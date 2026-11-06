@@ -160,8 +160,8 @@
 }
 
 /* The machine at a glance: one bar per resource in a row of cells, the
-   lighter band reserved and the solid part in use; each cell's one setting
-   or note sits under its bar. */
+   lighter band reserved and the solid part in use; each cell's notes sit
+   under its bar. Its settings are in Settings (T-55). */
 .jobs-budget {
   display: grid;
   flex: none;
@@ -194,6 +194,19 @@
 .jobs-budget-machine span,
 .jobs-budget-key {
   color: var(--text-secondary);
+}
+/* The key and the way to the card's settings, in Settings (T-55). */
+.jobs-budget-side {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  min-width: 0;
+}
+.jobs-budget-edit {
+  padding: 0;
+  color: var(--accent-ink);
+  font-size: inherit;
 }
 .jobs-budget-key {
   display: inline-flex;
@@ -308,39 +321,7 @@
 .jobs-gpu-held[title] {
   cursor: help;
 }
-.job-budget-settings summary {
-  width: fit-content;
-  color: var(--accent-ink);
-  cursor: pointer;
-}
-.job-budget-settings form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 8px;
-  padding: 10px 0 2px;
-}
-.job-budget-settings label {
-  display: grid;
-  flex: 1;
-  gap: 4px;
-  min-width: 90px;
-  color: var(--text-secondary);
-}
-.job-budget-settings input {
-  width: 100%;
-  min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--input);
-  color: var(--ink);
-  font: inherit;
-}
-.job-budget-settings .job-footnote {
-  flex-basis: 100%;
-}
-/* Reads like the settings beside it: a quiet word, not a boxed button. */
+/* Reads like the words beside it: a quiet word, not a boxed button. */
 .jobs-gpu-pause {
   padding: 0;
   color: var(--accent-ink);
@@ -508,9 +489,12 @@
   padding: 2px 4px 8px 2px;
   font-size: calc(10px + var(--font-adjust, 3px));
 }
+/* The title keeps a readable width; actions that do not fit beside it
+   wrap below it instead of squeezing it (four of them on a running job). */
 .job-detail-heading {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 10px;
 }
@@ -519,7 +503,7 @@
 }
 .job-detail-title {
   display: grid;
-  flex: 1;
+  flex: 1 1 14em;
   gap: 2px;
   min-width: 0;
 }
@@ -541,6 +525,10 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+.job-detail-heading > .job-detail-actions {
+  flex: 0 1 auto;
+  margin-left: auto;
 }
 .job-detail > p {
   margin: 0;
@@ -941,6 +929,43 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* The panel scrolls as one where scrolling a region inside it is hard or
+   there is no room for two of them: a finger cannot flick a pane nested in a
+   dialog, and a short window leaves each pane too little to be worth its own
+   scrollbar. The machine card then scrolls up and out of the way with
+   everything else, which is what it is asked for (T-53).
+
+   Both conditions, not only a narrow window: a tablet at 1366x1024 has the
+   height for the split and still cannot flick it. Measured on main at
+   1024x768, the list showed 306px of 1169px in its own region while the
+   panel itself did not scroll; at 820px of viewport the dialog is 780px and,
+   after the 203px machine card, each pane has about 360px left.
+
+   Only the scrolling and the one column: a window that is merely short or
+   touched is not narrow, so the headings, the form's columns and the
+   dialog's own size stay as they are (the rule below). */
+@media (max-width: 720px), (pointer: coarse), (max-height: 820px) {
+  .jobs-pane {
+    overflow: auto;
+  }
+  .jobs-source,
+  .jobs-browser,
+  .job-form {
+    flex: none;
+  }
+  .jobs-browser {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .job-list,
+  .job-detail,
+  .job-form {
+    overflow: visible;
+  }
+  /* Its own scroll inside the one that now carries everything. */
+  .ci-subscriptions {
+    max-height: none;
+  }
+}
 @media (max-width: 720px) {
   .jobs-nav .nav-count {
     display: none;
@@ -970,22 +995,6 @@
     gap: 14px;
     margin-top: 14px;
   }
-  .jobs-pane {
-    overflow: auto;
-  }
-  .jobs-source,
-  .jobs-browser,
-  .job-form {
-    flex: none;
-  }
-  .jobs-browser {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .job-list,
-  .job-detail,
-  .job-form {
-    overflow: visible;
-  }
   .jobs-source-heading {
     flex-wrap: wrap;
   }
@@ -996,10 +1005,56 @@
     flex-direction: column;
     align-items: stretch;
   }
-  .ci-subscriptions {
-    max-height: none;
-  }
 }
 .review-report-action {
   justify-content: flex-start;
+}
+
+/* Lowering a running job's memory limit (T-38 B): a short form under its
+   actions, and what came of the last try. */
+.job-lower-memory {
+  display: grid;
+  gap: 6px;
+  max-width: 420px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.job-lower-memory label {
+  display: grid;
+  gap: 4px;
+  font-weight: 600;
+}
+.job-lower-memory input {
+  max-width: 180px;
+}
+.job-lower-memory small {
+  color: var(--text-secondary);
+}
+.job-lower-memory-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.job-detail > p.job-limit-note {
+  color: var(--error-ink);
+}
+
+/* What earlier runs suggest requesting (T-38 C): a note under the limits,
+   with a button that fills them only when pressed. */
+.job-suggestion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.job-suggestion p {
+  flex: 1 1 260px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
 }

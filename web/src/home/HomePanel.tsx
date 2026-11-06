@@ -22,6 +22,7 @@ import { openJobs } from "../Jobs";
 import type { Agent, PendingRequest } from "../types";
 import { ProjectReply } from "./AskReply";
 import { CardReply, cardReplySlot, hasCardReply, KeptCardReplies, referableHistory } from "./CardReply";
+import { HandoverProposal } from "./HandoverProposal";
 import { changedSinceSeen, groupSections, projectDomId, requestDomId, topicName } from "./brief-layout";
 import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, relative } from "./format";
@@ -32,6 +33,7 @@ import { readPanelChoice, savePanelChoice } from "./panel-memory";
 import { RepoActivity } from "./RepoActivity";
 import { SectionBody } from "./SectionBody";
 import { SectionCard } from "./SectionCard";
+import { SummaryCard } from "./SummaryCard";
 import type { BriefOutcome, NeedsYouItem, ProjectPanel, Section } from "./types";
 import "./home-editors.css";
 
@@ -87,13 +89,19 @@ function useOverflow(active: boolean) {
   return [ref, overflowing] as const;
 }
 
-/** Linked repositories and their recent activity; a project without any shows nothing. */
+/**
+ * Linked repositories, one line each (T-18): name, branch, the default
+ * branch's latest run, the last commit and the open PRs. Repository details
+ * add the activity lists, the GitHub summary and the links; once opened, the
+ * links stay mounted while closed, with anything typed in them. A project
+ * without any repository shows nothing.
+ */
 function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boolean }) {
   const t = useStrings(homeText);
   const language = useLanguage();
   const [page, setPage] = useState<LinkedRepositories | null>(null);
-  const [manage, setManage] = useState(false);
-  const [collapsed, toggleFold] = useCardFold(`repos:${projectId}`);
+  const [details, setDetails] = useState(false);
+  const [opened, setOpened] = useState(false);
   useEffect(() => {
     if (readOnly) return;
     const controller = new AbortController();
@@ -106,26 +114,27 @@ function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boole
     return () => controller.abort();
   }, [projectId, readOnly]);
   if (!page?.repositories.length) return null;
-  // Its own fold, apart from the project's (T-115). Collapsed, it reads no
-  // activity (read again on expanding); GitHub, Jobs and CI go on as they
-  // are. Repository details stay mounted, with anything typed in them.
   const body = `${projectDomId(projectId)}-repos`;
   return (
-    <div className={`home-widget home-repos${collapsed ? " is-collapsed" : ""}`}>
-      <div className="home-card-head">
-        <FoldButton collapsed={collapsed} onToggle={toggleFold} label={t.repositories} controls={body} />
-        <h4>
-          <Github size={13} /> {t.repositories}
-        </h4>
-        {collapsed && <span className="home-card-count">{page.repositories.length}</span>}
-      </div>
-      <div className="home-card-body" id={body} hidden={collapsed}>
-        {!collapsed && <RepoActivity projectId={projectId} linked={page.repositories} />}
+    <div className={`home-widget home-repos${details ? " is-open" : ""}`} role="group" aria-label={t.repositories}>
+      <Github size={13} className="home-repos-icon" aria-hidden />
+      <RepoActivity projectId={projectId} linked={page.repositories} line lists={details} />
+      <button
+        type="button"
+        className="quiet-button home-repos-details"
+        aria-expanded={details}
+        aria-controls={body}
+        onClick={() => {
+          setDetails((value) => !value);
+          setOpened(true);
+        }}
+      >
+        {details ? t.hideRepositoryDetails : t.repositoryDetails}
+        {details ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+      </button>
+      <div className="home-repos-more" id={body} hidden={!details}>
         <GitHubSummary links={page.links} />
-        <button type="button" className="quiet-button" aria-expanded={manage} onClick={() => setManage((v) => !v)}>
-          {manage ? t.hideRepositoryDetails : t.repositoryDetails}
-        </button>
-        {manage && <GitHubLinks projectId={projectId} disabled={readOnly} language={language} />}
+        {opened && <GitHubLinks projectId={projectId} disabled={readOnly} language={language} />}
       </div>
     </div>
   );
@@ -354,14 +363,32 @@ export function HomePanel({
     }
   }
   const seen = useCallback((marks: SeenMark[]) => onSeen(id, marks), [onSeen, id]);
-  const card = (section: Section, sub = false) => (
+  // A report or status shows its summary; the whole body is read on its
+  // page (T-18, Lead 2270). An Ask keeps its full card, answered in place.
+  // A sub-topic's card says its topic in words (Dev 7, T-18): in a deck of
+  // sizes it may stand anywhere, so no stripe could show what it belongs to.
+  // Only the deck's cards take a size; the team's, in their details, do not.
+  const card = (section: Section, topic?: string, deck = true) => section.kind !== "ask" ? (
+    <SummaryCard
+      key={section.key}
+      section={section}
+      projectId={id}
+      workspaceId={workspaceId}
+      agents={agents}
+      topic={topic}
+      deck={deck}
+      readOnly={readOnly}
+      onSeen={seen}
+      notice={arrival?.inCard && arrival.key === section.key ? arrival.note : undefined}
+    />
+  ) : (
     <SectionCard
       key={section.key}
       section={section}
       projectId={id}
       workspaceId={workspaceId}
       agents={agents}
-      sub={sub}
+      topic={topic}
       readOnly={readOnly}
       onSeen={seen}
       onChanged={onChanged}
@@ -403,22 +430,26 @@ export function HomePanel({
           {collapsed && quiet && <span className="home-quiet">{t.quiet}</span>}
         </span>
         {reorder && (
+          // Unavailable while the order saves, or at the end it would move past, an arrow says so but stays
+          // focusable, so the one just pressed keeps the focus (T-19 HM:H7).
           <span className="home-reorder" role="group" aria-label={t.move(panel.project.name)}>
             <button
               type="button"
               className="icon-button"
+              data-move="up"
               aria-label={t.moveUp(panel.project.name)}
-              disabled={!reorder.onUp || reorder.busy}
-              onClick={reorder.onUp}
+              aria-disabled={!reorder.onUp || reorder.busy || undefined}
+              onClick={() => { if (!reorder.busy) reorder.onUp?.(); }}
             >
               <ArrowUp size={14} />
             </button>
             <button
               type="button"
               className="icon-button"
+              data-move="down"
               aria-label={t.moveDown(panel.project.name)}
-              disabled={!reorder.onDown || reorder.busy}
-              onClick={reorder.onDown}
+              aria-disabled={!reorder.onDown || reorder.busy || undefined}
+              onClick={() => { if (!reorder.busy) reorder.onDown?.(); }}
             >
               <ArrowDown size={14} />
             </button>
@@ -444,6 +475,10 @@ export function HomePanel({
                 ))}
               </Approvals>
             )}
+            {panel.handoverProposal && (
+              <HandoverProposal key={panel.handoverProposal.id} projectId={id} proposal={panel.handoverProposal}
+                readOnly={readOnly} onChanged={onChanged} />
+            )}
             <RepoBlock projectId={id} readOnly={readOnly} />
           </div>
           <div ref={briefRef} className={`home-brief${capped ? " is-capped" : ""}`}>
@@ -468,7 +503,7 @@ export function HomePanel({
                       </h3>
                     )}
                     {group.subs.length > 0 && (
-                      <div className="home-subs">{group.subs.map((sub) => card(sub, true))}</div>
+                      <div className="home-subs">{group.subs.map((sub) => card(sub, topicName(group.topic)))}</div>
                     )}
                   </div>
                 ),
@@ -574,7 +609,7 @@ export function HomePanel({
             </div>
             {(panel.brief.teamSections?.length ?? 0) > 0 && <div className="home-team-content">
               <p className="home-note">{t.teamNote}</p>
-              {panel.brief.teamSections?.map(section => card(section))}
+              {panel.brief.teamSections?.map(section => card(section, undefined, false))}
             </div>}
             <History30
               sections={panel.brief.history}

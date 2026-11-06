@@ -16,13 +16,14 @@ import {
   type Pending,
   type RemoteAccessDraft,
   type RemoteAccessOperation,
+  type RemoteAccessPreviews,
   type RemoteAccessView,
 } from "./remote-access";
-import { RemoteAccessPreviews } from "./RemoteAccessPreviews";
 import "./remote-access.css";
 
-/** The advanced fields as typed: empty means Core's default. */
-type Fields = { servePort: string; localPort: string; login: string };
+/** The fields as typed: empty means Core's default; `previews` is whether
+ * phone access includes previews (T-5). */
+type Fields = { servePort: string; localPort: string; login: string; previews: boolean };
 type PortField = "servePort" | "localPort";
 
 /** What a line says, kept as what happened and worded when shown, so it
@@ -53,6 +54,7 @@ const text = strings({
   turnedOff: "Turned off.",
   sentence: (said: string) => `${said}.`,
   notVerified: "Set up, but not verified.",
+  partial: "Phone access changed, but the older phone previews' Serve entry was not removed.",
   stopped: (what: string, at: string, why: string) => `${what} stopped at ${at}${why}.`,
   undone: (what: string, at: string, why: string) => `${what} stopped at ${at} and was undone${why}.`,
   uncertain: (at: string, why: string) => `Core could not confirm how ${at} ended${why}. Check, or apply again: Core compares with what is there first.`,
@@ -107,12 +109,27 @@ const text = strings({
   localPortHelp: (port: number) => `A loopback port on the Core host, used only by Serve. Empty: ${port}.`,
   loginHelp: "The one tailnet login that may open it. Empty: Tailscale's own login.",
   willOpen: "Your phone will open ",
+  includePreviews: "Phone access includes previews",
+  includePreviewsHelp:
+    "Single-file HTML previews open on the phone at this same address, each in a sandbox of its own. Left out, the phone opens none, and what it has open stops opening. Turning phone access off keeps this choice.",
+  previewsLabel: "Previews on the phone",
+  previewsNow: (included: boolean, available: boolean): string =>
+    !included ? "Not included" : available ? "Included" : "Included, once phone access is on",
+  legacyPending: (port: number, target: string, on: boolean) =>
+    `An older Yuzuno set a Serve entry of its own for phone previews on port ${port} (to ${target}). ${on ? "The next Save and apply or Turn off" : "“Remove the older entry” or the next Save and apply"} removes it while it is still exactly that entry; anything else there is left as it is.`,
+  legacyUnreadable: (error: string) =>
+    `An older Yuzuno's phone previews record could not be read (${error}); it is kept as it is. Until it can be, phone access stays on the ports it serves on now.`,
+  legacyLastTry: (detail: string) => ` Last try: ${detail}.`,
+  legacyForeign: (port: number, detail: string) => `An older Yuzuno's Serve entry for phone previews on port ${port} is no longer Yuzuno's: ${detail}.`,
+  legacyOutcome: (detail: string) => `Older phone previews: ${detail}.`,
   checking: "Checking…",
   check: "Check",
   checkFirst: "Check first",
   starting: "Starting…",
   apply: "Save and apply",
   turnOff: "Turn off",
+  legacyRemove: "Remove the older entry",
+  legacyRetry: "Try removing it again",
 }, {
   badPort: (field) => `${field === "servePort" ? "Serve 端口" : "Core 的手机端口"}必须是 1 到 65535 之间的端口。`,
   checkFailed: (detail) => `检查失败：${detail}`,
@@ -126,6 +143,7 @@ const text = strings({
   turnedOff: "已关闭。",
   sentence: (said) => `${said}。`,
   notVerified: "已设置，但未验证。",
+  partial: "手机访问已更改，但旧版手机预览的 Serve 入口没有移除。",
   stopped: (what, at, why) => `${what}在${at}停止${why}。`,
   undone: (what, at, why) => `${what}在${at}停止并已撤销${why}。`,
   uncertain: (at, why) => `Core 无法确认${at}的结果${why}。请检查，或再次应用：Core 会先与现有配置比较。`,
@@ -178,15 +196,28 @@ const text = strings({
   localPortHelp: (port) => `Core 主机上的回环端口，只供 Serve 使用。留空：${port}。`,
   loginHelp: "唯一可以打开它的 tailnet 登录。留空：使用 Tailscale 自己的登录。",
   willOpen: "你的手机将打开 ",
+  includePreviews: "手机访问包含预览",
+  includePreviewsHelp: "单文件 HTML 预览在手机上通过同一地址打开，各自在独立的沙箱中运行。不包含时，手机打不开预览，已打开的也会失效。关闭手机访问会保留这个选择。",
+  previewsLabel: "手机上的预览",
+  previewsNow: (included, available) => (!included ? "未包含" : available ? "已包含" : "已包含，手机访问开启后可用"),
+  legacyPending: (port, target, on) =>
+    `旧版 Yuzuno 曾为手机预览单独设置了 Serve 端口 ${port}（指向 ${target}）。${on ? "下一次“保存并应用”或“关闭”" : "“移除旧入口”或下一次“保存并应用”"}会在它仍完全是那个入口时移除它；那里的其他配置保持不变。`,
+  legacyUnreadable: (error) => `无法读取旧版 Yuzuno 的手机预览记录（${error}），已原样保留。在能读取之前，手机访问保持在它现在使用的端口上。`,
+  legacyLastTry: (detail) => ` 上次尝试：${detail}。`,
+  legacyForeign: (port, detail) => `旧版 Yuzuno 为手机预览设置的 Serve 端口 ${port} 已不再属于 Yuzuno：${detail}。`,
+  legacyOutcome: (detail) => `旧版手机预览：${detail}。`,
   checking: "正在检查…",
   check: "检查",
   checkFirst: "请先检查",
   starting: "正在开始…",
   apply: "保存并应用",
   turnOff: "关闭",
+  legacyRemove: "移除旧入口",
+  legacyRetry: "再次尝试移除",
 });
 
-function draftOf(fields: Fields): RemoteAccessDraft | { badPort: PortField } {
+/** `previews`: Core takes the choice with phone access (T-5). */
+function draftOf(fields: Fields, previews: boolean): RemoteAccessDraft | { badPort: PortField } {
   const port = (value: string) => {
     if (!value.trim()) return undefined;
     const n = Number(value.trim());
@@ -196,7 +227,7 @@ function draftOf(fields: Fields): RemoteAccessDraft | { badPort: PortField } {
   if (servePort === null) return { badPort: "servePort" };
   const localPort = port(fields.localPort);
   if (localPort === null) return { badPort: "localPort" };
-  return { enabled: true, servePort, localPort, login: fields.login.trim() || undefined };
+  return { enabled: true, servePort, localPort, login: fields.login.trim() || undefined, ...(previews ? { previews: fields.previews } : {}) };
 }
 
 function fieldsOf(draft: RemoteAccessDraft | undefined, view: RemoteAccessView): Fields {
@@ -205,7 +236,18 @@ function fieldsOf(draft: RemoteAccessDraft | undefined, view: RemoteAccessView):
     servePort: String(draft?.servePort ?? saved?.servePort ?? ""),
     localPort: String(draft?.localPort ?? saved?.localPort ?? ""),
     login: draft?.login ?? saved?.login ?? "",
+    previews: draft?.previews ?? saved?.previews ?? view.previews?.included ?? false,
   };
+}
+
+/** What the page says of an older Core's own previews entry (T-5): one still
+ * to remove, one left to others, or a record it cannot read; nothing of one
+ * removed or gone. */
+function legacyNote(legacy: RemoteAccessPreviews["legacy"] | null, t: ReturnType<typeof text>, on: boolean): string | null {
+  if (!legacy) return null;
+  if ("error" in legacy) return t.legacyUnreadable(legacy.error);
+  if ("formerOwned" in legacy) return legacy.state === "foreign" ? t.legacyForeign(legacy.formerOwned.servePort, legacy.detail.replace(/[.。]\s*$/, "")) : null;
+  return t.legacyPending(legacy.servePort, legacy.target, on) + (legacy.lastAttempt ? t.legacyLastTry(legacy.lastAttempt.detail.replace(/[.。]\s*$/, "")) : "");
 }
 
 /** Core refuses a change with `<code>: <sentence>`; the page shows the sentence. */
@@ -254,6 +296,9 @@ function outcome(op: RemoteAccessOperation, language: Language): string | null {
       return t.uncertain(at, why);
     case "interrupted":
       return t.interrupted(at);
+    case "partial":
+      // Core's own sentence says what is on and what of an older Core's previews was left.
+      return error ? t.sentence(error) : t.partial;
   }
 }
 
@@ -280,6 +325,9 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
   const [copied, setCopied] = useState(false);
   const pending = useRef<Pending | null>(null);
   if (pending.current === null) pending.current = loadPending(workspaceId);
+  // Whether the previews choice was changed here (T-5): until it is, a kept
+  // request from before Core took the choice is asked again as it was.
+  const previewsTouched = useRef(false);
 
   const accept = useCallback((next: RemoteAccessView) => {
     setView(next);
@@ -377,7 +425,9 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
     // Until this window knows its Workspace, no change is asked: its request
     // could not be kept for asking again after a lost answer.
     if (!fields || sending || busy || !workspaceId) return;
-    const draft = enabled ? draftOf(fields) : { enabled: false };
+    const kept = pending.current?.draft;
+    const older = !!kept && kept.enabled && !("previews" in kept) && !previewsTouched.current;
+    const draft = enabled ? draftOf(fields, !!view?.previews && !older) : { enabled: false };
     if ("badPort" in draft) return say({ kind: "port", field: draft.badPort });
     // The same change asked again is the same request; anything else is new.
     const request: Pending =
@@ -430,15 +480,23 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
   const host = view?.support.coreHost;
   const tailscale = view?.tailscale;
   const enabledNow = !!view && (!!view.saved?.enabled || !!view.listening || view.serve.state === "ours");
+  // What an older Core's phone previews left and is not settled yet (an entry
+  // still held, or a record that cannot be read) is what a Turn off cleans up,
+  // with phone access off as well; one no longer held leaves nothing to.
+  const legacy = view?.previews?.legacy ?? null;
+  const legacyLeft = !!legacy && !("formerOwned" in legacy);
+  const legacyTried = !!legacy && ("error" in legacy || ("lastAttempt" in legacy && !!legacy.lastAttempt));
   const done = operation ? outcome(operation, language) : null;
   const unverified = !!view?.url && !!view.verification && !view.verification.ok;
   // What Save and apply would make, from the node Check read and the typed port.
-  const typed = fields ? draftOf(fields) : null;
+  const typed = fields ? draftOf(fields, false) : null;
   const preview =
     view && typed && !("badPort" in typed)
       ? previewUrl(tailscale?.dnsName, typed.servePort ?? view.defaults.servePort)
       : null;
-  const stepIndex = operation ? operationSteps.indexOf(operation.step) : -1;
+  // A change at an older Core's previews entry shows that step too (T-5).
+  const steps: RemoteAccessOperation["step"][] = operation?.step === "cleanup" ? [...operationSteps, "cleanup"] : operationSteps;
+  const stepIndex = operation ? steps.indexOf(operation.step) : -1;
   return (
     <section id="settings-remote" className="settings-section remote-access" aria-label={t.section}>
       <header className="settings-section-heading">
@@ -519,6 +577,17 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
               </li>
             ))}
           </ul>
+          {view.previews && (
+            <p className="remote-access-previews-line" data-tone={view.previews.available ? "on" : view.previews.included ? "warn" : "off"}>
+              <span className="remote-access-state-label">{t.previewsLabel}</span>{" "}
+              <span>{t.previewsNow(view.previews.included, view.previews.available)}</span>
+            </p>
+          )}
+          {legacyNote(view.previews?.legacy ?? null, t, enabledNow) && (
+            <p className="remote-access-note" role="note">
+              {legacyNote(view.previews?.legacy ?? null, t, enabledNow)}
+            </p>
+          )}
           {view.verification && !view.verification.ok && (
             <details className="remote-access-verification">
               <summary>{t.verificationSteps}</summary>
@@ -564,7 +633,7 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
             <div className="remote-access-operation" aria-label={t.latest}>
               {busy && (
                 <ol className="remote-access-steps">
-                  {operationSteps.map((step, index) => (
+                  {steps.map((step, index) => (
                     <li key={step} data-state={index < stepIndex ? "done" : index === stepIndex ? "running" : "pending"}>
                       {labels.operation[step]}
                       {index === stepIndex && <span className="step-moving" aria-hidden="true" />}
@@ -580,9 +649,16 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
                   {done}
                 </p>
               )}
-              {!busy && !!operation.notes?.length && (
+              {/* An older Core's previews entry gone or left to others, apart from how phone access ended (T-5);
+                  one not removed is how the change ended, said above. */}
+              {!busy && operation.legacy && ["removed", "absent", "foreign"].includes(operation.legacy.state) && (
+                <p className="settings-row-help" role="status">
+                  {t.legacyOutcome(operation.legacy.detail.replace(/[.。]\s*$/, ""))}
+                </p>
+              )}
+              {!busy && !!operation.notes?.filter((note) => note !== operation.legacy?.detail).length && (
                 <ul className="remote-access-notes" aria-label={t.notes}>
-                  {operation.notes.map((note, index) => (
+                  {operation.notes.filter((note) => note !== operation.legacy?.detail).map((note, index) => (
                     <li key={index}>{note}</li>
                   ))}
                 </ul>
@@ -596,6 +672,24 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
           )}
           {supported && view.canChange && fields && (
             <div className="settings-group remote-access-form">
+              {view.previews && (
+                <label className="settings-row">
+                  <span className="settings-row-main">
+                    <span className="settings-row-title">{t.includePreviews}</span>
+                    <span className="settings-row-help">{t.includePreviewsHelp}</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    aria-label={t.includePreviews}
+                    checked={fields.previews}
+                    disabled={sending || busy}
+                    onChange={(e) => {
+                      previewsTouched.current = true;
+                      edit({ previews: e.target.checked });
+                    }}
+                  />
+                </label>
+              )}
               <details className="remote-access-advanced">
                 <summary>{t.advanced}</summary>
                 <label className="settings-row">
@@ -664,9 +758,9 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
                   >
                     {sending ? t.starting : t.apply}
                   </button>
-                  {enabledNow && (
+                  {(enabledNow || legacyLeft) && (
                     <button type="button" className="secondary-button" disabled={sending || busy || !workspaceId} onClick={() => void send(false)}>
-                      {t.turnOff}
+                      {enabledNow ? t.turnOff : legacyTried ? t.legacyRetry : t.legacyRemove}
                     </button>
                   )}
                 </div>
@@ -677,15 +771,6 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
             <p className="updates-error" role="alert" ref={errorLine}>
               {saidText(error, language)}
             </p>
-          )}
-          {supported && view.preview && (
-            <RemoteAccessPreviews
-              preview={view.preview}
-              canChange={view.canChange}
-              workspaceId={workspaceId}
-              phoneBusy={busy || sending}
-              refresh={refresh}
-            />
           )}
         </>
       )}

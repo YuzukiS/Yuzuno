@@ -3,10 +3,11 @@
 // A root topic with its sub-topics, a sub-topic whose topic has no card, and
 // several such, on a wide window, either side of the 520 px rule, a 320 px
 // phone, at 16 and 24 px text, expanded, folded and after a reload:
-// - every Brief card shares one left and one right edge (to a pixel);
+// - every Brief card starts on one of the deck's column edges and ends on one
+//   (T-18: one column, or the whole row), to a pixel, so none is cut;
 // - nothing scrolls sideways;
-// - the topics keep their grouping and order, and each card folds on its own
-//   and stays folded;
+// - the topics keep their grouping and order; the Ask folds on its own and
+//   stays folded, and a summary card has no body to fold;
 // - on a sub-card, its controls are where a tap reaches them, an Ask's draft
 //   outlives a fold, and Reply opens;
 // - Seen is the only write Home makes (the app's reading handoff for a
@@ -135,6 +136,15 @@ const card = (page, key) => page.locator(`.home-view .home-main [data-section-ke
 /** Every Brief card's box, the grouping as drawn, and what scrolls sideways. */
 const layout = (page) => page.evaluate(() => {
   const brief = document.querySelector(".home-view .home-main .home-brief");
+  // The deck's column edges, from its grid tracks.
+  const style = getComputedStyle(brief), area = brief.getBoundingClientRect();
+  const gap = parseFloat(style.columnGap) || 0;
+  let x = area.left + parseFloat(style.paddingLeft);
+  const columns = style.gridTemplateColumns.split(" ").map(parseFloat).map((width) => {
+    const column = { left: x, right: x + width };
+    x += width + gap;
+    return column;
+  });
   const cards = [...brief.querySelectorAll(".home-section")].map((el) => {
     const r = el.getBoundingClientRect();
     return { key: el.dataset.sectionKey, left: r.left, right: r.right, sub: el.classList.contains("is-sub"), collapsed: el.classList.contains("is-collapsed") };
@@ -146,16 +156,19 @@ const layout = (page) => page.evaluate(() => {
     subs: [...topic.querySelectorAll(":scope > .home-subs > .home-section")].map((el) => el.dataset.sectionKey),
   }));
   return {
-    cards, topics,
+    cards, topics, columns,
     sideways: { page: document.documentElement.scrollWidth - document.documentElement.clientWidth, brief: brief.scrollWidth - brief.clientWidth },
   };
 });
 
-/** Alignment: every card's left and right within a pixel of the first's. */
+/** Alignment: every card starts on a column's left edge and ends on a column's
+ *  right edge, within a pixel, the end not before the start (T-18). */
 function alignment(l) {
-  const [first] = l.cards;
-  return l.cards.map((c) => ({ key: c.key, left: Math.round((c.left - first.left) * 10) / 10, right: Math.round((c.right - first.right) * 10) / 10 }))
-    .filter((c) => Math.abs(c.left) > 1 || Math.abs(c.right) > 1);
+  return l.cards.map((c) => {
+    const first = l.columns.findIndex((col) => Math.abs(col.left - c.left) <= 1);
+    const last = l.columns.findIndex((col) => Math.abs(col.right - c.right) <= 1);
+    return { key: c.key, first, last, left: Math.round(c.left * 10) / 10, right: Math.round(c.right * 10) / 10 };
+  }).filter((c) => c.first < 0 || c.last < c.first);
 }
 const expectedTopics = [
   { topic: "development", heading: null, parent: "development", subs: ["development/merge-queue", "development/ship"] },
@@ -167,13 +180,13 @@ const expectedTopics = [
 async function measure(page, label, state) {
   const l = await layout(page);
   const off = alignment(l);
-  report.cases.push({ case: label, state, sideways: l.sideways, offsets: off, edges: l.cards.map((c) => ({ key: c.key, left: Math.round(c.left), right: Math.round(c.right), sub: c.sub, collapsed: c.collapsed })) });
+  report.cases.push({ case: label, state, sideways: l.sideways, columns: l.columns.length, offsets: off, edges: l.cards.map((c) => ({ key: c.key, left: Math.round(c.left), right: Math.round(c.right), sub: c.sub, collapsed: c.collapsed })) });
   await page.screenshot({ path: resolve(output, `${label.replace(/[^a-z0-9]+/gi, "-")}-${state}.png`), fullPage: true });
   assert.deepEqual(l.cards.map((c) => c.key), keys, `${label}, ${state}: every card, in order`);
   assert.deepEqual(l.topics.map((t) => ({ ...t, heading: t.heading && t.heading.trim() })), expectedTopics, `${label}, ${state}: the grouping`);
   assert.ok(l.sideways.page <= 1 && l.sideways.brief <= 1, `${label}, ${state}: nothing scrolls sideways ${JSON.stringify(l.sideways)}`);
   if (off.length) {
-    const message = `${label}, ${state}: card edges differ from the first's by ${JSON.stringify(off)}`;
+    const message = `${label}, ${state}: cards off the deck's column edges ${JSON.stringify(off)}`;
     report.alignFailures.push({ case: label, state, offsets: off });
     console.log(`FAIL ${label}, ${state}: ${JSON.stringify(off)}`);
     return message;
@@ -191,7 +204,7 @@ const viewports = [
 ];
 
 /** The header controls on a sub-card, each where a tap at its centre reaches it. */
-const reachable = (page, key) => card(page, key).evaluate((el) => [...el.querySelectorAll(".home-section-head button, .home-fold, .home-reply-open, .home-pin, .home-seen")]
+const reachable = (page, key) => card(page, key).evaluate((el) => [...el.querySelectorAll(".home-section-head button, .home-summary-head button, .home-fold, .home-reply-open, .home-pin, .home-seen")]
   .filter((b, i, all) => all.indexOf(b) === i && b.getClientRects().length)
   .map((b) => {
     b.scrollIntoView({ block: "nearest" });
@@ -207,22 +220,21 @@ try {
     try {
       const misses = [];
       misses.push(await measure(page, label, "expanded"));
-      // The root and a sub-topic folded: each folds on its own.
-      await card(page, "development").locator(".home-fold").click();
-      await card(page, "ops/backup").locator(".home-fold").click();
+      // A summary card's body is on its report page: nothing to fold (T-18).
+      for (const key of ["development", "development/merge-queue", "ops/backup"])
+        assert.equal(await card(page, key).locator(".home-fold").count(), 0, `${label}: ${key} is a summary card, with no fold`);
+      // The Ask, a sub-topic, folds on its own.
+      await card(page, "development/ship").locator(".home-fold").click();
       await page.waitForTimeout(150);
-      assert.equal(await card(page, "development").locator(".home-card-body").isVisible(), false, `${label}: the root folded`);
-      assert.equal(await card(page, "development/merge-queue").locator(".home-card-body").isVisible(), true, `${label}: its sub-topic did not`);
-      assert.equal(await card(page, "ops/deploy").locator(".home-card-body").isVisible(), true, `${label}: the other sub-topic did not`);
+      assert.equal(await card(page, "development/ship").locator(".home-card-body").isVisible(), false, `${label}: the Ask folded`);
+      assert.equal(await card(page, "development/merge-queue").isVisible(), true, `${label}: the cards beside it did not`);
       misses.push(await measure(page, label, "folded"));
       // As left: after a reload, still folded.
       await page.reload();
       await toHome(page);
-      assert.equal(await card(page, "development").locator(".home-card-body").isVisible(), false, `${label}: still folded after a reload`);
-      assert.equal(await card(page, "ops/backup").locator(".home-card-body").isVisible(), false, `${label}: still folded after a reload`);
+      assert.equal(await card(page, "development/ship").locator(".home-card-body").isVisible(), false, `${label}: still folded after a reload`);
       misses.push(await measure(page, label, "reloaded"));
-      await card(page, "development").locator(".home-fold").click();
-      await card(page, "ops/backup").locator(".home-fold").click();
+      await card(page, "development/ship").locator(".home-fold").click();
       // A sub-card's controls, its Ask's draft through a fold, and Reply.
       const controls = [...(await reachable(page, "development/ship")), ...(await reachable(page, "ops/deploy")), ...(await reachable(page, "development/merge-queue"))];
       report.cases.push({ case: label, state: "controls", controls });
@@ -241,7 +253,9 @@ try {
       assert.deepEqual(report.writes.filter((w) => w.case === label).map((w) => w.path), ["/api/projects/p1/brief/seen"], `${label}: Seen is the only write`);
       // On the wide window, a sub-card pinned: its widget is not a sub-card.
       if (viewport.width >= 1440) {
-        await card(page, "development/merge-queue").getByRole("button", { name: "Pin “Merge queue” to Widgets" }).click();
+        // Pin is in the summary card's More actions (T-18).
+        await card(page, "development/merge-queue").getByRole("button", { name: "More actions for “Merge queue”" }).click();
+        await card(page, "development/merge-queue").getByRole("button", { name: "Pin “Merge queue” to My widgets" }).click();
         const pinned = page.locator(".home-widget-column .home-pinned").first();
         await pinned.waitFor({ timeout: 5000 });
         const widget = await pinned.evaluate((el) => ({
@@ -255,7 +269,7 @@ try {
       }
       const miss = misses.filter(Boolean);
       if (miss.length) failed.push(...miss);
-      else check(`${label}: every Brief card on one pair of edges, expanded, folded and reloaded; grouping, folds, controls, draft, Reply, Seen${viewport.width >= 1440 ? ", Pin" : ""}`);
+      else check(`${label}: every Brief card on the deck's column edges, expanded, folded and reloaded; grouping, the Ask's fold, controls, draft, Reply, Seen${viewport.width >= 1440 ? ", Pin" : ""}`);
     } finally {
       await context.close();
     }
@@ -266,4 +280,4 @@ try {
 }
 assert.deepEqual(report.errors, [], "no page errors");
 assert.deepEqual(report.unexpected, [], "no other host");
-assert.deepEqual(failed, [], "every card on one pair of edges");
+assert.deepEqual(failed, [], "every card on the deck's column edges");

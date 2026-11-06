@@ -270,12 +270,17 @@ fn brief_with(detail: &AgentDetail, receipts: Unsettled) -> Brief {
     let mut agent = detail.agent.clone();
     agent.work_summary = crate::rail::project(detail);
     agent.project_id = None;
+    agent.kind = None;
+    crate::executor_release::show(&mut agent, None);
     let active = detail.turns.iter().rev().find(|t| t["status"] == "inProgress");
     let active_turn = active.and_then(|t| t["id"].as_str()).map(str::to_owned);
     let active_turn_unmatched = active.is_some_and(|t| t["_yuzunoUnmatched"] == true);
     let pending_ids = detail.pending.iter().map(|p| p.id.clone()).collect();
     Brief { agent, active_turn, active_turn_unmatched, pending_ids, activity: Activity::with(detail, receipts) }
 }
+
+/// Further writes for the transaction a write of the store makes (`insert_created_then`).
+pub(crate) type InTransaction = Box<dyn FnOnce(&Connection) -> Result<()> + Send>;
 
 /// Which of an Agent's Turns a read or a change works on (T-140). Every
 /// selection but `Meta` also holds the Agent's open Turns and its newest
@@ -1072,6 +1077,9 @@ fn project_window(
     crate::mailbox_notice::annotate(db, &mut index)?;
     crate::codex_sessions::annotate_imported_questions_in(db, &mut index)?;
     index.agent.project_id = crate::projects::agent_project(db, &index.agent.id)?;
+    index.agent.kind = crate::agent_roles::listed_kind(db, &index.agent.id)?;
+    let release = crate::executor_release::release_of(db, &index.agent.id)?;
+    crate::executor_release::show(&mut index.agent, release);
     let found = crate::conversation_window::project_from(&index.turns, query, |t, i| {
         let mut item = crate::client_view::item_owned(read(t, i)?, &index.pending);
         // The complete index has already been annotated from this snapshot.
@@ -1101,6 +1109,9 @@ fn project_window_marked(
     crate::mailbox_notice::annotate(db, &mut index)?;
     crate::codex_sessions::annotate_imported_questions_in(db, &mut index)?;
     index.agent.project_id = crate::projects::agent_project(db, &index.agent.id)?;
+    index.agent.kind = crate::agent_roles::listed_kind(db, &index.agent.id)?;
+    let release = crate::executor_release::release_of(db, &index.agent.id)?;
+    crate::executor_release::show(&mut index.agent, release);
     let found = crate::conversation_window::project_marked(&index.turns, ords, counts, query, position, |t, i| {
         let mut item = crate::client_view::item_owned(read(t, i)?, &index.pending);
         // The index has been annotated from this snapshot: its provenance on
@@ -1124,7 +1135,8 @@ fn project_window_marked(
 /// The completion check (`completed_before`, `record_recovered_completion`)
 /// looks a Turn's completion up by Agent and Turn ID.
 const COMPLETION_INDEX: &str = "CREATE INDEX IF NOT EXISTS journal_turn_completed
-    ON journal(agent_id, json_extract(data,'$.turn.id')) WHERE kind='turn/completed'";
+    ON journal(agent_id, json_extract(data,'$.turn.id')) WHERE kind='turn/completed';
+    CREATE INDEX IF NOT EXISTS journal_turn_ends ON journal(agent_id, seq) WHERE kind='turn/completed'";
 /// The busy timeout of every Store connection.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -1190,6 +1202,9 @@ impl Store {
         record_rows::mark_store(&db)?;
         crate::collaboration_store::migrate(&db)?;
         crate::projects::migrate(&db)?;
+        crate::agent_roles::migrate(&db)?;
+        crate::executor_archiving::migrate(&db)?;
+        crate::handover::migrate(&db)?;
         crate::services::migrate(&db)?;
         crate::service_jobs::migrate(&db)?;
         crate::github::store::migrate(&db)?;
@@ -1198,8 +1213,10 @@ impl Store {
         crate::jobs::store::migrate(&db)?;
         crate::ci_monitor::store::migrate(&db)?;
         crate::delivery::store::migrate(&db)?;
+        crate::merge_queue::store::migrate(&db)?;
         crate::machines::migrate(&db)?;
         crate::codex_sessions::migrate(&db)?;
+        crate::opencode_agent::fork_migrate(&db)?;
         crate::rewind::migrate(&db)?;
         crate::claude_quota::migrate(&db)?;
         crate::results::migrate(&db)?;
@@ -1258,7 +1275,6 @@ impl Store {
         };
         let before = d.message_receipts.clone();
         mark_restarted(&mut d, newest_in_progress);
-        d.agent.pending_count = d.pending.len() as u64;
         d.agent.updated_at = now();
         let receipts = changed_receipts(&before, &d.message_receipts);
         let body = record_rows::MetaBody::of(&d)?;
@@ -1270,8 +1286,15 @@ impl Store {
             tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,'workspace/restarted','{}',?2)", params![id, now()])?;
             d.agent.last_seq = tx.last_insert_rowid();
             d.agent.unread_count = unread(&tx, id, d.agent.reviewed_seq)?;
-            record_rows::write_meta(&tx, id, &body, &d.agent)?;
             record_rows::write_receipts(&tx, id, &receipts)?;
+            // As the rows now say (T-42); an Agent from before last_turn_end
+            // starts from its journal.
+            d.agent.open_questions = record_rows::open_questions(&tx, id)?.len() as u64;
+            d.agent.pending_count = d.pending.len() as u64 + d.agent.open_questions;
+            if d.agent.last_turn_end.is_none() {
+                d.agent.last_turn_end = record_rows::last_journaled_turn_end(&tx, id)?;
+            }
+            record_rows::write_meta(&tx, id, &body, &d.agent)?;
             tx.commit()?;
         }
         rewrite.done(|memory| {
@@ -1315,19 +1338,28 @@ impl Store {
     /// A requested project is linked in the same transaction, so a new Agent
     /// never exists outside the project it was created for.
     pub fn insert(&self, detail: &AgentDetail) -> Result<()> {
-        self.insert_record(detail, false)
+        self.insert_record(detail, false, None)
     }
 
     /// A newly created Agent, refused if its SSH machine is no longer
     /// registered.
     pub fn insert_created(&self, detail: &AgentDetail) -> Result<()> {
-        self.insert_record(detail, true)
+        self.insert_record(detail, true, None)
     }
 
-    fn insert_record(&self, detail: &AgentDetail, machine_registered: bool) -> Result<()> {
+    /// `insert_created`, with `then` written in the same transaction: an
+    /// executor's role and its dispatch's state (T-34), so the Agent never
+    /// exists without them.
+    pub(crate) fn insert_created_then(&self, detail: &AgentDetail, then: Option<InTransaction>) -> Result<()> {
+        self.insert_record(detail, true, then)
+    }
+
+    fn insert_record(&self, detail: &AgentDetail, machine_registered: bool, then: Option<InTransaction>) -> Result<()> {
         let mut detail = detail.clone();
         detail.agent.work_summary = None;
         let project = detail.agent.project_id.take();
+        detail.agent.kind = None;
+        crate::executor_release::show(&mut detail.agent, None);
         let rows = record_rows::split(&detail)?;
         let _kept_out = self.keep_older_cores_out_for(detail.agent.remote.as_ref()
             .and_then(|remote| crate::older_cores::agent_hazard(&detail.agent.name, &remote.machine)))?;
@@ -1348,6 +1380,9 @@ impl Store {
             record_rows::insert(&tx, &detail.agent.id, &rows)?;
             if let Some(project) = project.as_deref() {
                 crate::projects::set_agent_project_in(&tx, &detail.agent.id, Some(project))?;
+            }
+            if let Some(then) = then {
+                then(&tx)?;
             }
             tx.commit()?;
         }
@@ -1620,6 +1655,15 @@ impl Store {
         record_rows::turn_count(&*self.db.read()?, id)
     }
 
+    /// How many of the Agent's Turns come before `turn`, and how many it has;
+    /// None if it has no such Turn.
+    pub fn turns_around(&self, id: &str, turn: &str) -> Result<Option<(usize, usize)>> {
+        self.settle_unwritten(id)?;
+        let db = self.db.read()?;
+        let Some(before) = record_rows::turns_before(&db, id, turn)? else { return Ok(None) };
+        Ok(Some((before, record_rows::turn_count(&db, id)?)))
+    }
+
     /// Every Turn of the Agent, oldest first, read without payloads and
     /// handed to `each` one at a time until it says to stop: for the few
     /// reads that need a whole history (rewind's local archive, a Codex
@@ -1627,6 +1671,16 @@ impl Store {
     pub fn scan(&self, id: &str, each: impl FnMut(Value) -> Result<bool>) -> Result<()> {
         self.settle_unwritten(id)?;
         record_rows::scan(&*self.db.read()?, id, false, each)
+    }
+
+    /// Every Turn of the Agent as it is stored (T-10 Fork): payloads
+    /// included, and nothing a read adds for clients (mailbox, results,
+    /// origins), in order. What a fork copies.
+    pub(crate) fn stored_turns(&self, id: &str) -> Result<Vec<Value>> {
+        self.settle_unwritten(id)?;
+        let db = self.db.read()?;
+        let ids = record_rows::turn_ids(&db, id)?;
+        Ok(record_rows::load_turns(&db, id, &ids, true)?.into_iter().map(|(_, turn)| turn).collect())
     }
 
     /// What a rewind keeps of the local Turns it removes: the metadata and
@@ -1660,6 +1714,12 @@ impl Store {
             return Ok(hot.read().pending.clone());
         }
         Ok(record_rows::load_meta(&*self.db.read()?, id)?.context("Agent 不存在")?.pending)
+    }
+
+    /// The Agent's open asynchronous questions, oldest first (T-42), as its
+    /// rows say: what `open_questions` counts.
+    pub fn open_questions(&self, id: &str) -> Result<Vec<record_rows::OpenQuestion>> {
+        record_rows::open_questions(&*self.db.read()?, id)
     }
 
     /// The direct sub-agent `thread` of Agent `id` as its own Turns record it
@@ -2032,11 +2092,11 @@ impl Store {
     }
 
     pub fn agents(&self) -> Result<Vec<Agent>> {
-        let (ids, mut projects) = {
+        let (ids, mut projects, kinds, mut released) = {
             let db = self.db.read()?;
             let mut statement = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
             let ids = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            (ids, crate::projects::agent_projects(&db)?)
+            (ids, crate::projects::agent_projects(&db)?, crate::agent_roles::kinds(&db)?, crate::executor_release::releases(&db)?)
         };
         let mut agents = Vec::with_capacity(ids.len());
         for id in ids {
@@ -2044,6 +2104,8 @@ impl Store {
             let Some(listed) = self.listed(&id, Load::Reader)? else { continue };
             let mut agent = listed.agent;
             agent.project_id = projects.remove(&id);
+            agent.kind = kinds.get(&id).map(|kind| (*kind).to_owned());
+            crate::executor_release::show(&mut agent, released.remove(&id));
             agents.push(agent);
         }
         Ok(agents)
@@ -2398,11 +2460,16 @@ impl Store {
         let unwritten = self.memory.lock().unwrap().hot.get(id).map(|hot| hot.unwritten.clone()).unwrap_or_default();
         dirty.merge(unwritten);
         let fresh = spill(&mut staged, &dirty);
-        staged.agent.pending_count = staged.pending.len() as u64;
+        let native = staged.pending.len() as u64;
+        staged.agent.pending_count = native + staged.agent.open_questions;
         let plan = {
             let receipts = changed_receipts(&receipts_before, &staged.message_receipts);
             record_rows::plan(&*self.db.read()?, id, &staged, &staged.turns, &[], &dirty, &receipts)?
         };
+        // One that may open or answer a question changes what Needs you,
+        // the title and the attention order show (T-42), as a native
+        // request does: written with a synced commit and announced now.
+        let urgent = urgent || plan.may_change_questions();
         // Those of a replaced field are not written. The slice still notes
         // them until this write commits, so a failed one gives all back.
         let pending = self.take_chunks(id);
@@ -2416,7 +2483,8 @@ impl Store {
                 params![id, kind, data.to_string(), at.to_rfc3339()])?;
             agent.last_seq = tx.last_insert_rowid();
             agent.unread_count = unread(&tx, id, agent.reviewed_seq)?;
-            record_rows::apply(&tx, id, &plan, agent)?;
+            let written = record_rows::apply(&tx, id, &plan, agent)?;
+            settle_open_questions(&tx, id, plan.body(), agent, native, &written)?;
             for (turn, item, field) in &replaced {
                 record_rows::drop_chunks(&tx, id, turn, item, field)?;
             }
@@ -2772,8 +2840,9 @@ impl Store {
         if confirms {
             crate::model::accept_receipts(d.turns.iter(), &mut d.message_receipts);
         }
-        d.agent.pending_count = d.pending.len() as u64;
+        d.agent.pending_count = d.pending.len() as u64 + d.agent.open_questions;
         d.agent.updated_at = now();
+        let ended = crate::model::turn_ended(&turns_before, &d.turns);
         let mut dirty = Dirty::between(&turns_before, &d.turns);
         drop(turns_before);
         let unwritten = self.memory.lock().unwrap().hot.get(id).map(|hot| hot.unwritten.clone()).unwrap_or_default();
@@ -2787,11 +2856,21 @@ impl Store {
             rewrite = self.rewrite(id);
             let tx = db.transaction()?;
             let journaled = if completed_before(&tx, id, kind, data)? { "turn/reconfirmed" } else { kind };
+            let at = now();
             tx.execute("INSERT INTO journal(agent_id,kind,data,at) VALUES(?1,?2,?3,?4)",
-                params![id, journaled, data.to_string(), now()])?;
+                params![id, journaled, data.to_string(), at])?;
             d.agent.last_seq = tx.last_insert_rowid();
             d.agent.unread_count = unread(&tx, id, d.agent.reviewed_seq)?;
-            record_rows::apply(&tx, id, &plan, &d.agent)?;
+            // A Turn this change ended, finished or failed, is the last one (T-42).
+            if let Some(outcome) = ended {
+                d.agent.last_turn_end = Some(crate::model::TurnEnd { seq: d.agent.last_seq, outcome: outcome.into(), at });
+            }
+            let written = record_rows::apply(&tx, id, &plan, &d.agent)?;
+            settle_open_questions(&tx, id, plan.body(), &mut d.agent, d.pending.len() as u64, &written)?;
+            // An executor's slot follows its close and reopen, in this transaction (T-35).
+            crate::executor_slots::follow_agent(&tx, &d.agent, journaled, data)?;
+            // A release's close archives its executor, in this transaction too (T-34).
+            crate::executor_release::follow_close(&tx, &d.agent, journaled, data)?;
             let project_id = crate::projects::agent_project(&tx, id)?;
             tx.commit()?;
             #[cfg(test)]
@@ -3349,6 +3428,28 @@ impl Store {
     }
 }
 
+/// What the rows now say of the Agent's open asynchronous questions (T-42),
+/// read once the change's items and receipts are written, and only when
+/// the write may have changed them (`Written::questions`: a question Item,
+/// a deletion, an answer's receipt). Others, a plain stream event among
+/// them, keep the count, and the read is not run in their transaction
+/// (review 7727a352). When the count changed, `pending_count` follows
+/// (`native` requests and the questions) and the metadata is written again
+/// in the same transaction.
+fn settle_open_questions(tx: &Connection, id: &str, body: &record_rows::MetaBody, agent: &mut Agent, native: u64,
+    written: &record_rows::Written) -> Result<()> {
+    if !written.questions {
+        return Ok(());
+    }
+    let open = record_rows::open_questions(tx, id)?.len() as u64;
+    if open != agent.open_questions {
+        agent.open_questions = open;
+        agent.pending_count = native + open;
+        record_rows::write_meta(tx, id, body, agent)?;
+    }
+    Ok(())
+}
+
 /// A finished Turn whose completion is not among `known`.
 fn unrecorded_completion(turn: &Value, known: &HashSet<String>) -> bool {
     matches!(turn["status"].as_str(), Some("completed" | "failed" | "interrupted"))
@@ -3389,6 +3490,9 @@ mod tests;
 #[cfg(test)]
 #[path = "store/window_tests.rs"]
 mod window_tests;
+#[cfg(test)]
+#[path = "store/needs_you_tests.rs"]
+mod needs_you_tests;
 #[cfg(test)]
 #[path = "store/composition_tests.rs"]
 mod composition_tests;

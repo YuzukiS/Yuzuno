@@ -376,3 +376,43 @@ test("a scroll closes it only when it moves its button: a conversation following
   assert.equal(page.menu(), null, "the page scrolled: closed");
   page.close();
 });
+
+test("a touch held shows it is held from 150 ms until the actions open; a move past the slop, a lift or a cancel lets go at once (T-19 SH:R13)", async () => {
+  const page = mount();
+  page.window.renderRows([agent("a")]);
+  await tick();
+  const name = () => page.row("a").querySelector(".agent-name");
+  const holding = () => page.row("a").classList.contains("is-holding");
+  const down = () => page.pointer(name(), "pointerdown", { pointerType: "touch", clientX: 30, clientY: 20 });
+  down();
+  await tick(90);
+  assert.equal(holding(), false, "not at once: a tap shows nothing");
+  await tick(130);
+  assert.equal(holding(), true, "held past 150 ms: it shows");
+  await tick(page.window.LONG_PRESS_MS);
+  assert.ok(page.menu(), "the actions opened");
+  assert.equal(holding(), false, "and the row is let go as they open");
+  page.pointer(name(), "pointerup", { pointerType: "touch" });
+  page.key(page.document.activeElement, "Escape");
+  await tick();
+  for (const [how, end] of [
+    ["a move past the slop", () => page.pointer(name(), "pointermove", { pointerType: "touch", clientX: 30, clientY: 45 })],
+    ["a lift", () => page.pointer(name(), "pointerup", { pointerType: "touch" })],
+    ["a cancel", () => page.pointer(name(), "pointercancel", { pointerType: "touch" })],
+  ]) {
+    down();
+    await tick(220);
+    assert.equal(holding(), true, `held, before ${how}`);
+    end();
+    // A move renders at React's continuous priority, not in the event itself: a tick, far short of the hold.
+    await tick();
+    assert.equal(holding(), false, `${how} lets it go at once`);
+    await tick(page.window.LONG_PRESS_MS);
+    assert.equal(page.menu(), null, `${how} opens nothing`);
+  }
+  page.pointer(name(), "pointerdown", { pointerType: "mouse", clientX: 30, clientY: 20 });
+  await tick(220);
+  assert.equal(holding(), false, "a mouse held down shows nothing");
+  page.pointer(name(), "pointerup", { pointerType: "mouse" });
+  page.close();
+});

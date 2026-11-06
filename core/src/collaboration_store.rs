@@ -16,12 +16,17 @@ mod result_ack;
 mod result_outcome;
 pub(crate) use result_ack::skip_acknowledged;
 mod dispatch_materials;
+mod context_summary;
+pub(crate) mod executor_choice;
+pub(crate) mod executor_dispatch;
+pub(crate) mod executor_start;
 mod current;
 mod research;
 pub(crate) use research::desk_source as research_desk_source;
 pub(crate) use research::{decision_record as research_decision_record, line_now as research_line_now,
     run_method as research_run_method};
 mod compact;
+pub(crate) mod mail_delivery;
 use result_dispatch::TaskDispatch;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,6 +96,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         PRIMARY KEY(actor,operation,request_id));")?;
     db.execute_batch(result_ack::SCHEMA)?;
     db.execute_batch(research::SCHEMA)?;
+    executor_dispatch::migrate(db)?;
+    executor_start::migrate(db)?;
+    crate::executor_slots::migrate(db)?;
     // A restart cannot tell whether the Harness accepted an in-flight nudge.
     db.execute(
         "UPDATE collaboration_messages SET delivery_state='uncertain',
@@ -134,6 +142,10 @@ impl Store {
         // All stored relationships and receipts retain the original UUID. The
         // public reference is the durable SQLite sequence, never a second task.
         let input = normalize_task_input(&tx, operation, input)?;
+        // What GitHub said of the materials' SHAs comes from the runtime
+        // (commit_sha::resolve_materials, T-31), not the caller, and is no part
+        // of the request a requestId replays: it says when it was asked.
+        let (input, sha_check) = take_sha_check(operation, input);
         let (author, mut source) = actor_context(self, &tx, actor)?;
         if let (None, Some(gui_source)) = (actor, gui_source) {
             source = gui_source;
@@ -196,13 +208,13 @@ impl Store {
             "task_get" => task_get(&tx, &input)?,
             "task_result_get" => result_outcome::get(&tx, &input)?,
             "task_research_get" => research::get(&tx, &input)?,
-            "task_create" => task_create(self, &tx, &author, &source, &input)?,
-            "task_update" => task_update(self, &tx, &author, &source, &input)?,
+            "task_create" => task_create(self, &tx, &author, &source, &input, &sha_check)?,
+            "task_update" => task_update(self, &tx, &author, &source, &input, &sha_check)?,
             "task_claim" => task_claim(&tx, &author, &source, &input)?,
             "task_comment" => task_comment(&tx, &author, &source, &input)?,
             "task_submit_result" => task_submit_result(self, &tx, &author, &source, &input)?,
             "task_result_ack" => result_ack::acknowledge(&tx, &author, &input)?,
-            "task_dispatch" => task_dispatch(self, &tx, &author, &source, &input)?,
+            "task_dispatch" => task_dispatch(self, &tx, &author, &source, &input, &sha_check)?,
             "delivery_get" | "delivery_enable" | "delivery_continue" | "delivery_stop" => crate::delivery::store::call(self,&tx,&author,&source,operation,&input)?,
             _ => bail!("unknown_operation: {operation}"),
         };
@@ -222,6 +234,8 @@ impl Store {
     /// Separate priority batches keep a working Agent's urgent notification from
     /// reserving or reading normal mail that should wait for a turn boundary.
     pub fn pending_peer_deliveries(&self) -> Result<Vec<Value>> {
+        // A refused wake-up whose wait has passed is pending again (T-50).
+        self.retry_refused_peer_deliveries()?;
         let db = self.db.read()?;
         let mut q = db.prepare("SELECT recipient_id,MAX(seq),COUNT(*),
             (SELECT MIN(older.seq)-1 FROM collaboration_messages older
@@ -301,8 +315,11 @@ impl Store {
         } else {
             detail.as_object_mut().unwrap().remove("mailbox");
         }
+        // A retried wake-up (mail_delivery.rs) keeps its count while it is sent again.
         let changed = tx.execute("UPDATE collaboration_messages SET delivery_state=?1,
-            delivery_detail=CASE WHEN ?1 IN ('delivered','uncertain','error') THEN json_patch(delivery_detail,?2) ELSE ?2 END
+            delivery_detail=CASE WHEN ?1 IN ('delivered','uncertain','error') THEN json_patch(delivery_detail,?2)
+              WHEN ?1='sending' AND json_type(delivery_detail,'$.retry')='object'
+                THEN json_set(?2,'$.retry',json(json_extract(delivery_detail,'$.retry'))) ELSE ?2 END
             WHERE recipient_id=?3 AND seq<=?4 AND delivery_state=?5
               AND COALESCE(json_extract(data,'$.priority'),'normal')=?6
               AND COALESCE(json_extract(data,'$.metadata.kind'),'')!='update_wait'
@@ -356,6 +373,16 @@ pub(crate) fn task_live(db: &Connection, reference: &str) -> Result<Option<Value
     let Ok((id, _)) = task_key(db, reference) else { return Ok(None) };
     let raw: Option<String> = db.query_row("SELECT data FROM collaboration_tasks WHERE id=?1", [&id], |r| r.get(0)).optional()?;
     raw.map(|raw| Ok(serde_json::from_str::<compact::Row>(&raw)?.live())).transpose()
+}
+
+/// The runtime's shaCheck, taken out of a task_create, task_update or
+/// task_dispatch input (T-31); null for any other call, which keeps its input.
+fn take_sha_check(operation: &str, mut input: Value) -> (Value, Value) {
+    if !matches!(operation, "task_create" | "task_update" | "task_dispatch") {
+        return (input, Value::Null);
+    }
+    let check = input.as_object_mut().and_then(|o| o.remove("shaCheck")).unwrap_or(Value::Null);
+    (input, check)
 }
 
 fn normalize_task_input(db: &Connection, operation: &str, mut input: Value) -> Result<Value> {
@@ -708,10 +735,17 @@ pub(crate) fn activity(
 }
 
 fn peers_list(store: &Store, db: &Connection, input: &Value) -> Result<Value> {
-    allowed(input, &["includeClosed"])?;
+    allowed(input, &["includeClosed", "kind"])?;
     let include_closed = boolean(input, "includeClosed", false)?;
+    // Lead, executor or standing (T-33); absent lists every kind.
+    let only = optional_text(input, "kind", 32)?;
+    ensure!(
+        only.as_deref().is_none_or(|kind| [crate::agent_roles::LEAD, crate::agent_roles::EXECUTOR, crate::agent_roles::STANDING].contains(&kind)),
+        "invalid_input: kind must be lead, executor or standing"
+    );
     let memberships = crate::projects::agent_projects(db)?;
     let labels = crate::projects::project_labels(db)?;
+    let kinds = crate::agent_roles::kinds(db)?;
     let mut q = db.prepare("SELECT id FROM agents ORDER BY rowid")?;
     let ids = q.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut peers = Vec::new();
@@ -719,6 +753,10 @@ fn peers_list(store: &Store, db: &Connection, input: &Value) -> Result<Value> {
         let Some(brief) = store.brief_in(db, &id)? else { continue };
         let a = brief.agent;
         if !include_closed && a.closed_at.is_some() {
+            continue;
+        }
+        let kind = kinds.get(&a.id).copied().unwrap_or(crate::agent_roles::STANDING);
+        if only.as_deref().is_some_and(|only| only != kind) {
             continue;
         }
         let project = memberships.get(&a.id).map(|id| {
@@ -729,13 +767,13 @@ fn peers_list(store: &Store, db: &Connection, input: &Value) -> Result<Value> {
             json!({"id":a.id,"name":a.name,"harness":a.harness,"status":a.status,
             "closedAt":a.closed_at,"cwd":a.cwd,"connectionState":a.connection_state,
             "machine":a.remote.map(|r| r.machine.name).unwrap_or_else(|| "Local".into()),
-            "project":project}),
+            "project":project,"kind":kind}),
         );
     }
     Ok(json!({"peers":peers}))
 }
 
-fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value, input: &Value) -> Result<Value> {
+fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value, input: &Value, sha_check: &Value) -> Result<Value> {
     allowed(
         input,
         &[
@@ -749,7 +787,8 @@ fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
         ],
     )?;
     let title = required_text(input, "title", 300)?;
-    let materials = input.get("materials").map(|v| dispatch_materials::validate(db, v)).transpose()?;
+    let materials = input.get("materials").map(|v| dispatch_materials::validate(db, v)).transpose()?
+        .map(|m| dispatch_materials::with_check(m, sha_check));
     // Absent: the creating Agent's project at this moment (the user has none).
     // An archived project takes nothing new, so the default is then no project.
     let mut notice = None;
@@ -806,7 +845,10 @@ fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
     )?;
     crate::projects::set_task_project(db, &task.id, project.as_deref())?;
     let mut changes = json!({"title":task.title,"status":task.status,"assigneeAgentId":task.assignee_agent_id,"projectId":project});
-    if let Some(materials) = materials { changes["materials"] = materials; }
+    if let Some(materials) = materials {
+        dispatch_materials::check_shas(db, &task.id, &materials)?;
+        changes["materials"] = materials;
+    }
     let event = activity(
         db,
         &task.id,
@@ -819,10 +861,20 @@ fn task_create(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
     if let Some(notice) = notice {
         output["projectNotice"] = notice;
     }
+    let registered = output["activity"]["changes"]["materials"].clone();
+    receipt_sha_check(&mut output, &registered);
     Ok(output)
 }
 
-fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value, input: &Value) -> Result<Value> {
+/// A receipt says what GitHub said of the materials' SHAs (T-31), where
+/// they name any.
+fn receipt_sha_check(output: &mut Value, materials: &Value) {
+    if let Some(check) = materials.get("shaCheck").filter(|c| c.is_object()) {
+        output["shaCheck"] = check.clone();
+    }
+}
+
+fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value, input: &Value, sha_check: &Value) -> Result<Value> {
     allowed(input, &["requestId", "taskId", "expectedVersion", "patch"])?;
     let mut task = load_task(db, &required_text(input, "taskId", 128)?)?;
     check_version(&task, input)?;
@@ -848,11 +900,19 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
     );
     let mut changes = patch.clone();
     if let Some(materials) = patch.get("materials") {
-        changes["materials"] = dispatch_materials::validate(db, materials)?;
+        changes["materials"] = dispatch_materials::with_check(dispatch_materials::validate(db, materials)?, sha_check);
     }
     // Shares this task's version check, version bump and activity record.
-    if let Some(project) = project_input(db, patch)? {
+    let moved = project_input(db, patch)?;
+    if let Some(project) = &moved {
         crate::projects::set_task_project(db, &task.id, project.as_deref())?;
+    }
+    match changes.get("materials") {
+        Some(materials) => dispatch_materials::check_shas(db, &task.id, materials)?,
+        // A move to another Project keeps the registered SHAs only where their
+        // repository is still linked (T-29's rule, T-31).
+        None if moved.is_some() => dispatch_materials::check_shas(db, &task.id, &dispatch_materials::registered(db, &task.id)?["value"])?,
+        None => {}
     }
     if patch.get("title").is_some() {
         task.title = required_text(patch, "title", 300)?;
@@ -872,6 +932,9 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
             STATUSES.contains(&status.as_str()),
             "invalid_input: invalid task status"
         );
+        if status == "done" {
+            crate::executor_archive::refuse_own_done(db, actor, &task.id)?;
+        }
         task.status = status;
     }
     if patch.get("assigneeAgentId").is_some() {
@@ -899,7 +962,9 @@ fn task_update(store: &Store, db: &Connection, actor: &TaskActor, source: &Value
         source,
         json!({"changes":changes,"taskVersion":task.version,"dispatchInvalidatedAt":task.dispatch.as_ref().and_then(|d| d.invalidated_at.as_deref())}),
     )?;
-    Ok(json!({"task":task,"activity":event}))
+    let mut output = json!({"task":task,"activity":event});
+    receipt_sha_check(&mut output, &changes["materials"]);
+    Ok(output)
 }
 
 fn task_claim(db: &Connection, actor: &TaskActor, source: &Value, input: &Value) -> Result<Value> {
@@ -978,6 +1043,22 @@ fn task_submit_result(
     let mut task = load_task(db, &required_text(input, "taskId", 128)?)?;
     check_version(&task, input)?;
     let dispatch = result_dispatch::validate(db, &task, actor, input)?;
+    // An Agent's result on a task nobody holds, neither assigned nor actively
+    // dispatched, claims it for that Agent (T-29), as task_claim would; a
+    // closed one takes no such result. Dispatched or assigned tasks are as before.
+    let claims = actor.kind == "agent"
+        && task.assignee_agent_id.is_none()
+        && !task.dispatch.as_ref().is_some_and(|d| d.active);
+    if claims {
+        ensure!(
+            task.archived_at.is_none() && task.status != "cancelled",
+            "task_closed: {} is {}, so it takes no result; restore it with task_update first if this work belongs to it",
+            task_number(task.seq),
+            if task.archived_at.is_some() { "archived" } else { "cancelled" }
+        );
+        task.assignee_agent_id = Some(actor.id.clone());
+        task.assignee = Some(actor.clone());
+    }
     let summary = required_text(input, "summary", 16_384)?;
     let links = input.get("links").cloned().unwrap_or_else(|| json!([]));
     let entries = links
@@ -1001,6 +1082,10 @@ fn task_submit_result(
         matches!(status.as_str(), "review" | "done"),
         "invalid_input: result status must be review or done"
     );
+    if status == "done" {
+        // Nor through its result: its dispatcher, or the user, decides (T-36, #622 R2).
+        crate::executor_archive::refuse_own_done(db, actor, &task.id)?;
+    }
     let outcome = result_outcome::validate(store, db, &task, input.get("outcome"))?;
     let acceptance_context = result_outcome::acceptance_context(db, &task, dispatch.as_ref())?;
     let notification = result_dispatch::notification(store, db, dispatch.as_ref())?;
@@ -1016,6 +1101,9 @@ fn task_submit_result(
     task.status = status;
     crate::delivery::store::submitted(db, &task, actor, input)?;
     save_task(db, &mut task, actor)?;
+    if claims {
+        activity(db, &task.id, "claimed", actor, source, json!({"changes":{"assigneeAgentId":actor.id},"byResult":true}))?;
+    }
     let event = activity(
         db,
         &task.id,
@@ -1027,6 +1115,10 @@ fn task_submit_result(
     let message = result_dispatch::notify(store, db, &task, &event)?;
     let mut output = json!({"task":task,"activity":event});
     if let Some(message) = message { output["message"] = message; }
+    if claims {
+        output["claimNotice"] = json!({"code":"claimed","assigneeAgentId":actor.id,
+            "message":format!("{} had no assignee, so this result claimed it: you are now its assignee.", task_number(task.seq))});
+    }
     // Advice for a Home content editor of the task's Project; nothing more,
     // so a failed lookup leaves it out instead of failing the result.
     if actor.kind == "agent" {
@@ -1045,6 +1137,7 @@ fn task_dispatch(
     actor: &TaskActor,
     source: &Value,
     input: &Value,
+    sha_check: &Value,
 ) -> Result<Value> {
     allowed(
         input,
@@ -1056,6 +1149,8 @@ fn task_dispatch(
             "body",
             "priority",
             "materials",
+            // Only from a template dispatch, with the executor it made (executor_dispatch.rs).
+            "executor",
         ],
     )?;
     let mut task = load_task(db, &required_text(input, "taskId", 128)?)?;
@@ -1064,9 +1159,12 @@ fn task_dispatch(
         task.archived_at.is_none(),
         "task_archived: unarchive the task first"
     );
+    ensure!(input.get("toAgentId").is_some(), "invalid_input: give toAgentId, or executor to create the Agent from an executor template");
     let recipient_id = required_text(input, "toAgentId", 128)?;
     let recipient = store.brief_in(db, &recipient_id)?
         .context("agent_not_found: recipient does not exist")?;
+    // Said before that it is closed: an archived executor is never reopened (T-36).
+    crate::executor_archive::refuse_mail(db, &recipient_id)?;
     ensure!(
         recipient.agent.closed_at.is_none(),
         "agent_closed: reopen the recipient before dispatching work"
@@ -1074,9 +1172,27 @@ fn task_dispatch(
     task.assignee_agent_id = Some(recipient_id.clone());
     task.assignee = Some(agent_actor(store, db, &recipient_id)?);
     task.dispatch = Some(TaskDispatch::new(actor, source, task.assignee.as_ref().unwrap()));
+    // A template dispatch's executor starts cold: it gets its template, its
+    // Project's handover and Core's summary of the task so far (T-34).
+    let cold = match input.get("executor") {
+        Some(_) => {
+            let (request, dispatch) = (required_text(input, "requestId", 128)?, task.dispatch.as_ref().unwrap().id.clone());
+            let template = executor_dispatch::dispatched(db, actor, &request, &recipient_id, &dispatch)?;
+            // A rebuild's record is done with its executor's slot (T-35 S2).
+            executor_start::rebuilt(store, db, actor, &request, &recipient_id, &dispatch)?;
+            let project: Option<String> = db.query_row("SELECT project_id FROM project_tasks WHERE task_id=?1", [&task.id], |r| r.get(0)).optional()?;
+            let handover = match &project {
+                Some(project) => crate::handover::current_in(db, project)?
+                    .map(|(version, markdown)| json!({"projectId": project, "version": version, "markdown": markdown})),
+                None => None,
+            };
+            Some(dispatch_materials::ColdStart { template, handover, summary: context_summary::build(db, &task)? })
+        }
+        None => None,
+    };
     task.status = "doing".into();
     save_task(db, &mut task, actor)?;
-    let materials = dispatch_materials::snapshot(db, &task, input)?;
+    let materials = dispatch_materials::snapshot(db, &task, input, sha_check, cold)?;
     let body = dispatch_materials::body(&materials);
     let message = create_message(
         store,
@@ -1094,7 +1210,10 @@ fn task_dispatch(
         source,
         json!({"changes":{"assigneeAgentId":recipient_id,"status":"doing"},"messageId":message["id"],"dispatch":task.dispatch,"materials":materials}),
     )?;
-    Ok(json!({"task":task,"message":message,"activity":event}))
+    let mut output = json!({"task":task,"message":message,"activity":event,"agentId":recipient_id});
+    let effective = output["activity"]["materials"]["effective"].clone();
+    receipt_sha_check(&mut output, &effective);
+    Ok(output)
 }
 
 fn task_list(db: &Connection, input: &Value) -> Result<Value> {
@@ -1201,7 +1320,24 @@ fn task_list(db: &Connection, input: &Value) -> Result<Value> {
         task.dispatch = result_dispatch::project(db, task)?;
     }
     let next = tasks.last().map(|t| t.seq).unwrap_or(after);
+    let mut tasks = serde_json::to_value(&tasks)?;
+    with_executor_slots(db, &mut tasks)?;
     Ok(json!({"tasks":tasks,"counts":counts,"nextAfterSeq":next,"hasMore":has_more}))
+}
+
+/// The slot of each task's executor that holds or waits for one (T-35,
+/// executor_slots.rs): waiting with its place in the queue, starting, or
+/// running, and on which machine. Tasks without one are left as they are.
+pub(crate) fn with_executor_slots(db: &Connection, tasks: &mut Value) -> Result<()> {
+    let Some(list) = tasks.as_array_mut() else { return Ok(()) };
+    let ids: Vec<String> = list.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+    let views = crate::executor_slots::views(db, &ids.iter().map(String::as_str).collect::<Vec<_>>())?;
+    for task in list {
+        if let Some(view) = task["id"].as_str().and_then(|id| views.get(id)) {
+            task["executorSlot"] = view.clone();
+        }
+    }
+    Ok(())
 }
 
 fn task_get(db: &Connection, input: &Value) -> Result<Value> {
@@ -1217,8 +1353,13 @@ fn task_get(db: &Connection, input: &Value) -> Result<Value> {
         // Fixed reads never assemble current dispatch state, activity, execution
         // history or repository lists. Read the latest task separately if needed.
         let (id, seq) = task_key(db, &id)?;
-        return Ok(json!({"dispatchMaterials":dispatch_materials::read(db, &id, &dispatch)?,
-            "latestTask":{"taskId":task_number(seq)}}));
+        let mut fixed = json!({"dispatchMaterials":dispatch_materials::read(db, &id, &dispatch)?,
+            "latestTask":{"taskId":task_number(seq)}});
+        // A dispatch a rebuild superseded says so, and why (T-35 S2).
+        if let Some(superseded) = executor_start::superseded(db, &dispatch)? {
+            fixed["supersededBy"] = superseded;
+        }
+        return Ok(fixed);
     }
     let task = load_task(db, &id)?;
     if view == "current" {
@@ -1243,16 +1384,23 @@ fn task_get(db: &Connection, input: &Value) -> Result<Value> {
             activities.push(value);
         }
     }
-    let mut q = db.prepare("SELECT data,delivery_detail FROM collaboration_messages WHERE json_extract(data,'$.taskId')=?1 ORDER BY seq")?;
+    let mut q = db.prepare(&format!("SELECT data,delivery_detail,seq,id,delivery_state,{},{} FROM collaboration_messages m WHERE json_extract(data,'$.taskId')=?1 ORDER BY seq",
+        mail_delivery::READ, mail_delivery::CLOSED))?;
+    // Its mail whose wake-up failed, is tried again or is uncertain (T-50).
+    let mut problems = Vec::new();
     for row in q.query_map([&task.id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?,
+            r.get::<_, bool>(5)?, r.get::<_, bool>(6)?))
     })? {
-        let (message, detail) = row?;
+        let (message, detail, seq, id, state, read, closed) = row?;
         let message: Value = serde_json::from_str(&message)?;
         add_execution(&mut executions, &message["source"]);
         let detail: Value = serde_json::from_str(&detail)?;
         add_execution(&mut executions, &detail);
+        problems.extend(mail_delivery::entry(seq, &id, &message, &state, &detail, read, closed));
     }
+    problems.reverse();
+    problems.truncate(MAIL_PROBLEMS);
     let has_more = activities.len() > limit as usize;
     activities.truncate(limit as usize);
     let next = activities
@@ -1261,8 +1409,15 @@ fn task_get(db: &Connection, input: &Value) -> Result<Value> {
         .unwrap_or(after);
     let mut output = json!({"task":task,"activities":activities,"executions":executions,"nextAfterSeq":next,"hasMore":has_more});
     output["materialsSource"] = registration;
+    output["mailProblems"] = json!(problems);
+    if let Some(slot) = crate::executor_slots::views(db, &[task.id.as_str()])?.remove(&task.id) {
+        output["task"]["executorSlot"] = slot;
+    }
     Ok(output)
 }
+
+/// How many of a task's mail problems its views list, newest first.
+pub(crate) const MAIL_PROBLEMS: usize = 5;
 
 fn add_execution(executions: &mut Vec<Value>, source: &Value) {
     // A session alone is not an execution of this particular task.
@@ -1310,6 +1465,8 @@ fn create_message(
         "invalid_input: choose another Agent as recipient"
     );
     let recipient = agent_actor(store, db, &to)?;
+    // An archived executor takes no more mail or work (T-36).
+    crate::executor_archive::refuse_mail(db, &to)?;
     let body = required_text(input, "body", 16_384)?;
     let priority = message_priority(input)?;
     let mut task_id = optional_text(input, "taskId", 128)?;
@@ -1364,6 +1521,8 @@ fn create_message(
 /// Persist a validated message inside the caller's transaction. System-owned
 /// operations use this same mailbox; their author is never a user or Agent.
 pub(crate) fn insert_message(db: &Connection, mut message: Value) -> Result<Value> {
+    // Core's mail to an archived executor goes to its dispatcher (T-36).
+    crate::executor_archive::redirect(db, &mut message)?;
     message["notice"] = crate::mailbox_notice::message_notice(&message);
     let id = message["id"].as_str().context("Missing message identity")?.to_owned();
     let sender_id = message["sender"]["id"].as_str().context("Missing message sender")?;
@@ -1441,31 +1600,38 @@ pub fn tool_definitions() -> Vec<Value> {
         "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})
     };
     vec![
-        definition("peers_list", "List existing Workspace Agents, their project and native runtime state. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false}}), &[]),
+        definition("peers_list", "List existing Workspace Agents, their project, kind and native runtime state. kind is lead (a lead of its Project, set by the user), executor (made by Core for one task) or standing (made by the user); kind filters by it. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false},"kind":{"type":"string","enum":["lead","executor","standing"]}}), &[]),
         definition("projects_list", "List this Workspace's projects with their IDs, including projects without agents. Archived projects are marked and accept no new tasks. Task IDs are shared across projects.", json!({}), &[]),
-        definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
+        definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. A released executor takes no more mail (executor_archived): write to its dispatcher. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
         definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed.", json!({"afterSeq":after,"limit":limit,"priority":read_priority}), &[]),
         definition("task_list", "List shared goals, not native plans or execution logs. Continue existing work by taskId. Without filters it lists every project's and every assignee's tasks that are not archived (archived:true lists only archived ones), in creation order, 50 per page (limit up to 200); pass nextAfterSeq as afterSeq while hasMore. Every filter is applied before paging and to counts. Omit projectId for every project; null lists tasks without a project. compact:true gives short rows; task_get reads one task whole.", json!({"compact":{"type":"boolean","default":false,"description":"Short rows: id, title, status, version, assignee, updatedAt, projectId, githubLinks (a count) and the first 200 characters of progress and blocker. Description, result, dispatch and GitHub snapshots are left out; filters, counts and paging are unchanged."},"afterSeq":after,"limit":limit,"status":status,"statuses":{"type":"array","items":status,"minItems":1,"uniqueItems":true,"description":"Match any of these statuses, for example open work = todo, doing, blocked, review. Use instead of status, not with it."},"assigneeAgentId":nullable_string,"archived":{"type":"boolean","default":false},"query":string,"projectId":list_project}), &[]),
-        definition("task_get", "Read a shared task. Use the same taskId across implementation, review, retry, and recovery. Views (view): \"current\" (your default without afterSeq, limit or dispatchId) is what to decide with now: status, version, assignee, dispatch, a short result, the newest activity and the current delivery (each linked PR's head and base with that head's CI as last observed, its newest review, the newest CI subscriptions and their runs), without reading the history; \"activity\" (your default with afterSeq or limit) is one page of the history, oldest first; \"full\" is the whole record: description, materials, every activity page and execution references. Long text in current is cut and says so. Task writes answer you with a short receipt (taskId, version, status, the activity's seq); read the task for more.", json!({"taskId":task_reference,"afterSeq":after,"limit":limit,"view":{"type":"string","enum":["current","activity","full"]},"dispatchId":{"type":"string","description":"Read only immutable dispatchMaterials and a latestTask reference, without activity or execution history. Omit dispatchId to read the latest task. Normal activity pages return only material references."}}), &["taskId"]),
+        definition("task_get", "Read a shared task. Use the same taskId across implementation, review, retry, and recovery. Views (view): \"current\" (your default without afterSeq, limit or dispatchId) is what to decide with now: status, version, assignee, dispatch, a short result, the newest activity and the current delivery (each linked PR's head and base with that head's CI as last observed, its newest review, the newest CI subscriptions and their runs), executorSlot (when its executor waits for a slot, with its place in the queue, or is starting or running) and mailProblems (its newest mail whose wake-up failed, is tried again or is uncertain, as \"delivery failed: <reason>\"), without reading the history; \"activity\" (your default with afterSeq or limit) is one page of the history, oldest first; \"full\" is the whole record: description, materials, every activity page and execution references. Long text in current is cut and says so. Task writes answer you with a short receipt (taskId, version, status, the activity's seq); read the task for more.", json!({"taskId":task_reference,"afterSeq":after,"limit":limit,"view":{"type":"string","enum":["current","activity","full"]},"dispatchId":{"type":"string","description":"Read only immutable dispatchMaterials and a latestTask reference, without activity or execution history. Omit dispatchId to read the latest task. Normal activity pages return only material references."}}), &["taskId"]),
         definition("task_create", "Create an independent deliverable only when no existing task represents it. Title example: 'Preview files at a requested line with an out-of-range hint'. Do not turn native plan steps, shell calls, turn completions, or routine retries into cards. Description is stable scope/completion context; later progress belongs in progress or comments. Only title is a required content field. Task IDs are shared across projects; projectId rules are in its schema.", json!({"requestId":request,"title":string,"description":string,"status":status,"assigneeAgentId":nullable_string,"projectId":create_project,"materials":dispatch_materials::schema()}), &["requestId","title"]),
-        definition("task_update", "Explicitly edit task fields with optimistic version checking. Task state is a statement about the goal; runtime completion does not automatically mean done. Assignment does not notify or start an Agent. Cancelling does not stop its process. A principal assignee does not exclude collaborators. To let the user decide a status change instead, publish it as a TaskStatus proposal with result_publish; it changes nothing until the user confirms it.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"patch":{"type":"object","minProperties":1,"additionalProperties":false,"properties":{"title":string,"description":nullable_string,"status":status,"assigneeAgentId":nullable_string,"progress":nullable_string,"blocker":nullable_string,"archived":{"type":"boolean"},"projectId":{"type":["string","null"],"description":"Move the task to this project; null removes it from its project."},"materials":dispatch_materials::schema()}}}), &["requestId","taskId","expectedVersion","patch"]),
+        definition("task_update", "Explicitly edit task fields with optimistic version checking. Task state is a statement about the goal; runtime completion does not automatically mean done. Assignment does not notify or start an Agent. Cancelling does not stop its process. A principal assignee does not exclude collaborators. To let the user decide a status change instead, publish it as a TaskStatus proposal with result_publish; it changes nothing until the user confirms it. An executor never sets its own task done (executor_done_refused): it submits its result, and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"patch":{"type":"object","minProperties":1,"additionalProperties":false,"properties":{"title":string,"description":nullable_string,"status":status,"assigneeAgentId":nullable_string,"progress":nullable_string,"blocker":nullable_string,"archived":{"type":"boolean"},"projectId":{"type":["string","null"],"description":"Move the task to this project; null removes it from its project."},"materials":dispatch_materials::schema()}}}), &["requestId","taskId","expectedVersion","patch"]),
         definition("task_claim", "Atomically become the principal assignee of an unassigned task. A competing claim fails; collaborators may still read, comment, and submit review results. start optionally changes task state to doing; it does not spawn a process or acquire a lease.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"start":{"type":"boolean","default":false}}), &["requestId","taskId","expectedVersion"]),
         definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order. Optional research makes the comment a fixed research record (a method, a claim or an observation, with its sources): it notifies no one and never replaces task_submit_result for a formal outcome. Job sources must match this task's retained checked Job attempt; task sources keep their producer; external sources stay as stated. task_research_get reads a record with its sources' current state.", json!({"requestId":request,"taskId":task_reference,"body":string,"research":research::schema()}), &["requestId","taskId","body"]),
         definition("task_research_get", "Read one research record of a task by its activitySeq: the record as written, its version among the records with its id and the newest one, the method version it cites, and each source's identity as recorded beside its state now. Job sources compare retained Job records only, no file is read; task sources keep their original producer; external sources are as stated and never checked. A claim's status is its author's judgement, not a verdict or acceptance.", json!({"taskId":task_reference,"activitySeq":{"type":"integer","minimum":1}}), &["taskId","activitySeq"]),
-        definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references and this task's research records. Defaults to review; choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":string,"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
+        definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references and this task's research records. Defaults to review; choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification. On a task nobody holds (no assignee, no active dispatch) your result also claims it for you, as claimNotice in the receipt says; an archived or cancelled one then takes no result. An executor submits its own task's result with status review: done is refused (executor_done_refused), and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":string,"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
         definition("task_result_get", "Read one immutable task result and a page of its result history, newest first. Omit resultId for the current result; an explicit ID must belong to this task. Follow nextBefore as before while hasMore; result selection is independent of the history page. Legacy results without IDs remain readable by default and in history. Artifact states compare only retained Job records; no file or remote machine is read, current file availability stays unknown, and downloadable only names eligibility for the existing checked-download route. Reports, Job checks, independent verification and acceptance are separate; task status or acknowledgment never establishes acceptance.", json!({"taskId":task_reference,"resultId":string,"before":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":20,"default":10}}), &["taskId"]),
         definition("task_result_ack", "Record that you have handled a task result Core notified you about, by its exact resultId and dispatchId from that result message. Only the Agent the result notified can acknowledge it; repeats are idempotent. If that notification's wake-up has not been sent yet, Core skips it; one already in flight or delivered is not withdrawn. The message stays in your mailbox and the task is not changed. Reading mail, task_get, setting done or commenting never acknowledges a result.", json!({"requestId":request,"taskId":task_reference,"resultId":{"type":"string","description":"resultId from the result message."},"dispatchId":{"type":"string","description":"dispatchId from the same result message."}}), &["requestId","taskId","resultId","dispatchId"]),
         // Project Briefs; served by `project_brief`, not here.
         crate::project_brief::tool_definition("brief_get"),
         crate::project_brief::tool_definition("brief_update"),
         crate::project_brief::tool_definition("brief_guide"),
-        definition("task_dispatch", "Assign an existing task to an Agent, or reassign it: atomically set doing, record a new stable dispatchId and fixed result recipient, and send an associated durable message. The executor must retain message.dispatchId for task_submit_result; each dispatch supersedes the previous one even for the same Agent, so further instructions within the same assignment go by peer_send with taskId instead. Results automatically notify the dispatching Agent; GUI dispatch has no Agent recipient. Does not create another task, spawn an Agent, or restart a closed Agent. Normal delivery waits for the current turn; urgent requests an earlier native reminder. Automatic materials include the saved goal, explicit acceptance, repositories and GitHub snapshots, registered worktree/references and return requirements. Read full fixed material fields with task_get using the original dispatchId; body is only a supplement. Missing facts stay unspecified. A queued message is not proof that execution has begun.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"toAgentId":string,"body":{"type":"string","description":"Optional supplemental instructions; never replaces automatic task/materials context. Empty is allowed."},"priority":priority,"materials":dispatch_materials::schema()}), &["requestId","taskId","expectedVersion","toAgentId"]),
+        crate::handover_proposals::tool_definition("handover_get"),
+        crate::handover_proposals::tool_definition("handover_propose"),
+        definition("task_dispatch", "Assign an existing task to an Agent, or reassign it: atomically set doing, record a new stable dispatchId and fixed result recipient, and send an associated durable message. Give toAgentId for an existing open Agent, or executor for a new one Core creates from an executor template: only a lead of the task's Project, or the user, may, and not while Core prepares an update. The answer's agentId is the Agent; a retry with the same requestId returns the same one. The executor must retain message.dispatchId for task_submit_result; each dispatch supersedes the previous one even for the same Agent, so further instructions within the same assignment go by peer_send with taskId instead. Results automatically notify the dispatching Agent; GUI dispatch has no Agent recipient. Does not create another task or restart a closed Agent. Normal delivery waits for the current turn (a new executor's, until it has started; it waits for a free executor slot first, and task_get's executorSlot says its place in the queue); urgent requests an earlier native reminder. Automatic materials include the saved goal, explicit acceptance, repositories and GitHub snapshots, registered worktree/references and return requirements. Read full fixed material fields with task_get using the original dispatchId; body is only a supplement. Missing facts stay unspecified. A queued message is not proof that execution has begun.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"toAgentId":{"type":"string","description":"An existing open Agent. Give this or executor."},
+            "executor":{"type":"object","additionalProperties":false,"required":["templateId"],"description":"Create the Agent from an executor template of the task's Project, else the Workspace's: on the Core host it works in the dispatch's worktree folder, else the Project's folder there; on another machine, in the Project's folder on that machine. An Agent's dispatch may name only the worktree the user registered on the task or a folder inside the Project's: a path an Agent gives in materials is information, not permission. It starts when an executor slot is free (the user sets how many run at once). If its start fails, Core rebuilds it once as a new dispatch from you (task_get with the first dispatchId says so); if that fails too, Core blocks the task and mails you. Give this or toAgentId.",
+                "properties":{"templateId":{"type":"string","maxLength":48},"machineId":{"type":["string","null"],"description":"Where it runs: a machine's id from the Machines list, local for the Core host, or auto for Core to choose one now (a free executor slot first, then the most spare Jobs memory, then CPU; recorded as task_get executorSlot.choice). Unset: the template's machine, else the Core host. A worktree is a path on the Core host, so a dispatch to another machine can't carry one, and one under auto runs on the Core host."}}},
+            "body":{"type":"string","description":"Optional supplemental instructions; never replaces automatic task/materials context. Empty is allowed."},"priority":priority,"materials":dispatch_materials::schema()}), &["requestId","taskId","expectedVersion"]),
+        // Served by `executor_release`, not here.
+        crate::executor_release::tool_definition(),
         // Generated from the result contract; served by `results`, not here.
         crate::results::tool_definition(),
         crate::results::guide_tool_definition(),
         // The working guide, compiled from the yuzuno skill; served by `guide`.
         crate::guide::tool_definition(),
-    ].into_iter().chain(crate::github::tool_definitions()).chain(crate::pr_review::tool_definitions()).chain(crate::pr_operations::tool_definitions()).chain(crate::jobs::tool_definitions()).chain(crate::ci_monitor::tool_definitions()).chain(crate::delivery::tool_definitions()).chain(crate::services::tool_definitions()).collect()
+    ].into_iter().chain(crate::github::tool_definitions()).chain(crate::pr_review::tool_definitions()).chain(crate::pr_operations::tool_definitions()).chain(crate::merge_queue::tool_definitions()).chain(crate::jobs::tool_definitions()).chain(crate::ci_monitor::tool_definitions()).chain(crate::delivery::tool_definitions()).chain(crate::services::tool_definitions()).collect()
 }
 
 #[cfg(test)]
@@ -1612,7 +1778,7 @@ mod tests {
             // UUID relationship columns, and UUID idempotency response JSON.
             let db = store.db.write().unwrap();
             let (user, source) = actor_context(&store, &db, None).unwrap();
-            let mut created = task_create(&store, &db, &user, &source, &create_input).unwrap();
+            let mut created = task_create(&store, &db, &user, &source, &create_input, &Value::Null).unwrap();
             let uuid = created["task"]["id"].as_str().unwrap().to_owned();
             let result = json!({"summary":format!("Recorded ID: {uuid}"),
                 "links":[{"label":uuid,"url":format!("https://example.com/results/{uuid}"),"id":uuid,"taskId":uuid}],
@@ -2540,5 +2706,47 @@ mod tests {
                 json!({"requestId":"claim","taskId":task["id"],"expectedVersion":2})
             )
             .is_err());
+    }
+
+    /// T-29: an Agent's result on a task nobody holds claims it for that
+    /// Agent, as task_claim would, and the answer says so; an archived or
+    /// cancelled one takes no such result. A task already held is unchanged.
+    #[test]
+    fn a_result_on_a_task_nobody_holds_claims_it_and_says_so() {
+        let (_dir, store) = fixture();
+        let submit = |actor: &str, request: &str, task: &Value| {
+            let version = get(&store, task)["task"]["version"].clone();
+            store.collaboration_call(Some(actor), "task_submit_result", json!({"requestId":request,"taskId":task,
+                "expectedVersion":version,"summary":"Ready for review"}))
+        };
+        let task = create(&store)["id"].clone();
+        let result = submit("a", "result", &task).unwrap();
+        assert_eq!(result["task"]["assigneeAgentId"], "a");
+        assert_eq!(result["task"]["status"], "review");
+        assert_eq!(result["claimNotice"], json!({"code":"claimed","assigneeAgentId":"a",
+            "message":"T-1 had no assignee, so this result claimed it: you are now its assignee."}));
+        let read = get(&store, &task);
+        assert_eq!(read["task"]["assignee"]["id"], "a");
+        assert_eq!(read["task"]["version"], 2, "one version for the claim and the result together");
+        let kinds: Vec<_> = read["activities"].as_array().unwrap().iter().map(|a| a["kind"].clone()).collect();
+        assert_eq!(kinds, [json!("created"), json!("claimed"), json!("result")]);
+        // Another Agent's result on it now leaves the assignee alone.
+        let other = submit("b", "result-b", &task).unwrap();
+        assert_eq!((other["task"]["assigneeAgentId"].clone(), other.get("claimNotice")), (json!("a"), None));
+        // The GUI claims nothing.
+        let gui = store.collaboration_call(None, "task_create", json!({"requestId":"gui-task","title":"By hand"})).unwrap()["task"]["id"].clone();
+        let by_hand = store.collaboration_call(None, "task_submit_result", json!({"requestId":"gui-result","taskId":gui,
+            "expectedVersion":1,"summary":"Checked by hand"})).unwrap();
+        assert!(by_hand["task"]["assigneeAgentId"].is_null() && by_hand.get("claimNotice").is_none(), "{by_hand}");
+        // A closed task nobody holds takes no such result, and stays as it was.
+        for (request, patch, says) in [("archive", json!({"archived":true}), "archived"), ("cancel", json!({"status":"cancelled"}), "cancelled")] {
+            let closed = store.collaboration_call(None, "task_create", json!({"requestId":format!("{request}-task"),"title":request})).unwrap()["task"]["id"].clone();
+            store.collaboration_call(None, "task_update", json!({"requestId":request,"taskId":closed,"expectedVersion":1,"patch":patch})).unwrap();
+            let before = get(&store, &closed)["task"].clone();
+            let error = submit("a", &format!("{request}-result"), &closed).unwrap_err().to_string();
+            let number = before["id"].as_str().unwrap();
+            assert_eq!(error, format!("task_closed: {number} is {says}, so it takes no result; restore it with task_update first if this work belongs to it"));
+            assert_eq!(get(&store, &closed)["task"], before, "{request}");
+        }
     }
 }

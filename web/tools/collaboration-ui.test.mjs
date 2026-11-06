@@ -446,6 +446,68 @@ test("task delegation defaults to normal and only requests urgent delivery when 
   }
 });
 
+test("a task goes to a new executor from a template of its project, then the workspace, sent as the template (T-34)", async () => {
+  let current = task({ projectId: "p-app" });
+  const available = [
+    { template: { id: "reviewer", label: "Reviewer", harness: "claude" }, source: "project" },
+    { template: { id: "builder", label: "Builder", harness: "codex" }, source: "workspace" },
+  ];
+  const view = (list) => ({ workspace: { version: 1, templates: [] }, available: list, defaultNamePattern: "{task} · {label}",
+    limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false });
+  const page = mount((operation) => {
+    if (operation === "task_list") return { tasks: [current], hasMore: false };
+    if (operation === "task_get")
+      return { task: current, activities: [], executions: [], hasMore: false };
+    if (operation === "executor-templates?projectId=p-app") return view(available);
+    if (operation === "executor-templates") return view([]);
+    if (operation === "task_dispatch") {
+      current = { ...current, version: current.version + 1, assigneeAgentId: "executor-1", projectId: null };
+      return { task: current, agentId: "executor-1" };
+    }
+    throw new Error(operation);
+  });
+  try {
+    page.render();
+    (await waitFor(() => page.document.querySelector(".collab-task-card"), "task card")).click();
+    await tick();
+    click(page, "Give to agent");
+    await tick();
+    const choices = () => [...page.document.querySelectorAll(".collab-dispatch-from input")];
+    assert.equal(choices()[0].checked, true, "an existing agent comes first");
+    assert.ok(field(page, "Send to"), "with its agent picker");
+    choices()[1].click();
+    await tick();
+    const picker = await waitFor(() => !field(page, "Template")?.disabled && field(page, "Template"), "templates read");
+    assert.deepEqual([...picker.options].map((option) => option.textContent),
+      ["Choose a template", "Reviewer · this project’s", "Builder"], "the task project templates first, then the workspace ones");
+    assert.equal(field(page, "Send to"), undefined, "no agent picker for a template");
+    assert.match(page.document.querySelector(".collab-inset").textContent, /Core creates an agent for this task from the template/);
+    assert.equal(button(page, "Create and send").disabled, true, "nothing to send before a template is chosen");
+    await value(page, picker, "reviewer");
+    click(page, "Create and send");
+    await tick();
+    const request = page.calls.filter((call) => call.operation === "task_dispatch").at(-1);
+    assert.deepEqual(request.body.executor, { templateId: "reviewer" }, "a template dispatch names the template");
+    assert.equal(request.body.toAgentId, undefined, "a template dispatch names no agent");
+    assert.equal(request.body.expectedVersion, 1);
+    assert.equal(request.body.priority, "normal");
+
+    // A task in no project reads the workspace templates; with none, the
+    // form says where to add them, and sends nothing.
+    await waitFor(() => !page.document.querySelector(".collab-dispatch-from"), "form closed");
+    click(page, "Give to agent");
+    await tick();
+    choices()[1].click();
+    await waitFor(() => page.calls.some((call) => call.operation === "executor-templates"), "workspace templates read");
+    await waitFor(() => page.document.querySelector(".collab-inset").textContent.includes("No executor templates yet"), "empty hint");
+    assert.equal(field(page, "Template").disabled, true);
+    assert.equal(button(page, "Create and send").disabled, true);
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
 test("message delivery shows urgency, precise sources and hook waiting without claiming recipient understanding", async () => {
   const base = {
     sender: { kind: "agent", id: "dev-2", name: "Dev 2" },
@@ -1094,6 +1156,28 @@ test("a review's result mail and a review link open its task at that review's re
     assert.deepEqual(linked.errors, []);
   } finally {
     linked.close();
+  }
+});
+
+// T-50 (elasticLM): a task whose Job mail could not wake its Agent says so,
+// in Core's words, next to what it is waiting on.
+test("a task shows its mail whose wake-up failed, with the Job and why", async () => {
+  const problem = "delivery failed: Effort changes must wait until the current turn finishes; it is tried again at the recipient's next wake-up. The mail stays in the mailbox.";
+  const current = task();
+  const page = mount((operation) =>
+    operation === "task_list"
+      ? { tasks: [current], hasMore: false }
+      : { task: current, activities: [], executions: [], hasMore: false,
+          mailProblems: [{ messageId: "m1", jobId: "f9736ce5-293e-431f-a145-cae5a94f1ef2", status: "succeeded", problem }] },
+  );
+  try {
+    page.render();
+    (await waitFor(() => page.document.querySelector(".collab-task-card"), "task card")).click();
+    const section = await waitFor(() => page.document.querySelector(".collab-mail-problems"), "the task's mail problems");
+    assert.equal(section.querySelector("h4").textContent, "Mail not delivered");
+    assert.equal(section.querySelector("p").textContent, `Job f9736ce5 (succeeded): ${problem}`);
+  } finally {
+    page.close();
   }
 });
 
@@ -1913,5 +1997,590 @@ test("a theory record's bound shows as its author wrote it whatever was checked,
     } finally {
       page.close();
     }
+  }
+});
+
+// T-19 1c: a Workspace revision (every few seconds) reloads the board, the
+// open task and Messages quietly. Their Refresh buttons neither spin nor turn
+// off for it, and an error stays until an answer replaces it (CB-04, TD-01,
+// MS-01); a Refresh the reader asks for still shows. A save of the open task
+// does not play its entrance again (CB-13), and the list that takes over as
+// cards become rows fades in (CB-09). One test per row, each failing alone on
+// the board before this batch.
+function quietBoard() {
+  // The latest held answer of each operation, and all of them in order.
+  const held = {};
+  const queue = {};
+  const counts = {};
+  // `list`, when set, answers task_list from its request body.
+  const state = { holding: new Set(), failList: false, current: task(), messages: [], list: null };
+  const hold = (operation, answer) => new Promise((resolve) => {
+    held[operation] = () => resolve(answer);
+    (queue[operation] ||= []).push(held[operation]);
+  });
+  const page = mount((operation, body) => {
+    counts[operation] = (counts[operation] || 0) + 1;
+    const answer =
+      operation === "task_list" ? (state.failList ? { httpStatus: 503, error: "Core is away" } : state.list ? state.list(body) : { tasks: [state.current], hasMore: false })
+      : operation === "task_get" ? { task: state.current, activities: [], executions: [], hasMore: false }
+      : operation === "peer_read" ? { messages: state.messages, hasMore: false }
+      : operation === "task_update" ? { task: (state.current = task({ version: 2, title: "Preview line links clearly" })) }
+      : operation === "workspaces" ? { taskId: "T-1", repositories: [], workspaces: [] }
+      : operation === "github_links" || operation === "github_refresh" ? { links: [], repositories: [] }
+      : operation === "delivery_get" ? { flow: null, settings: { harness: "codex", model: "gpt-6.1-sol" } }
+      : operation === "peers_list" ? { peers: [] }
+      : operation.startsWith("pr-reviews") ? { reviews: [], hasMore: false, nextBefore: null }
+      : operation.startsWith("pr-operations") ? { operations: [], repositories: [], hasMore: false, nextBefore: null }
+      : {};
+    return state.holding.has(operation) ? hold(operation, answer) : answer;
+  });
+  const refreshButton = (label) => page.document.querySelector(`[aria-label="${label}"]`);
+  const shows = (label) => ({ disabled: refreshButton(label).disabled, spins: !!refreshButton(label).querySelector("svg.spin") });
+  // A revision, held in flight: what the Refresh labelled `label` shows meanwhile.
+  const duringRevision = async (operation, revision, label) => {
+    state.holding = new Set([operation]);
+    const before = counts[operation] || 0;
+    page.render({ revision });
+    await waitFor(() => (counts[operation] || 0) > before, `${operation} again for revision ${revision}`);
+    const seen = shows(label);
+    held[operation]();
+    state.holding = new Set();
+    await tick();
+    return seen;
+  };
+  const openTask = async () => {
+    page.document.querySelector(".collab-task-card").click();
+    await waitFor(() => refreshButton("Refresh task details") && !refreshButton("Refresh task details").disabled, "the task opens");
+  };
+  return { page, held, queue, counts, state, refreshButton, shows, duringRevision, openTask };
+}
+
+test("a Workspace revision reloads the board's list quietly; an error stays until an answer replaces it, and the reader's own Refresh still shows (T-19 CB-04)", async () => {
+  const board = quietBoard();
+  const { page, state, refreshButton, shows, held } = board;
+  const errorShown = () => /Core is away/.test(page.document.body.textContent);
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    assert.deepEqual(await board.duringRevision("task_list", 1, "Refresh tasks"), { disabled: false, spins: false }, "the board's Refresh during a revision's reload");
+    state.failList = true;
+    refreshButton("Refresh tasks").click();
+    await waitFor(errorShown, "the reader's Refresh fails");
+    state.failList = false;
+    state.holding = new Set(["task_list"]);
+    const before = board.counts.task_list;
+    page.render({ revision: 2 });
+    await waitFor(() => board.counts.task_list > before, "a revision reloads again");
+    assert.ok(errorShown(), "the error stays while the reload is on its way");
+    assert.deepEqual(shows("Refresh tasks"), { disabled: false, spins: false });
+    held.task_list();
+    state.holding = new Set();
+    await waitFor(() => !errorShown(), "the answer replaces the error");
+    state.holding = new Set(["task_list"]);
+    refreshButton("Refresh tasks").click();
+    await tick();
+    assert.deepEqual(shows("Refresh tasks"), { disabled: true, spins: true }, "the reader's Refresh shows");
+    held.task_list();
+    await waitFor(() => !refreshButton("Refresh tasks").disabled, "it ends");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a Workspace revision reloads an open task quietly (T-19 TD-01)", async () => {
+  const board = quietBoard();
+  try {
+    board.page.render({ revision: 0 });
+    await waitFor(() => board.page.document.querySelector(".collab-task-card"), "the board's list");
+    await board.openTask();
+    assert.deepEqual(await board.duringRevision("task_get", 1, "Refresh task details"), { disabled: false, spins: false }, "the task's Refresh during a revision's reload");
+    assert.deepEqual(board.page.errors, []);
+  } finally {
+    board.page.close();
+  }
+});
+
+test("a Workspace revision reloads Messages quietly (T-19 MS-01)", async () => {
+  const board = quietBoard();
+  try {
+    board.page.render({ revision: 0 });
+    await waitFor(() => board.page.document.querySelector(".collab-task-card"), "the board's list");
+    click(board.page, "Messages");
+    await waitFor(() => board.refreshButton("Refresh messages") && !board.refreshButton("Refresh messages").disabled, "Messages read");
+    assert.deepEqual(await board.duringRevision("peer_read", 1, "Refresh messages"), { disabled: false, spins: false }, "Messages' Refresh during a revision's reload");
+    assert.deepEqual(board.page.errors, []);
+  } finally {
+    board.page.close();
+  }
+});
+
+test("a save of the open task leaves its pane's entry as it was (T-19 CB-13)", async () => {
+  const board = quietBoard();
+  const { page } = board;
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    await board.openTask();
+    const entry = page.document.getElementById("collab-tasks").dataset.entry;
+    click(page, "Edit task");
+    await tick();
+    await value(page, field(page, "Task title"), "Preview line links clearly");
+    click(page, "Save changes");
+    await waitFor(() => page.calls.some((call) => call.operation === "task_update"), "the save");
+    await tick(100);
+    assert.equal(page.document.getElementById("collab-tasks").dataset.entry, entry, "the open pane's entry is unchanged by its save");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("as a task opens, the rows that take over from the cards fade in, and are done once that ends (T-19 CB-09)", async () => {
+  const board = quietBoard();
+  const { page } = board;
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-cards"), "the board's cards");
+    assert.ok(!page.document.querySelector(".collab-cards").classList.contains("collab-list-flip"), "the first list shown does not fade");
+    await board.openTask();
+    const rows = page.document.querySelector(".collab-groups");
+    assert.ok(rows?.classList.contains("collab-list-flip"), "the rows that take over fade in");
+    // jsdom has no AnimationEvent, so React listens for the prefixed name there (a browser sends
+    // animationend). The plain name would also reach Radix Presence on the dialog, which calls
+    // CSS.escape, absent from jsdom.
+    rows.dispatchEvent(new page.window.Event("webkitAnimationEnd", { bubbles: true }));
+    await tick();
+    assert.ok(!page.document.querySelector(".collab-groups").classList.contains("collab-list-flip"), "and are done once that ends");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+// Revisions every few seconds and a Core slow to answer: a revision's read never cancels the one on
+// its way. That one answers and shows, the revisions that came meanwhile are read once more after
+// it, and nothing else is asked; the reader's Refresh, or other conditions, still take over, and
+// the late answer they replace is ignored (T-19 F4: CB-04, TD-01, MS-01).
+async function revisions(page, from, to) {
+  for (let revision = from; revision <= to; revision++) {
+    page.render({ revision });
+    // The board reads a revision 600 ms after it arrives.
+    await tick(700);
+  }
+}
+
+test("revisions faster than a slow list read: the read on its way answers, one more follows for the latest, and Refresh or other conditions take over (T-19 CB-04)", async () => {
+  const board = quietBoard();
+  const { page, state, counts, queue, refreshButton, shows } = board;
+  const listed = () => page.document.querySelector(".collab-cards, .collab-groups")?.textContent || "";
+  const titled = (title) => { state.current = task({ title }); };
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    const base = counts.task_list;
+    state.holding = new Set(["task_list"]);
+    titled("Answer to the first revision");
+    page.render({ revision: 1 });
+    await waitFor(() => counts.task_list === base + 1, "a revision's read");
+    titled("Answer after the third revision");
+    await revisions(page, 2, 3);
+    assert.equal(counts.task_list, base + 1, "no other read starts while one is on its way");
+    assert.deepEqual(shows("Refresh tasks"), { disabled: false, spins: false });
+    queue.task_list.shift()();
+    await waitFor(() => /Answer to the first revision/.test(listed()), "the read on its way answers and shows");
+    await waitFor(() => counts.task_list === base + 2, "one more read, for the revisions that came meanwhile");
+    queue.task_list.shift()();
+    await waitFor(() => /Answer after the third revision/.test(listed()), "the latest shows");
+    await tick(700);
+    assert.equal(counts.task_list, base + 2, "and nothing more is read");
+
+    titled("A late answer");
+    page.render({ revision: 4 });
+    await waitFor(() => counts.task_list === base + 3, "a revision's read");
+    titled("The reader's answer");
+    refreshButton("Refresh tasks").click();
+    await waitFor(() => counts.task_list === base + 4, "the reader's Refresh starts at once");
+    assert.deepEqual(shows("Refresh tasks"), { disabled: true, spins: true }, "and shows");
+    queue.task_list.shift()();
+    await tick();
+    assert.ok(!/A late answer/.test(listed()), "the revision's late answer is ignored");
+    assert.deepEqual(shows("Refresh tasks"), { disabled: true, spins: true }, "and leaves the Refresh showing");
+    queue.task_list.shift()();
+    await waitFor(() => /The reader's answer/.test(listed()) && !refreshButton("Refresh tasks").disabled, "the reader's answer");
+
+    titled("Another late answer");
+    page.render({ revision: 5 });
+    await waitFor(() => counts.task_list === base + 5, "a revision's read");
+    titled("The answer for all tasks");
+    await value(page, field(page, "Show"), "all");
+    await waitFor(() => counts.task_list === base + 6, "other conditions start their read at once");
+    queue.task_list.shift()();
+    await tick();
+    assert.ok(!/Another late answer/.test(listed()), "the revision's late answer is ignored");
+    queue.task_list.shift()();
+    await waitFor(() => /The answer for all tasks/.test(listed()), "the answer for the new conditions");
+    await tick(700);
+    assert.equal(counts.task_list, base + 6, "nothing more is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("revisions faster than a slow task read: the read on its way answers, one more follows for the latest, and Refresh takes over (T-19 TD-01)", async () => {
+  const board = quietBoard();
+  const { page, state, counts, queue, refreshButton, shows } = board;
+  const detail = () => page.document.querySelector(".collab-detail")?.textContent || "";
+  const titled = (title) => { state.current = task({ title }); };
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    await board.openTask();
+    const base = counts.task_get;
+    state.holding = new Set(["task_get"]);
+    titled("Task read for the first revision");
+    page.render({ revision: 1 });
+    await waitFor(() => counts.task_get === base + 1, "a revision's read");
+    titled("Task after the third revision");
+    await revisions(page, 2, 3);
+    assert.equal(counts.task_get, base + 1, "no other read starts while one is on its way");
+    assert.deepEqual(shows("Refresh task details"), { disabled: false, spins: false });
+    queue.task_get.shift()();
+    await waitFor(() => /Task read for the first revision/.test(detail()), "the read on its way answers and shows");
+    await waitFor(() => counts.task_get === base + 2, "one more read, for the revisions that came meanwhile");
+    queue.task_get.shift()();
+    await waitFor(() => /Task after the third revision/.test(detail()), "the latest shows");
+    await tick(700);
+    assert.equal(counts.task_get, base + 2, "and nothing more is read");
+
+    titled("A late task answer");
+    page.render({ revision: 4 });
+    await waitFor(() => counts.task_get === base + 3, "a revision's read");
+    titled("The reader's task answer");
+    refreshButton("Refresh task details").click();
+    await waitFor(() => counts.task_get === base + 4, "the reader's Refresh starts at once");
+    assert.deepEqual(shows("Refresh task details"), { disabled: true, spins: true }, "and shows");
+    queue.task_get.shift()();
+    await tick();
+    assert.ok(!/A late task answer/.test(detail()), "the revision's late answer is ignored");
+    assert.deepEqual(shows("Refresh task details"), { disabled: true, spins: true }, "and leaves the Refresh showing");
+    queue.task_get.shift()();
+    await waitFor(() => /The reader's task answer/.test(detail()) && !refreshButton("Refresh task details").disabled, "the reader's answer");
+    await tick(700);
+    assert.equal(counts.task_get, base + 4, "nothing more is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("revisions faster than a slow Messages read: the read on its way answers, one more follows for the latest, and Refresh takes over (T-19 MS-01)", async () => {
+  const board = quietBoard();
+  const { page, state, counts, queue, refreshButton, shows } = board;
+  const shown = () => page.document.querySelector(".collab-messages")?.textContent || "";
+  const say = (body) => {
+    state.messages = [{ id: "mail-1", seq: 1, sender: { kind: "agent", id: "dev-2", name: "Dev 2" },
+      recipient: { kind: "agent", id: "dev-1", name: "Dev 1" }, body, taskId: "T-1", replyTo: null, threadId: "mail-1",
+      createdAt: "2026-10-12T12:00:00Z", firstReadAt: null, delivery: { state: "pending", detail: {} } }];
+  };
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    click(page, "Messages");
+    await waitFor(() => refreshButton("Refresh messages") && !refreshButton("Refresh messages").disabled, "Messages read");
+    const base = counts.peer_read;
+    state.holding = new Set(["peer_read"]);
+    say("Mail read for the first revision");
+    page.render({ revision: 1 });
+    await waitFor(() => counts.peer_read === base + 1, "a revision's read");
+    say("Mail after the third revision");
+    await revisions(page, 2, 3);
+    assert.equal(counts.peer_read, base + 1, "no other read starts while one is on its way");
+    assert.deepEqual(shows("Refresh messages"), { disabled: false, spins: false });
+    queue.peer_read.shift()();
+    await waitFor(() => /Mail read for the first revision/.test(shown()), "the read on its way answers and shows");
+    await waitFor(() => counts.peer_read === base + 2, "one more read, for the revisions that came meanwhile");
+    queue.peer_read.shift()();
+    await waitFor(() => /Mail after the third revision/.test(shown()), "the latest shows");
+    await tick(700);
+    assert.equal(counts.peer_read, base + 2, "and nothing more is read");
+
+    say("A late mail answer");
+    page.render({ revision: 4 });
+    await waitFor(() => counts.peer_read === base + 3, "a revision's read");
+    say("The reader's mail answer");
+    refreshButton("Refresh messages").click();
+    await waitFor(() => counts.peer_read === base + 4, "the reader's Refresh starts at once");
+    assert.deepEqual(shows("Refresh messages"), { disabled: true, spins: true }, "and shows");
+    queue.peer_read.shift()();
+    await tick();
+    assert.ok(!/A late mail answer/.test(shown()), "the revision's late answer is ignored");
+    assert.deepEqual(shows("Refresh messages"), { disabled: true, spins: true }, "and leaves the Refresh showing");
+    queue.peer_read.shift()();
+    await waitFor(() => /The reader's mail answer/.test(shown()) && !refreshButton("Refresh messages").disabled, "the reader's answer");
+    await tick(700);
+    assert.equal(counts.peer_read, base + 4, "nothing more is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+// The read after a revision that came during another read sees that read's answer on the board
+// (Lead, before R1): with no page yet it still reads, and after Load more it keeps both pages and
+// only says the list changed, as with more than one page loaded (T-19 F4: CB-04).
+test("a revision while the board's first read is on its way is read once that read shows (T-19 CB-04)", async () => {
+  const board = quietBoard();
+  const { page, state, counts, queue } = board;
+  const listed = () => page.document.querySelector(".collab-cards, .collab-groups")?.textContent || "";
+  try {
+    state.holding = new Set(["task_list"]);
+    state.current = task({ title: "The first answer" });
+    page.render({ revision: 0 });
+    await waitFor(() => counts.task_list === 1, "the first read");
+    page.render({ revision: 1 });
+    await tick(700);
+    assert.equal(counts.task_list, 1, "no other read while the first is on its way");
+    state.holding = new Set();
+    state.current = task({ title: "The revision's answer" });
+    queue.task_list.shift()();
+    await waitFor(() => /The revision's answer/.test(listed()), "the revision is read once the first read shows");
+    assert.equal(counts.task_list, 2);
+    await tick(700);
+    assert.equal(counts.task_list, 2, "and nothing more is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a revision while Load more is on its way keeps both pages and only says the list changed (T-19 CB-04)", async () => {
+  const board = quietBoard();
+  const { page, state, counts, queue } = board;
+  const listed = () => page.document.querySelector(".collab-cards, .collab-groups")?.textContent || "";
+  const first = task({ id: "T-1", title: "A task on the first page" });
+  const second = task({ id: "T-2", title: "A task on the second page" });
+  state.list = (body) =>
+    body.afterSeq !== undefined ? { tasks: [second], hasMore: false, nextAfterSeq: null }
+    : body.limit === 200 ? { tasks: [first, { ...second, version: 2 }], hasMore: false }
+    : { tasks: [first], hasMore: true, nextAfterSeq: 7 };
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => /A task on the first page/.test(listed()) && button(page, "Load more tasks"), "the first page");
+    const base = counts.task_list;
+    state.holding = new Set(["task_list"]);
+    click(page, "Load more tasks");
+    await waitFor(() => counts.task_list === base + 1, "the second page's read");
+    page.render({ revision: 1 });
+    await tick(700);
+    assert.equal(counts.task_list, base + 1, "no other read while the second page is on its way");
+    state.holding = new Set();
+    queue.task_list.shift()();
+    await waitFor(() => /A task on the second page/.test(listed()), "the second page shows");
+    await waitFor(() => counts.task_list === base + 2, "then the revision is read");
+    const read = page.calls.filter((call) => call.operation === "task_list").at(-1).body;
+    assert.equal(read.limit, 200, "as with more than one page: Core's first 200, compared");
+    assert.equal(read.afterSeq, undefined);
+    await waitFor(() => page.document.querySelector(".collab-outdated"), "the list says it changed");
+    assert.ok(/A task on the first page/.test(listed()) && /A task on the second page/.test(listed()), "both pages are kept");
+    await tick(700);
+    assert.equal(counts.task_list, base + 2, "and nothing more is read");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+// T-51 plan item 7: the board's own motion rows, as far as jsdom shows them (no layout or animations: a settle lands
+// at once there). board-motion-check.mjs plays them in Chromium.
+const settled = (page) => [...page.document.querySelectorAll("[data-settle]")].map((node) => node.dataset.taskId || node.id || node.className);
+
+test("other filters keep the cards shown, dimmed and busy, until Core answers; a failed read or an empty list keeps nothing (T-19 CB-03)", async () => {
+  const board = quietBoard();
+  const { page, state, held } = board;
+  const list = () => page.document.querySelector(".collab-cards, .collab-groups");
+  const stale = () => !!page.document.querySelector(".collab-task-list.is-stale");
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    state.holding = new Set(["task_list"]);
+    await value(page, field(page, "Show"), "all");
+    assert.equal(stale(), true, "the list other filters replace is marked stale");
+    assert.equal(list()?.getAttribute("aria-busy"), "true", "and busy");
+    assert.equal(page.document.querySelectorAll(".collab-task-card").length, 1, "its cards stay");
+    assert.equal(page.document.querySelector(".collab-loading"), null, "nothing says Gathering");
+    held.task_list();
+    state.holding = new Set();
+    await waitFor(() => !stale(), "Core's answer for them");
+    assert.equal(list()?.getAttribute("aria-busy"), null, "not busy once answered");
+    assert.ok(list()?.classList.contains("collab-list-flip"), "the answer's list fades in");
+    // Other filters whose read fails: the cards they replace go too, and the error shows.
+    state.failList = true;
+    await value(page, field(page, "Show"), "blocked");
+    await waitFor(() => /Core is away/.test(page.document.body.textContent), "the failed read");
+    assert.equal(stale(), false, "a read failing at once leaves no list marked stale");
+    assert.equal(page.document.querySelectorAll(".collab-task-card").length, 0, "no cards from the filters before");
+    // An empty answer is not kept for other filters: they gather, as before.
+    state.failList = false;
+    state.list = () => ({ tasks: [], hasMore: false });
+    await value(page, field(page, "Show"), "todo");
+    await waitFor(() => /No tasks match these filters/.test(page.document.body.textContent), "an empty answer");
+    state.holding = new Set(["task_list"]);
+    await value(page, field(page, "Show"), "doing");
+    assert.equal(stale(), false, "nothing to keep");
+    assert.ok(page.document.querySelector(".collab-loading"), "it gathers");
+    assert.doesNotMatch(page.document.body.textContent, /No tasks match/, "nothing says nothing matches before Core answers");
+    held.task_list();
+    state.holding = new Set();
+    await waitFor(() => /No tasks match these filters/.test(page.document.body.textContent), "Core's answer");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("Refresh tasks, task details and messages say they are busy while the read they asked for is on its way (T-19 GL-07)", async () => {
+  const board = quietBoard();
+  const { page, state, held, refreshButton } = board;
+  const says = (label) => ({ busy: refreshButton(label).getAttribute("aria-busy"), title: refreshButton(label).getAttribute("title") });
+  const during = async (operation, label) => {
+    state.holding = new Set([operation]);
+    refreshButton(label).click();
+    await tick();
+    const seen = says(label);
+    held[operation]();
+    state.holding = new Set();
+    await waitFor(() => !refreshButton(label).disabled, `${label} answered`);
+    return { seen, after: says(label) };
+  };
+  try {
+    page.render({ revision: 0 });
+    await waitFor(() => page.document.querySelector(".collab-task-card"), "the board's list");
+    assert.deepEqual(await during("task_list", "Refresh tasks"),
+      { seen: { busy: "true", title: "Refreshing tasks…" }, after: { busy: null, title: "Refresh tasks" } },
+      "Refresh tasks says it is busy while its read is on its way, then not");
+    await board.openTask();
+    assert.deepEqual(await during("task_get", "Refresh task details"),
+      { seen: { busy: "true", title: "Refreshing task details…" }, after: { busy: null, title: "Refresh task details" } },
+      "Refresh task details says it is busy while its read is on its way, then not");
+    click(page, "Messages");
+    await waitFor(() => refreshButton("Refresh messages") && !refreshButton("Refresh messages").disabled, "the mailbox");
+    assert.deepEqual(await during("peer_read", "Refresh messages"),
+      { seen: { busy: "true", title: "Refreshing messages…" }, after: { busy: null, title: "Refresh messages" } },
+      "Refresh messages says it is busy while its read is on its way, then not");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("the reader's own save that moves a task's row brings that row into view and settles it, once; a save that moves nothing settles nothing (T-19 CB-12)", async () => {
+  let tasks = [
+    task({ id: "T-1", status: "doing", updatedAt: "2026-10-12T12:00:00Z" }),
+    task({ id: "T-2", status: "todo", title: "Second", updatedAt: "2026-10-12T11:00:00Z" }),
+  ];
+  const page = mount((operation, body) => {
+    if (operation === "task_list") return { tasks, hasMore: false };
+    if (operation === "task_get") return { task: tasks.find((t) => t.id === body.taskId), activities: [], executions: [], hasMore: false };
+    if (operation === "task_update") {
+      const old = tasks.find((t) => t.id === body.taskId);
+      const next = { ...old, ...body.patch, version: old.version + 1, updatedAt: `2026-10-12T13:0${old.version}:00Z` };
+      tasks = tasks.map((t) => (t.id === next.id ? next : t));
+      return { task: next };
+    }
+    if (operation === "workspaces") return { taskId: body.taskId, repositories: [], workspaces: [] };
+    if (operation === "github_links" || operation === "github_refresh") return { links: [], repositories: [] };
+    if (operation === "delivery_get") return { flow: null, settings: { harness: "codex", model: "gpt-6.1-sol" } };
+    if (operation === "peers_list") return { peers: [] };
+    if (operation.startsWith("pr-reviews")) return { reviews: [], hasMore: false, nextBefore: null };
+    if (operation.startsWith("pr-operations")) return { operations: [], repositories: [], hasMore: false, nextBefore: null };
+    return {};
+  });
+  const scrolled = [];
+  page.window.HTMLElement.prototype.scrollIntoView = function () { scrolled.push(this.dataset?.taskId ?? this.className); };
+  const edit = async (label, text) => {
+    click(page, "Edit task");
+    await waitFor(() => field(page, label), "the edit form");
+    await value(page, field(page, label), text);
+    scrolled.length = 0;
+    click(page, "Save changes");
+    await waitFor(() => !button(page, "Save changes"), "saved");
+    await tick(60);
+  };
+  try {
+    page.render();
+    await waitFor(() => page.document.querySelector('.collab-task-card[data-task-id="T-2"]'), "the list");
+    page.document.querySelector('.collab-task-card[data-task-id="T-2"]').click();
+    await waitFor(() => button(page, "Edit task"), "T-2's detail");
+    await tick(400);
+    await edit("Task status", "doing");
+    assert.equal(page.document.querySelector('.collab-task-card[data-task-id="T-2"]').closest(".collab-group")?.classList.contains("group-doing"), true, "its row moved");
+    assert.ok(scrolled.includes("T-2"), "brought into view");
+    assert.deepEqual(settled(page), ["T-2"], "and it alone settles");
+    await waitFor(() => !settled(page).length, "the settle's time up");
+    await edit("Task title", "Second, renamed");
+    assert.deepEqual(settled(page), [], "a save that moves nothing settles nothing");
+    assert.ok(!scrolled.includes("T-2"), "nor scrolls");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a reply's Reply to an earlier message lands on the message it answers, which settles (T-19 MS-03)", async () => {
+  const mail = (n, patch = {}) => ({ id: `m-${n}`, seq: n, sender: { kind: "agent", id: "dev-1", name: "Dev 1" },
+    recipient: { kind: "agent", id: "dev-2", name: "Dev 2" }, body: `Note ${n}`, taskId: null, replyTo: null, threadId: `m-${n}`,
+    createdAt: `2026-10-12T12:0${n}:00Z`, firstReadAt: null, delivery: { state: "delivered", detail: {} }, ...patch });
+  const page = mount((operation) => {
+    if (operation === "task_list") return { tasks: [task()], hasMore: false };
+    if (operation === "peer_read") return { messages: [mail(3, { replyTo: "m-1" }), mail(2), mail(1)], hasMore: false };
+    return {};
+  });
+  try {
+    page.render();
+    await tick();
+    click(page, "Messages");
+    await waitFor(() => page.document.querySelector("#peer-message-m-3 .collab-reply-label"), "the reply");
+    assert.deepEqual(settled(page), []);
+    page.document.querySelector("#peer-message-m-3 .collab-reply-label").click();
+    await tick();
+    assert.equal(page.document.activeElement?.id, "peer-message-m-1", "the message it answers has the focus");
+    assert.deepEqual(settled(page), ["peer-message-m-1"], "and settles");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
+test("a review link settles the review it opens, once (T-19 GH-06)", async () => {
+  const review = { id: "run-1", linkId: "7:pull:1", repository: "owner/repo", number: 1, status: "completed", requestedHarness: "codex",
+    requestedModel: "gpt-6.1-sol", actualHarness: "codex", actualModel: "gpt-6.1-sol", baseSha: "a".repeat(40), headSha: "b".repeat(40),
+    mergeBaseSha: "a".repeat(40), conclusion: "no_findings", error: null, createdAt: "2026-10-12T12:00:00Z", outdated: false, findings: [],
+    cursor: 1, round: 1, rawReport: "report" };
+  const page = mount((operation) => {
+    if (operation === "task_list") return { tasks: [task()], hasMore: false };
+    if (operation === "task_get") return { task: task(), activities: [], executions: [], hasMore: false };
+    if (operation === "github_links" || operation === "github_refresh") return { links: [], repositories: [], refreshing: false };
+    if (operation === "peers_list") return { peers: [] };
+    if (operation === "pr-reviews?taskId=T-1") return { reviews: [review], hasMore: false, nextBefore: null };
+    if (operation === "run-1?taskId=T-1") return review;
+    if (operation.startsWith("pr-operations")) return { operations: [], repositories: [], hasMore: false, nextBefore: null };
+    return {};
+  });
+  try {
+    page.render();
+    await tick();
+    page.render({ focus: { taskId: "T-1", reviewId: "run-1", at: 1 } });
+    const focused = await waitFor(() => page.document.querySelector(".pr-review-run.focused"), "the linked review");
+    await waitFor(() => focused.hasAttribute("data-settle"), "its settle");
+    assert.equal(settled(page).length, 1, "it alone settles");
+    await waitFor(() => !focused.hasAttribute("data-settle"), "the settle's time up");
+    page.render({ focus: { taskId: "T-1", reviewId: "run-1", at: 1 }, revision: 1 });
+    await tick(100);
+    assert.equal(focused.hasAttribute("data-settle"), false, "once: a render again settles nothing");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
   }
 });

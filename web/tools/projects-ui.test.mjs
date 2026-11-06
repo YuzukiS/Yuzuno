@@ -102,9 +102,10 @@ const tasks = [
 const workspaceShown = (document) =>
   document.querySelector(".workspace-scope .status-dot.idle") && document.querySelector(".agent-list");
 async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], url = "http://127.0.0.1:4317/", failMove = [],
-  timers: scaled = {}, ready = workspaceShown } = {}) {
+  timers: scaled = {}, ready = workspaceShown, leads = {} } = {}) {
   const agents = fixtureAgents(overrides);
   const editorPolicies = new Map();
+  const projectLeads = new Map(Object.entries(leads));
   // Project services (T-151): what Core keeps, and what answers on each
   // port of this browser's computer (the proof the page checks itself).
   const services = [];
@@ -186,6 +187,20 @@ async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], 
         .filter((item) => item.kind === "pending")
         .map((item) => ({ kind: "approval", projectId: null, agentId: item.agentId, agentName: item.agentName,
           requestId: item.id, title: item.body, since: "2026-10-17T00:00:00Z" })) });
+    // A Project's leads (T-33), as Core keeps them.
+    const leadsProject = url.match(/\/api\/projects\/([^/]+)\/leads$/)?.[1];
+    if (leadsProject) {
+      let leads = projectLeads.get(leadsProject) || { version: 0, leadAgentIds: [] };
+      if (init.method === "PUT") {
+        if (body.expectedVersion !== leads.version)
+          return { ok: false, status: 400, json: async () => ({}), text: async () => JSON.stringify({ error: "version_conflict: this Project's leads changed; reload before saving" }) };
+        leads = { version: leads.version + 1, leadAgentIds: body.leadAgentIds };
+        projectLeads.set(leadsProject, leads);
+        for (const agent of agents) if (agent.projectId === leadsProject)
+          agent.kind = body.leadAgentIds.includes(agent.id) ? "lead" : agent.kind === "lead" ? undefined : agent.kind;
+      }
+      return respond(leads);
+    }
     const editorProject = url.match(/\/api\/projects\/([^/]+)\/home-editors$/)?.[1];
     if (editorProject) {
       let policy = editorPolicies.get(editorProject) || { version: 0, editorAgentIds: null };
@@ -732,6 +747,55 @@ test("Home content editor settings save stable IDs, explicit none and compatibil
   } finally { page.close(); }
 });
 
+test("a Project's leads are the user's to set, from its open members that are not executors, and the rail marks them (T-33)", async () => {
+  const page = await mount({
+    storage: { "yuzuno.selected.ws-1": "a" },
+    // Mori leads App already; Hana is an executor there.
+    agents: { a: { kind: "lead" }, b: { kind: "executor" } },
+    leads: { "p-app": { version: 3, leadAgentIds: ["a"] } },
+  });
+  try {
+    const badges = () => [...page.document.querySelectorAll(".agent-list .agent-row")]
+      .filter(row => row.querySelector(".agent-kind-badge"))
+      .map(row => [row.querySelector(".agent-name").textContent, row.querySelector(".agent-kind-badge").textContent]);
+    // An executor is marked too, as one (T-34).
+    assert.deepEqual(badges(), [["Mori", "Lead"], ["Hana", "Executor"]], "a lead and an executor are marked, each as its kind, in the rail scope");
+    const mori = page.document.querySelector('.agent-row[data-agent-id="a"] .agent-select');
+    assert.match(mori.getAttribute("aria-description"), /^Lead · /);
+    assert.match(mori.getAttribute("title"), / · Lead$/);
+    const hana = page.document.querySelector('.agent-row[data-agent-id="b"] .agent-select');
+    assert.match(hana.getAttribute("aria-description"), /^Executor · /);
+    assert.doesNotMatch(hana.getAttribute("aria-description"), /Lead/);
+
+    await fromScopeMenu(page, "Manage projects");
+    const section = await waitFor(() => page.document.querySelector(".project-leads-members"), "leads load");
+    const choices = () => [...section.querySelectorAll("label")].map(label => [label.textContent, label.querySelector("input").checked]);
+    // The executor is no choice; nothing in another Project is.
+    assert.deepEqual(choices(), [["Mori", true]]);
+    const save = () => button(page, "Save leads");
+    assert.equal(save().disabled, true, "nothing to save yet");
+    section.querySelector("input").click(); await pause();
+    assert.match(page.document.querySelector(".project-leads").textContent, /No lead\. The Project works as before\./);
+    save().click();
+    const saves = () => page.calls.filter(call => call.method === "PUT" && call.url.endsWith("/leads"));
+    await waitFor(() => saves().length === 1, "the cleared list is saved");
+    assert.deepEqual(saves()[0].body, { expectedVersion: 3, leadAgentIds: [] });
+    assert.ok(saves()[0].url.endsWith("/api/projects/p-app/leads"));
+    await waitFor(() => !page.document.querySelector(".project-leads-actions").textContent.includes("Unsaved changes"), "saved");
+    // Another window saved meanwhile: the refusal is shown and a reload reads the list again.
+    page.calls.length = 0;
+    section.querySelector("input").click(); await pause();
+    const stale = page.document.querySelector(".project-leads");
+    page.window.fetch = ((fetch) => async (url, init = {}) => init.method === "PUT" && url.endsWith("/leads")
+      ? { ok: false, status: 400, json: async () => ({}), text: async () => JSON.stringify({ error: "version_conflict: this Project's leads changed; reload before saving" }) }
+      : fetch(url, init))(page.window.fetch);
+    save().click();
+    await waitFor(() => stale.querySelector('[role="alert"]')?.textContent.includes("version_conflict"), "the refusal is shown");
+    assert.ok(button(page, "Reload saved leads"), "a reload is offered");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally { page.close(); }
+});
+
 test("Home content editors follow a language change from another window, an unsaved choice kept (T-189)", async () => {
   const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
   const language = async (value) => {
@@ -758,6 +822,24 @@ test("Home content editors follow a language change from another window, an unsa
     assert.equal(settings().textContent, english.text);
     assert.deepEqual(chosen(), english.chosen);
     assert.deepEqual(page.calls.slice(before).filter((call) => call.method === "PUT"), [], "changing the language saves nothing");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally { page.close(); }
+});
+
+test("a task executor is never offered as a Home content editor; all members means all but executors (T-36)", async () => {
+  // Hana is an executor in App, Mori a standing member.
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, agents: { b: { kind: "executor" } } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    const all = await waitFor(() => page.document.querySelector(".home-editor-mode input"), "editor setting loads");
+    assert.match(page.document.querySelector(".home-editor-mode").textContent, /^All members but task executors, including future members$/);
+    all.click(); await pause();
+    const names = [...page.document.querySelectorAll(".home-editor-members span")].map((span) => span.textContent);
+    assert.deepEqual(names, ["Mori"], "only the standing member can be chosen");
+    button(page, "Save content editors").click();
+    await waitFor(() => page.calls.some((call) => call.method === "PUT" && call.url.endsWith("/home-editors")), "the list is saved");
+    assert.deepEqual(page.calls.find((call) => call.method === "PUT" && call.url.endsWith("/home-editors")).body,
+      { expectedVersion: 0, editorAgentIds: ["a"] }, "turning off all members selects every member but the executor");
     assert.equal(page.errors.length, 0, page.errors.join("\n"));
   } finally { page.close(); }
 });

@@ -24,7 +24,7 @@ assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/ui-refine-9-browser");
 await mkdir(output, { recursive: true });
 const HOST = "yuzuno-ui-refine-9.test";
-const report = { checks: [], failures: [], errors: [], mutations: [], unexpected: [] };
+const report = { checks: [], failures: [], errors: [], mutations: [], unexpected: [], agentReads: [] };
 let page;
 async function step(name, run) {
   try {
@@ -125,8 +125,9 @@ const designSection = {
   key: "home-layout", kind: "status", title: "Interface design", version: 2, owner: { agentId: "dev-5", name: "Dev 5", state: "active" },
   updatedAt: ago(3), updatedTurnId: "t2", body: designBody, refs: {}, seen: { version: 2, at: ago(30) }, history: false,
   status: { asOf: ago(3), validFor: 86400, stale: false },
+  // With the size Core reads from a kept picture's header (T-19 HM:B14, #521), so its box has the picture's own shape.
   attachments: Object.entries(images).map(([name, bytes]) => ({ name, kind: "image", mime: "image/png", size: bytes.length,
-    snapshot: true, mayChange: false, takenAt: ago(3), caption: name })),
+    snapshot: true, mayChange: false, takenAt: ago(3), caption: name, width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) })),
 };
 const home = {
   generatedAt: ago(0),
@@ -217,6 +218,17 @@ async function open({ theme = "dark", width = 1440, height = 900, motion = "redu
     const path = url.pathname;
     if (method === "POST" && path === "/api/collaboration/github_repositories")
       return route.fulfill({ json: { repositories: [], links: [] } });
+    // An open conversation's reads, answered as Core answers an Agent with none, counted apart from this
+    // check's writes: its reading place (reading-handoff-api.ts), its inputs (useConversationInputs.ts) and,
+    // for a connected Codex Agent, its MCP services as Codex last reported them (CodexMcpStatus.tsx).
+    const own = path.match(/^\/api\/agents\/([\w-]+)\/(reading|conversation\/inputs|codex\/mcp)$/);
+    if (own && agents.some((a) => a.id === own[1])) {
+      report.agentReads.push(`${method} ${path}`);
+      if (own[2] === "reading" && (method === "GET" || method === "PUT"))
+        return route.fulfill({ json: method === "PUT" ? { handoff: null, sourceSeq: 1, accepted: true } : { handoff: null, sourceSeq: 0 } });
+      if (own[2] === "conversation/inputs" && method === "GET") return route.fulfill({ json: { inputs: [], hasBefore: false, total: 0 } });
+      if (own[2] === "codex/mcp" && method === "GET") return route.fulfill({ json: { state: "observed", reason: "", generation: 1, servers: [], more: 0 } });
+    }
     if (method !== "GET") {
       report.mutations.push({ method, path });
       if (method === "POST" && /^\/api\/agents\/[^/]+\/review$/.test(path)) return route.fulfill({ json: {} });
@@ -349,25 +361,37 @@ try {
     page = await open({ theme });
     const machines = page.locator(".home-widget-column .home-machines");
 
-    await step(`${theme}: Home has one frame per card: no box around a project, a plain group or an image`, async () => {
+    await step(`${theme}: Home has one frame per card, and its report page no box around a plain group or an image`, async () => {
       const panel = page.locator('.home-view [data-home-project="p1"]');
       if ((await panel.locator(".home-panel-toggle").getAttribute("aria-expanded")) === "false")
         await panel.locator(".home-panel-toggle").click();
       const card = panel.locator('[data-section-key="home-layout"]');
-      await card.locator(".brief-attachment img").first().waitFor();
-      await page.waitForFunction(() => [...document.querySelectorAll(".brief-attachment img")].every((img) => img.complete && img.naturalWidth > 0));
+      await card.waitFor();
+      // The card's frame is read on Home; its groups and images where its body is read, its report page (T-18).
+      const opened = page.locator(".home-report");
+      await card.locator(".home-report-open").click();
+      // Home again afterwards, whatever happens here: the next steps read Home.
+      const closeReport = async () => {
+        if (!(await opened.isVisible())) return;
+        await opened.locator(".report-back").click();
+        await opened.waitFor({ state: "hidden" });
+      };
+      try {
+      await opened.locator(".brief-attachment img").first().waitFor();
+      await page.waitForFunction(() => [...document.querySelectorAll(".home-report .brief-attachment img")].every((img) => img.complete && img.naturalWidth > 0));
       const frames = await page.evaluate(() => {
         const framed = (el) => el && parseFloat(getComputedStyle(el).borderTopWidth) > 0 && parseFloat(getComputedStyle(el).borderLeftWidth) > 0;
         const tinted = (el) => !/rgba?\(0, 0, 0, 0\)|transparent/.test(getComputedStyle(el).backgroundColor);
         const card = document.querySelector('.home-view [data-section-key="home-layout"]');
         const panel = card.closest(".home-panel");
-        const groups = [...card.querySelectorAll(".brief-group")];
+        const body = document.querySelector(".home-report .report-article");
+        const groups = [...body.querySelectorAll(".brief-group")];
         return {
           panel: framed(panel), panelTinted: tinted(panel), section: framed(card),
           groups: groups.map((g) => ({ tone: g.dataset.tone || "", framed: framed(g), tinted: tinted(g) })),
-          attachments: [...card.querySelectorAll(".brief-attachment")].map((a) => framed(a)),
+          attachments: [...body.querySelectorAll(".brief-attachment")].map((a) => framed(a)),
           // An image comes first and keeps its own shape (no letterboxed well).
-          images: [...card.querySelectorAll(".brief-attachment")].map((a) => {
+          images: [...body.querySelectorAll(".brief-attachment")].map((a) => {
             // The shape inside its 1 px outline.
             // A kept picture leads with itself, then its caption (T-9); others with a header.
             const img = a.querySelector("img"), box = img.getBoundingClientRect(), head = a.querySelector("header, .brief-attachment-caption").getBoundingClientRect();
@@ -384,12 +408,17 @@ try {
         assert.ok(image.first, "the image comes before its caption");
         assert.ok(Math.abs(image.ratio - image.natural) < 0.05, `its own shape: ${JSON.stringify(image)}`);
       }
+      await shot(opened.locator(".report-article"), `report-card-${theme}.png`);
+      await closeReport();
       await card.scrollIntoViewIfNeeded();
       await shot(page.locator(".home-main"), `home-card-${theme}.png`);
       return { frames };
+      } finally {
+        await closeReport();
+      }
     });
 
-    await step(`${theme}: the Home tab counts what Needs you lists; a newer version marks only the blocks it changed and leaves the card untinted`, async () => {
+    await step(`${theme}: the Home tab counts what Needs you lists; a newer version marks only the blocks it changed, on its report page, and leaves the card untinted`, async () => {
       const key = 'yuzuno.home-seen-blocks.v1:["ws-9","p1","home-layout",null]';
       assert.equal(await page.evaluate((k) => JSON.parse(localStorage.getItem(k) || "null")?.version, key), 2, "the seen version's blocks are kept");
       const tab = page.locator(".catchup-nav").first();
@@ -405,7 +434,7 @@ try {
         assert.equal(await tab.locator(".nav-count").innerText(), "1");
         assert.equal(await tab.getAttribute("title"), "Home · 1 waiting for your response");
         const card = page.locator('.home-view [data-section-key="home-layout"]');
-        const look = await card.evaluate((el) => {
+        const inspect = (el) => {
           const canvas = document.createElement("canvas");
           canvas.width = canvas.height = 1;
           const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -446,7 +475,13 @@ try {
               };
             }),
           };
-        });
+        };
+        const look = await card.evaluate(inspect);
+        // The changed blocks are marked where the body is read: its report page (T-18).
+        const opened = page.locator(".home-report");
+        await card.locator(".home-report-open").click();
+        await opened.locator(".report-head h1").waitFor();
+        look.marks = (await opened.locator(".report-main").evaluate(inspect)).marks;
         assert.ok(look.sameAsOther, "a changed card looks like any other card");
         assert.equal(look.chip, "Updated", "its header still says it changed");
         assert.deepEqual(look.marks.map((m) => [m.change, m.label]), [["updated", "Updated"], ["new", "New"]]);
@@ -457,35 +492,40 @@ try {
           assert.ok(mark.above && mark.height <= 20, `a small mark above its block ${JSON.stringify(mark)}`);
         }
         await shot(page.locator(".toolbar-nav"), `home-tab-count-${theme}.png`);
-        await card.scrollIntoViewIfNeeded();
-        await shot(card, `home-changed-blocks-${theme}.png`);
+        await shot(opened.locator(".report-main"), `home-changed-blocks-${theme}.png`);
+        await opened.locator(".report-back").click();
+        await opened.waitFor({ state: "hidden" });
         return { look };
       } finally {
+        if (await page.locator(".home-report").isVisible()) {
+          await page.locator(".home-report .report-back").click();
+          await page.locator(".home-report").waitFor({ state: "hidden" });
+        }
         setDesign(2);
         home.needsYou = [];
         home.projects[1].brief.sections = [];
       }
     });
 
-    await step(`${theme}: the Machines widget has a use and a memory bar for each GPU, and its Jobs as a compact list`, async () => {
+    await step(`${theme}: the Machines widget has a use and a memory bar for each GPU, and its Jobs as one line`, async () => {
       await machines.locator(".home-gpus .home-gpu-name").filter({ hasText: "RTX 5090" }).waitFor();
       const bars = await machines.locator(".home-gpus li .home-meter").evaluateAll((els) =>
         els.map((el) => ({ label: el.getAttribute("aria-label"), width: el.querySelector(".home-meter-gpu")?.style.width })));
       assert.deepEqual(bars.map((b) => b.label), ["GPU use 37%", "GPU memory 5.2 GiB / 31.8 GiB"]);
       assert.equal(bars[0].width, "37%");
-      // Each Job: a button, its name on one line, a quiet line under it.
-      const rows = machines.locator(".home-machine-jobs button.home-machine-job");
-      assert.equal(await rows.count(), 3);
-      const first = await rows.first().evaluate((el) => {
-        const name = el.querySelector("strong"), small = el.querySelector("small");
-        const line = parseFloat(getComputedStyle(name).lineHeight);
-        return { nameLines: Math.round(name.getBoundingClientRect().height / line), clipped: name.scrollWidth > name.clientWidth,
-          small: small.textContent, height: Math.round(el.getBoundingClientRect().height) };
+      // The Jobs here: one button, one line, however many run (Dev 7, T-18); every Job in its tip.
+      const line = machines.locator(".home-machine-jobs button.home-machine-job-line");
+      assert.equal(await line.count(), 1);
+      assert.equal(await machines.locator(".home-machine-jobs li").count(), 0, "no list of Jobs on Home");
+      const first = await line.evaluate((el) => {
+        const name = el.querySelector(".home-machine-job-first");
+        return { count: el.querySelector(".home-machine-job-count").textContent, clipped: name.scrollWidth > name.clientWidth,
+          tip: el.getAttribute("title"), height: Math.round(el.getBoundingClientRect().height) };
       });
-      assert.equal(first.nameLines, 1, "a long name stays on one line");
-      assert.ok(first.clipped, "and is cut with an ellipsis");
-      assert.match(first.small, /^yuzuno-next · Dev 3CPU 10%Memory 10\.0 GiB$/);
-      assert.ok(first.height <= 48, `a row is about two lines: ${first.height}px`);
+      assert.equal(first.count, "3 running");
+      assert.ok(first.clipped, "a long first name is cut with an ellipsis");
+      assert.match(first.tip, /^.+ · yuzuno-next · Dev 3\n.+\n.+$/);
+      assert.ok(first.height <= 30, `one line: ${JSON.stringify(first)}`);
       assert.ok(await noSideways(".home-widget-column .home-machines"), "no sideways scroll in the widget");
       await shot(machines, `machines-widget-${theme}.png`);
       return { first };
@@ -513,8 +553,8 @@ try {
       assert.equal(await page.locator(".scope-menu").count(), 0, "gone at once, not sinking");
     });
 
-    await step(`${theme}: a Job in the widget opens in the Jobs panel`, async () => {
-      await machines.locator("button.home-machine-job").first().click();
+    await step(`${theme}: the widget's Jobs line opens the Jobs panel at the first Job`, async () => {
+      await machines.locator("button.home-machine-job-line").click();
       const row = page.locator(".job-row[aria-current='true']");
       await row.waitFor();
       assert.match(await row.textContent(), /T-120 decision/);
@@ -563,32 +603,59 @@ try {
       return { height, meters };
     });
 
-    await step(`${theme}: the machine card's settings still open in place`, async () => {
+    // T-55: the card's settings moved to Settings; the card only shows, and
+    // keeps the pause of GPU work, an action on running jobs.
+    await step(`${theme}: the machine card's settings open in Settings, at the Core host budget`, async () => {
       const card = page.locator(".jobs-budget");
-      for (const summary of ["Machine budget", "Disk reserve", "Exclusive"]) {
-        await card.locator("summary", { hasText: summary }).click();
-        await card.locator("details[open] form").first().waitFor();
-        await card.locator("summary", { hasText: summary }).click();
-      }
-      assert.equal(await card.locator("details[open]").count(), 0);
+      assert.equal(await card.locator("details, form, input").count(), 0, "no editor on the card");
       assert.ok(await card.getByRole("button", { name: "Pause GPU work" }).isVisible());
-      await page.keyboard.press("Escape");
-      await page.getByRole("dialog").waitFor({ state: "detached" });
+      await card.getByRole("button", { name: "Edit in Settings", exact: true }).click();
+      const settings = page.locator(".modal.settings-modal");
+      await settings.waitFor();
+      try {
+        const editor = settings.locator("#settings-editor-jobs-budget:not([hidden])");
+        for (const group of ["This host's Job budget", "Disk reserve", "GPU 0 · NVIDIA GeForce RTX 5090"])
+          await editor.locator(`[aria-label="${group}"]`).waitFor();
+        // By role: a closing dialog's fading copy keeps its classes, not its role.
+        assert.equal(await page.getByRole("dialog", { name: "Jobs", exact: true }).count(), 0, "Jobs closed as Settings opened");
+        assert.equal(await editor.locator(".jobs-gpu-pause").count(), 0, "the GPU pause stays on the card");
+        assert.ok(await noSideways(".modal.settings-modal"));
+        await shot(settings, `settings-jobs-budget-${theme}.png`);
+      } finally {
+        if (await settings.count()) {
+          await page.keyboard.press("Escape");
+          await settings.waitFor({ state: "detached" });
+        }
+      }
     });
 
     await step(`${theme}: Settings has the desktop app under Updates, in the eight-category settings center`, async () => {
       await page.getByRole("button", { name: "Settings and updates", exact: true }).click();
       const settings = page.locator(".modal.settings-modal");
       await settings.waitFor();
-      assert.deepEqual(await settings.locator(".settings-nav [role=tab]").allInnerTexts(), ["Appearance & interaction", "Notifications & attention", "Agents & runtime", "Connections & devices", "Projects & collaboration", "Jobs & resources", "Data, privacy & recovery", "Updates & about"]);
-      const desktop = settings.locator('#settings-panel-updates [aria-label="Desktop app"]');
-      await desktop.waitFor();
-      assert.match(await desktop.textContent(), /updated separately/);
-      assert.equal(await desktop.locator("button").count(), 0, "no desktop buttons in a browser");
-      await desktop.scrollIntoViewIfNeeded();
-      await shot(settings, `settings-updates-${theme}.png`);
-      await page.keyboard.press("Escape");
-      await settings.waitFor({ state: "detached" });
+      try {
+        // The eight categories in order, each tab named in full for assistive technology; beside its icon each
+        // shows a short name, hidden from it (T-187: the narrow icon sidebar).
+        const full = ["Appearance & interaction", "Notifications & attention", "Agents & runtime", "Connections & devices", "Projects & collaboration", "Jobs & resources", "Data, privacy & recovery", "Updates & about"];
+        const tabs = settings.getByRole("tab");
+        assert.equal(await tabs.count(), full.length);
+        for (const [index, name] of full.entries())
+          assert.equal(await tabs.nth(index).getAttribute("id"), await settings.getByRole("tab", { name, exact: true }).getAttribute("id"), `tab ${index + 1} is "${name}"`);
+        assert.deepEqual(await settings.locator(".settings-nav [role=tab] .settings-nav-label").allInnerTexts(),
+          ["Appearance", "Notifications", "Agents", "Connections", "Projects", "Jobs", "Data", "Updates"]);
+        const desktop = settings.locator('#settings-panel-updates [aria-label="Desktop app"]');
+        await desktop.waitFor();
+        assert.match(await desktop.textContent(), /updated separately/);
+        assert.equal(await desktop.locator("button").count(), 0, "no desktop buttons in a browser");
+        await desktop.scrollIntoViewIfNeeded();
+        await shot(settings, `settings-updates-${theme}.png`);
+      } finally {
+        // Closed whatever was found, so no step after this one opens under it.
+        if (await settings.count()) {
+          await page.keyboard.press("Escape");
+          await settings.waitFor({ state: "detached" });
+        }
+      }
     });
 
     await step(`${theme}: the Machines page shows its agents as small tiles, several to a row`, async () => {

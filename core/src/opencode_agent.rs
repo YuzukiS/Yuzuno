@@ -32,10 +32,11 @@
 //! for any harness before its receipt is recorded.
 //!
 //! A model (T-10) is OpenCode's own default unless one is chosen for the
-//! Agent from what its OpenCode's configured providers list
-//! (`/config/providers`), and so is that model's variant (`model.variants`,
-//! such as `high`); a chosen one goes with each new message (`prompt_async`'s
-//! `model` and `variant`), and one OpenCode no longer lists refuses the
+//! Agent from what its OpenCode's configured providers list (`/api/model`),
+//! and so is that model's variant (`variants`, such as `high`). 2.x's prompt
+//! carries no model (T-32 slice 4a): a chosen one is made the session's
+//! (`POST /api/session/:id/model`) before a message whenever the session's
+//! is another or not known yet, and one OpenCode no longer lists refuses the
 //! message before anything is sent. Only names are kept, never what else a
 //! provider's record holds (its key, options or headers) or what a variant
 //! sets.
@@ -116,6 +117,13 @@ const STOP_LIMIT: Duration = Duration::from_secs(10);
 /// Waits before each attempt to open the event stream again.
 const RESUBSCRIBE: [Duration; 3] = [Duration::from_millis(100), Duration::from_millis(500), Duration::from_secs(2)];
 
+/// An Agent's OpenCode process, started but not yet attached (T-10 Fork),
+/// with where its snapshots are known to be kept, or why not.
+pub(crate) struct Started {
+    pub server: Arc<Server>,
+    pub files: std::result::Result<crate::opencode_revert_files::Started, String>,
+}
+
 /// One Agent's live OpenCode process and the session it drives there.
 #[derive(Clone)]
 pub(crate) struct Connection {
@@ -132,6 +140,15 @@ pub(crate) struct Connection {
     /// (T-10, giving up a compaction): a whole read begun before the latest
     /// is never published (`opencode_resync`), so it never undoes one.
     removals: Arc<std::sync::atomic::AtomicU64>,
+    /// Where this OpenCode keeps its snapshots can be known from how it was
+    /// started (T-10 Revert), or why not.
+    pub files: Arc<std::result::Result<crate::opencode_revert_files::Started, String>>,
+    /// How this connection's 2.x events read in Core's shapes (T-32 slice 3b).
+    cursor: Arc<std::sync::Mutex<crate::opencode_v2::Cursor>>,
+    /// The sign-in attempts journaled as logged in through this connection
+    /// (T-32 slice 4b, R3 b2b46a5f of #621): 2.x keeps its attempts in
+    /// memory, so an attempt is this process's alone.
+    pub logins: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -175,8 +192,10 @@ impl Usage {
 }
 
 impl Connection {
-    fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>) -> Self {
-        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default() }
+    fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>,
+        files: std::result::Result<crate::opencode_revert_files::Started, String>) -> Self {
+        Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default(),
+            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default() }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.
@@ -239,7 +258,7 @@ impl Connection {
     /// A sub-agent session OpenCode says it started under one of the Agent's:
     /// its `session.created` or `session.updated`, or a `task` call's part.
     fn learn(&self, kind: &str, event: &Value) {
-        let p = &event["properties"];
+        let p = &event["data"];
         match kind {
             "session.created" | "session.updated" => {
                 let info = &p["info"];
@@ -254,6 +273,14 @@ impl Connection {
                     if let (Some(child), Some(parent)) = (metadata["sessionId"].as_str(), metadata["parentSessionId"].as_str()) {
                         let title = part["state"]["title"].as_str().or(part["state"]["input"]["description"].as_str());
                         self.adopt(child, parent, json!({"title":title,"agent":part["state"]["input"]["subagent_type"]}));
+                    }
+                }
+                // 2.x's sub-agent tool names the session it runs as it starts (core/src/tool/plugin/subagent.ts),
+                // under the session of the answer it is part of.
+                if part["type"] == "tool" && part["tool"] == "subagent" {
+                    if let (Some(child), Some(parent)) = (metadata["sessionID"].as_str(), p["sessionID"].as_str()) {
+                        let input = &part["state"]["input"];
+                        self.adopt(child, parent, json!({"title":input["description"],"agent":input["subagent_type"].as_str().or(input["agent"].as_str())}));
                     }
                 }
             }
@@ -279,6 +306,41 @@ async fn sub_agents(server: &Server, session: &str) -> Result<BTreeMap<String, V
     Ok(found)
 }
 
+/// Moves the OpenCode database in an Agent's `folder` into a new
+/// `set-aside-N` folder beside it, its WAL and other files first, so that a
+/// new database never meets an old WAL; that folder, or None when there is
+/// no database. A failed move fails the start, so OpenCode never starts
+/// with part of one left. What the scrub overwrote and removed instead, as
+/// what can't be read as a database, is listed beside it.
+fn set_aside(folder: &std::path::Path) -> Result<(Option<PathBuf>, Vec<crate::opencode_login::Destroyed>)> {
+    let present = || -> Vec<&str> { ["opencode.db-wal", "opencode.db-shm", "opencode.db-journal", "opencode.db"].into_iter()
+        .filter(|name| folder.join(name).symlink_metadata().is_ok()).collect() };
+    if present().is_empty() {
+        return Ok((None, Vec::new()));
+    }
+    // No login leaves with it (T-32 slice 4b, D6): its credentials are scrubbed first, with no server running yet.
+    // SQLite may remove its WAL and index as it closes, so what is moved is what is left after.
+    let destroyed = crate::opencode_login::scrub(&folder.join("opencode.db"))
+        .map_err(|error| anyhow!("OpenCode 数据库的登录凭据没有清除（{error:#}）；数据库没有挪开，OpenCode 没有启动"))?;
+    let files = present();
+    if files.is_empty() {
+        return Ok((None, destroyed));
+    }
+    let mut n = 1;
+    let aside = loop {
+        let path = folder.join(format!("set-aside-{n}"));
+        match std::fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(error) => return Err(error).with_context(|| format!("{} 无法创建；OpenCode 没有启动", path.display())),
+        }
+    };
+    for name in files {
+        std::fs::rename(folder.join(name), aside.join(name)).with_context(|| format!("没有记下 Session 的 OpenCode 数据库 {name} 无法移到 {}；OpenCode 没有启动", aside.display()))?;
+    }
+    Ok((Some(aside), destroyed))
+}
+
 /// The `opencode` this Core starts (`YUZUNO_OPENCODE_BIN`, else from PATH).
 fn program() -> PathBuf {
     std::env::var_os("YUZUNO_OPENCODE_BIN").map(PathBuf::from).unwrap_or_else(|| "opencode".into())
@@ -293,7 +355,7 @@ pub fn enabled() -> bool {
 /// starts with OpenCode's own default (its configuration's); its models are
 /// its own OpenCode's (`opencode_agent_catalog`).
 pub fn catalog() -> Value {
-    json!({"models":[],"opencode":{"version":opencode::VERSION}})
+    json!({"models":[],"opencode":{"version":opencode::VERIFIED}})
 }
 
 /// A model as the Agent settings offer it: named `<provider>/<model>`, shown
@@ -314,6 +376,24 @@ async fn chosen(server: &Server, model: &str) -> Result<Option<ModelChoice>> {
     let listed = server.models().await.context("没有读到 OpenCode 的模型；这条消息没有发送，草稿保留")?;
     let found = listed.into_iter().find(|m| m.id() == model);
     found.map(Some).with_context(|| format!("所选模型 {model} 已不在 OpenCode 当前的配置中；这条消息没有发送，草稿保留。请在设置里另选模型"))
+}
+
+/// Makes the Agent's chosen model and variant the session's before a message
+/// (T-32 slice 4a, D3): 2.x's prompt carries none. Only when the session's,
+/// as OpenCode says now (`GET /api/session/:id`), is another or none yet;
+/// never without a chosen one, so OpenCode's own default stays. Each switch
+/// is a `model-switched` message of 2.x's.
+async fn choose_for(c: &Connection, model: Option<&ModelChoice>, variant: Option<&str>) -> Result<()> {
+    let Some(model) = model else { return Ok(()) };
+    let current = c.server.session(&c.session).await.context("没有读到 OpenCode 会话当前的模型；这条消息没有发送，草稿保留")?;
+    let current = &current["model"];
+    // 2.x reads a model without a variant as its "default" one, and switches as it does
+    // (core/src/session/info.ts, session.ts switchModel).
+    let same_variant = current["variant"].as_str().unwrap_or("default") == variant.unwrap_or("default");
+    if current["id"] == model.model.as_str() && current["providerID"] == model.provider.as_str() && same_variant {
+        return Ok(());
+    }
+    c.server.switch_model(&c.session, model, variant).await.context("没有把所选模型设为 OpenCode 会话的模型；这条消息没有发送，草稿保留")
 }
 
 /// The variant chosen for an Agent, as its chosen model lists it now; None
@@ -425,7 +505,13 @@ impl Workspace {
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能读取它的模型")?;
         let models = c.server.models().await?;
         c.windows(&models);
-        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":{"version":opencode::VERSION}}))
+        // Which OpenCode it runs, and, as a note, when that is newer than the one checked against (T-32).
+        let version = c.server.version();
+        let mut native = json!({"version":version,"verified":opencode::VERIFIED});
+        if opencode::newer_than_verified(version) {
+            native["note"] = json!(opencode::newer_note());
+        }
+        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":native}))
     }
 
     /// Chooses the model for an Agent's next messages, keeping its variant.
@@ -478,11 +564,15 @@ impl Workspace {
         self.listed(id).await
     }
 
+    /// A new OpenCode Agent on this Core host; an executor with `birth` (T-34).
     pub async fn opencode_create_on(
         self: &Arc<Self>, name: String, cwd: String, model: String,
-        machine_id: Option<String>, project_id: Option<String>,
+        machine_id: Option<String>, project_id: Option<String>, birth: Option<crate::workspace::Birth>,
     ) -> Result<crate::model::Agent> {
-        let permit = self.admission.enter_work()?;
+        // An executor is made under its dispatch's work permit (T-34, R3
+        // d51396b7): asking for another here would let an update that starts
+        // meanwhile fail a dispatch its refusal says can be retried.
+        let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
         ensure!(enabled(), "OpenCode Agent 尚未开放");
         if name.trim().is_empty() || name.len() > 100 {
             bail!("请填写名称（最多 100 字节）");
@@ -494,7 +584,7 @@ impl Workspace {
         }
         let cwd = std::fs::canonicalize(cwd).context("工作目录不存在或无法读取")?;
         ensure!(cwd.is_dir(), "工作目录必须是文件夹");
-        let id = uuid::Uuid::new_v4().to_string();
+        let (id, then) = crate::workspace::Birth::of(birth);
         let colors = ["yuzu", "sage", "rose", "sky"];
         let count = self.stored(|store| store.agents()).await?.len();
         let agent = crate::model::Agent {
@@ -503,6 +593,9 @@ impl Workspace {
             goal: String::new(),
             work_summary: None,
             project_id,
+            kind: None,
+            released_at: None,
+            released_by: None,
             cwd: cwd.to_string_lossy().into_owned(),
             model,
             settings: Default::default(),
@@ -510,12 +603,14 @@ impl Workspace {
             harness: "opencode".into(),
             claude_session_id: None,
             opencode_session_id: None,
+            opencode_version: None,
+            opencode_major: None,
             thread_id: None,
             status: "offline".into(),
             created_at: now(),
             updated_at: now(),
             unread_count: 0,
-            pending_count: 0,
+            pending_count: 0, open_questions: 0, last_turn_end: None,
             last_message: None,
             last_seq: 0,
             reviewed_seq: 0,
@@ -537,8 +632,12 @@ impl Workspace {
             codex_handoff: None,
             opencode_usage_seen: None,
         };
-        self.stored(move |store| store.insert_created(&detail)).await?;
+        let born = then.is_some();
+        self.stored(move |store| store.insert_created_then(&detail, then)).await?;
         self.changed(&id);
+        if born {
+            return Ok(agent);
+        }
         let ws = self.clone();
         tokio::spawn(async move {
             let _permit = permit;
@@ -581,9 +680,17 @@ impl Workspace {
     /// Under the Agent gate: the live connection, or a new OpenCode process
     /// for the Agent's session (created on the first connection).
     pub(crate) async fn opencode_ensure(self: &Arc<Self>, id: &str) -> Result<Connection> {
+        self.opencode_ensure_on(id, None).await
+    }
+
+    /// `opencode_ensure`, attaching `started` (a fork's target, T-10 Fork),
+    /// already serving this Agent's folder with its own database, rather
+    /// than starting another process.
+    pub(crate) async fn opencode_ensure_on(self: &Arc<Self>, id: &str, started: Option<Started>) -> Result<Connection> {
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         crate::model::ensure_not_disconnected(&d.agent)?;
+        crate::model::ensure_opencode_current(&d.agent)?;
         if let Some(c) = self.opencodes.lock().unwrap().get(id).cloned() {
             return Ok(c);
         }
@@ -591,9 +698,15 @@ impl Workspace {
         if d.agent.opencode_session_id.is_none() && !d.turns.is_empty() {
             bail!("OpenCode 上次任务已发送但原生 Session 未确认；不会创建另一个 Session 或重发任务");
         }
+        // An executor waiting for a slot starts only from the queue (T-35).
+        self.executor_slot_admits(id).await?;
         self.record_meta(id, "opencode/connecting", json!({}), |m| m.agent.connection_state = "connecting".into()).await?;
         self.changed(id);
-        match self.opencode_connect(id, &d).await {
+        let connected = match started {
+            Some(started) => self.opencode_attach(id, &d, started).await,
+            None => self.opencode_connect(id, &d).await,
+        };
+        match connected {
             Ok(c) => Ok(c),
             Err(error) => {
                 let message = error.to_string();
@@ -607,24 +720,78 @@ impl Workspace {
     }
 
     async fn opencode_connect(self: &Arc<Self>, id: &str, d: &AgentDetail) -> Result<Connection> {
-        let folder = self.data_dir.join("opencode").join(id);
-        std::fs::create_dir_all(&folder)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))?;
+        // With no session recorded, nothing Core sent is in a database already
+        // in its folder: an earlier start made it, 1.19.3 among them, and its
+        // session never reached the record. 2.x would apply its own schema to
+        // it (2.2.5 core/src/database/migration.ts), so it is moved aside,
+        // never deleted, and 2.x makes a new one (R2 f9cbccce of #575).
+        if d.agent.opencode_session_id.is_none() {
+            let folder = self.data_dir.join("opencode").join(id);
+            let (aside, destroyed) = tokio::task::spawn_blocking(move || set_aside(&folder)).await??;
+            for leftover in destroyed {
+                self.record_meta(id, "opencode/leftoverDestroyed", json!(leftover), |_| {}).await?;
+            }
+            if let Some(aside) = aside {
+                self.record_meta(id, "opencode/setAside", json!({"folder": aside}), |_| {}).await?;
+            }
         }
-        let launch = Launch { program: program(), directory: d.agent.cwd.clone().into(), database: folder.join("opencode.db") };
-        // Until it is in `opencodes`, this is its only owner: an error below
-        // drops it, which ends its process group.
+        let started = self.opencode_start(id, &d.agent.cwd).await?;
+        self.opencode_attach(id, d, started).await
+    }
+
+    /// This Agent's OpenCode process, started and nothing else (T-10 Fork):
+    /// its own folder and database, serving `cwd`, from the executable
+    /// `opencode` resolves to now. Until it is attached, the caller is its
+    /// only owner: dropping it ends its process group.
+    pub(crate) async fn opencode_start(&self, id: &str, cwd: &str) -> Result<Started> {
+        // Its own folder, and the cache Core's Agents share (T-32): OpenCode
+        // keeps its data and state in the one, its downloads in the other.
+        let (folder, cache) = (self.data_dir.join("opencode").join(id), self.data_dir.join("opencode").join("cache"));
+        for made in [&folder, &cache] {
+            std::fs::create_dir_all(made)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(made, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
+        // What `opencode` resolves to now: a native executable is started by
+        // that very file, so what was checked is what runs (T-10 Revert).
+        // Read from the disk on the blocking pool, as what it checks next is (R5 of #534).
+        let named = program();
+        let (wanted, path) = (named.clone(), std::env::var_os("PATH"));
+        let launcher = tokio::task::spawn_blocking(move || crate::opencode_revert_files::Launcher::resolve(&wanted, path.as_deref())).await?;
+        let start = match &launcher {
+            Ok(crate::opencode_revert_files::Launcher::Native { path, .. }) => path.clone(),
+            _ => named,
+        };
+        let launch = Launch::new(start, cwd.into(), &folder, cache);
         let server = Arc::new(Server::start(&launch).await?);
+        let pid = server.pid();
+        // OpenCode's folders as it was started: Core's environment with the Agent's own on top.
+        let given: Vec<(&'static str, std::ffi::OsString)> = launch.environment().into_iter().map(|(name, value)| (name, value.to_owned())).collect();
+        let var = move |name: &str| given.iter().find(|(set, _)| *set == name).map(|(_, value)| value.clone()).or_else(|| std::env::var_os(name));
+        let files = tokio::task::spawn_blocking(move || crate::opencode_revert_files::Started::of(launcher, pid, var,
+            std::env::vars_os().map(|(name, _)| name), dirs::home_dir)).await?;
+        Ok(Started { server, files })
+    }
+
+    /// Wires a started process to the Agent: its session (created on the
+    /// first connection), its Workspace MCP, its events, its record. Until it
+    /// is in `opencodes`, `started` is its only owner: an error below drops
+    /// it, which ends its process group.
+    async fn opencode_attach(self: &Arc<Self>, id: &str, d: &AgentDetail, started: Started) -> Result<Connection> {
+        let Started { server, files } = started;
         let session = match &d.agent.opencode_session_id {
             Some(session) => session.clone(),
             None => {
+                // Its database is made by this server: the version it was made with is kept with its session (T-32).
                 let session = server.create_session(&d.agent.name).await?["id"].as_str().unwrap_or_default().to_owned();
-                let kept = session.clone();
-                self.record_meta(id, "opencode/session", json!({"sessionId":session}), move |m| {
+                let (kept, version) = (session.clone(), server.version().to_owned());
+                self.record_meta(id, "opencode/session", json!({"sessionId":session,"version":version}), move |m| {
                     m.agent.opencode_session_id = Some(kept);
+                    m.agent.opencode_major = opencode::major(&version);
+                    m.agent.opencode_version = Some(version);
                 }).await?;
                 session
             }
@@ -640,14 +807,14 @@ impl Workspace {
         let children = sub_agents(&server, &session).await?;
         let snapshot = server.snapshot(&session, &children.keys().cloned().collect::<Vec<_>>()).await?;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        let c = Connection::new(generation, server.clone(), session.clone(), children.clone());
+        let c = Connection::new(generation, server.clone(), session.clone(), children.clone(), files);
         // Each listed model's context window, read once as it connects (T-10).
         if let Ok(models) = server.models().await {
             c.windows(&models);
         }
         let owned = self.owner(id).await;
         self.opencodes.lock().unwrap().insert(id.into(), c.clone());
-        let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":opencode::VERSION}));
+        let (agent, data) = (id.to_owned(), json!({"sessionId":session,"generation":generation,"version":server.version()}));
         let usage = c.clone();
         // Compared as before, since it changes Turns, without returning a copy
         // of the record nobody reads (T-140).
@@ -840,18 +1007,39 @@ impl Workspace {
         let Some(c) = self.opencode_current(id, generation) else { return };
         let Some(session) = opencode::session_of(event) else { return };
         let kind = event["type"].as_str().unwrap_or("unknown");
-        c.learn(kind, event);
+        // 1.19.3's text as it streams: the completed part replaces it.
+        if kind == "message.part.delta" {
+            return;
+        }
+        // What it stands for in the shapes Core reads (T-32 slice 3b): a
+        // 2.x event read as 1.19.3's were, a 1.19.3 one as it is.
+        let read = c.cursor.lock().unwrap().read(event);
+        for one in &read {
+            c.learn(type_of(one), one);
+        }
+        // 2.x's text as it streams is written once gathered (opencode_v2),
+        // journaled as the text it wrote; not one row per delta.
+        let streamed = kind.ends_with(".delta");
+        if streamed && read.is_empty() {
+            return;
+        }
         let journal = format!("opencode/{kind}");
-        let kept = journaled(event);
+        let kept = match &read[..] {
+            [gathered] if streamed => journaled(gathered),
+            _ => journaled(event),
+        };
         if session != c.session {
             // A sub-agent's requests are the Agent's to answer; nothing else
             // of it changes the record. Any other session's is not the Agent's.
             let Some(child) = c.child(session) else { return };
-            if !requested(kind) {
+            let asked: Vec<&Value> = read.iter().filter(|one| requested(type_of(one))).collect();
+            if asked.is_empty() {
                 return;
             }
             let written = self.store.record_event(id, &journal, &kept, Sel::Open, |d| {
-                request(d, generation, session, Some(&child), event);
+                for one in &asked {
+                    request(d, generation, session, Some(&child), one);
+                }
                 refresh_status(d);
             });
             if let Err(error) = written {
@@ -860,20 +1048,23 @@ impl Workspace {
             self.changed(id);
             return;
         }
-        let written = match kind {
-            // Text as it streams: the completed part replaces it.
-            "message.part.delta" => return,
-            kind if projected(kind) => event_turns(&self.store, id, event).and_then(|turns| {
-                self.store.record_event(id, &journal, &kept, Sel::Turns(turns), |d| {
-                    project(d, generation, &c.session, event);
-                    if kind == "message.updated" {
-                        measure(d, &c, &event["properties"]["info"]);
-                    }
-                    refresh_status(d);
-                }).map(drop)
-            }),
+        let applied: Vec<&Value> = read.iter().filter(|one| projected(type_of(one)) || type_of(one) == "message.part.delta").collect();
+        let written = if applied.is_empty() {
             // Kept as evidence; it changes nothing here.
-            _ => self.store.update_meta(id, &journal, &kept, |_| {}).map(drop),
+            self.store.update_meta(id, &journal, &kept, |_| {}).map(drop)
+        } else {
+            applied.iter().try_fold(Vec::new(), |mut turns, one| {
+                turns.extend(event_turns(&self.store, id, one)?);
+                Ok::<_, anyhow::Error>(turns)
+            }).and_then(|turns| self.store.record_event(id, &journal, &kept, Sel::Turns(turns), |d| {
+                for one in &applied {
+                    project(d, generation, &c.session, one);
+                    if type_of(one) == "message.updated" {
+                        measure(d, &c, &one["data"]["info"]);
+                    }
+                }
+                refresh_status(d);
+            }).map(drop))
         };
         if let Err(error) = written {
             eprintln!("Workspace OpenCode event not recorded: {error:#}");
@@ -1049,6 +1240,9 @@ impl Workspace {
             tokio::task::spawn_blocking(move || anyhow::Ok((crate::input_images::opencode_images(&root, &agent, &images)?,
                 crate::input_images::history_images(&root, &agent, &images)))).await??
         };
+        // The model is made the session's before anything of the message enters the Turn (R1 276dd516): a read or
+        // switch that fails leaves the Turn as it was.
+        choose_for(&c, model.as_ref(), variant.as_deref()).await?;
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，补充消息未发送；草稿保留");
         let message = MessageId::new();
         let input = message.as_str().to_owned();
@@ -1084,7 +1278,7 @@ impl Workspace {
         let held = self.send_view(id).await?.turns.iter().any(|t| t["id"] == expected && t["_opencodeInputs"].get(&input).is_some());
         ensure!(held, "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
         *sent = true;
-        let mut submitted = c.server.submit_with(&c.session, &message, text, &files, model.as_ref(), variant.as_deref()).await;
+        let mut submitted = c.server.submit_with(&c.session, &message, text, &files).await;
         // A 400 refuses it only when OpenCode's record, read after it, has no
         // message under its ID, as for a command (#435): an event that already
         // confirmed it makes it delivered, and a record that could not be read
@@ -1178,6 +1372,8 @@ impl Workspace {
 
     /// `sent`: whether OpenCode may have taken the prompt (asked, and not refused).
     async fn opencode_send_once(self: &Arc<Self>, id: &str, text: String, client_id: Option<&str>, images: &[String], commands: bool, sent: &mut bool) -> Result<Value> {
+        // Also what a send that does not come through `send_message` meets (T-10 Revert).
+        self.ensure_rewind_settled(id).await?;
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         if let Some(blocked) = compaction_blocks(&d, "这条消息没有发送") {
@@ -1202,6 +1398,11 @@ impl Workspace {
             tokio::task::spawn_blocking(move || anyhow::Ok((crate::input_images::opencode_images(&root, &agent, &images)?,
                 crate::input_images::history_images(&root, &agent, &images)))).await??
         };
+        // A prompt's model is made the session's before its Turn is recorded (R3 4051b7d4), as an added message's
+        // is: a read or switch that fails rejects it, with no Turn. A command's model goes with the command.
+        if command.is_none() {
+            choose_for(&c, model.as_ref(), variant.as_deref()).await?;
+        }
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
         let message = MessageId::new();
         let turn = message.as_str().to_owned();
@@ -1237,9 +1438,12 @@ impl Workspace {
                 let (model, variant) = if command.model.is_some() { (None, None) } else { (model.as_ref().map(ModelChoice::id), variant.as_deref()) };
                 self.opencode_command_started(id, &c, &message, &command.name, arguments, model.as_deref(), variant).await
             }
-            None => c.server.submit_with(&c.session, &message, &text, &files, model.as_ref(), variant.as_deref()).await,
+            None => c.server.submit_with(&c.session, &message, &text, &files).await,
         };
         let refused = match &submitted {
+            // 2.x has no 1.19.3 route to run a command: it answers 405 (T-32 slice 4a), until the commands slice.
+            Ok(Submission::Refused(status)) if status.code == 405 && command.is_some() =>
+                Some(format!("{}；命令没有执行", crate::opencode_v2::NOT_YET)),
             Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条消息（HTTP {}），它没有收下：{}", status.code, status.body)),
             // Refused here, before any request.
             Err(error) => Some(format!("消息没有发送：{error}")),
@@ -1371,6 +1575,8 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
+        // A revert whose outcome is not known may still be applied by it (T-10 Revert).
+        self.ensure_rewind_settled(id).await?;
         let d = self.send_view(id).await?;
         ensure_agent_open(&d.agent)?;
         ensure!(d.agent.harness == "opencode", "Agent 不是 OpenCode");
@@ -1384,10 +1590,14 @@ impl Workspace {
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能压缩，没有执行 /compact")?;
         let unread = "没有读到 OpenCode 会话现在的状态；没有执行 /compact";
         let session = c.server.session(&c.session).await.context(unread)?;
+        // A revert the session holds is applied with its next message, and a
+        // compaction would apply it first: only a message clears it from
+        // here (R3 of #534).
         ensure!(session["revert"].is_null(),
-            "OpenCode 会话里有一次尚未处理的回退，压缩会先把它应用掉（删除被回退的消息）；没有执行 /compact。请先在 OpenCode 中处理这次回退");
+            "OpenCode 会话里的回退要到这个会话收到下一条消息时才会删去被回退的消息，压缩会先把它应用掉；请先发一条消息，再压缩。没有执行 /compact");
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有执行 /compact");
         let messages = c.server.messages(&c.session).await.context(unread)?;
+        ensure!(!crate::opencode_v2::is_v2(&messages), "{}；没有执行 /compact", crate::opencode_v2::NOT_YET);
         let (provider, model) = compact_model(&c.server, &d, &messages).await?;
         let known = compaction_messages(&messages);
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化；没有执行 /compact");
@@ -1606,6 +1816,9 @@ impl Workspace {
             let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
             ensure!(p.params["_runtimeGeneration"] == c.generation && c.owns(asked),
                 "这个请求属于已经结束的 OpenCode 连接；不会把回答发给新的进程");
+            if let Some(not_yet) = p.params["_opencodeNotYet"].as_str() {
+                bail!("{not_yet}");
+            }
             let answer = answer(&p, &reply)?;
             store.update_meta(&agent, "request/replied", &json!({"requestId":request}), |m| {
                 if let Some(p) = m.pending.iter_mut().find(|p| p.id == request) {
@@ -1700,15 +1913,19 @@ impl Workspace {
     }
 }
 
-/// Lets OpenCode end cleanly when nothing else holds it; else it is only asked
-/// to end what its tools run, and dropping the last holder ends its group.
-/// Either way a refused or unanswered dispose does not stop the stop.
+/// Lets OpenCode end cleanly (`shutdown`) when nothing else holds it. Else
+/// it is signalled to end, and this stop holds it until it has exited,
+/// within TEARDOWN as `shutdown` waits: 2.x closes its event stream early in
+/// its teardown, so the task reading it lets go first, and were this the
+/// last hold, its drop (SIGKILL to the group) would cut short the teardown
+/// that ends what its tools run (R1 070d0f95 of #575). The last holder reaps it.
 async fn stop(server: Arc<Server>) -> Result<()> {
     match Arc::try_unwrap(server) {
         Ok(server) => server.shutdown().await,
         Err(server) => {
-            if let Err(error) = server.dispose().await {
-                eprintln!("OpenCode did not end what its tools run before it was stopped: {error:#}");
+            server.terminate();
+            if !server.ended_within(opencode::TEARDOWN).await {
+                eprintln!("OpenCode did not end within {:?} of SIGTERM; what still holds it ends its group", opencode::TEARDOWN);
             }
             Ok(())
         }
@@ -1744,16 +1961,21 @@ const TAIL: usize = 8;
 /// the Agent's ownership, as the change is made). The open and newest ones
 /// come with them (`Sel::Turns`).
 fn event_turns(store: &Store, id: &str, event: &Value) -> Result<Vec<String>> {
-    let info = &event["properties"]["info"];
+    let info = &event["data"]["info"];
     let mut turns: Vec<String> = [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str).map(str::to_owned).collect();
     // A message added to a running Turn, or an answer to one (T-10).
     for message in [&info["id"], &info["parentID"]].into_iter().filter_map(Value::as_str) {
         turns.extend(store.turn_holding(id, "_opencodeInputs", message)?);
     }
-    if let Some(message) = event["properties"]["part"]["messageID"].as_str() {
+    // A part, or 2.x's text streamed into one (T-32 slice 3b).
+    if let Some(message) = event["data"]["part"]["messageID"].as_str().or(event["data"]["messageID"].as_str()) {
         turns.extend(store.turn_holding(id, "_opencodeAnswers", message)?);
     }
     Ok(turns)
+}
+
+fn type_of(event: &Value) -> &str {
+    event["type"].as_str().unwrap_or_default()
 }
 
 /// An event as the journal keeps it: each `data:` URL in it (a file part's
@@ -1762,9 +1984,15 @@ fn event_turns(store: &Store, id: &str, event: &Value) -> Result<Vec<String>> {
 /// only (T-10). Image bytes stay in Core's managed files, never in its
 /// database.
 fn journaled(event: &Value) -> Cow<'_, Value> {
+    // 2.x sends a file's bytes as its own base64 `data` beside its `mime`
+    // (schema/src/prompt.ts), not as a `data:` URL (T-32 slice 3b).
+    fn bytes(map: &serde_json::Map<String, Value>, key: &str) -> bool {
+        key == "data" && map.get("mime").is_some_and(Value::is_string) && map[key].is_string()
+    }
     fn inline(value: &Value) -> bool {
         match value {
-            Value::Object(map) => map.iter().any(|(key, v)| (key == "url" && v.as_str().is_some_and(|u| u.starts_with("data:"))) || inline(v)),
+            Value::Object(map) => map.iter().any(|(key, v)| (key == "url" && v.as_str().is_some_and(|u| u.starts_with("data:")))
+                || bytes(map, key) || inline(v)),
             Value::Array(items) => items.iter().any(inline),
             _ => false,
         }
@@ -1772,11 +2000,15 @@ fn journaled(event: &Value) -> Cow<'_, Value> {
     fn strip(value: &mut Value) {
         match value {
             Value::Object(map) => {
+                let mime = map.get("mime").and_then(Value::as_str).map(str::to_owned);
                 for (key, v) in map.iter_mut() {
                     match v.as_str() {
                         Some(url) if key == "url" && url.starts_with("data:") => {
                             let kind = url.split_once(',').map_or("data:", |(kind, _)| kind);
                             *v = format!("{kind},… ({} characters not kept)", url.len()).into();
+                        }
+                        Some(data) if key == "data" && mime.is_some() => {
+                            *v = format!("{},… ({} characters not kept)", mime.as_deref().unwrap_or_default(), data.len()).into();
                         }
                         _ => strip(v),
                     }
@@ -1801,10 +2033,19 @@ fn projected(kind: &str) -> bool {
 }
 
 fn project(d: &mut AgentDetail, generation: u64, session: &str, event: &Value) {
-    let p = &event["properties"];
+    let p = &event["data"];
     match event["type"].as_str().unwrap_or_default() {
         "message.updated" => message(d, &p["info"]),
         "message.part.updated" => part(d, &p["part"]),
+        // 2.x's text as it streams (T-32 slice 3b), into the item of the answer it is part of.
+        "message.part.delta" => {
+            let Some(message) = p["messageID"].as_str() else { return };
+            let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some()) else { return };
+            if !turn["items"].is_array() {
+                turn["items"] = json!([]);
+            }
+            crate::opencode_v2::apply_delta(turn["items"].as_array_mut().expect("turn items"), p);
+        }
         "session.status" => status(d, &p["status"]),
         "session.error" => {
             // It names no message, so it decides no Turn: the idle that
@@ -1830,7 +2071,7 @@ fn requested(kind: &str) -> bool {
 
 /// A request event of `session`: the Agent's own, or its sub-agent `child`'s.
 fn request(d: &mut AgentDetail, generation: u64, session: &str, child: Option<&Value>, event: &Value) {
-    let p = &event["properties"];
+    let p = &event["data"];
     match event["type"].as_str().unwrap_or_default() {
         "permission.asked" => ask(d, PERMISSION, generation, session, child, p),
         "question.asked" => ask(d, QUESTION, generation, session, child, p),
@@ -1972,12 +2213,38 @@ fn stale(d: &mut AgentDetail) {
 /// What a snapshot holds, applied as the events it stands for would be; each
 /// part and message replaces its own, so applying one again changes nothing.
 fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot: &Snapshot, children: &BTreeMap<String, Value>, c: &Connection) {
-    for entry in snapshot.messages.as_array().into_iter().flatten() {
+    // 2.x's messages read as 1.19.3's were (T-32 slice 3b); the live stream
+    // goes on from the turn this read finds open. 1.19.3-shaped ones, as the
+    // stand-in's 1.19.3 mode sends, are read as they are.
+    let (entries, ended) = if crate::opencode_v2::is_v2(&snapshot.messages) {
+        let read = crate::opencode_v2::read_messages(&snapshot.messages);
+        let mut cursor = c.cursor.lock().unwrap();
+        cursor.resumed(session, &read, &snapshot.inbox);
+        for request in snapshot.permissions.iter().chain(&snapshot.questions) {
+            cursor.asked(request);
+        }
+        (read.messages, read.ended)
+    } else {
+        (snapshot.messages.as_array().cloned().unwrap_or_default(), Vec::new())
+    };
+    for entry in &entries {
         message(d, &entry["info"]);
         for p in entry["parts"].as_array().into_iter().flatten() {
             part(d, p);
         }
         measure(d, c, &entry["info"]);
+    }
+    // What 2.x admitted and has not taken into the turn yet: stored, so delivered.
+    for info in crate::opencode_v2::admitted(&snapshot.inbox) {
+        message(d, &info);
+    }
+    // How a turn that ended while no stream was open ended, as its idle message says (2.x).
+    for end in &ended {
+        let Some(error) = &end.error else { continue };
+        if let Some(turn) = d.turns.iter_mut().find(|t| t["status"] == "inProgress"
+            && (t["id"] == end.user.as_str() || t["_opencodeInputs"].get(&end.user).is_some())) {
+            turn["_opencodeSessionError"] = error.clone();
+        }
     }
     // This process's requests are what it has pending now; it answered or
     // dropped the others while no stream was open.
@@ -2033,6 +2300,17 @@ fn message(d: &mut AgentDetail, info: &Value) {
                 turn["_opencodeAnswers"] = json!({});
             }
             turn["_opencodeAnswers"][id] = json!({"completed":info["time"]["completed"],"error":info["error"],"finish":info["finish"],"parent":parent});
+        }
+        // A shell command of 2.x's (T-32 slice 4a, D2): its Turn's, as the message before it says; no answer.
+        Some("shell") => {
+            let Some(parent) = info["parentID"].as_str() else { return };
+            let Some(turn) = d.turns.iter_mut().find(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some()) else {
+                return;
+            };
+            if !turn["_opencodeShells"].is_object() {
+                turn["_opencodeShells"] = json!({});
+            }
+            turn["_opencodeShells"][id] = parent.into();
         }
         _ => {}
     }
@@ -2103,8 +2381,11 @@ fn part(d: &mut AgentDetail, part: &Value) {
     if compaction_part(d, message, id, part) {
         return;
     }
-    let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some()) else { return };
+    let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some() || t["_opencodeShells"].get(message).is_some())
+        else { return };
     let item = match part["type"].as_str() {
+        Some("shell") => json!({"id":id,"type":"commandExecution","command":part["command"],"status":part["status"],
+            "aggregatedOutput":part["output"],"exitCode":part["exit"],"nativeMessageId":message}),
         Some("text") if part["synthetic"] != true => json!({"id":id,"type":"agentMessage","text":part["text"],"nativeMessageId":message}),
         Some("reasoning") => json!({"id":id,"type":"reasoning","summary":[part["text"]],"nativeMessageId":message}),
         Some("tool") => {
@@ -2120,7 +2401,17 @@ fn part(d: &mut AgentDetail, part: &Value) {
     }
     let items = turn["items"].as_array_mut().expect("turn items");
     match items.iter_mut().find(|i| i["id"] == item["id"]) {
-        Some(existing) => *existing = item,
+        Some(existing) => {
+            // 2.x stores no text until its entry ends, so a read in mid-step,
+            // or its entry's start, says "" of text already streamed: that is kept (T-32 slice 3b).
+            let mut item = item;
+            for slot in ["/text", "/summary/0"] {
+                if item.pointer(slot) == Some(&json!("")) && existing.pointer(slot).is_some_and(|t| t.as_str().is_some_and(|t| !t.is_empty())) {
+                    *item.pointer_mut(slot).expect("slot") = existing.pointer(slot).expect("kept").clone();
+                }
+            }
+            *existing = item;
+        }
         None => items.push(item),
     }
 }
@@ -2404,7 +2695,7 @@ fn settle(turn: &mut Value) {
 fn halted(error: &Value) -> Option<&'static str> {
     match error["name"].as_str()? {
         "MessageAbortedError" => Some("interrupted"),
-        "APIError" | "ProviderAuthError" | "MessageOutputLengthError" => Some("failed"),
+        "APIError" | "ProviderAuthError" | "MessageOutputLengthError" | crate::opencode_v2::EXECUTION_FAILED => Some("failed"),
         _ => None,
     }
 }
@@ -2482,6 +2773,11 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
         params["_opencodeChild"] = child.clone();
     }
     params["_responseSent"] = false.into();
+    // 2.x's own request: shown with why it can't be answered here yet, so its
+    // run is seen to wait on it (T-32 slice 4a, until slice 5).
+    if crate::opencode_v2::is_v2_request(request) {
+        params["_opencodeNotYet"] = format!("{}；这个请求还不能在 Yuzuno 里回答，只能中断这一轮", crate::opencode_v2::NOT_YET).into();
+    }
     if let Some(turn) = d.turns.iter().rev().find(|t| t["status"] == "inProgress").and_then(|t| t["id"].as_str()) {
         params["turnId"] = turn.into();
     }
@@ -2519,6 +2815,14 @@ fn answer(p: &PendingRequest, response: &Value) -> Result<Answer> {
         _ => bail!("不是可以回答的 OpenCode 请求"),
     }
 }
+
+#[path = "opencode_revert.rs"]
+mod revert;
+pub(crate) use revert::expire_previews as expire_revert_previews;
+
+#[path = "opencode_fork.rs"]
+mod fork;
+pub(crate) use fork::{migrate as fork_migrate, router as fork_router};
 
 #[cfg(test)]
 #[path = "opencode_agent_tests.rs"]

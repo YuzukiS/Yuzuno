@@ -44,7 +44,7 @@
   margin-left: calc((100% + var(--conversation-scrollbar) - var(--column)) / 2);
   padding-inline: 16px;
 }
-.conversation-body > .jump-latest {
+.conversation-body > :is(.jump-latest, .jump-latest-leaving) {
   bottom: 12px;
 }
 /* Off the end and not reading history, the one way back rides the top edge

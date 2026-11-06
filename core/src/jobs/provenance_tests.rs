@@ -296,3 +296,75 @@ async fn the_tool_reads_only_log_headers_and_takes_one_scope() {
     }
     assert!(tool_definitions().iter().any(|t| t["name"] == "job_provenance"));
 }
+
+#[test]
+fn an_attempt_that_started_ahead_of_a_blocked_head_says_which_and_why_it_fitted() {
+    // T-38: field by field; nothing else recorded there leaves.
+    let extent = || Ok(json!({"segments":1,"oldestOffset":0,"totalBytes":10,"truncated":false}));
+    let mut job = local_job();
+    job["admission"] = json!({"passed":{"jobId":"head-1","name":"check","waits":"shared RAM reservation",
+        "need":{"cpuMillis":1100,"memoryMiB":12352,"swapMiB":0},"room":{"cpuMillis":14900,"memoryMiB":16320,"swapMiB":0},
+        "headNeed":{"cpuMillis":1100,"memoryMiB":24640,"swapMiB":0},"at":"2026-11-05T04:30:00Z","note":"SECRET-NOTE"}});
+    let (m, report) = export(&[job], vec![extent()]);
+    let ahead = &m["attempts"][0]["admission"]["startedAheadOf"];
+    assert_eq!((ahead["jobId"].as_str(), ahead["name"].as_str()), (Some("head-1"), Some("check")));
+    assert_eq!(ahead["room"], json!({"cpuMillis":14900,"memoryMiB":16320,"swapMiB":0}));
+    assert!(report.contains("- Started ahead of check (waiting for shared RAM reservation): 1100 mCPU / 12352 MiB RAM / 0 MiB swap fitted in the 14900 mCPU / 16320 MiB RAM / 0 MiB swap left beside its 1100 mCPU / 24640 MiB RAM / 0 MiB swap"), "{report}");
+    assert_absent(&m, &report, &["SECRET-NOTE"]);
+    // Started in its turn: nothing said.
+    let (m, report) = export(&[local_job()], vec![extent()]);
+    assert!(m["attempts"][0]["admission"].is_null());
+    assert!(!report.contains("Started ahead of"), "{report}");
+}
+
+#[test]
+fn an_attempt_whose_memory_limit_was_lowered_says_from_what_to_what_by_whom_and_when() {
+    // T-38 B: field by field; the host's evidence stays on the job.
+    let extent = || Ok(json!({"segments":1,"oldestOffset":0,"totalBytes":10,"truncated":false}));
+    let mut job = local_job();
+    job["limitChanges"] = json!([
+        {"by":{"kind":"user","id":"user","name":"You"},"at":"2026-11-05T08:30:00Z","fromMiB":4096,"toMiB":2048,"evidence":{"controlGroup":"SECRET-GROUP"}},
+        {"by":{"kind":"agent","id":"a","name":"Mori"},"at":"2026-11-05T08:40:00Z","fromMiB":2048,"toMiB":1024,"evidence":{"controlGroup":"SECRET-GROUP"}}]);
+    let (m, report) = export(&[job], vec![extent()]);
+    assert_eq!(m["attempts"][0]["limitChanges"], json!([
+        {"at":"2026-11-05T08:30:00Z","fromMiB":4096,"toMiB":2048,"by":"the user"},
+        {"at":"2026-11-05T08:40:00Z","fromMiB":2048,"toMiB":1024,"by":"Mori"}]));
+    assert!(report.contains("- Memory limit lowered from 4096 MiB to 2048 MiB by the user at 2026-11-05T08:30:00Z\n"), "{report}");
+    assert!(report.contains("- Memory limit lowered from 2048 MiB to 1024 MiB by Mori at 2026-11-05T08:40:00Z\n"), "{report}");
+    assert_absent(&m, &report, &["SECRET-GROUP"]);
+    // Never lowered: an empty list, and nothing said.
+    let (m, report) = export(&[local_job()], vec![extent()]);
+    assert_eq!(m["attempts"][0]["limitChanges"], json!([]));
+    assert!(!report.contains("Memory limit lowered"), "{report}");
+}
+
+/// T-50: with guardPaths the export says which paths were frozen and their
+/// objects, HEAD at submission and at the start, and whether the start found
+/// them unchanged; without that start check it says only declared.
+#[test]
+fn guarded_paths_export_both_heads_and_whether_they_were_unchanged_at_the_start() {
+    const AT_SUBMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+    const AT_START: &str = "89abcdef0123456789abcdef0123456789abcdef";
+    const TREE: &str = "fedcba9876543210fedcba9876543210fedcba98";
+    let mut job = local_job();
+    let paths = json!([{"path":"src","object":TREE,"type":"tree"},{"path":"later","object":null,"type":null}]);
+    job["guardPaths"] = json!(["src", "later"]);
+    job["snapshot"]["git"]["guardPaths"] = paths.clone();
+    job["result"]["guard"] = json!({"attempt":"a1","checkedAt":2.0,"guardPaths":paths,"headAtSubmit":AT_SUBMIT,"headAtStart":AT_START,"guardedUnchanged":true});
+    let (m, report) = export(&[job.clone()], vec![Ok(Value::Null)]);
+    let code = &m["attempts"][0]["code"];
+    assert_eq!((&code["git"]["headAtSubmit"], &code["git"]["headAtStart"], &code["git"]["guardedUnchanged"]),
+        (&json!(AT_SUBMIT), &json!(AT_START), &json!(true)));
+    assert_eq!(code["git"]["guardPaths"], paths);
+    assert_eq!(code["state"], "verified");
+    assert!(code["when"].as_str().unwrap().contains("HEAD itself and the rest of the checkout could change"), "{code}");
+    assert!(report.contains(&format!("- Code: guarded paths src `{TREE}`, later unknown at Git `{AT_SUBMIT}` (HEAD at submission), HEAD at start `{AT_START}`, tracked changes none under the guarded paths (verified")), "{report}");
+    // Rejected before its start check: frozen at submission, nothing checked at a start.
+    job["result"]["guard"] = Value::Null;
+    let (m, _) = export(&[job], vec![Ok(Value::Null)]);
+    let code = &m["attempts"][0]["code"];
+    assert_eq!((&code["state"], &code["git"]["headAtStart"], &code["git"]["guardedUnchanged"]), (&json!("declared"), &Value::Null, &Value::Null));
+    // Without guardPaths the export is as before.
+    let (m, _) = export(&[local_job()], vec![Ok(Value::Null)]);
+    assert!(m["attempts"][0]["code"]["git"].get("guardPaths").is_none());
+}

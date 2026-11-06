@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { useTimeDisplay } from "../../time-preferences";
 import {
   ArrowUpRight,
@@ -23,6 +23,8 @@ import { useBriefDensity } from "../home-density";
 import { attachmentUrl, formatTime, type AttachmentsProps } from "./brief-catalog";
 import { OpenChoice } from "../../portal/OpenChoice";
 import { htmlFile } from "../../portal/html-file";
+import { keptSnapshot, useKeptImage } from "./kept-image";
+import { CardFoldWorkspace } from "../card-fold";
 
 /** Rows of a data file shown inline; the file itself opens in full. */
 export const PREVIEW_ROWS = 20;
@@ -314,14 +316,87 @@ function Path({ path }: { path: string }) {
  * never changes the image being looked at or marked (T-177). */
 type Shown = { url: string; version: number; takenAt: string; title: string; ownerId: string };
 
+/** The longest side Core gives a kept image a size for. */
+const IMAGE_SIDE = 65_535;
+
+/** The size Core read from a kept image's bytes (T-19 HM:B14): both sides
+ * whole numbers from 1 to IMAGE_SIDE, or none (an older card, a format Core
+ * reads no size of, a file only referenced, a size no Core gives), so the
+ * box is the stable one for an unknown size. */
+function shapeOf({ width, height }: SectionAttachment) {
+  const side = (value: unknown): value is number =>
+    typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= IMAGE_SIDE;
+  return side(width) && side(height) ? { width, height } : null;
+}
+
+/**
+ * A kept image in its box (T-19 HM:B14). With the size Core read, the box
+ * has the picture's own shape from its first frame, at most the card's width
+ * and 420 px high (200 px on a short card); without one, a fixed box the
+ * picture is fitted into whole. Loading, shown and failed are this one box,
+ * so nothing after it moves when the picture arrives or cannot. Once
+ * decoded, the picture fades in over small, the first time this window shows
+ * that snapshot; under reduced motion it is there at once. Nothing else moves:
+ * its caption, details, focus and scroll are left as they are.
+ *
+ * Its snapshot and its read, and how a load or decode is taken, are
+ * useKeptImage's (kept-image.ts), which its card's figure shares. A decode
+ * that fails says so in the same box, as a load that fails does.
+ */
+function KeptImage({ attachment, url, label, onOpen }: {
+  attachment: SectionAttachment;
+  url: string;
+  label: string | undefined;
+  onOpen: () => void;
+}) {
+  const t = useStrings(briefText);
+  const workspaceId = useContext(CardFoldWorkspace);
+  const { projectId, section } = useBrief();
+  const snapshot = keptSnapshot({ workspaceId, projectId, sectionKey: section.key, sectionId: section.id, name: attachment.name,
+    takenAt: attachment.takenAt, size: attachment.size, mime: attachment.mime });
+  const kept = useKeptImage(snapshot, `${snapshot}\n${section.version}\n${url}`);
+  const shape = shapeOf(attachment);
+  const box = {
+    "data-shape": shape ? "known" : "unknown",
+    style: shape ? ({ "--image-width": shape.width, "--image-height": shape.height } as CSSProperties) : undefined,
+  };
+  if (kept.failed)
+    return (
+      <div className="brief-image" data-failed {...box}>
+        <p className="brief-image-failed" role="status">
+          <ImageIcon size={16} aria-hidden="true" />
+          {t.imageNotLoaded}
+        </p>
+      </div>
+    );
+  return (
+    <button type="button" className="brief-image" aria-label={t.openImage(attachment.name)} onClick={onOpen} {...box}>
+      {/* A new snapshot loads again, in a picture of its own. */}
+      <img
+        key={snapshot}
+        ref={kept.picture}
+        src={url}
+        alt={label || attachment.name}
+        loading="lazy"
+        decoding="async"
+        data-loading={kept.loading ? "" : undefined}
+        onLoad={kept.onLoad}
+        onError={kept.onError}
+      />
+      {/* It opens larger: said on the picture, for touch as for the pointer. */}
+      <span className="brief-image-zoom" aria-hidden="true">
+        <Maximize2 size={13} />
+      </span>
+    </button>
+  );
+}
+
 function Attachment({ name, caption }: { name: string; caption?: string }) {
   const time = useTimeDisplay();
   const t = useStrings(briefText);
   const { projectId, section } = useBrief();
   const markUp = usePointFix();
   const [shown, setShown] = useState<Shown | null>(null);
-  // The snapshot this card failed to load, so a new one under the same name tries again.
-  const [unloaded, setUnloaded] = useState<string | null>(null);
   const attachment = section.attachments.find((item) => item.name === name);
   if (!attachment)
     return (
@@ -379,31 +454,9 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   // details are there when asked for. What the user must know (it may have
   // changed, it could not be loaded) stays in view.
   if (image) {
-    const failed = unloaded === attachment.takenAt;
     return (
       <div className="brief-attachment" data-kind="image" data-picture>
-        {failed ? (
-          <p className="brief-image-failed" role="status">
-            <Icon size={16} aria-hidden="true" />
-            {t.imageNotLoaded}
-          </p>
-        ) : (
-          <button type="button" className="brief-image" aria-label={t.openImage(attachment.name)} onClick={preview}>
-            {/* A new snapshot under the same name loads again. */}
-            <img
-              key={attachment.takenAt}
-              src={url}
-              alt={label || attachment.name}
-              loading="lazy"
-              decoding="async"
-              onError={() => setUnloaded(attachment.takenAt)}
-            />
-            {/* It opens larger: said on the picture, for touch as for the pointer. */}
-            <span className="brief-image-zoom" aria-hidden="true">
-              <Maximize2 size={13} />
-            </span>
-          </button>
-        )}
+        <KeptImage attachment={attachment} url={url} label={label} onOpen={preview} />
         {label ? (
           <p className="brief-attachment-caption">{label}</p>
         ) : (

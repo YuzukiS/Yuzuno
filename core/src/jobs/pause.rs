@@ -174,10 +174,51 @@ pub(super) fn acts_on(job: &Value, resume: bool) -> bool {
         }
 }
 
-fn deadline(job: &Value) -> Option<String> {
+/// When the attempt is stopped if still running: its start plus its timeout,
+/// or the shared end of a service's retries (deadlineAtUnix) if earlier,
+/// as host.py `run_time` cuts it at launch.
+fn deadline(job: &Value) -> Option<chrono::DateTime<chrono::FixedOffset>> {
     let started = chrono::DateTime::parse_from_rfc3339(job["startedAt"].as_str()?).ok()?;
     let seconds = i64::try_from(job["timeoutSeconds"].as_u64()?).ok()?;
-    Some((started + chrono::Duration::seconds(seconds)).to_rfc3339())
+    let own = started + chrono::Duration::seconds(seconds);
+    let shared = job["deadlineAtUnix"]
+        .as_f64()
+        .filter(|end| end.is_finite())
+        .and_then(|end| chrono::DateTime::from_timestamp_millis((end * 1000.0) as i64))
+        .map(|end| end.fixed_offset());
+    Some(shared.filter(|end| *end < own).unwrap_or(own))
+}
+
+/// A length of time as a person reads it: "1 h 05 min", "20 min 34 s", "45 s".
+fn span(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    let (hours, minutes, rest) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
+    match (hours, minutes) {
+        (0, 0) => format!("{rest} s"),
+        (0, _) => format!("{minutes} min {rest:02} s"),
+        _ => format!("{hours} h {minutes:02} min"),
+    }
+}
+
+/// How far the attempt had got at the pause and what remains of its time
+/// (T-50): elapsed is from its start, remaining is to its deadline, both at
+/// `at`, the moment the pause was confirmed. Remaining keeps shrinking while
+/// it is paused.
+fn time_left(job: &Value, at: chrono::DateTime<chrono::FixedOffset>) -> Option<String> {
+    let started = chrono::DateTime::parse_from_rfc3339(job["startedAt"].as_str()?).ok()?;
+    let end = deadline(job)?;
+    let (elapsed, remaining) = ((at - started).num_seconds(), (end - at).num_seconds());
+    let left = if remaining > 0 {
+        format!("{} remained", span(remaining))
+    } else {
+        "no time remained".to_owned()
+    };
+    Some(format!(
+        ": at the pause it had run {} of its {} timeout and {left} (it is stopped at {} if still running)",
+        span(elapsed),
+        span(job["timeoutSeconds"].as_i64().unwrap_or_default()),
+        end.to_rfc3339()
+    ))
 }
 
 /// Tell the Job's Agent, once per change, so a silent Job is not taken for a
@@ -193,8 +234,12 @@ fn tell(db: &Connection, job: &Value, event: &str) -> Result<()> {
         None => (format!("Local job {name} ({id})"), "its memory, GPU memory and reservation are kept"),
     };
     let body = if event == "paused" {
-        format!("{what} was paused by the user. Its processes are frozen; {kept}, and its timeout still counts{}. Only the user resumes it. Do not resubmit it or read its silence as a failure. Task {public_task}. job_get(jobId={id}) shows the pause.",
-            deadline(job).map(|d| format!(" (it is stopped at {d} if still running)")).unwrap_or_default())
+        let at = job["pause"]["confirmedAt"]
+            .as_str()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .unwrap_or_else(|| chrono::Utc::now().fixed_offset());
+        format!("{what} was paused by the user. Its processes are frozen; {kept}, and its timeout still counts while it is paused{}. Only the user resumes it. Do not resubmit it or read its silence as a failure. Task {public_task}. job_get(jobId={id}) shows the pause.",
+            time_left(job, at).unwrap_or_default())
     } else {
         format!("{what} was resumed by the user; the same processes continue. Network connections or leases may have expired while it was paused. Task {public_task}.")
     };
@@ -369,5 +414,16 @@ impl Store {
         save(&tx, &job)?;
         tx.commit()?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    #[test]
+    fn lengths_read_in_seconds_minutes_and_hours() {
+        for (seconds, words) in [(-3, "0 s"), (0, "0 s"), (45, "45 s"), (60, "1 min 00 s"), (1234, "20 min 34 s"),
+            (3599, "59 min 59 s"), (3600, "1 h 00 min"), (3900, "1 h 05 min"), (90061, "25 h 01 min")] {
+            assert_eq!(super::span(seconds), words, "{seconds} s");
+        }
     }
 }

@@ -3,6 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { DialogExitGhost } from "./DialogExitGhost";
 import {
   ArrowLeft,
+  ArrowRight,
   BriefcaseBusiness,
   Github,
   GitPullRequest,
@@ -18,20 +19,18 @@ import {
 } from "lucide-react";
 import { api, API_BASE, errorText, HttpError, post } from "./api";
 import {
-  BudgetSettings,
   DiskSpace,
   GpuDevices,
+  maxActiveOf,
   UsageMeter,
   useMachineLoad,
+  validBudget,
   WindowsJobs,
-  type BudgetBounds,
-  type BudgetHost,
-  type DiskView,
-  type GpuView,
-  type WindowsJobsView,
+  type JobsBudgetView,
 } from "./JobBudget";
+import type { SettingsEditor } from "./settings-catalog";
 import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, TaskSpendCard, type Artifact, type Cost, type Progress } from "./JobRun";
-import { openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
+import { ConversationReviews, openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
 import { ProvenanceCard } from "./Provenance";
 import type { Agent } from "./types";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
@@ -123,7 +122,18 @@ type Job = {
   /** The job this one resumes from its checkpoint. */
   resumeOf?: string | null;
   checkpointFrom?: { jobId: string } | null;
+  /** Its mail by status: delivery, and why when it did not go through (T-50). */
+  mail?: Record<string, { messageId: string; delivery: string; problem?: string | null }> | null;
+  /** How admission started it: ahead of the blocked queue head, within what
+   * that head's need left (T-38). */
+  admission?: { passed?: PassedHead | null } | null;
+  /** Its memory limit lowered while it ran, newest last (T-38 B). */
+  limitChanges?: { by: { kind: string; name: string }; at: string; fromMiB: number; toMiB: number }[] | null;
+  /** The last lowering that did not take, and why. */
+  limitRefusal?: { at: string; toMiB: number; state: string; reason: string } | null;
 };
+/** The queue head a job started ahead of, as Core recorded it then. */
+type PassedHead = { jobId: string; name: string; waits: string; need: Resources; room: Resources; headNeed: Resources };
 type CheckpointStop = {
   state: "requested" | "signalled" | "pending" | "failed" | "expired" | "checkpointed" | "notResumable";
   reason?: string | null;
@@ -147,29 +157,8 @@ type Page = {
 const uniqueJobs = (jobs: Job[]) => [
   ...new Map(jobs.map((j) => [j.id, j])).values(),
 ];
-type Budget = {
-  machine: BudgetHost & { name: string; memoryAvailableMiB: number | null; scope: string; suggestedBudget?: Resources };
-  collectorOverhead?: Resources;
-  budget: Resources;
-  /** Absent from Cores before T-160. */
-  budgetBounds?: BudgetBounds;
-  reserved: Resources;
-  queuedCount: number;
-  activeCount: number;
-  /** Absent from Cores before T-95. */
-  disk?: DiskView;
-  /** Absent from Cores before T-106. */
-  gpus?: GpuView;
-  /** Absent from Cores before T-108's Windows ceiling. */
-  windows?: WindowsJobsView;
-};
+type Budget = JobsBudgetView;
 type GpuRequest = { count?: number; devices?: string[]; memoryMiB: number; mode?: "exclusive" | "shared" };
-const validBudget = (value: Budget) =>
-  !!value?.machine &&
-  !!value?.budget &&
-  !!value?.reserved &&
-  Number.isFinite(value.activeCount) &&
-  Number.isFinite(value.queuedCount);
 type Log = {
   text: string;
   offset: number;
@@ -185,8 +174,30 @@ const memory = (miB: number) =>
   miB >= 1024
     ? `${(miB / 1024).toFixed(1)} GiB`
     : `${Number(miB.toFixed(1))} MiB`;
+/** "Started ahead of check, …": in the dimension the head waited for. */
+function passedAhead(passed: PassedHead, t: JobsText) {
+  const kind = passed.waits.includes("CPU") ? "cpu" : passed.waits.includes("swap") ? "swap" : "ram";
+  const amount = (r: Resources) =>
+    t.aheadAmount(kind, kind === "cpu" ? `${r.cpuMillis / 1000}` : memory(kind === "swap" ? r.swapMiB : r.memoryMiB));
+  return t.startedAhead(passed.name, kind, amount(passed.need), amount(passed.room), amount(passed.headNeed));
+}
 // English, for what stays English outside the panel (the conversation's dock).
 const en = jobsText("en");
+/** A systemd byte count as MiB, or null when it is not a measurement. */
+const mibOf = (raw: string | undefined) => {
+  const bytes = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
+  return Number.isSafeInteger(bytes) && bytes >= 0 ? bytes / 1048576 : null;
+};
+/** The new limit a lowering starts from (T-38 B): twice the peak, at least
+ * what the job uses now plus 256 MiB, below its request; none when the
+ * reading is not there or nothing below the request would do. */
+export function suggestedLimit(job: Job): number | null {
+  const peak = mibOf(job.usage?.MemoryPeak);
+  const now = mibOf(job.usage?.MemoryCurrent);
+  if (peak == null || now == null) return null;
+  const value = Math.ceil(Math.max(peak * 2, now + 256));
+  return value < job.resources.memoryMiB ? value : null;
+}
 const ramReading = (raw: string | undefined, t: JobsText) => {
   const bytes = raw && /^\d+$/.test(raw) ? Number(raw) : NaN;
   // systemd uses UINT64_MAX for an unavailable measurement.
@@ -306,7 +317,12 @@ type JobScope = { agentId?: string; taskId?: string };
 type JobSource = "local" | "github_actions" | "reviews";
 type JobOpen = JobScope &
   Omit<CiOpen, "source"> &
-  ReviewOpen & { source?: JobSource; jobId?: string; settings?: "budget" };
+  ReviewOpen & {
+    source?: JobSource;
+    jobId?: string;
+    /** Reviews only: this Agent's own reviews, as its conversation's dock lists them (T-25). */
+    involving?: string;
+  };
 export const openJobs = (detail: JobOpen = {}) =>
   window.dispatchEvent(new CustomEvent("yuzuno:open-job", { detail }));
 
@@ -411,6 +427,8 @@ export function ConversationJobs({
           more={ci.runs.length - runs.length}
         />
       )}
+      {/* Its PR reviews, after the runs (T-25), as many as Settings allows. */}
+      {dock.reviews > 0 && <ConversationReviews agentId={agentId} revision={revision} disabled={disabled} limit={dock.reviews} />}
       {children}
     </WorkDock>
   );
@@ -429,12 +447,15 @@ export function Jobs({
   agents,
   revision,
   disabled,
+  onOpenSettings,
 }: {
   workspaceId: string;
   agent?: Agent | null;
   agents?: Agent[];
   revision: string;
   disabled: boolean;
+  /** Opens Settings at an editor: the machine card's Edit in Settings (T-55). */
+  onOpenSettings?: (editor: SettingsEditor) => void;
 }) {
   const entry = useStrings(entryText);
   const language = useLanguage();
@@ -461,21 +482,30 @@ export function Jobs({
   const [source, setSource] = useState<JobSource>("local");
   const [ciInitial, setCiInitial] = useState<CiOpen>({});
   const [reviewInitial, setReviewInitial] = useState<ReviewOpen>({});
+  // Reviews read as the conversation's dock reads them (T-25): those the
+  // scope's Agent requested, was sent, or has on its tasks. Other sources
+  // keep that Agent's scope.
+  const [reviewsInvolving, setReviewsInvolving] = useState(false);
   const [page, setPage] = useState<Page>({
     jobs: [],
     hasMore: false,
     nextBefore: null,
   });
   const [budget, setBudget] = useState<Budget | null>(null);
-  const [budgetRequest, setBudgetRequest] = useState(0);
-  const clearBudgetRequest = useCallback(() => setBudgetRequest(0), []);
-  useEffect(() => {
-    // Closing or leaving Local also cancels a request whose budget has not loaded yet.
-    if (!open || source !== "local") clearBudgetRequest();
-  }, [open, source, clearBudgetRequest]);
   // Why this Core gave no budget, e.g. its host cannot run local Jobs.
   const [budgetRefusal, setBudgetRefusal] = useState("");
   const [selected, setSelected] = useState("");
+  // Whether this scope's list has answered yet: before it has, an empty
+  // list is still being read, not a list with no jobs (T-19 JB-04).
+  const [listed, setListed] = useState(false);
+  // A row the reader chose: on a narrow window the job shows under the
+  // list, so it is brought into view (T-19 JB-07).
+  const detailBox = useRef<HTMLDivElement>(null);
+  const reveal = useRef(false);
+  // The chosen job's own read (T-19 JB-07), apart from the list's: whose it
+  // is, and why it failed. null: under way or done; "": the list read failed
+  // first, so this one did not happen; text: it failed, and says why.
+  const [detailRead, setDetailRead] = useState<{ id: string; failure: string | null } | null>(null);
   const [detail, setDetail] = useState<Job | null>(null);
   const [log, setLog] = useState<Log | null>(null);
   const [error, setError] = useState("");
@@ -538,6 +568,7 @@ export function Jobs({
               before || !old.jobs.length ? next.nextBefore : old.nextBefore,
           };
         });
+        setListed(true);
         if (typeof capacity === "string") {
           setBudget(null);
           setBudgetRefusal(capacity);
@@ -547,18 +578,30 @@ export function Jobs({
           setBudget(capacity);
           setBudgetRefusal("");
         }
-        if (selected) {
-          const [job, output] = await Promise.all([
-            api<Job>(`/jobs/${selected}`),
-            api<Log>(`/jobs/${selected}/logs`),
-          ]);
-          if (stamp === generation.current) {
-            setDetail(job);
-            setLog(output);
-          }
+      } catch (e) {
+        if (stamp === generation.current) {
+          setError(errorText(e));
+          if (selected)
+            setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: "" }));
+        }
+        return;
+      }
+      if (!selected) return;
+      // A failure already shown for this job stays until its read succeeds.
+      if (stamp === generation.current)
+        setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
+      try {
+        const [job, output] = await Promise.all([
+          api<Job>(`/jobs/${selected}`),
+          api<Log>(`/jobs/${selected}/logs`),
+        ]);
+        if (stamp === generation.current) {
+          setDetail(job);
+          setLog(output);
+          setDetailRead({ id: selected, failure: null });
         }
       } catch (e) {
-        if (stamp === generation.current) setError(errorText(e));
+        if (stamp === generation.current) setDetailRead({ id: selected, failure: errorText(e) });
       }
     },
     [scope, selected],
@@ -569,10 +612,13 @@ export function Jobs({
       setScope(
         detail.taskId
           ? { taskId: detail.taskId }
-          : detail.agentId
-            ? { agentId: detail.agentId }
-            : {},
+          : detail.involving
+            ? { agentId: detail.involving }
+            : detail.agentId
+              ? { agentId: detail.agentId }
+              : {},
       );
+      setReviewsInvolving(detail.source === "reviews" && !detail.taskId && !!detail.involving);
       setSource(detail.source || "local");
       setCiInitial(
         detail.source === "github_actions"
@@ -585,7 +631,6 @@ export function Jobs({
           : {},
       );
       setSelected(detail.jobId || "");
-      setBudgetRequest(detail.settings === "budget" ? (value) => value + 1 : 0);
       setCreating(false);
       setOpen(true);
     };
@@ -610,10 +655,23 @@ export function Jobs({
   }, [open, disabled, load, revision, source]);
   useEffect(() => {
     setPage({ jobs: [], hasMore: false, nextBefore: null });
+    setListed(false);
   }, [scope]);
+  useEffect(() => {
+    if (!reveal.current) return;
+    reveal.current = false;
+    if (!window.matchMedia?.("(max-width: 720px)").matches) return;
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    detailBox.current?.scrollIntoView?.({ block: "start", behavior: still ? "auto" : "smooth" });
+  }, [selected]);
+  // A job chosen whose answer has not come yet is being read, not unchosen;
+  // one whose read failed, or could not start, is not.
+  const detailFailure = selected && detailRead?.id === selected ? detailRead.failure : null;
+  const reading = !!selected && detail?.id !== selected && detailFailure === null;
   useEffect(() => {
     setDetail(null);
     setLog(null);
+    setDetailRead(selected ? { id: selected, failure: null } : null);
   }, [selected]);
   useEffect(() => {
     if (disabled || open) return;
@@ -736,6 +794,21 @@ export function Jobs({
       setBusy(false);
     }
   }
+  /** Lower the running job's memory limit (T-38 B). */
+  async function lowerMemory(job: Job, memoryMiB: number) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await post(`/jobs/${job.id}/memory`, { memoryMiB });
+      await load();
+      window.dispatchEvent(new CustomEvent("yuzuno:jobs-refresh"));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function pause(job: Job, resume: boolean) {
     if (busy) return;
     setBusy(true);
@@ -785,6 +858,13 @@ export function Jobs({
   const shownError = (text: string) =>
     text === en.updatedCore ? t.updatedCore : text === en.envObject ? t.envObject : text === en.unconfirmed ? t.unconfirmed : text;
   const rail = useRef<HTMLDivElement>(null);
+  // Closed by Edit in Settings (T-55): Settings opens at its editor and puts
+  // the focus there, so this dialog gives none back to its trigger. Any other
+  // close gives it back, as Radix does; a new opening forgets the handoff.
+  const handingOff = useRef(false);
+  useEffect(() => {
+    if (open) handingOff.current = false;
+  }, [open]);
   const overlay = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const waiting = budget ? budget.activeCount + budget.queuedCount : 0;
@@ -830,6 +910,11 @@ export function Jobs({
           ref={box}
           className="modal jobs-dialog"
           lang={langTag(language)}
+          onCloseAutoFocus={(event) => {
+            if (!handingOff.current) return;
+            handingOff.current = false;
+            event.preventDefault();
+          }}
           onEscapeKeyDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -848,6 +933,7 @@ export function Jobs({
                 onClick={() => {
                   setScope({});
                   setReviewInitial({});
+                  setReviewsInvolving(false);
                 }}
               >
                 {t.workspace}
@@ -860,6 +946,7 @@ export function Jobs({
                   onClick={() => {
                     setScope({ agentId: agent.id });
                     setReviewInitial({});
+                    setReviewsInvolving(false);
                   }}
                 >
                   {agent.name}
@@ -922,8 +1009,9 @@ export function Jobs({
             >
               {source === "reviews" ? (
                 <ReviewJobs
-                  key={JSON.stringify([scope, reviewInitial])}
+                  key={JSON.stringify([scope, reviewInitial, reviewsInvolving])}
                   scope={scope}
+                  involving={reviewsInvolving}
                   agentName={agent?.name}
                   revision={revision}
                   initial={reviewInitial}
@@ -983,8 +1071,6 @@ export function Jobs({
                   </JobsSourceHeading>
                   {budget && (
                     <JobsBudget
-                      openRequest={budgetRequest}
-                      onOpenRequestHandled={clearBudgetRequest}
                       budget={budget}
                       // GPUs on which the user paused a running job (T-107).
                       pausedGpus={
@@ -995,6 +1081,16 @@ export function Jobs({
                         )
                       }
                       onSaved={() => void load()}
+                      onEditSettings={
+                        onOpenSettings &&
+                        (() => {
+                          // One dialog at a time: Jobs closes, Settings opens
+                          // and takes the focus (onCloseAutoFocus above).
+                          handingOff.current = true;
+                          setOpen(false);
+                          onOpenSettings("jobs-budget");
+                        })
+                      }
                     />
                   )}
                   {!budget && budgetRefusal && (
@@ -1002,9 +1098,9 @@ export function Jobs({
                       {budgetRefusal}
                     </p>
                   )}
-                  {error && (
+                  {(error || detailFailure) && (
                     <p className="inline-error" role="alert">
-                      {shownError(error)}
+                      {shownError(error || detailFailure || "")}
                     </p>
                   )}
                   {creating ? (
@@ -1026,7 +1122,13 @@ export function Jobs({
                         items={page.jobs}
                         place={placeJob}
                         selected={selected}
-                        empty={<p className="jobs-empty">{t.none}</p>}
+                        empty={
+                          listed ? (
+                            <p className="jobs-empty">{t.none}</p>
+                          ) : (
+                            !error && <p className="jobs-empty">{t.reading}</p>
+                          )
+                        }
                         row={(job) => (
                           <JobRow
                             status={stateOf(job, t).mark}
@@ -1043,7 +1145,10 @@ export function Jobs({
                             timeTitle={when(job, t)}
                             moments={queuedAndFinished(job, t)}
                             selected={selected === job.id}
-                            onSelect={() => setSelected(job.id)}
+                            onSelect={() => {
+                              reveal.current = job.id !== selected;
+                              setSelected(job.id);
+                            }}
                             onDragStart={(event) => {
                               event.dataTransfer.effectAllowed = "copy";
                               startHandoffDrag(event, jobHandoff(job));
@@ -1061,12 +1166,17 @@ export function Jobs({
                           </button>
                         )}
                       </StateGroups>
-                      <div className="job-detail">
+                      <div
+                        className="job-detail"
+                        ref={detailBox}
+                        aria-busy={reading || undefined}
+                      >
                         {/* Only the selected job: a reply for the job selected
                             before can land after the selection changed, until
                             the selection's effects have run. */}
                         {detail && detail.id === selected ? (
                           <JobDetail
+                            key={detail.id}
                             job={detail}
                             log={log}
                             now={now}
@@ -1074,12 +1184,15 @@ export function Jobs({
                             revision={revision}
                             onCancel={() => void cancel(detail)}
                             onPause={(resume) => void pause(detail, resume)}
+                            onLowerMemory={(memoryMiB) => void lowerMemory(detail, memoryMiB)}
                             onCheckpoint={(resume) => void checkpoint(detail, resume)}
                             onRerun={() => rerun(detail)}
                             onOpen={setSelected}
                           />
                         ) : (
-                          <p className="jobs-empty">{t.selectOne}</p>
+                          <p className="jobs-empty">
+                            {reading ? t.readingJob : t.selectOne}
+                          </p>
                         )}
                       </div>
                     </div>
@@ -1102,22 +1215,23 @@ const jobSources: { id: JobSource; Icon: typeof BriefcaseBusiness }[] = [
 ];
 
 /**
- * The machine at a glance: one bar per resource, the lighter band what jobs
- * have reserved and the solid part what they use now, each with its one
- * setting beneath. The fine print sits in tips.
+ * The machine at a glance, read only: one bar per resource, the lighter band
+ * what jobs have reserved and the solid part what they use now, and how many
+ * hold a slot of how many may. The fine print sits in tips; its settings are
+ * in Settings (T-55), and only the pause of GPU work, an action on running
+ * jobs, stays here.
  */
 function JobsBudget({
-  openRequest,
-  onOpenRequestHandled,
   budget,
   pausedGpus,
   onSaved,
+  onEditSettings,
 }: {
-  openRequest?: number;
-  onOpenRequestHandled?: () => void;
   budget: Budget;
   pausedGpus: Set<string>;
+  /** After a GPU pause or resume, to read it again. */
   onSaved: () => void;
+  onEditSettings?: () => void;
 }) {
   const t = useStrings(jobsText);
   const load = useMachineLoad();
@@ -1128,17 +1242,33 @@ function JobsBudget({
   const unknown = t.unknown;
   const hostAvailable =
     budget.machine.memoryAvailableMiB == null ? t.unknown : memory(budget.machine.memoryAvailableMiB);
+  // A Core before T-55 says nothing of how many may run at once.
+  const slots = maxActiveOf(budget);
   return (
     <div className="jobs-budget">
       <div className="jobs-budget-head">
         <div className="jobs-budget-machine">
           <strong>{budget.machine.name}</strong>
-          <span>{t.activeQueued(budget.activeCount, budget.queuedCount)}</span>
+          {slots ? (
+            <span className="jobs-budget-counts" title={t.slotsTitle(slots.value, slots.set)}>
+              {t.activeOf(budget.activeCount, slots.value, budget.queuedCount)}
+            </span>
+          ) : (
+            <span className="jobs-budget-counts">{t.activeQueued(budget.activeCount, budget.queuedCount)}</span>
+          )}
         </div>
-        <span className="jobs-budget-key" title={t.keyTitle}>
-          <span className="jobs-key is-used" aria-hidden="true" /> {t.inUse}
-          <span className="jobs-key is-reserved" aria-hidden="true" /> {t.reservedKey}
-        </span>
+        <div className="jobs-budget-side">
+          <span className="jobs-budget-key" title={t.keyTitle}>
+            <span className="jobs-key is-used" aria-hidden="true" /> {t.inUse}
+            <span className="jobs-key is-reserved" aria-hidden="true" /> {t.reservedKey}
+          </span>
+          {onEditSettings && (
+            <button type="button" className="quiet-button jobs-budget-edit" title={t.editInSettingsTitle} onClick={onEditSettings}>
+              {t.editInSettings}
+              <ArrowRight size={13} aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </div>
       <div className="jobs-budget-meters">
         <UsageMeter
@@ -1157,16 +1287,6 @@ function JobsBudget({
             <span className="jobs-reserved-text">
               {t.reservedOf(String(cpu(budget.reserved.cpuMillis)), String(cpu(budget.budget.cpuMillis)))}
             </span>
-            <BudgetSettings
-              openRequest={openRequest}
-              onOpenRequestHandled={onOpenRequestHandled}
-              budget={budget.budget}
-              bounds={budget.budgetBounds}
-              host={budget.machine}
-              suggested={budget.machine.suggestedBudget}
-              collector={budget.collectorOverhead}
-              onSaved={onSaved}
-            />
           </span>
         </UsageMeter>
         <UsageMeter
@@ -1188,8 +1308,8 @@ function JobsBudget({
             <span className="jobs-budget-host">{t.hostFree(hostAvailable)}</span>
           </span>
         </UsageMeter>
-        {budget.disk && <DiskSpace disk={budget.disk} onSaved={onSaved} />}
-        {budget.windows?.available && <WindowsJobs windows={budget.windows} onSaved={onSaved} />}
+        {budget.disk && <DiskSpace disk={budget.disk} />}
+        {budget.windows?.available && <WindowsJobs windows={budget.windows} />}
         {budget.gpus && (
           <GpuDevices gpus={budget.gpus} paused={pausedGpus} busyNow={load?.gpus} onSaved={onSaved} />
         )}
@@ -1227,6 +1347,7 @@ function JobDetail({
   revision,
   onCancel,
   onPause,
+  onLowerMemory,
   onCheckpoint,
   onRerun,
   onOpen,
@@ -1239,6 +1360,8 @@ function JobDetail({
   onCancel: () => void;
   /** Pause, or with true resume, the running job. */
   onPause: (resume: boolean) => void;
+  /** Lower the running job's memory limit to this many MiB. */
+  onLowerMemory: (memoryMiB: number) => void;
   /** Stop the running job at a checkpoint, or with true resume from it. */
   onCheckpoint: (resume: boolean) => void;
   onRerun: () => void;
@@ -1253,6 +1376,11 @@ function JobDetail({
   const refused = resume ? null : pauseRefusal(job, t);
   const stop = job.checkpointStop;
   const stopping = stoppingAtCheckpoint(job);
+  // Lowering the memory limit: this host's own running jobs only.
+  const lowerable = job.status === "running" && !stopping && (!job.executor || job.executor.kind === "local");
+  const [lowering, setLowering] = useState(false);
+  const [limitDraft, setLimitDraft] = useState("");
+  const lowered = job.limitChanges?.length ? job.limitChanges[job.limitChanges.length - 1] : null;
   return (
     <>
       <JobDetailHeading
@@ -1279,6 +1407,21 @@ function JobDetail({
           >
             {resume ? <Play size={12} aria-hidden="true" /> : <Pause size={12} aria-hidden="true" />}
             {resume ? t.resume : t.pauseButton}
+          </button>
+        )}
+        {lowerable && (
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy}
+            aria-expanded={lowering}
+            onClick={() => {
+              setLimitDraft(String(suggestedLimit(job) ?? ""));
+              setLowering(!lowering);
+            }}
+            title={t.lowerMemoryTitle}
+          >
+            {t.lowerMemory}
           </button>
         )}
         {job.status === "running" && job.checkpoint && (stop?.state === "failed" || !stopping) && (
@@ -1362,6 +1505,46 @@ function JobDetail({
       ) : (
         job.reason && <p>{job.reason}</p>
       )}
+      {Object.entries(job.mail || {})
+        .filter(([, mail]) => mail.problem)
+        .map(([status, mail]) => (
+          <p key={status} className="job-mail-problem">
+            {t.mailProblem} {mail.problem}
+          </p>
+        ))}
+      {lowerable && lowering && (
+        <form
+          className="job-lower-memory"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const value = Number(limitDraft);
+            if (!Number.isInteger(value) || value < 1 || value >= job.resources.memoryMiB) return;
+            setLowering(false);
+            onLowerMemory(value);
+          }}
+        >
+          <label>
+            {t.newMemoryLimit}
+            <input
+              type="number"
+              min={1}
+              max={job.resources.memoryMiB - 1}
+              step={1}
+              required
+              value={limitDraft}
+              onChange={(event) => setLimitDraft(event.target.value)}
+            />
+          </label>
+          <small>{t.lowerMemoryBounds(memory(job.resources.memoryMiB))}</small>
+          <div className="job-lower-memory-actions">
+            <button type="submit" className="primary-button" disabled={busy}>{t.lowerLimit}</button>
+            <button type="button" className="quiet-button" onClick={() => setLowering(false)}>{t.cancelLowering}</button>
+          </div>
+        </form>
+      )}
+      {job.limitRefusal && (!lowered || job.limitRefusal.at > lowered.at) && (
+        <p className="job-limit-note" role="status">{t.notLowered(job.limitRefusal.reason)}</p>
+      )}
       <JobCard title={t.summary}>
         <dl>
           <dt>{t.sourceLabel}</dt>
@@ -1375,8 +1558,22 @@ function JobDetail({
           </dd>
           <dt>{t.execution}</dt>
           <dd>{job.exclusive ? t.exclusiveExecution : t.normal}</dd>
+          {job.admission?.passed && (
+            <>
+              <dt>{t.admission}</dt>
+              <dd className="job-admission">{passedAhead(job.admission.passed, t)}</dd>
+            </>
+          )}
           <dt>{t.resources}</dt>
           <dd>{t.resourceLine(job.resources.cpuMillis / 1000, memory(job.resources.memoryMiB), memory(job.resources.swapMiB))}</dd>
+          {lowered && (
+            <>
+              <dt>{t.memoryLimit}</dt>
+              <dd className="job-limit-changes">
+                {t.loweredLine(memory(lowered.fromMiB), memory(lowered.toMiB), lowered.by.name, new Date(lowered.at).toLocaleString())}
+              </dd>
+            </>
+          )}
           {job.gpu && (
             <>
               <dt>GPU</dt>
@@ -1516,6 +1713,43 @@ type Draft = {
   gpuCount?: number;
 };
 
+/** What the task's earlier measured runs of the same name or command suggest
+ * requesting (T-38 C). */
+type Suggestion = {
+  memoryMiB: number;
+  cpuMillis: number | null;
+  memoryPeakMiB: number;
+  averageCpuCores: number | null;
+  basedOn: { jobId: string }[];
+};
+/** The suggestion for the draft, asked again a moment after it changes; null
+ * without one. It is only shown: the limits change only if the user says so. */
+function useSuggestion(taskId: string, name: string, command: string) {
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  useEffect(() => {
+    // A suggestion is for this draft: the last draft's goes at once, before
+    // the next one is asked (review 7a85f843).
+    setSuggestion(null);
+    const task = taskId.trim();
+    if (!/^T-[1-9]\d*$/.test(task) || (!name.trim() && !command.trim())) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      const query = new URLSearchParams({ taskId: task, name: name.trim() });
+      if (command.trim()) query.set("argv", JSON.stringify(["/bin/sh", "-c", command]));
+      api<{ suggestion?: Suggestion | null }>(`/jobs/suggestion?${query}`, { signal: controller.signal })
+        .then((value) => setSuggestion(typeof value?.suggestion?.memoryMiB === "number" ? value.suggestion : null))
+        .catch(() => {
+          if (!controller.signal.aborted) setSuggestion(null);
+        });
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [taskId, name, command]);
+  return suggestion;
+}
+
 /** A new job: what runs, its limits, then its checks and files. */
 function JobForm({
   draft,
@@ -1534,6 +1768,7 @@ function JobForm({
   onSubmit: (event: React.FormEvent) => void;
 }) {
   const t = useStrings(jobsText);
+  const suggestion = useSuggestion(draft.taskId, draft.name, draft.command);
   return (
     <form className="job-form" onSubmit={onSubmit}>
       <fieldset className="job-form-group">
@@ -1636,6 +1871,32 @@ function JobForm({
             onChange={(e) => setDraft({ ...draft, timeout: e.target.value })}
           />
         </label>
+        {suggestion && (
+          <div className="job-wide job-suggestion" role="note">
+            <p>
+              {t.suggestion(
+                suggestion.basedOn.length,
+                memory(suggestion.memoryPeakMiB),
+                suggestion.averageCpuCores === null ? null : suggestion.averageCpuCores.toFixed(2),
+                memory(suggestion.memoryMiB),
+                suggestion.cpuMillis === null ? null : (suggestion.cpuMillis / 1000).toFixed(1),
+              )}
+            </p>
+            <button
+              type="button"
+              className="quiet-button"
+              onClick={() =>
+                setDraft({
+                  ...draft,
+                  memory: String(suggestion.memoryMiB),
+                  ...(suggestion.cpuMillis === null ? {} : { cpu: String(suggestion.cpuMillis / 1000) }),
+                })
+              }
+            >
+              {t.useSuggestion}
+            </button>
+          </div>
+        )}
         <div className="job-wide">
           <label className="job-checkbox">
             <input

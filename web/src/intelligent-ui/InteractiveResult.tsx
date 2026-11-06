@@ -1,4 +1,4 @@
-import { Component, useState, type ComponentType, type ReactNode } from "react";
+import { Component, useRef, useState, type ComponentType, type ReactNode } from "react";
 import {
   ActionProvider,
   defineRegistry,
@@ -17,6 +17,7 @@ import { PublishedClarification } from "./ClarificationHost";
 import { PublishedTaskStatus } from "./TaskStatusProposal";
 import { resultText } from "./result-text";
 import { useStrings } from "../i18n";
+import { useSurfaceIn } from "../surface";
 import "./intelligent-ui.css";
 
 function Continue({
@@ -155,6 +156,7 @@ export default function InteractiveResult({
   onFile,
   onDraft,
   onInteract,
+  arrival,
 }: {
   spec: ResultSpec;
   raw: string;
@@ -163,10 +165,17 @@ export default function InteractiveResult({
   onFile?: (path: string, line?: number) => void;
   onDraft?: (text: string) => void;
   onInteract?: () => void;
+  arrival?: { readonly current: boolean };
 }) {
   const t = useStrings(resultText);
+  // Taking the place of a placeholder, it fades in over small, opacity only,
+  // so nothing in it moves (T-19 HM:I5, M9). One drawn at once does not.
+  const root = useRef<HTMLDivElement>(null);
+  const [arrived] = useState(() => !!arrival?.current);
+  useSurfaceIn(root, arrived ? 1 : 0, "small", arrived);
   return (
     <div
+      ref={root}
       className="interactive-result"
       data-result-id={identity}
       onFocusCapture={onInteract}

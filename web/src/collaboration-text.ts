@@ -55,6 +55,7 @@ export const boardText = strings({
   owner: "Owner",
   everyone: "Everyone",
   refreshTasks: "Refresh tasks",
+  refreshingTasks: "Refreshing tasks…",
   outdated: "Tasks changed since these pages loaded.",
   gathering: "Gathering your tasks…",
   emptyFilteredTitle: "A little breathing room",
@@ -69,6 +70,14 @@ export const boardText = strings({
   loadMore: "Load more tasks",
   notAssigned: "Not assigned yet",
   result: "Result",
+  // Its executor's slot (T-35): waiting in the queue, starting, or running.
+  executorSlot: (state: string, position?: number | null, reason?: string | null) =>
+    state === "waiting" ? (position ? `Queued (number ${position})` : "Queued")
+      : state === "starting" ? (reason ? `Start not finished: ${reason}` : "Starting") : "Running",
+  executorSlotHelp: (state: string, reason?: string | null) =>
+    state === "waiting" ? "Its executor waits for a free slot and starts in turn. Settings → Executor templates sets how many run at once."
+      : state === "starting" ? (reason ? `Its executor keeps its slot, open; its start didn't finish: ${reason}. Connect starts it again; Close frees its slot.` : "Its executor holds a slot and is starting.")
+      : "Its executor holds a slot and is running.",
   updatedAt: (at: string) => `Updated ${at}`,
   // A new task
   eyebrow: "Something to work on",
@@ -82,6 +91,7 @@ export const boardText = strings({
   // A task
   details: "Task details",
   refreshDetails: "Refresh task details",
+  refreshingDetails: "Refreshing task details…",
   closeTask: "Close task",
   close: "Close",
   opening: "Opening task…",
@@ -98,6 +108,16 @@ export const boardText = strings({
   urgent: "Urgent · notify during current work",
   urgencyHint: "Normal messages wait until the current turn ends. Urgent messages request a reminder during current work. Offline messages wait for reconnection.",
   assignSend: "Assign and send",
+  dispatchFrom: "Who does it",
+  toAgent: "An existing agent",
+  fromTemplate: "A new executor, from a template",
+  template: "Template",
+  chooseTemplate: "Choose a template",
+  projectTemplate: "this project’s",
+  templateHint: "Core creates an agent for this task from the template, in the task’s worktree or else the project’s folder, starts it and sends it the task. Its result comes back to you.",
+  noTemplates: "No executor templates yet. Add them in Settings, under Executor templates.",
+  templatesUnread: (error: string) => `Couldn’t read the executor templates: ${error}`,
+  createSend: "Create and send",
   conflict: "This task changed while you were editing. Your draft is kept.",
   compare: "Compare with the current task",
   fields: {
@@ -117,6 +137,9 @@ export const boardText = strings({
   saveChanges: "Save changes",
   cancel: "Cancel",
   waitingOn: "Waiting on",
+  /** Its mail whose wake-up did not go through (T-50); Core's words follow. */
+  mailProblems: "Mail not delivered",
+  jobMail: (status: string, id: string) => `Job ${id.slice(0, 8)} (${status}): `,
   whereThingsStand: "Where things stand",
   theWork: "The work",
   earlierResult: "Earlier result",
@@ -168,6 +191,7 @@ export const boardText = strings({
   allAgents: "All agents",
   closedSuffix: " · closed",
   refreshMessages: "Refresh messages",
+  refreshingMessages: "Refreshing messages…",
   openingMailbox: "Opening the mailbox…",
   quiet: "Quiet for now",
   quietAgent: "Messages sent to this agent will appear here.",
@@ -236,6 +260,7 @@ export const boardText = strings({
   owner: "负责人",
   everyone: "所有人",
   refreshTasks: "刷新任务",
+  refreshingTasks: "正在刷新任务…",
   outdated: "这些页面加载后，任务有变化。",
   gathering: "正在收集任务…",
   emptyFilteredTitle: "暂时清闲",
@@ -249,6 +274,13 @@ export const boardText = strings({
   loadMore: "加载更多任务",
   notAssigned: "尚未分配",
   result: "结果",
+  executorSlot: (state, position, reason) =>
+    state === "waiting" ? (position ? `排队中（第 ${position} 位）` : "排队中")
+      : state === "starting" ? (reason ? `启动未完成：${reason}` : "启动中") : "运行中",
+  executorSlotHelp: (state, reason) =>
+    state === "waiting" ? "它的执行者在等空位，会按顺序启动。同时运行的数量在 设置 → 执行者模板 中设定。"
+      : state === "starting" ? (reason ? `它的执行者保持打开并占着一个位置；启动未完成：${reason}。连接会再次启动它；关闭会释放它的位置。` : "它的执行者占着一个位置，正在启动。")
+      : "它的执行者占着一个位置，正在运行。",
   updatedAt: (at) => `更新于 ${at}`,
   eyebrow: "一件要做的事",
   closeNew: "关闭新建任务",
@@ -260,6 +292,7 @@ export const boardText = strings({
   create: "创建任务",
   details: "任务详情",
   refreshDetails: "刷新任务详情",
+  refreshingDetails: "正在刷新任务详情…",
   closeTask: "关闭任务",
   close: "关闭",
   opening: "正在打开任务…",
@@ -276,6 +309,16 @@ export const boardText = strings({
   urgent: "紧急 · 在当前工作中提醒",
   urgencyHint: "普通消息会等到当前回合结束。紧急消息会请求在当前工作中提醒。对方离线时，消息会等到重新连接。",
   assignSend: "分配并发送",
+  dispatchFrom: "由谁来做",
+  toAgent: "现有 Agent",
+  fromTemplate: "按模板新建执行者",
+  template: "模板",
+  chooseTemplate: "选择一个模板",
+  projectTemplate: "此项目的",
+  templateHint: "Core 按模板为这个任务创建一个 Agent（在任务的工作树中，否则在项目的文件夹中），启动它并把任务发给它。它的结果会回到你这里。",
+  noTemplates: "还没有执行者模板。可在设置的“执行者模板”中添加。",
+  templatesUnread: (error) => `无法读取执行者模板：${error}`,
+  createSend: "创建并发送",
   conflict: "你编辑期间任务有变化。你的草稿已保留。",
   compare: "与当前任务比较",
   fields: {
@@ -295,6 +338,8 @@ export const boardText = strings({
   saveChanges: "保存更改",
   cancel: "取消",
   waitingOn: "正在等待",
+  mailProblems: "邮件未送达",
+  jobMail: (status, id) => `Job ${id.slice(0, 8)}（${status}）：`,
   whereThingsStand: "目前进展",
   theWork: "工作内容",
   earlierResult: "之前的结果",
@@ -345,6 +390,7 @@ export const boardText = strings({
   allAgents: "所有 Agent",
   closedSuffix: " · 已关闭",
   refreshMessages: "刷新消息",
+  refreshingMessages: "正在刷新消息…",
   openingMailbox: "正在打开邮箱…",
   quiet: "暂时没有消息",
   quietAgent: "发给这个 Agent 的消息会显示在这里。",

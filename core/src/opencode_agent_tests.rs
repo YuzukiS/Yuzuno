@@ -35,7 +35,7 @@ async fn events_of_an_older_connection_or_another_session_change_nothing() {
     ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
     ws.reconnect("oc").await.unwrap();
     let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
-    let asked = |session: &str| json!({"id":"evt_1","type":"permission.asked","properties":{"id":"per_1",
+    let asked = |session: &str| json!({"id":"evt_1","type":"permission.asked","data":{"id":"per_1",
         "sessionID":session,"permission":"bash","patterns":["ls"],"metadata":{},"always":[]}});
     let before = ws.store.detail("oc").unwrap().agent.last_seq;
     // An older connection's stream, and another session's event, write nothing.
@@ -52,6 +52,23 @@ async fn events_of_an_older_connection_or_another_session_change_nothing() {
     // The same request again, as a snapshot would show it, is not a second one.
     ws.dispatch_opencode_event("oc", c.generation, asked(&c.session)).await;
     assert_eq!(ws.store.detail("oc").unwrap().pending.len(), 1);
+    ws.close_agent("oc").await.unwrap();
+}
+
+/// Whether where its OpenCode keeps snapshots can be known is kept with the
+/// connection (T-10 Revert): the stand-in runs through a script, so it
+/// cannot, and the connection says why.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_opencode_started_through_a_script_cannot_say_where_its_snapshots_are() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
+    let why = c.files.as_ref().as_ref().unwrap_err();
+    assert!(why.contains("not a native executable"), "{why}");
     ws.close_agent("oc").await.unwrap();
 }
 
@@ -80,7 +97,7 @@ async fn a_form_an_opencode_agent_publishes_is_answered_once_as_a_new_message() 
     let message = |value: Value| serde_json::from_value::<crate::model::MessageInput>(value).unwrap();
     let prompts = || std::fs::read_to_string(data.join("opencode/oc/calls.jsonl")).unwrap_or_default().lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
-        .filter(|call| call["path"].as_str().unwrap().ends_with("/prompt_async")).collect::<Vec<_>>();
+        .filter(|call| call["path"].as_str().unwrap().ends_with("/prompt")).collect::<Vec<_>>();
 
     let turn = ws.send_message("oc", message(json!({"clientMessageId":"c1","text":"Set it up"}))).await.unwrap().turn_id.unwrap();
     let spec = json!({"root":"r","elements":{
@@ -106,7 +123,7 @@ async fn a_form_an_opencode_agent_publishes_is_answered_once_as_a_new_message() 
     assert_eq!(sent.input.clarification.as_ref().map(|c| c.result_id.as_str()), Some(result.as_str()));
     let calls = prompts();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[1]["body"]["parts"][0]["text"], text);
+    assert_eq!(calls[1]["body"]["text"], text);
     // The same message again is its receipt; the same form's answers again are refused.
     assert_eq!(ws.send_message("oc", form).await.unwrap().turn_id, sent.turn_id);
     assert!(ws.send_message("oc", message(json!({"clientMessageId":"form-2","text":text,"clarification":answer}))).await.is_err());
@@ -160,7 +177,7 @@ async fn a_late_part_reaches_the_turn_its_message_answers() {
     ws.store.release_for_test("oc");
     let held = |turn: &str| ws.store.held_for_test("oc").is_some_and(|d| d.read().turns.iter().any(|t| t["id"] == turn));
     assert!(!held("msg_old"), "the ended Turn is read from rows, not memory");
-    let part = |id: &str, message: &str, text: &str| json!({"type":"message.part.updated","properties":{"sessionID":c.session,
+    let part = |id: &str, message: &str, text: &str| json!({"type":"message.part.updated","data":{"sessionID":c.session,
         "part":{"id":id,"sessionID":c.session,"messageID":message,"type":"text","text":text}}});
     ws.dispatch_opencode_event("oc", c.generation, part("prt_late", "msg_answer_old", "late")).await;
     ws.dispatch_opencode_event("oc", c.generation, part("prt_new", "msg_answer_new", "new")).await;

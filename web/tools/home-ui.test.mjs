@@ -118,7 +118,7 @@ const machineLoad = () => ({
   jobs: [{ id: "job-1", name: "cargo test", agentId: "a", agentName: "Mori", projectId: "p-app", cpuPct: null, memMiB: 512 }],
 });
 
-async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], workspaceAgents = agents, research = null } = {}) {
+async function mount({ storage = {}, home = homeFixture(), failReplies = 0, replyStatus = "accepted", replyAnswer = null, workspace = "ws-home", holdWorkspace = false, load = machineLoad, linked = [], activity = {}, workspaceAgents = agents, research = null, before = null } = {}) {
   // holdWorkspace: /api/workspace answers only on releaseWorkspace(), so Home opens first.
   let releaseWorkspace = () => {};
   const workspaceRead = holdWorkspace ? new Promise((resolve) => (releaseWorkspace = resolve)) : null;
@@ -188,7 +188,7 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
     if (url.endsWith("/api/collaboration/github_repositories"))
       return respond({ repositories: request.body?.projectId === "p-app" ? linked : [], links: [] });
     if (url.endsWith("/api/projects/p-app/repo-activity"))
-      return respond({ observedAt: at(1), repositories: linked.map((repo) => ({ ...repo, observedAt: at(1), commits: [], pulls: [], runs: [], stale: false })) });
+      return respond({ observedAt: at(1), repositories: linked.map((repo) => ({ ...repo, observedAt: at(1), commits: [], pulls: [], runs: [], stale: false, ...activity })) });
     const detail = url.match(/\/api\/agents\/(\w)$/);
     if (detail) {
       const agent = workspaceAgents.find((a) => a.id === detail[1]);
@@ -198,9 +198,12 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
     return respond({});
   };
   const doc = w.document;
+  // By its words, or by its title for an icon-only button (a summary card's Reply and Seen, T-18).
   const button = (text, root = doc) =>
-    [...root.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(text));
+    [...root.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(text) || (!b.textContent.trim() && (b.title ?? "").startsWith(text)));
   const panel = (id) => doc.querySelector(`[data-home-project="${id}"]`);
+  // Anything the page has before the app starts (the tab title, an app badge).
+  before?.(w);
   try {
     w.eval(bundle);
     // Home's memory is per workspace: open it once the workspace is read.
@@ -236,6 +239,16 @@ async function choose(p, select, value) {
   await pause();
 }
 const card = (p, projectId, key) => p.doc.getElementById(`home-section-${projectId}-${key}`);
+// A report or status is read on its page, opened from its card (T-18, Lead 2270).
+async function openReport(p, projectId, key) {
+  card(p, projectId, key).querySelector(".home-report-open").click();
+  await waitFor(() => p.doc.querySelector(".home-report .report-head h1"), `the report ${key}`);
+  return p.doc.querySelector(".home-report");
+}
+async function closeReport(p) {
+  p.doc.querySelector(".home-report .report-back").click();
+  await waitFor(() => !p.doc.querySelector(".home-report"), "the report closed");
+}
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 test("Home replaces Catch up: panels follow Project Priority, needs you jumps, no unread turns are listed", async () => {
@@ -417,23 +430,30 @@ test("a newer version marks only the blocks it added or changed, against what th
   Object.assign(shown, { version: 2, seen: { version: 2, at: at(60) }, body: notes() });
   const p = await mount({ home });
   const key = 'yuzuno.home-seen-blocks.v1:["ws-home","p-app","notes",null]';
-  const marks = () => [...card(p, "p-app", "notes").querySelectorAll(".brief-change")].map((el) => [
-    el.dataset.change,
-    el.querySelector(":scope > .brief-change-mark").textContent,
-    el.textContent.trim().slice(0, 40),
-  ]);
+  // Which blocks changed is said on the report page; the card says only that it did (T-18).
+  const marks = async () => {
+    assert.equal(card(p, "p-app", "notes").querySelectorAll(".brief-change").length, 0, "no block marks on the card");
+    const page = await openReport(p, "p-app", "notes");
+    const found = [...page.querySelectorAll(".brief-change")].map((el) => [
+      el.dataset.change,
+      el.querySelector(":scope > .brief-change-mark").textContent,
+      el.textContent.trim().slice(0, 40),
+    ]);
+    await closeReport(p);
+    return found;
+  };
   let stored;
   try {
     await waitFor(() => p.w.localStorage.getItem(key), "the seen version's blocks are kept");
     assert.equal(JSON.parse(p.w.localStorage.getItem(key)).version, 2);
-    assert.deepEqual(marks(), [], "nothing is marked at the seen version");
+    assert.deepEqual(await marks(), [], "nothing is marked at the seen version");
     // Version 3 rewrites the summary and adds a group; the rest is as it was.
     Object.assign(shown, { version: 3, body: notes(v3) });
     p.doc.querySelector('[aria-label="Refresh Home"]').click();
     await waitFor(() => card(p, "p-app", "notes").dataset.sectionVersion === "3", "version 3 is shown");
     assert.ok(card(p, "p-app", "notes").classList.contains("is-changed"));
     assert.equal(card(p, "p-app", "notes").querySelector(".home-changed").textContent, "Updated");
-    assert.deepEqual(marks(), [
+    assert.deepEqual(await marks(), [
       ["updated", "Updated", "UpdatedAll three steps are done."],
       ["new", "New", "NewNextStep three starts tomorrow."],
     ], "the new group is marked once, its own block is not marked again");
@@ -445,7 +465,7 @@ test("a newer version marks only the blocks it added or changed, against what th
     p.button("Seen", card(p, "p-app", "notes")).click();
     await waitFor(() => p.posts(/\/brief\/seen$/).length === 1, "seen was sent");
     await waitFor(() => !card(p, "p-app", "notes").classList.contains("is-changed"), "Home read again after Seen");
-    assert.deepEqual(marks(), []);
+    assert.deepEqual(await marks(), []);
     assert.equal(JSON.parse(p.w.localStorage.getItem(key)).version, 3);
     assert.deepEqual(p.errors, []);
   } finally {
@@ -460,14 +480,16 @@ test("a newer version marks only the blocks it added or changed, against what th
   const elsewhere = await mount({ home: later() });
   try {
     assert.equal(card(elsewhere, "p-app", "notes").querySelector(".home-changed").textContent, "Updated");
-    assert.equal(card(elsewhere, "p-app", "notes").querySelectorAll(".brief-change").length, 0);
+    assert.equal((await openReport(elsewhere, "p-app", "notes")).querySelectorAll(".brief-change").length, 0);
   } finally {
     elsewhere.close();
   }
   // The same device, opened again later, still compares with version 2.
   const again = await mount({ storage: stored, home: later() });
   try {
-    await waitFor(() => card(again, "p-app", "notes")?.querySelectorAll(".brief-change").length === 2, "the marks come back after a reload");
+    await waitFor(() => card(again, "p-app", "notes"), "the card");
+    const page = await openReport(again, "p-app", "notes");
+    await waitFor(() => page.querySelectorAll(".brief-change").length === 2, "the marks come back after a reload");
   } finally {
     again.close();
   }
@@ -504,7 +526,8 @@ test("a Sources block changed since the seen version is marked like any other, a
   Object.assign(later.projects[0].brief.sections[1], { version: 3, seen: { version: 2, at: at(60) }, body: notes([1, 2]) });
   const p = await mount({ storage: stored, home: later });
   try {
-    const shown = card(p, "p-app", "notes");
+    // On its page, where its Sources sit beside the body (T-18).
+    const shown = await openReport(p, "p-app", "notes");
     assert.deepEqual(
       [...shown.querySelectorAll(".brief-change")].map((el) => [el.dataset.change, el.textContent.trim()]),
       [["updated", "UpdatedSourcesPR #1PR #2"]],
@@ -520,7 +543,7 @@ test("a Sources block changed since the seen version is marked like any other, a
   }
 });
 
-test("a section that can't be drawn says so in its place, is tried again once per new version, and the rest of the app still works", async () => {
+test("a section that can't be drawn says so in its place on its page, is tried again once per new version, and the rest of the app still works", async () => {
   const home = homeFixture();
   // A Sources block the result contract refuses (an unknown prop), as a body
   // an older Core kept could carry.
@@ -536,7 +559,7 @@ test("a section that can't be drawn says so in its place, is tried again once pe
   const p = await mount({ home });
   // Each time the section is drawn and refused, React reports the caught error once.
   const refused = () => p.logged.filter((line) => /ZodError|unrecognized_keys/i.test(line)).length;
-  const unreadable = () => card(p, "p-app", "notes").querySelector(".result-part-error")?.textContent;
+  const unreadable = () => p.doc.querySelector(".home-report .result-part-error")?.textContent;
   const reads = () => p.calls.filter((c) => c.url.endsWith("/api/home")).length;
   async function refresh(what) {
     const before = reads();
@@ -545,37 +568,45 @@ test("a section that can't be drawn says so in its place, is tried again once pe
     await pause(150);
   }
   try {
-    assert.equal(unreadable(), "This section couldn't be displayed.");
-    assert.match(card(p, "p-app", "notes/review").textContent, /Review notes body/);
-    assert.match(card(p, "p-res", "metrics").textContent, /Loss body/);
+    // Home draws summaries, not bodies: every card shows, and none is refused there (T-18).
+    assert.ok(card(p, "p-app", "notes") && card(p, "p-app", "notes/review") && card(p, "p-res", "metrics"));
+    assert.equal(refused(), 0);
     assert.deepEqual([...p.doc.querySelectorAll("[data-home-project]")].map((el) => el.dataset.homeProject), ["p-res", "p-app", "p-docs"]);
+    // Its page says so in the block's place.
+    await openReport(p, "p-app", "notes");
+    assert.equal(unreadable(), "This section couldn't be displayed.");
     const first = refused();
     assert.ok(first > 0, "the refusal was caught and reported");
+    await closeReport(p);
     // The same section read again is not drawn again.
     await refresh("the same version");
-    assert.equal(unreadable(), "This section couldn't be displayed.");
     assert.equal(refused(), first, "an unchanged section is not tried again");
-    // A new version is tried once, then stays as it is.
+    // A new version is tried once on its page, then stays as it is.
     Object.assign(notes, { version: 3, body: links({ note: "still older" }) });
     await refresh("version 3");
     await waitFor(() => card(p, "p-app", "notes").dataset.sectionVersion === "3", "version 3 is shown");
+    await openReport(p, "p-app", "notes");
+    assert.equal(unreadable(), "This section couldn't be displayed.");
     const second = refused();
     assert.ok(second > first, "a new version is tried again");
     await refresh("version 3 again");
     assert.equal(refused(), second, "and only once");
-    assert.equal(unreadable(), "This section couldn't be displayed.");
+    await closeReport(p);
     // A version that can be drawn is drawn.
     Object.assign(notes, { version: 4, body: links({}) });
     await refresh("version 4");
-    await waitFor(() => card(p, "p-app", "notes").querySelector(".result-sources a")?.textContent === "Spec", "version 4 is drawn");
+    await waitFor(() => card(p, "p-app", "notes").dataset.sectionVersion === "4", "version 4 is shown");
+    const page = await openReport(p, "p-app", "notes");
+    await waitFor(() => page.querySelector(".result-sources a")?.textContent === "Spec", "version 4 is drawn");
     assert.equal(unreadable(), undefined);
+    await closeReport(p);
     // The conversation and the way back to Home work as before.
     const error = p.panel("p-res").querySelector(".home-error");
     p.button("Sora", error).click();
     await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Sora", "Sora's conversation is open");
     p.button("Back to Home").click();
     await waitFor(() => p.doc.querySelector(".home-view [data-home-project]"), "back on Home");
-    assert.equal(card(p, "p-app", "notes").querySelector(".result-sources a")?.textContent, "Spec");
+    assert.ok(card(p, "p-app", "notes"));
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -786,6 +817,26 @@ test("a reply Core cannot confirm never shows as replied", async () => {
   }
 });
 
+test("the Jobs here never read as none while the load is unknown: unknown when it can't be read, then the line (T-18)", async () => {
+  let fail = true;
+  const p = await mount({ load: () => {
+    if (fail) throw new TypeError("Failed to fetch");
+    return machineLoad();
+  } });
+  try {
+    const cell = () => p.doc.querySelector(".home-machines .home-machine-jobs");
+    await waitFor(() => p.doc.querySelector(".home-machines .home-machines-at.is-error"), "the load can't be read");
+    assert.equal(cell().querySelector(".home-note").textContent, "unknown");
+    assert.doesNotMatch(cell().textContent, /No Jobs running|\b0 running/);
+    fail = false;
+    await waitFor(() => cell().querySelector(".home-machine-job-line"), "read again two seconds later", 6);
+    assert.equal(cell().querySelector(".home-machine-job-count").textContent, "1 running");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 test("an unknown machine metric reads unknown, never 0, and sampling stops while hidden", async () => {
   const p = await mount();
   try {
@@ -796,8 +847,8 @@ test("an unknown machine metric reads unknown, never 0, and sampling stops while
     assert.deepEqual(facts("Other"), ["unknown"]);
     assert.deepEqual(facts("GPU"), ["unknown"]);
     assert.deepEqual(facts("Jobs"), ["10%", "2.0 GiB"]);
-    assert.deepEqual(facts("CPU"), ["unknown"], "a job's unknown CPU");
-    assert.match(machines.textContent, /App · Mori/, "a job names its project and Agent");
+    // The Jobs here are one line; each Job's project and Agent are in its tip, its own CPU and memory in Jobs (T-18).
+    assert.match(machines.querySelector(".home-machine-job-line").getAttribute("title"), /cargo test · App · Mori/, "a job names its project and Agent");
     assert.doesNotMatch(facts("Agents").join(" "), /\b0\b/);
     const reads = () => p.calls.filter((c) => c.url.endsWith("/api/machine-load")).length;
     await waitFor(() => reads() >= 2, "sampled again after two seconds", 5);
@@ -813,10 +864,11 @@ test("an unknown machine metric reads unknown, never 0, and sampling stops while
   }
 });
 
-test("each GPU reads as two bars, use and memory, and a Job on the machine opens in Jobs", async () => {
+test("each GPU reads as two bars, use and memory; the Jobs here are one line that opens Jobs at the first (T-18)", async () => {
   const load = () => ({
     ...machineLoad(),
     gpus: [{ name: "RTX 5090", utilPct: 42, memUsedMiB: 8192, memTotalMiB: 32768, attribution: "unknown" }],
+    jobs: [...machineLoad().jobs, { id: "job-2", name: "vite build", agentId: "a", agentName: "Mori", projectId: "p-app", cpuPct: 12, memMiB: 256 }],
   });
   const p = await mount({ load });
   try {
@@ -824,12 +876,16 @@ test("each GPU reads as two bars, use and memory, and a Job on the machine opens
     const bars = [...p.doc.querySelectorAll(".home-gpus li .home-meter")];
     assert.deepEqual(bars.map((b) => b.getAttribute("aria-label")), ["GPU use 42%", "GPU memory 8.0 GiB / 32.0 GiB"]);
     assert.deepEqual(bars.map((b) => b.querySelector(".home-meter-gpu").style.width), ["42%", "25%"]);
-    // As the conversation's dock: a name, a quiet line, and the row opens the Job.
+    // One line however many run, so nothing below moves: how many, the first one's
+    // name, every name in its tip; the list is in Jobs, which it opens at the first (Dev 7, T-18).
     const opened = [];
     p.w.addEventListener("yuzuno:open-job", (event) => opened.push(JSON.stringify(event.detail)));
-    const row = p.doc.querySelector(".home-machine-jobs button.home-machine-job");
-    assert.equal(row.querySelector("strong").textContent, "cargo test");
-    assert.match(row.querySelector("small").textContent, /^App · MoriCPU unknownMemory 512 MiB$/);
+    const row = p.doc.querySelector(".home-machine-jobs button.home-machine-job-line");
+    assert.equal(row.querySelector(".home-machine-job-count").textContent, "2 running");
+    assert.equal(row.querySelector(".home-machine-job-first").textContent, "cargo test");
+    assert.equal(row.getAttribute("title"), "cargo test · App · Mori\nvite build · App · Mori");
+    assert.equal(row.getAttribute("aria-label"), "2 Jobs running on this machine, first cargo test: open in Jobs");
+    assert.equal(p.doc.querySelectorAll(".home-machine-jobs li").length, 0, "no list of Jobs on Home");
     row.click();
     assert.deepEqual(opened, [JSON.stringify({ source: "local", jobId: "job-1" })]);
     await waitFor(() => p.doc.querySelector(".jobs-nav.selected"), "the Jobs panel opens");
@@ -922,7 +978,7 @@ test("Home is laid out as Needs you, My widgets, then the projects; widgets are 
     await waitFor(() => !p.doc.querySelector('[role="dialog"]'), "the Machines page closes");
     // Organize: a dialog; hidden, a widget is not drawn and reads nothing; the choice is kept.
     p.button("Organize", column).click();
-    await waitFor(() => /Organize my widgets/.test(p.doc.querySelector('[role="dialog"]')?.textContent || ""), "Organize opens");
+    await waitFor(() => /Organize Home/.test(p.doc.querySelector('[role="dialog"]')?.textContent || ""), "Organize opens");
     const dialog = () => p.doc.querySelector('[role="dialog"]');
     assert.match(dialog().textContent, /Changes only how this device shows them\./);
     assert.ok(dialog().querySelector('[aria-label="Move Machines up"]').disabled);
@@ -959,23 +1015,24 @@ test("Home is laid out as Needs you, My widgets, then the projects; widgets are 
   }
 });
 
-// T-115: every Home card folds on its own, the project's Repositories too.
+// T-115: every Home card folds on its own. The project's Repositories are one
+// line since T-18, with details instead of a fold.
 const repo = { id: 1, fullName: "acme/app", url: "https://github.com/acme/app", syncedAt: at(1), error: null };
 const fold = (root) => root.querySelector(".home-fold");
 const storageOf = (p) => Object.fromEntries(Array.from({ length: p.w.localStorage.length }, (_, i) => p.w.localStorage.key(i)).map((k) => [k, p.w.localStorage.getItem(k)]));
 
-test("every Home card folds on its own and keeps its header; nothing is seen, answered or read meanwhile (T-115)", async () => {
+test("every Home card that holds a body folds on its own and keeps its header; a summary card has none to fold; nothing is seen, answered or read meanwhile (T-115, T-18)", async () => {
   const p = await mount({ linked: [repo] });
   try {
     await waitFor(() => p.panel("p-app").querySelector(".home-repos .repo-activity"), "the Repositories block is read");
     await waitFor(() => p.panel("p-res").querySelector(".home-approvals"), "the approval is shown");
+    // A report or status shows its summary; its body is on its page, so it has no fold (T-18).
+    for (const key of ["notes", "notes/review"]) assert.equal(fold(card(p, "p-app", key)), null, `${key} is a summary`);
     const cards = {
       needs: p.doc.querySelector(".home-needs-you"),
       machines: p.doc.querySelector(".home-machines"),
-      notes: card(p, "p-app", "notes"),
-      review: card(p, "p-app", "notes/review"),
+      release: card(p, "p-app", "release"),
       approvals: p.panel("p-res").querySelector(".home-approvals"),
-      repos: p.panel("p-app").querySelector(".home-repos"),
     };
     for (const [name, root] of Object.entries(cards)) {
       const button = fold(root);
@@ -985,26 +1042,25 @@ test("every Home card folds on its own and keeps its header; nothing is seen, an
       assert.ok(body && root.contains(body) && !body.hidden, `${name} controls its own body`);
     }
     const machineReads = () => p.calls.filter((c) => c.url.endsWith("/api/machine-load")).length;
-    const activityReads = () => p.calls.filter((c) => c.url.endsWith("/repo-activity")).length;
     for (const root of Object.values(cards)) fold(root).click();
     await pause();
     for (const [name, root] of Object.entries(cards)) {
       assert.equal(fold(root).getAttribute("aria-expanded"), "false", name);
       assert.equal(p.doc.getElementById(fold(root).getAttribute("aria-controls")).hidden, true, `${name}'s body is hidden`);
     }
-    // The headers still say what is new and what waits.
-    assert.match(cards.review.querySelector(".home-section-head").textContent, /Review notes.*New/);
-    assert.ok(cards.review.querySelector(".home-seen"), "Seen is still offered");
+    // The headers still say what is new and what waits; a summary card is as it was.
+    assert.match(cards.release.querySelector(".home-section-head").textContent, /Ask/);
+    const review = card(p, "p-app", "notes/review");
+    assert.match(review.querySelector(".home-summary-head").textContent, /New/);
+    assert.match(review.querySelector(".home-summary-title").textContent, /Review notes/);
+    assert.ok(review.querySelector(".home-seen"), "Seen is still offered");
     assert.match(cards.needs.querySelector("h2").textContent, /Needs you\s*2/);
     assert.match(cards.approvals.querySelector(".home-card-head").textContent, /Waiting for approval\s*1/);
-    assert.match(cards.repos.querySelector(".home-card-head").textContent, /Repositories\s*1/);
-    // The Repositories fold is its own: the project stays open; activity and load are not read.
+    // Each fold is its own: the project stays open; load is not read.
     assert.equal(p.panel("p-app").classList.contains("is-collapsed"), false);
-    assert.equal(cards.repos.querySelector(".repo-activity"), null);
-    const machines = machineReads(), activity = activityReads();
+    const machines = machineReads();
     await pause(2600);
     assert.equal(machineReads(), machines, "a collapsed Machines widget reads no load");
-    assert.equal(activityReads(), activity);
     assert.deepEqual(p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url), [],
       "folding marks nothing seen, answers nothing and approves nothing");
     // Kept for this Workspace, by each card's own identity.
@@ -1013,23 +1069,73 @@ test("every Home card folds on its own and keeps its header; nothing is seen, an
     const again = await mount({ linked: [repo], storage: stored });
     try {
       await waitFor(() => again.panel("p-app").querySelector(".home-repos"), "the Repositories block is drawn again");
-      assert.equal(fold(card(again, "p-app", "notes/review")).getAttribute("aria-expanded"), "false");
-      assert.equal(fold(card(again, "p-app", "notes")).getAttribute("aria-expanded"), "false");
-      assert.equal(fold(card(again, "p-app", "release")).getAttribute("aria-expanded"), "true", "another card is not folded with it");
-      assert.equal(fold(again.panel("p-app").querySelector(".home-repos")).getAttribute("aria-expanded"), "false");
+      assert.equal(fold(card(again, "p-app", "release")).getAttribute("aria-expanded"), "false");
       assert.equal(fold(again.doc.querySelector(".home-machines")).getAttribute("aria-expanded"), "false");
-      fold(card(again, "p-app", "notes")).click();
+      fold(card(again, "p-app", "release")).click();
       await pause();
-      assert.equal(again.doc.getElementById(fold(card(again, "p-app", "notes")).getAttribute("aria-controls")).hidden, false, "expanded again");
+      assert.equal(again.doc.getElementById(fold(card(again, "p-app", "release")).getAttribute("aria-controls")).hidden, false, "expanded again");
     } finally {
       again.close();
     }
     const other = await mount({ linked: [repo], storage: stored, workspace: "ws-other" });
     try {
-      assert.equal(fold(card(other, "p-app", "notes/review")).getAttribute("aria-expanded"), "true", "another Workspace keeps its own");
+      assert.equal(fold(card(other, "p-app", "release")).getAttribute("aria-expanded"), "true", "another Workspace keeps its own");
     } finally {
       other.close();
     }
+  } finally {
+    p.close();
+  }
+});
+
+// T-18: a project's repositories are one bar of one line each; the lists,
+// the GitHub summary and the links open with Repository details.
+test("a project's repository is one line: name, branch, the default branch's run, the last commit and open PRs; details open the lists and close again; only the links' refresh is sent (T-18)", async () => {
+  const activity = {
+    defaultBranch: "main",
+    commits: [{ sha: "c40b8361234567", title: "Merge the cache fix", author: "mori", at: at(2), url: "https://github.com/acme/app/commit/c40b836" }],
+    pulls: [{ number: 71, title: "Home slice 1", author: "kumo", url: "https://github.com/acme/app/pull/71", draft: false }],
+    pullsTotal: 2,
+    runs: [
+      { id: 9, name: "CI", branch: "feat/home", status: "in_progress", conclusion: null, at: at(1), url: "https://github.com/acme/app/actions/runs/9" },
+      { id: 8, name: "CI", branch: "main", status: "completed", conclusion: "success", at: at(3), url: "https://github.com/acme/app/actions/runs/8" },
+    ],
+  };
+  const p = await mount({ linked: [repo], activity });
+  try {
+    const repos = () => p.panel("p-app").querySelector(".home-repos");
+    await waitFor(() => repos()?.querySelector(".repo-line .repo-line-commit .repo-row"), "the repository's line is read");
+    assert.equal(repos().getAttribute("aria-label"), "Repositories");
+    assert.equal(fold(repos()), null, "one line needs no fold");
+    const line = repos().querySelector(".repo-line");
+    assert.equal(repos().querySelectorAll(".repo-line").length, 1);
+    assert.equal(line.querySelector(".repo-name").textContent, "acme/app");
+    assert.equal(line.querySelector(".repo-branch").textContent, "main");
+    // The default branch's latest run, not the newer one on a feature branch.
+    assert.equal(line.querySelector(".repo-line-run a").getAttribute("href"), "https://github.com/acme/app/actions/runs/8");
+    assert.match(line.querySelector(".repo-line-run").textContent, /passed\s*CI/);
+    assert.match(line.querySelector(".repo-line-commit").textContent, /c40b836\s*Merge the cache fix/);
+    assert.equal(line.querySelector(".repo-line-pulls").textContent, "2 open PRs");
+    assert.equal(repos().querySelector(".repo-activity-lists"), null, "no lists until details open");
+    const sent = () => p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url);
+    assert.deepEqual(sent(), [], "reading the line sends nothing");
+    const details = repos().querySelector(".home-repos-details");
+    assert.equal(details.getAttribute("aria-expanded"), "false");
+    assert.equal(p.doc.getElementById(details.getAttribute("aria-controls")).hidden, true);
+    details.click();
+    await waitFor(() => repos().querySelector(".repo-activity-lists"), "the lists open");
+    assert.equal(details.getAttribute("aria-expanded"), "true");
+    assert.equal(details.textContent, "Hide repository details");
+    await waitFor(() => repos().querySelector('[aria-label="GitHub repositories"] .github-entry'), "the links are listed");
+    assert.equal(repos().querySelectorAll(".repo-line").length, 1, "the line stays");
+    details.click();
+    await pause();
+    assert.equal(repos().querySelector(".repo-activity-lists"), null, "closed again");
+    assert.equal(p.doc.getElementById(details.getAttribute("aria-controls")).hidden, true);
+    assert.ok(repos().querySelector('[aria-label="GitHub repositories"]'), "the links stay mounted, with anything typed in them");
+    // The links, once shown, ask Core to refresh them, as Repository details did before T-18; nothing else.
+    assert.deepEqual(sent(), ["/api/collaboration/github_refresh"], "opening details asks only for the links' refresh");
+    assert.deepEqual(p.errors, []);
   } finally {
     p.close();
   }
@@ -1114,52 +1220,34 @@ function readingFixture() {
   return home;
 }
 
-test("a folded card still says what it is about, when its data is from and that nobody keeps it (T-173)", async () => {
+test("a summary card says what it is, when its data is from and that nobody keeps it; a body naming no summary gives no excerpt (T-173, T-18)", async () => {
   const p = await mount({ home: readingFixture() });
   try {
     await waitFor(() => card(p, "p-docs", "layout"), "the Docs cards are drawn");
     const overview = card(p, "p-docs", "overview");
     const evidence = card(p, "p-docs", "evidence");
     const layout = card(p, "p-docs", "layout");
-    // Open, the body says it all: nothing is shown twice.
-    for (const root of [overview, evidence, layout]) assert.ok(!root.querySelector(".home-card-glance"), "no excerpt while open");
-    // An author who has closed: marked in the header, explained in the body.
+    // These bodies name no summary: the card says so, lightly, and takes nothing
+    // from the body, neither its opening paragraph nor its chart (Lead 2292).
+    for (const root of [overview, evidence, layout]) {
+      assert.equal(root.querySelector(".home-summary-unnamed").textContent, "No summary named");
+      assert.equal(root.querySelector(".home-summary-lead"), null);
+      assert.equal(root.querySelector(".home-card-frame"), null);
+      assert.equal(root.querySelector(".brief-body"), null, "no block of the body on Home");
+    }
+    assert.doesNotMatch(overview.textContent, /core\.15/);
+    // When its data is from, in the foot of a status; a report says when it was updated.
+    assert.match(layout.querySelector(".home-summary-foot").textContent, /Data as of/);
+    assert.doesNotMatch(overview.querySelector(".home-summary-foot").textContent, /Data as of/);
+    // An author who has closed: marked, with why.
     assert.equal(layout.querySelector(".home-unmaintained").textContent, "Not maintained");
     assert.match(layout.querySelector(".home-unmaintained").title, /Kumo has closed/);
-    assert.match(layout.querySelector(".home-unmaintained-note").textContent, /Kumo has closed, so this status is no longer updated.*can claim it.*nothing is removed by itself/s);
     assert.ok(!overview.querySelector(".home-unmaintained"), "an active author's card is not marked");
-    // Folding keeps the fold button focused and the chart's data table open.
-    const table = overview.querySelector("details.brief-chart-data");
-    table.open = true;
-    table.dispatchEvent(new p.w.Event("toggle"));
-    await pause();
-    for (const root of [overview, evidence, layout]) {
-      fold(root).focus();
-      fold(root).click();
-      await pause();
-      assert.ok(p.doc.activeElement === fold(root), "focus stays on the fold");
-    }
-    const glance = (root) => root.querySelector(".home-card-glance");
-    assert.equal(glance(overview).querySelector(".home-card-summary").textContent.trim(), "Release core.15 is out; two lines wait for main.",
-      "the accent Group's first paragraph");
-    assert.ok(glance(overview).querySelector(".home-card-summary strong"), "as Markdown");
-    assert.ok(!glance(overview).querySelector(".home-section-time"), "a report has no data time");
-    assert.ok(!glance(evidence), "a card opening with evidence shows no summary rather than the evidence");
-    assert.equal(glance(layout).querySelector(".home-card-summary").textContent.trim(), "Daily runs core.12.");
-    assert.match(glance(layout).querySelector(".home-section-time").textContent, /Data as of/);
-    assert.ok(layout.querySelector(".home-section-head .home-unmaintained"), "still marked when folded");
-    for (const root of [overview, layout]) {
-      const id = fold(root).getAttribute("aria-controls");
-      assert.ok(!glance(root).contains(p.doc.getElementById(id)), "the excerpt is outside the hidden body");
-      assert.equal(p.doc.getElementById(id).hidden, true);
-    }
-    fold(overview).click();
-    await pause();
-    assert.ok(!glance(overview), "no excerpt once open");
-    assert.ok(overview.querySelector("details.brief-chart-data") === table, "the same table, still open");
-    assert.equal(table.open, true);
-    assert.deepEqual(p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url), [],
-      "folding marks nothing seen and answers nothing");
+    // The title and Open report go to the page; nothing is written by looking.
+    assert.equal(layout.querySelector(".home-report-open").textContent, "Open status");
+    assert.equal(overview.querySelector(".home-report-open").textContent, "Open report");
+    assert.ok(overview.querySelector(".home-summary-title button"), "the title is the link");
+    assert.deepEqual(p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url), []);
   } finally {
     p.close();
   }
@@ -1613,6 +1701,117 @@ test("a reply begun on a card the user then marks seen stays sendable, at that v
   }
 });
 
+// T-18 (Lead 2655): a pinned report with a summary is its summary card in
+// the widgets. Marked seen, it is History's entry, which a reply can still
+// refer to: the reply being written stays, as it does in History.
+function pinnedNotes() {
+  const home = homeFixture();
+  home.projects.forEach((panel, n) => panel.brief.sections.forEach((s, i) => (s.id = 100 * (n + 1) + i)));
+  const notes = home.projects[0].brief.sections.find((s) => s.key === "notes");
+  Object.assign(notes, { seen: null, body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "text", size: "wide" } }, children: ["text"] },
+    text: { type: "Markdown", props: { text: "Notes body" } },
+  } } });
+  return home;
+}
+async function pinWithReply(p, text) {
+  card(p, "p-app", "notes").querySelector('[aria-label="Pin “Notes” to My widgets"]').click();
+  await waitFor(() => !!p.doc.querySelector(".home-widget-column article[data-pin-widget]"), "Notes is pinned as its card");
+  const widget = p.doc.querySelector(".home-widget-column article[data-pin-widget]");
+  p.button("Reply", widget).click();
+  await waitFor(() => !!replyBox(widget), "the reply opens in the widget");
+  await choose(p, replyBox(widget).querySelector("select"), "b");
+  await type(p, replyBox(widget).querySelector("textarea"), text);
+  return widget;
+}
+/** Core's reading once the user marked Notes seen (elsewhere: on another device, or its page). */
+function notesSeen(p) {
+  const app = p.state.home.projects[0].brief;
+  const notes = app.sections.find((s) => s.key === "notes");
+  app.sections = app.sections.filter((s) => s !== notes);
+  app.history.unshift({ ...notes, history: true, historyReason: "seen", currentSource: true, seen: { version: 2, at: at(0) } });
+  p.event({ type: "workspace.changed", scope: "brief" });
+}
+
+test("a pinned report marked seen keeps its reply: the same field, text, focus and recipient, sent at its version, Seen left as it is (T-18)", async () => {
+  const p = await mount({ home: pinnedNotes() });
+  try {
+    const widget = await pinWithReply(p, "Before it is seen");
+    const box = replyBox(widget), field = box.querySelector("textarea");
+    field.focus();
+    assert.equal(p.doc.activeElement === field, true);
+    notesSeen(p);
+    await waitFor(() => /Marked seen/.test(widget.textContent), "the widget says it is marked seen");
+    assert.equal(p.doc.querySelector(".home-widget-column article[data-pin-widget]") === widget, true, "the same widget");
+    assert.equal(replyBox(widget) === box && box.querySelector("textarea") === field, true, "the same reply and field");
+    assert.equal(field.value, "Before it is seen");
+    assert.equal(p.doc.activeElement === field, true, "focus stays in the field");
+    assert.equal(box.querySelector("select").value, "b", "the recipient the user chose");
+    assert.match(box.textContent, /Reply to “Notes” · version 2/);
+    assert.equal(p.button("Reply", widget)?.getAttribute("aria-expanded"), "true", "its Reply stays, open");
+    // Its page takes a reply too: the card and the page never disagree.
+    widget.querySelector(".home-report-open").click();
+    await waitFor(() => p.doc.querySelector(".home-report .report-head h1"), "its report");
+    assert.ok(p.button("Reply", p.doc.querySelector(".home-report .report-actions")), "the page offers Reply on the same version");
+    await closeReport(p);
+    p.button("Send", replyBox(widget)).click();
+    await waitFor(() => /Sent to Hana, referring to version 2/.test(replyBox(widget).textContent), "sent");
+    const [post] = p.posts(/\/brief\/reply$/);
+    assert.deepEqual([post.body.key, post.body.version, post.body.title, post.body.agentId, post.body.text], ["notes", 2, "Notes", "b", "Before it is seen"]);
+    assert.equal(p.posts(/\/brief\/(seen|defer)$/).length, 0, "nothing marked seen or deferred");
+    assert.match(widget.textContent, /Marked seen/, "still the seen entry");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a pinned report removed, gone from History, or another section under its key takes no reply in its widget; the draft is kept, sent nowhere (T-18)", async () => {
+  const removed = (p) => {
+    const app = p.state.home.projects[0].brief;
+    const notes = app.sections.find((s) => s.key === "notes");
+    app.sections = app.sections.filter((s) => s !== notes);
+    app.history.unshift({ ...notes, history: true, historyReason: "removed" });
+  };
+  // Seen, then past History's 30 days: Core no longer has it.
+  const expired = (p) => {
+    const app = p.state.home.projects[0].brief;
+    app.history = app.history.filter((s) => s.key !== "notes");
+  };
+  const anew = (p) => {
+    const app = p.state.home.projects[0].brief;
+    const index = app.sections.findIndex((s) => s.key === "notes");
+    app.sections[index] = { ...app.sections[index], id: 999, version: 3, title: "Notes, anew", seen: null };
+  };
+  for (const [how, change, pinState] of [["removed", removed, "removed"], ["expired", expired, "removed"], ["written anew", anew, "replaced"]]) {
+    const p = await mount({ home: pinnedNotes() });
+    try {
+      await pinWithReply(p, `Draft before ${how}`);
+      if (how === "expired") {
+        notesSeen(p);
+        await waitFor(() => /Marked seen/.test(p.doc.querySelector(".home-widget-column article[data-pin-widget]")?.textContent ?? ""), `${how}: seen first`);
+        assert.ok(replyBox(p.doc.querySelector(".home-widget-column article[data-pin-widget]")), `${how}: the seen entry keeps the reply`);
+      }
+      change(p);
+      p.event({ type: "workspace.changed", scope: "brief" });
+      const column = p.doc.querySelector(".home-widget-column");
+      await waitFor(() => column.querySelector(`.home-pinned[data-pin-state="${pinState}"]`), `${how}: the widget says why`);
+      assert.equal(column.querySelector(".home-card-reply"), null, `${how}: no reply in the widget`);
+      assert.equal(p.button("Reply", column.querySelector(".home-pinned")), undefined, `${how}: no Reply in the widget`);
+      if (how !== "written anew") {
+        const kept = p.panel("p-app").querySelector(".home-kept-reply");
+        assert.ok(kept, `${how}: the draft is kept in its project`);
+        assert.match(kept.textContent, new RegExp(`Draft before ${how}`));
+        assert.equal(p.button("Send", kept), undefined, `${how}: never sent from there`);
+      }
+      assert.equal(p.posts(/\/brief\/reply$/).length, 0, `${how}: nothing sent`);
+      assert.deepEqual(p.errors, []);
+    } finally {
+      p.close();
+    }
+  }
+});
+
 // T-177: a Home image opens in the app's preview and Point & Fix marks it,
 // on Codex Agents that can take images. What Point & Fix needs from a
 // browser, which jsdom lacks, is stubbed: decoding (400×300), drawing,
@@ -1662,8 +1861,10 @@ test("a Home image opens in the app, and Mark up adds it with its card to the au
   const p = await mount({ home: homeImages(), workspaceAgents: codexAgents });
   try {
     const { uploads, reads } = pointFixStubs(p);
-    await waitFor(() => card(p, "p-app", "shots")?.querySelector("button.brief-image"), "the image is drawn");
-    const shots = card(p, "p-app", "shots");
+    // On the report's page, where its attachments are (T-18).
+    await waitFor(() => card(p, "p-app", "shots"), "the card is drawn");
+    const shots = await openReport(p, "p-app", "shots");
+    await waitFor(() => shots.querySelector("button.brief-image"), "the image is drawn");
     assert.ok(!shots.querySelector(".brief-attachment a"), "no link to a browser tab");
     const preview = () => p.doc.querySelector('[role="dialog"]');
     shots.querySelector("button.brief-image").click();
@@ -1703,8 +1904,10 @@ test("a Home image whose author is gone is never offered to another Agent: the u
   const p = await mount({ home: homeImages(), workspaceAgents: codexAgents });
   try {
     const { uploads } = pointFixStubs(p);
-    await waitFor(() => card(p, "p-app", "ghost")?.querySelector("button.brief-image"), "the image is drawn");
-    card(p, "p-app", "ghost").querySelector("button.brief-attachment-open").click();
+    await waitFor(() => card(p, "p-app", "ghost"), "the card is drawn");
+    const ghost = await openReport(p, "p-app", "ghost");
+    await waitFor(() => ghost.querySelector("button.brief-image"), "the image is drawn");
+    ghost.querySelector("button.brief-attachment-open").click();
     const preview = () => p.doc.querySelector('[role="dialog"]');
     await waitFor(preview, "Open opens the same preview");
     buttonIn(preview(), "Mark up").click();
@@ -1736,7 +1939,7 @@ test("Home's repository details follow a language change; the repository stays a
   const p = await mount({ linked: [repo] });
   try {
     await waitFor(() => p.panel("p-app").querySelector(".home-repos .repo-activity"), "the Repositories block is read");
-    [...p.panel("p-app").querySelectorAll(".home-repos button")].find((b) => b.textContent === "Repository details…").click();
+    p.panel("p-app").querySelector(".home-repos-details").click();
     await waitFor(() => p.panel("p-app").querySelector('.home-repos [aria-label="GitHub repositories"] .github-entry'), "the repositories are listed");
     const reads = () => p.calls.filter((c) => c.url.endsWith("/api/collaboration/github_repositories")).length;
     const before = reads();
@@ -2089,9 +2292,8 @@ test("T-9 a report copies in one click as Markdown from its body: folded parts, 
   try {
     await waitFor(() => card(p, "p-app", "research"), "the report");
     const report = card(p, "p-app", "research");
-    // Folded on the page: the copy still has every part.
-    report.querySelector(".home-section-head button[aria-controls]").click();
-    await waitFor(() => report.classList.contains("is-collapsed"), "folded");
+    // The card shows its summary only; the copy, from More actions, still has every part (T-18).
+    await openMore(p, report);
     const copied = [];
     clipboard(p, async (text) => { copied.push(text); });
     p.button("Copy report", report).click();
@@ -2157,10 +2359,11 @@ const withDesk = () => {
   }));
   return home;
 };
-const foldCard = async (p, report) => {
-  report.querySelector(".home-section-head button[aria-controls]").click();
-  await waitFor(() => report.classList.contains("is-collapsed"), "folded");
-};
+// A summary card's Copy report is under More actions (T-18).
+async function openMore(p, report) {
+  report.querySelector(".home-summary-more > button").click();
+  await waitFor(() => !report.querySelector(".home-summary-more-list").hidden, "More actions open");
+}
 
 test("T-9 a report's research desk copies Core's numbers for the version shown, through a write that starts in the click", async () => {
   const reads = [];
@@ -2168,7 +2371,7 @@ test("T-9 a report's research desk copies Core's numbers for the version shown, 
   try {
     await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
     const report = card(p, "p-app", "dose-study");
-    await foldCard(p, report);
+    await openMore(p, report);
     // As Safari needs it: a ClipboardItem whose text is still loading, written in the click.
     const items = [];
     p.w.ClipboardItem = class { constructor(parts) { this.parts = parts; } };
@@ -2204,7 +2407,7 @@ test("T-9 a research desk whose numbers Core can't give for that version copies 
   try {
     await waitFor(() => card(p, "p-app", "dose-study"), "the desk report");
     const report = card(p, "p-app", "dose-study");
-    await foldCard(p, report);
+    await openMore(p, report);
     const copied = [];
     Object.defineProperty(p.w.navigator, "clipboard", { configurable: true, value: { writeText: async (value) => { copied.push(value); } } });
     const copy = async () => {
@@ -2296,8 +2499,11 @@ test("T-9 a report's plain fields read back as written once the copy is rendered
   pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), { body: body(copied[0]) }));
   p = await mount({ home: pasted });
   try {
-    await waitFor(() => card(p, "p-app", "pasted")?.querySelector(".brief-markdown"), "the pasted copy");
-    const rendered = card(p, "p-app", "pasted").querySelector(".brief-markdown");
+    // Read on the report's page, where its body is drawn (T-18).
+    await waitFor(() => card(p, "p-app", "pasted"), "the pasted report");
+    const page = await openReport(p, "p-app", "pasted");
+    await waitFor(() => page.querySelector(".brief-markdown"), "the pasted copy");
+    const rendered = page.querySelector(".brief-markdown");
     const visible = rendered.textContent.replace(/\s+/g, " ");
     const lost = Object.entries(plainFields).filter(([, text]) => !visible.includes(text)).map(([field]) => field);
     assert.deepEqual(lost, [], `every plain field reads back as its characters; lost: ${lost.join(", ")}`);
@@ -2387,8 +2593,11 @@ test("T-9 a report's Markdown blocks copy as Home shows each: indented code, and
   const copies = {};
   try {
     await waitFor(() => names.every((name) => card(p, "p-app", `md-${name}`)), "the reports");
-    for (const [name, text] of Object.entries(pageShows))
-      assert.equal(card(p, "p-app", `md-${name}`).querySelector(".brief-markdown").textContent.trim(), text, `the page shows ${name} as written`);
+    for (const [name, text] of Object.entries(pageShows)) {
+      const page = await openReport(p, "p-app", `md-${name}`);
+      assert.equal(page.querySelector(".brief-markdown").textContent.trim(), text, `the page shows ${name} as written`);
+      await closeReport(p);
+    }
     for (const name of names) {
       const copied = [];
       clipboard(p, async (text) => { copied.push(text); });
@@ -2406,8 +2615,10 @@ test("T-9 a report's Markdown blocks copy as Home shows each: indented code, and
   }));
   p = await mount({ home: pasted });
   try {
-    await waitFor(() => card(p, "p-app", "pasted")?.querySelectorAll(".brief-markdown").length === names.length, "the pasted copies");
-    const rendered = [...card(p, "p-app", "pasted").querySelectorAll(".brief-markdown")];
+    await waitFor(() => card(p, "p-app", "pasted"), "the pasted report");
+    const page = await openReport(p, "p-app", "pasted");
+    await waitFor(() => page.querySelectorAll(".brief-markdown").length === names.length, "the pasted copies");
+    const rendered = [...page.querySelectorAll(".brief-markdown")];
     const failed = names.filter((name, i) => {
       const pres = [...rendered[i].querySelectorAll("pre")];
       return !markdownChecks[name](rendered[i], pres.map((pre) => pre.textContent), pres);
@@ -2444,8 +2655,11 @@ test("T-9 a fence a Markdown block leaves open before a research desk ends with 
   pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), { body: body(copied) }));
   p = await mount({ home: pasted });
   try {
-    await waitFor(() => card(p, "p-app", "pasted")?.querySelector(".brief-markdown"), "the pasted copy");
-    const rendered = card(p, "p-app", "pasted").querySelector(".brief-markdown");
+    // Read on the report's page, where its body is drawn (T-18).
+    await waitFor(() => card(p, "p-app", "pasted"), "the pasted report");
+    const page = await openReport(p, "p-app", "pasted");
+    await waitFor(() => page.querySelector(".brief-markdown"), "the pasted copy");
+    const rendered = page.querySelector(".brief-markdown");
     const code = [...rendered.querySelectorAll("pre")].map((pre) => pre.textContent);
     assert.deepEqual(code, ["raw log line\n"], "only the notes' own line is code");
     const headings = [...rendered.querySelectorAll("h4")].map((h) => h.textContent);
@@ -2484,15 +2698,154 @@ test("T-9 a copied research desk keeps each row's and part's own source and defi
   pasted.projects[0].brief.sections.push(section("pasted", "report", "Pasted", 1, owner("a", "Mori"), { body: body(copied) }));
   p = await mount({ home: pasted });
   try {
-    await waitFor(() => card(p, "p-app", "pasted")?.querySelector(".brief-markdown table"), "the pasted copy");
+    await waitFor(() => card(p, "p-app", "pasted"), "the pasted report");
+    const page = await openReport(p, "p-app", "pasted");
+    await waitFor(() => page.querySelector(".brief-markdown table"), "the pasted copy");
     // The first table is the current plot's.
-    const table = card(p, "p-app", "pasted").querySelector(".brief-markdown table");
+    const table = page.querySelector(".brief-markdown table");
     const basisOf = (label) => [...table.querySelectorAll("tr")].find((tr) => tr.cells[0]?.textContent === label)?.cells[4]?.textContent;
     assert.equal(table.rows[0].cells[4]?.textContent, "Source · definition");
     assert.equal(basisOf("High dose"), "Analysis output · Recovery v2", "the row's own");
     assert.equal(basisOf("High dose · High dose"), "Protocol, lines 50-52 · Recovery v1", "the part's own, not its row's");
     assert.equal(basisOf("High dose · Placebo"), "no source of its own · no definition of its own", "a part naming none takes none from its row");
     assert.equal(table.querySelectorAll("a").length, 0);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// T-42: who needs the user. Core says how each Agent's last Turn ended; what
+// this device has seen of it is kept here only.
+const ended = (seq, outcome = "finished") => ({ lastTurnEnd: { seq, outcome, at: at(4) } });
+const attentionAgents = () => [
+  // Mori's last Turn failed, Hana's finished, neither shown here yet.
+  { ...agents[0], ...ended(30, "failed"), status: "error" },
+  { ...agents[1], ...ended(20) },
+  // Sora: a request and a question sent to be answered later.
+  { ...agents[2], pendingCount: 2, openQuestions: 1 },
+];
+const attentionHome = () => {
+  const home = homeFixture();
+  home.needsYou.push({ kind: "question", projectId: "p-res", agentId: "c", agentName: "Sora", turnId: "t3", itemId: "q1", title: "Which seed?", since: at(5) });
+  return home;
+};
+// The window opens on Sora, whose last Turn hasn't ended: nothing is seen before the test looks.
+const startOnSora = { "yuzuno.selected.ws-home": JSON.stringify("c") };
+const railIds = (p) => [...p.doc.querySelectorAll(".agent-list .agent-row")].map((row) => row.dataset.agentId);
+const railLabel = (p, id) => p.doc.querySelector(`.agent-row[data-agent-id="${id}"] .agent-runtime`)?.textContent ?? null;
+const shown = (p) => p.doc.querySelector(".conversation-title h1")?.textContent ?? null;
+
+test("Needs you lists an open question and opens its conversation; Turn ends not seen here follow, failed then finished, and stay this device's", async () => {
+  const p = await mount({ workspaceAgents: attentionAgents(), home: attentionHome(), storage: startOnSora });
+  try {
+    await waitFor(() => p.doc.querySelector('[data-needs-you="question:c:t3:q1"]'), "the question is listed");
+    const unseen = (outcome) => [...p.doc.querySelectorAll(`.home-needs-you [data-unseen="${outcome}"]`)].map((b) => b.dataset.unseenAgent);
+    assert.deepEqual(unseen("failed"), ["a"]);
+    assert.deepEqual(unseen("finished"), ["b"]);
+    // The rail says so too, in the list's order: Appearance chose none.
+    assert.deepEqual(railIds(p), ["a", "b", "c"]);
+    assert.equal(railLabel(p, "a"), "Failed · unseen");
+    assert.equal(railLabel(p, "b"), "Finished · unseen");
+    p.doc.querySelector('[data-needs-you="question:c:t3:q1"]').click();
+    await waitFor(() => shown(p) === "Sora", "the question opens Sora's conversation");
+    // Shown here, Hana's Turn end is seen on this device, and only here.
+    p.button("Home").click();
+    await waitFor(() => p.doc.querySelector('[data-unseen-agent="b"]'), "Home again");
+    p.doc.querySelector('[data-unseen-agent="b"]').click();
+    await waitFor(() => shown(p) === "Hana", "Hana's conversation");
+    await waitFor(() => p.w.localStorage.getItem("yuzuno.turnSeen.ws-home") === '{"b":20}', "seen on this device");
+    await waitFor(() => railLabel(p, "b") === "Ready", "Hana's label");
+    assert.equal(railLabel(p, "a"), "Failed · unseen");
+    p.button("Home").click();
+    await waitFor(() => p.doc.querySelector('.home-needs-you [data-unseen="failed"]'), "Home again");
+    assert.equal(p.doc.querySelector('.home-needs-you [data-unseen="finished"]'), null, "nothing finished is unseen");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("the rail in attention order once Appearance chooses it: the same Agents, who needs you first, within each project group", async () => {
+  const one = await mount({ workspaceAgents: attentionAgents(), storage: { ...startOnSora, "yuzuno.appearance": JSON.stringify({ agentOrder: "attention", projectGroups: "none" }) } });
+  try {
+    assert.deepEqual(railIds(one), ["c", "a", "b"], "waiting on you, failed unseen, finished unseen");
+  } finally {
+    one.close();
+  }
+  const listed = await mount({ workspaceAgents: attentionAgents(), storage: { ...startOnSora, "yuzuno.appearance": JSON.stringify({ projectGroups: "none" }) } });
+  try {
+    assert.deepEqual(railIds(listed), ["a", "b", "c"], "by default the list keeps its order");
+  } finally {
+    listed.close();
+  }
+  // Grouped by project: each group ordered, the groups as the project menu has them.
+  const grouped = [{ ...agents[0], ...ended(30) }, { ...agents[1], pendingCount: 1 }, agents[2]];
+  const groups = await mount({ workspaceAgents: grouped, storage: { ...startOnSora, "yuzuno.appearance": JSON.stringify({ agentOrder: "attention" }) } });
+  try {
+    assert.deepEqual(railIds(groups), ["b", "a", "c"]);
+  } finally {
+    groups.close();
+  }
+});
+
+test("a Turn end read past on any device is not unseen on a new one; one that ended after the last read still is (review 9392d7c2)", async () => {
+  // Nothing in this browser's storage. Mori's failed Turn was read through
+  // elsewhere (reviewedSeq 30); Hana's ended after her last read (12).
+  const workspaceAgents = [
+    { ...agents[0], ...ended(30, "failed"), status: "error", reviewedSeq: 30 },
+    { ...agents[1], ...ended(20) },
+    { ...agents[2], pendingCount: 2, openQuestions: 1 },
+  ];
+  const p = await mount({ workspaceAgents, home: attentionHome(),
+    storage: { ...startOnSora, "yuzuno.appearance": JSON.stringify({ agentOrder: "attention", projectGroups: "none" }) } });
+  try {
+    await waitFor(() => p.doc.querySelector('.home-needs-you [data-unseen="finished"]'), "Hana's Turn end is listed");
+    const unseen = (outcome) => [...p.doc.querySelectorAll(`.home-needs-you [data-unseen="${outcome}"]`)].map((b) => b.dataset.unseenAgent);
+    assert.deepEqual([unseen("failed"), unseen("finished")], [[], ["b"]], "only the end after the last read");
+    assert.equal(railLabel(p, "b"), "Finished · unseen");
+    assert.notEqual(railLabel(p, "a"), "Failed · unseen");
+    assert.deepEqual(railIds(p), ["c", "b", "a"], "Mori's read end no longer moves Mori up");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("the tab title and the app badge count what Home's tab counts; next needs you goes through Needs you, then Turn ends unseen, and round again", async () => {
+  const badges = [];
+  const p = await mount({
+    workspaceAgents: attentionAgents(),
+    home: attentionHome(),
+    storage: startOnSora,
+    before: (w) => {
+      w.document.title = "Yuzuno · test";
+      w.navigator.setAppBadge = async (count) => badges.push(count);
+      w.navigator.clearAppBadge = async () => badges.push(0);
+    },
+  });
+  const press = () => p.w.dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "j", ctrlKey: true, bubbles: true }));
+  try {
+    // Sora's request and question, and Mori's Ask.
+    await waitFor(() => p.doc.title === "(3) Yuzuno · test", `the title counts: ${p.doc.title}`);
+    assert.equal(badges.at(-1), 3);
+    const button = p.doc.querySelector(".next-needs-you");
+    assert.equal(button.title, "Go to the next thing that needs you (Ctrl J)");
+    assert.match(button.textContent, /^Next needs youCtrl J$/);
+    // Home is open: the first is Mori's Ask, there.
+    press();
+    await waitFor(() => p.scrolled.some((el) => el.id === "home-section-p-app-release"), "the Ask is shown on Home");
+    assert.ok(p.doc.querySelector(".home-view"), "still Home");
+    press();
+    await waitFor(() => shown(p) === "Sora", "then Sora, whose request and question wait");
+    press();
+    await waitFor(() => shown(p) === "Mori", "then the failed Turn not seen here");
+    // Shown, Mori's is seen and leaves the round; it goes on from there.
+    await waitFor(() => p.w.localStorage.getItem("yuzuno.turnSeen.ws-home") === '{"a":30}', "seen on this device");
+    button.click();
+    await waitFor(() => shown(p) === "Hana", "then the finished one");
+    press();
+    await waitFor(() => p.doc.querySelector(".home-view"), "and round again to the Ask");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

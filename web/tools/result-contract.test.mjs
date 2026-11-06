@@ -9,6 +9,7 @@ import {
 } from "../src/intelligent-ui/contract.ts";
 import { catalog } from "../src/intelligent-ui/spec.ts";
 import { comparisonExample, reportExample } from "../src/intelligent-ui/examples.ts";
+import { RESERVE_CAP, RESERVE_HEIGHT, reserveFor } from "../src/intelligent-ui/result-reserve.ts";
 
 const problems = (value) => {
   try {
@@ -155,4 +156,21 @@ test("the renderer's catalog describes the same components", () => {
   assert.deepEqual(Object.keys(componentProps).sort(), Object.keys(COMPONENT_DESCRIPTIONS).sort());
   const prompt = catalog.prompt();
   for (const description of Object.values(COMPONENT_DESCRIPTIONS)) assert.ok(prompt.includes(description));
+});
+
+test("a result's placeholder keeps room for the kinds of block its spec holds, at most the cap; text alone keeps none (T-19 HM:I5)", () => {
+  const result = (children, elements) => ({ root: "result", elements: {
+    result: { type: "Result", props: { title: "T", summary: "S" }, children }, ...elements } });
+  const text = { type: "Text", props: { text: "Hello" } };
+  assert.equal(reserveFor(checkResultSpec(result(["body"], { body: text })).spec), null);
+  const table = checkResultSpec(comparisonExample).spec;
+  assert.deepEqual(reserveFor(table), { kinds: ["table"], height: RESERVE_HEIGHT.table });
+  // Inside a Section, and more than one kind: the sum, at most the cap.
+  const chart = { type: "BarChart", props: { id: "c", title: "Chart", unit: "ms", data: [{ id: "a", label: "A", value: 1 }] } };
+  const grid = { type: "Table", props: { id: "t", title: "Table", columns: [{ key: "k", label: "K" }], rows: [{ id: "r", cells: { k: "v" } }] } };
+  const both = checkResultSpec(result(["part"], { part: { type: "Section", props: { title: "Part" }, children: ["grid", "chart"] }, grid, chart })).spec;
+  assert.deepEqual(reserveFor(both), { kinds: ["table", "chart"], height: Math.min(RESERVE_CAP, RESERVE_HEIGHT.table + RESERVE_HEIGHT.chart) });
+  assert.equal(reserveFor(both).height, RESERVE_CAP);
+  // Only what the tree reaches counts.
+  assert.equal(reserveFor({ root: "result", elements: { result: { type: "Result", props: {}, children: [] }, stray: grid } }), null);
 });

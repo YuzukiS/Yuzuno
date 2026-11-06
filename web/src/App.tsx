@@ -5,7 +5,7 @@ import { MAX_DRAFT_SKILLS } from "./composer-draft";
 import { useImageUploads } from "./useImageUploads";
 import { PointFix, imageRefusal } from "./PointFix";
 import { PointFixOpen, type PointFixSource } from "./point-fix";
-import { appendImage, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
+import { appendImage, clipboardImages, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
 import {
   memo,
   useCallback,
@@ -16,8 +16,9 @@ import {
   useState,
   type ComponentProps,
 } from "react";
-import { settleWhenLanded } from "./settle";
+import { ringAgain, settleWhenLanded } from "./settle";
 import { ToastStack, type ToastText } from "./Toasts";
+import { animates } from "./motion";
 import {
   Archive,
   ArchiveRestore,
@@ -27,6 +28,7 @@ import {
   ArrowUp,
   ArrowUpRight,
   Bell,
+  BellRing,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -36,10 +38,13 @@ import {
   House,
   Link2,
   ImagePlus,
+  Shapes,
   SquareDashedMousePointer,
   Leaf,
   LoaderCircle,
+  Maximize2,
   MessageSquare,
+  Minimize2,
   Monitor,
   PanelLeft,
   PanelRight,
@@ -94,7 +99,7 @@ import type {
 } from "./types";
 import type { SettingsDestination, SettingsEditor } from "./settings-catalog";
 import { UpdateBanner, WorkspaceUpdatesHost } from "./WorkspaceUpdates";
-import { useAppearanceFollow } from "./appearance-follow";
+import { onFollowApplied, useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSavedPages } from "./useSavedPages";
@@ -137,7 +142,7 @@ import { GroupedAgents } from "./ProjectGroups";
 import { groupAgents } from "./project-groups";
 import { useAppearance } from "./appearance";
 import { StatusBar } from "./StatusBar";
-import { useAutoRead } from "./useAutoRead";
+import { AUTO_READ_DWELL_MS, useAutoRead } from "./useAutoRead";
 import { PanelResizeHandle, usePanelWidths } from "./ResizablePanels";
 import { CollaborationBoard } from "./CollaborationBoard";
 import { MachinesPage } from "./MachinesPage";
@@ -191,9 +196,11 @@ import { moveWindow, useCustomFrame, WindowControls } from "./WindowControls";
 import { conversationTimeMarks } from "./conversation-time";
 import { useTimeDisplay } from "./time-preferences";
 import { PastedTextComposer, type ComposerHandle } from "./PastedTextComposer";
+import { ComposerAddMenu } from "./ComposerAddMenu";
+import { useComposerShape } from "./composer-shape";
 import { draftTextBlocks } from "./message-content";
 import { RequestSummary } from "./MessageContent";
-import { appendDraft, draftText, hasDraftContent, type ComposerDraft } from "./composer-draft";
+import { appendDraft, appendDraftOnce, draftText, hasDraftContent, type ComposerDraft } from "./composer-draft";
 import { HandoffContext, HandoffDropStrip, type HandoffApi } from "./SendToAgent";
 import { handoffLabel, handoffNotices, handoffRefusal, handoffText, type HandoffSource } from "./handoff";
 import { useComposerDraft } from "./useComposerDraft";
@@ -203,14 +210,28 @@ import { QuestionIndex, questionKey } from "./pending-questions";
 import { pruneRequestDrafts } from "./request-draft";
 import { usePhone } from "./phone-layout";
 import { PhoneDockButtons, usePhoneDockMotion, type PhoneDock } from "./PhoneDocks";
-import { useArrivalsIn, useSurfaceIn } from "./surface";
+import { useArrivalsIn, useDelayedPresence, useSurfaceIn } from "./surface";
+import { ConversationStrips } from "./ConversationStrips";
 import { followVisualViewport } from "./keyboard-viewport";
-import type { HomeReplyOrigin, QuestionSource } from "./types";
+import type { HomeReplyOrigin, NativeTurn, QuestionSource } from "./types";
 import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-reply/HomeReply";
 import { reportText } from "./home/report/report-text";
 import { Home, type HomeTarget } from "./home/Home";
+import {
+  needsYouTargets,
+  nextTarget,
+  orderByAttention,
+  unseenEnd,
+  waitingSince,
+  proposersWaiting,
+  type NeedsJump,
+  type NeedsTarget,
+} from "./attention";
+import { markTurnSeen, useTurnSeen } from "./turn-seen";
 import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
+import { OpenCodeRevertHost } from "./Rewind";
+import { OpenCodeForkHost, type OpenCodeForkOutcome } from "./ForkOpenCode";
 
 type TurnProps = ComponentProps<typeof Turn>;
 /** Streamed changes replace only the Turn they touch; the others keep their
@@ -267,8 +288,12 @@ function writeStorage(key: string, value: unknown) {
 }
 // A stable empty list, so the sub-agent dock's memo holds without a detail.
 const EMPTY_TURNS: never[] = [];
+/** The page's own title, which a count of what needs the user prefixes (T-42). */
+const PAGE_TITLE = typeof document === "undefined" ? "Yuzuno" : document.title;
 /** Frames a new Agent's row waits for its folded group to open (T-19 SH:R11). */
 const JOIN_WAIT = 90;
+/** A Turn still working, as its own view tells (components.tsx `running`). */
+const RUNNING_TURN = /inProgress|running/;
 /** Where a held message is read: its text, below its minute mark. A run of
  * messages in one minute shows only its first time, so loading earlier ones
  * can take that line away; holding the message's box would move its text by
@@ -276,6 +301,17 @@ const JOIN_WAIT = 90;
 function readingTop(element: HTMLElement) {
   const text = Array.from(element.children).find(child => !child.classList.contains("message-time"));
   return (text ?? element).getBoundingClientRect().top;
+}
+
+/**
+ * Whether an event on the conversation's scroller is its own: one whose
+ * target is inside it. A dialog or menu portaled out of it (an OpenCode
+ * revert's, a rewind's) still sends its clicks, wheels, touches and keys
+ * there through React, and they must neither take the conversation from
+ * following nor send it back to the end (T-10, Lead 4153, 4154).
+ */
+function ownEvent(e: { target: EventTarget; currentTarget: EventTarget }): boolean {
+  return e.target instanceof Node && e.currentTarget instanceof Node && e.currentTarget.contains(e.target);
 }
 
 export function App() {
@@ -320,6 +356,9 @@ export function App() {
   // The shared Appearance preset, for a device that follows it (T-194).
   const [presetRevision, presetRefresh] = useRefreshTrigger();
   const [loading, setLoading] = useState(!previewMode);
+  // Retry in the connection banner, from its press until the read it starts
+  // is over (T-19 SH:M05).
+  const [retrying, setRetrying] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   // A project chosen by a group's "+": its id, "" for none, null to follow
   // the project scope.
@@ -553,7 +592,62 @@ export function App() {
   const [sourceOrigin, setSourceOrigin] = useState<"home" | "rail">(
     "home",
   );
-  const [atBottom, setAtBottom] = useState(true);
+  const [atBottom, setAtBottomState] = useState(true);
+  // Whether Back to latest shows (T-19 SH:C19, CV:CW-05). Set with `atBottom`
+  // wherever the app decides, but a scroll shows it only 96 px or more from
+  // the end and hides it only under 48 px, so it does not flicker while a
+  // stream grows the page. `atBottom` (follow, reading) keeps its 72 px.
+  const [latestAway, setLatestAway] = useState(false);
+  const setAtBottom = useCallback((at: boolean) => {
+    setAtBottomState(at);
+    setLatestAway(!at);
+  }, []);
+  const latestShown = latestAway || historyReading;
+  // Back to latest leaves through a copy (T-19): aria-hidden, inert and not
+  // hit by the pointer, it fades out where the button was, while the button
+  // itself is gone at once. Only within one conversation: another one shown
+  // takes it away at once, and what showed for the one before is not a
+  // baseline it can leave from (some ways of opening an Agent reset `atBottom`
+  // only after it is shown). None under reduced motion or without Web
+  // Animations; reduced motion turned on, or the copy's fade cancelled, takes
+  // it away.
+  const [latestLeaving, setLatestLeaving] = useState(0);
+  const latestWas = useRef({ shown: latestShown, scope: "" });
+  useLayoutEffect(() => {
+    const scope = `${workspaceId}\n${selected}`;
+    const was = latestWas.current;
+    const sameScope = was.scope === scope;
+    latestWas.current = { shown: latestShown && sameScope, scope };
+    if (latestShown || !sameScope) {
+      setLatestLeaving(0);
+      return;
+    }
+    if (!was.shown || !animates()) return;
+    setLatestLeaving((n) => n + 1);
+    const gone = setTimeout(() => setLatestLeaving(0), 400);
+    return () => clearTimeout(gone);
+  }, [latestShown, workspaceId, selected]);
+  useEffect(() => {
+    const query = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!query?.addEventListener) return;
+    const change = () => {
+      if (query.matches) setLatestLeaving(0);
+    };
+    query.addEventListener("change", change);
+    return () => query.removeEventListener("change", change);
+  }, []);
+  const latestLeavingCopy = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    const cancelled = () => setLatestLeaving(0);
+    el.addEventListener("animationcancel", cancelled);
+    return () => el.removeEventListener("animationcancel", cancelled);
+  }, []);
+  // Each time it shows, it comes in, rising 4 px as it fades in over small.
+  const latestButton = useRef<HTMLButtonElement>(null);
+  const latestShows = useRef({ shown: false, n: 0 });
+  if (latestShows.current.shown !== latestShown)
+    latestShows.current = { shown: latestShown, n: latestShows.current.n + (latestShown ? 1 : 0) };
+  useSurfaceIn(latestButton, latestShows.current.n, "small", true, "translateY(4px)");
   const [jumpToTurn, setJumpTarget] = useState<string | null>(null);
   // The input a jump to `jumpToTurn` reads from, when it is one (T-6).
   const jumpItem = useRef<string | null>(null);
@@ -663,7 +757,10 @@ export function App() {
   // that (a scroll says the rest) and moves nothing.
   const measureLatest = useCallback(() => {
     const el = scroll.current;
-    if (el && el.clientHeight > 0 && el.scrollHeight - el.scrollTop - el.clientHeight >= 72) setAtBottom(false);
+    if (!el || el.clientHeight <= 0) return;
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (gap >= 72) setAtBottomState(false);
+    if (gap >= 96) setLatestAway(true);
   }, []);
   const searchReading = useRef(false);
   const draggingScrollbar = useRef(false);
@@ -744,12 +841,16 @@ export function App() {
   // (`drain`), only the end of what it replays (`drained`) or a reset ends the
   // wait: no read starts for it, and no timer guesses it (Lead 3356).
   const arrivalsSettle = useRef<{ after: number; drain?: boolean; drained?: boolean } | null>(null);
+  // Core streamed or announced a change to the open Agent since the stream
+  // last reset: a Turn the next detail adds after the shown ones arrived live
+  // (T-19 CV:T-01).
+  const liveTurn = useRef<{ workspace: string; agent: string } | null>(null);
   // Renders the app when a resumed stream's replay ends, so the wait is looked at again.
   const [, setDrains] = useState(0);
   // Told in the stream's order, so a reset that follows always wins (R1 276d4a1d; Lead 3356).
   const onReplay = useCallback((state: "resumed" | "drained") => {
     if (state === "resumed") {
-      liveChange.current = null;
+      liveChange.current = liveTurn.current = null;
       arrivalsSettle.current = { after: Infinity, drain: true };
       return;
     }
@@ -783,13 +884,16 @@ export function App() {
         case "agent.item":
         case "agent.context":
           // Only the shown Agent's detail is kept; others are read when opened.
-          if (event.agentId === currentSelected.current) live.sync.push(event);
+          if (event.agentId === currentSelected.current) {
+            if (event.type !== "agent.context") liveTurn.current = { workspace: currentWorkspace.current, agent: event.agentId };
+            live.sync.push(event);
+          }
           return;
         case "agent.changed":
           workspaceRefresh.soon(250);
           homeRefresh.soon(1_000);
           if (event.agentId === currentSelected.current) {
-            liveChange.current = { workspace: currentWorkspace.current, agent: event.agentId };
+            liveChange.current = liveTurn.current = { workspace: currentWorkspace.current, agent: event.agentId };
             live.sync.refetch();
           }
           return;
@@ -813,7 +917,7 @@ export function App() {
                   : listed.lastSeq > old.lastSeq;
               if (!newer) return w;
               const agents = w.agents.slice();
-              agents[index] = { ...listed, projectId: old.projectId };
+              agents[index] = { ...listed, projectId: old.projectId, kind: old.kind };
               return { ...w, agents };
             });
           }
@@ -842,8 +946,8 @@ export function App() {
           else refresh();
           return;
         case "reset":
-          // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01).
-          liveChange.current = null;
+          // What a reconnect, poll or Core's reset brings only shows (T-19 CV:Q-01, CV:T-01).
+          liveChange.current = liveTurn.current = null;
           arrivalsSettle.current = { after: live.sync.reads };
           jobsRefresh.now();
           presetRefresh.now();
@@ -863,7 +967,7 @@ export function App() {
   if (lastConnection.current !== eventConnection) {
     lastConnection.current = eventConnection;
     if (eventConnection !== "open") {
-      liveChange.current = null;
+      liveChange.current = liveTurn.current = null;
       arrivalsSettle.current = { after: Infinity };
     }
   }
@@ -928,6 +1032,22 @@ export function App() {
   const shellNow = useRef(shell);
   shellNow.current = shell;
   const core = coreConnection(!!workspace, workspaceFailure, eventConnection, previewMode, browserOffline, language);
+  // The connection banners show once their cause has held 600 ms, so a flap
+  // never flashes one; they reveal over small, leave over exit-small and keep
+  // what they said while they leave (T-19 SH:M04, SH:M06).
+  const coreWanted = !!(workspaceError || core.browser);
+  const coreBanner = useDelayedPresence(coreWanted, 600);
+  const coreSaid = useRef({ error: workspaceError, label: core.label, detail: core.detail, browser: core.browser, stream: core.stream, loaded: !!workspace });
+  if (coreWanted) coreSaid.current = { error: workspaceError, label: core.label, detail: core.detail, browser: core.browser, stream: core.stream, loaded: !!workspace };
+  const liveBanner = useDelayedPresence(!previewMode && !workspaceError && !core.browser && eventConnection === "reconnecting", 600);
+  // A newer revision of the shared Appearance preset applied here in the
+  // background says so, as the look changed with no action here (T-19 ST:SA7).
+  useEffect(() => {
+    if (previewMode || !workspaceId) return;
+    return onFollowApplied((id) => {
+      if (id === workspaceId) setNotice(shellNow.current.appearanceFollowed);
+    });
+  }, [workspaceId, setNotice]);
   const agent = workspace?.agents.find((a) => a.id === selected);
   const inspectorShown = (phone ? phoneInspector : inspector) && !!agent && !homeOpen;
   // A side panel shown again comes in from its side over medium (T-19 M7): the Agent list from
@@ -950,6 +1070,13 @@ export function App() {
   // Shown, not just counted: hiding the list while it comes in stops its move (Lead 3219).
   useSurfaceIn(railBox, panelOpens.current.rails, "medium", !phone && railOpen && panelOpens.current.rails > 0, "translateX(-8px)");
   useSurfaceIn(inspectorBox, panelOpens.current.inspectors, "medium", inspectorShown && panelOpens.current.inspectors > 0, "translateX(8px)");
+  // An action's error above the composer fades in as it appears (T-19 SH:X05); the room it takes is
+  // made at once. Another error replacing it while it shows plays nothing; dismissing it stops it.
+  const actionErrorBox = useRef<HTMLDivElement>(null);
+  const actionErrors = useRef({ shown: false, n: 0 });
+  if (actionErrors.current.shown !== !!actionError)
+    actionErrors.current = { shown: !!actionError, n: actionErrors.current.n + (actionError ? 1 : 0) };
+  useSurfaceIn(actionErrorBox, actionErrors.current.n, "small", !!actionError && actionErrors.current.n > 0);
   // On a phone the context panel is a screen of its own: opening it takes focus to its heading
   // (T-19 SH:P03), unless something in it already has focus (a settings destination's control).
   useEffect(() => {
@@ -1141,6 +1268,8 @@ export function App() {
   // it and any after it are done.
   const mark = arrivalsSettle.current;
   let settles = !!mark && (mark.drain ? !!mark.drained && current && !!pendingScope : readNumber > mark.after);
+  // Nothing arrives live in this render, requests or Turns (T-19 CV:T-01 too).
+  const arrivalsQuiet = !!mark;
   if (pendingScope) {
     const seen = pendingSeen.current;
     if (!seen || seen.scope !== pendingScope) {
@@ -1152,14 +1281,14 @@ export function App() {
     } else {
       const fresh = pending.filter((request) => !seen.ids.has(request.id)).map((request) => request.id);
       if (fresh.length) {
-        const announced = !arrivalsSettle.current && liveChange.current?.workspace === workspaceId && liveChange.current.agent === selected;
+        const announced = !arrivalsQuiet && liveChange.current?.workspace === workspaceId && liveChange.current.agent === selected;
         if (announced) liveChange.current = null;
         pendingSeen.current = { scope: pendingScope, ids: new Set([...seen.ids, ...fresh].slice(-200)),
           arrived: announced ? [...seen.arrived, ...fresh].slice(-20) : seen.arrived };
       }
     }
   }
-  if (settles) arrivalsSettle.current = liveChange.current = null;
+  if (settles) arrivalsSettle.current = liveChange.current = liveTurn.current = null;
   useArrivalsIn(
     pendingSeen.current?.scope === pendingScope ? pendingSeen.current.arrived.map((id) => `${pendingScope}\n${id}`) : [],
     (key) => document.getElementById(`request-${key.slice(key.lastIndexOf("\n") + 1)}`),
@@ -1230,12 +1359,13 @@ export function App() {
   [conversationInputs.inputs, conversationInputs.total]);
   const readingInputNumber = conversationInputs.total - inputDockEntries.length
     + (readingInputId ? inputDockEntries.findIndex(entry => entry.id === readingInputId) + 1 : inputDockEntries.length);
-  // Claude takes a follow-up to your running turn, not to a turn of its own.
+  // Claude takes a follow-up to its newest running turn: yours, or one of its
+  // own, such as a mailbox notice's or a reconnect's (T-45).
   const claudeFollowUpTurnId = isClaude && busy
     ? logicalTurns
         .slice()
         .reverse()
-        .find((turn) => turn.status === "inProgress" && turn._yuzunoSource !== "native")?.id || null
+        .find((turn) => turn.status === "inProgress")?.id || null
     : null;
   // OpenCode takes a message into its running turn and answers it from its
   // next step (T-10), but not while it waits for your answer to a request.
@@ -1252,7 +1382,7 @@ export function App() {
     currentDetail && !previewMode ? recoveryReason(currentDetail) : null;
   // One the user disconnected is started only by their Reconnect (T-184).
   const holdForRecovery =
-    (recovery === "running" && !isClaude) || recovery === "collaboration" || recovery === "missing" || recovery === "disconnected";
+    (recovery === "running" && !isClaude) || recovery === "collaboration" || recovery === "missing" || recovery === "disconnected" || recovery === "archived";
   // The one line under the draft that asks something of you; otherwise the
   // line stays quiet and shows the keys only while you type.
   const composerNotice = busy
@@ -1266,7 +1396,9 @@ export function App() {
           ? "End the unconfirmed turn above, or check again; your draft is kept"
           : recovery === "disconnected"
             ? "You disconnected this agent. Reconnect above to send; your draft is kept"
-            : "Reconnect above to check the last turn; your draft is kept"
+            : recovery === "archived"
+              ? "This agent is kept to read; create a new OpenCode agent to go on"
+              : "Reconnect above to check the last turn; your draft is kept"
       : agent?.status === "uncertain"
         ? "Send to check the previous result first"
         : agent?.status === "offline"
@@ -1274,6 +1406,13 @@ export function App() {
             ? "Reconnect above, or send a message to resume this session"
             : "Send a message to resume this session"
           : null;
+  const [composerPlaceholder, shortPlaceholder] = previewMode
+    ? [shell.preview, shell.preview]
+    : cannotSendWhileWorking
+      ? [shell.waitTurn, shell.waitTurnShort]
+      : busy
+        ? [shell.addThought, shell.addThoughtShort]
+        : [shell.ask(agent?.name ?? ""), shell.askShort(agent?.name ?? "")];
   const logicalRunningTurn = busy
     ? logicalTurns
         .slice()
@@ -1304,11 +1443,164 @@ export function App() {
     agent?.harness,
     currentDetail,
   );
+  // One line while the draft, or its placeholder, fits beside "+" and Send
+  // with nothing under it; otherwise the text above the tools (T-44). The
+  // controls' widths count, so what changes them is listed too. A placeholder
+  // too long for the line shows its short form (Lead 2 4757).
+  const [composerBox, setComposerBox] = useState<HTMLFormElement | null>(null);
+  // Expanded for editing, as with the ChatGPT app's expand icon (T-44): a
+  // block at a set height until the same button collapses it, the draft is
+  // emptied (sent or cleared) or another Agent opens.
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
+  const expanded = expandedFor === selected && draft.parts.some((p) => p.kind === "paste" || !!p.text);
+  useLayoutEffect(() => {
+    if (expandedFor !== null && !expanded) setExpandedFor(null);
+  }, [expandedFor, expanded]);
+  const { shape: composerShape, short: placeholderShort, tall: composerTall } = useComposerShape(
+    composerBox,
+    () => composer.current?.lineExtent() ?? null,
+    expanded || !!draft.images?.length || !!draft.skills?.length || !!imageUploads.error || !!draftError || (draftBlocked && !previewMode) || !!composerNotice,
+    [draft, selected, language, busy, interrupting, sending, currentDetail?.codexPlan, previewMode],
+    composerPlaceholder,
+    () => composer.current?.rows() ?? 0,
+  );
+  // Offered from a draft's third row, and while expanded, to collapse it.
+  const offerExpand = composerShape === "block" && (composerTall || expanded);
+  const [resultRequestFor, setResultRequestFor] = useState<string | null>(null);
+  const resultRequestFrom = useRef<HTMLElement | null>(null);
   // New Claude messages still sending that their own Turn shows: once, there,
   // with the delivery note (T-120). The same set while its members stay the
   // same, so a streamed change does not draw every Turn again.
   const inTurnKey = [...sendingInTurn(currentDetail, selected, outgoing)].sort().join("\n");
   const inTurn = useMemo<ReadonlySet<string>>(() => new Set(inTurnKey ? inTurnKey.split("\n") : []), [inTurnKey]);
+  // A Turn that arrives live while its conversation is open fades in, once (T-19 CV:T-01, Lead
+  // 3250): one a detail adds after the Turns shown, both at the latest window, after Core streamed
+  // or announced a change to the Agent. The first detail of a Workspace, Agent or native session,
+  // a window being read, and what a reconnect, poll or reset brings only become what was shown; as
+  // for requests, nothing arrives live until arrivals settle after a reconnect, reset or leaving
+  // the conversation (Lead 3299, 3301). A Turn whose message this window showed as a preview, or
+  // sending in its Turn, the frame before does not play: it is that message, confirmed. Matched by
+  // its exact ID, never by its text.
+  const turnScope = pendingScope;
+  const turnsSeen = useRef<{ scope: string; latest: boolean; ids: Set<string>; arrived: string[] } | null>(null);
+  // New Claude messages sending in their Turn, as of App's last commit (the layout effect below);
+  // previews, as of their own last commit, for the conversation they were shown in.
+  const shownMessages = useRef<ReadonlySet<string>>(new Set());
+  const shownPreviews = useRef<{ scope: string; ids: ReadonlySet<string> }>({ scope: "", ids: new Set() });
+  const previewsShown = useCallback((scope: string, ids: ReadonlySet<string>) => {
+    shownPreviews.current = { scope, ids };
+  }, []);
+  // A shown Turn's own change, live (T-19 CV:T-04, CV:T-09; Lead 2 4591): its working indicator
+  // comes in where the Turn itself does not (a Turn whose message was shown before, now confirmed;
+  // a shown Turn running again), and a Turn Core records completed brings its reply actions and
+  // files in. Once per change: each is named by how many times that Turn has made it in this
+  // conversation, so a Turn that runs again, or completes again, cues again (R1 47f7c0f0). Told
+  // apart as the arrivals above: in the latest window, after Core streamed or announced a change
+  // to this Agent, never what a first read, a window, a reconnect, poll or reset brings.
+  // Interrupted and failed Turns keep their own words with no cue, and the working indicator
+  // always goes at once. Read before the arrivals below take the announcement.
+  const turnAnnounced = !arrivalsQuiet && liveTurn.current?.workspace === workspaceId && liveTurn.current.agent === selected;
+  // The question dock's arrivals too, once this conversation has shown a detail: the questions its
+  // first one lists are what was there, even after an announcement while it loaded (#569 round
+  // cfabe82d P3: opened from Home, with nothing else marking the wait).
+  const dockLive = turnAnnounced && !!turnScope && turnsSeen.current?.scope === turnScope;
+  const turnCues = useRef<{ scope: string; latest: boolean; status: Map<string, string>;
+    started: string[]; completed: string[] } | null>(null);
+  // How many times each Turn has started or completed live, per conversation, for as long as the
+  // window is open: kept across leaving it and coming back, as the cues below keep every name they
+  // have played (R2 3578219f).
+  const turnChanges = useRef(new Map<string, number>());
+  const handedRunning: string[] = [];
+  // Left (the settle mark is the requests' above): the next detail is a new baseline.
+  if (!turnScope && turnsSeen.current) {
+    turnsSeen.current = null;
+    liveTurn.current = null;
+  }
+  if (turnScope && currentDetail) {
+    const seen = turnsSeen.current;
+    const latest = !currentDetail.conversation?.hasAfter && !live.windowLoading;
+    const ids = currentDetail.turns.map((turn) => turn.id);
+    let last = -1;
+    if (seen?.scope === turnScope) ids.forEach((id, index) => { if (seen.ids.has(id)) last = index; });
+    // A conversation already shown with no Turns takes its first ones as added after nothing; one
+    // whose Turns no longer overlap the shown ones (another window, a jump) is a new baseline.
+    if (!seen || seen.scope !== turnScope || !seen.latest || !latest || (last < 0 && seen.ids.size > 0)) {
+      turnsSeen.current = { scope: turnScope, latest, ids: new Set(ids.slice(-500)), arrived: seen?.scope === turnScope ? seen.arrived : [] };
+      if (seen?.scope !== turnScope) liveTurn.current = null;
+    } else if (ids.some((id) => !seen.ids.has(id))) {
+      const fresh = currentDetail.turns.slice(last + 1).filter((turn) => !seen.ids.has(turn.id));
+      const announced = !arrivalsQuiet && liveTurn.current?.workspace === workspaceId && liveTurn.current.agent === selected;
+      if (announced && fresh.length) liveTurn.current = null;
+      const handedOver = (turn: NativeTurn) => {
+        const first = turn.items.find((item) => item.type === "userMessage");
+        const id = typeof first?.clientId === "string" ? first.clientId
+          : typeof first?._yuzunoClientMessageId === "string" && inTurn.has(first._yuzunoClientMessageId) ? first._yuzunoClientMessageId : null;
+        const previews = shownPreviews.current.scope === turnScope ? shownPreviews.current.ids : null;
+        const shown = (message: string) => shownMessages.current.has(message) || !!previews?.has(message);
+        if (id && shown(id)) return true;
+        return !!currentDetail.messageReceipts?.some((receipt) => receipt.binding?.turnId === turn.id
+          && turn.items.some((item) => item.id === receipt.binding!.itemId) && shown(receipt.input.clientMessageId));
+      };
+      if (announced) for (const turn of fresh) if (handedOver(turn) && RUNNING_TURN.test(turn.status)) handedRunning.push(turn.id);
+      turnsSeen.current = { scope: turnScope, latest, ids: new Set([...seen.ids, ...ids].slice(-500)),
+        arrived: announced ? [...seen.arrived, ...fresh.filter((turn) => !handedOver(turn)).map((turn) => turn.id)].slice(-20) : seen.arrived };
+    }
+  }
+  if (!turnScope) turnCues.current = null;
+  else if (currentDetail) {
+    const was = turnCues.current?.scope === turnScope ? turnCues.current : null;
+    const latest = !currentDetail.conversation?.hasAfter && !live.windowLoading;
+    const now = !!was?.latest && latest && turnAnnounced;
+    // Its cue's name, "n\nid": the how-manieth time this Turn has started or completed live here.
+    const change = (kind: "run" | "done", id: string) => {
+      const key = `${turnScope}\n${kind}\n${id}`;
+      const n = (turnChanges.current.get(key) ?? 0) + 1;
+      turnChanges.current.set(key, n);
+      return `${n}\n${id}`;
+    };
+    const started = [...(was?.started ?? []), ...handedRunning.map((id) => change("run", id))];
+    const completed = [...(was?.completed ?? [])];
+    const status = new Map<string, string>();
+    for (const turn of currentDetail.turns) {
+      status.set(turn.id, turn.status);
+      const before = was?.status.get(turn.id);
+      if (!now || before === undefined) continue;
+      const runs = RUNNING_TURN.test(turn.status);
+      if (runs && !RUNNING_TURN.test(before)) started.push(change("run", turn.id));
+      else if (RUNNING_TURN.test(before) && turn.status === "completed") completed.push(change("done", turn.id));
+    }
+    turnCues.current = { scope: turnScope, latest, status, started: started.slice(-20), completed: completed.slice(-20) };
+  }
+  // By its data, not a selector: an ID may hold any character, and CSS.escape is not everywhere.
+  // A key ends with its Turn's ID.
+  const shownTurn = (key: string) => {
+    const id = key.slice(key.lastIndexOf("\n") + 1);
+    return [...document.querySelectorAll<HTMLElement>(".turn[data-turn-id]")].find((el) => el.dataset.turnId === id) ?? null;
+  };
+  useArrivalsIn(
+    turnsSeen.current?.scope === turnScope ? turnsSeen.current.arrived.map((id) => `${turnScope}\n${id}`) : [],
+    shownTurn,
+    "small",
+  );
+  const cues = turnScope && turnCues.current?.scope === turnScope ? turnCues.current : null;
+  useArrivalsIn(cues ? cues.started.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => shownTurn(key)?.querySelector<HTMLElement>(".turn-activity") ?? null, "small");
+  useArrivalsIn(cues ? cues.completed.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => shownTurn(key)?.querySelector<HTMLElement>(".reply-actions") ?? null, "small");
+  useArrivalsIn(cues ? cues.completed.map((id) => `${turnScope}\n${id}`) : [],
+    (key) => shownTurn(key)?.querySelector<HTMLElement>(".turn-files") ?? null, "small");
+  // New Claude messages this window shows sending in their Turn, as of this commit. Read by the next
+  // render's Turn arrivals above, with the previews (`previewsShown`).
+  useLayoutEffect(() => {
+    const shown = new Set<string>();
+    const sending = (currentDetail?.turns ?? []).flatMap((turn) => turn.items.filter((item) =>
+      typeof item._yuzunoClientMessageId === "string" && inTurn.has(item._yuzunoClientMessageId)));
+    if (sending.length) {
+      const drawn = new Set([...document.querySelectorAll<HTMLElement>("[data-item-id]")].map((el) => el.dataset.itemId));
+      for (const item of sending) if (drawn.has(item.id)) shown.add(item._yuzunoClientMessageId as string);
+    }
+    shownMessages.current = shown;
+  });
   // A message this tab is still sending is on its way, not unconfirmed: Core
   // records its receipt before the harness answers, and a read in between
   // shows it sending (T-120). Only that same message, while its request runs.
@@ -1339,6 +1631,67 @@ export function App() {
     if (!updatesOpen) setSettingsAt(null);
   }, [updatesOpen]);
   const needsYou = totalPending + openAsks;
+  // Who needs the user (T-42). What this device has seen of each Agent's last
+  // Turn end, kept here only; a preview's sample Workspace keeps none.
+  const turnSeen = useTurnSeen(previewMode ? "" : workspaceId);
+  // A Turn end is seen once its conversation has been shown, in a visible
+  // window, as long as reading marks it read (AUTO_READ_DWELL_MS): the one
+  // a window opens on and leaves at once is not.
+  const shownEnd = !homeOpen && agent?.lastTurnEnd ? agent.lastTurnEnd.seq : 0;
+  useEffect(() => {
+    if (previewMode || !selected || !shownEnd) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const watch = () => {
+      clearTimeout(timer);
+      if (document.visibilityState === "visible")
+        timer = setTimeout(() => markTurnSeen(workspaceId, selected, shownEnd), AUTO_READ_DWELL_MS);
+    };
+    watch();
+    document.addEventListener("visibilitychange", watch);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", watch);
+    };
+  }, [previewMode, workspaceId, selected, shownEnd]);
+  // The tab's title and the app's badge count what Home's tab counts. The
+  // badge only where this browser or installed app has one; nothing else
+  // depends on it.
+  useEffect(() => {
+    if (previewMode) return;
+    document.title = needsYou > 0 ? `(${needsYou}) ${PAGE_TITLE}` : PAGE_TITLE;
+    const badge = navigator as Navigator & {
+      setAppBadge?: (count?: number) => Promise<void>;
+      clearAppBadge?: () => Promise<void>;
+    };
+    const done = needsYou > 0 ? badge.setAppBadge?.(needsYou) : badge.clearAppBadge?.();
+    done?.catch(() => {});
+  }, [previewMode, needsYou]);
+  // Next needs you: Home's Needs you in Core's order, then the Turn ends not
+  // seen here (attention.ts). After an Ask, Home stays the place shown.
+  const needsTargets = useMemo(
+    () => needsYouTargets(needsYouItems, activeAgents, turnSeen),
+    [needsYouItems, activeAgents, turnSeen],
+  );
+  const lastNeedsJump = useRef<NeedsJump | null>(null);
+  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; proposalId?: string; n: number } | null>(null);
+  const goNextNeedsYou = () => {
+    const shown: NeedsTarget | null = homeOpen
+      ? lastNeedsJump.current && lastNeedsJump.current.target.kind !== "agent" ? lastNeedsJump.current.target : null
+      : selected ? { kind: "agent", agentId: selected } : null;
+    const jump = nextTarget(needsTargets, shown, lastNeedsJump.current);
+    if (!jump) return;
+    lastNeedsJump.current = jump;
+    const { target } = jump;
+    if (target.kind === "agent") {
+      selectAgent(target.agentId);
+    } else {
+      goHome();
+      setHomeJump((last) => ({ projectId: target.projectId, n: (last?.n ?? 0) + 1,
+        ...(target.kind === "handover" ? { proposalId: target.proposalId } : { sectionKey: target.sectionKey }) }));
+    }
+  };
+  const nextNeedsYou = useRef(goNextNeedsYou);
+  nextNeedsYou.current = goNextNeedsYou;
   const reviewDisplayed = useCallback(
     async (id: string, throughSeq: number) => {
       await post(`/agents/${encodeURIComponent(id)}/review`, { throughSeq });
@@ -1425,7 +1778,11 @@ export function App() {
       workspaceFailed.current = true;
       setWorkspaceFailure(error);
     },
-    () => setLoading(false),
+    (more) => {
+      setLoading(false);
+      // Not while the read a Retry asked for still waits its turn.
+      if (!more) setRetrying(false);
+    },
   );
   // Remembered for this Workspace only, and not at all until it is known.
   // Its own effect, so a Workspace that arrives or changes records what is
@@ -1713,6 +2070,8 @@ export function App() {
           scroll.current.scrollTop += target.getBoundingClientRect().top - scroll.current.getBoundingClientRect().top - offset;
         }
         target.focus({ preventScroll: true });
+        // Landed on the mark already there (the same message again): its ring plays again.
+        ringAgain(target);
         setSourceJump(false);
       };
       if (disclosures.length) {
@@ -1780,6 +2139,10 @@ export function App() {
         setSearchOpen((v) => !v);
         setRailOpen(true);
       }
+      if (pressed(event, shortcutKeys().nextNeedsYou)) {
+        event.preventDefault();
+        nextNeedsYou.current();
+      }
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
@@ -1819,6 +2182,15 @@ export function App() {
     else selectAgent(id);
     if (phone) requestAnimationFrame(() => phoneBack.current?.focus());
   }
+  /** Settings at one editor, from another dialog that has just closed (the
+   * Jobs card's Edit in Settings, T-55): it lets go of focus first. */
+  function openSettingsAt(editor: SettingsEditor) {
+    if (previewMode) return;
+    requestAnimationFrame(() => {
+      setSettingsAt({ editor, nonce: Date.now() });
+      setUpdatesOpen(true);
+    });
+  }
   function openSettingsDestination(destination: SettingsDestination) {
     if (previewMode) return;
     setUpdatesOpen(false);
@@ -1848,7 +2220,6 @@ export function App() {
       setTaskFocus({ taskId: destination.taskId, section: "workspaces", at: Date.now() });
       setCollaborationOpen(true);
     } else if (destination.kind === "machines") setMachinesOpen(true);
-    else openJobs({ source: "local", settings: "budget" });
     });
   }
   // An Agent's action menu (T-184), in the list and the conversation header.
@@ -2550,10 +2921,28 @@ export function App() {
     (text: string) => turnHandlers.current.appendToDraft(text),
     [],
   );
-  const rewindDraft = useCallback((agentId: string, text: string) => {
-    setDraft(agentId, current => appendDraft(current, text));
-    setNotice(shellNow.current.rewindSaved);
+  // Whether the text was added and saved (an OpenCode revert counts its text as given only then).
+  // With an `origin`, once: a draft that holds it already is saved again as it is, not added to.
+  const rewindDraft = useCallback((agentId: string, text: string, origin?: string) => {
+    const saved = setDraft(agentId, current => origin ? appendDraftOnce(current, text, origin) : appendDraft(current, text));
+    if (saved) setNotice(shellNow.current.rewindSaved);
+    return saved;
   }, [setDraft]);
+  // An OpenCode fork (T-10 Fork): its new Agent shown and opened. The source
+  // Agent stays as it is, its draft too: nothing is copied or sent.
+  function openForked(outcome: OpenCodeForkOutcome) {
+    const fork = outcome.agent;
+    if (!fork) return;
+    markJoined(fork.id);
+    setWorkspace((w) => w ? { ...w, agents: [...w.agents.filter((a) => a.id !== fork.id), fork] } : w);
+    revealAgent(fork);
+    setSelected(fork.id);
+    setAgentScope(fork.closedAt ? "closed" : "active");
+    refresh();
+    setNotice(fork.closedAt ? shell.forkClosed(fork.name)
+      : outcome.connected ? shell.forkContinuing(fork.name)
+      : shell.forkNotConnected(fork.name, (outcome.warnings ?? []).join(" ")));
+  }
   /**
    * Send to Agent (T-152): the menu and a drop on the rail both end here. It
    * only adds to that Agent's draft, after what is there, and opens it: the
@@ -2744,19 +3133,26 @@ export function App() {
       );
       live.sync.mutate((d) => (d.agent.id === id ? { ...d, agent: updated } : d));
       if (currentSelected.current === id)
-        setAgentScope(action === "close" ? "closed" : "active");
-      setNotice(action === "close" ? shell.closedSaved(agent.name) : shell.reopened(agent.name));
+        setAgentScope(action === "close" || action === "release" ? "closed" : "active");
+      setNotice(action === "close" ? shell.closedSaved(agent.name)
+        : action === "release" ? shell.released(agent.name) : shell.reopened(agent.name));
     }
     live.clearError();
     setCatchupSource(null);
     refresh();
   }
-  const filteredAgents =
+  const searched =
     (agentScope === "closed" ? scopedClosed : scopedActive).filter((a) =>
       `${a.name} ${a.workSummary?.text || ""} ${a.cwd} ${a.remote?.machine.name || ""}`
         .toLowerCase()
         .includes(search.toLowerCase()),
     ) || [];
+  // In attention order when Appearance chooses it (T-42): the same Agents,
+  // ordered within each group as grouping keeps the list's order.
+  const filteredAgents =
+    appearance.agentOrder === "attention"
+      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems), waiting: proposersWaiting(needsYouItems) })
+      : searched;
 
   return (
     <HandoffContext.Provider value={handoffApi}>
@@ -2846,7 +3242,7 @@ export function App() {
               <MessageSquare size={15} />
               <span className="toolbar-nav-label">{shell.tasks}</span>
             </button>
-            <Jobs key={`jobs-${workspaceId}`} workspaceId={workspaceId} agent={agent} agents={workspace?.agents || []} revision={String(jobsRevision)} disabled={previewMode || loading} />
+            <Jobs key={`jobs-${workspaceId}`} workspaceId={workspaceId} agent={agent} agents={workspace?.agents || []} revision={String(jobsRevision)} disabled={previewMode || loading} onOpenSettings={openSettingsAt} />
           </nav>
         </div>
         <div className="toolbar-actions">
@@ -2945,19 +3341,38 @@ export function App() {
             </button>
           )}
         </div>
+        {/* Next needs you (T-42): at the top of the list, on a phone too, while
+            something waits; its own row, so the heading fits any rail. */}
+        {needsTargets.length > 0 && (
+          <button
+            type="button"
+            className="next-needs-you"
+            title={shell.nextNeedsYouTitle(`${shortcutModifier} ${boundKeys.nextNeedsYou}`, needsTargets.length)}
+            onClick={goNextNeedsYou}
+          >
+            <BellRing size={14} />
+            <span>{shell.nextNeedsYou}</span>
+            {!phone && <kbd>{shortcutModifier} {boundKeys.nextNeedsYou}</kbd>}
+          </button>
+        )}
         <nav className="agent-list" aria-label={shell.agents}>
           {(() => {
-            const row = (a: Agent) => (
+            const row = (a: Agent) => {
+            const unseen = unseenEnd(a, turnSeen);
+            return (
             <AgentRailRow
               key={a.id}
               agent={a}
               selected={selected === a.id && !homeOpen}
+              unseen={unseen}
               statusLabel={
                 a.closedAt
                   ? shell.closed
                   : a.id === selected && compacting
                     ? shell.compacting
-                    : shell.status[a.status]
+                    : unseen
+                      ? shell.unseen[unseen]
+                      : shell.status[a.status]
               }
               idle={
                 !a.closedAt &&
@@ -2968,6 +3383,7 @@ export function App() {
               actions={agentActions}
             />
             );
+            };
             // All projects, grouped as Settings chooses; a project's own
             // list, or No grouping, stays one list.
             const groups =
@@ -3039,33 +3455,49 @@ export function App() {
       {/* On a phone the list or the context panel covers it, still mounted. */}
       <main className="main-panel" ref={mainBox} inert={listShown || (phone && inspectorShown) ? true : undefined}>
        <WorkActivityProvider>
-        {(workspaceError || core.browser) && (
-          <div className="connection-banner core-connection-banner" role={workspaceError ? "alert" : "status"} lang={langTag(language)}>
-            <WifiOff size={15} />
-            <div>
-              <strong>{workspaceError ? core.label : core.browser}</strong>
-              <span>
-                {workspaceError
-                  ? core.detail
-                  : workspace
-                    ? shell.lastReadWorked
-                    : shell.noneLoaded}
-              </span>
-              {workspaceError && core.browser && <span>{shell.sentence(core.browser)}</span>}
-              <span>{core.stream}</span>
+        {coreBanner.shown && (
+          <div className={`banner-reveal${coreBanner.leaving ? " is-leaving" : ""}`}>
+            <div className="banner-reveal-clip">
+              <div className="connection-banner core-connection-banner" role={coreSaid.current.error ? "alert" : "status"} lang={langTag(language)}>
+                <WifiOff size={15} />
+                <div>
+                  <strong>{coreSaid.current.error ? coreSaid.current.label : coreSaid.current.browser}</strong>
+                  <span>
+                    {coreSaid.current.error
+                      ? coreSaid.current.detail
+                      : coreSaid.current.loaded
+                        ? shell.lastReadWorked
+                        : shell.noneLoaded}
+                  </span>
+                  {coreSaid.current.error && coreSaid.current.browser && <span>{shell.sentence(coreSaid.current.browser)}</span>}
+                  <span>{coreSaid.current.stream}</span>
+                </div>
+                <button
+                  className={`quiet-button${retrying ? " retrying" : ""}`}
+                  aria-busy={retrying || undefined}
+                  disabled={coreBanner.leaving}
+                  onClick={() => {
+                    setRetrying(true);
+                    refresh();
+                  }}
+                >
+                  <RefreshCw size={13} className={retrying ? "spin" : undefined} />
+                  {retrying ? shell.retrying : shell.retry}
+                </button>
+              </div>
             </div>
-            <button className="quiet-button" onClick={refresh}>
-              <RefreshCw size={13} />
-              {shell.retry}
-            </button>
           </div>
         )}
-        {!previewMode && !workspaceError && !core.browser && eventConnection === "reconnecting" && (
-          <div className="connection-banner core-connection-banner event-connection-banner" role="status" lang={langTag(language)}>
-            <RefreshCw size={15} />
-            <div>
-              <strong>{shell.liveReconnecting}</strong>
-              <span>{shell.liveReconnectingLine}</span>
+        {liveBanner.shown && (
+          <div className={`banner-reveal${liveBanner.leaving ? " is-leaving" : ""}`}>
+            <div className="banner-reveal-clip">
+              <div className="connection-banner core-connection-banner event-connection-banner" role="status" lang={langTag(language)}>
+                <RefreshCw size={15} />
+                <div>
+                  <strong>{shell.liveReconnecting}</strong>
+                  <span>{shell.liveReconnectingLine}</span>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -3089,6 +3521,8 @@ export function App() {
             onNavigate={openFromHome}
             onChanged={refresh}
             onNeedsYou={reportNeedsYou}
+            turnSeen={turnSeen}
+            jumpTo={homeJump}
             arrival={homeArrival}
             onBackToReply={(link) => openMessageLink(link)}
             report={homeReport}
@@ -3250,47 +3684,6 @@ export function App() {
                 onReconnected={refresh}
               />
             )}
-            {/* One reading bar, and one way back to the latest messages in it:
-                reading a source, the place left off, or a window of earlier
-                messages. The floating button stands in only when none of
-                those is showing, so two never appear at once (T-15). */}
-            {/* Over this browser's own place too, not over a link or a source being read. */}
-            {readingOffer?.agentId === selected && (!catchupSource || (catchupSource.restore !== undefined && catchupSource.progress === undefined)) && (
-              <div className="source-navigation reading-offer" role="status" lang={langTag(language)}>
-                <span>
-                  {shell.continueReading(readingOffer.handoff.label === "desktop" ? "desktop" : "browser", ageText(readingOffer.handoff.ageSeconds, language === "zh-Hans"))}
-                </span>
-                <button className="secondary-button" onClick={continueReading}>{shell.continue}</button>
-                <button className="quiet-button" onClick={dismissReading}>{shell.notNow}</button>
-              </div>
-            )}
-            {readingBar && (
-              <div className="source-navigation" lang={langTag(language)}>
-                <button
-                  className="quiet-button"
-                  onClick={() =>
-                    source && sourceOrigin === "home"
-                      ? goHome()
-                      : backToLatest()
-                  }
-                >
-                  <ArrowLeft size={13} />
-                  {source && sourceOrigin === "home" ? shell.backHome : shell.backLatest}
-                </button>
-                <span role="status">
-                  {source
-                    ? sourceNotice?.(shell) || (source.progress !== undefined ? (source.where ? shell.readingIn(source.where) : source.title)
-                      : source.restore !== undefined ? shell.leftOff
-                      : source.link ? shell.linked : shell.original)
-                    : shell.earlierMessages}
-                </span>
-                {historyWindow && (
-                  <button className="inline-link" disabled={live.windowLoading} onClick={() => changeHistoryPage("after")}>
-                    {live.windowLoading ? shell.loadingHistory : shell.newerMessages}
-                  </button>
-                )}
-              </div>
-            )}
             <div
               ref={conversationBody}
               className="conversation-body"
@@ -3300,6 +3693,50 @@ export function App() {
                 if (event.animationName === "phone-dock-in" || event.animationName === "phone-dock-out") dockMotion.end();
               }}
             >
+              {/* Over the conversation's top, not above it: one that appears moves no text (T-19 SH:C08, CV:CW-11). */}
+              <ConversationStrips>
+                {/* Over this browser's own place too, not over a link or a source being read. */}
+                {readingOffer?.agentId === selected && (!catchupSource || (catchupSource.restore !== undefined && catchupSource.progress === undefined)) && (
+                  <div className="source-navigation reading-offer" role="status" lang={langTag(language)}>
+                    <span>
+                      {shell.continueReading(readingOffer.handoff.label === "desktop" ? "desktop" : "browser", ageText(readingOffer.handoff.ageSeconds, language === "zh-Hans"))}
+                    </span>
+                    <button className="secondary-button" onClick={continueReading}>{shell.continue}</button>
+                    <button className="quiet-button" onClick={dismissReading}>{shell.notNow}</button>
+                  </div>
+                )}
+                {/* One reading bar, and one way back to the latest in it:
+                    a source being read, the place left off, or a window of
+                    earlier messages. The floating button stands in only when
+                    no bar is showing, so two never appear at once (T-15). */}
+                {readingBar && (
+                  <div className="source-navigation" lang={langTag(language)}>
+                    <button
+                      className="quiet-button"
+                      onClick={() =>
+                        source && sourceOrigin === "home"
+                          ? goHome()
+                          : backToLatest()
+                      }
+                    >
+                      <ArrowLeft size={13} />
+                      {source && sourceOrigin === "home" ? shell.backHome : shell.backLatest}
+                    </button>
+                    <span role="status">
+                      {source
+                        ? sourceNotice?.(shell) || (source.progress !== undefined ? (source.where ? shell.readingIn(source.where) : source.title)
+                          : source.restore !== undefined ? shell.leftOff
+                          : source.link ? shell.linked : shell.original)
+                        : shell.earlierMessages}
+                    </span>
+                    {historyWindow && (
+                      <button className="inline-link" disabled={live.windowLoading} onClick={() => changeHistoryPage("after")}>
+                        {live.windowLoading ? shell.loadingHistory : shell.newerMessages}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </ConversationStrips>
               {runningTurn && (
                 <CurrentTurnPrompt
                   key={`${selected}:${runningTurn.id}`}
@@ -3320,33 +3757,37 @@ export function App() {
                 ref={attachScroll}
                 data-agent-id={selected}
                 onWheel={(e) => {
+                  if (!ownEvent(e)) return;
                   if (e.deltaY < 0) {
                     live.pinWindow();
                     stickToBottom.current = false;
                   }
                   if (e.deltaY > 0) readerScrollIntent();
                 }}
-                onTouchStart={() => {
+                onTouchStart={(e) => {
+                  if (!ownEvent(e)) return;
                   touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false };
                 }}
                 // The browser's pan: noted, never taken for a cancelled touch.
                 onPointerCancel={(e) => {
-                  if (e.pointerType === "touch" && touch.current) touch.current.panned = true;
+                  if (ownEvent(e) && e.pointerType === "touch" && touch.current) touch.current.panned = true;
                 }}
                 // A touch the system took away ends nothing the reader did.
-                onTouchCancel={() => {
-                  touch.current = null;
+                onTouchCancel={(e) => {
+                  if (ownEvent(e)) touch.current = null;
                 }}
                 // A tap on a disclosure opens or closes it (its click hands the
                 // conversation to the reader); it is not the reader going to the
                 // end. A pan is, wherever it began.
                 onTouchEnd={(e) => {
+                  if (!ownEvent(e)) return;
                   const began = touch.current;
                   touch.current = null;
                   const scrolled = !began || began.panned || Math.abs((scroll.current?.scrollTop ?? began.from) - began.from) >= 1;
                   if (scrolled || !(e.target as Element).closest?.("summary")) readerScrollIntent();
                 }}
                 onKeyDownCapture={(e) => {
+                  if (!ownEvent(e)) return;
                   if (
                     e.target instanceof HTMLElement &&
                     e.target.closest(
@@ -3370,6 +3811,8 @@ export function App() {
                   // clicked; their window is kept as it is, and where they are
                   // reading is noted, as a scroll would note it, so the
                   // conversation reopens there rather than at the end (T-19).
+                  // Only a disclosure of the conversation itself (see ownEvent).
+                  if (!ownEvent(e)) return;
                   if ((e.target as Element).closest?.("summary")) {
                     live.pinWindow();
                     stickToBottom.current = false;
@@ -3392,11 +3835,13 @@ export function App() {
                       setHistoryReading(false);
                       searchReading.current = false;
                     }
-                    const bottom =
-                      el.scrollHeight - el.scrollTop - el.clientHeight < 72;
+                    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+                    const bottom = gap < 72;
                     if (!bottom && stickToBottom.current) live.pinWindow();
-                    const latest = bottom && !searchReading.current && !currentDetail?.conversation?.hasAfter;
-                    setAtBottom(latest);
+                    const elsewhere = searchReading.current || !!currentDetail?.conversation?.hasAfter;
+                    const latest = bottom && !elsewhere;
+                    setAtBottomState(latest);
+                    setLatestAway((away) => (elsewhere || gap >= 96 ? true : gap < 48 ? false : away));
                     stickToBottom.current = latest;
                     noteReading(latest);
                   }
@@ -3404,6 +3849,10 @@ export function App() {
               >
                 <div className="conversation-inner" ref={followGrowth}>
                   <InputReading.Provider value={readingBy === "inputs" ? reportInput : null}>
+                  {/* OpenCode's revert, held for the Agent, not for the turn it removes (T-10). */}
+                  <OpenCodeRevertHost workspaceId={previewMode ? "" : workspaceId} agent={agent} onDraft={previewMode || closed ? undefined : rewindDraft}>
+                  {/* OpenCode's fork into a new Agent, also held for the Agent (T-10 Fork). */}
+                  <OpenCodeForkHost workspaceId={previewMode ? "" : workspaceId} agent={agent} onForked={openForked}>
                   <ConversationWindow key={selected} scroll={scroll} follow={stickToBottom} hold={heldPlace}
                     target={sourceJump && catchupSource?.turnId ? { turnId: catchupSource.turnId, itemId: catchupSource.itemId }
                       : jumpHere ? { turnId: jumpHere, itemId: jumpItem.current ?? undefined } : pageTarget}>
@@ -3509,6 +3958,8 @@ export function App() {
                     agentId={agent.id}
                     messages={outgoing}
                     detail={currentDetail}
+                    scope={turnScope ?? ""}
+                    onShown={previewsShown}
                   />
                   {pending.map((request) => (
                     <PendingCard
@@ -3542,6 +3993,8 @@ export function App() {
                   {pageSpace === "after" && currentDetail?.conversation?.hasAfter &&
                     <div aria-hidden="true" style={{ height: scroll.current?.clientHeight || 0 }} />}
                   </ConversationWindow>
+                  </OpenCodeForkHost>
+                  </OpenCodeRevertHost>
                   </InputReading.Provider>
                 </div>
               </div>
@@ -3584,16 +4037,23 @@ export function App() {
                   inputs={readingBy === "inputs"}
                 />
               )}
-              {(!atBottom || historyReading) && !readingBar && (
-                <button className="jump-latest" onClick={backToLatest}>
+              {latestShown && !readingBar && (
+                <button className="jump-latest" ref={latestButton} onClick={backToLatest}>
                   <ArrowDown size={13} />
                   Back to latest
                 </button>
               )}
+              {latestLeaving > 0 && (
+                <div key={latestLeaving} className="jump-latest-leaving" aria-hidden="true" inert ref={latestLeavingCopy}
+                  onAnimationEnd={() => setLatestLeaving(0)}>
+                  <ArrowDown size={13} />
+                  Back to latest
+                </div>
+              )}
             </div>
             <PendingQuestions key={`${workspaceId}:${selected}`} ref={questionPanel} agentId={selected} workspaceId={workspaceId}
               detail={detail?.agent.id === selected ? detail : null} shown={currentDetail} known={coreQuestions}
-              outgoing={outgoing} pendingInputs={pendingInputs} disabled={closed || previewMode || isClaude}
+              outgoing={outgoing} pendingInputs={pendingInputs} disabled={closed || previewMode || isClaude} live={dockLive}
               onSend={sendQuestionAnswer} onAdd={turnAnswer} onSource={showQuestionSource}
               onCheck={() => reconnectAgent(selected).then(refresh)} />
             {closed ? (
@@ -3604,10 +4064,12 @@ export function App() {
                     <strong>This conversation is saved.</strong>
                     <p>
                       {hasDraft ? "Your unfinished draft is saved too. " : ""}
-                      Reopen this agent to continue from the same session.
+                      {agent.releasedAt
+                        ? "This executor was released and stays closed. Dispatch its task again for new work."
+                        : "Reopen this agent to continue from the same session."}
                     </p>
                   </div>
-                  <button
+                  {!agent.releasedAt && <button
                     type="button"
                     className="secondary-button"
                     disabled={previewMode || !!workspaceError}
@@ -3619,7 +4081,7 @@ export function App() {
                     }
                   >
                     <ArchiveRestore size={15} /> Reopen
-                  </button>
+                  </button>}
                 </div>
                 <div className="closed-conversation-metadata">
                   <ConversationMetadata
@@ -3683,7 +4145,7 @@ export function App() {
                     </div>
                   )}
                   {actionError && (
-                    <div role="alert" className="inline-error">
+                    <div role="alert" className="inline-error" ref={actionErrorBox}>
                       <CircleAlert size={14} />
                       {actionError}
                       <button
@@ -3697,7 +4159,20 @@ export function App() {
                   )}
                 </div>
                 <form
+                  ref={setComposerBox}
                   className={`composer ${busy ? "is-working" : ""}`}
+                  data-shape={composerShape}
+                  data-expand={offerExpand ? (expanded ? "open" : "offered") : undefined}
+                  onDragOver={(e) => {
+                    if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+                  }}
+                  onDrop={(e) => {
+                    // Images dropped on the box go with the draft, as pasted
+                    // ones do; the editor takes those dropped on its text.
+                    if (e.defaultPrevented || !e.dataTransfer.types.includes("Files")) return;
+                    e.preventDefault();
+                    if (!previewMode && !draftBlocked) void imageUploads.add(clipboardImages(e.dataTransfer));
+                  }}
                   onSubmit={(e) => {
                     e.preventDefault();
                     void send();
@@ -3724,15 +4199,7 @@ export function App() {
                     ref={composer}
                     agentId={selected}
                     label={shell.message(agent.name)}
-                    placeholder={
-                      previewMode
-                        ? shell.preview
-                        : cannotSendWhileWorking
-                          ? shell.waitTurn
-                          : busy
-                            ? shell.addThought
-                            : shell.ask(agent.name)
-                    }
+                    placeholder={placeholderShort ? shortPlaceholder : composerPlaceholder}
                     draft={draft}
                     readOnly={previewMode || draftBlocked}
                     slashCommands={previewMode ? false : isClaude ? "claude" : isOpenCode ? "opencode" : "codex"}
@@ -3745,6 +4212,19 @@ export function App() {
                     onImages={files => void imageUploads.add(files)}
                     onSubmit={() => void send()}
                   />
+                  {offerExpand && (
+                    <button
+                      type="button"
+                      className="composer-tool composer-expand"
+                      aria-label={expanded ? shell.collapseDraft : shell.expandDraft}
+                      title={expanded ? shell.collapseDraft : shell.expandDraft}
+                      // A click leaves the caret where it was in the text.
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => setExpandedFor(expanded ? null : selected)}
+                    >
+                      {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                    </button>
+                  )}
                   <ImageAttachments images={draft.images || []} description={imageNote ?? undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
                     annotateThumbnails onAnnotate={previewMode || draftBlocked ? undefined : image => markUpDraftImage(image)} />
                   {/* Every chosen skill shows, so one that is not this Agent's can be removed. */}
@@ -3757,42 +4237,53 @@ export function App() {
                   <div className="composer-bottom" lang={langTag(language)}>
                     <div className="composer-tools">
                       <input ref={imagePicker} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden aria-label={shell.chooseImages} onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ""; void imageUploads.add(files); }} />
-                      {/* Agents that cannot take images keep the button, quieted, so
-                          its tooltip can say why. */}
-                      <button
-                        type="button"
-                        className="composer-tool"
-                        aria-label={imageUploads.busy ? shell.savingImages : shell.addImages}
-                        aria-disabled={!imageSupported || undefined}
-                        disabled={previewMode || draftBlocked || imageUploads.busy}
-                        title={
-                          imageSupported
-                            ? shell.addImagesTitle(imageNote)
-                            : shell.imagesOnly
-                        }
-                        onClick={() => { if (imageSupported) imagePicker.current?.click(); }}
-                      >
-                        {imageUploads.busy ? <LoaderCircle size={15} className="spin" /> : <ImagePlus size={15} />}
-                      </button>
                       <input ref={pointFixPicker} type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label={shell.chooseToMark} onChange={event => {
                         const file = event.target.files?.[0];
                         event.target.value = "";
                         if (file) openPointFix({ name: file.name || "Screenshot", ownerId: selected, provenance: `an image you chose (${file.name || "pasted"})`, load: async () => file });
                       }} />
-                      <button
-                        type="button"
-                        className="composer-tool"
-                        aria-label={shell.markUp}
-                        title={shell.markUpTitle}
+                      {/* Agents that cannot take images keep the entry, quieted,
+                          so it can say why. */}
+                      <ComposerAddMenu
+                        label={shell.addMenu}
+                        title={shell.addMenuTitle}
+                        menuLabel={shell.addMenuLabel}
                         disabled={previewMode}
-                        onClick={() => pointFixPicker.current?.click()}
-                      >
-                        <SquareDashedMousePointer size={15} />
-                      </button>
-                      {!previewMode && <ResultRequest key={selected} onDraft={appendToDraft} />}
-                      {!previewMode && !isClaude && !isOpenCode && (
-                        <CodexPlanChip state={currentDetail?.codexPlan}
-                          onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
+                        busy={imageUploads.busy}
+                        items={[
+                          {
+                            key: "images",
+                            label: imageUploads.busy ? shell.savingImages : shell.addImages,
+                            icon: <ImagePlus size={16} />,
+                            title: imageSupported ? shell.addImagesTitle(imageNote) : shell.imagesOnly,
+                            note: imageSupported ? undefined : shell.imagesOnly,
+                            unavailable: !imageSupported,
+                            disabled: draftBlocked || imageUploads.busy,
+                            onSelect: () => imagePicker.current?.click(),
+                          },
+                          {
+                            key: "markUp",
+                            label: shell.markUp,
+                            icon: <SquareDashedMousePointer size={16} />,
+                            title: shell.markUpTitle,
+                            onSelect: () => pointFixPicker.current?.click(),
+                          },
+                          {
+                            key: "result",
+                            label: shell.askResult,
+                            icon: <Shapes size={16} />,
+                            title: shell.askResultTitle,
+                            onSelect: (plus) => {
+                              resultRequestFrom.current = plus;
+                              setResultRequestFor(selected);
+                            },
+                          },
+                        ]}
+                      />
+                      {!previewMode && (
+                        <ResultRequest key={selected} open={resultRequestFor === selected}
+                          onOpenChange={open => setResultRequestFor(open ? selected : null)} onDraft={appendToDraft}
+                          returnFocus={() => resultRequestFrom.current?.focus()} />
                       )}
                     </div>
                     <span className="composer-hint" data-notice={composerNotice ? "" : undefined}>
@@ -3818,6 +4309,11 @@ export function App() {
                       )}
                     </span>
                     <div className="composer-send-actions">
+                      {/* Codex's Plan mode, beside Send as a mode is in ChatGPT. */}
+                      {!previewMode && !isClaude && !isOpenCode && (
+                        <CodexPlanChip state={currentDetail?.codexPlan}
+                          onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
+                      )}
                       {busy && (
                         <button
                           type="button"

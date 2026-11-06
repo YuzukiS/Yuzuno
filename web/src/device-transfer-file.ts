@@ -88,7 +88,7 @@ export function exportDevicePreferences(
   },
   now = new Date(),
 ): string {
-  const { palette, theme, fontSize, agentList, projectGroups, dock, turnDock } = appearance;
+  const { palette, theme, fontSize, agentList, agentOrder, projectGroups, dock, turnDock } = appearance;
   return `${JSON.stringify(
     {
       format: DEVICE_FILE,
@@ -99,8 +99,9 @@ export function exportDevicePreferences(
         theme,
         fontSize,
         agentList,
+        agentOrder,
         projectGroups,
-        dock: { jobs: dock.jobs, actions: dock.actions, subAgents: dock.subAgents },
+        dock: { jobs: dock.jobs, actions: dock.actions, reviews: dock.reviews, subAgents: dock.subAgents },
         turnDock: { numbers: turnDock.numbers, bars: turnDock.bars },
       },
       sending: { sendKey: sending.sendKey },

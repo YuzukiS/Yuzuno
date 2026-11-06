@@ -1,7 +1,7 @@
 // T-177: Home Brief images in Chromium, on a production build with every API
 // answered here (no Core, no GitHub, no model). A wide window and a phone:
-// a report image opens in the app's preview by keyboard and closes with
-// Escape back to it; Open opens the same preview; Mark up reads the image
+// a report image, on the report page its Home card opens (T-18), opens in
+// the app's preview by keyboard and closes with Escape back to it; Open opens the same preview; Mark up reads the image
 // shown and adds the annotated image, the original and the card's source to
 // its author's draft, sending nothing. An Ask's image, a history entry's and
 // a pinned widget's open the same preview; an unreadable snapshot says so.
@@ -160,15 +160,29 @@ try {
     });
     await page.goto("http://yuzuno-home-image.test/");
     await page.locator(".toolbar-nav .catchup-nav").first().click();
-    const card = (key) => page.locator(`.home-section[data-section-key="${key}"]`);
+    const card = (key) => page.locator(`.home-view .home-section[data-section-key="${key}"]`);
     const dialog = page.getByRole("dialog");
-    await shown(page, card("shots").locator("button.brief-image img").first());
+    // A report's or status's body is read on its page, opened from its card (T-18).
+    const opened = page.locator(".home-report");
+    const openReport = async (key) => {
+      await card(key).locator(".home-report-open").scrollIntoViewIfNeeded();
+      await card(key).locator(".home-report-open").click();
+      await opened.locator(".report-head h1").waitFor();
+    };
+    const closeReport = async () => {
+      await opened.locator(".report-back").click();
+      await opened.waitFor({ state: "hidden" });
+    };
+    await card("shots").waitFor();
     await page.screenshot({ path: resolve(output, `${viewport.name}-home.png`), fullPage: true });
-    assert.equal(await card("shots").locator(".brief-attachment a").count(), 0, "no image link to a browser tab");
+    await openReport("shots");
+    await shown(page, opened.locator("button.brief-image img").first());
+    await page.screenshot({ path: resolve(output, `${viewport.name}-report.png`), fullPage: true });
+    assert.equal(await opened.locator(".brief-attachment a").count(), 0, "no image link to a browser tab");
     const writesNow = () => report.writes.filter((w) => w.viewport === viewport.name).length;
 
     // By keyboard: the picture opens the preview; Escape closes it back to it.
-    const before = card("shots").locator("button.brief-image").first();
+    const before = opened.locator("button.brief-image").first();
     await before.focus();
     await page.keyboard.press("Enter");
     await dialog.waitFor();
@@ -190,14 +204,14 @@ try {
     await page.waitForFunction((el) => el === document.activeElement, await before.elementHandle(), { timeout: 5_000 })
       .catch(() => assert.fail("focus returns to the image"));
     assert.equal(writesNow(), 0, "looking writes nothing");
-    check(`${viewport.name}: a Home image opens in the app's preview by keyboard and Escape returns to it; nothing written`);
+    check(`${viewport.name}: a report's image, on its page, opens in the app's preview by keyboard and Escape returns to it; nothing written`);
 
     // Open, from the picture's folded details, then Mark up: the image shown, marked, into its author's draft.
-    // Home starts at low density, which shows the first attachment: show them all, as a person would.
-    const showAll = card("shots").locator("button.brief-attachments-more");
+    // At low density only the first attachment shows: show them all, as a person would.
+    const showAll = opened.locator("button.brief-attachments-more");
     if ((await showAll.count()) && (await showAll.getAttribute("aria-expanded")) === "false") await showAll.click();
     // The file name is in the folded details now; the picture's own name says which one it is.
-    const after = card("shots").locator(".brief-attachment", { has: page.locator('button.brief-image[aria-label="Open image screen-after.png"]') });
+    const after = opened.locator(".brief-attachment", { has: page.locator('button.brief-image[aria-label="Open image screen-after.png"]') });
     assert.equal(await after.locator("button.brief-attachment-open").isVisible(), false, "Open waits in the folded image info");
     await after.locator("details.brief-image-info > summary").click();
     await after.locator("button.brief-attachment-open").click();
@@ -230,8 +244,10 @@ try {
     await page.screenshot({ path: resolve(output, `${viewport.name}-draft.png`) });
     check(`${viewport.name}: Mark up adds the image shown, its original and the card's source to its author's draft, sending nothing`);
 
-    // An Ask's image: the same preview; marking it never answers the Ask.
+    // An Ask's image, on Home: the same preview; marking it never answers the Ask.
     await page.locator(".toolbar-nav .catchup-nav").first().click();
+    await card("decide").waitFor();
+    if (await opened.isVisible()) await closeReport();
     await card("decide").locator("button.brief-image").click();
     await dialog.waitFor();
     assert.equal(await dialog.locator("h2").innerText(), "Proposed layout");
@@ -244,15 +260,15 @@ try {
     assert.equal(report.writes.filter((w) => w.viewport === viewport.name && w.path.includes("/brief/")).length, 0, "no reply, no Seen");
     check(`${viewport.name}: an Ask's image opens the same preview; marking it up never answers the Ask`);
 
-    // A snapshot Core no longer has: said plainly on the card (T-9) and in the preview, nothing to mark.
-    await card("gone").scrollIntoViewIfNeeded();
-    const failed = card("gone").locator(".brief-image-failed");
+    // A snapshot Core no longer has: said plainly on the status's page (T-9) and in the preview, nothing to mark.
+    await openReport("gone");
+    const failed = opened.locator(".brief-image-failed");
     await failed.waitFor();
     assert.match(await failed.innerText(), /couldn't be loaded from this Core/);
     assert.equal(await failed.getAttribute("role"), "status");
-    assert.equal(await card("gone").locator("button.brief-image").count(), 0, "no broken picture to click");
-    await card("gone").locator("details.brief-image-info > summary").click();
-    await card("gone").locator("button.brief-attachment-open").click();
+    assert.equal(await opened.locator("button.brief-image").count(), 0, "no broken picture to click");
+    await opened.locator("details.brief-image-info > summary").click();
+    await opened.locator("button.brief-attachment-open").click();
     await dialog.waitFor();
     await dialog.getByRole("alert").waitFor();
     assert.match(await dialog.getByRole("alert").innerText(), /can't be read from this Core/);
@@ -260,7 +276,8 @@ try {
     await page.screenshot({ path: resolve(output, `${viewport.name}-unreadable.png`) });
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
-    check(`${viewport.name}: an unreadable snapshot says so on its card and in the preview, and offers no Mark up`);
+    await closeReport();
+    check(`${viewport.name}: an unreadable snapshot says so on its page and in the preview, and offers no Mark up`);
 
     // History reads its own version; a pinned widget opens the same preview.
     await page.locator(".home-team-details > summary").click();
@@ -271,6 +288,8 @@ try {
     assert.match(await dialog.locator(".input-image-dialog img").getAttribute("src"), /\/attachments\/shots\/old\.png\?version=1$/);
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
+    // Pin is in the card's More actions (T-18).
+    await card("shots").getByRole("button", { name: "More actions for “Screens”" }).click();
     await card("shots").getByRole("button", { name: "Pin “Screens” to My widgets" }).click();
     const pinned = page.locator(".home-pinned");
     await pinned.locator("button.brief-image").first().click();

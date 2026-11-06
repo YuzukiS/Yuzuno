@@ -1,0 +1,137 @@
+//! A task dispatched from an executor template, as the runtime does it (T-34,
+//! executor model phase 1; docs/executor-model.md; its rows are
+//! collaboration_store/executor_dispatch.rs). The executor is created first,
+//! as POST /api/agents creates an Agent, without starting its runtime; the
+//! task is then dispatched to it in the store's own transaction, its mail
+//! queued, and it waits for an executor slot; the scheduler starts its runtime
+//! when one is free (executor_slots.rs, T-35), and the mail is delivered once
+//! it is connected. A failure after the executor exists closes it.
+use crate::{
+    collaboration_store::executor_dispatch::{Dispatch, LocalDefault, NeedsLocalBudget, Next, Plan},
+    updates::admission::Permit,
+    workspace::{Birth, Workspace},
+};
+use anyhow::{ensure, Context, Result};
+use serde_json::Value;
+use std::{path::Path, sync::Arc};
+
+/// Why a template dispatch is refused while an update drains, when an
+/// ordinary one is not: it creates an Agent, work an update waits for. The
+/// permit comes before the row is read, so a retry of one already made is
+/// refused too, and gets its recorded answer after the update (Lead 5080).
+const UPDATING: &str = "workspace_updating: Workspace is preparing an update, and a dispatch from an executor template waits for it, as creating an Agent does. Retry the same request once the update is done: a dispatch it already made returns its recorded answer, and one it had not made goes ahead then. A dispatch to an existing Agent is not refused";
+
+/// That refusal, typed: nothing of the dispatch was written, so a rebuild it
+/// meets stays pending for a later pass instead of blocking its task
+/// (executor_start.rs, R1 dde34160).
+#[derive(Debug)]
+pub(crate) struct WaitsForUpdate;
+
+impl std::fmt::Display for WaitsForUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(UPDATING)
+    }
+}
+
+impl std::error::Error for WaitsForUpdate {}
+
+impl Workspace {
+    /// `task_dispatch` with `executor` instead of `toAgentId`.
+    pub(crate) async fn executor_dispatch(self: &Arc<Self>, actor: Option<&str>, input: Value) -> Result<Value> {
+        // Taken as POST /api/agents takes it, before anything is written.
+        let permit = self.admission.enter_work().map_err(|_| anyhow::Error::new(WaitsForUpdate))?;
+        ensure!(input.get("toAgentId").is_none(), "invalid_input: give toAgentId or executor, not both");
+        let (who, again) = (actor.map(str::to_owned), input.clone());
+        let next = match self.stored(move |store| store.executor_dispatch_begin(who.as_deref(), input, LocalDefault::Unread)).await {
+            // It chooses its machine (`auto`), and this Core host's Jobs
+            // budget isn't saved: its default is read now, outside the
+            // dispatch's transaction, which wrote nothing (R1 94ba0ebd). Only
+            // such a dispatch reads it.
+            Err(error) if error.downcast_ref::<NeedsLocalBudget>().is_some() => {
+                let default_local = self.default_local_budget().await;
+                let who = actor.map(str::to_owned);
+                self.stored(move |store| store.executor_dispatch_begin(who.as_deref(), again, LocalDefault::Read(default_local.as_ref()))).await?
+            }
+            next => next?,
+        };
+        let dispatch = match next {
+            Next::Dispatch(dispatch) => dispatch,
+            Next::Create(plan) => {
+                if let Err(error) = self.create_executor(&plan).await {
+                    return Err(self.executor_failed(&plan.dispatch, error, &permit).await);
+                }
+                plan.dispatch
+            }
+        };
+        let answer = match self.admission.enter_completion() {
+            Ok(completion) => self.collaboration_stored(completion, actor, "task_dispatch", dispatch.input.clone()).await,
+            Err(error) => Err(error),
+        };
+        match answer {
+            Ok(answer) => {
+                drop(permit);
+                // Its slot, when one is free; a retry of a dispatch whose
+                // start a stopped Core missed waits for one again too.
+                self.spawn_executor_slots_pass();
+                Ok(answer)
+            }
+            Err(error) => Err(self.executor_failed(&dispatch, error, &permit).await),
+        }
+    }
+
+    /// This Core host's Jobs budget while none is saved, for `auto` to rank it
+    /// by (T-35 S3b). Unread (a Core host that isn't Linux), it has no budget,
+    /// and ranks after every machine that has one.
+    async fn default_local_budget(self: &Arc<Self>) -> Option<Value> {
+        #[cfg(test)]
+        self.executor_slots.budget_reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        let read = if self.executor_slots.fail_budget_read.load(std::sync::atomic::Ordering::Relaxed) {
+            Err(anyhow::anyhow!("a test's Core host that isn't Linux"))
+        } else {
+            crate::jobs::local_budget_default(self).await
+        };
+        #[cfg(not(test))]
+        let read = crate::jobs::local_budget_default(self).await;
+        read.unwrap_or_else(|error| {
+            #[cfg(test)]
+            self.executor_slots.budget_read_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("Executor dispatch: this host's default Jobs budget could not be read: {error:#}");
+            None
+        })
+    }
+
+    async fn create_executor(self: &Arc<Self>, plan: &Plan) -> Result<()> {
+        // Core makes no folder (task_workspaces.rs is the user's alone). On
+        // another machine its Project's folder there is checked over SSH, as
+        // creating any Agent there checks it (T-35 S3a).
+        let (cwd, machine) = if plan.machine == "local" {
+            let cwd = plan.folders.iter().find(|f| Path::new(f).is_absolute() && Path::new(f).is_dir()).cloned().with_context(|| {
+                format!("no_folder: an executor works in a folder on this host, and {} is not one", plan.folders.join(", nor "))
+            })?;
+            (cwd, None)
+        } else {
+            let cwd = plan.folders.first().cloned().context("no_folder: an executor on another machine works in its Project's folder there")?;
+            (cwd, Some(plan.machine.clone()))
+        };
+        let birth = Birth { id: plan.dispatch.agent_id.clone(), then: plan.then() };
+        crate::server::create_executor(self, &plan.template, plan.name.clone(), cwd, machine, plan.project_id.clone(), birth).await?;
+        Ok(())
+    }
+
+    /// The dispatch failed: its row says why, and the executor it made is
+    /// closed, not deleted. Returns `error`, for the caller.
+    async fn executor_failed(self: &Arc<Self>, dispatch: &Dispatch, error: anyhow::Error, permit: &Permit) -> anyhow::Error {
+        let (actor, request, why) = (dispatch.actor.clone(), dispatch.request_id.clone(), format!("{error:#}"));
+        match self.stored(move |store| store.executor_dispatch_failed(&actor, &request, &why)).await {
+            Ok(Some(agent)) => {
+                if let Err(closing) = self.close_agent_admitted(&agent, permit).await {
+                    eprintln!("Executor {agent}: its dispatch failed, and it could not be closed: {closing:#}");
+                }
+            }
+            Ok(None) => {}
+            Err(recording) => eprintln!("Executor dispatch {}: could not record that it failed: {recording:#}", dispatch.request_id),
+        }
+        error
+    }
+}

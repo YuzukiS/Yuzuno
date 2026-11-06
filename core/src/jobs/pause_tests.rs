@@ -261,3 +261,42 @@ fn a_resume_left_pending_by_a_restart_stays_frozen_until_the_user_asks_again() {
     assert!(resumed.get("pause").is_none(), "{resumed}");
     assert_eq!(resumed["status"], "running");
 }
+
+/// T-50 (elasticLM): the pause mail says how long the attempt had run and how
+/// much of its time remained at the pause, keeps the deadline, and says the
+/// timeout keeps counting while it is paused.
+#[test]
+fn the_pause_mail_names_elapsed_and_remaining_time_and_keeps_the_deadline() {
+    let (_dir, s) = setup();
+    // A three-hour job started 1 h 05 min ago. Over an hour both lengths are
+    // in whole minutes, so a slow run cannot change the words.
+    let input: Submit = serde_json::from_value(json!({"requestId":"long","taskId":"T-1","name":"Long job","cwd":"/workspace","argv":["/usr/bin/true"],"resources":{"cpuMillis":500,"memoryMiB":128,"swapMiB":0},"timeoutSeconds":10800})).unwrap();
+    let machine = json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":600,"memoryMiB":192,"swapMiB":0}});
+    let job = s.create_job(Some("a"), input, json!({"cwd":"/workspace"}), machine, json!({"bootId":"boot"})).unwrap();
+    s.reserve_next_job(None, None, None).unwrap().unwrap();
+    let id = job["id"].as_str().unwrap();
+    let started = chrono::Utc::now().timestamp_millis() as f64 / 1000.0 - 3900.0;
+    s.update_job_evidence(id, json!({"jobId":job["id"],"attempt":job["attempt"],"status":"running","reason":"Running with verified cgroup limits","started":{"at":started}}))
+        .unwrap();
+    let begun = chrono::DateTime::parse_from_rfc3339(s.job(id).unwrap()["startedAt"].as_str().unwrap()).unwrap();
+    let deadline = (begun + chrono::Duration::seconds(10800)).to_rfc3339();
+    s.request_job_pause(id, false).unwrap();
+    s.record_job_pause(id, &job["attempt"], false, &answer("paused")).unwrap();
+    let notices = mail(&s);
+    assert_eq!(notices.len(), 1);
+    let body = notices[0]["body"].as_str().unwrap();
+    let expected = format!("its timeout still counts while it is paused: at the pause it had run 1 h 05 min of its 3 h 00 min timeout and 1 h 54 min remained (it is stopped at {deadline} if still running). Only the user resumes it.");
+    assert!(body.contains(&expected), "the pause mail lacks its elapsed and remaining time: {body}");
+
+    // Paused past its own end (the host stops it there): nothing remains.
+    let (_dir, s) = setup();
+    let (job, _) = running(&s);
+    let id = job["id"].as_str().unwrap();
+    s.request_job_pause(id, false).unwrap();
+    s.record_job_pause(id, &job["attempt"], false, &answer("paused")).unwrap();
+    let begun = chrono::DateTime::parse_from_rfc3339(s.job(id).unwrap()["startedAt"].as_str().unwrap()).unwrap();
+    let deadline = (begun + chrono::Duration::seconds(3600)).to_rfc3339();
+    let body = mail(&s)[0]["body"].as_str().unwrap().to_owned();
+    assert!(body.contains(&format!("of its 1 h 00 min timeout and no time remained (it is stopped at {deadline} if still running)")),
+        "the pause mail lacks its elapsed and remaining time: {body}");
+}

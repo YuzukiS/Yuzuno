@@ -126,6 +126,39 @@
 .agent-row {
   -webkit-touch-callout: none;
 }
+/* A touch held on a row presses it in and tints it over medium, from
+   HOLD_CUE_MS into the hold, done before the actions open at LONG_PRESS_MS
+   (AgentRailRow.tsx, T-19 SH:R13). A move past the slop or a lift lets it go
+   at once: only the way in plays. The tint sits under the row's content. */
+.agent-row.is-holding {
+  isolation: isolate;
+  transform: scale(0.985);
+  transition:
+    transform var(--motion-medium) var(--ease-standard),
+    background-color var(--motion-micro) var(--ease-standard),
+    border-color var(--motion-micro) var(--ease-standard);
+}
+.agent-row.is-holding::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  pointer-events: none;
+  animation: agent-row-hold var(--motion-medium) var(--ease-standard) both;
+}
+@keyframes agent-row-hold {
+  from {
+    opacity: 0;
+  }
+}
+/* Under reduced motion the tint is there at once, and nothing scales. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-row.is-holding {
+    transform: none;
+  }
+}
 @media (pointer: coarse) {
   .agent-row-menu {
     top: 6px;

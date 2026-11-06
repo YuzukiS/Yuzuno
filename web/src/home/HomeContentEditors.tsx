@@ -30,7 +30,8 @@ export function HomeContentEditors({ projectId, agents, disabled, onChanged }: {
     }).catch(e => { if (!controller.signal.aborted) setError(errorText(e)); });
     return () => controller.abort();
   }, [path, reload]);
-  const members = agents.filter(a => a.projectId === projectId && !a.closedAt);
+  // A task executor is never an editor (T-36): it may still ask its own questions.
+  const members = agents.filter(a => a.projectId === projectId && !a.closedAt && a.kind !== "executor");
   const unavailable = ids?.filter(id => !members.some(a => a.id === id)) ?? [];
   const changed = saved && JSON.stringify(saved.editorAgentIds) !== JSON.stringify(ids);
   async function save() {

@@ -13,13 +13,23 @@ pub struct RemoteAgent {
     #[serde(deserialize_with = "agent_machine")]
     pub machine: RemoteMachine,
     pub runtime: Option<RuntimeRef>,
+    /// Core asked the machine to launch this Agent's runtime (Codex's
+    /// `ensure`, Claude Code's host), recorded and committed before the
+    /// request went (T-35 S3b, Lead 2 mail 5898). Until then a failed start
+    /// launched nothing there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub launch_requested: bool,
+    /// Claude Code: the host instance the machine answered that request
+    /// with, as `runtime` is Codex's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_instance: Option<String>,
 }
 
 impl RemoteAgent {
     /// A new Agent on `machine`, fixed to the data root the machine names now.
     pub fn new(mut machine: RemoteMachine) -> Self {
         machine.data_root = Some(machine.root().to_owned());
-        Self { machine, runtime: None }
+        Self { machine, runtime: None, launch_requested: false, host_instance: None }
     }
 }
 
@@ -65,6 +75,20 @@ impl Default for AgentSettings {
 
 pub fn ensure_agent_open(agent: &Agent) -> anyhow::Result<()> {
     anyhow::ensure!(agent.closed_at.is_none(), "Agent 已关闭；请先重新打开，再继续对话");
+    Ok(())
+}
+
+/// Refuses to start an OpenCode Agent made with OpenCode 1.19.3 (T-32): it is
+/// kept to read, and its database is never opened by 2.x, which would
+/// migrate it in place (2.2.5 core/src/database/v1-migration.bun.ts). Its
+/// conversation stays in Core's record.
+pub fn ensure_opencode_current(agent: &Agent) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        agent.harness != "opencode" || agent.opencode_session_id.is_none()
+            || agent.opencode_major.as_deref() == Some(crate::opencode::MAJOR),
+        "这个 OpenCode Agent 是用 OpenCode 1.19.3 创建的，只能阅读：Yuzuno 现在使用 OpenCode {}.x，不会用它打开这个 Agent 的数据库。要继续工作，请新建一个 OpenCode Agent。",
+        crate::opencode::MAJOR
+    );
     Ok(())
 }
 
@@ -281,6 +305,18 @@ pub struct Agent {
     /// Agent JSON, so membership never lives in the record itself.
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// `lead` or `executor`, projected from `agent_roles` for API responses
+    /// (T-33); absent for a standing Agent. Kept out of the record for the
+    /// same reason as `project_id`.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// When a released executor was released (T-34, `agent_roles.archived_at`),
+    /// projected for API responses like `kind`; absent for every other Agent.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<String>,
+    /// Who released it: `agent:<id>` or `user`, as `agent_roles.released_by`.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub released_by: Option<String>,
     pub cwd: String,
     pub model: String,
     #[serde(default)]
@@ -293,6 +329,18 @@ pub struct Agent {
     /// The OpenCode session (`ses_…`) in this Agent's own OpenCode database.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opencode_session_id: Option<String>,
+    /// The OpenCode version this Agent's database was made with (T-32), as
+    /// its first 2.x server reported it; kept with its session when that is
+    /// made. None for one not yet started, and for one made with 1.19.3 (a
+    /// session but no version), which is kept to read only
+    /// (`ensure_opencode_current`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opencode_version: Option<String>,
+    /// That version's major as Core parsed it (`opencode::major`), kept with
+    /// it: the gate and the web compare this, not the version string (R1
+    /// 070d0f95 of #575).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opencode_major: Option<String>,
     pub thread_id: Option<String>,
     pub status: String,
     #[serde(default)]
@@ -311,7 +359,20 @@ pub struct Agent {
     pub created_at: String,
     pub updated_at: String,
     pub unread_count: u64,
+    /// What waits on the user: the native requests (`pending`) and the open
+    /// asynchronous questions (`open_questions`) together (T-42).
     pub pending_count: u64,
+    /// Codex questions sent `delivery: "async"` that are still open: no answer
+    /// to them accepted, not cancelled or expired, and not imported unanswered
+    /// (T-42). They wait on the user without holding the Agent: an Agent
+    /// with only these is idle, and mail still starts its Turns.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub open_questions: u64,
+    /// The last Turn that ended finished or failed (T-42): its journal row, how
+    /// it ended and when. An interrupted Turn, or one whose outcome is unknown,
+    /// leaves it as it was. Devices compare it with what they have seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_end: Option<TurnEnd>,
     pub last_message: Option<String>,
     /// Journal position of the last event in this record, for read receipts
     /// and unread counts. Durable; streamed output (no journal row) leaves it.
@@ -328,6 +389,52 @@ pub struct Agent {
     pub remote: Option<RemoteAgent>,
     #[serde(default = "disconnected")]
     pub connection_state: String,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// How and where an Agent's last Turn ended (T-42).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnEnd {
+    /// The journal row of the change that ended it.
+    pub seq: i64,
+    /// `finished` or `failed`.
+    pub outcome: String,
+    pub at: String,
+}
+
+impl Agent {
+    /// The native requests alone, without the open asynchronous questions:
+    /// what holds the Agent waiting (T-42).
+    pub fn native_requests(&self) -> u64 {
+        self.pending_count.saturating_sub(self.open_questions)
+    }
+}
+
+/// How a Turn ended, if it ended finished or failed: `finished` for a
+/// completed one (T-42). Interrupted and unknown outcomes are neither.
+pub fn turn_outcome(turn: &Value) -> Option<&'static str> {
+    match turn["status"].as_str() {
+        Some("completed") => Some("finished"),
+        Some("failed") => Some("failed"),
+        _ => None,
+    }
+}
+
+/// How this change ended a Turn, finished or failed (T-42): one that was in
+/// `before` and had not ended there, the newest when there are several. A
+/// Turn the change brought in already ended (a snapshot of older ones) is
+/// no Turn this change ended.
+pub fn turn_ended(before: &[Value], after: &[Value]) -> Option<&'static str> {
+    after.iter().rev().find_map(|turn| {
+        let outcome = turn_outcome(turn)?;
+        let id = turn["id"].as_str()?;
+        let was = before.iter().find(|t| t["id"].as_str() == Some(id))?;
+        (!matches!(was["status"].as_str(), Some("completed" | "failed" | "interrupted"))).then_some(outcome)
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -677,7 +784,7 @@ impl AgentDetail {
             "thread/status/changed" => thread_status_changed(&mut self.agent, p),
             _ => {}
         }
-        self.agent.pending_count = self.pending.len() as u64;
+        self.agent.pending_count = self.pending.len() as u64 + self.agent.open_questions;
         let turns = &self.turns;
         settle_status(&mut self.agent, &self.pending, || turns.iter().any(|t| t["status"] == "inProgress"));
         self.agent.updated_at = at.to_rfc3339();

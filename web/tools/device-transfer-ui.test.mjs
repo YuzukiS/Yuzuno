@@ -143,7 +143,7 @@ test("the export is one versioned file of Appearance, the send key and time disp
   assert.deepEqual([data.format, data.version], ["yuzuno-device-preferences", 1]);
   assert.deepEqual(data.sending, { sendKey: "enter" });
   assert.deepEqual(data.time, { clock: "h24", timeZone: "UTC" });
-  assert.deepEqual(Object.keys(data.appearance).sort(), ["agentList", "dock", "fontSize", "palette", "projectGroups", "theme", "turnDock"]);
+  assert.deepEqual(Object.keys(data.appearance).sort(), ["agentList", "agentOrder", "dock", "fontSize", "palette", "projectGroups", "theme", "turnDock"]);
   page.close();
 });
 

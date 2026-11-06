@@ -7,9 +7,10 @@ ports given (and stops listening when an entry goes). For each request it does
 what Serve does with identity headers: it removes any Tailscale-* header the
 client sent, sets Tailscale-User-Login to the state's owner, keeps the
 browser's Host, adds X-Forwarded-For, and proxies to the entry's target. Every
-request is appended to --log as one JSON line.
+request is appended to --log as one JSON line, with the headers that say who
+sent it (Origin, Referer, the client header and the browser's Sec-Fetch-*).
 
-    serve_proxy.py --state <tailscale.exe.json> --cert C --key K --ports 18444,18445 --log requests.jsonl
+    serve_proxy.py --state <tailscale.exe.json> --cert C --key K --ports 18444[,18445] --log requests.jsonl
 
 The browser reaches it as https://<node>:<port> with Chromium's
 --host-resolver-rules mapping the node's name to 127.0.0.1 and the stand-in's
@@ -84,7 +85,9 @@ def main():
                         self.send_header(k, v)
                 self.end_headers()
                 note({"port": port, "method": self.command, "path": self.path, "status": answer.status,
-                      "origin": self.headers.get("origin"), "referer": self.headers.get("referer")})
+                      "origin": self.headers.get("origin"), "referer": self.headers.get("referer"),
+                      "client": self.headers.get("x-yuzuno-client"), "fetchMode": self.headers.get("sec-fetch-mode"),
+                      "fetchSite": self.headers.get("sec-fetch-site"), "fetchDest": self.headers.get("sec-fetch-dest")})
                 try:
                     while chunk := answer.read1(65536):
                         self.wfile.write(chunk)

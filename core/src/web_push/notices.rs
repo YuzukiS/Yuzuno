@@ -58,10 +58,20 @@ pub struct AskState {
     pub since: String,
 }
 
+/// A lead's handover proposal waiting in Home's Needs you (T-34 S3b).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProposalState {
+    pub project: String,
+    pub id: String,
+    pub proposer_id: String,
+    pub proposer_name: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Read {
     pub agents: Vec<AgentState>,
     pub asks: Vec<AskState>,
+    pub proposals: Vec<ProposalState>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -129,7 +139,7 @@ fn agent_notice(before: &AgentState, after: &AgentState) -> Option<Notice> {
 }
 
 /// The notices between two reads: at most one per Agent, none for an
-/// Agent new to the list, and one per Ask new in Needs you.
+/// Agent new to the list, and one per Ask or handover proposal new in Needs you.
 pub fn notices(before: &Read, after: &Read) -> Vec<Notice> {
     let earlier: HashMap<&str, &AgentState> = before.agents.iter().map(|a| (a.id.as_str(), a)).collect();
     let mut found: Vec<Notice> = after.agents.iter()
@@ -147,6 +157,21 @@ pub fn notices(before: &Read, after: &Read) -> Vec<Notice> {
             summary: false,
             covers: vec![Kind::NeedsYou],
             event: format!("ask:{key}:{}", ask.since),
+        });
+    }
+    let proposed: HashSet<&str> = before.proposals.iter().map(|p| p.id.as_str()).collect();
+    for proposal in after.proposals.iter().filter(|p| !proposed.contains(p.id.as_str())) {
+        found.push(Notice {
+            kind: Kind::NeedsYou,
+            // By Project and lead: a lead's new proposal supersedes its own, and
+            // its notice replaces the earlier one (#612 R2).
+            tag: tag(Kind::NeedsYou, &format!("handover:{}:{}", proposal.project, proposal.proposer_id)),
+            title: format!("{} proposes a handover change", proposal.proposer_name),
+            body: "A change to a Project's handover is waiting for your decision on Home.".into(),
+            agent: None,
+            summary: false,
+            covers: vec![Kind::NeedsYou],
+            event: format!("handover:{}:{}", proposal.project, proposal.id),
         });
     }
     found
@@ -233,7 +258,7 @@ mod tests {
         AgentState { id: id.into(), name: format!("Agent {id}"), status: status.into(), turn: Some("t1".into()), ..Default::default() }
     }
     fn read(agents: Vec<AgentState>) -> Read {
-        Read { agents, asks: vec![] }
+        Read { agents, asks: vec![], proposals: vec![] }
     }
     fn kinds(notices: &[Notice]) -> Vec<(Kind, &str)> {
         notices.iter().map(|n| (n.kind, n.title.as_str())).collect()
@@ -271,8 +296,8 @@ mod tests {
     #[test]
     fn a_new_ask_needs_you_and_opens_home() {
         let ask = |key: &str| AskState { project: "p1".into(), key: key.into(), agent_name: "Lead".into(), since: "2026-10-25T00:00:00Z".into() };
-        let before = Read { agents: vec![], asks: vec![ask("old")] };
-        let after = Read { agents: vec![], asks: vec![ask("old"), ask("new")] };
+        let before = Read { agents: vec![], asks: vec![ask("old")], proposals: vec![] };
+        let after = Read { agents: vec![], asks: vec![ask("old"), ask("new")], proposals: vec![] };
         let found = notices(&before, &after);
         assert_eq!(kinds(&found), vec![(Kind::NeedsYou, "Lead asks you")]);
         assert_eq!(found[0].tag, "yuzuno:needsYou:ask:p1/new");
@@ -280,6 +305,27 @@ mod tests {
         let sent = payload(&found[0], "w1");
         assert_eq!(sent, json!({"v":1,"kind":"needsYou","workspaceId":"w1","open":"home","title":"Lead asks you",
             "body":"An Ask is waiting for your answer on Home.","tag":"yuzuno:needsYou:ask:p1/new"}));
+    }
+
+    /// T-34 S3b: a lead's handover proposal new in Needs you is one notice,
+    /// with its own words, that opens Home; one already shown is not again.
+    #[test]
+    fn a_new_handover_proposal_needs_you_and_opens_home() {
+        let proposal = |id: &str| ProposalState { project: "p1".into(), id: id.into(), proposer_id: "lead".into(), proposer_name: "Lead".into() };
+        let before = Read { agents: vec![], asks: vec![], proposals: vec![proposal("old")] };
+        let after = Read { agents: vec![], asks: vec![], proposals: vec![proposal("old"), proposal("new")] };
+        let found = notices(&before, &after);
+        assert_eq!(kinds(&found), vec![(Kind::NeedsYou, "Lead proposes a handover change")], "a new proposal is one notice");
+        assert_eq!(found[0].tag, "yuzuno:needsYou:handover:p1:lead");
+        assert_eq!(payload(&found[0], "w1"), json!({"v":1,"kind":"needsYou","workspaceId":"w1","open":"home",
+            "title":"Lead proposes a handover change","body":"A change to a Project's handover is waiting for your decision on Home.",
+            "tag":"yuzuno:needsYou:handover:p1:lead"}));
+        assert!(notices(&after, &after).is_empty(), "a proposal already shown is not told again");
+        // The lead's next proposal supersedes its own: one notice, under the same tag (#612 R2).
+        let first = notices(&Read::default(), &Read { proposals: vec![proposal("old")], ..Read::default() });
+        let second = notices(&Read { proposals: vec![proposal("old")], ..Read::default() }, &Read { proposals: vec![proposal("newer")], ..Read::default() });
+        assert_eq!((first.len(), second.len()), (1, 1));
+        assert_eq!(second[0].tag, first[0].tag, "a superseding proposal shares its tag, so its notice replaces the earlier one");
     }
 
     #[test]

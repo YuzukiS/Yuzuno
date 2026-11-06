@@ -24,6 +24,7 @@ native history and Core's prior view, linked by the rewind attempt ID.
 | Codex files | No file restore through conversation rewind | Unavailable |
 | Claude conversation | Unavailable in the current integration (CLI 2.1.280 / SDK 0.3.296) | Unavailable |
 | Claude files | Existing native checkpoint preview and restore | Not supported by the current file-checkpoint integration |
+| OpenCode conversation and files | OpenCode's own revert (`POST /session/:id/revert`, 1.19.3), together; see [OpenCode](#opencode). Checked against a stand-in only | Unavailable |
 
 Claude's file option opens the existing file-checkpoint preview. It restores
 only files covered by Claude Code's checkpoint and leaves conversation history
@@ -50,6 +51,64 @@ refusal preserves the existing history.
 The preview loads history only when opened, with limits of 1,000 turns and a
 32 MiB archive. Exceeding either limit refuses the operation. Rendering reply
 footers does not scan native histories or file checkpoints.
+
+## OpenCode
+
+On an OpenCode Agent, **Rewind** is OpenCode's own revert. The selected turn and
+later turns leave the conversation; OpenCode removes them from its session with
+the next message it gets. Each file that a later change of OpenCode's touched
+goes back as OpenCode's snapshot holds it. It is not a conversation-only
+rewind.
+
+The preview lists each such file: what it is now and what it becomes. A change
+made to it since, by you or another Agent, is overwritten. Before it asks
+OpenCode, Core keeps a copy of each file in its own data folder, under
+`opencode/<agent>/revert/<attempt>`, not in the Agent's folder. It keeps the
+copies of the newest three reverts whose outcome is known, removing older ones
+when it makes a new copy; a revert not yet confirmed keeps its copy. Files can be
+sent back only when Core can tell exactly what OpenCode will write:
+
+- OpenCode was started by Core from its native executable, not a script or
+  wrapper, and Core's environment sets no Git variables;
+- each path is plain, not `.gitattributes`, and Git would not convert the file
+  on checkout;
+- at most 200 files, 8 MiB each and 32 MiB in all.
+
+Otherwise a revert with files is refused before anything is asked. A turn with
+no file to send back needs none of this.
+
+A revert is refused while anything runs or waits for an answer, while an
+earlier rewind, compaction or message is unconfirmed, or while the session
+already holds a revert. Confirming reads everything again and refuses on any
+change; then OpenCode is asked once.
+
+- **Reverted:** the session holds the revert. Each file is reported on its own:
+  as the snapshot holds it, still as before (OpenCode only logs a checkout that
+  fails), or neither. Nothing is overwritten to fix it. The original text is
+  added to the draft. Until the next message, `/compact` is refused: OpenCode
+  would apply the revert first. Send a message, then compact.
+- **Not reverted:** OpenCode refused before it began (busy, no such session, a
+  request it could not read), or its request ended without keeping the revert
+  and a new read finds the messages and every file as before. No turn leaves
+  and no text is added.
+- **Not yet confirmed:** new messages, commands, `/compact` and another revert
+  wait. **Check outcome** settles what can be told:
+  - a revert OpenCode confirmed but Core could not record is recorded;
+  - a request OpenCode answered without keeping the revert is read again, and
+    is not reverted only if the messages and every file are as before;
+  - if Core stopped before the request went out, nothing was asked, and it is
+    not reverted (the copies stay where they were kept);
+  - a request with no answer kept is reverted if OpenCode's session now holds
+    the revert, which OpenCode keeps only once its files are sent back.
+    Otherwise it stays unconfirmed: OpenCode may have changed files before it
+    stopped, and its own Git processes may still be changing them.
+
+  There is no **Keep current history** for OpenCode, and the revert is never
+  asked for again.
+
+OpenCode's restore (unrevert) is not offered: it writes back every file of the
+snapshot. This has been checked against Core's stand-in of OpenCode 1.19.3, not
+yet against OpenCode itself.
 
 ## Protocol evidence
 

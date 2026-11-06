@@ -9,7 +9,7 @@
 //! command arguments, environment values, absolute paths, logs, chat and file
 //! contents never do. A recorded string that may still hold a known absolute
 //! path (a reason, a scope note) has it replaced by what it stands for.
-use super::{resource_summary, runs, store};
+use super::{ids, resource_summary, runs, store};
 use crate::{model::now, store::Store};
 use anyhow::{ensure, Result};
 use serde::Deserialize;
@@ -57,9 +57,11 @@ impl Store {
     /// a run's attempts in stage order, each stage's oldest first.
     pub(super) fn provenance_records(&self, scope: &Scope) -> Result<(Option<Value>, Vec<Value>)> {
         let db = self.db.read()?;
+        // The whole ID, or a unique prefix of it (T-30), read with the records.
         match scope {
-            Scope::Job(id) => Ok((None, vec![store::get(&db, id)?])),
+            Scope::Job(id) => Ok((None, vec![store::get(&db, &ids::resolve(&db, ids::Kind::Job, id)?)?])),
             Scope::Run(id) => {
+                let id = &ids::resolve(&db, ids::Kind::Run, id)?;
                 let run = runs::run_view(&db, id)?;
                 let mut all = runs::attempts(&db, id)?;
                 let mut jobs = Vec::new();
@@ -212,6 +214,22 @@ fn exit(job: &Value) -> Value {
 fn code(job: &Value) -> Value {
     let snapshot = &job["snapshot"];
     let git = &snapshot["git"];
+    if let (Some(head), Some(paths)) = (git["head"].as_str(), git["guardPaths"].as_array()) {
+        // guardPaths (T-50): only those paths were frozen; HEAD could move.
+        // What the start found is this attempt's own record of its check.
+        let status = &git["statusSha256"];
+        let start = &job["result"]["guard"];
+        let checked = start["guardedUnchanged"] == true;
+        return json!({"git": {"head": head, "headAtSubmit": head, "headAtStart": start["headAtStart"], "statusSha256": status,
+                "guardPaths": paths, "guardedUnchanged": if checked { json!(true) } else { Value::Null },
+                "trackedChanges": if status == EMPTY_SHA256 { "none under the guarded paths" } else { "present under the guarded paths: their files are among the inputs" }},
+            "state": if checked { "verified" } else { "declared" },
+            "when": if checked {
+                "At submission, and checked again before the command started: the guarded paths' content at HEAD and their changed tracked files were unchanged. Only the guarded paths: HEAD itself and the rest of the checkout could change"
+            } else {
+                "At submission only: no start check of the guarded paths was recorded (the command did not start, or its record is missing). Only the guarded paths were frozen"
+            }});
+    }
     if let Some(head) = git["head"].as_str() {
         let status = &git["statusSha256"];
         return json!({"git": {"head": head, "statusSha256": status,
@@ -348,6 +366,28 @@ fn logs(job: &Value, extent: &Result<Value, String>) -> Value {
     }
 }
 
+/// How admission started the attempt, when it started ahead of a queue head
+/// short of the budget (T-38): that head and the sizes, field by field.
+fn admission(job: &Value) -> Value {
+    let passed = &job["admission"]["passed"];
+    if !passed.is_object() {
+        return Value::Null;
+    }
+    let size = |r: &Value| json!({"cpuMillis": r["cpuMillis"], "memoryMiB": r["memoryMiB"], "swapMiB": r["swapMiB"]});
+    json!({"startedAheadOf": {"jobId": passed["jobId"], "name": passed["name"], "waits": passed["waits"],
+        "need": size(&passed["need"]), "room": size(&passed["room"]), "headNeed": size(&passed["headNeed"])}})
+}
+fn amount(r: &Value) -> String {
+    format!("{} mCPU / {} MiB RAM / {} MiB swap", md(&r["cpuMillis"]), md(&r["memoryMiB"]), md(&r["swapMiB"]))
+}
+/// The memory limit lowerings of a running attempt (T-38 B), field by field:
+/// when, from and to how many MiB, and who (the user, or an Agent by name).
+fn limit_changes(job: &Value) -> Value {
+    json!(job["limitChanges"].as_array().into_iter().flatten().map(|c| json!({
+        "at": c["at"], "fromMiB": c["fromMiB"], "toMiB": c["toMiB"],
+        "by": if c["by"]["kind"] == "user" { json!("the user") } else { c["by"]["name"].clone() },
+    })).collect::<Vec<_>>())
+}
 fn attempt(job: &Value, extent: &Result<Value, String>, known: &mut Known, labels: &mut Labels) -> Value {
     known.add(&job["cwd"], "<cwd>");
     known.add(&job["snapshot"]["cwd"], "<cwd>");
@@ -363,7 +403,8 @@ fn attempt(job: &Value, extent: &Result<Value, String>, known: &mut Known, label
         "run": if run.is_object() { json!({"id": run["id"], "stage": run["stage"], "attempt": run["attempt"]}) } else { Value::Null },
         "retryOf": job["retryOf"], "retriedBy": job["retriedBy"], "resumeOf": job["checkpointFrom"]["jobId"],
         "requestedBy": job["requestedBy"], "turnId": job["source"]["turnId"],
-        "status": job["status"], "reason": job["reason"], "exit": exit(job),
+        "status": job["status"], "reason": job["reason"], "exit": exit(job), "admission": admission(job),
+        "limitChanges": limit_changes(job),
         "times": {"createdAt": job["createdAt"], "startedAt": job["startedAt"], "finishedAt": job["finishedAt"]},
         "target": target(job),
         "executor": {"kind": target(job)["kind"], "capabilities": job["capabilities"]},
@@ -555,8 +596,22 @@ fn report(m: &Value) -> String {
             _ => format!("exit status {}", md(&exit["state"])),
         };
         let _ = writeln!(out, "- Outcome: {}; {ended}", md(&a["reason"]));
+        let ahead = &a["admission"]["startedAheadOf"];
+        if ahead.is_object() {
+            let _ = writeln!(out, "- Started ahead of {} (waiting for {}): {} fitted in the {} left beside its {}", md(&ahead["name"]),
+                md(&ahead["waits"]), amount(&ahead["need"]), amount(&ahead["room"]), amount(&ahead["headNeed"]));
+        }
+        for change in a["limitChanges"].as_array().into_iter().flatten() {
+            let _ = writeln!(out, "- Memory limit lowered from {} MiB to {} MiB by {} at {}", md(&change["fromMiB"]),
+                md(&change["toMiB"]), md(&change["by"]), md(&change["at"]));
+        }
         let code = &a["code"];
+        let guarded = code["git"]["guardPaths"].as_array();
         let _ = match code["git"]["head"].as_str() {
+            Some(_) if guarded.is_some() => writeln!(out, "- Code: guarded paths {} at Git {} (HEAD at submission), HEAD at start {}, tracked changes {} ({}: {})",
+                guarded.into_iter().flatten().map(|g| format!("{} {}", md(&g["path"]), hex(&g["object"]))).collect::<Vec<_>>().join(", "),
+                hex(&code["git"]["headAtSubmit"]), hex(&code["git"]["headAtStart"]),
+                md(&code["git"]["trackedChanges"]), md(&code["state"]), md(&code["when"])),
             Some(_) => writeln!(out, "- Code: Git {}, tracked changes {} ({}: {})", hex(&code["git"]["head"]),
                 md(&code["git"]["trackedChanges"]), md(&code["state"]), md(&code["when"])),
             None => writeln!(out, "- Code: {} ({})", md(&code["note"]), md(&code["state"])),

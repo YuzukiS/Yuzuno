@@ -6,6 +6,11 @@
 // (touch: one finger moves, two pinch, sent as the screen sends them).
 // Synthetic images and names only; screenshots for review. Not a check of a
 // real iPhone, Safari or the desktop app's WebView.
+// T-18 (#467): Home's report and status cards are summary cards, which draw no
+// Attachments block, so the Home images are an Ask's (whose card shows its whole
+// body), first counted as listed; the report page is a report's with no summary,
+// "album", opened from its card; and that report pinned with no summary (shown
+// whole) opens its images in the same viewer too.
 //   YUZUNO_UI_DIST=<isolated build> node tools/image-viewer-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -122,14 +127,25 @@ const snapshot = (name) => ({ name, kind: "image", mime: "image/png", size: imag
 const captions = { "settings-long.png": "Settings, scrolled to the end", "dashboard-wide.png": "Dashboard", "icon.png": "Icon", "photo.png": "Desk photo", "receipt-strip.png": "Receipt strip",
   "settings-note.png": "Settings after the spacing fix, scrolled from the account section down past notifications, privacy and storage to the very last row, to compare each group's spacing with the design", "gone.png": "Old capture" };
 const sections = [{
-  id: 11, key: "shots", kind: "report", title: "Settings screens", version: 3, owner: { agentId: "b", name: "Hana", state: "active" },
+  id: 11, key: "shots", kind: "ask", title: "Settings screens", version: 3, owner: { agentId: "b", name: "Hana", state: "active" },
   updatedAt: ago(5), updatedTurnId: "t1", refs: {}, seen: null, history: false,
+  ask: { question: "Do these settings screens look right?", state: "open", reply: { freeText: true } },
   body: spec(["text", "files"], {
     text: node("Markdown", { text: "The settings screen, whole, and other captures." }),
     files: node("Attachments", { items: Object.entries(captions).map(([name, caption]) => ({ name, caption })) }),
   }),
   attachments: Object.keys(captions).map(snapshot),
+}, {
+  // A report with no summary (T-18): its page, and its pin (shown whole), show its images.
+  id: 12, key: "album", kind: "report", title: "Settings album", version: 2, owner: { agentId: "b", name: "Hana", state: "active" },
+  updatedAt: ago(6), updatedTurnId: "t1", refs: {}, seen: null, history: false,
+  body: spec(["text", "files"], {
+    text: node("Markdown", { text: "The same captures, kept for the album." }),
+    files: node("Attachments", { items: Object.entries(captions).map(([name, caption]) => ({ name, caption })) }),
+  }),
+  attachments: Object.keys(captions).map(snapshot),
 }];
+const ALBUM_PIN = "pin:p1:12:album";
 const home = {
   generatedAt: ago(0), order: ["p1"], needsYou: [],
   projects: [{
@@ -244,6 +260,9 @@ async function openPage(viewport) {
   await page.addInitScript(({ theme, fontSize }) => {
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, fontSize, palette: "garden" }));
+    // The album pinned to My widgets (T-18): with no summary it is shown whole.
+    localStorage.setItem("yuzuno.homeWidgets.ws-image-viewer", JSON.stringify({ order: [], hidden: [],
+      pins: [{ projectId: "p1", key: "album", id: 12, title: "Settings album", projectName: "Yuzuno" }] }));
     // What the window saw of each wheel: whether something took it first.
     window.wheels = [];
     addEventListener("wheel", (event) => wheels.push({ prevented: event.defaultPrevented, ctrl: event.ctrlKey }), { passive: true });
@@ -258,10 +277,10 @@ async function openPage(viewport) {
       report.writes.push({ viewport: viewport.name, method, path });
       return route.fulfill({ json: {} });
     }
-    const attachment = /^\/api\/projects\/p1\/brief\/attachments\/shots\/([^/]+)$/.exec(path);
+    const attachment = /^\/api\/projects\/p1\/brief\/attachments\/(shots|album)\/([^/]+)$/.exec(path);
     if (attachment) {
-      const name = decodeURIComponent(attachment[1]);
-      report.imageReads.push(`${viewport.name} home ${name}?version=${url.searchParams.get("version")}`);
+      const name = decodeURIComponent(attachment[2]);
+      report.imageReads.push(`${viewport.name} home ${attachment[1]}/${name}?version=${url.searchParams.get("version")}`);
       return images[name] ? route.fulfill({ body: images[name], contentType: "image/png" }) : route.fulfill({ status: 404, json: { error: "This snapshot is no longer kept." } });
     }
     if (path === `/api/agents/a/images/${messageImage}`) {
@@ -433,9 +452,14 @@ try {
     await card.waitFor();
     const showAll = card.locator("button.brief-attachments-more");
     if ((await showAll.count()) && (await showAll.getAttribute("aria-expanded")) === "false") await showAll.click();
-    const open = async (scope, name) => {
+    // Listed before any picture is opened, so a card that draws none fails here and not only by a timeout (T-18).
+    await card.locator(".brief-attachments > li").nth(Object.keys(captions).length - 1).waitFor({ timeout: 5000 }).catch(() => {});
+    const listed = await card.locator(".brief-attachments > li").count();
+    assert.equal(listed, Object.keys(captions).length, `the shots card (an Ask, its whole body shown) lists its attachments: ${listed}`);
+    check(`${viewport.name}: the shots card (an Ask, its whole body shown) lists its ${listed} attachments, so what follows opens them`);
+    const open = async (scope, name, key = "shots") => {
       await scope.locator(`button.brief-image[aria-label="Open image ${name}"]`).click();
-      return opened(page, `/attachments/shots/${name}?`);
+      return opened(page, `/attachments/${key}/${name}?`);
     };
     s = await open(card, "settings-long.png");
     assert.match(s.src, /\/attachments\/shots\/settings-long\.png\?version=3$/);
@@ -583,18 +607,33 @@ try {
       await escape();
       check(`${viewport.name}: a 200 × 40000 strip's thumb is at its shortest yet stays on its bar, and takes the strip to both ends, after a resize and a zoom too`);
 
-      // The report's own page shows the same images, and opens them in the same viewer.
-      await card.locator(".home-report-open").click();
+      // A report's own page shows its images, and opens them in the same viewer: the album's,
+      // opened from its card (a summary card, T-18).
+      await page.locator('.home-main .home-summary-card[data-section-key="album"] .home-report-open').click();
       const reportPage = page.locator(".home-report");
       await reportPage.locator(".report-head h1").waitFor();
-      s = await open(reportPage, "settings-long.png");
+      s = await open(reportPage, "settings-long.png", "album");
       assert.equal(s.title, "Settings, scrolled to the end");
+      assert.match(s.src, /\/attachments\/album\/settings-long\.png\?version=2$/);
       close(s.image.top, s.stage.top, 1, "from its top");
       await shot("report-long-open");
       await escape();
       await reportPage.locator(".report-back").click();
       await card.waitFor();
       check(`${viewport.name}: the report page's image opens in the same viewer`);
+
+      // The album pinned with no summary is shown whole in My widgets, and its image opens there too (T-18).
+      const pinned = page.locator(`.home-widget-slot[data-widget="${ALBUM_PIN}"] .home-pinned`);
+      await pinned.waitFor();
+      const pinMore = pinned.locator("button.brief-attachments-more");
+      if ((await pinMore.count()) && (await pinMore.getAttribute("aria-expanded")) === "false") await pinMore.click();
+      await pinned.locator('button.brief-image[aria-label="Open image settings-long.png"]').scrollIntoViewIfNeeded();
+      s = await open(pinned, "settings-long.png", "album");
+      assert.equal(s.title, "Settings, scrolled to the end");
+      close(s.image.top, s.stage.top, 1, "from its top");
+      await shot("pin-long-open");
+      await escape();
+      check(`${viewport.name}: a report pinned with no summary opens its image in the same viewer`);
     }
 
     // One Core no longer has: said, with nothing to zoom.

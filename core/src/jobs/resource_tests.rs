@@ -38,6 +38,33 @@ fn worker_monotonic_time_is_used_for_success_and_failure_including_pauses() {
     }
 }
 
+/// T-29: a run under 2 s of worker wall time gets no average CPU, with the
+/// reason; its CPU seconds and wall time stay, and the mail says why. From
+/// 2 s on the average is given as before.
+#[test]
+fn a_run_under_two_seconds_gets_no_average_cpu_and_says_why() {
+    let mut job = measured("succeeded");
+    // 0.3 s of wall time and 0.9 s of CPU: three cores' worth on a 2-core request.
+    job["result"]["evidence"]["systemd"]["ExecMainExitTimestampMonotonic"] = json!("1300000");
+    job["result"]["evidence"]["systemd"]["CPUUsageNSec"] = json!("900000000");
+    let value = resources::attempt(&job);
+    assert_eq!(value["measurement"], "complete");
+    assert_eq!(value["actual"], json!({"memoryPeakMiB":64.0,"cpuSeconds":0.9,"workerWallSeconds":0.3,
+        "averageCpuCores":null,"averageCpuCoresReason":"too_short"}));
+    assert!(resources::mail(&job).contains("peak memory 64.00/512.00 MiB; average CPU not given for a worker wall time under 2 s \
+        (declared 2.00 cores) (CPU 0.90 s / worker wall 0.30 s)"), "{}", resources::mail(&job));
+    job["result"]["evidence"]["systemd"]["ExecMainExitTimestampMonotonic"] = json!("3000000");
+    let value = resources::attempt(&job);
+    assert_eq!(value["actual"]["averageCpuCores"], 0.45);
+    assert!(value["actual"].get("averageCpuCoresReason").is_none());
+    assert!(resources::mail(&job).contains("average CPU 0.45/2.00 cores (CPU 0.90 s / worker wall 2.00 s)"));
+    // Without a CPU counter there is no average either, but not for its length.
+    job["result"]["evidence"]["systemd"]["ExecMainExitTimestampMonotonic"] = json!("1300000");
+    job["result"]["evidence"]["systemd"]["CPUUsageNSec"] = json!("[not set]");
+    let value = resources::attempt(&job);
+    assert!(value["actual"]["averageCpuCores"].is_null() && value["actual"].get("averageCpuCoresReason").is_none());
+}
+
 #[test]
 fn missing_sentinel_and_bad_counters_stay_unknown_but_real_zero_stays_zero() {
     for invalid in [

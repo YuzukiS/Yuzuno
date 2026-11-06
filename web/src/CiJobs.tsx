@@ -209,6 +209,7 @@ const ciText = strings({
   runs: "Actions runs",
   history: "History",
   noRuns: "No Actions runs observed yet. Subscribe to a PR or run to begin.",
+  reading: "Reading runs…",
   attempt: (attempt: string) => `attempt ${attempt}`,
   earlier: "Earlier CI runs",
   openTitle: "Open run, logs and artifacts on GitHub",
@@ -230,6 +231,8 @@ const ciText = strings({
   moreJobs: "More jobs",
   ciNote: "CI completion does not merge a PR, approve review, or complete its task.",
   selectRun: "Select a run to inspect jobs and steps.",
+  readingRun: "Reading this run…",
+  readingSteps: "Reading its jobs and steps…",
 }, {
   labels: {
     passed: "已通过",
@@ -312,6 +315,7 @@ const ciText = strings({
   runs: "Actions 运行",
   history: "历史",
   noRuns: "尚未观察到 Actions 运行。订阅一个 PR 或运行即可开始。",
+  reading: "正在读取运行…",
   attempt: (attempt) => `第 ${attempt} 次尝试`,
   earlier: "更早的 CI 运行",
   openTitle: "在 GitHub 上打开运行、日志和产物",
@@ -333,6 +337,8 @@ const ciText = strings({
   moreJobs: "更多 Job",
   ciNote: "CI 完成并不会合并 PR、批准审查或完成其任务。",
   selectRun: "选择一个运行，查看它的 Job 和步骤。",
+  readingRun: "正在读取这个运行…",
+  readingSteps: "正在读取它的 Job 和步骤…",
 });
 type CiText = ReturnType<typeof ciText>;
 const ciEn = ciText("en");
@@ -579,8 +585,15 @@ export function CiJobs({
   const language = useLanguage();
   const t = ciText(language);
   const [page, setPage] = useState<Page>(empty);
+  // The query whose runs have answered: before they have, an empty list is
+  // still being read, not a list with no runs (T-19 JB-04).
+  const [listedFor, setListedFor] = useState<string | null>(null);
   const [selected, setSelected] = useState(initial.runKey || "");
   const [report, setReport] = useState<Report | null>(null);
+  // The chosen run's own read of its jobs and steps (T-19 CI-04), apart from
+  // the list's: whose it is, and why it failed (null: under way or done). A
+  // list answer does not clear it.
+  const [reportRead, setReportRead] = useState<{ id: string; failure: string | null } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [check, setCheck] = useState<Check | null>(null);
@@ -636,6 +649,7 @@ export function CiJobs({
               }
             : p,
         );
+        setListedFor(query);
         setError("");
       } catch (e) {
         if (generation.current === g) setError(errorText(e));
@@ -655,6 +669,8 @@ export function CiJobs({
       const request = ++reportRequest.current;
       const current = () =>
         request === reportRequest.current && selection.current === runKey;
+      // A failure already shown for this run stays until a read succeeds.
+      setReportRead((old) => (old?.id === runKey && old.failure ? old : { id: runKey, failure: null }));
       try {
         let r: Report | null = null;
         let details: Report["details"] = null;
@@ -666,7 +682,7 @@ export function CiJobs({
           );
           if (!current()) return;
           if (next.error) {
-            setError(next.error);
+            setReportRead({ id: runKey, failure: next.error });
             setReport((old) => ({
               ...next,
               details: old?.run.id === next.run.id ? old.details : null,
@@ -680,6 +696,7 @@ export function CiJobs({
         if (!r) return;
         const complete = r;
         setError("");
+        setReportRead({ id: runKey, failure: null });
         setReport((old) =>
           number > 1 && old?.run.id === complete.run.id
             ? {
@@ -689,11 +706,15 @@ export function CiJobs({
             : complete,
         );
       } catch (e) {
-        if (current()) setError(errorText(e));
+        if (current()) setReportRead({ id: runKey, failure: errorText(e) });
       }
     },
     [],
   );
+  const reportFailure = selected && reportRead?.id === selected ? reportRead.failure : null;
+  // A chosen run whose jobs and steps have not come is being read, unless
+  // its read failed.
+  const readingRun = !!selected && report?.run.id !== selected && reportFailure === null;
   const observedRun = page.runs.find((r) => r.id === selected);
   const observedState = observedRun ? stateOf(observedRun) : null;
   // A hidden window reads no steps; it catches up once when shown again.
@@ -763,6 +784,8 @@ export function CiJobs({
         behind.current = false;
         shown.current = stateOf(run);
         setError("");
+        // Its jobs and steps are read now, so an earlier failed read is over.
+        setReportRead({ id: run.id, failure: null });
         setReport({
           run,
           error: null,
@@ -888,9 +911,9 @@ export function CiJobs({
           </p>
         )
       )}
-      {error && (
+      {(error || reportFailure) && (
         <p className="inline-error" role="alert">
-          {error === ciEn.updatedCore ? t.updatedCore : error}
+          {error ? (error === ciEn.updatedCore ? t.updatedCore : error) : reportFailure}
         </p>
       )}
       {creating ? (
@@ -1044,7 +1067,11 @@ export function CiJobs({
               place={placeRun}
               selected={selected}
               empty={
-                <p className="jobs-empty">{t.noRuns}</p>
+                listedFor === query ? (
+                  <p className="jobs-empty">{t.noRuns}</p>
+                ) : (
+                  !error && <p className="jobs-empty">{t.reading}</p>
+                )
               }
               row={(r) => (
                 <JobRow
@@ -1074,7 +1101,10 @@ export function CiJobs({
                 </button>
               )}
             </StateGroups>
-            <div className="job-detail">
+            <div
+              className="job-detail"
+              aria-busy={readingRun || undefined}
+            >
               {chosen ? (
                 <>
                   <JobDetailHeading
@@ -1120,6 +1150,14 @@ export function CiJobs({
                       <dd>{stamp(chosen.observedAt, t)}</dd>
                     </dl>
                   </JobCard>
+                  {/* Its jobs and steps are being read: their card is there
+                      already, saying so, instead of appearing later under the
+                      summary (T-19 CI-04). */}
+                  {readingRun && (
+                    <JobCard title={t.jobsSteps}>
+                      <p className="jobs-empty">{t.readingSteps}</p>
+                    </JobCard>
+                  )}
                   {report?.run.id === selected && report.details && (
                     <JobCard
                       title={t.jobsSteps}
@@ -1193,7 +1231,9 @@ export function CiJobs({
                   <p className="job-footnote">{t.ciNote}</p>
                 </>
               ) : (
-                <p className="jobs-empty">{t.selectRun}</p>
+                <p className="jobs-empty">
+                  {readingRun ? t.readingRun : t.selectRun}
+                </p>
               )}
             </div>
           </div>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Folder,
   LoaderCircle,
@@ -11,6 +11,7 @@ import { api, errorText, post } from "./api";
 import { langTag, useLanguage } from "./i18n";
 import { newAgentText } from "./new-agent-text";
 import { Modal } from "./components";
+import { useSurfaceIn } from "./surface";
 import { ChoiceChips } from "./ChoiceChips";
 import { MachineEditor } from "./MachineEditor";
 import type { Agent, Model, Project } from "./types";
@@ -125,6 +126,9 @@ export function RemoteCreateAgent({
   // that doesn't report them. The harness starts on the default until this
   // Agent's own harness is chosen; a permission is sent only when chosen.
   const [defaults, setDefaults] = useState<AgentDefaultsView | "unknown" | null>(null);
+  // While they are read, the harness and model choices wait, so an answer
+  // that comes late never undoes a pick (T-19 ST:SX-14).
+  const [defaultsReading, setDefaultsReading] = useState(false);
   const harnessChosen = useRef(false);
   // The harness as last rendered, for the defaults' answer that arrives later.
   const harnessNow = useRef(harness);
@@ -153,9 +157,33 @@ export function RemoteCreateAgent({
   const [modelReload, setModelReload] = useState(0);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<"new" | "existing" | "claude">("new");
+  // A pane shown once in this opening stays, hidden, so a session ID, its
+  // preview and a name typed there survive a switch; the one switched to
+  // fades in over small (T-19 ST:SX-02). The New form is never remounted.
+  const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set());
+  const [switches, setSwitches] = useState(0);
+  const shownPane = useRef<HTMLDivElement>(null);
+  useSurfaceIn(shownPane, switches, "small", switches > 0);
+  const kept = (pane: typeof mode) => pane === mode || visited.has(pane);
+  function switchTo(next: typeof mode) {
+    if (next === mode) return;
+    setVisited((panes) => new Set(panes).add(mode));
+    setMode(next);
+    setSwitches((n) => n + 1);
+  }
   const [importBusy, setImportBusy] = useState(false);
   const [error, setError] = useState("");
   const [adding, setAdding] = useState(false);
+  // Escape with the machine editor open closes the editor, not the dialog,
+  // and gives focus back to its button (T-19 ST:SX-50).
+  const addMachineButton = useRef<HTMLButtonElement>(null);
+  const refocusAdd = useRef(false);
+  useLayoutEffect(() => {
+    if (!adding && refocusAdd.current) {
+      refocusAdd.current = false;
+      addMachineButton.current?.focus();
+    }
+  }, [adding]);
   const [savingMachine, setSavingMachine] = useState(false);
   const [checking, setChecking] = useState(false);
   const [checkError, setCheckError] = useState("");
@@ -270,6 +298,7 @@ export function RemoteCreateAgent({
   useEffect(() => {
     if (!open || disabled || mode !== "new") return;
     const controller = new AbortController();
+    setDefaultsReading(true);
     void readAgentDefaults(controller.signal, projectId || undefined)
       .then((view) => {
         if (controller.signal.aborted) return;
@@ -290,8 +319,14 @@ export function RemoteCreateAgent({
       })
       .catch(() => {
         if (!controller.signal.aborted) setDefaults("unknown");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setDefaultsReading(false);
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      setDefaultsReading(false);
+    };
   }, [open, disabled, mode, projectId]);
   const known = defaults && defaults !== "unknown" ? defaults : null;
   // A default model: Codex (with an effort) and Claude Code on the Core host
@@ -329,6 +364,8 @@ export function RemoteCreateAgent({
       // Workspace's choice: the next opening starts on the default again.
       harnessChosen.current = false;
       setPermission("");
+      setAdding(false);
+      setVisited(new Set());
     }
   }, [open]);
 
@@ -413,6 +450,15 @@ export function RemoteCreateAgent({
     <Modal
       open={open}
       onOpenChange={(value) => !value && !locked && close()}
+      onEscapeKeyDown={(event) => {
+        // Only while the editor shows: kept in the hidden New pane, it waits
+        // there, and Escape in another pane closes the dialog (R1 bd985b53).
+        if (!adding || mode !== "new") return;
+        event.preventDefault();
+        if (savingMachine) return;
+        refocusAdd.current = true;
+        setAdding(false);
+      }}
       title={mode === "new" ? t.newTitle : t.existingTitle}
       description={
         mode === "new" ? t.newDescription : mode === "claude" ? t.claudeDescription : t.codexDescription
@@ -425,7 +471,7 @@ export function RemoteCreateAgent({
           type="button"
           aria-pressed={mode === "new"}
           disabled={locked}
-          onClick={() => setMode("new")}
+          onClick={() => switchTo("new")}
         >
           {t.newAgent}
         </button>
@@ -433,7 +479,7 @@ export function RemoteCreateAgent({
           type="button"
           aria-pressed={mode === "existing"}
           disabled={locked}
-          onClick={() => setMode("existing")}
+          onClick={() => switchTo("existing")}
         >
           {t.existingCodex}
         </button>
@@ -441,28 +487,34 @@ export function RemoteCreateAgent({
           type="button"
           aria-pressed={mode === "claude"}
           disabled={locked}
-          onClick={() => setMode("claude")}
+          onClick={() => switchTo("claude")}
         >
           {t.existingClaude}
         </button>
       </div>
-      {mode === "existing" ? (
-        <ImportCodexSession
-          disabled={disabled}
-          close={close}
-          onCreated={onCreated}
-          onBusyChange={setImportBusy}
-        />
-      ) : mode === "claude" ? (
-        <ImportClaudeSession
-          disabled={disabled}
-          close={close}
-          onCreated={onCreated}
-          onBusyChange={setImportBusy}
-          projects={projects}
-          initialProjectId={projectId}
-        />
-      ) : (
+      {kept("existing") && (
+        <div ref={mode === "existing" ? shownPane : undefined} hidden={mode !== "existing"}>
+          <ImportCodexSession
+            disabled={disabled}
+            close={close}
+            onCreated={onCreated}
+            onBusyChange={setImportBusy}
+          />
+        </div>
+      )}
+      {kept("claude") && (
+        <div ref={mode === "claude" ? shownPane : undefined} hidden={mode !== "claude"}>
+          <ImportClaudeSession
+            disabled={disabled}
+            close={close}
+            onCreated={onCreated}
+            onBusyChange={setImportBusy}
+            projects={projects}
+            initialProjectId={projectId}
+          />
+        </div>
+      )}
+      <div ref={mode === "new" ? shownPane : undefined} hidden={mode !== "new"}>
         <form
           className="create-form remote-create"
           onSubmit={(e) => void create(e)}
@@ -483,6 +535,7 @@ export function RemoteCreateAgent({
               label={t.harness}
               name="create-harness"
               value={harness}
+              disabled={defaultsReading}
               onChange={(value) => {
                 harnessChosen.current = true;
                 setHarness(value as "codex" | "claude" | "opencode");
@@ -497,7 +550,12 @@ export function RemoteCreateAgent({
                 ...(opencode ? [{ value: "opencode", label: "OpenCode", note: t.experimental }] : []),
               ]}
             />
-            {known && (
+            {defaultsReading && (
+              <p className="remote-field-note" role="status">
+                {t.readingDefaults}
+              </p>
+            )}
+            {known && !defaultsReading && (
               <p className="remote-field-note create-default-source" data-source={known.effective.harness.source}>
                 {t.defaultHarness(sourceText(known.effective.harness.source, language), harnessName(known.effective.harness.value))}
               </p>
@@ -522,6 +580,7 @@ export function RemoteCreateAgent({
               }))}
               after={
                 <button
+                  ref={addMachineButton}
                   type="button"
                   className="choice-chip-action"
                   aria-expanded={adding}
@@ -649,7 +708,7 @@ export function RemoteCreateAgent({
                 label={t.model}
                 name="create-model"
                 value={model}
-                disabled={loadingModels}
+                disabled={loadingModels || defaultsReading}
                 onChange={setModel}
                 choices={[
                   defaultModel
@@ -768,9 +827,16 @@ export function RemoteCreateAgent({
           {disabled && (
             <p className="field-hint">{t.createDisabled}</p>
           )}
-          {error && (
-            <p role="alert" className="inline-error">
-              {error}
+          {/* The error's two lines are kept while empty: a failure fills them instead of
+              pushing the buttons down under the pointer. Below them it could fall out of this
+              dialog's scrolled view (T-19 SX-25). */}
+          {error ? (
+            <p key="error" role="alert" className="inline-error kept-error" title={error}>
+              <span>{error}</span>
+            </p>
+          ) : (
+            <p key="line" className="inline-error kept-error is-empty" aria-hidden="true">
+              <span>&nbsp;</span>
             </p>
           )}
           <div className="modal-actions">
@@ -803,7 +869,7 @@ export function RemoteCreateAgent({
             </button>
           </div>
         </form>
-      )}
+      </div>
     </Modal>
   );
 }

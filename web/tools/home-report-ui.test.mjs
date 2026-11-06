@@ -205,19 +205,24 @@ test("a card opens its report as a page over Home: the summary its author named 
   assert.deepEqual(page.errors, []);
 });
 
-test("the fixture is a section the contract accepts, and a folded card shows its named conclusion with its conditions", async (t) => {
+test("the fixture is a section the contract accepts, and its card shows the named conclusion with its conditions and figure, and no other block", async (t) => {
   // The body this page reads is one Core takes (brief-contract.ts), summary and details included.
   const checked = checkBriefSection({ key: "eval", kind: "report", title: "Synthetic eval: model B vs A", body: reportBody() });
   assert.deepEqual(checked.body.elements.body.props, { summary: { lead: "answer", visual: "loss", conditions: "holds" }, details: ["method"] });
   const page = await openHome(() => homeData([section("eval", 7, 3)]));
   t.after(page.close);
-  page.card("eval").querySelector(".home-section-head button[aria-controls]").click();
-  await until(() => page.card("eval").querySelector(".home-card-glance"), "the folded card");
-  const glance = page.card("eval").querySelector(".home-card-glance");
-  assert.equal(glance.querySelector(".home-card-summary").textContent.trim(), "Model B lowers validation loss by 4% on the synthetic set.");
-  const conditions = glance.querySelector(".home-card-conditions");
+  const card = page.card("eval");
+  assert.equal(card.querySelector(".home-summary-lead").textContent.trim(), "Model B lowers validation loss by 4% on the synthetic set.");
+  const conditions = card.querySelector(".home-card-conditions");
   assert.equal(conditions.getAttribute("aria-label"), "Conditions");
-  assert.match(conditions.textContent, /Conditions.*Scoring definition v2.*Synthetic data, 100 items per arm/);
+  assert.deepEqual([...conditions.querySelectorAll(".home-card-condition-chips li")].map((li) => li.textContent), ["Scoring definition v2", "Synthetic data, 100 items per arm"]);
+  // Two Metrics values make a small card: its figure as big numbers, no frame (T-18, Dev 7's v12).
+  assert.equal(card.dataset.cardSize, "small");
+  assert.ok(!card.querySelector(".home-card-frame"), "a small card has no frame");
+  assert.match(card.querySelector(".home-card-numbers").textContent, /Validation loss.*0\.412/);
+  // Nothing else of the body is on Home: the method, the notes and the table are read on the page.
+  assert.doesNotMatch(card.textContent, /Three seeds per arm|Line 1 of the notes|Results/);
+  assert.equal(card.querySelector(".home-fold"), null, "no fold: the body is read on its page");
   assert.deepEqual(page.errors, []);
 });
 
@@ -378,12 +383,22 @@ test("Seen on the report marks the version shown; Back then focuses its project,
   t.after(page.close);
   page.card("eval").querySelector(".home-report-open").click();
   const report = await until(page.report, "the report");
+  // A reply being written on the page (T-174) stays through its Seen: the version
+  // seen is still one a reply can refer to (T-18, Lead 2655).
+  await page.press(report.querySelector(".report-actions"), "Reply");
+  const field = await until(() => report.querySelector(".home-card-reply textarea"), "the reply field");
+  Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(field, "Kept through Seen");
+  field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  await tick();
   current = homeData([], [section("eval", 7, 3, { history: true, historyReason: "seen", seen: { version: 3 } })]);
   await page.press(report.querySelector(".report-actions"), "Seen");
   const seen = await until(() => page.requests.find((r) => r.method === "POST" && r.url.endsWith("/seen")), "the seen request");
   assert.equal(seen.url, "/api/projects/p1/brief/seen");
   assert.deepEqual(JSON.parse(seen.body), { sections: [{ key: "eval", version: 3 }] });
   await until(() => notice(page) === "You marked this report seen; it is in History.", "the History note");
+  assert.equal(report.querySelector(".home-card-reply textarea") === field, true, "the same reply field");
+  assert.equal(field.value, "Kept through Seen");
+  assert.equal(page.button(report.querySelector(".report-actions"), "Reply")?.getAttribute("aria-expanded"), "true", "Reply stays, open");
   report.querySelector(".report-back").click();
   await until(() => !page.report(), "closed");
   await tick();

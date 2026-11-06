@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Copy, LoaderCircle, MessageSquareReply, Send, Trash2, X } from "lucide-react";
+import { LoaderCircle, MessageSquareReply, Send, Trash2, X } from "lucide-react";
 import { errorText, HttpError, shortcutModifier } from "../api";
+import { CopyButton } from "../components";
 import { useStrings } from "../i18n";
 import { useSurfaceIn } from "../surface";
 import type { Agent } from "../types";
@@ -8,7 +9,7 @@ import { TargetPicker } from "./AskReply";
 import { dropPendingReply, outboxKey, pendingReply, sendReply } from "./home-api";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
-import type { Section } from "./types";
+import type { ProjectPanel, Section } from "./types";
 
 /**
  * Replies to report and status cards (T-174). A reply goes to the card's
@@ -101,6 +102,19 @@ export function referableHistory(history: Section[], liveKeys: string[]) {
     seen.add(section.key);
     return section.kind === "report" && section.historyReason === "seen" && !liveKeys.includes(section.key);
   });
+}
+
+/**
+ * Whether a card takes a reply where it shows (T-174): a live report or
+ * status, or a History entry its project's referableHistory keeps (a pinned
+ * report, or the report page, after the user marked it seen). Never an ask.
+ */
+export function replyableIn(panel: ProjectPanel | undefined, section: Section) {
+  if (section.kind === "ask") return false;
+  if (!section.history) return true;
+  if (!panel) return false;
+  const live = [...panel.brief.sections, ...(panel.brief.teamSections ?? [])].map((s) => s.key);
+  return referableHistory(panel.brief.history, live).includes(section);
 }
 
 /** A Core from before card replies refuses the reply's version: nothing was sent. */
@@ -333,9 +347,8 @@ export function KeptCardReplies({
             )}
             <span className="home-kept-reply-actions">
               {!inHistory && (
-                <button type="button" className="quiet-button" onClick={() => void navigator.clipboard?.writeText(draft.text)}>
-                  <Copy size={13} /> {t.copyText}
-                </button>
+                // Says it copied, or that it could not (T-19 HM:S11).
+                <CopyButton text={draft.text} label={t.copyText} />
               )}
               <button
                 type="button"

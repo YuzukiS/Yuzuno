@@ -1,3 +1,4 @@
+import type { HandoverProposalSummary } from "../project-handover";
 /**
  * What Home reads from Core (GET /api/home and its companions). Core owns
  * these facts. Section bodies are written by Agents and checked by the
@@ -33,6 +34,10 @@ export type SectionAttachment = {
   url?: string;
   /** Where a referenced (not snapshotted) file lives on its machine. */
   path?: string;
+  /** A kept image's size as drawn, which Core read from the bytes it keeps
+   * (T-19 HM:B14); absent when it could not, or for anything not kept. */
+  width?: number;
+  height?: number;
 };
 
 /**
@@ -132,6 +137,8 @@ export type ProjectPanel = {
   };
   errors: { agentId: string; agentName: string; message: string; at: string }[];
   pending: (PendingRequest & { agentName: string })[];
+  /** A lead's handover proposal waiting for the user (T-34 S3b). */
+  handoverProposal?: HandoverProposalSummary | null;
   jobs: HomeJob[];
   brief: { version: number; sections: Section[]; teamSections?: Section[]; history: Section[] };
   /** Live sections changed since the user last marked them seen. */
@@ -147,12 +154,17 @@ export type ProjectPanel = {
 };
 
 export type NeedsYouItem = {
-  kind: "approval" | "ask";
+  kind: "approval" | "ask" | "question" | "handover";
   projectId: string | null;
   agentId: string;
   agentName: string;
   requestId?: string;
   sectionKey?: string;
+  /** A question's Turn and Item (T-42). */
+  turnId?: string;
+  itemId?: string;
+  /** A lead's handover proposal (T-34 S3b), named by its proposer. */
+  proposalId?: string;
   title: string;
   since: string;
 };

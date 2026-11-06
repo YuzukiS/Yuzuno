@@ -144,8 +144,11 @@ prompt. Its result may add display-only `account` (`email`, `organization`,
 `version`. `send` acknowledges **local enqueue**, not successful native execution;
 the Core must not blindly retry after a broken connection. A second send is
 rejected until the native result and any outstanding interrupt receipt settle.
-`append` sends a follow-up to the running `send` turn (`expectedTurnId`) as
-Claude Code takes a message typed while it works: queued with the default
+`append` sends a follow-up to the running turn (`expectedTurnId`) as
+Claude Code takes a message typed while it works. That turn is the `send`
+turn, or a native turn Claude runs on its own (`native-<uuid>`, such as a
+mailbox notice's), once its frames are shown. One whose owner no evidence
+names yet is held, not shown, and refuses it. The message is queued with the default
 priority (never `'now'`, which stops the turn), folded into the running turn
 between tool rounds, or, if that turn ends first, run as the next turn, which
 then is `followUpTurnId`. Several may wait at once, in order. Each follow-up is
@@ -164,6 +167,14 @@ Such follow-ups run next as one turn: the first one's `followUpTurnId`, which
 the rest join. Without that evidence a follow-up claims no turn. The next native
 turn is held until a frame names it, which makes that turn the follow-up's. A
 missing confirmation never moves a follow-up on by itself.
+
+A follow-up sent to a native turn of Claude's own is folded into that turn
+when one of its frames names it, and is `accepted` there; that frame does not
+make it a turn of our prompt's. If the native turn turns out to be the `send`
+prompt's, the follow-up goes with the prompt's turn. If the native turn ends
+first, the same evidence decides: with no prompt of ours in flight, the
+follow-up runs next with `previousTurnId` the native turn. With a prompt still
+waiting, queued ahead of it, the follow-up goes with that prompt's turn.
 
 `append` acknowledges local enqueue only, refuses once its turn has ended, and
 returns the same answer for a repeated `clientMessageId`.

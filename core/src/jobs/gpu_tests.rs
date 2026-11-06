@@ -188,27 +188,26 @@ fn without_a_current_sample_gpu_jobs_wait_and_cpu_jobs_do_not() {
 }
 
 #[test]
-fn cpu_work_passes_a_gpu_waiter_but_nothing_passes_a_cpu_waiter() {
+fn cpu_work_passes_a_gpu_waiter_freely_and_a_cpu_waiter_only_within_what_it_leaves() {
     let (_dir, s) = setup();
     sample(&s, json!([card(GPU0, 0, 16000)]));
     let g1 = gpu(&s, "g1", 4096, "exclusive");
     assert_eq!(start(&s).unwrap()["id"], g1["id"]);
     let g2 = gpu(&s, "g2", 4096, "exclusive");
     let c1 = cpu(&s, "c1", "a", 200);
-    assert_eq!(
-        start(&s).unwrap()["id"],
-        c1["id"],
-        "CPU work is not held behind a GPU waiter"
-    );
+    let passed = start(&s).unwrap();
+    assert_eq!(passed["id"], c1["id"], "CPU work is not held behind a GPU waiter");
+    assert!(passed["admission"].is_null(), "a GPU wait is not a backfill head (T-38)");
     assert!(reason(&s, &g2).contains("in use by managed job g1"));
-    // A job short of the shared CPU budget holds everything after it.
+    // A job short of the shared CPU budget is passed only within what its
+    // need leaves (T-38): 100 mCPU here, less than the small job's 300.
     let big = cpu(&s, "big", "a", 3800);
     let small = cpu(&s, "small", "a", 200);
     assert!(start(&s).is_none());
     assert!(reason(&s, &big).contains("Waiting for shared CPU quota"));
     assert_eq!(
         reason(&s, &small),
-        "Waiting behind big, which needs the shared CPU/RAM budget first; jobs do not pass it"
+        "Waiting behind big, which waits for shared CPU quota: this job needs 300 mCPU / 192 MiB RAM / 0 MiB swap; 100 mCPU / 3712 MiB RAM / 0 MiB swap may start ahead of it now"
     );
 }
 
@@ -464,6 +463,41 @@ fn a_full_slot_count_or_a_lowered_budget_is_told_to_every_waiting_job() {
             reason(&s, w)
         );
     }
+}
+
+/// T-55: as many of this host's own Jobs start as the user saved, and the
+/// next waits at the same slot reason. Lowering the number holds back new
+/// Jobs only: the attempts that hold a slot keep it and go on.
+#[test]
+fn a_saved_max_active_admits_that_many_and_lowering_it_holds_new_jobs_while_held_slots_continue() {
+    let (_dir, s) = setup();
+    let budget = Resources { cpu_millis: 4000, memory_mi_b: 4096, swap_mi_b: 0 };
+    let held = |s: &Store| -> i64 {
+        s.db.read().unwrap().query_row("SELECT COUNT(*) FROM local_jobs WHERE reserved=1", [], |r| r.get(0)).unwrap()
+    };
+    let running: Vec<Value> = (0..4).map(|i| cpu(&s, &format!("r{i}"), "a", 200)).collect();
+    for _ in &running {
+        start(&s).unwrap();
+    }
+    let fifth = cpu(&s, "w1", "b", 200);
+    assert!(start(&s).is_none(), "the 5th Job waits at the default four");
+    assert_eq!(reason(&s, &fifth), "Waiting for an execution/collector slot", "the 5th Job waits at the slot reason");
+
+    s.set_job_budget_with(budget.clone(), Some(Some(6))).unwrap();
+    assert_eq!(start(&s).map(|j| j["id"].clone()), Some(fifth["id"].clone()), "raised to 6, the 5th starts");
+
+    s.set_job_budget_with(budget, Some(Some(2))).unwrap();
+    assert_eq!(held(&s), 5, "lowered to 2, the five that hold a slot keep it");
+    let sixth = cpu(&s, "w2", "b", 200);
+    assert!(start(&s).is_none(), "lowered to 2, a new Job waits");
+    assert_eq!(reason(&s, &sixth), "Waiting for an execution/collector slot");
+    for job in &running[..3] {
+        done(&s, job);
+    }
+    assert_eq!(held(&s), 2);
+    assert!(start(&s).is_none(), "two still hold a slot: the new Job waits");
+    done(&s, &running[3]);
+    assert_eq!(start(&s).map(|j| j["id"].clone()), Some(sixth["id"].clone()), "one holds a slot: the new Job starts");
 }
 
 #[test]

@@ -390,6 +390,18 @@
 .collab-card-heading .collab-task-id {
   margin-left: auto;
 }
+/* Its executor's slot (T-35): queued, starting or running. */
+.collab-executor-slot {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.collab-executor-slot[data-slot-state="running"] {
+  color: var(--green);
+}
 .collab-has-result {
   display: inline-flex;
   align-items: center;
@@ -518,6 +530,23 @@
     opacity: 0;
   }
 }
+/* The list as cards or as rows, taking over from the other as a task opens
+   or has gone (CollaborationBoard.tsx). It starts part-way, so the list is
+   never gone while the column beside it moves (Dev 7). */
+.collab-list-flip {
+  animation: collab-list-flip var(--motion-small) var(--ease-standard) both;
+}
+@keyframes collab-list-flip {
+  from {
+    opacity: 0.4;
+  }
+}
+/* Other filters chosen: the cards they replace stay, dimmed and busy, until
+   Core answers for them; that answer's list then fades in as above
+   (CollaborationBoard.tsx, T-19 CB-03). */
+.collab-task-list.is-stale > :is(.collab-cards, .collab-groups, .collab-list-count, .collab-load-more) {
+  opacity: 0.5;
+}
 @keyframes collab-detail-switch {
   from {
     opacity: 0;
@@ -628,6 +657,32 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 11px;
+}
+/* An existing Agent, or a new executor from a template (T-34). */
+.collab-dispatch-from {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 0.82rem;
+}
+.collab-dispatch-from legend {
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 0;
+  color: var(--muted);
+}
+.collab-dispatch-from label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.collab-dispatch-from input {
+  margin: 0;
+  accent-color: var(--green);
 }
 .collab-urgent-option {
   display: flex;

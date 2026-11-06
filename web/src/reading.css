@@ -194,6 +194,16 @@
   line-height: 1.3;
   opacity: 0.72;
 }
+/* A Project's lead (T-33) or an executor (T-34): a small label under the name. */
+.agent-identity > .agent-kind-badge {
+  align-self: flex-start;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: calc(8px + var(--font-adjust, 3px));
+  line-height: 1.4;
+  opacity: 0.72;
+}
 .agent-identity > .remote-machine-badge > svg {
   flex-shrink: 0;
   width: 11px;
@@ -221,4 +231,47 @@
 }
 .inspector-work-source:hover {
   text-decoration: underline;
+}
+
+/* A Turn end this device has not shown yet (T-42), and the list's way to
+   the next thing that needs you while something does. */
+.agent-select .agent-runtime.unseen-finished {
+  color: #6f8a5c;
+  font-weight: 600;
+}
+.agent-select .agent-runtime.unseen-failed {
+  color: #a96a5b;
+  font-weight: 600;
+}
+.next-needs-you {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: calc(100% - 30px);
+  margin: 6px 15px 2px;
+  padding: 6px 10px;
+  border: 1px solid #e8d9a8;
+  border-radius: 8px;
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-align: left;
+}
+.next-needs-you:hover {
+  border-color: var(--yellow);
+}
+.next-needs-you span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.next-needs-you kbd {
+  flex: none;
+  font: inherit;
+  opacity: 0.7;
+}
+:root[data-theme="dark"] .next-needs-you {
+  border-color: #5a5634;
 }

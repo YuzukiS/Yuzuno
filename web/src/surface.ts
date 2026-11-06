@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 const REDUCED = "(prefers-reduced-motion: reduce)";
 
@@ -7,6 +7,19 @@ function tokenMs(name: string): number {
   const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const ms = value.endsWith("ms") ? parseFloat(value) : value.endsWith("s") ? parseFloat(value) * 1000 : NaN;
   return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * Fades `element` in once, opacity only, over the `duration` token, for what
+ * is not drawn by React (T-19 CV:CO-09, the slash menu CodeMirror draws).
+ * Under reduced motion, or without the Web Animations API, nothing plays.
+ */
+export function fadeIn(element: HTMLElement, duration: "micro" | "small" | "medium"): Animation | null {
+  if (typeof element.animate !== "function" || window.matchMedia?.(REDUCED).matches) return null;
+  const ms = tokenMs(`--motion-${duration}`);
+  if (!ms) return null;
+  const easing = getComputedStyle(document.documentElement).getPropertyValue("--ease-standard").trim() || "ease";
+  return element.animate([{ opacity: 0 }, { opacity: 1 }], { duration: ms, easing });
 }
 
 /**
@@ -168,4 +181,37 @@ export function useRevealIn(ref: RefObject<HTMLElement | null>, key: unknown) {
     query.addEventListener("change", change);
     return () => query.removeEventListener("change", change);
   }, []);
+}
+
+/**
+ * A banner that a brief flap should not flash (T-19 M15: SH:M04, SH:M06): `shown` once `want` has held
+ * for `delay` ms. Once shown and no longer wanted, it is `leaving` for exit-small (the banner's own CSS
+ * plays its exit meanwhile), then gone; under reduced motion it goes at once. Wanted again while
+ * leaving, it stays.
+ */
+export function useDelayedPresence(want: boolean, delay: number): { shown: boolean; leaving: boolean } {
+  const [shown, setShown] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  useEffect(() => {
+    if (want) {
+      setLeaving(false);
+      if (shown) return;
+      const timer = setTimeout(() => setShown(true), delay);
+      return () => clearTimeout(timer);
+    }
+    if (!shown) return;
+    const ms = window.matchMedia?.(REDUCED).matches ? 0 : tokenMs("--motion-exit-small");
+    if (!ms) {
+      setShown(false);
+      setLeaving(false);
+      return;
+    }
+    setLeaving(true);
+    const timer = setTimeout(() => {
+      setShown(false);
+      setLeaving(false);
+    }, ms);
+    return () => clearTimeout(timer);
+  }, [want, shown, delay]);
+  return { shown, leaving };
 }

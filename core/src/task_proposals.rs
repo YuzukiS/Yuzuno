@@ -15,7 +15,9 @@
 //! if the change was committed, otherwise failed and nothing changed.
 //!
 //! Only the latest version of a result, from an open Agent, can be decided.
-//! The target is always the proposal's, never the request's.
+//! A released executor's is decided by its dispatcher; here only when the
+//! user dispatched it or its dispatcher no longer exists (T-36). The target
+//! is always the proposal's, never the request's.
 use crate::{
     collaboration_store::{load_task, task_key, STATUSES},
     server::ApiError,
@@ -182,9 +184,15 @@ fn load(store: &Store, db: &Connection, result: &str) -> Result<Loaded> {
     let open = store.brief_in(db, &agent)?.is_some_and(|b| b.agent.closed_at.is_none());
     let reference = props["taskId"].as_str().unwrap_or_default();
     let task_id = task_key(db, reference).map(|(id, _)| id).unwrap_or_default();
+    // A released executor's proposal is its dispatcher's to decide (T-36):
+    // the user decides it here only when the user dispatched it, or when its
+    // dispatcher no longer exists.
+    let decider = if open { None } else { crate::executor_archive::proposal_decider(db, &agent)? };
     let blocked = if version != latest {
         Some("The Agent replaced this proposal with a newer version; decide that one instead.".into())
-    } else if !open {
+    } else if let Some(Some(dispatcher)) = &decider {
+        Some(format!("{dispatcher} dispatched this executor, so {dispatcher} decides its task's status, not here."))
+    } else if !open && decider.is_none() {
         Some("The Agent that proposed this is closed, so the proposal can no longer be decided here.".into())
     } else if task_id.is_empty() {
         Some(format!("{reference} no longer exists."))
@@ -192,6 +200,28 @@ fn load(store: &Store, db: &Connection, result: &str) -> Result<Loaded> {
         None
     };
     Ok(Loaded { agent, turn, proposal: props.clone(), task_id, blocked })
+}
+
+/// The task-status proposals `agent` left undecided, oldest first: of each
+/// of its chains the latest version, with no applied or declined decision.
+/// Its release tells its dispatcher of each (T-36).
+pub(crate) fn undecided(db: &Connection, agent: &str) -> Result<Vec<Value>> {
+    let mut query = db.prepare(
+        "SELECT r.id,r.spec_json FROM interactive_results r WHERE r.agent_id=?1
+         AND r.version=(SELECT MAX(o.version) FROM interactive_results o WHERE o.chain_id=r.chain_id)
+         AND NOT EXISTS(SELECT 1 FROM result_task_actions a WHERE a.result_id=r.id AND a.state IN ('applied','declined'))
+         ORDER BY r.created_at,r.rowid",
+    )?;
+    let rows = query.query_map([agent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut out = vec![];
+    for row in rows {
+        let (id, spec) = row?;
+        let spec: Value = serde_json::from_str(&spec)?;
+        if let Some((_, props)) = proposal_in(&spec) {
+            out.push(json!({"resultId":id,"taskId":props["taskId"],"status":props["status"],"reason":props["reason"]}));
+        }
+    }
+    Ok(out)
 }
 
 fn attempt(r: &rusqlite::Row) -> rusqlite::Result<Attempt> {
@@ -360,6 +390,8 @@ impl Workspace {
             Ok(Some((json!({"requestId":domain_request(&id, &request),"taskId":loaded.task_id,"expectedVersion":expected,"patch":patch}), source)))
         }).await?;
         if let Some((input, source)) = next {
+            // A confirmed done releases the task's executor (T-36).
+            let done = (input["patch"]["status"] == "done").then(|| input["taskId"].as_str().unwrap_or_default().to_owned());
             let ws = self.clone();
             #[cfg(test)]
             let held = result.to_owned();
@@ -374,6 +406,10 @@ impl Workspace {
                 }
                 Ok(answer)
             }).await?;
+            if let (Some(task), true) = (done, outcome.is_ok()) {
+                let ws = self.clone();
+                tokio::spawn(async move { ws.release_on_done(None, task).await });
+            }
             let (id, request) = (result.to_owned(), decision.request_id.clone());
             self.stored(move |store| {
                 let (state, error, receipt) = match outcome {
@@ -544,6 +580,40 @@ mod tests {
         ws.store.update("a", "test/closed", &json!({}), |d| d.agent.closed_at = Some("now".into())).unwrap();
         let closed = ws.decide_task_proposal("r2", confirm("c2", "blocked", version)).await.unwrap_err();
         assert!(closed.to_string().contains("is closed"), "{closed}");
+    }
+
+    /// T-36: a released executor's proposal is its dispatcher's to decide:
+    /// the user's view names that Agent and nothing is decided here. When its
+    /// dispatcher no longer exists, or the user dispatched it, the user
+    /// decides it, as for its release.
+    #[tokio::test]
+    async fn a_released_executors_proposal_is_its_dispatchers_to_decide() {
+        let (_dir, ws) = fixture();
+        let (_, version) = task(&ws, "Slice", "doing");
+        ws.store.insert(&agent("lead")).unwrap();
+        ws.store.db.write().unwrap().execute(
+            "INSERT INTO agent_roles(agent_id,kind,template_id,created_by,archived_at,created_at,updated_at)
+             VALUES('a','executor','reviewer','agent:lead','then','now','now')", []).unwrap();
+        ws.store.update("a", "test/closed", &json!({}), |d| d.agent.closed_at = Some("then".into())).unwrap();
+        proposal(&ws, "r1", "r1", 1, "T-1", "review");
+        let dispatcher = "Lead dispatched this executor, so Lead decides its task's status, not here.";
+        assert_eq!(ws.task_proposal("r1").await.unwrap().blocked.as_deref(), Some(dispatcher), "the user's view names its dispatcher");
+        let refused = ws.decide_task_proposal("r1", confirm("c1", "review", version)).await.unwrap_err();
+        assert_eq!(refused.to_string(), format!("not_decidable: {dispatcher}"));
+        assert_eq!(current(&ws, "T-1")["task"]["version"].as_i64(), Some(version), "nothing changed");
+        ws.store.update("lead", "test/closed", &json!({}), |d| d.agent.closed_at = Some("then".into())).unwrap();
+        assert_eq!(ws.task_proposal("r1").await.unwrap().blocked, None, "its dispatcher is closed: the user decides");
+        ws.store.update("lead", "test/reopened", &json!({}), |d| d.agent.closed_at = None).unwrap();
+        assert_eq!(ws.task_proposal("r1").await.unwrap().blocked.as_deref(), Some(dispatcher), "open again, it decides");
+        ws.store.db.write().unwrap().execute("DELETE FROM agents WHERE id='lead'", []).unwrap();
+        assert_eq!(ws.task_proposal("r1").await.unwrap().blocked, None, "its dispatcher is gone: the user decides");
+        let applied = ws.decide_task_proposal("r1", confirm("c2", "review", version)).await.unwrap();
+        assert_eq!(applied.attempts.last().unwrap().state, "applied");
+        ws.store.db.write().unwrap().execute("UPDATE agent_roles SET created_by='user' WHERE agent_id='a'", []).unwrap();
+        proposal(&ws, "r2", "r2", 1, "T-1", "doing");
+        assert_eq!(ws.task_proposal("r2").await.unwrap().blocked, None, "one the user dispatched is the user's to decide");
+        let applied = ws.decide_task_proposal("r2", confirm("c3", "doing", version + 1)).await.unwrap();
+        assert_eq!(applied.attempts.last().unwrap().state, "applied");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

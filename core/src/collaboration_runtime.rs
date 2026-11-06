@@ -22,6 +22,11 @@ impl Workspace {
         operation: &str,
         input: Value,
     ) -> Result<Value> {
+        // An executor being released starts nothing new (T-36).
+        if let Some(agent) = actor.filter(|_| crate::executor_archiving::starts_work(operation)) {
+            let (agent, call) = (agent.to_owned(), operation.to_owned());
+            self.stored(move |store| crate::executor_archiving::refuse_while_archiving(&*store.db.read()?, &agent, &call)).await?;
+        }
         if operation.starts_with("job_") {
             return tokio::spawn(crate::jobs::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Job operation ended unexpectedly")?;
@@ -33,6 +38,10 @@ impl Workspace {
         if operation.starts_with("review_") {
             return tokio::spawn(crate::pr_review::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Review operation ended unexpectedly")?;
+        }
+        if operation.starts_with("merge_") {
+            return tokio::spawn(crate::merge_queue::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
+                .await.context("Merge queue operation ended unexpectedly")?;
         }
         if operation.starts_with("github_pr_") {
             return tokio::spawn(crate::pr_operations::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
@@ -46,6 +55,15 @@ impl Workspace {
             return tokio::spawn(crate::services::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Service operation ended unexpectedly")?;
         }
+        if operation.starts_with("handover_") {
+            return tokio::spawn(crate::handover_proposals::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
+                .await.context("Handover operation ended unexpectedly")?;
+        }
+        if operation == "executor_release" {
+            // Its close is awaited in turn; a dropped request does not stop it.
+            return tokio::spawn(crate::executor_release::call(self.clone(), actor.map(str::to_owned), input))
+                .await.context("Releasing an executor ended unexpectedly")?;
+        }
         if operation.starts_with("brief_") {
             return tokio::spawn(crate::project_brief::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Brief operation ended unexpectedly")?;
@@ -53,11 +71,37 @@ impl Workspace {
         // An abbreviated base or head in task materials becomes the full SHA
         // before the store sees it; the store keeps taking full SHAs only.
         let input = if matches!(operation, "task_create" | "task_update" | "task_dispatch") {
-            crate::commit_sha::resolve_materials(self, operation, input).await?
+            crate::commit_sha::resolve_materials(self, actor, operation, input).await?
         } else {
             input
         };
+        if operation == "task_dispatch" && input.get("executor").is_some() {
+            // Its steps are awaited in turn; a dropped request does not stop them.
+            let (ws, actor) = (self.clone(), actor.map(str::to_owned));
+            return tokio::spawn(async move { ws.executor_dispatch(actor.as_deref(), input).await })
+                .await.context("Dispatch from an executor template ended unexpectedly")?;
+        }
         let permit = self.admission.enter_completion()?;
+        let done = (operation == "task_update" && input["patch"]["status"] == "done")
+            || (operation == "task_submit_result" && input["status"] == "done");
+        let answer = self.collaboration_stored(permit, actor, operation, input).await?;
+        // Its dispatcher, a lead of its Project or the user set the task
+        // done: its executor is released (T-36), after this answer.
+        if let (true, Some(task)) = (done, answer["task"]["id"].as_str()) {
+            let (ws, actor, task) = (self.clone(), actor.map(str::to_owned), task.to_owned());
+            tokio::spawn(async move { ws.release_on_done(actor, task).await });
+        }
+        Ok(answer)
+    }
+
+    /// The store's part of a collaboration call, under `permit`.
+    pub(crate) async fn collaboration_stored(
+        self: &Arc<Self>,
+        permit: crate::updates::admission::Permit,
+        actor: Option<&str>,
+        operation: &str,
+        input: Value,
+    ) -> Result<Value> {
         // Called from MCP too, whose requests can be dropped: the change and
         // its announcement are one job, so neither happens without the other.
         let (ws, actor, call) = (self.clone(), actor.map(str::to_owned), operation.to_owned());
@@ -413,7 +457,9 @@ impl Workspace {
             }
             Err(error) => {
                 // Unknown and rejected native deliveries remain inspectable.
-                // The mail itself was already saved; never roll it back or loop.
+                // The mail itself was already saved; never roll it back. A
+                // definite refusal (error) is pending again after a wait, a
+                // few times at most (mail_delivery.rs); an unknown one never.
                 let state = if error.downcast_ref::<crate::rpc::RpcError>().is_some()
                     || error.downcast_ref::<crate::claude::Rejected>().is_some()
                 {
@@ -421,7 +467,8 @@ impl Workspace {
                 } else {
                     "uncertain"
                 };
-                let detail_json = json!({"agentId":id,"mode":mode,"clientMessageId":client_id,"turnId":expected_turn,"priority":priority,"error":error.to_string()});
+                let detail_json = json!({"agentId":id,"mode":mode,"clientMessageId":client_id,"turnId":expected_turn,"priority":priority,
+                    "error":error.to_string(),"failedAt":crate::model::now()});
                 self.stored(move |store| store.set_peer_delivery_for_priority(
                     &agent,
                     through,
@@ -575,7 +622,7 @@ fn peer_delivery_possible(a: &Agent, priority: &str) -> bool {
     a.closed_at.is_none()
         && a.connection_state == "connected"
         && match a.status.as_str() {
-            "idle" => a.pending_count == 0,
+            "idle" => a.native_requests() == 0,
             "working" | "waiting" => priority == "urgent" && matches!(a.harness.as_str(), "codex" | "claude"),
             _ => false,
         }
@@ -771,6 +818,11 @@ for line in sys.stdin:
  result={}
  if m in ['thread/start','thread/resume','thread/read']:
   result={'thread':{'id':'native-thread','status':{'type':'idle'},'turns':[]}}
+ if m=='turn/start' and (root/'start-mode').exists() and (root/'start-mode').read_text()=='reject':
+  # A start the harness refuses, as Claude refused elasticLM's (T-50).
+  with (root/'refused-starts.jsonl').open('a') as f:f.write(json.dumps(p)+'\n')
+  print(json.dumps({'id':r['id'],'error':{'code':-32600,'message':'Effort changes must wait until the current turn finishes'}}),flush=True)
+  continue
  if m=='turn/start':
   with (root/'starts.jsonl').open('a') as f:f.write(json.dumps(p)+'\n')
   result={'turn':{'id':'native-turn','status':'inProgress','items':[]}}

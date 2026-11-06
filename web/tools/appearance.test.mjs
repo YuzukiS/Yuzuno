@@ -38,8 +38,8 @@ test("the Agent list is detailed until chosen; earlier saved choices keep theirs
   assert.equal(readAppearance().agentList, "detailed");
   // Saved before the choice existed.
   store.set(KEY, JSON.stringify({ theme: "dark", fontSize: 18, palette: "pine" }));
-  assert.deepEqual(readAppearance(), { theme: "dark", fontSize: 18, palette: "pine", agentList: "detailed", projectGroups: "headers",
-    dock: { jobs: 5, actions: 2, subAgents: 5 }, turnDock: { numbers: 5, bars: 5 } });
+  assert.deepEqual(readAppearance(), { theme: "dark", fontSize: 18, palette: "pine", agentList: "detailed", agentOrder: "list", projectGroups: "headers",
+    dock: { jobs: 5, actions: 2, reviews: 2, subAgents: 5 }, turnDock: { numbers: 5, bars: 5 } });
   store.set(KEY, JSON.stringify({ theme: "dark", fontSize: 18, palette: "pine", agentList: "dense" }));
   assert.equal(readAppearance().agentList, "detailed", "an unknown value falls back");
 });
@@ -88,15 +88,18 @@ test("text size is any whole px from 10 to 24; below 14 only conversation text s
   }
 });
 
-test("the dock shows 5 jobs, 2 runs and 5 sub-agents until chosen; 0 is a choice, out of range falls back", () => {
+test("the dock shows 5 jobs, 2 runs, 2 PR reviews and 5 sub-agents until chosen; 0 is a choice, out of range falls back", () => {
   store.clear();
-  assert.deepEqual(readAppearance().dock, { jobs: 5, actions: 2, subAgents: 5 });
-  store.set(KEY, JSON.stringify({ dock: { jobs: 0, actions: 10, subAgents: 3 } }));
-  assert.deepEqual(readAppearance().dock, { jobs: 0, actions: 10, subAgents: 3 });
-  store.set(KEY, JSON.stringify({ dock: { jobs: -1, actions: 11, subAgents: 2.5 } }));
-  assert.deepEqual(readAppearance().dock, { jobs: 5, actions: 2, subAgents: 5 }, "each falls back on its own");
-  saveAppearance({ ...readAppearance(), dock: { jobs: 1, actions: 0, subAgents: 0 } });
-  assert.deepEqual(JSON.parse(store.get(KEY)).dock, { jobs: 1, actions: 0, subAgents: 0 });
+  assert.deepEqual(readAppearance().dock, { jobs: 5, actions: 2, reviews: 2, subAgents: 5 });
+  store.set(KEY, JSON.stringify({ dock: { jobs: 0, actions: 10, reviews: 0, subAgents: 3 } }));
+  assert.deepEqual(readAppearance().dock, { jobs: 0, actions: 10, reviews: 0, subAgents: 3 });
+  store.set(KEY, JSON.stringify({ dock: { jobs: -1, actions: 11, reviews: 1.5, subAgents: 2.5 } }));
+  assert.deepEqual(readAppearance().dock, { jobs: 5, actions: 2, reviews: 2, subAgents: 5 }, "each falls back on its own");
+  // An Appearance saved before the dock listed PR reviews (T-25) shows two.
+  store.set(KEY, JSON.stringify({ dock: { jobs: 1, actions: 3, subAgents: 4 } }));
+  assert.deepEqual(readAppearance().dock, { jobs: 1, actions: 3, reviews: 2, subAgents: 4 });
+  saveAppearance({ ...readAppearance(), dock: { jobs: 1, actions: 0, reviews: 0, subAgents: 0 } });
+  assert.deepEqual(JSON.parse(store.get(KEY)).dock, { jobs: 1, actions: 0, reviews: 0, subAgents: 0 });
 });
 
 test("the turn dock numbers 5 turns with 5 bars each side until chosen; 0 numbered turns hides it", () => {

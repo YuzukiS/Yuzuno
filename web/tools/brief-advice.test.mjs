@@ -79,6 +79,37 @@ test("a table or chart without a summary may need one; with any, nothing is said
   assert.deepEqual(advise({ refs: refs("T-1") }), []);
 });
 
+test("a summary with no size is advised at the root's summary; one with a size, or no summary, is not (T-18, Lead 2473)", () => {
+  const named = (summary) => adviseBriefSection(checkBriefSection({
+    key: "eval", kind: "report", title: "Eval",
+    body: { root: "body", elements: { body: { type: "BriefBody", props: { summary }, children: ["answer", "runs"] }, answer: markdown("B lowers loss."), runs: table } },
+  }));
+  const [advice] = named({ lead: "answer", visual: "runs" });
+  assert.equal(advice.code, "summary_size_missing");
+  assert.equal(advice.path, "body.elements.body.props.summary");
+  assert.match(advice.reason, /"small" \(one column\), "wide" \(two columns, the figure beside the text\) or "large" \(two columns, two rows\)/);
+  assert.deepEqual(codes(named({ lead: "answer", visual: "runs", size: "wide" })), []);
+  assert.ok(!codes(advise({ answer: markdown("No summary named.") })).includes("summary_size_missing"));
+  // An Ask is never advised, summary or not.
+  assert.deepEqual(adviseBriefSection(checkBriefSection({ key: "q", kind: "ask", title: "Q", ask: { question: "Which?", reply: { freeText: true } },
+    body: { root: "body", elements: { body: { type: "BriefBody", props: { summary: { lead: "answer" } }, children: ["answer"] }, answer: markdown("Pick one.") } } })), []);
+});
+
+test("a summary's missing size is advised last, so the advice an answer carries is first the advice on what the section says (review 247a9c8b)", () => {
+  const long = (word) => markdown(`${word} `.repeat(A.markdownChars));
+  const advice = adviseBriefSection(checkBriefSection({
+    key: "eval", kind: "report", title: "Eval",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead" } }, children: ["lead", "a", "b", "c"] },
+      lead: markdown("B lowers loss."), a: long("a"), b: long("b"), c: long("c"),
+    } },
+  }));
+  assert.deepEqual(codes(advice), ["long_markdown", "long_markdown", "long_markdown", "summary_size_missing"]);
+  // Core passes on at most limits.advice.items of them: those are the content's.
+  assert.equal(BRIEF_LIMITS.advice.items, 3);
+  assert.deepEqual(codes(advice.slice(0, BRIEF_LIMITS.advice.items)), ["long_markdown", "long_markdown", "long_markdown"]);
+});
+
 test("a target twice is advised only within one block", () => {
   const twice = advise({ note: markdown("See below."), refs: refs("T-1", "T-2", "T-1") });
   assert.deepEqual(twice.map((one) => [one.code, one.path]), [["duplicate_ref", "body.elements.refs.props.items.2"]]);

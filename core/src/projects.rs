@@ -110,6 +110,11 @@ pub(crate) fn ensure_assignable(db: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The folder `id` pre-fills new Agents with on `machine`, if it has one.
+pub(crate) fn default_dir(db: &Connection, id: &str, machine: &str) -> Result<Option<String>> {
+    Ok(load(db, id)?.default_dirs.get(machine).cloned())
+}
+
 pub(crate) fn agent_project(db: &Connection, agent_id: &str) -> Result<Option<String>> {
     Ok(db
         .query_row(
@@ -132,6 +137,8 @@ pub(crate) fn project_labels(db: &Connection) -> Result<HashMap<String, (String,
 }
 
 pub(crate) fn set_agent_project_in(db: &Connection, agent_id: &str, project_id: Option<&str>) -> Result<()> {
+    // A lead leads the Project it was chosen for, and only while it is there (T-33).
+    crate::agent_roles::membership_changed(db, agent_id, project_id)?;
     match project_id {
         None => {
             db.execute("DELETE FROM project_agents WHERE agent_id=?1", [agent_id])?;
@@ -261,8 +268,9 @@ impl Store {
             project.name
         );
         tx.execute("DELETE FROM projects WHERE id=?1", [id])?;
-        // Its new-Agent and review defaults go with it (T-190).
+        // Its new-Agent and review defaults go with it (T-190), and its executor templates (T-34).
         tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::agent_defaults::project_key(id)])?;
+        tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::executor_templates::project_key(id)])?;
         tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::pr_review::settings::project_key(id)])?;
         tx.commit()?;
         Ok(())
@@ -310,5 +318,10 @@ impl Store {
 
     pub fn agent_project(&self, agent_id: &str) -> Result<Option<String>> {
         agent_project(&*self.db.read()?, agent_id)
+    }
+
+    /// The Agent's listed kind (T-33): `lead`, `executor`, or None if standing.
+    pub fn agent_kind(&self, agent_id: &str) -> Result<Option<String>> {
+        crate::agent_roles::listed_kind(&*self.db.read()?, agent_id)
     }
 }

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RequestSummary } from "./MessageContent";
 import { Bell } from "lucide-react";
 import type { AgentActionHandlers } from "./agent-actions";
@@ -41,6 +41,10 @@ const text = strings({
   update: "Update · ",
   drop: (name: string) => `Drop to add it to ${name}’s draft`,
   needsYou: (count: number) => `${count} needs you`,
+  lead: "Lead",
+  leadTitle: "A lead of this Project, as set in its settings",
+  executor: "Executor",
+  executorTitle: "Made by Core for one task, from an executor template",
 }, {
   host: "Core 主机",
   open: (name) => `打开 ${name}`,
@@ -51,28 +55,45 @@ const text = strings({
   update: "更新 · ",
   drop: (name) => `放下即可添加到 ${name} 的草稿`,
   needsYou: (count) => `${count} 项需要你`,
+  lead: "负责人",
+  leadTitle: "此 Project 的负责人（在 Project 设置中指定）",
+  executor: "执行者",
+  executorTitle: "由 Core 按执行者模板为一个任务创建",
 });
 
 /** How long a touch is held before it opens the actions, and how far it may
  * move first: a scroll moves further, and the browser cancels the pointer. */
 export const LONG_PRESS_MS = 500;
 const LONG_PRESS_SLOP = 10;
+/** A touch held this long shows it is being held (T-19 SH:R13): the row
+ * presses in before the actions open. */
+const HOLD_CUE_MS = 150;
 
 /** A touch held still opens `onPress` at that point; a move, a cancel or an
  * early lift does nothing. After a long-press (`fired`), the click that
  * follows is swallowed, so the row does not also open; any next press clears
  * it. `claim` takes a pending touch for the browser's own context menu, so
- * the menu opens once. */
+ * the menu opens once. `holding` is true from HOLD_CUE_MS into a hold until
+ * it opens or ends. */
 function useLongPress(onPress: (point: MenuPoint) => void) {
   const timer = useRef<number | undefined>(undefined);
+  const cue = useRef<number | undefined>(undefined);
   const start = useRef<{ x: number; y: number; id: number } | null>(null);
   const fired = useRef(false);
+  const [holding, setHolding] = useState(false);
   const cancel = () => {
     window.clearTimeout(timer.current);
+    window.clearTimeout(cue.current);
     start.current = null;
+    setHolding(false);
   };
+  useEffect(() => () => {
+    window.clearTimeout(timer.current);
+    window.clearTimeout(cue.current);
+  }, []);
   return {
     fired,
+    holding,
     claim: () => {
       if (!start.current) return false;
       cancel();
@@ -87,11 +108,13 @@ function useLongPress(onPress: (point: MenuPoint) => void) {
         if ((event.target as Element).closest?.('[role="menu"]')) return;
         if (event.pointerType !== "touch" || !event.isPrimary) return;
         start.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+        cue.current = window.setTimeout(() => setHolding(true), HOLD_CUE_MS);
         timer.current = window.setTimeout(() => {
           const at = start.current;
           if (!at) return;
           start.current = null;
           fired.current = true;
+          setHolding(false);
           onPress({ x: at.x, y: at.y });
         }, LONG_PRESS_MS);
       },
@@ -110,12 +133,15 @@ export function AgentRailRow({
   selected,
   statusLabel,
   idle = false,
+  unseen = null,
   onSelect,
   actions,
 }: {
   agent: Agent;
   selected: boolean;
   statusLabel: string;
+  /** Its last Turn ended this way and this device hasn't shown it (T-42). */
+  unseen?: "finished" | "failed" | null;
   /** Only an Agent shown as plainly idle can show its unfinished Job/CI work; any
    * other state (working, waiting for you, compacting, closed…) comes first. */
   idle?: boolean;
@@ -129,7 +155,8 @@ export function AgentRailRow({
   const machine = agent.remote?.machine.name || t.host;
   const jobs = useAgentJobs(agent.id);
   const ci = useAgentCI(agent.id);
-  const waiting = idle ? waitingSummary(jobs, ci, language) : null;
+  // Unfinished Job/CI work shows on a plainly idle Agent, not over a Turn end not seen yet.
+  const waiting = idle && !unseen ? waitingSummary(jobs, ci, language) : null;
   const label = waiting?.label ?? statusLabel;
   // Two waits or checks at once ("Waiting · Job / CI") take their own line
   // under the name; one ("Waiting · CI") fits beside it like any status.
@@ -139,9 +166,14 @@ export function AgentRailRow({
   const menu = useRef<AgentActionsMenuHandle>(null);
   const select = useRef<HTMLButtonElement>(null);
   const press = useLongPress((point) => menu.current?.openAt(point, select.current));
+  // A Project's lead says so (T-33), and an executor (T-34); the button's
+  // label is its name only.
+  const kind = agent.kind === "lead" ? { name: t.lead, title: t.leadTitle }
+    : agent.kind === "executor" ? { name: t.executor, title: t.executorTitle } : null;
+  const description = t.description(label, waiting?.detail ?? null, machine, agent.unreadCount);
   return (
     <article
-      className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}`}
+      className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}${press.holding ? " is-holding" : ""}`}
       data-agent-id={agent.id}
       {...drop.handlers}
       {...(actions && {
@@ -177,12 +209,13 @@ export function AgentRailRow({
         className="agent-select agent-row-top"
         onClick={onSelect}
         aria-label={t.open(agent.name)}
-        aria-description={t.description(label, waiting?.detail ?? null, machine, agent.unreadCount)}
+        aria-description={kind ? `${kind.name} · ${description}` : description}
         aria-current={selected ? "true" : undefined}
-        title={t.title(agent.name, label, waiting?.detail ?? null, agent.unreadCount)}
+        title={`${t.title(agent.name, label, waiting?.detail ?? null, agent.unreadCount)}${kind ? ` · ${kind.name}` : ""}`}
       >
         <span className="agent-identity">
           <span className="agent-name">{agent.name}</span>
+          {kind && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
         </span>
       </button>
       {/* After the card's own target in focus order; drawn at its top right. */}
@@ -194,14 +227,14 @@ export function AgentRailRow({
           The whole card opens the agent; nothing inside is a separate link. */}
       <div className="agent-row-state">
         <span
-          className={`agent-runtime runtime-${agent.status}`}
+          className={`agent-runtime runtime-${agent.status}${unseen ? ` unseen-${unseen}` : ""}`}
           data-jobs={waiting ? jobs?.active : undefined}
           data-ci={
             waiting && ci
               ? ci.running + ci.discovering + (ci.waitingForRun ?? 0) + ci.check
               : undefined
           }
-          data-combined={combined || undefined}
+          data-combined={combined || !!unseen || undefined}
         >
           <span className={`status-dot ${agent.status}`} aria-hidden="true" />
           {label}

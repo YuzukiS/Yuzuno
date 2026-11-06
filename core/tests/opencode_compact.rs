@@ -58,6 +58,8 @@ async fn lab(model: bool) -> Lab {
     let work = dir.path().join("work");
     std::fs::create_dir(&work).unwrap();
     std::fs::create_dir_all(dir.path().join("data/opencode").join(ID)).unwrap();
+    // Compaction still reads 1.19.3's messages until its slice (T-32, Lead 4983): the stand-in sends those.
+    std::fs::write(dir.path().join("data/opencode/v1Messages"), "1").unwrap();
     let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
     ws.store.insert(&agent(ID, &work.to_string_lossy())).unwrap();
     let d = ws.reconnect(ID).await.unwrap();
@@ -86,7 +88,7 @@ impl Lab {
     /// Prompts and commands OpenCode was sent.
     fn sent(&self) -> Vec<Value> {
         self.calls().into_iter().filter(|c| c["method"] == "POST"
-            && ["/prompt_async", "/command"].iter().any(|end| c["path"].as_str().unwrap().ends_with(end))).collect()
+            && ["/prompt", "/command"].iter().any(|end| c["path"].as_str().unwrap().ends_with(end))).collect()
     }
 
     fn detail(&self) -> AgentDetail {
@@ -230,7 +232,7 @@ async fn nothing_is_asked_for_without_a_known_model_or_a_readable_idle_session_w
     lab.ws.opencode_set_model(ID, MODEL.into()).await.unwrap();
     lab.control("revert", json!({"sessionID":session})).await;
     let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
-    assert!(error.contains("尚未处理的回退"), "{error}");
+    assert!(error.contains("请先发一条消息"), "{error}");
 
     let lab = self::lab(true).await;
     let session = lab.session();
@@ -238,7 +240,7 @@ async fn nothing_is_asked_for_without_a_known_model_or_a_readable_idle_session_w
     let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
     assert!(error.contains("不是空闲状态"), "{error}");
     lab.control("idle", json!({"sessionID":session})).await;
-    lab.control("mode", json!({"fail":{format!("/session/{session}"):500}})).await;
+    lab.control("mode", json!({"fail":{format!("/api/session/{session}"):500}})).await;
     let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
     assert!(error.contains("没有读到 OpenCode 会话现在的状态"), "{error}");
     assert!(lab.summarized().is_empty(), "{:#?}", lab.calls());
@@ -363,7 +365,7 @@ async fn a_stopped_compaction_keeps_new_messages_out_while_opencode_holds_it() {
     let turn = compaction(&d);
     assert_eq!((turn["_opencodeCompact"]["state"].as_str(), turn["_opencodeCompact"]["nativePending"].as_bool()), (Some("stopped"), Some(true)), "{turn:#}");
     assert!(turn["error"]["message"].as_str().unwrap().contains("仍未完成"), "{turn:#}");
-    let aborted = lab.calls().iter().filter(|c| c["method"] == "POST" && c["path"].as_str().unwrap().ends_with("/abort")).count();
+    let aborted = lab.calls().iter().filter(|c| c["method"] == "POST" && c["path"].as_str().unwrap().ends_with("/interrupt")).count();
     assert_eq!(aborted, 1);
     refuses_new_writes(&lab, "还留着上一次没有完成的压缩").await;
     assert_eq!(lab.summarized().len(), 1);
@@ -439,7 +441,10 @@ impl Lab {
     }
 
     /// A compaction stopped while it ran: one OpenCode still holds, its
-    /// request answered 200 and true. Its Turn's ID.
+    /// request answered 200 and true. Its Turn's ID, once the whole read Core
+    /// makes after that answer is published: until then it may still publish
+    /// what it read before anything the test does next, and a later wait for
+    /// a read (`read_again`) could take it for its own.
     async fn stopped(&self) -> String {
         self.summarize("hold").await;
         self.ws.opencode_compact(ID).await.unwrap();
@@ -448,6 +453,10 @@ impl Lab {
         let d = self.until("its request's end", |d| compaction(d)["_opencodeCompact"]["answer"]["kind"] == "ended").await;
         let attempt = &compaction(&d)["_opencodeCompact"];
         assert_eq!((attempt["state"].as_str(), attempt["nativePending"].as_bool()), (Some("stopped"), Some(true)), "{attempt:#}");
+        self.until("the read after the request's answer, published", |_| {
+            let kinds = self.kinds();
+            kinds.iter().rposition(|k| k == "opencode/compactAnswered").is_some_and(|at| kinds[at + 1..].iter().any(|k| k == "opencode/resynced"))
+        }).await;
         compaction(&d)["id"].as_str().unwrap().to_owned()
     }
 }
@@ -498,16 +507,13 @@ async fn a_stopped_compaction_given_up_removes_only_its_part_and_lets_messages_i
 /// part still in them; the removal and its own read after it come in
 /// between. The stale read is read again, and what it finds then is published.
 /// Nothing else reads meanwhile: the read after the request's answer is
-/// published first, and the stand-in says when the one read is held (Lead 3916).
+/// published first (`stopped`), and the stand-in says when the one read is
+/// held (Lead 3916).
 #[tokio::test]
 async fn a_read_from_before_a_removal_never_undoes_it() {
     let lab = lab(true).await;
     let turn = lab.stopped().await;
-    lab.until("the read after the request's answer, published", |_| {
-        let kinds = lab.kinds();
-        kinds.iter().rposition(|k| k == "opencode/compactAnswered").is_some_and(|at| kinds[at + 1..].iter().any(|k| k == "opencode/resynced"))
-    }).await;
-    let reads = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"] == "/permission").count();
+    let reads = |lab: &Lab| lab.calls().iter().filter(|c| c["method"] == "GET" && c["path"].as_str().is_some_and(|p| p.starts_with("/api/session/") && p.ends_with("/permission"))).count();
     let (resynced, before) = (lab.kinds().iter().filter(|k| *k == "opencode/resynced").count(), reads(&lab));
     lab.control("mode", json!({"holdPermission": true})).await;
     lab.control("drop", json!({})).await;

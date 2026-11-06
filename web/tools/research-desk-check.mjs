@@ -1,6 +1,7 @@
-// A research desk on Home (T-9), in a browser: the two synthetic desks of
-// research-fixtures.mjs as Home draws them, at both densities on a desktop
-// and on a 390 px phone, light theme.
+// A research desk (T-9), in a browser: the two synthetic desks of
+// research-fixtures.mjs as their report pages draw them (T-18: a report's
+// body is read on its page, opened from its Home card, always at high
+// density), on a desktop and on a 390 px phone, light theme.
 // - Desktop: claims, view and sources side by side; a phone: one column, the
 //   claims first and the sources after the view; nothing scrolls sideways.
 // - Arrow keys move a row's selection and its visible focus; the parts of a
@@ -158,7 +159,19 @@ async function serve(route) {
   });
 }
 const card = (key) => page.locator(`.home-view [data-section-key="${key}"]`);
-const desk = (key) => card(key).locator(".research-desk");
+/** The desk on the report page that is open. */
+const desk = () => page.locator(".home-report .research-desk");
+/** A section's report page, opened from its card on Home (T-18). */
+async function openReport(key) {
+  const opener = card(key).locator(".home-report-open");
+  await opener.scrollIntoViewIfNeeded();
+  await opener.click();
+  await desk().waitFor();
+}
+async function closeReport() {
+  await page.locator(".home-report .report-back").click();
+  await page.locator(".home-report").waitFor({ state: "hidden" });
+}
 
 async function open(width, height) {
   page = await browser.newPage({ viewport: { width, height }, locale: "en-US", reducedMotion: "reduce" });
@@ -179,83 +192,104 @@ async function open(width, height) {
   const toggle = page.locator('.home-view .home-panel-toggle[aria-expanded="false"]');
   await page.locator(".home-view .home-panel-toggle").first().waitFor();
   if (await toggle.count()) await toggle.first().click();
-  await desk("dose-study").waitFor();
-  await until("the snapshot numbers", async () => (await desk("dose-study").innerText()).includes("−2.04"));
+  await card("dose-study").waitFor();
+  await openReport("dose-study");
+  await until("the snapshot numbers", async () => (await desk().innerText()).includes("−2.04"));
   await sleep(200);
 }
 /** Boxes of the desk's three parts and whether anything scrolls sideways. */
-const layout = (key) =>
-  page.evaluate((key) => {
-    const root = document.querySelector(`.home-view [data-section-key="${key}"] .research-desk`);
+const layout = () =>
+  page.evaluate(() => {
+    const root = document.querySelector(".home-report .research-desk");
     const box = (selector) => {
       const r = root.querySelector(selector).getBoundingClientRect();
       return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) };
     };
     const scroller = document.scrollingElement;
-    const sideways = [...document.querySelectorAll(".home-view *")].filter((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== "visible" && getComputedStyle(el).overflowX !== "hidden").map((el) => el.className).slice(0, 5);
-    return { claims: box(".research-claims"), main: box(".research-main"), aside: box(".research-aside"), page: scroller.scrollWidth > scroller.clientWidth, sideways };
-  }, key);
-const radio = (key, label, text) => desk(key).locator(`[role="radiogroup"][aria-label="${label}"] [role="radio"]`, { hasText: text });
-const selected = (key, label) => desk(key).locator(`[role="radiogroup"][aria-label="${label}"] [role="radio"][aria-checked="true"]`);
+    const sideways = [...document.querySelectorAll(".home-report *")].filter((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== "visible" && getComputedStyle(el).overflowX !== "hidden").map((el) => el.className).slice(0, 5);
+    const body = root.closest(".brief-body"), style = getComputedStyle(body);
+    const bodyWidth = Math.round(body.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight));
+    return { claims: box(".research-claims"), main: box(".research-main"), aside: box(".research-aside"), bodyWidth, page: scroller.scrollWidth > scroller.clientWidth, sideways };
+  });
+/** The desk's own layouts (research.css), by the width of the body it is in: three
+ *  columns from 960 px, the claims across the top from 640 px, else one column. */
+const expected = (s) => (s.bodyWidth >= 960 ? "three" : s.bodyWidth >= 640 ? "strip" : "stack");
+const drawn = (s) =>
+  s.claims.right <= s.main.left && s.main.right <= s.aside.left && Math.abs(s.claims.top - s.main.top) < 4 && Math.abs(s.main.top - s.aside.top) < 4 ? "three"
+    : s.claims.bottom <= s.main.top + 1 && s.main.right <= s.aside.left && Math.abs(s.main.top - s.aside.top) < 4 ? "strip"
+      : s.claims.bottom <= s.main.top + 1 && s.main.bottom <= s.aside.top + 1 && Math.abs(s.claims.left - s.main.left) < 4 ? "stack" : "other";
+const radio = (label, text) => desk().locator(`[role="radiogroup"][aria-label="${label}"] [role="radio"]`, { hasText: text });
+const selected = (label) => desk().locator(`[role="radiogroup"][aria-label="${label}"] [role="radio"][aria-checked="true"]`);
 
 try {
-  for (const density of ["low", "high"]) {
-    await step(`desktop 1440, ${density} density: claims, view and sources side by side; keys move the selection; every view shows`, async () => {
+  {
+    const density = "high";
+    await step("desktop 1440, on the report page at high density: claims, view and sources laid out as the desk's width calls for; keys move the selection; every view shows", async () => {
       await open(1440, 900);
-      if (density === "high") {
-        await page.locator('.home-view [aria-label="Card density"] button', { hasText: "High density" }).click();
-        await until("the high density", async () => (await desk("dose-study").getAttribute("data-density")) === "high");
-      }
-      await desk("dose-study").scrollIntoViewIfNeeded();
-      const shown = await layout("dose-study");
-      assert.ok(shown.claims.right <= shown.main.left && shown.main.right <= shown.aside.left, JSON.stringify(shown));
-      assert.ok(Math.abs(shown.claims.top - shown.main.top) < 4 && Math.abs(shown.main.top - shown.aside.top) < 4, "one row of three");
+      assert.equal(await desk().getAttribute("data-density"), "high", "a report page reads at high density");
+      await desk().scrollIntoViewIfNeeded();
+      const shown = await layout();
+      assert.equal(drawn(shown), expected(shown), JSON.stringify(shown));
       assert.ok(!shown.page && !shown.sideways.length, JSON.stringify(shown));
+      report.layouts = [...(report.layouts || []), { width: 1440, bodyWidth: shown.bodyWidth, layout: drawn(shown) }];
       await shot(`desktop-${density}-claim.png`);
       // Keys: from the selected row, down to the next, the focus with it.
       const rows = "Recovery time vs placebo (v2): rows";
-      await selected("dose-study", rows).focus();
-      const before = await selected("dose-study", rows).innerText();
+      await selected(rows).focus();
+      const before = await selected(rows).innerText();
       await page.keyboard.press("ArrowUp");
-      await until("the row above", async () => (await selected("dose-study", rows).innerText()) !== before);
+      await until("the row above", async () => (await selected(rows).innerText()) !== before);
       const focused = await page.evaluate(() => document.activeElement?.getAttribute("aria-checked"));
       assert.equal(focused, "true", "the focus moved with the selection");
       const ring = await page.evaluate(() => getComputedStyle(document.activeElement).outlineStyle);
       assert.notEqual(ring, "none", "the focus is visible");
       await shot(`desktop-${density}-keyboard.png`);
       await page.keyboard.press("ArrowDown");
-      await radio("dose-study", "Show", "Each arm's own mean").click();
-      await until("the parts", async () => (await desk("dose-study").locator(".research-caption").innerText().catch(() => "")) === "High dose");
+      await radio("Show", "Each arm's own mean").click();
+      await until("the parts", async () => (await desk().locator(".research-caption").innerText().catch(() => "")) === "High dose");
       await shot(`desktop-${density}-parts.png`);
       for (const [view, wait, file] of [
         ["Evidence & limits", "Symptom-free for 72 hours.", "evidence"],
         ["Definitions", "v1 → v2", "definitions"],
         ["Next steps", "nothing runs from this card", "next"],
       ]) {
-        await radio("dose-study", "Views of this desk", view).click();
-        await until(view, async () => (await desk("dose-study").locator(".research-main").innerText()).includes(wait));
-        assert.ok(!(await layout("dose-study")).page, `${view}: nothing scrolls sideways`);
+        await radio("Views of this desk", view).click();
+        await until(view, async () => (await desk().locator(".research-main").innerText()).includes(wait));
+        assert.ok(!(await layout()).page, `${view}: nothing scrolls sideways`);
         await shot(`desktop-${density}-${file}.png`);
       }
       // The second desk, of another shape, by the same component.
-      await desk("pass-bench").scrollIntoViewIfNeeded();
-      await until("the benchmark numbers", async () => (await desk("pass-bench").innerText()).includes("−6.1"));
+      await closeReport();
+      await openReport("pass-bench");
+      await until("the benchmark numbers", async () => (await desk().innerText()).includes("−6.1"));
       await shot(`desktop-${density}-benchmark.png`);
       await page.close();
     });
   }
+  await step("desktop 2400, on the report page: the desk in the layout its width calls for, nothing sideways", async () => {
+    await open(2400, 1000);
+    await desk().scrollIntoViewIfNeeded();
+    const shown = await layout();
+    assert.equal(drawn(shown), expected(shown), JSON.stringify(shown));
+    assert.ok(!shown.page && !shown.sideways.length, JSON.stringify(shown));
+    report.layouts = [...(report.layouts || []), { width: 2400, bodyWidth: shown.bodyWidth, layout: drawn(shown) }];
+    await shot("desktop-2400-claim.png");
+    await page.close();
+  });
   await step("phone 390: one column, claims first and sources after the view; nothing scrolls sideways; the plan's link shows its state", async () => {
     await open(390, 844);
-    await desk("dose-study").scrollIntoViewIfNeeded();
-    const shown = await layout("dose-study");
+    await desk().scrollIntoViewIfNeeded();
+    const shown = await layout();
     assert.ok(shown.claims.bottom <= shown.main.top + 1 && shown.main.bottom <= shown.aside.top + 1, JSON.stringify(shown));
     assert.ok(Math.abs(shown.claims.left - shown.main.left) < 4, "one column");
     assert.ok(!shown.page && !shown.sideways.length, JSON.stringify(shown));
     await shot("phone-390-claim.png");
     await shot("phone-390-page.png", true);
-    await radio("pass-bench", "Views of this desk", "Next steps").click();
-    await until("the linked task", async () => (await desk("pass-bench").innerText()).includes("Quiet machine run"));
-    await desk("pass-bench").scrollIntoViewIfNeeded();
+    await closeReport();
+    await openReport("pass-bench");
+    await radio("Views of this desk", "Next steps").click();
+    await until("the linked task", async () => (await desk().innerText()).includes("Quiet machine run"));
+    await desk().scrollIntoViewIfNeeded();
     await shot("phone-390-next.png");
     await page.close();
   });

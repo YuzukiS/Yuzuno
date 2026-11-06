@@ -4,6 +4,7 @@ import type { GitHubLink } from "./GitHubLinks";
 import { describeRead, type ContextRead } from "./review-reads";
 import { reviewConclusionsIn, reviewReasons } from "./review-outcome";
 import { strings, useLanguage } from "./i18n";
+import { settleWhenLanded } from "./settle";
 import {
   describeEvidence,
   describePolicy,
@@ -381,9 +382,25 @@ export function PrReviews({
       : page.reviews
     : [];
   const loaded = page !== null;
+  // The review a link names settles once, where it landed (T-19 GH-06): once
+  // what it sits in has come in (the task's detail, collab-detail-in), so the
+  // settle is seen whole, and then as after a smooth jump, once it holds still.
+  const settledReview = useRef<string | null>(null);
+  const reviewSettled = useRef<(() => void) | null>(null);
   useEffect(() => {
-    focusedElement.current?.scrollIntoView?.({ block: "start" });
+    const element = focusedElement.current;
+    element?.scrollIntoView?.({ block: "start" });
+    if (!element || !focused || settledReview.current === focused.id) return;
+    settledReview.current = focused.id;
+    const entering: Animation[] = [];
+    for (let node = element.parentElement; node; node = node.parentElement)
+      for (const animation of node.getAnimations?.() ?? [])
+        if (animation.playState === "running" && animation.effect?.getComputedTiming().endTime !== Infinity) entering.push(animation);
+    void Promise.allSettled(entering.map((animation) => animation.finished)).then(() => {
+      if (element.isConnected) reviewSettled.current = settleWhenLanded(element, "data-settle", true, "animation");
+    });
   }, [focused, loaded]);
+  useEffect(() => () => reviewSettled.current?.(), []);
   if (!controls && !shown.length && !error) return null;
   return (
     <section className="pr-reviews" aria-label={t.title}>

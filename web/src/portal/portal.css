@@ -321,6 +321,26 @@
   border-radius: 12px;
   background: var(--surface-raised, var(--paper));
   box-shadow: 0 12px 30px var(--palette-shadow, rgba(0, 0, 0, 0.14));
+  transform-origin: 50% 0;
+  animation: open-choice-menu-in var(--motion-small) var(--ease-standard);
+}
+/* Drops from its ▾ and rises back into it (exit-small, MENU_OUT_MS in
+   OpenChoice.tsx), as the scope menu rises from its switcher (T-19 SV-05). */
+.open-choice-menu.is-leaving {
+  pointer-events: none;
+  animation: open-choice-menu-out var(--motion-exit-small) var(--ease-exit) both;
+}
+@keyframes open-choice-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+  }
+}
+@keyframes open-choice-menu-out {
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+  }
 }
 .open-choice-menu button {
   display: block;

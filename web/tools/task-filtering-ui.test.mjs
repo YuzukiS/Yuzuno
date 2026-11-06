@@ -267,7 +267,8 @@ test("a slower earlier request cannot replace a newer one, nor show its error or
     gates["dev-1"]({ httpStatus: 500, error: "dev-1 request failed" });
     await tick(60);
     assert.doesNotMatch(page.text(), /dev-1 request failed/);
-    assert.match(page.text(), /Gathering your tasks/, "still loading the current conditions");
+    // Still loading the current conditions: the cards shown before stay, dimmed and busy (T-19 CB-03).
+    assert.equal(page.document.querySelector(".collab-cards")?.getAttribute("aria-busy"), "true", "still loading the current conditions");
     assert.doesNotMatch(page.text(), /No tasks match/);
     gates["dev-2"](taskList(tasks, { assigneeAgentId: "dev-2", statuses: OPEN, limit: 100 }));
     await until(() => page.cards().length === 1, "dev-2 result");
@@ -506,11 +507,13 @@ test("new conditions still wait for Core before saying nothing matches", async (
     await until(() => page.cards().length === 1, "the done task");
     await choose(page, "Show", "blocked");
     await tick(80);
-    assert.match(page.text(), /Gathering your tasks/);
     assert.doesNotMatch(page.text(), /No tasks match/, "no empty state from the previous conditions");
-    assert.deepEqual(page.cards(), [], "and no cards from them either");
+    // Their cards stay until Core answers, dimmed and busy: not an answer for these (T-19 CB-03).
+    assert.deepEqual(page.cards(), ["T-1"], "their cards stay until Core answers");
+    assert.equal(page.document.querySelector(".collab-cards")?.getAttribute("aria-busy"), "true", "dimmed and busy, not an answer for these conditions");
     release();
     await until(() => /No tasks match these filters/.test(page.text()), "real empty answer");
+    assert.deepEqual(page.cards(), [], "and they go with Core's answer");
   } finally {
     page.close();
   }

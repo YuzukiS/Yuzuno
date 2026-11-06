@@ -94,6 +94,11 @@ pub fn parse(input: &str, object: bool) -> Result<Target> {
     })
 }
 
+/// Job logs are read as GitHub sent them, escape sequences included; gh has
+/// this flag since 2.97.0 (GHSA-3m3g-3wcr-px46).
+pub(crate) const RAW_LOG_FLAG: &str = "--allow-escape-sequences";
+pub(crate) const RAW_LOG_MIN_GH: &str = "2.97.0";
+
 pub(super) fn failure(stderr: &[u8], code: Option<i32>) -> anyhow::Error {
     let text = String::from_utf8_lossy(stderr).to_lowercase();
     let message = if text.contains("rate limit") || text.contains("http 429") {
@@ -458,6 +463,56 @@ impl Client {
                     _ => bail!("timeout: GitHub conditional read timed out"),
                 }
             }
+        }
+    }
+
+    /// A job log's first `limit` bytes (gh follows GitHub's redirect to the
+    /// log). Bytes past the limit are never read: the answer says it stopped
+    /// there. Logs carry terminal colour codes; they are kept as bytes, which
+    /// since gh 2.97.0 needs `--allow-escape-sequences` (an older gh refuses
+    /// the flag, and the read fails with `gh_too_old`).
+    pub(crate) async fn log_prefix(&self, endpoint: &str, limit: usize) -> Result<(Vec<u8>, bool)> {
+        let mut child = self.spawn_with_headers(
+            endpoint,
+            "Accept: application/vnd.github+json",
+            "GET",
+            false,
+            &[RAW_LOG_FLAG.to_owned()],
+        )?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .context("gh stdout unavailable")?
+            .take(limit as u64 + 1);
+        let mut stderr = child
+            .stderr
+            .take()
+            .context("gh stderr unavailable")?
+            .take(64 * 1024 + 1);
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut out = Vec::new();
+            stdout.read_to_end(&mut out).await?;
+            if out.len() > limit {
+                out.truncate(limit);
+                return Ok::<_, anyhow::Error>((out, true));
+            }
+            let mut err = Vec::new();
+            stderr.read_to_end(&mut err).await?;
+            let status = child.wait().await?;
+            if !status.success() {
+                if String::from_utf8_lossy(&err).contains(&format!("unknown flag: {RAW_LOG_FLAG}")) {
+                    bail!("gh_too_old: the Core host's gh does not know `gh api {RAW_LOG_FLAG}`, which job-log reads need; it was added in gh {RAW_LOG_MIN_GH}, so update gh on the Core host to {RAW_LOG_MIN_GH} or later");
+                }
+                return Err(failure(&err, status.code()));
+            }
+            Ok((out, false))
+        })
+        .await;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        match result {
+            Ok(answer) => answer,
+            Err(_) => bail!("timeout: GitHub job log read timed out"),
         }
     }
 

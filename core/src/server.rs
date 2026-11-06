@@ -55,8 +55,11 @@ pub fn router_on_port(ws: Arc<Workspace>, assets: PathBuf, port: u16) -> Router 
 pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updates: Option<Arc<crate::updates::controller::Controller>>) -> Router {
     ws.start_collaboration(port);
     ws.start_jobs();
+    ws.start_executor_slots();
+    ws.start_archive_passes();
     ws.start_ci_monitor();
     ws.start_delivery();
+    ws.start_merge_queue();
     ws.start_backup_schedule();
     ws.start_web_push();
     let mcp = crate::collaboration_mcp::router(ws.clone(), port);
@@ -69,6 +72,8 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .merge(crate::workspace_backup::retention::changes())
         // Only on Core's own port: a phone cannot change its own access.
         .merge(crate::remote_access::changes())
+        // Only on Core's own port: an OpenCode Agent's login passes a key (T-32 slice 4b).
+        .merge(crate::opencode_login::router())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);
@@ -80,9 +85,13 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
 /// events and artifacts the local port serves, never the Agents' MCP
 /// endpoints, and starts nothing: the local router runs Core's services.
 /// Every request must pass `RemoteEntry::admit`; none falls back to the
-/// local port's rules.
+/// local port's rules. Previews asked for here are served here too, under
+/// the path it keeps for them (`previews::phone_router`, T-5), which never
+/// reaches Yuzuno's page.
 pub fn remote_router(ws: Arc<Workspace>, assets: PathBuf, updates: Option<Arc<crate::updates::controller::Controller>>, entry: RemoteEntry) -> Router {
     let router = browser_routes(assets, updates.clone())
+        .merge(crate::previews::phone_router())
+        .layer(middleware::from_fn(crate::previews::reserved))
         .layer(middleware::from_fn_with_state(Arc::new(entry), remote_browser_boundary))
         .with_state(ws);
     finish(router, updates)
@@ -103,8 +112,10 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
     let asset_service = tower::service_fn(move |request: Request| crate::updates::assets::serve(assets.clone(), asset_updates.clone(), request));
     Router::new()
         .merge(update_routes)
+        .merge(crate::agent_roles::router())
         .merge(crate::pr_review::router())
         .merge(crate::pr_operations::router())
+        .merge(crate::merge_queue::router())
         .merge(crate::jobs::router())
         .merge(crate::remote_access::router())
         .merge(crate::ci_monitor::router())
@@ -121,8 +132,13 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::reading_handoff::router())
         .merge(crate::claude_checkpoints::router())
         .merge(crate::rewind::router())
+        .merge(crate::opencode_agent::fork_router())
         .merge(crate::claude_quota::router())
         .merge(crate::agent_defaults::router())
+        .merge(crate::executor_templates::router())
+        .merge(crate::executor_slots::router())
+        .merge(crate::executor_release::router())
+        .merge(crate::handover::router())
         .merge(crate::appearance_preset::router())
         .merge(crate::task_proposals::router())
         .merge(crate::task_workspaces::router())
@@ -429,13 +445,17 @@ async fn local_browser_boundary(
     harden(next.run(req).await)
 }
 
+/// Every response may not be sniffed, framed or stored; only a previewed
+/// page (T-5), as its handler marks it, is framed by its own policy instead.
 fn harden(mut response: Response) -> Response {
     response
         .headers_mut()
         .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
-    response
-        .headers_mut()
-        .insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
+    if response.extensions().get::<crate::previews::PreviewDocument>().is_none() {
+        response
+            .headers_mut()
+            .insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
+    }
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
@@ -455,7 +475,11 @@ pub struct RemoteEntry {
     origin: String,
     host: String,
     login: String,
+    run: u64,
 }
+
+/// The next `RemoteEntry::run`.
+static NEXT_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl RemoteEntry {
     /// `origin` is `https://<host>[:<port>]` as the browser shows it, with
@@ -476,7 +500,8 @@ impl RemoteEntry {
             !login.is_empty() && login.trim() == login && !login.chars().any(char::is_control),
             "YUZUNO_REMOTE_LOGIN is one Tailscale login, without spaces around it"
         );
-        Ok(Self { origin: format!("https://{authority}"), host: authority, login: login.to_owned() })
+        let run = NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(Self { origin: format!("https://{authority}"), host: authority, login: login.to_owned(), run })
     }
 
     /// From the YUZUNO_REMOTE_PORT, _ORIGIN and _LOGIN settings: all three
@@ -501,6 +526,13 @@ impl RemoteEntry {
 
     pub fn login(&self) -> &str {
         &self.login
+    }
+
+    /// A number of this entry's own, never another's while Core runs: what a
+    /// preview asked for through it is taken for (T-5), so that an entry
+    /// served anew, even as it was, opens none of what an earlier one was given.
+    pub fn run(&self) -> u64 {
+        self.run
     }
 
     /// Whether a request may enter: the configured login, this host and, for
@@ -546,7 +578,7 @@ async fn remote_browser_boundary(State(entry): State<Arc<RemoteEntry>>, mut req:
         return (StatusCode::FORBIDDEN, reason).into_response();
     }
     // Pages that change phone access read this to stay read-only here, and
-    // a preview asked for here is served by the phone previews' entry.
+    // a preview asked for here is taken for this entry.
     req.extensions_mut().insert(crate::remote_access::RemoteRequest);
     req.extensions_mut().insert(entry.clone());
     harden(next.run(req).await)
@@ -562,7 +594,7 @@ async fn workspace(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     let (runtime, default_cwd) = (ws.runtime.lock().await.clone(), ws.default_cwd.clone());
     stored_json(&ws, move |store| Ok(
         json!({"agents":store.agents()?,"runtime":runtime,"defaultCwd":default_cwd,
-            "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERSION},
+            "opencode":{"enabled":crate::opencode_agent::enabled(),"version":crate::opencode::VERIFIED},
             "workspace":{"id":store.workspace_id()?},"projects":store.projects()?,
             "projectUsage":store.project_usage()?}),
     )).await
@@ -631,17 +663,57 @@ mod defaults_create_tests {
             crate::model::AgentSettings { permission_preset: Some("full".into()), ..Default::default() },
             crate::model::AgentSettings { permission_mode: Some("bypassPermissions".into()), ..Default::default() },
         ] {
-            let refused = ws.claude_create_on_with("C".into(), String::new(), cwd.clone(), String::new(), None, None, settings).await;
+            let refused = ws.claude_create_on_with("C".into(), String::new(), cwd.clone(), String::new(), None, None, settings, None).await;
             assert!(refused.is_err());
         }
         assert!(ws.store.agents().unwrap().is_empty());
     }
 }
 async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiResult<Json<Value>> {
-    let project = p.project_id.clone();
+    let (project, save_default) = (p.project_id.clone(), p.save_project_default);
+    let (agent, sources) = create_agent(&ws, p, None).await?;
+    // The Agent already exists; a failed default update must not hide it.
+    let mut response = serde_json::to_value(&agent)?;
+    response["defaultSources"] = sources;
+    if let (true, Some(project)) = (save_default, project) {
+        let machine = agent.remote.as_ref().map_or("local", |r| r.machine.id.as_str()).to_owned();
+        let cwd = agent.cwd.clone();
+        match ws.stored(move |store| store.set_project_default_dir(&project, &machine, &cwd)).await {
+            Ok(_) => ws.projects_changed(),
+            Err(e) => response["projectDefaultError"] = e.to_string().into(),
+        }
+    }
+    Ok(Json(response))
+}
+
+/// The executor a template dispatch makes (T-34), created as POST
+/// /api/agents creates an Agent with what the template names, in `cwd` on
+/// `machine` (none: this Core host; T-35 S3a), a member of the task's
+/// Project; its runtime is left for the dispatch.
+pub(crate) async fn create_executor(ws: &Arc<Workspace>, template: &crate::executor_templates::Template, name: String,
+    cwd: String, machine: Option<String>, project_id: Option<String>, birth: crate::workspace::Birth) -> anyhow::Result<crate::model::Agent> {
+    let p = Create {
+        name,
+        goal: String::new(),
+        harness: Some(template.harness.clone()),
+        cwd,
+        model: template.model.clone().map_or(crate::agent_defaults::ModelAsk::Inherit, crate::agent_defaults::ModelAsk::Named),
+        reasoning_effort: template.reasoning_effort.clone().map(Some),
+        machine_id: machine,
+        project_id,
+        save_project_default: false,
+        permission_preset: template.permission_preset.clone(),
+        permission_mode: template.permission_mode.clone(),
+    };
+    Ok(create_agent(ws, p, Some(birth)).await?.0)
+}
+
+/// An Agent as POST /api/agents creates it, and where each of its settings
+/// came from; an executor with `birth`.
+async fn create_agent(ws: &Arc<Workspace>, p: Create, birth: Option<crate::workspace::Birth>) -> anyhow::Result<(crate::model::Agent, Value)> {
     // Defaults apply only here, to the Agent being created (T-190): its
     // project's overrides, when it is created in one, before the Workspace's.
-    let in_project = project.clone();
+    let in_project = p.project_id.clone();
     let (defaults, project_defaults) = ws.stored(move |store| {
         let own = match in_project.as_deref() { Some(id) => Some(store.project_agent_defaults(id)?), None => None };
         Ok((store.agent_defaults()?, own))
@@ -667,7 +739,7 @@ async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiR
                     "The default Claude Code model set for {set_for} can't be used now: {e:#}. Choose a model for this Agent"))?;
                 // As the create dialog holds for a model chosen there.
                 if entry["supportsAutoMode"] == false && settings.permission_mode.as_deref() == Some("auto") {
-                    return Err(anyhow::anyhow!("{checked}, the default Claude Code model set for {set_for}, can't run in Auto mode. Choose a model or a permission mode for this Agent").into());
+                    anyhow::bail!("{checked}, the default Claude Code model set for {set_for}, can't run in Auto mode. Choose a model or a permission mode for this Agent");
                 }
                 model = crate::agent_defaults::catalog_name(entry, checked);
             }
@@ -698,23 +770,12 @@ async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiR
         None => p.model.as_before(),
     };
     let agent = match new.harness.as_str() {
-        "codex" => ws.create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings).await?,
-        "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings).await?,
-        "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, model, p.machine_id, p.project_id).await?,
-        _ => return Err(anyhow::anyhow!("未知 Harness").into()),
+        "codex" => ws.create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
+        "claude" => ws.claude_create_on_with(p.name, p.goal, p.cwd, model, p.machine_id, p.project_id, settings, birth).await?,
+        "opencode" if crate::opencode_agent::enabled() => ws.opencode_create_on(p.name, p.cwd, model, p.machine_id, p.project_id, birth).await?,
+        _ => anyhow::bail!("未知 Harness"),
     };
-    // The Agent already exists; a failed default update must not hide it.
-    let mut response = serde_json::to_value(&agent)?;
-    response["defaultSources"] = sources;
-    if let (true, Some(project)) = (p.save_project_default, project) {
-        let machine = agent.remote.as_ref().map_or("local", |r| r.machine.id.as_str()).to_owned();
-        let cwd = agent.cwd.clone();
-        match ws.stored(move |store| store.set_project_default_dir(&project, &machine, &cwd)).await {
-            Ok(_) => ws.projects_changed(),
-            Err(e) => response["projectDefaultError"] = e.to_string().into(),
-        }
-    }
-    Ok(Json(response))
+    Ok((agent, sources))
 }
 async fn projects(State(ws): State<Arc<Workspace>>) -> ApiResult<Response> {
     stored_json(&ws, |store| Ok(json!({"projects":store.projects()?}))).await

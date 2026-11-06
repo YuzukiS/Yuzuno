@@ -54,9 +54,12 @@ fn request_title(request: &PendingRequest) -> String {
         return "Reconnect to confirm this request".into();
     }
     let params = &request.params;
+    // Claude's AskUserQuestion and Bash name them under `input` (T-42).
     params["reason"].as_str()
         .or_else(|| params["command"].as_str())
+        .or_else(|| params["input"]["command"].as_str())
         .or_else(|| params["questions"][0]["question"].as_str())
+        .or_else(|| params["input"]["questions"][0]["question"].as_str())
         .or_else(|| params["toolName"].as_str())
         .map(|text| text.chars().take(200).collect())
         .unwrap_or_else(|| "Needs your response".into())
@@ -142,12 +145,22 @@ pub(super) fn build(store: &Store) -> Result<Value> {
     // Only the requests of Agents with requests waiting, not their records:
     // Home is rebuilt on every change while one waits (T-120).
     let mut pending: HashMap<&str, Vec<PendingRequest>> = HashMap::new();
-    for agent in agents.iter().filter(|a| a.closed_at.is_none() && a.pending_count > 0) {
+    for agent in agents.iter().filter(|a| a.closed_at.is_none() && a.native_requests() > 0) {
         match store.pending(&agent.id) {
             Ok(requests) => {
                 pending.insert(agent.id.as_str(), requests);
             }
             Err(error) => eprintln!("Home skipped the requests of Agent {}: {error:#}", agent.id),
+        }
+    }
+    // And the questions they sent to be answered later (T-42).
+    let mut questions: HashMap<&str, Vec<crate::record_rows::OpenQuestion>> = HashMap::new();
+    for agent in agents.iter().filter(|a| a.closed_at.is_none() && a.open_questions > 0) {
+        match store.open_questions(&agent.id) {
+            Ok(open) => {
+                questions.insert(agent.id.as_str(), open);
+            }
+            Err(error) => eprintln!("Home skipped the questions of Agent {}: {error:#}", agent.id),
         }
     }
     let projects = store.projects()?;
@@ -163,6 +176,14 @@ pub(super) fn build(store: &Store) -> Result<Value> {
             needs.push((priority, time(&request.created_at), json!({"kind":"approval","projectId":agent.project_id,
                 "agentId":agent.id,"agentName":agent.name,"requestId":request.id,"title":request_title(request),
                 "since":request.created_at})));
+        }
+        for question in questions.get(agent.id.as_str()).into_iter().flatten() {
+            let priority = agent.project_id.as_deref().and_then(|id| rank.get(id)).copied().unwrap_or(usize::MAX);
+            let since = question.at_ms.and_then(DateTime::<Utc>::from_timestamp_millis);
+            let title: String = question.title.as_deref().unwrap_or("Answer when you can").chars().take(200).collect();
+            needs.push((priority, since, json!({"kind":"question","projectId":agent.project_id,"agentId":agent.id,
+                "agentName":agent.name,"turnId":question.turn_id,"itemId":question.item_id,"title":title,
+                "since":since.map(|at| at.to_rfc3339())})));
         }
     }
     let mut panels = vec![];
@@ -184,9 +205,10 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         let policy = editors::policy(&db, id)?;
         // A source filter, never a Seen mark or deletion. All Asks remain
         // reachable, including a subtopic whose regular parent is hidden.
+        // With no list, every owner's but a task executor's (T-36).
         let visible: Vec<_> = live.iter().filter(|row| row.kind == "ask"
-            || policy.editor_agent_ids.is_none()
-            || (policy.includes(&row.owner_id) && members.iter().any(|a| a.id == row.owner_id)))
+            || (policy.includes(&row.owner_id)
+                && (policy.editor_agent_ids.is_none() || members.iter().any(|a| a.id == row.owner_id))))
             .cloned().collect();
         let team: Vec<_> = live.iter().filter(|row| !visible.iter().any(|shown| shown.key == row.key)).cloned().collect();
         let history = sections::history(&db, id)?;
@@ -196,6 +218,21 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                 closed: a.closed_at.is_some(), name: a.name.as_str(), project: a.project_id.as_deref() });
             sections::owner(agent, row)
         };
+        // A lead's handover proposal waits for the user's decision (T-34 S3b),
+        // named by its proposer, as an approval is.
+        let mut handover = crate::handover_proposals::pending_summary(&db, id)?;
+        // With the document's version now: the card reads the proposal again when it moves (#612 R1).
+        if let Some(proposal) = handover.as_mut() {
+            proposal["currentVersion"] = json!(crate::handover_proposals::current_version(&db, id)?);
+        }
+        if let Some(proposal) = &handover {
+            let since = proposal["at"].as_str().unwrap_or_default().to_owned();
+            let title: String = proposal["reason"].as_str().and_then(|r| r.lines().find(|l| !l.trim().is_empty()))
+                .unwrap_or("A new version of the handover").chars().take(200).collect();
+            needs.push((priority, time(&since), json!({"kind":"handover","projectId":id,
+                "agentId":proposal["proposer"]["id"],"agentName":proposal["proposer"]["name"],
+                "proposalId":proposal["id"],"title":title,"since":since})));
+        }
         for row in live.iter().filter(|row| row.kind == "ask" && row.ask_state.as_deref() == Some("open")) {
             if row.deferred_until.as_deref().and_then(time).is_some_and(|until| until > at) {
                 continue;
@@ -210,8 +247,8 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         // a new one, so a widget pinned to the old one never shows it. A
         // history entry says why it is history and whether its source is
         // one Home shows now (the same test as `visible`).
-        let current = |row: &sections::Row| row.kind == "ask" || policy.editor_agent_ids.is_none()
-            || (policy.includes(&row.owner_id) && members.iter().any(|a| a.id == row.owner_id));
+        let current = |row: &sections::Row| row.kind == "ask" || (policy.includes(&row.owner_id)
+            && (policy.editor_agent_ids.is_none() || members.iter().any(|a| a.id == row.owner_id)));
         let mut shown = |rows: &[sections::Row]| -> Vec<Value> {
             rows.iter().map(|row| {
                 let mut section = sections::section_json(row, &owner(row), seen.get(&row.key), refs.of(&row.data["body"]), at);
@@ -228,6 +265,7 @@ pub(super) fn build(store: &Store) -> Result<Value> {
             "agents":counts(&members),
             "errors":errors,
             "pending":requests,
+            "handoverProposal":handover,
             "jobs":jobs.iter().filter(|job| job.project.as_deref() == Some(id)).map(|job| job.shown.clone()).collect::<Vec<_>>(),
             "contentEditors":policy,
             "brief":{"version":sections::brief_version(&db, id)?,"sections":shown(&visible),"teamSections":shown(&team),"history":shown(&history)},
@@ -446,25 +484,15 @@ pub(super) fn compose_card(workspace: &str, project: &str, project_id: &str, key
     )
 }
 
-/// The Turn a reply joins, as the composer chooses it (App.tsx): Codex
-/// steers its running Turn; Claude takes a follow-up only to a running Turn
-/// of yours, never to one of its own.
-pub(super) fn follow_up_turn(detail: &crate::model::AgentDetail) -> Result<Option<String>> {
-    let running = |turn: &&Value| turn["status"] == "inProgress";
-    if detail.agent.harness != "claude" {
-        return Ok(detail.turns.iter().rev().find(running).and_then(|t| t["id"].as_str()).map(str::to_owned));
-    }
+/// The Turn a reply joins, as the composer chooses it (App.tsx): the newest
+/// running Turn. Claude takes it while it works, whether the Turn is yours
+/// or one of its own (T-45).
+pub(super) fn follow_up_turn(detail: &crate::model::AgentDetail) -> Option<String> {
     let busy = detail.agent.closed_at.is_none() && matches!(detail.agent.status.as_str(), "working" | "waiting");
-    if !busy {
-        return Ok(None);
+    if detail.agent.harness == "claude" && !busy {
+        return None;
     }
-    let yours = detail.turns.iter().rev().filter(running).find(|turn| {
-        turn["_yuzunoSource"] != "native" && turn["id"].as_str().is_some_and(|id| !crate::claude::native_turn(id))
-    });
-    match yours.and_then(|turn| turn["id"].as_str()) {
-        Some(id) => Ok(Some(id.into())),
-        None => bail!("Claude is working on a turn of its own; wait for it to finish, or interrupt it, then reply"),
-    }
+    detail.turns.iter().rev().find(|turn| turn["status"] == "inProgress").and_then(|t| t["id"].as_str()).map(str::to_owned)
 }
 
 /// A sent reply marks its ask replied; one not (yet) delivered does not.
@@ -476,6 +504,7 @@ pub(super) fn delivered(receipt: &MessageReceipt) -> bool {
 /// sent as the composer sends it. Returns its receipt.
 pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInput) -> Result<MessageReceipt> {
     ensure!(input.text.len() <= MAX_REPLY, "A reply is at most {MAX_REPLY} bytes");
+    let input = reply_target(ws, &project, input).await?;
     if let Some(version) = input.version {
         ensure!(input.ask_version.is_none() && input.workspace_id.is_none(), "A reply answers a card or an ask, not both");
         return card_reply(ws, project, input, version).await;
@@ -524,12 +553,43 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
             text,
             text_blocks: None,
             images: vec![],
-            expected_turn_id: follow_up_turn(&detail)?,
+            expected_turn_id: follow_up_turn(&detail),
             question: None,
             clarification: None,
         },
     };
     ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await
+}
+
+/// A reply meant for a released executor (from a Home that showed it as the
+/// section's owner before its release) goes to whoever owns the section now:
+/// its dispatcher, once its archive handed the section over (T-36). With no
+/// other owner it is refused, and nothing is sent.
+async fn reply_target(ws: &Arc<Workspace>, project: &str, mut input: ReplyInput) -> Result<ReplyInput> {
+    let (agent, key, project) = (input.agent_id.clone(), input.key.clone(), project.to_owned());
+    let owner = ws.stored(move |store| {
+        let db = store.db.read()?;
+        if crate::executor_release::release_of(&db, &agent)?.is_none() {
+            return Ok(None);
+        }
+        let owner = match &key {
+            Some(key) => sections::find(&db, &project, key, None)?.filter(|row| row.live).map(|row| row.owner_id),
+            None => None,
+        };
+        Ok(Some(owner.filter(|owner| *owner != agent)))
+    }).await?;
+    match owner {
+        None => Ok(input),
+        Some(Some(owner)) => {
+            input.agent_id = owner;
+            Ok(input)
+        }
+        Some(None) => Err(not_submitted(
+            "executor_archived: the executor this reply is for was released, and no other Agent owns this section. \
+             Nothing was sent, and your reply is kept."
+                .into(),
+        )),
+    }
 }
 
 /// Refused before anything was recorded: the client keeps its reply, and
@@ -611,7 +671,7 @@ async fn ask_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, vers
             text: compose_ask(&workspace, &name, &project, row, chosen.as_ref(), &input.text),
             text_blocks: None,
             images: vec![],
-            expected_turn_id: follow_up_turn(&detail)?,
+            expected_turn_id: follow_up_turn(&detail),
             question: None,
             clarification: None,
         };
@@ -678,7 +738,7 @@ async fn card_reply(ws: &Arc<Workspace>, project: String, input: ReplyInput, ver
         text,
         text_blocks: None,
         images: vec![],
-        expected_turn_id: follow_up_turn(&detail)?,
+        expected_turn_id: follow_up_turn(&detail),
         question: None,
         clarification: None,
     };

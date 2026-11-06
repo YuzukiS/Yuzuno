@@ -84,10 +84,11 @@ struct Stop {
     ended: String,
     /// How the open event stream ended: `ended` when Core closed it.
     events: String,
-    /// `POST /global/dispose` the stand-in OpenCode received.
+    /// `POST /global/dispose` the stand-in OpenCode received: none, as 2.x
+    /// has no such call (T-32).
     disposed: usize,
     /// The process the stand-in's tool ran, in a session of its own, which
-    /// only `/global/dispose` ends.
+    /// only its teardown after SIGTERM ends.
     tool_ended: bool,
     /// A process this test started that has nothing to do with Core.
     unrelated_running: bool,
@@ -105,7 +106,7 @@ async fn stop_with(signal: Signal) -> Stop {
     let program = dir.path().join("opencode");
     std::fs::write(&program, format!("#!/bin/sh\nexec /usr/bin/python3 {FIXTURE} \"$@\"\n")).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // The stand-in starts a tool process that only /global/dispose ends.
+    // The stand-in starts a tool process that only its teardown after SIGTERM ends.
     let root = data.join("opencode").join(ID);
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("tool"), "1").unwrap();
@@ -211,7 +212,7 @@ fn expected() -> Stop {
     Stop {
         ended: "exit 0".into(),
         events: "ended".into(),
-        disposed: 1,
+        disposed: 0,
         tool_ended: true,
         unrelated_running: true,
         reopened: Ok(()),
@@ -219,7 +220,7 @@ fn expected() -> Stop {
 }
 
 /// SIGTERM: Core shuts down as it does on Ctrl+C. It closes the event stream,
-/// asks its OpenCode to end what its tools run, and exits normally, with its
+/// lets its OpenCode tear down, which ends what its tools run, and exits normally, with its
 /// records kept; a process that is not its own runs on.
 #[tokio::test]
 async fn sigterm_stops_core_through_its_own_shutdown() {

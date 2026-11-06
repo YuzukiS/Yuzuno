@@ -12,6 +12,10 @@ export interface Agent {
   harness?: "codex" | "claude" | "opencode";
   claudeSessionId?: string;
   opencodeSessionId?: string;
+  /** The OpenCode version an OpenCode Agent's database was made with (T-32); none until it first starts, and none for one made with 1.19.3. */
+  opencodeVersion?: string;
+  /** That version's major as Core parsed it ("2"): what the web reads, never the version string. */
+  opencodeMajor?: string;
   id: string;
   name: string;
   goal: string;
@@ -32,7 +36,13 @@ export interface Agent {
    * runtime stopped; held as disconnected all the same. */
   disconnectUnconfirmed?: boolean;
   unreadCount: number;
+  /** What waits on the user: native requests and open async questions. */
   pendingCount: number;
+  /** Open questions an Agent sent to be answered later (T-42), counted in
+   * pendingCount without holding the Agent. */
+  openQuestions?: number;
+  /** How and where its last Turn ended, finished or failed (T-42). */
+  lastTurnEnd?: { seq: number; outcome: "finished" | "failed"; at: string } | null;
   lastMessage?: string;
   lastSeq: number;
   reviewedSeq: number;
@@ -58,6 +68,13 @@ export interface Agent {
   rev?: number | null;
   /** Explicit membership; absent means no project. */
   projectId?: string | null;
+  /** A lead of its Project (set by the user) or a task's executor (T-33);
+   * absent for a standing Agent. */
+  kind?: "lead" | "executor" | null;
+  /** When an executor was released (T-34): it stays closed. Absent otherwise. */
+  releasedAt?: string | null;
+  /** Who released it: `agent:<id>` or `user`. */
+  releasedBy?: string | null;
 }
 export interface Project {
   id: string;

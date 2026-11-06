@@ -486,6 +486,7 @@ export class ClaudeBridge {
     this.closed = false;
     this.started = false;
     this.ready = false;
+    this.closeAfterReply = false;
     this.interrupting = false;
     this.configuring = false;
     this.catalogOnly = false;
@@ -553,6 +554,10 @@ export class ClaudeBridge {
       this.emit({ type: 'response', id, result });
     } catch (error) {
       this.emit({ type: 'response', id: validId(id) ? id : null, error: errorText(error, this.credentialMask) });
+    }
+    if (this.closeAfterReply) {
+      this.closeAfterReply = false;
+      this.close();
     }
   }
 
@@ -684,7 +689,11 @@ export class ClaudeBridge {
       ]);
       this.ready = true;
     } catch (error) {
-      this.close();
+      // Closed once the reply to this start is out (`handle`), so Core reads
+      // why the start failed before the exit. Closed first, the exit came
+      // first, and Core could close the bridge before the reply reached it,
+      // leaving the start's outcome unknown (T-35 S2).
+      this.closeAfterReply = true;
       // Name what ran: a CLI this SDK cannot drive fails here, in its own
       // words. Masked before it is shortened, with room left for the name.
       throw new Error(`${errorText(error, this.credentialMask).slice(0, 3000)} (${describeRuntime(runtimeProvenance(cli, undefined, probed, this.sdk))})`);
@@ -725,8 +734,10 @@ export class ClaudeBridge {
    * A follow-up to the running turn, sent as Claude Code takes a message typed
    * while it works: queued (default priority, never 'now', which stops the
    * turn), and folded into the running turn between tool rounds, or, if the
-   * turn ends first, run as the next turn (followUpTurnId). Acknowledges local
-   * enqueue only; a `message_delivery` event reports Claude naming it.
+   * turn ends first, run as the next turn (followUpTurnId). The running turn
+   * is a prompt's or one of Claude's own (a notice's, a restart's rescue).
+   * Acknowledges local enqueue only; a `message_delivery` event reports
+   * Claude naming it.
    */
   append(command) {
     if (!this.ready) throw new Error('Runtime has not finished initialization');
@@ -739,13 +750,14 @@ export class ClaudeBridge {
       if (same.text !== command.text || same.images !== images) throw new Error('Message id already has different content');
       return { queued: true, uuid: same.uuid, turnId: same.turnId };
     }
-    if (!validId(command.expectedTurnId) || command.expectedTurnId !== this.turnId) throw new Error('The turn to add to has already ended');
+    const turnId = this.followUpTarget(command.expectedTurnId);
+    if (!turnId) throw new Error('The turn to add to has already ended');
     if (command.uuid !== undefined && (typeof command.uuid !== 'string' || !NATIVE_UUID.test(command.uuid) || this.appends.has(command.uuid))) {
       throw new Error('Invalid prompt uuid');
     }
     const content = promptContent(command.text, command.images);
     const uuid = command.uuid ?? randomUUID();
-    this.appends.set(uuid, { uuid, clientMessageId: command.clientMessageId, text: command.text, images, turnId: this.turnId,
+    this.appends.set(uuid, { uuid, clientMessageId: command.clientMessageId, text: command.text, images, turnId,
       followUpTurnId: command.followUpTurnId, accepted: false });
     this.queue.push({
       type: 'user',
@@ -754,16 +766,30 @@ export class ClaudeBridge {
       uuid,
       ...(this.sessionId ? { session_id: this.sessionId } : {}),
     });
-    return { queued: true, uuid, turnId: this.turnId };
+    return { queued: true, uuid, turnId };
+  }
+
+  /**
+   * The turn a follow-up sent to `turnId` waits on: the prompt's in flight,
+   * or the native turn running now once it is shown, under the turn it is
+   * shown as (its own id, or a prompt's that it turned out to answer). One
+   * whose owner is unknown is not shown yet, so nothing can name it.
+   */
+  followUpTarget(turnId) {
+    if (!validId(turnId)) return null;
+    if (turnId === this.turnId) return turnId;
+    return this.native?.id === turnId ? this.native.owner : null;
   }
 
   /**
    * Whether these prompt uuids name the prompt in flight or any follow-up of
-   * ours still held (a turn naming one is answering it). Follow-ups confirmed
-   * in earlier turns are dropped when those turns end.
+   * ours still held (a turn naming one is answering it), but one sent to the
+   * running turn of Claude's own, which names it as its own. Follow-ups
+   * confirmed in earlier turns are dropped when those turns end.
    */
   ours(prompts) {
-    return Boolean(this.turnId) && prompts.some(id => id === this.promptUuid || this.appends.has(id));
+    return Boolean(this.turnId) && prompts.some(id => id === this.promptUuid
+      || (this.appends.has(id) && !(this.native && this.appends.get(id).turnId === this.native.id)));
   }
 
   /** Follow-ups Claude names here have been taken off its queue. */
@@ -1210,16 +1236,20 @@ export class ClaudeBridge {
     if (!this.turnId && !this.native) return { interrupted: false };
     this.interrupting = true;
     const turn = this.turnId;
+    const native = this.native;
     try {
       this.cancelPermissions('The user interrupted this turn');
       const receipt = await this.query.interrupt();
       // A turn the user stopped is not one that missed its Brief update.
       if (turn && this.briefTurn?.turnId === turn) this.briefTurn.interrupted = true;
       // Follow-ups the interrupt left queued run after it: once the turn ends,
-      // or now, if its result already came.
+      // or now, if its result already came. The turn is the prompt's, else
+      // the one of Claude's own that was running.
       const stillQueued = new Set(Array.isArray(receipt?.still_queued) ? receipt.still_queued : []);
       if (turn && this.turnId === turn) this.stillQueued = stillQueued;
       else if (turn && !this.turnId) this.runQueued(turn, uuid => stillQueued.has(uuid));
+      else if (!turn && native && this.native === native) this.stillQueued = stillQueued;
+      else if (!turn && native && !this.turnId) this.runQueued(native.id, uuid => stillQueued.has(uuid));
       // Both native result and control receipt must settle before another send.
       return { interrupted: true, ...(receipt ? { receipt } : {}) };
     } finally {
@@ -1252,9 +1282,11 @@ export class ClaudeBridge {
     const turnFrame = inTurn(event);
     const prompts = turnFrame ? answeredPrompts(event) : [];
     // A frame naming a follow-up still waiting while no turn of ours runs:
-    // Claude is answering it, so this is that follow-up's turn.
+    // Claude is answering it, so this is that follow-up's turn. One sent to
+    // the turn of Claude's own still running is folded into that turn.
     if (prompts.length && !this.turnId) {
-      const waiting = prompts.map(id => this.appends.get(id)).find(append => append && !append.accepted);
+      const waiting = prompts.map(id => this.appends.get(id))
+        .find(append => append && !append.accepted && !(this.native && append.turnId === this.native.id));
       if (waiting) this.promote(waiting, waiting.turnId);
     }
     // Frames ahead of their init, or a repeated init, stay in the open turn.
@@ -1299,8 +1331,15 @@ export class ClaudeBridge {
     return { id, owner: ours ? null : id, unmatched: false, held: [], heldBytes: 0 };
   }
 
-  /** Settles whose a native turn is and sends what waited for that. */
+  /**
+   * Settles whose a native turn is and sends what waited for that. A
+   * follow-up sent to it while it was shown as Claude's own then waits on
+   * the prompt's turn it turned out to be.
+   */
   own(native, owner, unmatched = false) {
+    if (owner !== native.id) {
+      for (const append of this.appends.values()) if (append.turnId === native.id) append.turnId = owner;
+    }
     native.owner = owner;
     native.unmatched = unmatched;
     native.heldBytes = 0;
@@ -1329,21 +1368,35 @@ export class ClaudeBridge {
       const ended = this.turnId;
       this.turnId = null;
       this.promptUuid = null;
-      // A follow-up the turn did not consume is still queued only on evidence:
-      // the result's full list of the prompts it consumed leaves it out, or
-      // the interrupt receipt names it. Without either, it waits unpromoted
-      // until a frame names it; no turn is claimed for it by default. A list
-      // at its cap may be cut short: it confirms the uuids it names, and
-      // proves nothing about the rest.
-      const listed = event.user_message_uuids;
-      const consumed = Array.isArray(listed) && listed.length < MAX_LISTED_PROMPTS ? new Set(listed) : null;
-      const stillQueued = this.stillQueued;
-      this.stillQueued = new Set();
       for (const [uuid, append] of this.appends) if (append.accepted) this.appends.delete(uuid);
-      this.runQueued(ended, uuid => (consumed !== null && !consumed.has(uuid)) || stillQueued.has(uuid));
+      this.runQueued(ended, this.leftQueued(event));
+    } else {
+      for (const [uuid, append] of this.appends) if (append.accepted && append.turnId === native.id) this.appends.delete(uuid);
+      // A follow-up sent to this turn of Claude's own and not read in it:
+      // with a prompt of ours in flight, queued ahead of it, it goes with
+      // that prompt's turn; otherwise it runs next, as one sent to ours does.
+      if (this.turnId) {
+        for (const append of this.appends.values()) if (append.turnId === native.id) append.turnId = this.turnId;
+      } else this.runQueued(native.id, this.leftQueued(event));
     }
     this.native = null;
     for (const [tool, turn] of this.toolTurns) if (turn === native) this.toolTurns.delete(tool);
+  }
+
+  /**
+   * Whether a follow-up of the turn this result ends is still queued, on
+   * evidence only: the result's full list of the prompts it consumed leaves
+   * it out, or the interrupt receipt names it. Without either, it waits
+   * unpromoted until a frame names it; no turn is claimed for it by default.
+   * A list at its cap may be cut short: it confirms the uuids it names, and
+   * proves nothing about the rest.
+   */
+  leftQueued(event) {
+    const listed = event.user_message_uuids;
+    const consumed = Array.isArray(listed) && listed.length < MAX_LISTED_PROMPTS ? new Set(listed) : null;
+    const stillQueued = this.stillQueued;
+    this.stillQueued = new Set();
+    return uuid => (consumed !== null && !consumed.has(uuid)) || stillQueued.has(uuid);
   }
 
   /**

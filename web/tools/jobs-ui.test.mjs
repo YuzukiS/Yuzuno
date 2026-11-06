@@ -87,6 +87,27 @@ test('completed job retains its actual process/thread limit and failure evidence
   } finally {p.close();}
 });
 
+// T-50 (elasticLM): a finished job whose completion mail could not wake its
+// Agent says so in its details, in Core's words; a mail that went through says nothing.
+test('a completion mail whose delivery failed says why in the job details', async () => {
+  const problem = "delivery failed: Effort changes must wait until the current turn finishes; it is tried again at the recipient's next wake-up. The mail stays in the mailbox.";
+  const finished = { ...job, status: 'succeeded', reserved: false, usage: null, reason: 'success', result: { reason: 'success' },
+    mail: { succeeded: { messageId: 'm1', delivery: 'error', problem } } };
+  const p = mount(url => url === '/api/jobs/job-one' ? finished : page([finished]));
+  try {
+    await until(() => p.doc.querySelector('.conversation-job')); p.doc.querySelector('.conversation-job').click();
+    await until(() => p.doc.querySelector('.job-mail-problem'));
+    assert.equal(p.doc.querySelector('.job-mail-problem').textContent, `Mail to its Agent: ${problem}`);
+  } finally { p.close(); }
+  const delivered = { ...finished, mail: { succeeded: { messageId: 'm1', delivery: 'delivered', problem: null } } };
+  const q = mount(url => url === '/api/jobs/job-one' ? delivered : page([delivered]));
+  try {
+    await until(() => q.doc.querySelector('.conversation-job')); q.doc.querySelector('.conversation-job').click();
+    await until(() => q.doc.querySelector('.job-log'));
+    assert.ok(!q.doc.querySelector('.job-mail-problem'), 'a mail that went through says nothing');
+  } finally { q.close(); }
+});
+
 test('lost submission reply retains command and idempotency key across remount; retry does not create another attempt', async () => {
   let accepted = null, count = 0;
   const handler = (url, body) => {
@@ -138,6 +159,70 @@ test('exclusive queue shows mode and wait reason; rerun preserves mode but requi
   } finally {p.close();}
 });
 
+test('a job started ahead of a blocked queue head says which and why it fitted; the head and the job behind it say how much may pass (T-38)', async () => {
+  const head={...job,id:'job-head',name:'check',status:'queued',reserved:false,cursor:3,
+    reason:'Waiting for shared RAM reservation: needs 24640 MiB including collector, 24512 MiB available; short 128 MiB. Up to 14900 mCPU / 16320 MiB RAM / 0 MiB swap may start ahead of it meanwhile'};
+  const behind={...job,id:'job-behind',name:'w10',status:'queued',reserved:false,cursor:2,
+    reason:'Waiting behind check, which waits for shared RAM reservation: this job needs 1100 mCPU / 4160 MiB RAM / 0 MiB swap; 13800 mCPU / 3968 MiB RAM / 0 MiB swap may start ahead of it now'};
+  const passed={...job,name:'k5',status:'running',reason:'Running with verified cgroup limits',
+    admission:{passed:{jobId:'job-head',name:'check',waits:'shared RAM reservation',need:{cpuMillis:1100,memoryMiB:12352,swapMiB:0},
+      room:{cpuMillis:14900,memoryMiB:16320,swapMiB:0},headNeed:{cpuMillis:1100,memoryMiB:24640,swapMiB:0},at:new Date().toISOString()}}};
+  const p=mount(url=>url==='/api/jobs/job-one'?passed:page([head,behind,passed]));
+  try {
+    await until(()=>[...p.doc.querySelectorAll('.conversation-job')].some(r=>r.textContent.includes('k5')));
+    [...p.doc.querySelectorAll('.conversation-job')].find(r=>r.textContent.includes('k5')).click();
+    await until(()=>p.doc.querySelector('.job-detail'));
+    await wait();
+    assert.ok(p.doc.querySelector('.job-admission'), 'the detail says the job started ahead of check');
+    assert.equal(p.doc.querySelector('.job-admission').textContent,
+      "Started ahead of check, which waited for the shared RAM reservation: this job's 12.1 GiB RAM fitted in the 15.9 GiB RAM left beside check's 24.1 GiB RAM");
+    const rows=[...p.doc.querySelectorAll('.job-row')].map(r=>r.textContent);
+    assert.ok(rows.some(r=>r.includes('check') && r.includes('Up to 14900 mCPU / 16320 MiB RAM / 0 MiB swap may start ahead of it meanwhile')), 'the head says how much may pass');
+    assert.ok(rows.some(r=>r.includes('w10') && r.includes('Waiting behind check')), 'the job behind it says what it waits for');
+    assert.deepEqual(p.errors,[]);
+  } finally {p.close();}
+});
+
+test('a running job\'s memory limit is lowered from its card: twice the peak at least, sent as asked, then said; a refusal says why; not on another machine (T-38 B)', async () => {
+  const mib = n => String(n * 1048576);
+  const base = {...job,status:'running',reserved:true,reason:'Running with verified cgroup limits',resources:{cpuMillis:500,memoryMiB:4096,swapMiB:0},
+    reservation:{cpuMillis:600,memoryMiB:4160,swapMiB:0},usage:{MemoryCurrent:mib(150),MemoryPeak:mib(200)}};
+  let current = base;
+  const p = mount((url, body) => {
+    if (url === '/api/jobs/job-one/memory') {
+      current = {...base,resources:{...base.resources,memoryMiB:body.memoryMiB},reservation:{...base.reservation,memoryMiB:body.memoryMiB + 64},
+        limitChanges:[{by:{kind:'user',name:'You'},at:'2026-11-05T08:30:00Z',fromMiB:4096,toMiB:body.memoryMiB}]};
+      return current;
+    }
+    return url === '/api/jobs/job-one' ? current : page([current]);
+  });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click(); await until(() => p.doc.querySelector('.job-log'));
+    assert.ok(button(p, 'Lower memory limit…'), 'a running job on this host can be lowered');
+    button(p, 'Lower memory limit…').click(); await wait();
+    // Twice the 200 MiB peak is less than what it uses now plus 256 MiB.
+    assert.equal(field(p, 'New memory limit').value, '406');
+    assert.match(p.doc.querySelector('.job-lower-memory small').textContent, /Swap stays as reserved/);
+    await fill(p, 'New memory limit', '1024');
+    button(p, 'Lower limit').click();
+    await until(() => p.doc.querySelector('.job-limit-changes'));
+    assert.deepEqual(p.calls.filter(c => c.url === '/api/jobs/job-one/memory').map(c => c.body), [{ memoryMiB: 1024 }]);
+    assert.match(p.doc.querySelector('.job-limit-changes').textContent, /^Lowered from 4\.0 GiB to 1\.0 GiB by You, /);
+    assert.equal(p.doc.querySelector('.job-lower-memory'), null, 'the form closes');
+    // A refusal says why, and the request stays.
+    current = {...base,limitRefusal:{at:'2026-11-05T08:31:00Z',toMiB:300,state:'notLimited',reason:'300 MiB is below what the job uses now plus 256 MiB (406 MiB); nothing was changed'}};
+    p.doc.querySelector('[aria-label="Refresh jobs"]').click();
+    await until(() => p.doc.querySelector('.job-limit-note'));
+    assert.equal(p.doc.querySelector('.job-limit-note').textContent, 'Not lowered: 300 MiB is below what the job uses now plus 256 MiB (406 MiB); nothing was changed');
+    // On another machine there is nothing to lower with.
+    current = {...base,executor:{kind:'ssh',machineName:'owl'}};
+    p.doc.querySelector('[aria-label="Refresh jobs"]').click();
+    await until(() => !button(p, 'Lower memory limit…'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test('legacy unconfirmed ordinary submission retries with the same payload and request ID', async () => {
   const draft={agentId:'a',taskId:'T-47',name:'legacy',cwd:'/workspace',command:'true',cpu:'1',memory:'512',swap:'0',timeout:'30',env:'{}',inputs:'',outputs:'',guardGit:true};
   const body={agentId:'a',taskId:'T-47',name:'legacy',cwd:'/workspace',argv:['/bin/sh','-c','true'],env:{},inputs:[],outputs:[],guardGit:true,resources:{cpuMillis:1000,memoryMiB:512,swapMiB:0},timeoutSeconds:30};
@@ -150,6 +235,91 @@ test('legacy unconfirmed ordinary submission retries with the same payload and r
     assert.deepEqual(p.calls.find(c=>c.url==='/api/jobs' && c.body).body,{...body,requestId:'legacy-request'});
     assert.equal(!!p.doc.querySelector('[role="alert"]'),false);
   } finally {p.close();}
+});
+
+test('the submit form shows what earlier runs of the same name or command suggest, and sends the limits as set unless asked to use it (T-38 C)', async () => {
+  // The K4 calibration of 2026-11-04: 20 GiB asked, 2.6 GiB at its peak on 1.2 cores.
+  const suggestion = { memoryMiB: 4096, cpuMillis: 1800, memoryPeakMiB: 2662, averageCpuCores: 1.2, basedOn: [{ jobId: 'k4' }] };
+  const asked = [];
+  const handler = (url, body) => {
+    if (url.startsWith('/api/jobs/suggestion?')) {
+      const q = Object.fromEntries(new URL(url, 'http://isolated.test').searchParams);
+      asked.push(q);
+      return { suggestion: q.name === 'K4 calibration' ? suggestion : null };
+    }
+    if (url === '/api/jobs' && body) return { ...job, ...body, id: 'job-one', status: 'queued' };
+    return page([]);
+  };
+  const posted = p => p.calls.filter(c => c.url === '/api/jobs' && c.body).map(c => c.body.resources);
+  // The submit form's own fields, wherever else a CPU quota is named.
+  const limit = (p, text) => [...p.doc.querySelectorAll('.job-form label')].find(l => l.textContent.startsWith(text))?.querySelector('input');
+  async function set(p, text, value) {
+    const el = limit(p, text);
+    assert.ok(el, `Missing ${text} field in the form`);
+    Object.getOwnPropertyDescriptor(p.window.HTMLInputElement.prototype, 'value').set.call(el, value);
+    el.dispatchEvent(new p.window.Event('input', { bubbles: true }));
+    await wait();
+  }
+  let p = mount(handler);
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'first of its kind'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
+    for (let n = 0; n < 40 && !asked.some(q => q.name === 'first of its kind'); n++) await wait();
+    assert.ok(asked.some(q => q.name === 'first of its kind'), 'the form asks what earlier runs suggest');
+    await wait();
+    assert.ok(!p.doc.querySelector('.job-suggestion'), 'no history, no suggestion');
+    await fill(p, 'Name', 'K4 calibration');
+    await until(() => p.doc.querySelector('.job-suggestion'));
+    assert.deepEqual(asked.at(-1), { taskId: 'T-38', name: 'K4 calibration', argv: JSON.stringify(['/bin/sh', '-c', 'python3 calib.py']) });
+    assert.equal(p.doc.querySelector('.job-suggestion p').textContent,
+      'The last measured run of this name or command in this task peaked at 2.6 GiB RAM and 1.20 CPU cores. Suggested: 4.0 GiB RAM and 1.8 CPU (peak × 1.5, rounded up). Your limits stay as you set them.');
+    // Shown, never applied: what is in the fields is sent.
+    await set(p, 'RAM limit', '20480'); await set(p, 'CPU quota', '4');
+    assert.ok(p.doc.querySelector('.job-suggestion'), 'still shown');
+    button(p, 'Submit job').click(); await until(() => posted(p).length === 1);
+    assert.deepEqual(posted(p), [{ cpuMillis: 4000, memoryMiB: 20480, swapMiB: 0 }]);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  // Asked to use it, the fields take it, and that is sent.
+  p = mount(handler);
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'K4 calibration'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
+    await set(p, 'RAM limit', '20480'); await set(p, 'CPU quota', '4');
+    await until(() => button(p, 'Use suggestion'));
+    button(p, 'Use suggestion').click(); await wait();
+    assert.deepEqual([limit(p, 'RAM limit').value, limit(p, 'CPU quota').value], ['4096', '1.8']);
+    button(p, 'Submit job').click(); await until(() => posted(p).length === 1);
+    assert.deepEqual(posted(p), [{ cpuMillis: 1800, memoryMiB: 4096, swapMiB: 0 }]);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('the suggestion for the last draft goes as soon as the name changes, and the new one comes with its answer (T-38 C)', async () => {
+  const byName = {
+    'K4 calibration': { memoryMiB: 4096, cpuMillis: 1800, memoryPeakMiB: 2662, averageCpuCores: 1.2, basedOn: [{ jobId: 'k4' }] },
+    'K5 calibration': { memoryMiB: 8192, cpuMillis: 3000, memoryPeakMiB: 5000, averageCpuCores: 2.0, basedOn: [{ jobId: 'k5' }] },
+  };
+  const p = mount(url => {
+    if (url.startsWith('/api/jobs/suggestion?')) {
+      const q = Object.fromEntries(new URL(url, 'http://isolated.test').searchParams);
+      return { suggestion: byName[q.name] ?? null };
+    }
+    return page([]);
+  });
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'K4 calibration'); await fill(p, 'Existing task', 'T-38'); await fill(p, 'Command', 'python3 calib.py');
+    await until(() => p.doc.querySelector('.job-suggestion'));
+    assert.match(p.doc.querySelector('.job-suggestion p').textContent, /Suggested: 4\.0 GiB RAM and 1\.8 CPU/);
+    // Another name: the last draft's note and its button go at once, before the next answer.
+    await fill(p, 'Name', 'K5 calibration');
+    assert.ok(!p.doc.querySelector('.job-suggestion'), 'the note for the last draft goes at once');
+    assert.ok(!button(p, 'Use suggestion'), 'nothing from the last draft can be used');
+    await until(() => p.doc.querySelector('.job-suggestion'));
+    assert.match(p.doc.querySelector('.job-suggestion p').textContent, /Suggested: 8\.0 GiB RAM and 3\.0 CPU/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
 });
 
 test('known rejection permits editing and a completed job only reruns after a new explicit submit', async () => {
@@ -473,36 +643,9 @@ test('the machine card puts what jobs use on the bars of what they reserve, and 
   } finally { q.close(); }
 });
 
-test('machine budget takes the whole host, keeps the default apart, includes collectors and retains validation errors', async () => {
-  let saves=0;
-  const p=mount((url, body) => {
-    if(url==='/api/jobs/budget' && body) return ++saves===1 ? {httpStatus:400,error:'Budget must be 200–4096000 mCPU, 128–67108864 MiB RAM and 0–67108864 MiB swap (including collectors)'} : body;
-    return page([]);
-  });
-  try {
-    await open(p);
-    p.doc.querySelector('.job-budget-settings summary').click(); await wait();
-    const form=p.doc.querySelector('.job-budget-settings');
-    // T-160: this host's totals are for reference; no share of them is a ceiling.
-    assert.match(form.textContent,/this host has 32 CPU · 40107 MiB RAM · 16384 MiB swap; the budget may use all of it\. Conservative default: 4 CPU/);
-    assert.match(form.textContent,/has the RAM it needs free at that moment, keeping 2048 MiB for Core and the desktop\. CPU is a shared quota, not reserved cores/);
-    assert.doesNotMatch(form.textContent,/ceiling/i);
-    assert.match(form.textContent,/4.2 CPU and 8320 MiB/);
-    assert.match(form.textContent,/Running jobs keep their original limits/);
-    assert.deepEqual(['CPU quota','RAM (MiB)','Swap (MiB)'].map(name=>[field(p,name).min,field(p,name).max]),[['0.2','4096'],['128','67108864'],['0','67108864']]);
-    await fill(p,'CPU quota','32'); await fill(p,'RAM (MiB)','40107'); await fill(p,'Swap (MiB)','16384');
-    for (const name of ['CPU quota','RAM (MiB)','Swap (MiB)']) assert.equal(field(p,name).validity.valid,true,name);
-    button(p,'Save budget').click(); await until(()=>form.querySelector('[role="alert"]'));
-    assert.match(form.textContent,/Budget must be 200–4096000 mCPU/);
-    assert.equal(field(p,'CPU quota').value,'32');
-    assert.equal(form.open,true);
-    const payload=p.calls.find(c=>c.url==='/api/jobs/budget' && c.body).body;
-    assert.deepEqual(payload,{cpuMillis:32000,memoryMiB:40107,swapMiB:16384});
-    button(p,'Save budget').click(); await until(()=>!form.open);
-    assert.equal(saves,2);
-    assert.equal(p.calls.some(c=>c.url.endsWith('/cancel') || (c.url==='/api/jobs' && c.body)),false);
-  } finally {p.close();}
-});
+// The machine budget's editor, with its guarantees (the whole host, the default
+// apart, collectors, validation errors kept), is in Settings now (T-55):
+// jobs-settings-ui.test.mjs; the card itself is read only.
 
 const review = (id, cursor, patch = {}) => ({ id, taskId: 'task-one', taskRef: 'T-1', taskTitle: 'Deliver PR', linkId: '7:pull:1', repository: 'o/r', number: 7, url: 'https://github.com/o/r/pull/7', round: 1, status: 'completed', phase: 'completed', conclusion: 'no_findings', requestedHarness: 'codex', requestedModel: 'gpt-6.1-sol', actualHarness: 'codex', actualModel: 'gpt-6.1-sol', baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), mergeBaseSha: 'c'.repeat(40), createdAt: '2026-10-15T01:00:00Z', finishedAt: '2026-10-15T01:10:00Z', error: null, requestedBy: { kind: 'agent', id: 'a', name: 'Mori' }, findingsCount: 0, outdated: false, cursor, ...patch });
 const reviewPage = (reviews, more = null) => ({ reviews, hasMore: more != null, nextBefore: more });
@@ -671,7 +814,8 @@ test('A refresh re-reads at most ten loaded pages and drops older rows instead o
     const more = all.some(r => r.cursor < rows.at(-1).cursor);
     return reviewPage(rows, more ? rows.at(-1).cursor : null);
   });
-  const lists = () => p.calls.filter(c => c.url.startsWith('/api/reviews?')).length;
+  // The Reviews list's own reads; the conversation dock reads its reviews apart (T-25).
+  const lists = () => p.calls.filter(c => c.url.startsWith('/api/reviews?') && !c.url.includes('involving=')).length;
   try {
     await open(p); button(p, 'Reviews').click();
     // Finished reviews fold after ten; earlier pages come once all show.
@@ -772,6 +916,316 @@ test("a review's reasons follow a language change in Jobs too; one this version 
     p.window.localStorage.setItem('yuzuno.language', JSON.stringify({ language: 'zh-Hans' }));
     p.window.dispatchEvent(new p.window.StorageEvent('storage', { key: 'yuzuno.language' })); await wait();
     assert.deepEqual(reasons('审查原因'), ['审查覆盖不完整', '无法识别的审查原因：brand_new_reason']);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// T-19 F1: before Core answers, a list or a chosen job or run says it is being
+// read. On main it said there were none, or that nothing was chosen.
+const texts = (p, selector) => [...p.doc.querySelectorAll(selector)].map(el => el.textContent);
+function held() { let answer; const promise = new Promise(r => { answer = r; }); return { promise, answer }; }
+
+test('the job list reads as being read until Core first answers, and only then as empty (T-19 JB-04)', async () => {
+  const list = held();
+  const p = mount(async url => url.startsWith('/api/jobs?') ? (await list.promise, page([])) : page([]));
+  try {
+    await open(p);
+    await until(() => p.doc.querySelector('.jobs-browser .jobs-empty'));
+    await wait();
+    assert.equal(texts(p, '.jobs-browser .jobs-empty').includes('No jobs yet.'), false, 'not "none" before the answer');
+    assert.equal(texts(p, '.jobs-browser .jobs-empty').includes('Reading jobs…'), true);
+    list.answer();
+    await until(() => texts(p, '.jobs-browser .jobs-empty').includes('No jobs yet.'));
+    assert.equal(texts(p, '.jobs-browser .jobs-empty').includes('Reading jobs…'), false);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a chosen job reads as being read until its answer comes; a narrow window brings it into view, at once under reduced motion (T-19 JB-07)', async () => {
+  for (const reduced of [false, true]) {
+    const detail = held();
+    const p = mount(async url => url === '/api/jobs/job-one' ? (await detail.promise, job) : page([job]));
+    const scrolled = [];
+    p.window.matchMedia = query => ({ matches: query === '(max-width: 720px)' || (reduced && query === '(prefers-reduced-motion: reduce)'), addEventListener() {}, removeEventListener() {} });
+    // Only the job's own box is counted: other parts may scroll themselves.
+    p.window.HTMLElement.prototype.scrollIntoView = function (options) { if (this.classList.contains('job-detail')) scrolled.push({ className: this.className, options }); };
+    try {
+      await open(p);
+      await until(() => p.doc.querySelector('.jobs-browser .job-row'));
+      p.doc.querySelector('.jobs-browser .job-row').click();
+      // Its read is on its way (held): what shows meanwhile.
+      await until(() => p.calls.some(c => c.url === '/api/jobs/job-one'));
+      await wait();
+      const box = p.doc.querySelector('.job-detail');
+      assert.doesNotMatch(box.textContent, /Select a job/, 'not "unchosen" while it is read');
+      assert.match(box.textContent, /Reading this job…/);
+      assert.equal(box.getAttribute('aria-busy'), 'true');
+      // The options object is the page's own; compare its values.
+      assert.deepEqual(JSON.parse(JSON.stringify(scrolled)), [{ className: 'job-detail', options: { block: 'start', behavior: reduced ? 'auto' : 'smooth' } }]);
+      detail.answer();
+      await until(() => p.doc.querySelector('.job-log'));
+      assert.equal(p.doc.querySelector('.job-detail').getAttribute('aria-busy'), null);
+      assert.doesNotMatch(p.doc.querySelector('.job-detail').textContent, /Reading this job/);
+      assert.equal(scrolled.length, 1, 'brought into view once, when chosen');
+      assert.deepEqual(p.errors, []);
+    } finally { p.close(); }
+  }
+});
+
+test('a wide window leaves the list where it is when a job is chosen (T-19 JB-07)', async () => {
+  const p = mount(url => url === '/api/jobs/job-one' ? job : page([job]));
+  const scrolled = [];
+  p.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  p.window.HTMLElement.prototype.scrollIntoView = function () { if (this.classList.contains('job-detail')) scrolled.push(this.className); };
+  try {
+    await open(p);
+    await until(() => p.doc.querySelector('.jobs-browser .job-row'));
+    p.doc.querySelector('.jobs-browser .job-row').click();
+    await until(() => p.doc.querySelector('.job-log'));
+    assert.deepEqual(scrolled, []);
+  } finally { p.close(); }
+});
+
+test('Actions runs, a linked run and its jobs and steps read as being read until Core answers (T-19 JB-04, CI-04)', async () => {
+  const list = held(), report = held();
+  const steps = { run: ciRun, error: null, details: { jobs: [{ id: 1, name: 'Build passed', status: 'passed', url: 'https://github.com/o/r/actions/runs/42/job/1', steps: [{ number: 1, name: 'Compile', status: 'completed', conclusion: 'success' }] }], page: 1, hasMore: false, nextPage: null, observedAt: ciRun.observedAt } };
+  const p = mount(async url => url.startsWith('/api/ci/') ? (await report.promise, steps) : url.startsWith('/api/ci?') ? (await list.promise, ciPage) : page([]));
+  try {
+    await until(() => p.doc.querySelector('[aria-label="Jobs"]'));
+    p.window.dispatchEvent(new p.window.CustomEvent('yuzuno:open-job', { detail: { source: 'github_actions', runKey: ciRun.id } }));
+    await until(() => p.doc.querySelector('.ci-jobs .job-detail'));
+    await wait();
+    const ci = () => p.doc.querySelector('.ci-jobs');
+    const box = () => p.doc.querySelector('.ci-jobs .job-detail');
+    assert.doesNotMatch(ci().textContent, /No Actions runs observed yet/, 'not "none" before the answer');
+    assert.match(ci().textContent, /Reading runs…/);
+    assert.doesNotMatch(box().textContent, /Select a run/, 'not "unchosen" while the linked run is read');
+    assert.match(box().textContent, /Reading this run…/);
+    assert.equal(box().getAttribute('aria-busy'), 'true');
+    list.answer();
+    await until(() => ci().querySelector('.job-row'));
+    await until(() => /a{40}/.test(box().textContent));
+    assert.match(box().textContent, /Reading its jobs and steps…/, 'the steps card is there, saying it is being read');
+    assert.equal(box().getAttribute('aria-busy'), 'true');
+    report.answer();
+    await until(() => p.doc.querySelector('.ci-child-job'));
+    assert.doesNotMatch(box().textContent, /Reading/);
+    assert.equal(box().getAttribute('aria-busy'), null);
+    assert.equal(box().querySelectorAll('.job-card').length >= 2, true);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a job whose read failed keeps its failure; choosing another shows that one being read, without the first one\'s failure (T-19 JB-07)', async () => {
+  const second = { ...job, id: 'job-two', name: 'Second synthetic job', cursor: 2 };
+  const reads = { 'job-one': [], 'job-two': [] };
+  const p = mount(url => {
+    const id = url.match(/^\/api\/jobs\/(job-one|job-two)$/)?.[1];
+    if (!id) return page([job, second]);
+    const read = held();
+    reads[id].push(read);
+    return read.promise;
+  });
+  const row = name => [...p.doc.querySelectorAll('.jobs-browser .job-row')].find(r => r.textContent.includes(name));
+  const alert = () => p.doc.querySelector('[role="dialog"] [role="alert"]')?.textContent || '';
+  const box = () => p.doc.querySelector('.job-detail');
+  try {
+    await open(p);
+    await until(() => row('Second synthetic job'));
+    row('中文 training').click();
+    await until(() => reads['job-one'].length === 1);
+    // As Core answers a failed read: an HTTP error with its reason.
+    reads['job-one'][0].answer({ httpStatus: 500, error: 'The first job could not be read' });
+    await until(() => /could not be read/.test(alert()));
+    assert.doesNotMatch(box().textContent, /Reading this job/, 'a failed read is not still being read');
+    assert.equal(box().getAttribute('aria-busy'), null);
+    row('Second synthetic job').click();
+    await until(() => reads['job-two'].length === 1);
+    await wait();
+    assert.match(box().textContent, /Reading this job…/, 'the second job, held, is being read');
+    assert.equal(box().getAttribute('aria-busy'), 'true');
+    assert.doesNotMatch(alert(), /could not be read/, 'the first job\'s failure stays with it');
+    reads['job-two'][0].answer(second);
+    await until(() => p.doc.querySelector('.job-log'));
+    assert.equal(box().getAttribute('aria-busy'), null);
+    assert.match(box().textContent, /Second synthetic job/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a run whose jobs and steps could not be read keeps saying so when only the runs list is read again (T-19 CI-04)', async () => {
+  const p = mount(url => url.startsWith('/api/ci/') ? { httpStatus: 500, error: 'Steps unavailable for this run' } : url.startsWith('/api/ci?') ? ciPage : page([]));
+  const box = () => p.doc.querySelector('.ci-jobs .job-detail');
+  const alert = () => p.doc.querySelector('.ci-jobs [role="alert"]')?.textContent || '';
+  const reportReads = () => p.calls.filter(c => c.url.startsWith('/api/ci/')).length;
+  const listReads = () => p.calls.filter(c => c.url.startsWith('/api/ci?')).length;
+  try {
+    await open(p); button(p, 'GitHub Actions').click();
+    await until(() => p.doc.querySelector('.ci-jobs .job-row'));
+    p.doc.querySelector('.ci-jobs .job-row').click();
+    await until(() => /Steps unavailable/.test(alert()));
+    assert.doesNotMatch(box().textContent, /Reading its jobs and steps/);
+    assert.equal(box().getAttribute('aria-busy'), null);
+    const reads = reportReads(), lists = listReads();
+    p.window.renderJobs({ ...props, revision: '2' });
+    await until(() => listReads() > lists);
+    await wait(); await wait();
+    assert.equal(reportReads(), reads, 'only the list was read again');
+    assert.match(alert(), /Steps unavailable/, 'the list\'s answer does not clear the run\'s failure');
+    assert.doesNotMatch(box().textContent, /Reading its jobs and steps/, 'nor shows the run as being read');
+    assert.equal(box().getAttribute('aria-busy'), null);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('a run whose jobs and steps could not be read shows them without its failure once a check with GitHub brings them (T-19 CI-04)', async () => {
+  const after = ciRunning('2026-10-15T01:05:00Z', 'completed');
+  let listed = ciRun;
+  const p = mount((url, body) => {
+    if (url === '/api/ci/refresh' && body) { listed = after.run; return { status: 'checked', checkedAt: after.run.observedAt, retryAt: null, error: null, paused: 0, more: 0, runWatched: true, run: after.run, details: [after.details] }; }
+    if (url.startsWith('/api/ci/')) return { httpStatus: 500, error: 'Steps unavailable for this run' };
+    return url.startsWith('/api/ci?') ? { ...ciPage, runs: [listed] } : page([]);
+  });
+  const box = () => p.doc.querySelector('.ci-jobs .job-detail');
+  const alert = () => p.doc.querySelector('.ci-jobs [role="alert"]')?.textContent || '';
+  const reportReads = () => p.calls.filter(c => c.url.startsWith('/api/ci/') && c.url !== '/api/ci/refresh').length;
+  const listReads = () => p.calls.filter(c => c.url.startsWith('/api/ci?')).length;
+  try {
+    await open(p); button(p, 'GitHub Actions').click();
+    await until(() => p.doc.querySelector('.ci-jobs .job-row'));
+    p.doc.querySelector('.ci-jobs .job-row').click();
+    await until(() => /Steps unavailable/.test(alert()));
+    const lists = listReads();
+    p.window.renderJobs({ ...props, revision: '2' });
+    await until(() => listReads() > lists);
+    await wait(); await wait();
+    assert.match(alert(), /Steps unavailable/, 'the list alone read again leaves the run\'s failure');
+    const reads = reportReads();
+    refreshButton(p).click();
+    await until(() => checkLine(p).startsWith('Checked with GitHub at'));
+    await until(() => p.doc.querySelector('.ci-child-job li .ci-step-state')?.textContent === 'success');
+    await wait(); await wait();
+    assert.doesNotMatch(alert(), /Steps unavailable/, 'the steps the check brought end the run\'s failed read');
+    assert.doesNotMatch(box().textContent, /Reading/);
+    assert.equal(box().getAttribute('aria-busy'), null);
+    assert.equal(reportReads(), reads, 'its steps came with the check');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('the conversation dock lists its PR reviews after its runs, follows Core to their end and opens each in its task (T-25)', async () => {
+  // Mori's reviews (Core's `involving`): a round the Lead started on Mori's PR, preparing; one that requested
+  // changes; one that passed; one whose end Core could not confirm.
+  let reviews = [
+    review('third', 12, { status: 'preparing', phase: 'Fetching fixed PR revision', conclusion: 'unknown', round: 3, createdAt: '2026-10-15T02:00:00Z', finishedAt: null, requestedBy: { kind: 'agent', id: 'lead', name: 'Lead' } }),
+    review('changes', 11, { conclusion: 'changes_requested', findingsCount: 3, round: 2, finishedAt: '2026-10-15T01:50:00Z' }),
+    review('clean', 10, { round: 1 }),
+    review('lost', 9, { status: 'unknown', conclusion: 'unknown', finishedAt: null, number: 8, round: 1 }),
+  ];
+  const p = mount(url => {
+    if (url === '/api/reviews?involving=a') return reviewPage(reviews);
+    if (url === '/api/reviews?taskId=task-one&reviewId=changes') return reviewPage([reviews.find(r => r.id === 'changes')]);
+    if (url.startsWith('/api/reviews?taskId=task-one')) return reviewPage(reviews);
+    return page([]);
+  });
+  const group = () => p.doc.querySelector('.work-dock [role="group"][aria-label="PR reviews"]');
+  const items = () => [...(group()?.querySelectorAll('.conversation-review') || [])];
+  const names = () => items().map(i => i.querySelector('.work-dock-label strong').textContent);
+  const states = () => items().map(i => [...i.classList].find(c => c.startsWith('state-')));
+  const reads = () => p.calls.filter(c => c.url === '/api/reviews?involving=a').length;
+  try {
+    await until(() => items().length === 2);
+    // What is still going first, then the latest ended: two shown, the rest behind More.
+    assert.deepEqual(names(), ['PR #7 · round 3', 'PR #7 · round 2']);
+    assert.deepEqual(states(), ['state-pending', 'state-rejected']);
+    assert.match(items()[0].textContent, /Preparing/);
+    assert.match(items()[1].textContent, /Changes requested · 3 findings/);
+    assert.equal(group().querySelector('.work-dock-more')?.getAttribute('aria-label'), 'PR reviews: 2 more, open the list');
+    // Read once, and again only when Core says something changed: no timer.
+    for (let n = 0; n < 12; n++) await wait();
+    assert.equal(reads(), 1);
+    assert.equal(p.calls.some(c => c.url === '/api/reviews?agentId=a'), false, 'not only what Mori requested itself');
+    // Core says a review changed (the jobs scope): the round runs, then ends with no findings, the one mark of passing.
+    reviews = [{ ...reviews[0], status: 'running', phase: 'Reviewing' }, ...reviews.slice(1)];
+    p.window.renderJobs({ ...props, revision: '2' });
+    await until(() => states()[0] === 'state-running');
+    assert.match(items()[0].textContent, /Reviewing/);
+    reviews = [{ ...reviews[0], status: 'completed', conclusion: 'no_findings', finishedAt: '2026-10-15T02:20:00Z' }, ...reviews.slice(1)];
+    p.window.renderJobs({ ...props, revision: '3' });
+    await until(() => states()[0] === 'state-passed');
+    assert.deepEqual(names(), ['PR #7 · round 3', 'PR #7 · round 2']);
+    assert.match(items()[0].textContent, /No actionable findings/);
+    assert.equal(reads(), 3);
+    // Opened from the dock: the Jobs panel's Reviews, that review in its task.
+    items()[1].click();
+    await until(() => p.doc.querySelector('.review-jobs .job-detail h3'));
+    assert.match(p.doc.querySelector('.review-jobs .job-detail').textContent, /Changes requested/);
+    assert.equal(p.doc.querySelector('.job-task-scope').textContent, 'Task task-one');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+
+  // An end Core could not confirm stays unknown, never a failure.
+  let q = mount(url => url === '/api/reviews?involving=a' ? reviewPage([review('lost', 9, { status: 'unknown', conclusion: 'unknown', finishedAt: null })]) : page([]));
+  try {
+    await until(() => q.doc.querySelector('.work-dock .conversation-review'));
+    const item = q.doc.querySelector('.work-dock .conversation-review');
+    assert.ok(item.classList.contains('state-unknown'), item.className);
+    assert.match(item.textContent, /Outcome unknown/);
+    assert.equal(!!q.doc.querySelector('.work-dock .work-dock-more'), false);
+  } finally { q.close(); }
+  // No reviews, or a Core without `involving`: no group, no placeholder, no error.
+  for (const answer of [reviewPage([]), { httpStatus: 400, error: 'unknown field `involving`' }]) {
+    q = mount(url => url === '/api/reviews?involving=a' ? answer : page([]));
+    try {
+      await until(() => q.calls.some(c => c.url === '/api/reviews?involving=a'));
+      for (let n = 0; n < 4; n++) await wait();
+      assert.ok(!q.doc.querySelector('.work-dock [role="group"][aria-label="PR reviews"]'), 'no reviews group');
+      assert.deepEqual(q.errors, []);
+    } finally { q.close(); }
+  }
+});
+
+test('the dock keeps to Settings for its PR reviews (0 removes the group and its read), and its More opens this Agent\'s own reviews (T-25 R1)', async () => {
+  const many = [1, 2, 3, 4].map(n => review(`r${n}`, 10 + n, { round: n, finishedAt: `2026-10-15T0${n}:00:00Z` }));
+  const handler = url => url === '/api/reviews?involving=a' ? reviewPage(many) : url.startsWith('/api/reviews?') ? reviewPage([]) : page([]);
+  const group = p => p.doc.querySelector('.work-dock [role="group"][aria-label="PR reviews"]');
+  const limits = dock => ({ 'yuzuno.appearance': JSON.stringify({ dock }) });
+  // 0: no group, and nothing is read for it.
+  let p = mount(handler, limits({ jobs: 5, actions: 2, reviews: 0, subAgents: 5 }));
+  try {
+    await until(() => p.calls.some(c => c.url.startsWith('/api/ci?')));
+    for (let n = 0; n < 4; n++) await wait();
+    assert.ok(!group(p), 'no reviews group at 0');
+    assert.equal(p.calls.some(c => c.url.includes('involving=')), false, 'and no read for it');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  // 1: the latest ended one, the rest behind More.
+  p = mount(handler, limits({ jobs: 5, actions: 2, reviews: 1, subAgents: 5 }));
+  try {
+    await until(() => group(p)?.querySelectorAll('.conversation-review').length === 1);
+    assert.equal(group(p).querySelector('.conversation-review .work-dock-label strong').textContent, 'PR #7 · round 4');
+    const more = group(p).querySelector('.work-dock-more');
+    assert.equal(more.getAttribute('aria-label'), 'PR reviews: 3 more, open the list');
+    // More opens the Jobs panel's Reviews on the same reviews the dock lists: requested by, sent to, or on Mori's tasks.
+    const before = p.calls.filter(c => c.url === '/api/reviews?involving=a').length;
+    more.click();
+    await until(() => p.doc.querySelectorAll('.review-jobs .job-row').length === 4);
+    assert.ok(p.calls.filter(c => c.url === '/api/reviews?involving=a').length > before, 'the list reads involving');
+    assert.equal(p.calls.some(c => c.url === '/api/reviews?agentId=a'), false, 'not only what Mori requested itself');
+    assert.match(p.doc.querySelector('.review-jobs').textContent, /Showing Mori's reviews, as its conversation lists them/);
+    // The panel's other sources keep Mori's scope, never `involving`.
+    const jobReads = () => p.calls.filter(c => c.url === '/api/jobs?agentId=a').length;
+    const jobsBefore = jobReads();
+    // The source tabs by their ids: Local's own name carries its queue count.
+    p.doc.getElementById('jobs-tab-local').click();
+    await until(() => jobReads() > jobsBefore);
+    assert.equal(p.calls.some(c => c.url.startsWith('/api/jobs?') && c.url.includes('involving')), false);
+    // Mori's own button is the requester scope again, as before.
+    p.doc.getElementById('jobs-tab-reviews').click();
+    await until(() => p.doc.querySelector('.review-jobs'));
+    button(p, 'Mori').click();
+    await until(() => p.calls.some(c => c.url === '/api/reviews?agentId=a'));
+    await until(() => /Showing reviews Mori requested itself/.test(p.doc.querySelector('.review-jobs')?.textContent || ''));
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });

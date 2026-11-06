@@ -685,7 +685,7 @@ fn command_contract_bounds_and_tool_schemas_are_explicit() {
     let mut bad = value;
     bad.env.insert("BAD=NAME".into(), "value".into());
     assert!(bad.validate().is_err());
-    assert_eq!(tool_definitions().len(), 15);
+    assert_eq!(tool_definitions().len(), 16);
     assert!(tool_definitions()
         .iter()
         .all(|d| d["inputSchema"]["additionalProperties"] == false));
@@ -1041,6 +1041,46 @@ fn the_disk_reserve_setting_is_bounded_kept_and_can_return_to_the_default() {
     assert_eq!(s.job_disk_reserve().unwrap(), None);
 }
 
+/// T-55: how many of this host's own Jobs run at once is the user's, 1–16,
+/// kept beside the budget. A save without it leaves it, null returns it to
+/// the default, and the route's body reads it that way.
+#[test]
+fn max_active_is_bounded_kept_and_can_return_to_the_default() {
+    let (dir, s) = setup();
+    let budget = Resources { cpu_millis: 600, memory_mi_b: 192, swap_mi_b: 0 };
+    let slots = |s: &Store| {
+        let view = s.job_budget_view(machine()).unwrap();
+        (view["maxActive"].clone(), view["maxActiveSet"].clone())
+    };
+    assert_eq!(slots(&s), (json!(4), json!(false)), "four unless the user saved another");
+    let view = s.job_budget_view(machine()).unwrap();
+    assert_eq!((view["maxActiveDefault"].clone(), view["maxActiveBounds"].clone()), (json!(4), json!({"minimum":1,"maximum":16})));
+    for refused in [0, 17] {
+        let error = s.set_job_budget_with(budget.clone(), Some(Some(refused))).err().map(|e| e.to_string());
+        assert_eq!(error.as_deref(), Some("maxActive must be 1–16, or null for the default (4)"), "{refused} is refused");
+    }
+    assert_eq!(slots(&s), (json!(4), json!(false)), "a refused save changes nothing");
+    assert_eq!(s.set_job_budget_with(budget.clone(), Some(Some(6))).unwrap(), json!(budget), "the save answers with the budget, as before");
+    drop(s);
+    let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    assert_eq!(slots(&s), (json!(6), json!(true)), "the view says the saved number, kept across a reopen");
+    s.set_job_budget(budget.clone()).unwrap();
+    assert_eq!(slots(&s), (json!(6), json!(true)), "a budget save without maxActive leaves it");
+    s.set_job_budget_with(budget, Some(None)).unwrap();
+    assert_eq!(slots(&s), (json!(4), json!(false)), "null returns it to the default");
+
+    // POST /api/jobs/budget's body, as the route reads it.
+    let body = |extra: Value| {
+        let mut value = json!({"cpuMillis":600,"memoryMiB":192,"swapMiB":0});
+        value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value::<BudgetSave>(value).map(|b| b.max_active)
+    };
+    assert_eq!(body(json!({})).unwrap(), None, "a body without maxActive leaves it");
+    assert_eq!(body(json!({"maxActive":null})).unwrap(), Some(None), "null asks for the default");
+    assert_eq!(body(json!({"maxActive":8})).unwrap(), Some(Some(8)));
+    assert!(body(json!({"maxJobs":8})).is_err(), "an unknown field is refused, as before");
+}
+
 /// The 2026-10-17 incident (T-32 Job 159e79c0): the disk filled while the
 /// launch record was written. Before, the job stayed "unknown", held its
 /// reservation, and later read "Core stopped". Now it is not started, for
@@ -1166,4 +1206,368 @@ fn machine_id_local_and_a_local_agents_agent_are_this_host_and_the_target_says_s
     // Named nothing: this host, as before, and the target says that too.
     let job = submit(&s, "unnamed");
     assert_eq!(job["target"], json!({"requested":null,"kind":"local","machineId":"local","machineName":"test"}));
+}
+
+/// T-29: inputs past the guard's bounds refuse the snapshot job_submit and
+/// each run's stage take at submit with one sentence: which file, how big,
+/// which limit, and whether guardGit counted it. No traceback, and no path of
+/// the helper in Core's data folder. Other helper failures read as before.
+#[tokio::test]
+async fn inputs_past_the_guard_are_refused_naming_the_file_its_size_and_the_limit() {
+    async fn refused(helper: &std::path::Path, request: Value) -> String {
+        host::invoke(helper, "snapshot", None, Some(request)).await.unwrap_err().to_string()
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let helper = host::helper(&dir.path().join("data")).await.unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    // Sparse files: their size is what the guard reads first.
+    let sized = |name: &str, bytes: u64| std::fs::File::create(work.join(name)).unwrap().set_len(bytes).unwrap();
+    let cwd = work.to_string_lossy().into_owned();
+    let clean = |error: &str| {
+        let helper = helper.to_string_lossy();
+        assert!(!error.contains("Traceback") && !error.contains(&*helper) && !error.contains("host-"), "{error}");
+    };
+
+    sized("small.txt", 10);
+    let ok = host::invoke(&helper, "snapshot", None, Some(json!({"cwd":cwd,"inputs":["small.txt"],"guardGit":false}))).await.unwrap();
+    assert_eq!(ok["files"][0]["path"], work.join("small.txt").to_string_lossy().as_ref());
+
+    sized("big.bin", 3 * 1024 * 1024);
+    let one = refused(&helper, json!({"cwd":cwd,"inputs":["small.txt","big.bin"],"guardGit":false})).await;
+    assert_eq!(one, "Input guard refused these inputs: big.bin is 3145728 bytes, over the 2 MiB per-file limit: guarded inputs \
+        are at most 2 MiB each and 16 MiB together, and large data is not snapshotted.");
+    clean(&one);
+
+    let parts: Vec<String> = (0..9).map(|i| format!("part{i}.bin")).collect();
+    for part in &parts {
+        sized(part, 2 * 1024 * 1024);
+    }
+    let all = refused(&helper, json!({"cwd":cwd,"inputs":parts,"guardGit":false})).await;
+    assert_eq!(all, "Input guard refused these inputs: guarded inputs reach 18874368 bytes with part8.bin, over the 16 MiB total \
+        limit: guarded inputs are at most 2 MiB each and 16 MiB together, and large data is not snapshotted.");
+    clean(&all);
+
+    // A changed tracked file guardGit adds counts too, and the refusal says so.
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let done = std::process::Command::new("git").arg("-C").arg(&repo).args(["-c", "user.name=Lab", "-c", "user.email=lab@example.invalid"])
+            .args(args).output().unwrap();
+        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.join("model.txt"), "small").unwrap();
+    git(&["add", "model.txt"]);
+    git(&["commit", "-qm", "fixture"]);
+    std::fs::File::create(repo.join("model.txt")).unwrap().set_len(3 * 1024 * 1024).unwrap();
+    let tracked = refused(&helper, json!({"cwd":repo.to_string_lossy(),"guardGit":true})).await;
+    assert_eq!(tracked, "Input guard refused these inputs: model.txt is 3145728 bytes, over the 2 MiB per-file limit: guarded \
+        inputs are at most 2 MiB each and 16 MiB together, and large data is not snapshotted. It is a changed tracked Git file, \
+        guarded because guardGit is true: commit it, or submit with guardGit=false and list the inputs the command reads.");
+    clean(&tracked);
+
+    // Anything else the helper fails at is reported as it always was.
+    let gone = refused(&helper, json!({"cwd":dir.path().join("gone").to_string_lossy(),"guardGit":false})).await;
+    assert!(gone.starts_with("Host helper failed: Traceback"), "{gone}");
+}
+
+/// T-29, through the callers: job_submit and a run's stage refuse an input
+/// past the guard with that sentence, the stage's after its "Stage {key}: "
+/// prefix, and save nothing. Both probe this host's systemd user manager
+/// before the snapshot.
+#[tokio::test]
+#[ignore = "needs a systemd user manager (XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS) for the host probe; run in a Job"]
+async fn job_submit_and_a_run_stage_refuse_an_input_past_the_guard_in_that_sentence() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+    ws.jobs.started.set(()).unwrap();
+    let agent: AgentDetail = serde_json::from_value(json!({"agent":{"id":"a","name":"a","cwd":"/tmp","model":"test","color":"sage",
+        "status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+        "turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"task","title":"Jobs","status":"doing"})).unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    std::fs::File::create(work.join("big.bin")).unwrap().set_len(3 * 1024 * 1024).unwrap();
+    let cwd = work.to_string_lossy().into_owned();
+    let resources = json!({"cpuMillis":200,"memoryMiB":64,"swapMiB":0});
+    let sentence = "Input guard refused these inputs: big.bin is 3145728 bytes, over the 2 MiB per-file limit: guarded inputs are at \
+        most 2 MiB each and 16 MiB together, and large data is not snapshotted.";
+    let submit = call(ws.clone(), Some("a".into()), "job_submit".into(), json!({"requestId":"big","taskId":"T-1","name":"big",
+        "cwd":cwd,"argv":["/usr/bin/true"],"resources":resources,"inputs":["big.bin"],"guardGit":false})).await.unwrap_err().to_string();
+    assert_eq!(submit, sentence);
+    let run = call(ws.clone(), Some("a".into()), "job_run_submit".into(), json!({"requestId":"run","taskId":"T-1","name":"run",
+        "stages":[{"key":"prep","cwd":cwd,"argv":["/usr/bin/true"],"resources":resources,"inputs":["big.bin"],"guardGit":false}]}))
+        .await.unwrap_err().to_string();
+    assert_eq!(run, format!("Stage prep: {sentence}"));
+    let db = ws.store.db.read().unwrap();
+    let count = |table: &str| db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!((count("local_jobs"), count("local_job_runs")), (0, 0), "nothing saved");
+}
+
+/// T-50 (elasticLM): guardPaths narrows guardGit to the named paths. Their
+/// bounds are checked at submit, and the snapshot job_submit and each stage
+/// take keeps each path's Git object at HEAD and only the changes under it:
+/// a commit elsewhere leaves that, and a stage's code identity for reuse, as
+/// they were, and a commit under a guarded path changes both.
+#[tokio::test]
+async fn guard_paths_are_checked_at_submit_and_freeze_only_the_content_under_them() {
+    fn with(extra: Value) -> Result<Submit, String> {
+        let mut value = json!({"requestId":"g","taskId":"T-1","name":"Guarded","cwd":"/workspace","argv":["/usr/bin/true"],
+            "resources":{"cpuMillis":500,"memoryMiB":128,"swapMiB":0}});
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        let submit: Submit = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        submit.validate().map_err(|e| e.to_string())?;
+        Ok(submit)
+    }
+    async fn snapshot(helper: &std::path::Path, submit: &Submit) -> Value {
+        host::invoke(helper, "snapshot", None, Some(serde_json::to_value(submit).unwrap())).await.unwrap()
+    }
+    assert!(with(json!({"guardPaths":["src","notes/today.md","."]})).is_ok());
+    let bounds = "guardPaths are at most 128 distinct paths relative to cwd, never through .. and without control characters";
+    let many: Vec<String> = (0..129).map(|i| format!("p{i}")).collect();
+    for bad in [json!(["../src"]), json!(["/srv/data"]), json!(["src", "src"]), json!(["a\nb"]), json!([""]), json!(many)] {
+        assert_eq!(with(json!({"guardPaths":bad})).unwrap_err(), bounds, "{bad}");
+    }
+    assert_eq!(with(json!({"guardPaths":["src"],"guardGit":false})).unwrap_err(),
+        "guardPaths narrows guardGit to those paths: set guardGit to true, or omit guardPaths");
+    assert_eq!(with(json!({"guardPaths":["src"],"guardGit":false,"machineId":"m1"})).unwrap_err(),
+        "guardPaths narrows guardGit, which reads this host's working tree; omit it for a remote machine");
+    // Without guardPaths a submission, and so its record, is as before.
+    assert!(serde_json::to_value(with(json!({})).unwrap()).unwrap().get("guardPaths").is_none());
+
+    let dir = tempfile::tempdir().unwrap();
+    let helper = host::helper(&dir.path().join("data")).await.unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    let git = |args: &[&str]| -> String {
+        let done = std::process::Command::new("git").arg("-C").arg(&repo).args(["-c", "user.name=Lab", "-c", "user.email=lab@example.invalid"])
+            .args(args).output().unwrap();
+        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+        String::from_utf8(done.stdout).unwrap().trim().to_owned()
+    };
+    std::fs::write(repo.join("src/model.py"), "first").unwrap();
+    std::fs::write(repo.join("notes.md"), "first").unwrap();
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-qm", "fixture"]);
+    let cwd = repo.to_string_lossy().into_owned();
+    let guarded = with(json!({"cwd":cwd,"guardPaths":["src"]})).unwrap();
+    let plain = with(json!({"cwd":cwd})).unwrap();
+    let code = |submit: &Submit, snapshot: &Value| runs::spec_identity(submit, snapshot, &[])["parts"]["code"].clone();
+    let frozen = snapshot(&helper, &guarded).await;
+    assert_eq!(frozen["git"]["guardPaths"], json!([{"path":"src","object":git(&["rev-parse", "HEAD:src"]),"type":"tree"}]));
+    assert_eq!(frozen["git"]["head"], git(&["rev-parse", "HEAD"]));
+    let (guarded_code, plain_code) = (code(&guarded, &frozen), code(&plain, &snapshot(&helper, &plain).await));
+
+    // A commit elsewhere: HEAD moves; what is guarded, and its identity, do not.
+    std::fs::write(repo.join("notes.md"), "written during the run").unwrap();
+    git(&["commit", "-qam", "notes"]);
+    std::fs::write(repo.join("notes.md"), "still being edited").unwrap();
+    let later = snapshot(&helper, &guarded).await;
+    assert_ne!(later["git"]["head"], frozen["git"]["head"]);
+    assert_eq!((&later["git"]["guardPaths"], &later["git"]["statusSha256"], &later["files"]),
+        (&frozen["git"]["guardPaths"], &frozen["git"]["statusSha256"], &frozen["files"]));
+    assert_eq!(code(&guarded, &later), guarded_code, "a stage reused across a commit elsewhere keeps its code identity");
+    assert_ne!(code(&plain, &snapshot(&helper, &plain).await), plain_code, "without guardPaths HEAD is the code, as before");
+
+    // A commit under the guarded path changes its object, and the identity.
+    std::fs::write(repo.join("src/model.py"), "changed during the run").unwrap();
+    git(&["commit", "-qam", "model"]);
+    let changed = snapshot(&helper, &guarded).await;
+    assert_ne!(changed["git"]["guardPaths"], frozen["git"]["guardPaths"]);
+    assert_ne!(code(&guarded, &changed), guarded_code);
+}
+
+/// T-50 (elasticLM): a finished Job's mail, and the harness refuses the
+/// native start that would wake its Agent, as Claude refused elasticLM's
+/// ("Effort changes must wait until the current turn finishes").
+#[cfg(unix)]
+async fn a_refused_completion_mail(ws: &Arc<crate::workspace::Workspace>, dir: &std::path::Path, name: &str) -> Value {
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"task","title":"Training","status":"doing"})).unwrap();
+    let job = ws.store.create_job(Some("a"), input(name), json!({"cwd":"/workspace"}), machine(), json!({"bootId":"boot"})).unwrap();
+    ws.store.reserve_next_job(None, None, None).unwrap().unwrap();
+    let id = job["id"].as_str().unwrap();
+    ws.store.update_job_evidence(id, evidence(&job, "succeeded")).unwrap();
+    ws.store.update("a", "test/idle", &json!({}), |d| d.agent.status = "idle".into()).unwrap();
+    std::fs::write(dir.join("start-mode"), "reject").unwrap();
+    let refused = refused_starts(dir);
+    let batch = ws.store.pending_peer_deliveries().unwrap().into_iter().find(|b| b["agentId"] == "a").expect("the completion mail rings");
+    ws.deliver_peer_batch(&batch).await.unwrap();
+    assert_eq!(refused_starts(dir), refused + 1, "its start was refused");
+    ws.store.job(id).unwrap()
+}
+
+#[cfg(unix)]
+fn refused_starts(dir: &std::path::Path) -> usize {
+    std::fs::read_to_string(dir.join("refused-starts.jsonl")).map_or(0, |text| text.lines().count())
+}
+
+/// The completion mail as its Agent's mailbox holds it, read as the user
+/// (which marks nothing read).
+#[cfg(unix)]
+fn mailbox_copy(ws: &crate::workspace::Workspace, job: &Value) -> Value {
+    let inbox = ws.store.collaboration_call(None, "peer_read", json!({"agentId":"a"})).unwrap();
+    inbox["messages"].as_array().unwrap().iter().find(|m| m["metadata"]["jobId"] == job["id"]).cloned().expect("still in the mailbox")
+}
+
+/// Time passes for one mail: its refusal and every wake-up are `seconds`
+/// earlier, so the refusal's wait and the wake-up budget's interval are behind it.
+#[cfg(unix)]
+fn later(ws: &crate::workspace::Workspace, mail: &Value, seconds: i64) {
+    let db = ws.store.db.write().unwrap();
+    let at = (chrono::Utc::now() - chrono::Duration::seconds(seconds)).to_rfc3339();
+    db.execute("UPDATE collaboration_messages SET delivery_detail=json_set(delivery_detail,'$.failedAt',?1) WHERE id=?2",
+        rusqlite::params![at, mail["id"].as_str()]).unwrap();
+    db.execute("UPDATE collaboration_wakeups SET at=at-?1", [seconds]).unwrap();
+}
+
+const REFUSED_WORDS: &str = "delivery failed: Effort changes must wait until the current turn finishes";
+
+/// T-50 (elasticLM) item 9: a completion mail whose wake-up the harness
+/// refused is shown on its Job and on its task as "delivery failed:
+/// <reason>", and stays in the mailbox unread.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_completion_mail_whose_wake_up_was_refused_says_why_on_its_job_and_task_and_stays_in_the_mailbox() {
+    let (dir, ws) = crate::collaboration_runtime::tests::fixture().await;
+    let job = a_refused_completion_mail(&ws, dir.path(), "mail").await;
+    let mail = mailbox_copy(&ws, &job);
+    assert_eq!((&mail["delivery"]["state"], &mail["firstReadAt"]), (&json!("error"), &Value::Null), "{mail:#}");
+    let words = format!("{REFUSED_WORDS}; it is tried again at the recipient's next wake-up. The mail stays in the mailbox.");
+    let shown = ws.collaboration_call(Some("a"), "job_get", json!({"jobId":job["id"]})).await.unwrap();
+    assert_eq!(shown["mail"]["succeeded"]["problem"], json!(words), "the Job shows its mail's failed delivery: {:#}", shown["mail"]);
+    assert_eq!((&shown["mail"]["succeeded"]["messageId"], &shown["mail"]["succeeded"]["delivery"]), (&mail["id"], &json!("error")));
+    for view in ["current", "full"] {
+        let task = ws.collaboration_call(Some("a"), "task_get", json!({"taskId":"T-1","view":view})).await.unwrap();
+        let problems = if view == "current" { &task["current"]["mailProblems"] } else { &task["mailProblems"] };
+        assert_eq!((&problems[0]["problem"], &problems[0]["jobId"], &problems[0]["status"]), (&json!(words), &job["id"], &json!("succeeded")),
+            "the task shows its mail's failed delivery ({view}): {problems:#}");
+    }
+    ws.close_agent("a").await.unwrap();
+}
+
+/// T-50 (elasticLM) item 9: a refused wake-up rings again once its wait has
+/// passed and its Agent is idle, its next native opportunity, and then goes
+/// through; a harness that keeps refusing gets three retries, no more.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_refused_wake_up_rings_again_at_the_next_opportunity_and_at_most_three_times() {
+    let (dir, ws) = crate::collaboration_runtime::tests::fixture().await;
+    let idle = || ws.store.update("a", "test/idle", &json!({}), |d| d.agent.status = "idle".into()).unwrap();
+    let rings = || ws.store.pending_peer_deliveries().unwrap().into_iter().find(|b| b["agentId"] == "a");
+    let job = a_refused_completion_mail(&ws, dir.path(), "mail").await;
+    let mail = mailbox_copy(&ws, &job);
+    idle();
+    assert!(rings().is_none(), "not before its wait");
+    later(&ws, &mail, 31);
+    let batch = rings().expect("a refused wake-up rings again after its wait");
+    let retrying = ws.collaboration_call(Some("a"), "job_get", json!({"jobId":job["id"]})).await.unwrap();
+    assert_eq!(retrying["mail"]["succeeded"]["problem"],
+        json!(format!("{REFUSED_WORDS}; trying again at the recipient's next wake-up (retry 1 of 3). The mail stays in the mailbox.")));
+    // This time the harness takes it.
+    std::fs::remove_file(dir.path().join("start-mode")).unwrap();
+    ws.deliver_peer_batch(&batch).await.unwrap();
+    assert_eq!(std::fs::read_to_string(dir.path().join("starts.jsonl")).unwrap().lines().count(), 1, "one start, taken");
+    let delivered = mailbox_copy(&ws, &job);
+    assert_eq!((&delivered["delivery"]["state"], &delivered["delivery"]["detail"]["retry"]["count"]), (&json!("delivered"), &json!(1)));
+    let shown = ws.collaboration_call(Some("a"), "job_get", json!({"jobId":job["id"]})).await.unwrap();
+    assert_eq!((&shown["mail"]["succeeded"]["delivery"], &shown["mail"]["succeeded"]["problem"]), (&json!("delivered"), &Value::Null));
+    let task = ws.collaboration_call(Some("a"), "task_get", json!({"taskId":"T-1","view":"current"})).await.unwrap();
+    assert_eq!(task["current"]["mailProblems"], json!([]));
+    ws.store.update("a", "turn/completed", &json!({"turn":{"id":"native-turn","status":"completed"}}),
+        |d| { d.apply("turn/completed", &json!({"turn":{"id":"native-turn","status":"completed"}})); }).unwrap();
+
+    // A harness that keeps refusing: three retries, each after a longer wait, then no more.
+    // A minute later, so the wake-up budget's ten seconds since the last one have passed.
+    later(&ws, &mail, 60);
+    let job = a_refused_completion_mail(&ws, dir.path(), "again").await;
+    let mail = mailbox_copy(&ws, &job);
+    for wait in [31, 61, 121] {
+        idle();
+        later(&ws, &mail, wait);
+        let refused = refused_starts(dir.path());
+        ws.deliver_peer_batch(&rings().expect("rings again after its wait")).await.unwrap();
+        assert_eq!(refused_starts(dir.path()), refused + 1, "each retry is one more refused start");
+    }
+    idle();
+    later(&ws, &mail, 3600);
+    assert!(rings().is_none(), "three retries, no more");
+    let shown = ws.collaboration_call(Some("a"), "job_get", json!({"jobId":job["id"]})).await.unwrap();
+    assert_eq!(shown["mail"]["succeeded"]["problem"],
+        json!(format!("{REFUSED_WORDS}; tried again 3 times, not again. The mail stays in the mailbox.")));
+    assert!(mailbox_copy(&ws, &job)["firstReadAt"].is_null());
+    ws.close_agent("a").await.unwrap();
+}
+
+/// T-50 R1 P3: a completion mail whose refused wake-up Core will not try
+/// again never says it will, on its Job or its task: a refusal from before
+/// Core recorded refusal times (as elasticLM's seq 4260), or mail its Agent
+/// has read since.
+#[test]
+fn a_refused_wake_up_core_will_not_retry_does_not_promise_a_retry() {
+    let (_dir, s) = setup();
+    let refused = |name: &str, failed_at: Option<String>| -> (Value, i64) {
+        let job = submit(&s, name);
+        s.reserve_next_job(None, None, None).unwrap().unwrap();
+        s.update_job_evidence(job["id"].as_str().unwrap(), evidence(&job, "succeeded")).unwrap();
+        let inbox = s.collaboration_call(None, "peer_read", json!({"agentId":"a"})).unwrap();
+        let seq = inbox["messages"].as_array().unwrap().iter().find(|m| m["metadata"]["jobId"] == job["id"]).unwrap()["seq"].as_i64().unwrap();
+        let mut detail = json!({"mode":"start","error":"Effort changes must wait until the current turn finishes"});
+        if let Some(at) = failed_at {
+            detail["failedAt"] = json!(at);
+        }
+        s.set_peer_delivery("a", seq, "sending", json!({})).unwrap();
+        s.set_peer_delivery("a", seq, "error", detail).unwrap();
+        (s.job(job["id"].as_str().unwrap()).unwrap(), seq)
+    };
+    // Refused before Core recorded when: left as it was.
+    let (older, _) = refused("older", None);
+    // Refused with its time, and read by its Agent since.
+    let (read, seq) = refused("read", Some((chrono::Utc::now() - chrono::Duration::seconds(600)).to_rfc3339()));
+    s.db.write().unwrap().execute("INSERT INTO collaboration_message_reads(message_seq,reader_id,read_at) VALUES(?1,'a','now')", [seq]).unwrap();
+    assert!(s.pending_peer_deliveries().unwrap().is_empty(), "neither rings again");
+    let task = s.collaboration_call(None, "task_get", json!({"taskId":"T-1","view":"current"})).unwrap();
+    let said = |job: &Value| -> (String, String) {
+        let on_task = task["current"]["mailProblems"].as_array().unwrap().iter().find(|p| p["jobId"] == job["id"]).unwrap()["problem"].as_str().unwrap().to_owned();
+        let on_job = s.mail_notifications(&job["notifications"]).unwrap()["succeeded"]["problem"].as_str().unwrap().to_owned();
+        (on_task, on_job)
+    };
+    for (job, why) in [(&older, "it was refused before Core recorded refusal times"), (&read, "the recipient has read the mail")] {
+        let (on_task, on_job) = said(job);
+        assert!(!on_task.contains("tried again at the recipient's next wake-up"), "a refusal Core will not retry does not promise a retry: {on_task}");
+        let words = format!("delivery failed: Effort changes must wait until the current turn finishes; it is not tried again: {why}. The mail stays in the mailbox.");
+        assert_eq!((on_task.as_str(), on_job.as_str()), (words.as_str(), words.as_str()));
+    }
+}
+
+/// T-50 R2 ffe9a391 P3: a refusal whose recipient is closed afterwards is not
+/// requeued (a closed Agent's batches never ring), and its Job and task say it
+/// is not tried again because the recipient is closed.
+#[test]
+fn a_refused_wake_up_to_a_recipient_closed_since_is_not_requeued_and_says_so() {
+    let (_dir, s) = setup();
+    let job = submit(&s, "closed-since");
+    s.reserve_next_job(None, None, None).unwrap().unwrap();
+    let id = job["id"].as_str().unwrap();
+    s.update_job_evidence(id, evidence(&job, "succeeded")).unwrap();
+    let inbox = s.collaboration_call(None, "peer_read", json!({"agentId":"a"})).unwrap();
+    let seq = inbox["messages"].as_array().unwrap().iter().find(|m| m["metadata"]["jobId"] == job["id"]).unwrap()["seq"].as_i64().unwrap();
+    s.set_peer_delivery("a", seq, "sending", json!({})).unwrap();
+    // Refused ten minutes ago: its first retry is due.
+    let at = (chrono::Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
+    s.set_peer_delivery("a", seq, "error", json!({"mode":"start","error":"Effort changes must wait until the current turn finishes","failedAt":at})).unwrap();
+    s.update("a", "agent/closed", &json!({}), |d| d.agent.closed_at = Some(chrono::Utc::now().to_rfc3339())).unwrap();
+    assert!(s.pending_peer_deliveries().unwrap().is_empty(), "a closed Agent is never rung");
+    let state: String = s.db.read().unwrap()
+        .query_row("SELECT delivery_state FROM collaboration_messages WHERE seq=?1", [seq], |r| r.get(0)).unwrap();
+    assert_eq!(state, "error", "a refusal to a closed recipient is not requeued");
+    let words = json!("delivery failed: Effort changes must wait until the current turn finishes; it is not tried again: the recipient is closed. The mail stays in the mailbox.");
+    let task = s.collaboration_call(None, "task_get", json!({"taskId":"T-1","view":"current"})).unwrap();
+    let on_task = task["current"]["mailProblems"].as_array().unwrap().iter().find(|p| p["jobId"] == job["id"]).unwrap()["problem"].clone();
+    let on_job = s.mail_notifications(&s.job(id).unwrap()["notifications"]).unwrap()["succeeded"]["problem"].clone();
+    assert_eq!((on_task, on_job), (words.clone(), words));
 }

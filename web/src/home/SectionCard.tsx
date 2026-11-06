@@ -1,4 +1,4 @@
-import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
 import { BookOpen, CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
@@ -23,7 +23,7 @@ import { useReportOpen } from "./report/report-open";
 import { reportText } from "./report/report-text";
 
 /** When a status's data is from, and whether it is past its validity. */
-function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
+export function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
   const time = useTimeDisplay();
   const language = useLanguage();
   const t = homeText(language);
@@ -36,7 +36,8 @@ function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; s
   );
 }
 
-function Time({ label, iso }: { label: string; iso?: string }) {
+/** A section's due, expected or next-update time, as its card and its report page say it. */
+export function SectionTime({ label, iso }: { label: string; iso?: string }) {
   const time = useTimeDisplay();
   const language = useLanguage();
   if (!iso) return null;
@@ -48,13 +49,14 @@ function Time({ label, iso }: { label: string; iso?: string }) {
 }
 
 /**
- * Keeps a card at least as tall as it was before Core sent a new version,
- * until the reader touches it, so shorter content never pulls up the blocks
- * below while they are being read.
+ * Keeps a card at least as tall as it was before Core sent a new version, or
+ * a new state of its ask (replied, as Core reads the reply: T-19 HM:A4, with
+ * the version unchanged), until the reader touches it, so shorter content
+ * never pulls up the blocks below while they are being read.
  */
-function useReservedHeight(version: number, collapsed: boolean) {
+function useReservedHeight(content: string, collapsed: boolean) {
   const ref = useRef<HTMLElement>(null);
-  const last = useRef<{ version: number; height: number } | null>(null);
+  const last = useRef<{ content: string; height: number } | null>(null);
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
@@ -65,9 +67,9 @@ function useReservedHeight(version: number, collapsed: boolean) {
       return;
     }
     const previous = last.current;
-    if (previous && previous.version !== version && previous.height > 0)
+    if (previous && previous.content !== content && previous.height > 0)
       element.style.minHeight = `${previous.height}px`;
-    last.current = { version, height: element.getBoundingClientRect().height };
+    last.current = { content, height: element.getBoundingClientRect().height };
   });
   const release = () => {
     if (ref.current?.style.minHeight) ref.current.style.minHeight = "";
@@ -76,8 +78,11 @@ function useReservedHeight(version: number, collapsed: boolean) {
 }
 
 /** Pins a status or report section to the widget column, or takes it off.
- * Only this button follows the pins, so pinning redraws no card body. */
-function PinButton({ section, projectId }: { section: Section; projectId: string }) {
+ * Only this button follows the pins, so pinning redraws no card body.
+ * `anchor` is the control that keeps its place while the widget comes in
+ * (T-19 HM:W5), when this button is not itself always in view: a summary
+ * card's More actions pass their trigger (Lead 3643, 3722). */
+export function PinButton({ section, projectId, anchor }: { section: Section; projectId: string; anchor?: RefObject<HTMLElement | null> }) {
   const pins = useContext(PinsContext);
   const t = useStrings(homeText);
   if (!pins || !pinnable(section)) return null;
@@ -91,7 +96,7 @@ function PinButton({ section, projectId }: { section: Section; projectId: string
       aria-pressed={pinned}
       aria-label={pinned ? t.unpinLabel(section.title) : t.pinLabel(section.title)}
       title={pinned ? t.unpin : t.pin}
-      onClick={(event) => pins.toggle(projectId, section, event.currentTarget)}
+      onClick={(event) => pins.toggle(projectId, section, anchor?.current ?? event.currentTarget)}
     >
       {pinned ? <PinOff size={13} /> : <Pin size={13} />}
     </button>
@@ -105,7 +110,7 @@ export const SectionCard = memo(function SectionCard({
   projectId,
   workspaceId,
   agents,
-  sub = false,
+  topic,
   readOnly,
   onSeen,
   onChanged,
@@ -115,8 +120,8 @@ export const SectionCard = memo(function SectionCard({
   projectId: string;
   workspaceId: string;
   agents: Agent[];
-  /** A sub-topic shown under its parent, labelled with its own author. */
-  sub?: boolean;
+  /** A sub-topic's topic, read as words: the card says it belongs there, labelled with its own author. */
+  topic?: string;
   readOnly: boolean;
   onSeen: (marks: SeenMark[]) => Promise<void>;
   onChanged: () => void;
@@ -132,7 +137,7 @@ export const SectionCard = memo(function SectionCard({
   // Collapsing hides the body only: drafts, Defer and table state are kept,
   // and the header still says what changed and offers Seen (T-115).
   const [collapsed, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
-  const [ref, release] = useReservedHeight(section.version, collapsed);
+  const [ref, release] = useReservedHeight(`${section.version}:${section.ask?.state ?? ""}`, collapsed);
   const [seeing, setSeeing] = useState(false);
   const [deferOpen, setDeferOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -154,6 +159,7 @@ export const SectionCard = memo(function SectionCard({
   const summary = useMemo(() => (section.kind === "ask" ? null : sectionSummary(section)), [section]);
   // What the author's conclusion holds under goes with it (T-18).
   const conditions = useMemo(() => (summary ? sectionConditions(section) : null), [summary, section]);
+  const sub = topic !== undefined;
   const orphaned = unmaintained(section);
   const gone = t.gone[section.owner.state as keyof typeof t.gone] ?? t.inactive;
   // Answered, waiting for its owner: no longer the user's to decide, so it
@@ -210,6 +216,7 @@ export const SectionCard = memo(function SectionCard({
           label={section.title}
           controls={`${sectionDomId(projectId, section.key)}-body`}
         />
+        {topic !== undefined && <span className="home-sub-of">{t.inTopic(topic)}</span>}
         <span className={`home-kind kind-${section.kind}${replied ? " is-replied" : ""}`}>
           {replied ? t.replied : t.kind[section.kind]}
         </span>
@@ -306,9 +313,9 @@ export const SectionCard = memo(function SectionCard({
       {(section.status || section.time) && (
         <div className="home-section-time">
           {section.status && <DataAsOf status={section.status} stale={stale} />}
-          <Time label={t.due} iso={section.time?.due} />
-          <Time label={t.expected} iso={section.time?.eta} />
-          <Time label={t.nextUpdate} iso={section.time?.nextUpdate} />
+          <SectionTime label={t.due} iso={section.time?.due} />
+          <SectionTime label={t.expected} iso={section.time?.eta} />
+          <SectionTime label={t.nextUpdate} iso={section.time?.nextUpdate} />
         </div>
       )}
       {!replied && section.ask && <p className="home-question">{section.ask.question}</p>}

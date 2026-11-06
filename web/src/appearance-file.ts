@@ -17,9 +17,11 @@ export const appearanceFields = [
   "theme",
   "fontSize",
   "agentList",
+  "agentOrder",
   "projectGroups",
   "dock.jobs",
   "dock.actions",
+  "dock.reviews",
   "dock.subAgents",
   "turnDock.numbers",
   "turnDock.bars",
@@ -33,8 +35,9 @@ const GROUPS: Record<string, string[] | null> = {
   theme: null,
   fontSize: null,
   agentList: null,
+  agentOrder: null,
   projectGroups: null,
-  dock: ["jobs", "actions", "subAgents"],
+  dock: ["jobs", "actions", "reviews", "subAgents"],
   turnDock: ["numbers", "bars"],
 };
 /** At most this many unknown names are listed, each cut to NAME_LENGTH. */
@@ -57,14 +60,15 @@ function withField(appearance: Appearance, field: AppearanceField, value: FieldV
 /** Each listed field of `appearance`, named, and nothing else: an export's
  * Appearance settings, and a shared preset's (appearance-preset.ts). */
 export function appearanceSettings(appearance: Appearance) {
-  const { palette, theme, fontSize, agentList, projectGroups, dock, turnDock } = appearance;
+  const { palette, theme, fontSize, agentList, agentOrder, projectGroups, dock, turnDock } = appearance;
   return {
     palette,
     theme,
     fontSize,
     agentList,
+    agentOrder,
     projectGroups,
-    dock: { jobs: dock.jobs, actions: dock.actions, subAgents: dock.subAgents },
+    dock: { jobs: dock.jobs, actions: dock.actions, reviews: dock.reviews, subAgents: dock.subAgents },
     turnDock: { numbers: turnDock.numbers, bars: turnDock.bars },
   };
 }

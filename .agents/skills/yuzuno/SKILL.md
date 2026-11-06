@@ -18,6 +18,7 @@ Core enforces identity, permissions, idempotency, resource admission and state c
 
 - To find work among many tasks, call `task_list` with `compact: true`: short rows without description, result or GitHub snapshots, with the same filters, counts and paging. Read the one you need with `task_get`.
 - A task is an outcome, not a turn. Read it with `task_get`: it answers with the task as it is now and its current delivery; page its history with `view: "activity"` and ask for `view: "full"` only when you need the whole record. When you were dispatched, read the fixed materials with `task_get` and the message's `dispatchId`, and keep that `dispatchId` for the result; never substitute a newer one.
+- A Project's handover document is what an executor that starts cold is given: read it with `handover_get`. A lead that learns something lasting proposes a whole new version with `handover_propose`; it writes nothing until the user approves it on Home, and one mail tells the lead the decision.
 - Reading files, running commands, tests, retries and native sub-agents are execution of that task, not new tasks. Create a task only for a separate outcome someone else could own.
 - You own the whole delivery, including its evidence. Keep the identifiers you produce (commit, PR, Job, review, CI run) and cite them in progress and in the result.
 - When handling a conversation rewind or file restore, follow [references/rewind.md](references/rewind.md): native conversation history, files and external operations have separate outcomes.
@@ -52,6 +53,7 @@ Report what is true, in separate terms: result submitted, review passed, merged,
 - `ci_subscribe` notifies you per completed run. `ci_get` returns the run as Core last observed it plus a jobs/steps page read through a short shared cache, each with its own observation time; only `ci_refresh` asks GitHub about the run now. Report CI state with those times rather than as "just checked".
 - Submit with `task_submit_result`: exact commit, CI run, review identifier and conclusion, tests, known limits. Use status `review` unless you are told to report `done`.
 - If your result notifies the dispatcher automatically (a dispatched task and a `task_submit_result` that takes `dispatchId`), do not also `peer_send` the same news.
+- Once the work is accepted, the lead that dispatched a task from an executor template, or any lead of the task's Project, releases its executor with `executor_release`; setting the task done releases it too. Releasing closes it for good and frees its slot, once its running Jobs, delivery flow and pull request operations have ended (until then it is archiving and starts nothing new). It does not accept the work, so record that on the task.
 
 ## Showing a result
 

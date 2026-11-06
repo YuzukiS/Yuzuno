@@ -3,7 +3,7 @@ import { ArrowUpRight, ChevronDown, LoaderCircle, PanelRight } from "lucide-reac
 import { errorText } from "../api";
 import { strings, useStrings } from "../i18n";
 import { useOpenWith, type OpenWith } from "./portal-preference";
-import { mintPreview, openInPortal, openOutside, phonePreviewsOff, reaches, type PortalTarget } from "./index";
+import { mintPreview, openInPortal, openOutside, phonePreviewsOff, provesPreview, type PortalTarget } from "./index";
 import "./portal.css";
 
 // The entry's own words (T-189).
@@ -32,6 +32,8 @@ const text = strings({
 });
 
 const narrow = () => window.innerWidth <= 720;
+/** The menu's way out: --motion-exit-small. */
+const MENU_OUT_MS = 130;
 
 /**
  * How to open a page or prototype (T-5): the device's default way as the
@@ -60,6 +62,22 @@ export function OpenChoice({
   const [fallback, setFallback] = useState<string | null>(null);
   const [error, setError] = useState("");
   const box = useRef<HTMLDivElement>(null);
+  const more = useRef<HTMLButtonElement>(null);
+  // The menu pops in from its ▾ and sinks back into it, as the scope menu
+  // does (T-19 SV-05). It stays on screen, inert, for its short way out;
+  // reduced motion closes it at once. Set in the same render that closes it,
+  // so the menu is never taken off the screen and put back for its way out.
+  const [leaving, setLeaving] = useState(false);
+  const [shownMenu, setShownMenu] = useState(menu);
+  if (menu !== shownMenu) {
+    setShownMenu(menu);
+    setLeaving(!menu && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+  }
+  useEffect(() => {
+    if (!leaving) return;
+    const timer = window.setTimeout(() => setLeaving(false), MENU_OUT_MS + 100);
+    return () => window.clearTimeout(timer);
+  }, [leaving]);
   const service = target().kind === "service";
   useEffect(() => {
     if (!menu) return;
@@ -87,7 +105,7 @@ export function OpenChoice({
     setBusy(true);
     try {
       const at = await mintPreview(chosen.source);
-      if (!(await reaches(at.proof.url, at.proof.answer))) {
+      if (!(await provesPreview(at.proof))) {
         openInPortal(chosen, from);
         onOpened?.();
       } else {
@@ -116,6 +134,7 @@ export function OpenChoice({
         if (event.key === "Escape" && menu) {
           event.preventDefault();
           setMenu(false);
+          more.current?.focus();
         }
       }}
     >
@@ -125,6 +144,7 @@ export function OpenChoice({
           {busy ? t.opening : label(preferred)}
         </button>
         <button
+          ref={more}
           type="button"
           className="primary-button open-choice-more"
           aria-label={t.more}
@@ -137,8 +157,16 @@ export function OpenChoice({
           <ChevronDown size={14} />
         </button>
       </span>
-      {menu && (
-        <div className="open-choice-menu" role="menu">
+      {(menu || leaving) && (
+        <div
+          className={`open-choice-menu${menu ? "" : " is-leaving"}`}
+          role="menu"
+          aria-hidden={menu ? undefined : true}
+          inert={!menu}
+          onAnimationEnd={(event) => {
+            if (!menu && event.animationName === "open-choice-menu-out") setLeaving(false);
+          }}
+        >
           <button type="button" role="menuitem" onClick={(event) => void open(preferred, event.currentTarget)}>
             {label(preferred)}
             <small>{t.isDefault}</small>

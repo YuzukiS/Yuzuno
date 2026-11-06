@@ -83,9 +83,14 @@ pub struct Workspace {
     pub(crate) pr_reviews: crate::pr_review::State,
     pub(crate) pr_operations: crate::pr_operations::State,
     pub(crate) jobs: crate::jobs::State,
+    /// How many executors run at once, and the queue (T-35); see `executor_slots`.
+    pub(crate) executor_slots: crate::executor_slots::State,
+    /// Releases that wait for an executor's work to end (T-36); see `executor_archiving`.
+    pub(crate) executor_archiving: crate::executor_archiving::State,
     pub(crate) ci: crate::ci_monitor::State,
     pub(crate) codex_usage: crate::codex_usage::State,
     pub(crate) delivery: crate::delivery::State,
+    pub(crate) merge_queue: crate::merge_queue::State,
     pub admission: Arc<crate::updates::admission::Admission>,
     pub(crate) update_notice_layout: OnceLock<crate::updates::state::Layout>,
     pub store: Arc<Store>,
@@ -150,11 +155,19 @@ impl Workspace {
         store.rotate_collaboration_mcp_credentials()?;
         store.recover_pr_reviews()?;
         store.recover_pr_operations()?;
+        // Before any runtime starts: an executor a stopped Core left half made is closed (T-34).
+        store.recover_executor_dispatches()?;
+        // A rebuild a stopped Core left unfinished is completed, or blocks its task (T-35 S2).
+        store.recover_executor_rebuilds()?;
+        // A start a stopped Core left unfinished waits for its slot again (T-35).
+        store.recover_executor_slots()?;
         Ok(Arc::new(Self {
             github: Default::default(),
             pr_reviews: Default::default(),
             pr_operations: Default::default(),
             jobs: Default::default(),
+            executor_slots: Default::default(),
+            executor_archiving: Default::default(),
             ci: Default::default(),
             codex_usage: Default::default(),
             codex_context: Default::default(),
@@ -163,6 +176,7 @@ impl Workspace {
             codex_terminals: Default::default(),
             codex_plan: Default::default(),
             delivery: Default::default(),
+            merge_queue: Default::default(),
             admission: Arc::new(crate::updates::admission::Admission::default()),
             update_notice_layout: OnceLock::new(),
             store,
@@ -231,6 +245,7 @@ impl Workspace {
                     // Rewind previews no one can confirm any more keep a
                     // whole history each; freed here, before any reclaim.
                     crate::rewind::expire_previews();
+                    crate::opencode_agent::expire_revert_previews();
                     // Large record copies may be freed yet stay resident in
                     // glibc. Reclaim outside Store locks and async workers,
                     // only once recent records are idle, with a process-wide
@@ -303,6 +318,8 @@ impl Workspace {
         self.stored(move |store| {
             let mut agent = store.agent(&id)?;
             agent.project_id = store.agent_project(&id)?;
+            agent.kind = store.agent_kind(&id)?;
+            crate::executor_release::show(&mut agent, crate::executor_release::release_of(&*store.db.read()?, &id)?);
             Ok(agent)
         }).await
     }
@@ -473,18 +490,21 @@ impl Workspace {
         self: &Arc<Self>, name: String, legacy_goal: String, cwd: String, model: String,
         machine_id: Option<String>, project_id: Option<String>,
     ) -> Result<Agent> {
-        self.create_on_with(name, legacy_goal, cwd, model, machine_id, project_id, AgentSettings::default()).await
+        self.create_on_with(name, legacy_goal, cwd, model, machine_id, project_id, AgentSettings::default(), None).await
     }
 
     /// A new Codex Agent starting with `settings` (the defaults for new
-    /// Agents resolved by the caller, T-190).
+    /// Agents resolved by the caller, T-190); an executor with `birth`.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_on_with(
         self: &Arc<Self>, name: String, _legacy_goal: String, cwd: String, model: String,
-        machine_id: Option<String>, project_id: Option<String>, settings: AgentSettings,
+        machine_id: Option<String>, project_id: Option<String>, settings: AgentSettings, birth: Option<Birth>,
     ) -> Result<Agent> {
         validate_settings(&settings)?;
-        let permit = self.admission.enter_work()?;
+        // An executor is made under its dispatch's work permit (T-34, R3
+        // d51396b7): asking for another here would let an update that starts
+        // meanwhile fail a dispatch its refusal says can be retried.
+        let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
         if name.trim().is_empty() || name.len() > 100 {
             bail!("请填写名称（最多 100 字节）");
         }
@@ -502,7 +522,7 @@ impl Workspace {
             if !path.is_dir() { bail!("工作目录必须是文件夹"); }
             path.to_string_lossy().into_owned()
         };
-        let id = uuid::Uuid::new_v4().to_string();
+        let (id, then) = Birth::of(birth);
         let colors = ["yuzu", "sage", "rose", "sky"];
         let count = self.stored(|store| store.agents()).await?.len();
         let a = Agent {
@@ -511,6 +531,9 @@ impl Workspace {
             goal: String::new(),
             work_summary: None,
             project_id,
+            kind: None,
+            released_at: None,
+            released_by: None,
             cwd,
             model,
             settings,
@@ -518,13 +541,15 @@ impl Workspace {
             harness: "codex".into(),
             claude_session_id: None,
             opencode_session_id: None,
+            opencode_version: None,
+            opencode_major: None,
             thread_id: None,
             status: "offline".into(),
             closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
             created_at: now(),
             updated_at: now(),
             unread_count: 0,
-            pending_count: 0,
+            pending_count: 0, open_questions: 0, last_turn_end: None,
             last_message: None,
             last_seq: 0,
             reviewed_seq: 0,
@@ -545,8 +570,12 @@ impl Workspace {
             codex_handoff: None,
             opencode_usage_seen: None,
         };
-        self.stored(move |store| store.insert_created(&detail)).await?;
+        let born = then.is_some();
+        self.stored(move |store| store.insert_created_then(&detail, then)).await?;
         self.changed(&id);
+        if born {
+            return Ok(a);
+        }
         let this = self.clone();
         tokio::spawn(async move {
             let _permit = permit;
@@ -583,6 +612,8 @@ impl Workspace {
             // Connecting reads and writes the Agent's fields only, so neither
             // reads nor copies its history (T-140).
             let agent = self.listed(id).await?;
+            // An executor waiting for a slot starts only from the queue (T-35).
+            self.executor_slot_admits(id).await?;
             self.record_meta(id, "runtime/connecting", json!({}), |m| {
                 m.agent.connection_state = "connecting".into();
             }).await?;
@@ -590,6 +621,9 @@ impl Workspace {
             let result = async {
                 if let Some(remote_agent) = agent.remote {
                     self.ensure_collaboration_tunnel(&remote_agent.machine).await?;
+                    // Committed before the machine is asked to launch anything
+                    // (T-35 S3b): a failure before it launched nothing there.
+                    self.launch_requested(id, "runtime/ensuring").await?;
                     let runtime = remote::ensure_runtime(&remote_agent.machine,
                         &self.stored(|store| store.workspace_id()).await?, id).await?;
                     if let Some(previous) = &remote_agent.runtime {
@@ -1083,7 +1117,9 @@ impl Workspace {
             .or_else(|| self.opencodes.lock().unwrap().get(id).map(|c| c.generation))
     }
 
-    async fn reconcile(self: &Arc<Self>, id: &str) -> Result<()> {
+    /// Ensure, then reconcile the thread with the record, as a Reconnect
+    /// does (also a reopened executor's start, executor_slots.rs).
+    pub(crate) async fn reconcile(self: &Arc<Self>, id: &str) -> Result<()> {
         let connection = self.ensure(id).await?;
         let result = self.reconcile_connection(id, &connection).await;
         if result.is_err() {
@@ -1266,10 +1302,12 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        self.close_agent_locked(id).await
+        self.close_agent_locked(id, json!({})).await
     }
 
-    async fn close_agent_locked(self: &Arc<Self>, id: &str) -> Result<AgentDetail> {
+    /// Close under the Agent gate; `data` is its `agent/closed` row's, which
+    /// a release fills in (executor_release.rs).
+    pub(crate) async fn close_agent_locked(self: &Arc<Self>, id: &str, data: Value) -> Result<AgentDetail> {
         // Its state and each Turn's status, as the send view has them; the
         // whole record only where it is the answer (T-140).
         let mut view = self.send_view(id).await?;
@@ -1333,25 +1371,20 @@ impl Workspace {
             }
             shutdown?;
         }
-        self.record_update(id, "agent/closed", json!({}), Sel::Open, |d| {
-            d.agent.closed_at = Some(now());
-            d.agent.disconnected_at = None;
-            d.agent.disconnect_unconfirmed = false;
-            d.agent.status = "offline".into();
-            d.agent.connection_state = "disconnected".into();
-            d.pending.clear();
-            if let Some(usage) = &mut d.context_usage { usage.stale = true; }
-            for receipt in &mut d.message_receipts {
-                if receipt.status == "sending" { receipt.status = "uncertain".into(); }
-            }
-            // A previously disconnected local process can have an unknown
-            // final result. Closing never invents successful tool completion.
-            for turn in &mut d.turns {
-                if turn["status"] == "inProgress" { turn["status"] = "unknown".into(); }
-            }
-        }).await?;
+        self.record_update(id, "agent/closed", data, Sel::Open, mark_closed).await?;
         self.changed(id);
+        // An executor's slot is free once it is closed (T-35).
+        self.wake_executor_slots();
         self.answer(id).await
+    }
+
+    /// `close_agent` for a caller already holding a work permit: an executor
+    /// whose dispatch failed (T-34), closed even while an update drains.
+    pub(crate) async fn close_agent_admitted(self: &Arc<Self>, id: &str, permit: &crate::updates::admission::Permit) -> Result<AgentDetail> {
+        permit.validate(&self.admission)?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        self.close_agent_locked(id, json!({})).await
     }
 
     pub async fn reopen_agent(self: &Arc<Self>, id: &str) -> Result<AgentDetail> {
@@ -1361,6 +1394,8 @@ impl Workspace {
             let _held = gate.lock().await;
             if !self.mark_reopened(id).await? { return self.answer(id).await; }
         }
+        // A reopened executor waits for its slot again; the queue starts it (T-35).
+        if self.reopened_into_queue(id).await? { return self.answer(id).await; }
         // Native resume preserves the existing identity and session. A failed
         // reconnection leaves an open, retryable Agent with the original history.
         self.reconnect_accepted(id, &_permit).await
@@ -1375,6 +1410,7 @@ impl Workspace {
             let _held = gate.lock().await;
             if !self.mark_reopened(id).await? { return self.listed(id).await; }
         }
+        if self.reopened_into_queue(id).await? { return self.listed(id).await; }
         self.reconnect_settled(id, &permit).await?;
         self.listed(id).await
     }
@@ -1382,7 +1418,9 @@ impl Workspace {
     /// Called under the Agent gate: marks a closed Agent open again (its Agent
     /// fields only); false if it was open. Neither reads its history (T-140).
     async fn mark_reopened(&self, id: &str) -> Result<bool> {
-        if self.listed(id).await?.closed_at.is_none() { return Ok(false); }
+        let listed = self.listed(id).await?;
+        anyhow::ensure!(listed.released_at.is_none(), crate::executor_release::REOPEN_REFUSED);
+        if listed.closed_at.is_none() { return Ok(false); }
         self.record_meta(id, "agent/reopened", json!({}), |m| {
             m.agent.closed_at = None;
             m.agent.disconnected_at = None;
@@ -1398,8 +1436,19 @@ impl Workspace {
         let _permit = self.admission.enter_work()?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        self.close_agent_locked(id).await?;
+        self.close_agent_locked(id, json!({})).await?;
         let closed = self.listed(id).await?;
+        if closed.harness == "opencode" {
+            // Its OpenCode database stays with the Agent's files, and no login stays in it (T-32 slice 4b, D6): its
+            // server stopped above, its credentials are scrubbed before anything of the Agent is deleted. What can't be
+            // read as a database is overwritten and removed instead, and noted, should the delete stop after.
+            let db = self.data_dir.join("opencode").join(id).join("opencode.db");
+            let destroyed = tokio::task::spawn_blocking(move || crate::opencode_login::scrub(&db)).await?
+                .map_err(|error| anyhow::anyhow!("OpenCode Agent 的登录凭据没有清除（{error:#}）；Agent 没有删除"))?;
+            for leftover in destroyed {
+                self.record_meta(id, "opencode/leftoverDestroyed", json!(leftover), |_| {}).await?;
+            }
+        }
         if closed.remote.is_some() {
             let workspace = self.stored(|store| store.workspace_id()).await?;
             // Older image-transfer builds had no dedicated cleanup marker.
@@ -1696,12 +1745,12 @@ impl Workspace {
                     bail!("这条问题的回答已提交；不会重复发送");
                 }
             }
-            // A Claude follow-up goes only to a turn of yours still running. A
-            // draft kept for one that has since ended was never sent; sending
-            // it again starts from the conversation as it is now.
+            // A Claude follow-up goes only to a turn still running, yours or
+            // one of Claude's own (T-45). A draft kept for one that has since
+            // ended was never sent; sending it again starts from the
+            // conversation as it is now.
             if let (true, None, Some(expected)) = (claude, &input.clarification, &input.expected_turn_id) {
-                anyhow::ensure!(!crate::claude::native_turn(expected)
-                    && detail.turns.iter().any(|t| t["id"] == expected.as_str() && t["status"] == "inProgress"),
+                anyhow::ensure!(detail.turns.iter().any(|t| t["id"] == expected.as_str() && t["status"] == "inProgress"),
                     "原 Turn 已结束或发生变化；消息仍保留，请确认后作为新消息发送");
             }
             if !claude && detail.agent.harness != "opencode" {
@@ -2615,6 +2664,46 @@ impl Workspace {
     }
 }
 
+/// An executor a template dispatch creates (T-34): with the id its dispatch
+/// row chose, `then` (its role, its row's state) written in the transaction
+/// that inserts it, and its runtime not started by the create: the dispatch
+/// starts it once the task is its. Made only by a dispatch holding a work
+/// permit, which the create runs under instead of taking its own.
+pub struct Birth {
+    pub(crate) id: String,
+    pub(crate) then: crate::store::InTransaction,
+}
+
+impl Birth {
+    /// The new Agent's id, and what its insert also writes.
+    pub(crate) fn of(birth: Option<Birth>) -> (String, Option<crate::store::InTransaction>) {
+        match birth {
+            Some(birth) => (birth.id, Some(birth.then)),
+            None => (uuid::Uuid::new_v4().to_string(), None),
+        }
+    }
+}
+
+/// What closing does to an Agent's record; also to one whose runtime never
+/// started (an executor whose dispatch ended, T-34).
+pub(crate) fn mark_closed(d: &mut AgentDetail) {
+    d.agent.closed_at = Some(now());
+    d.agent.disconnected_at = None;
+    d.agent.disconnect_unconfirmed = false;
+    d.agent.status = "offline".into();
+    d.agent.connection_state = "disconnected".into();
+    d.pending.clear();
+    if let Some(usage) = &mut d.context_usage { usage.stale = true; }
+    for receipt in &mut d.message_receipts {
+        if receipt.status == "sending" { receipt.status = "uncertain".into(); }
+    }
+    // A previously disconnected local process can have an unknown
+    // final result. Closing never invents successful tool completion.
+    for turn in &mut d.turns {
+        if turn["status"] == "inProgress" { turn["status"] = "unknown".into(); }
+    }
+}
+
 pub(crate) fn same_generation(connection: Option<&Connection>, generation: u64) -> bool {
     connection.is_some_and(|c| c.generation == generation)
 }
@@ -2625,6 +2714,8 @@ fn failure(error: &anyhow::Error) -> anyhow::Error {
     let message = error.to_string();
     if error.downcast_ref::<OutcomeUnknown>().is_some() {
         OutcomeUnknown(message).into()
+    } else if let Some(queued) = error.downcast_ref::<crate::executor_slots::WaitsForSlot>() {
+        queued.clone().into()
     } else {
         anyhow::anyhow!(message)
     }
@@ -2638,6 +2729,8 @@ fn failure(error: &anyhow::Error) -> anyhow::Error {
 fn record_failure(store: &Store, id: &str, error: &anyhow::Error) -> bool {
     let Ok(agent) = store.agent(id) else { return false };
     if agent.closed_at.is_some() { return false; }
+    // An executor waiting for its slot was refused before anything started.
+    if error.downcast_ref::<crate::executor_slots::WaitsForSlot>().is_some() { return false; }
     let unknown = error.downcast_ref::<OutcomeUnknown>().is_some() || agent.status == "uncertain";
     let message = error.to_string();
     if agent.error.as_deref() == Some(&message)

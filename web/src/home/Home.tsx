@@ -8,10 +8,10 @@ import { reportLinkHref, type MessageLink, type ReportLink } from "../deep-link"
 import { arrivalOf, sameSectionLive } from "../home-reply/home-reply-model";
 import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
-import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief-layout";
+import { keepUnchanged, projectDomId, requestDomId, sectionDomId, handoverDomId } from "./brief-layout";
 import { markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
 import { usePhone } from "../phone-layout";
-import { useSurfaceIn } from "../surface";
+import { useDelayedPresence, useSurfaceIn } from "../surface";
 import { HomePanel } from "./HomePanel";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
@@ -19,10 +19,15 @@ import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
 import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou } from "./NeedsYou";
-import { PinnedSection } from "./PinnedSection";
+import { unseenEnd, type TurnSeen } from "../attention";
+import { PinNotes, PinnedSection } from "./PinnedSection";
 import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
 import { PinsContext, pinSource, pinWidgetId, resolvePin, useWidgetLayout, type PinControl } from "./widget-layout";
+import { DeckSizes, sizable, useHeldSizes } from "./card-sizes";
+import { cardContent, shownSize, type CardSize } from "./card-preview";
+import { SummaryCard } from "./SummaryCard";
+import { replyableIn } from "./CardReply";
 import "./home.css";
 import { CardFoldWorkspace, unfoldAround } from "./card-fold";
 import { homeText } from "./home-text";
@@ -87,6 +92,8 @@ export function Home({
   onNavigate,
   onChanged,
   onNeedsYou,
+  turnSeen,
+  jumpTo = null,
   arrival = null,
   onBackToReply,
   report: incomingReport = null,
@@ -104,6 +111,10 @@ export function Home({
   onChanged: () => void;
   /** Each read's Needs you, for the Home tab's count. */
   onNeedsYou?: (items: NeedsYouItem[]) => void;
+  /** What this device has seen of each Agent's last Turn end (T-42). */
+  turnSeen?: TurnSeen;
+  /** An Ask "next needs you" goes to; another jump is another `n`. */
+  jumpTo?: { projectId: string | null; sectionKey?: string; proposalId?: string; n: number } | null;
   /** "Open on Home" on a reply from Home (T-9): the section and version it
    * answered, and the message to go back to; another opening is another `n`. */
   arrival?: { origin: HomeReplyOrigin; back: MessageLink; n: number } | null;
@@ -127,6 +138,26 @@ export function Home({
   // Workspace's overview (or its cards). Abort is checked before writes.
   const [reading, setReading] = useState<{ workspaceId: string; value: HomeData } | null>(null);
   const data = readOnly ? previewHome : reading?.workspaceId === workspaceId ? reading.value : null;
+  // The Turn ends this device hasn't shown (T-42): failed, then finished.
+  const unseenEnds = useMemo(() => {
+    const open = readOnly || !turnSeen ? [] : agents.filter((a) => !a.closedAt);
+    return {
+      failed: open.filter((a) => unseenEnd(a, turnSeen!) === "failed"),
+      finished: open.filter((a) => unseenEnd(a, turnSeen!) === "finished"),
+    };
+  }, [agents, turnSeen, readOnly]);
+  // An Ask "next needs you" chose: shown as its own row's click shows it.
+  const jumpToItem = useRef<(item: NeedsYouItem) => void>(() => {});
+  const jumped = useRef(0);
+  useEffect(() => {
+    if (!jumpTo || !data || jumped.current === jumpTo.n) return;
+    const item = data.needsYou.find((n) => n.projectId === jumpTo.projectId && (jumpTo.proposalId
+      ? n.kind === "handover" && n.proposalId === jumpTo.proposalId
+      : n.kind === "ask" && n.sectionKey === jumpTo.sectionKey));
+    if (!item) return;
+    jumped.current = jumpTo.n;
+    jumpToItem.current(item);
+  }, [jumpTo, data]);
   // What went wrong, worded when shown so it follows the language (T-189):
   // a reply Home can't use, an order not saved, or Core's reason as it came.
   const activeWorkspace = useRef(workspaceId);
@@ -138,6 +169,14 @@ export function Home({
   useSurfaceIn(view, "home", "medium", !phone);
   const [errorState, setErrorState] = useState<(HomeError & { workspaceId: string }) | null>(null);
   const error = errorState?.workspaceId === workspaceId ? errorState : null;
+  // The error floats over the top of what is below it, which stays where it was as it comes and goes; it fades in
+  // over small and out over exit-small, saying what it said, and goes at once with its Workspace (T-19 HM:H2).
+  const banner = useDelayedPresence(!!error, 0);
+  const lastError = useRef(errorState);
+  if (error) lastError.current = errorState;
+  // While the banner is shown, the error it says stays: when the next read answers, the same banner takes its way
+  // out (is-leaving, set after that render), never unmounted and put back as a second alert (#620 R1).
+  const bannerError = error ?? (banner.shown && lastError.current?.workspaceId === workspaceId ? lastError.current : null);
   const setError = useCallback((value: HomeError | null) => {
     if (activeWorkspace.current === workspaceId) setErrorState(value ? { workspaceId, ...value } : null);
   }, [workspaceId]);
@@ -157,8 +196,11 @@ export function Home({
   // The Needs you area's landing mark, from the return overview (T-19).
   const needsSettled = useRef<(() => void) | null>(null);
   useEffect(() => () => needsSettled.current?.(), []);
-  const pendingJump = useRef<{ target: () => HTMLElement | null; n: number } | null>(null);
+  const pendingJump = useRef<{ target: () => HTMLElement | null; n: number; block?: ScrollLogicalPosition } | null>(null);
   const reload = useCallback(() => setTick((n) => n + 1), []);
+  // Refresh asked for and not yet answered (T-19 HM:H3): its icon turns and it says it is busy. The reads Home makes
+  // on its own (a revision, the safety net) show nothing.
+  const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
     if (readOnly) return;
     const controller = new AbortController();
@@ -170,6 +212,7 @@ export function Home({
     readHome(controller.signal)
       .then((value) => {
         if (controller.signal.aborted) return;
+        setRefreshing(false);
         if (!value || !Array.isArray(value.projects) || !Array.isArray(value.needsYou)) {
           setError({ kind: "unavailable", reason: "" });
           failed();
@@ -186,6 +229,7 @@ export function Home({
       .catch((e) => {
         // The last read stays on screen; nothing is blanked while retrying.
         if (controller.signal.aborted) return;
+        setRefreshing(false);
         setError({ kind: "read", reason: errorText(e) });
         failed();
       });
@@ -231,12 +275,25 @@ export function Home({
     // A saved order shows as soon as Core reports it.
     if (localOrder && data && !saving && data.order.join("\n") === localOrder.join("\n")) setLocalOrder(null);
   }, [data, localOrder, saving]);
+  // The arrow just pressed keeps the focus as its panel moves, and as a refused order puts it back (T-19 HM:H7).
+  // The panels change places at once, as Home's layout does (no motion: HM:H7 and H8's moves are not animated).
+  const movedArrow = useRef<{ id: string; by: -1 | 1 } | null>(null);
+  useLayoutEffect(() => {
+    const moved = movedArrow.current;
+    if (!moved) return;
+    movedArrow.current = null;
+    const arrow = document.getElementById(projectDomId(moved.id))
+      ?.querySelector<HTMLElement>(`.home-reorder [data-move="${moved.by < 0 ? "up" : "down"}"]`);
+    if (arrow && document.activeElement !== arrow) arrow.focus();
+  }, [panels]);
   async function move(index: number, by: -1 | 1) {
     const ids = panels.map((p) => p.project.id);
     const target = index + by;
     if (target < 0 || target >= ids.length) return;
     [ids[index], ids[target]] = [ids[target], ids[index]];
     const previous = localOrder;
+    const moved = { id: ids[target], by };
+    movedArrow.current = moved;
     setLocalOrder(ids);
     setSaving(true);
     setError(null);
@@ -244,6 +301,7 @@ export function Home({
       await saveHomeOrder(ids);
       reload();
     } catch (e) {
+      movedArrow.current = moved;
       setLocalOrder(previous);
       setError({ kind: "order", reason: errorText(e) });
     } finally {
@@ -278,7 +336,13 @@ export function Home({
         onBack={onBackToReply ? () => onBackToReply(arrival.back) : undefined}
       />
     );
+  jumpToItem.current = jump;
   function jump(item: NeedsYouItem) {
+    // A question is answered in its conversation (T-42).
+    if (item.kind === "question") {
+      onNavigate({ kind: "agent", agentId: item.agentId });
+      return;
+    }
     const panel = item.projectId ? panels.find((p) => p.project.id === item.projectId) : undefined;
     if (!panel) {
       // An approval from an Agent outside any project lives in its conversation.
@@ -289,7 +353,9 @@ export function Home({
     revealIn(panel.project.id, () =>
       item.kind === "approval" && item.requestId
         ? document.getElementById(requestDomId(item.requestId))
-        : item.sectionKey
+        : item.kind === "handover" && item.proposalId
+          ? document.getElementById(handoverDomId(item.proposalId))
+          : item.sectionKey
           ? document.getElementById(sectionDomId(panel.project.id, item.sectionKey))
           : null,
     );
@@ -305,7 +371,7 @@ export function Home({
     const show = () => {
       // Only the user's click scrolls Home; new content never does.
       const smooth = !reducedMotion();
-      target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+      target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: jumpTo.block ?? "center" });
       target.focus({ preventScroll: true });
       // Where it landed, once the scroll has (T-19): kept until the next press.
       settled = settleWhenLanded(target, "data-home-highlight", smooth);
@@ -336,6 +402,14 @@ export function Home({
     if (!arrival || !landed || report || arrived.current === arrival.n) return;
     arrived.current = arrival.n;
     const { projectId, key } = arrival.origin;
+    if (landed.kind === "gone") {
+      // No panel to go to: the note saying so, below the overview and Needs you and often out of view, is brought
+      // into view (nearest) and settles (T-19 HM:H15).
+      const n = reveal.n + 1;
+      pendingJump.current = { target: () => document.querySelector<HTMLElement>(".home-main > .home-reply-arrival"), n, block: "nearest" };
+      setReveal({ n, projects: reveal.projects });
+      return;
+    }
     revealIn(projectId, () => (key !== null && sameSectionLive(landed) ? document.getElementById(sectionDomId(projectId, key)) : null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arrival, data, report]);
@@ -481,7 +555,15 @@ export function Home({
   }, [agentsKey, readOnly]);
   const noAgents = useMemo<Agent[]>(() => [], []);
   const widgetLayout = useWidgetLayout(workspaceId);
-  const { layout, pin, unpin } = widgetLayout;
+  // The sizes the deck's cards are shown at in this visit (T-18).
+  const deckSizes = useHeldSizes(readOnly ? "" : workspaceId, visit);
+  // How each pinned card is shown, fixed for the visit by its pin (Lead 2604): as its summary card, or
+  // whole as before. A newer version that adds or drops the summary changes it only at the next visit,
+  // so the widget, its reply and its focus stay; a pin the user sized is always its card.
+  const pinPaths = useRef({ workspaceId, visit, paths: new Map<string, "card" | "full">() });
+  if (pinPaths.current.workspaceId !== workspaceId || pinPaths.current.visit !== visit)
+    pinPaths.current = { workspaceId, visit, paths: new Map() };
+  const { layout, pin, unpin, resize, resetSizes } = widgetLayout;
   // A section pinned here (T-19 HM:W5): what was pressed keeps its place
   // while the widget column above it grows, and the new widget comes in over
   // small (opacity, 4 px up) and settles once; under reduced motion it is
@@ -575,14 +657,54 @@ export function Home({
     {
       id: "machines",
       name: t.machines,
+      // Built in: the whole row at its content's height, no size to choose (Dev 7's v19).
+      full: "builtin",
       body: <MachineWidget projectName={projectName} readOnly={readOnly} />,
     },
     // The design preview has no pins: its sections are not this workspace's.
-    ...(readOnly || !layout ? [] : layout.pins).map((p) => {
+    ...(readOnly || !layout ? [] : layout.pins).map((p): HomeWidget => {
       const source = resolvePin(p, data, readFailed);
+      const id = pinWidgetId(p);
+      const name = source.state === "shown" ? source.section.title : p.title;
+      const onResize = (size: CardSize | null) => resize(p, size);
+      // A pinned card with a summary is the same card as in its project, at the size the user gave the widget,
+      // else its Agent's, held for the visit (T-18, Lead 2457, 2473; Dev 7's v19). Nothing is written to the card.
+      // Its summary gone in a later version, it says so on the same card (Lead 2604), never the old body.
+      let path = pinPaths.current.paths.get(id);
+      if (source.state === "shown" && !path) {
+        path = p.size || cardContent(source.section).kind === "named" ? "card" : "full";
+        pinPaths.current.paths.set(id, path);
+      }
+      if (source.state === "shown" && (path === "card" || p.size)) {
+        const section = source.section;
+        const { size, own } = shownSize(section, cardContent(section), p.size ?? null,
+          sizable(section) ? (computed) => deckSizes.held(p.projectId, section.id!, computed) : undefined);
+        return {
+          id,
+          name,
+          size: { shown: size, own, chosen: p.size ?? null, onChange: onResize },
+          onUnpin: () => unpin(p),
+          body: (
+            <SummaryCard
+              section={section}
+              projectId={p.projectId}
+              workspaceId={workspaceId}
+              agents={byProject.get(p.projectId) || noAgents}
+              readOnly={readOnly}
+              onSeen={(marks) => seen(p.projectId, marks)}
+              widget={{ id, chosen: p.size ?? null, onResize, onUnpin: () => unpin(p) }}
+              // Marked seen, it keeps its Reply and the reply being written, as History does (T-174, Lead 2655).
+              referable={replyableIn(data?.projects.find((panel) => panel.project.id === p.projectId), section)}
+              notice={<PinNotes source={source} />}
+            />
+          ),
+        };
+      }
+      // Any other pin as before: its whole body, or why it can't show it, across the row (Dev 7's v19).
       return {
-        id: pinWidgetId(p),
-        name: source.state === "shown" ? source.section.title : p.title,
+        id,
+        name,
+        full: "legacy",
         onUnpin: () => unpin(p),
         body: (
           <PinnedSection
@@ -612,6 +734,7 @@ export function Home({
     {/* Which cards are collapsed is kept per Workspace; the preview keeps none (T-115). */}
     <CardFoldWorkspace.Provider value={readOnly ? "" : workspaceId}>
     <PinsContext.Provider value={pins}>
+    <DeckSizes.Provider value={deckSizes}>
     <BriefDensity.Provider value={density}>
     <HomeReadContext.Provider value={readOnly ? null : homeRead}>
     <ReportOpen.Provider value={cardReport}>
@@ -655,8 +778,18 @@ export function Home({
             </button>
           )}
           {!readOnly && (
-            <button type="button" className="icon-button" aria-label={t.refresh} title={t.refresh} onClick={reload}>
-              <RefreshCw size={14} />
+            <button
+              type="button"
+              className="icon-button home-refresh"
+              aria-label={t.refresh}
+              title={t.refresh}
+              aria-busy={refreshing || undefined}
+              onClick={() => {
+                setRefreshing(true);
+                reload();
+              }}
+            >
+              <RefreshCw size={14} className={refreshing ? "spin" : undefined} />
             </button>
           )}
         </span>
@@ -666,11 +799,13 @@ export function Home({
           {t.densityNotKept(densityRefusal.detail)}
         </p>
       )}
-      {error && (
-        <p className="inline-error home-error-banner" role="alert">
-          {error.kind === "unavailable" ? t.unavailable : error.kind === "order" ? t.orderNotSaved(error.reason) : error.reason}
-          {data && t.lastReading}
-        </p>
+      {banner.shown && bannerError && (
+        <div className="home-error-slot">
+          <p className={`inline-error home-error-banner${banner.leaving ? " is-leaving" : ""}`} role="alert">
+            {bannerError.kind === "unavailable" ? t.unavailable : bannerError.kind === "order" ? t.orderNotSaved(bannerError.reason) : bannerError.reason}
+            {data && t.lastReading}
+          </p>
+        </div>
       )}
       {!data ? (
         !error && (
@@ -700,13 +835,20 @@ export function Home({
             onNavigate={onNavigate}
           />
           <div className="home-needs-area" id="home-current-needs" tabIndex={-1}>
-            <NeedsYou items={data.needsYou} projectName={projectName} onJump={jump} />
+            <NeedsYou
+              items={data.needsYou}
+              projectName={projectName}
+              onJump={jump}
+              unseen={unseenEnds}
+              onOpenAgent={(agentId) => onNavigate({ kind: "agent", agentId })}
+            />
           </div>
           {/* The design preview has no workspace: its own default layout, not changed. */}
           <HomeWidgets
             widgets={widgets}
             layout={readOnly ? (layout ?? { order: [], hidden: [], pins: [] }) : layout}
             onChange={layout ? widgetLayout.change : undefined}
+            onResetSizes={layout ? resetSizes : undefined}
           />
           <div className="home-main">
             {landed?.kind === "gone" && landedNote(false)}
@@ -781,6 +923,7 @@ export function Home({
     </ReportOpen.Provider>
     </HomeReadContext.Provider>
     </BriefDensity.Provider>
+    </DeckSizes.Provider>
     </PinsContext.Provider>
     </CardFoldWorkspace.Provider>
     </HomeNavigation.Provider>

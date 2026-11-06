@@ -9,6 +9,7 @@ import { cardWords } from "./subagent-text";
 import { callFacts } from "./tool-call";
 import { CallDetails, CallName, ToolCallSummary, callIcon } from "./ToolCall";
 import { requestWords, shownError } from "./request-text";
+import { usePendingMotion } from "./pending-motion";
 import "./opencode.css";
 
 /** One of OpenCode's questions (its QuestionInfo); `custom` is true unless OpenCode says otherwise. */
@@ -68,7 +69,11 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource, d
   const kept = { answers, free };
   useEffect(() => { draft.save(kept, choiceEmpty(kept)); }, [answers, free]);
   const unconfirmedAnswer = useUnconfirmedAnswer(refresh, answering, draft.attempted);
-  const locked = disabled || !!request.stale || !!request.params._responseSent || sending || answered || unconfirmedAnswer.unconfirmed;
+  // OpenCode 2.x's own request, which Core can't answer yet (T-32 slice 4a): said why, never answerable here.
+  const notYet = typeof request.params._opencodeNotYet === "string" ? request.params._opencodeNotYet : "";
+  const locked = disabled || !!notYet || !!request.stale || !!request.params._responseSent || sending || answered || unconfirmedAnswer.unconfirmed;
+  // The hint follows Core's mark; the card is resolved as soon as Core answered its own request (R2 e5c4a849).
+  const motion = usePendingMotion(!!request.params._responseSent, request.agentId, !!request.params._responseSent || answered);
   const answer = (q: Question, index: number) =>
     [...(answers[index] || []), ...(q.custom !== false && free[index]?.trim() ? [free[index].trim()] : [])];
   async function respond(response: unknown) {
@@ -91,7 +96,7 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource, d
   const subAgent = child ? (typeof child.title === "string" && child.title) || (typeof child.agent === "string" && child.agent ? `@${child.agent}` : "") : "";
   const patterns = Array.isArray(request.params.patterns) ? request.params.patterns.map(String) : [];
   const metadata = request.params.metadata && Object.keys(request.params.metadata).length ? request.params.metadata : null;
-  return <section className={`pending-card opencode-request${highlightSource ? " source-highlight" : ""}`} id={`request-${request.id}`} tabIndex={-1} lang={langTag(language)}>
+  return <section ref={motion.card} className={`pending-card opencode-request${highlightSource ? " source-highlight" : ""}`} id={`request-${request.id}`} tabIndex={-1} lang={langTag(language)}>
     <div className="pending-heading">
       {question ? <MessageSquare size={17} /> : <ShieldCheck size={17} />}
       <strong>{question ? t.openQuestion : t.openPermission}</strong>
@@ -99,7 +104,8 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource, d
     </div>
     {child && <p className="pending-source">{t.fromSubAgent}<strong lang="">{subAgent || t.ofThisAgent}</strong>{t.onlySubAgent}</p>}
     {request.stale && <p className="inline-error">{t.staleOpen}</p>}
-    {request.params._responseSent && <p className="field-hint">{t.sentOpen}</p>}
+    {notYet && <p className="inline-error" lang="">{notYet}</p>}
+    {request.params._responseSent && <p className="field-hint" ref={motion.hint}>{t.sentOpen}</p>}
     {question ? <form onSubmit={e => { e.preventDefault(); void respond({ answers: questions.map(answer) }); }}>
       <fieldset disabled={locked} className="opencode-question-fields">
         {questions.map((q, index) => <fieldset key={index}>
