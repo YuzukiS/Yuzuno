@@ -233,6 +233,8 @@ if path.startswith('actions/jobs/') and path.endswith('/logs'):
         print('fake gh: a job log read without --allow-escape-sequences would rewrite its escape sequences',file=sys.stderr); sys.exit(1)
     if s.get('slowLog'):
         p.with_name('log-started').write_text('1'); time.sleep(2)
+    if s.get('mainOnLog'):
+        s['main']=s.pop('mainOnLog'); s['pull']['base']['sha']=s['main']; save()
     out(200,s['logs'][path.split('/')[2]])
 out(404,{})
 "#).unwrap();
@@ -625,7 +627,7 @@ async fn a_run_that_finished_between_the_reads_is_judged_on_a_fresh_read_of_the_
     let e = lab.entry().await;
     assert_eq!(e["state"], "merged", "a run that finished between the reads is judged on the fresh read of the PR: {e}");
     let reads = calls(lab.dir.path()).iter().filter(|c| c["method"] == "GET" && c["endpoint"] == "repos/owner/repo/pulls/11").count();
-    assert_eq!(reads, 3, "the PR is read at release, then before and after the head's runs");
+    assert_eq!(reads, 4, "the PR is read at release, before and after the head's runs, and right before the merge request");
 }
 
 #[cfg(unix)]
@@ -1188,6 +1190,88 @@ async fn an_uncertain_merge_on_a_main_that_moved_is_checked_again_not_sent_again
     assert_eq!(e["state"], "waiting", "main moved before a second request could go: {e}");
     assert!(e["detail"].as_str().unwrap().contains("Main moved"), "{}", e["detail"]);
     assert_eq!(writes(lab.dir.path()).len(), 1, "no second merge request onto a main CI did not test");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn main_moving_after_the_check_gets_no_merge_and_every_check_runs_again() {
+    let moved = sha('c');
+    let lab = lab_with(|s| {
+        s["commits"][&moved] = json!({"sha":moved,"tree":sha('6'),"parents":[main_sha()]});
+        // Main moves while the check downloads job logs, after it read main.
+        s["mainOnLog"] = json!(moved);
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let w = writes(lab.dir.path());
+    assert!(!w.iter().any(|w| w.starts_with("PUT")), "no merge request onto a main CI did not test: {w:?}");
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("since the check, so no merge was sent"), "{}", e["detail"]);
+    let e = lab.step().await;
+    assert_eq!(e["lastEvidence"]["main"]["before"], json!(moved), "every check runs again, from the new main: {e}");
+    assert!(!writes(lab.dir.path()).iter().any(|w| w.starts_with("PUT")));
+}
+
+/// A `merging` entry the process stopped on before it journaled a request.
+#[cfg(unix)]
+async fn resumed_before_its_first_request(lab: &Lab) {
+    let mut m = lab.entry().await;
+    m["state"] = json!("merging");
+    m["merge"] = json!({"expectedMain":main_sha(),"tree":tree(),"gate":"slot","head":head(),"attempts":0,"puts":[],"sha":null,"post":null,"mainCi":null});
+    lab.ws.store.db.write().unwrap().execute("UPDATE merge_entries SET state='merging',next_check=0,data=?1", [m.to_string()]).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_resumed_before_its_first_request_reads_main_first() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    resumed_before_its_first_request(&lab).await;
+    change(lab.dir.path(), |s| s["main"] = json!(sha('c')));
+    tick(&lab.ws).await.unwrap();
+    assert!(writes(lab.dir.path()).is_empty(), "a resumed merge reads main before its first request and sends nothing onto a moved main");
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("Main moved"), "{}", e["detail"]);
+
+    // On the main it expects, the resumed merge reads main, then sends.
+    let lab = lab_with(|_| {});
+    lab.release(Some("lead"), "r1").await.unwrap();
+    resumed_before_its_first_request(&lab).await;
+    let before = calls(lab.dir.path()).len();
+    tick(&lab.ws).await.unwrap();
+    let c = calls(lab.dir.path());
+    let first = c[before..].iter().find(|c| c["method"] == "PUT" || c["endpoint"] == "repos/owner/repo/git/ref/heads/main").unwrap();
+    assert_eq!(first["method"], "GET", "main is read right before the first request: {c:?}");
+    assert_eq!(lab.entry().await["state"], "merged");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pr_that_changed_before_the_first_request_is_refused_without_one() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    resumed_before_its_first_request(&lab).await;
+    change(lab.dir.path(), |s| s["pull"]["head"]["sha"] = json!(sha('d')));
+    tick(&lab.ws).await.unwrap();
+    assert!(writes(lab.dir.path()).is_empty(), "no request for a head that moved");
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("merge_refused")), "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("The PR head moved"), "{}", e["detail"]);
+
+    // Merged by someone else before Core sent anything: not Core's merge.
+    let lab = lab_with(|_| {});
+    lab.release(Some("lead"), "r1").await.unwrap();
+    resumed_before_its_first_request(&lab).await;
+    change(lab.dir.path(), |s| {
+        s["pull"].as_object_mut().unwrap().extend([("merged".into(), json!(true)), ("state".into(), json!("closed")), ("merge_commit_sha".into(), json!(merge_commit()))]);
+    });
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("merge_refused")), "a merge made outside the queue is not Core's: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("merged outside the queue"), "{}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty());
 }
 
 #[cfg(unix)]

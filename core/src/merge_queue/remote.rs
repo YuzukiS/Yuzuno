@@ -362,19 +362,20 @@ pub(super) enum MergeOutcome {
     Held(String),
 }
 
-/// Send the merge, at most twice. Before any second request Core reads the PR:
-/// merged at the head is the answer; open at the head with main unchanged
-/// allows one more request; anything else is reported, never retried.
+/// Send the merge, at most twice. Right before every request, the first
+/// included, Core reads the PR and main again: the request pins the head but
+/// not the base, so a main that moved since the check would get a merge CI
+/// never tested. Open at the head on the expected main allows the request;
+/// after an uncertain answer, merged at the head is the answer; anything else
+/// is reported, never retried.
 pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<MergeOutcome> {
     let t = target(entry)?;
     let expected = entry["merge"]["expectedMain"].as_str().context("The merge has no expected main")?.to_owned();
     let mut sent = entry["merge"]["attempts"].as_i64().unwrap_or(0);
     let mut last = String::from("no answer");
     loop {
-        if sent > 0 {
-            if let Some(found) = reconcile(ws, &t, &expected).await? {
-                return Ok(found);
-            }
+        if let Some(found) = reconcile(ws, &t, &expected, sent > 0).await? {
+            return Ok(found);
         }
         if sent >= 2 {
             return Ok(MergeOutcome::Unknown(format!(
@@ -401,11 +402,18 @@ pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<MergeOut
     }
 }
 
-/// The PR as GitHub has it now, after a merge request without a certain
-/// answer: None means it is open at the head on the expected main, so one
-/// more request may go.
-async fn reconcile(ws: &Arc<Workspace>, t: &Target, expected: &str) -> Result<Option<MergeOutcome>> {
+/// The PR and main as GitHub has them now, before a merge request: None
+/// means the PR is open at the head on the expected main, so the request may
+/// go. `sent` says an earlier request got no certain answer; before the first
+/// one, a merged PR is someone else's merge.
+async fn reconcile(ws: &Arc<Workspace>, t: &Target, expected: &str, sent: bool) -> Result<Option<MergeOutcome>> {
     let pr = read(ws, format!("repos/{}/pulls/{}", t.repo, t.number)).await?;
+    if pr["merged"] == true && !sent {
+        return Ok(Some(MergeOutcome::Refused(format!(
+            "The PR was merged outside the queue, as {}",
+            pr["merge_commit_sha"].as_str().unwrap_or("?")
+        ))));
+    }
     if pr["merged"] == true {
         return Ok(Some(match pr["merge_commit_sha"].as_str() {
             Some(sha) if pr["head"]["sha"] == t.head.as_str() => MergeOutcome::Merged(sha.to_owned()),
@@ -420,7 +428,8 @@ async fn reconcile(ws: &Arc<Workspace>, t: &Target, expected: &str) -> Result<Op
     }
     let main = read(ws, format!("repos/{}/git/ref/heads/{}", t.repo, t.base)).await?["object"]["sha"].as_str().unwrap_or("").to_owned();
     if main != expected {
-        return Ok(Some(MergeOutcome::Moved(format!("Main moved to {} before the merge was certain; every check runs again", short(&main)))));
+        let when = if sent { "before the merge was certain" } else { "since the check, so no merge was sent" };
+        return Ok(Some(MergeOutcome::Moved(format!("Main moved to {} {when}; every check runs again", short(&main)))));
     }
     Ok(None)
 }

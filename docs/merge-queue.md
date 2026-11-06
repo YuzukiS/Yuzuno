@@ -93,7 +93,13 @@ removed, and a new one is built.
 
 Once every check holds, the entry merges, one merge at a time per repository:
 
-1. Core journals the merge request, then sends it.
+1. Right before each merge request, the first included, Core reads the PR and
+   main again. The request pins the head but not the base, so this is what
+   keeps an untested merge off main. If the head moved, or the PR is no longer
+   open (merged outside the queue too), the entry stops with `merge_refused`.
+   If main moved since the check, nothing is sent and every check runs again on
+   the new main. Otherwise Core journals the request, then sends it. The
+   remaining window is one round trip, which the post-check covers.
 2. If GitHub's answer is uncertain (a timeout, a 5xx, a dropped connection),
    Core reads the PR before anything else. If it is merged at the head, that is
    the merge. If it is still open at the head and main has not moved, Core
