@@ -334,6 +334,22 @@
   .app:not(.phone) .turn-dock a {
     pointer-events: none;
   }
+  /* Except its two controls, which are not part of the scale: loading
+     earlier inputs, and reading by inputs rather than by Turns. The rule
+     above took them with it, so by touch there was no way to either — the
+     comment above says the numbers "would only be in the way", and these are
+     not numbers (#459 round 1, P2b). They already stand wider than the 14px
+     the scale keeps, so a finger's worth of them fits. */
+  .app:not(.phone) .turn-dock .turn-dock-by,
+  .app:not(.phone) .turn-dock .turn-dock-by button,
+  .app:not(.phone) .turn-dock .turn-dock-earlier {
+    pointer-events: auto;
+  }
+  .app:not(.phone) .turn-dock .turn-dock-by button,
+  .app:not(.phone) .turn-dock .turn-dock-earlier {
+    min-width: 40px;
+    min-height: 40px;
+  }
   .app:not(.phone) .turn-dock-chip,
   .app:not(.phone) .turn-dock-preview {
     display: none;

@@ -383,21 +383,67 @@ export function ConversationJobs({
   // A running job's time so far, as a finished one shows how long it took.
   const now = useNow(shown.some(live));
   const runs = first(ci.runs, runActive, (run) => time(run.updatedAt), dock.actions);
-  // Every Job and run the conversation knows about, not only the few drawn
-  // as marks: the entry above counts the work, the marks show the newest.
-  // A Job held at a checkpoint is an exception that is waiting, not broken.
-  const work = useMemo<WorkEntry[]>(() => [
-    ...jobs.map((job) => ({ id: job.id, kind: "job" as const, state: jobWork(job.status),
-      resumable: checkpointed(job) || stoppingAtCheckpoint(job),
-      name: job.name, says: stateOf(job, t).name,
-      // Its own detail, where it already lives.
-      onOpen: () => openJobs({ jobId: job.id, agentId }) })),
-    ...ci.runs.map((run) => ({ id: run.id, kind: "run" as const, state: runWork(run.status, run.conclusion),
-      name: run.name, says: run.conclusion ?? run.status,
-      onOpen: () => openJobs({ agentId, source: "github_actions" }) })),
-  ].filter((item) => item.state !== "uncounted") as WorkEntry[], [jobs, ci.runs, agentId, t]);
-  useWorkActivity("job", work.filter((item: WorkEntry) => item.kind === "job"));
-  useWorkActivity("run", work.filter((item: WorkEntry) => item.kind === "run"));
+  /**
+   * What Work activity counts, which is deliberately not everything the Jobs
+   * panel keeps (#459 round 1, P2c; recorded as deviation row 14, a
+   * refinement of d6 B2).
+   *
+   * The panel is the history. This line is what needs a look and what is
+   * going on, so a thing already answered is not held against the count for
+   * good:
+   *
+   *  - a CI workflow is its **latest run**. An older failing run that a
+   *    later run of the same workflow has replaced is history; counting it
+   *    meant one bad run made the entry say "needs a look" forever.
+   *  - a Job the **user cancelled** is not a problem to go and see.
+   *  - a Job that failed and whose **name has since succeeded** is resolved.
+   *
+   * Anything still running counts whatever else is true of it, and nothing
+   * here changes what the panel itself lists.
+   */
+  const work = useMemo<WorkEntry[]>(() => {
+    // One run per workflow — repository and workflow name — the newest kept.
+    const newestRun = new Map<string, Run>();
+    for (const run of ci.runs) {
+      const workflow = `${run.repository}\u0000${run.name}`;
+      const had = newestRun.get(workflow);
+      const newer =
+        !had ||
+        time(run.createdAt) > time(had.createdAt) ||
+        (time(run.createdAt) === time(had.createdAt) && run.cursor > had.cursor);
+      if (newer) newestRun.set(workflow, run);
+    }
+    // When each name last succeeded, so an earlier failure of it is answered.
+    const succeededAt = new Map<string, number>();
+    for (const job of jobs)
+      if (job.status === "succeeded")
+        succeededAt.set(job.name, Math.max(succeededAt.get(job.name) ?? 0, time(job.finishedAt)));
+    const jobState = (job: Job) => {
+      const state = jobWork(job.status);
+      if (state !== "exception") return state;
+      if (job.status === "cancelled") return "uncounted";
+      const answered = succeededAt.get(job.name);
+      return answered && answered > time(job.finishedAt) ? "uncounted" : state;
+    };
+    return [
+      ...jobs.map((job) => ({ id: job.id, kind: "job" as const, state: jobState(job),
+        resumable: checkpointed(job) || stoppingAtCheckpoint(job),
+        name: job.name, says: stateOf(job, t).name,
+        // Its own detail, where it already lives.
+        onOpen: () => openJobs({ jobId: job.id, agentId }) })),
+      ...[...newestRun.values()].map((run) => ({ id: run.id, kind: "run" as const,
+        state: runWork(run.status, run.conclusion),
+        name: run.name, says: run.conclusion ?? run.status,
+        onOpen: () => openJobs({ agentId, source: "github_actions" }) })),
+    ].filter((item) => item.state !== "uncounted") as WorkEntry[];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs, ci.runs, agentId, t]);
+  // The way into each whole list, which the column offers where the dock's
+  // own heading and "+N more" take no presses by touch (#459 round 1, P2a).
+  useWorkActivity("job", work.filter((item: WorkEntry) => item.kind === "job"),
+    () => openJobs({ agentId }));
+  useWorkActivity("run", work.filter((item: WorkEntry) => item.kind === "run"),
+    () => openJobs({ agentId, source: "github_actions" }));
   // Jobs, then CI, as marks on the conversation's left edge (WorkDock.tsx).
   // A kind set to 0 has no group here at all.
   return (

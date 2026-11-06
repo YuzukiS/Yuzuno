@@ -5,7 +5,7 @@
 // otherwise it names itself in a small tip. Jobs and runs open their details
 // in the Jobs panel; sub-agents open a card beside the dock.
 import {
-  createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type ReactNode, type RefObject,
 } from "react";
 import {
@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { animates } from "./motion";
-import { byAttention, workActivity, type WorkItem, type WorkKind } from "./work-activity.ts";
+import { byAttention, workActivity, workKinds, type WorkItem, type WorkKind } from "./work-activity.ts";
 import "./work-dock.css";
 
 // The dock's own words (T-189); labels and names come from its callers.
@@ -33,6 +33,9 @@ const column = strings({
   jobs: "Jobs",
   runs: "CI",
   subAgents: "Sub-agents",
+  backgroundTasks: "Background tasks",
+  unknown: "Not recognised",
+  openList: (what: string) => `Open ${what}`,
   empty: "Nothing is running for this Agent.",
 }, {
   title: "工作活动",
@@ -41,6 +44,9 @@ const column = strings({
   jobs: "Jobs",
   runs: "CI",
   subAgents: "子 Agent",
+  backgroundTasks: "后台任务",
+  unknown: "无法识别",
+  openList: (what) => `打开${what}`,
   empty: "这个 Agent 没有在进行的工作。",
 });
 
@@ -138,19 +144,38 @@ export type WorkEntry = WorkItem & {
   says?: string;
   onOpen?: (from: HTMLElement) => void;
 };
-type Register = (kind: WorkKind, items: readonly WorkEntry[]) => void;
+/** How a kind opens the list it belongs to: the dock's heading and "+N more". */
+export type OpenList = (from: HTMLElement) => void;
+type Register = (id: string, kind: WorkKind, items: readonly WorkEntry[], openList?: OpenList) => void;
 const Registry = createContext<Register | null>(null);
 
-/** Hands this kind's work to the dock, and takes it back when it goes. */
-export function useWorkActivity(kind: WorkKind, items: readonly WorkEntry[]) {
+/**
+ * Hands this instance's work to the dock, and takes it back when it goes.
+ *
+ * Keyed by the instance, not by the kind. Two docks of the same kind are
+ * ordinary — Claude's background tasks and the conversation's sub-agents are
+ * both drawn by SubAgentDock — and with one slot per kind they overwrote each
+ * other, while either one's cleanup wrote `[]` and cleared the other's work
+ * as well. The counts in the entry and the column were then whichever
+ * mounted last (#459 round 1, P1).
+ */
+export function useWorkActivity(kind: WorkKind, items: readonly WorkEntry[], openList?: OpenList) {
   const register = useContext(Registry);
+  // Stable for the life of this component, and different per instance.
+  const id = useId();
   // The identity of the array changes on every render; what it says does not.
   const key = JSON.stringify(items);
+  // The opener is a new function on every render; registering it directly
+  // would re-register on each one. A stable wrapper calls the latest.
+  const latest = useRef(openList);
+  latest.current = openList;
+  const has = !!openList;
+  const open = useCallback<OpenList>((from) => latest.current?.(from), []);
   useEffect(() => {
-    register?.(kind, items);
-    return () => register?.(kind, []);
+    register?.(id, kind, items, has ? open : undefined);
+    return () => register?.(id, kind, [], undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [register, kind, key]);
+  }, [register, id, kind, key, has, open]);
 }
 
 /**
@@ -161,21 +186,45 @@ export function useWorkActivity(kind: WorkKind, items: readonly WorkEntry[]) {
 const Activity = createContext<ReturnType<typeof workActivity> | null>(null);
 /** The same work, in the order it should be looked at. */
 const Entries = createContext<readonly WorkEntry[]>([]);
+/** Each kind's way into its own whole list, where it offered one. */
+const Lists = createContext<Partial<Record<WorkKind, OpenList>>>({});
 
 export function WorkActivityProvider({ children }: { children: ReactNode }) {
-  const [work, setWork] = useState<Partial<Record<WorkKind, readonly WorkEntry[]>>>({});
-  const register = useCallback<Register>((kind, items) => {
-    setWork((was) => (was[kind] === items ? was : { ...was, [kind]: items }));
+  const [work, setWork] = useState<Record<string, { kind: WorkKind; items: readonly WorkEntry[]; openList?: OpenList }>>({});
+  const register = useCallback<Register>((id, kind, items, openList) => {
+    setWork((was) => {
+      // Empty is this instance going away: its own slot goes, and no other.
+      if (!items.length) {
+        if (!(id in was)) return was;
+        const next = { ...was };
+        delete next[id];
+        return next;
+      }
+      const had = was[id];
+      if (had && had.kind === kind && had.items === items && had.openList === openList) return was;
+      return { ...was, [id]: { kind, items, openList } };
+    });
   }, []);
-  const sorted = useMemo(
-    () => byAttention([...(work.job ?? []), ...(work.run ?? []), ...(work.subAgent ?? [])]) as WorkEntry[],
-    [work],
-  );
+  const sorted = useMemo(() => {
+    const slots = Object.values(work);
+    // Every instance of a kind together, kinds in the order they are read.
+    const ofKind = (kind: WorkKind) =>
+      slots.filter((slot) => slot.kind === kind).flatMap((slot) => slot.items);
+    return byAttention(workKinds.flatMap(ofKind)) as WorkEntry[];
+  }, [work]);
+  const lists = useMemo(() => {
+    const found: Partial<Record<WorkKind, OpenList>> = {};
+    for (const slot of Object.values(work))
+      if (slot.openList && !found[slot.kind]) found[slot.kind] = slot.openList;
+    return found;
+  }, [work]);
   const activity = useMemo(() => workActivity(sorted), [sorted]);
   return (
     <Registry.Provider value={register}>
       <Activity.Provider value={activity}>
-        <Entries.Provider value={sorted}>{children}</Entries.Provider>
+        <Entries.Provider value={sorted}>
+          <Lists.Provider value={lists}>{children}</Lists.Provider>
+        </Entries.Provider>
       </Activity.Provider>
     </Registry.Provider>
   );
@@ -238,13 +287,26 @@ export function WorkActivityColumn({ onBack }: { onBack: () => void }) {
   const t = useStrings(column);
   const language = useLanguage();
   const entries = useContext(Entries);
-  const needsLook = entries.filter((e) => e.state === "exception" || e.state === "unrecognized");
-  const rest = (kind: WorkKind) => entries.filter((e) => e.kind === kind && !needsLook.includes(e));
+  // The same definition the entry counts by: exceptions are what needs a
+  // look, and work this build has no word for is shown apart rather than
+  // folded in. The column said exception-or-unrecognised, so its heading
+  // could count more than the entry did (#459 round 1, P3a).
+  const needsLook = entries.filter((e) => e.state === "exception");
+  const unknown = entries.filter((e) => e.state === "unrecognized");
+  const rest = (kind: WorkKind) =>
+    entries.filter((e) => e.kind === kind && e.state !== "exception" && e.state !== "unrecognized");
+  // Each kind's own way into its whole list, which by touch the dock itself
+  // no longer offers: its heading and its "+N more" are 28x24 and the dock
+  // takes no presses there, so the column carries them instead (#459 round
+  // 1, P2a). The mixed groups have no single list to open.
+  const lists = useContext(Lists);
   const groups = [
-    { id: "attention", label: t.attention, items: needsLook },
-    { id: "jobs", label: t.jobs, items: rest("job") },
-    { id: "runs", label: t.runs, items: rest("run") },
-    { id: "subAgents", label: t.subAgents, items: rest("subAgent") },
+    { id: "attention", label: t.attention, items: needsLook, openList: undefined },
+    { id: "jobs", label: t.jobs, items: rest("job"), openList: lists.job },
+    { id: "runs", label: t.runs, items: rest("run"), openList: lists.run },
+    { id: "subAgents", label: t.subAgents, items: rest("subAgent"), openList: lists.subAgent },
+    { id: "backgroundTasks", label: t.backgroundTasks, items: rest("backgroundTask"), openList: lists.backgroundTask },
+    { id: "unknown", label: t.unknown, items: unknown, openList: undefined },
   ].filter((group) => group.items.length > 0);
   return (
     <div className="work-activity-column" lang={langTag(language)}>
@@ -280,6 +342,17 @@ export function WorkActivityColumn({ onBack }: { onBack: () => void }) {
                     </button>
                   </li>
                 ))}
+                {group.openList && (
+                  <li>
+                    <button
+                      type="button"
+                      className="work-activity-row work-activity-row-list"
+                      onClick={(event) => group.openList?.(event.currentTarget)}
+                    >
+                      <span className="work-activity-row-name">{t.openList(group.label)}</span>
+                    </button>
+                  </li>
+                )}
               </ul>
             </section>
           ))}

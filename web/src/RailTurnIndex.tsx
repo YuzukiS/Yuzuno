@@ -15,6 +15,7 @@ const text = strings({
   title: "Where you are",
   back: "Back to Agents",
   turn: (n: number) => `Turn ${n}`,
+  loadedTurn: (n: number) => `Loaded turn ${n}`,
   noMessage: "No message",
   reading: "Where you are reading",
   empty: "This conversation has no Turns yet.",
@@ -22,6 +23,7 @@ const text = strings({
   title: "阅读位置",
   back: "返回 Agent 列表",
   turn: (n) => `第 ${n} 轮`,
+  loadedTurn: (n) => `已载入的第 ${n} 轮`,
   noMessage: "没有消息",
   reading: "你正在读的位置",
   empty: "这个会话还没有轮次。",
@@ -30,15 +32,17 @@ const text = strings({
 export function RailTurnIndex({
   turns,
   readingTurnId,
-  loadedNumbering = true,
+  loadedNumbering = false,
   onNavigate,
   onBack,
 }: {
   turns: readonly NativeTurn[];
   /** The Turn the conversation says is being read, if any. */
   readingTurnId?: string;
-  /** False while only part of the conversation is loaded: then the numbers
-   * are of what is here, not of the whole conversation. */
+  /** True while only part of the conversation is loaded (App passes
+   * `!!detail.history`): the numbers are then of what is here, not of the
+   * whole conversation, and each row says so — the same distinction
+   * TurnNavigator's own labels make ("Loaded turn" against "Turn"). */
   loadedNumbering?: boolean;
   onNavigate: (turnId: string) => void;
   onBack: () => void;
@@ -64,7 +68,7 @@ export function RailTurnIndex({
           {turns.map((turn, index) => {
             const here = !!readingTurnId && turn.id === readingTurnId;
             const asked = userRequests(turn)[0];
-            const number = loadedNumbering ? index + 1 : index + 1;
+            const number = index + 1;
             return (
               <li key={turn.id}>
                 <button
@@ -75,7 +79,7 @@ export function RailTurnIndex({
                   onClick={() => onNavigate(turn.id)}
                 >
                   <span className="rail-turn-index-number">
-                    {t.turn(number)}
+                    {loadedNumbering ? t.loadedTurn(number) : t.turn(number)}
                     {here && <span className="rail-turn-index-dot" aria-label={t.reading} />}
                   </span>
                   {/* The words of the Turn, one line: enough to tell it from

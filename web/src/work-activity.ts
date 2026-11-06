@@ -9,7 +9,16 @@
  * what went wrong. What went wrong is never folded into the others, since it
  * is the reason to look.
  */
-export type WorkKind = "job" | "run" | "subAgent";
+/**
+ * Claude's background tasks are a kind of their own, not sub-agents: they are
+ * drawn by the same dock component, and while both registered as "subAgent"
+ * they overwrote each other in the registry (#459 round 1, P1).
+ *
+ * The list is the single place a kind is named. Everything below counts and
+ * totals by walking it, so a kind added here cannot be half-added.
+ */
+export const workKinds = ["job", "run", "subAgent", "backgroundTask"] as const;
+export type WorkKind = (typeof workKinds)[number];
 /**
  * `unrecognized` is work this build has no word for -- a Core older or newer
  * than it. It is counted and shown apart rather than dropped: Work activity
@@ -53,7 +62,7 @@ const empty = (): KindCount => ({ current: 0, done: 0, exception: 0, unrecognize
  * counting it twice would show work that is not there.
  */
 export function workActivity(items: readonly WorkItem[]): WorkActivity {
-  const byKind: Record<WorkKind, KindCount> = { job: empty(), run: empty(), subAgent: empty() };
+  const byKind = Object.fromEntries(workKinds.map((kind) => [kind, empty()])) as Record<WorkKind, KindCount>;
   const seen = new Set<string>();
   for (const item of items) {
     if (!item?.id || !byKind[item.kind]) continue;
@@ -63,7 +72,7 @@ export function workActivity(items: readonly WorkItem[]): WorkActivity {
     byKind[item.kind][item.state] += 1;
   }
   const total = (state: WorkState) =>
-    byKind.job[state] + byKind.run[state] + byKind.subAgent[state];
+    workKinds.reduce((sum, kind) => sum + byKind[kind][state], 0);
   const current = total("current");
   const exception = total("exception");
   const unrecognized = total("unrecognized");

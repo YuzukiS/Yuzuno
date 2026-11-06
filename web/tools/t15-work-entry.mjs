@@ -143,11 +143,16 @@ const seen = await read();
 console.log(JSON.stringify(seen, null, 1));
 
 // The fixture: 7 jobs (2 running, 1 failed, 1 cancelled, 3 succeeded) and
-// 3 CI runs (1 running, 1 success, 1 failure).
+// 3 CI runs (1 running, 1 success, 1 failure), each run a workflow of its own.
+//
+// Two need a look, not three: the Job the user cancelled is not a problem to
+// go and see, so Work activity does not count it (#459 round 1, P2c;
+// deviation row 14). The failed Job and the failed run are the two.
+// t15-counting.mjs holds that rule on its own fixtures.
 check(seen.shown, "the conversation says what it has running");
 check(seen.inHead, "beside its name, where there is room to read it");
 // By the numbers, not by English words: the same entry is read in Chinese.
-check(/\b3\b/.test(seen.counts), `what needs a look is counted (${seen.counts})`);
+check(/\b2\b/.test(seen.counts), `what needs a look is counted, the user's own cancel aside (${seen.counts})`);
 check(seen.needsLook, "and the entry says so to the eye as well");
 check(/\b4\b/.test(seen.counts), `and what is still going (${seen.counts})`);
 // Never one number across the three kinds.

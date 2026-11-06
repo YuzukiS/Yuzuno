@@ -34,6 +34,15 @@
   align-items: center;
   width: var(--work-dock-width);
   max-height: calc(100% - 16px);
+  /* max-height alone only capped the box: a conversation with jobs, runs and
+     sub-agents all at their Appearance limits draws more than fits, and the
+     entries spilled out of the bottom of the conversation and over the
+     composer — measured, the last one took 2px of the "+" beside the input
+     area, so a press aimed at "+" landed on a Job (#459 round 1, P2a). The
+     dock scrolls within its own height instead; nothing is clipped away and
+     nothing is drawn outside. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding-block: 8px;
   color: var(--text-quiet);
 }
