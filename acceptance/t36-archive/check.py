@@ -172,12 +172,17 @@ def agent(agent_id):
     return next(a for a in get('/workspace')['agents'] if a['id'] == agent_id)
 
 
+# Each task's dispatch ID, as its executor passes it with its result.
+DISPATCH = {}
+
+
 def dispatch(lead, t):
     answer = lead.call('task_dispatch', {'requestId': str(uuid.uuid4()), 'taskId': t['id'], 'expectedVersion': t['version'],
                                          'executor': {'templateId': 'worker'}})
     # Over MCP a task write answers with its short receipt: the executor is the task's assignee now.
     REPORT.setdefault('dispatches', []).append(answer)
     executor = answer.get('agentId') or answer['task']['assignee']['id']
+    DISPATCH[t['id']] = answer['task']['dispatch']['id']
     wait_for(lambda: agent(executor), lambda a: a.get('connectionState') == 'connected' and a.get('status') == 'idle',
              'the executor of ' + t['id'] + ' starts and finishes its dispatch turn', seconds=90)
     return executor
@@ -230,7 +235,8 @@ def main():
         REPORT['reasons']['own done'] = exe.refused('task_update', {'requestId': 'done', 'taskId': t2['id'], 'expectedVersion': current['version'],
                                                                      'patch': {'status': 'done'}}, 'executor_done_refused')
         REPORT['reasons']['own done result'] = exe.refused('task_submit_result', {'requestId': 'done-result', 'taskId': t2['id'],
-            'expectedVersion': current['version'], 'summary': 'Finished.', 'status': 'done'}, 'executor_done_refused')
+            'expectedVersion': current['version'], 'dispatchId': DISPATCH[t2['id']], 'summary': 'Finished.', 'status': 'done'},
+            'executor_done_refused')
         check('the executor cannot set its own task done, with task_update or with its result (executor_done_refused)')
         brief = exe.call('brief_get', {})
         exe.call('brief_update', {'requestId': 'ask', 'expectedVersion': brief['version'], 'changes': [{
