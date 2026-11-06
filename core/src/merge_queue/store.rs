@@ -190,7 +190,7 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue) ->
     ensure!(linked, "This PR is not linked to the task; link it with github_links first");
     ensure!(
         enabled(db, repository_id)?,
-        "merge_queue_disabled: the merge queue is off for {repository}; only the user can turn it on in Settings"
+        "merge_queue_disabled: the merge queue is off for {repository}; only the user can turn it on, through PUT /api/merge-queue/repositories/{{id}} on this Core (a Settings switch comes in T-37 S2b)"
     );
     let (latest, running) = review(db, &link)?;
     match checks::review(&json!({"headSha":input.head_sha}), latest.as_ref(), running) {
