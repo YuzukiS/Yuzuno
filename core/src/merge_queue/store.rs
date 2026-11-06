@@ -181,7 +181,7 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue) ->
     let busy: Option<(String, String)> = db
         .query_row(
             &format!("SELECT id,state FROM merge_entries WHERE repository_id=?1 AND number=?2 AND state IN {ACTIVE}"),
-            params![repository_id, number],
+            params![repository_id, number as i64],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
@@ -276,7 +276,8 @@ fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
 
 impl Store {
     pub(super) fn merge_review(&self, link: &str) -> Result<(Option<Value>, bool)> {
-        review(&self.db.read()?, link)
+        let db = self.db.read()?;
+        review(&db, link)
     }
 
     /// The release's checks before anything is read from GitHub, or the
@@ -320,7 +321,7 @@ impl Store {
             "history":[{"at":at,"state":"queued","reason":null,"detail":"released"}],"dryRun":true,"createdAt":at,"updatedAt":at});
         tx.execute(
             "INSERT INTO merge_entries(id,task_id,repository_id,number,state,next_check,data) VALUES(?1,?2,?3,?4,'queued',0,?5)",
-            params![id, p.task, p.repository_id, p.number, e.to_string()],
+            params![id, p.task, p.repository_id, p.number as i64, e.to_string()],
         )?;
         receipt(&tx, actor, "merge_enqueue", &input.request_id, &value, &id)?;
         let head: String = input.head_sha.chars().take(12).collect();
