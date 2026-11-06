@@ -442,6 +442,19 @@
     min-height: 40px;
     padding-inline: 11px;
   }
+  /* Each of these is 28x24 — eighteen of them on a full dock, which no
+     finger can tell apart and which 40px rows could not fit in a 594px
+     panel either. By touch the dock is the glance and the entry above is the
+     way in, the same division the turn dock on the other side already makes
+     (turn-dock.css, V8). They keep their place in the page for a keyboard
+     and a mouse, and what they say is still read aloud. */
+  /* The whole dock, not only its entries: its group boxes reach 2px into the
+     "+" beside the input area, and measured by hit test that "+" came back
+     38px wide instead of its own 40 — the dock was taking presses meant for
+     it. Nothing in the dock needs a press by touch, so none of it takes one. */
+  .app:not(.phone) .work-dock {
+    pointer-events: none;
+  }
 }
 
 /* The way into where the reader is, beside what the conversation is doing:

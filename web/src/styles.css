@@ -3805,3 +3805,42 @@ p {
     min-width: 40px;
   }
 }
+
+/* Targets a finger can hit on a workbench that is not a phone (T-15 V3).
+   Measured by hit test rather than by box — several of these are extended by
+   an ::after that takes the press, and the box understates them — these came
+   back at 28x28 and 30x30 in the toolbar and 28x28 to 30x29 around the input
+   area, against the 40px this task asks for. A phone has had its own 44px
+   rules since T-170; this is the same thought for a tablet, a Duo or any
+   screen worked by touch. The room is there: the toolbar row is 48px.
+   What is deliberately not here: the "…" in an Agent row, which a touch
+   screen reaches by holding the row (agent-actions.css), and the work dock's
+   own entries, which a finger reads rather than presses — the Work activity
+   entry beside the conversation's name opens the same work as a column of
+   44px rows (work-dock.css, V9). */
+@media (hover: none) and (pointer: coarse) {
+  .app:not(.phone) .toolbar .icon-button,
+  .app:not(.phone) .toolbar-nav .catchup-nav,
+  .app:not(.phone) .rail-actions .icon-button,
+  .app:not(.phone) .agent-scope button,
+  .app:not(.phone) .project-group-add,
+  .app:not(.phone) .composer-tool,
+  .app:not(.phone) .interrupt-button,
+  .app:not(.phone) .send-button,
+  .app:not(.phone) .context-usage-button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  /* The "…" keeps the 26px it is drawn at — a wider one would cost the names
+     beside it the width they were given back — and takes its presses from a
+     40px area around itself instead. */
+  .app:not(.phone) .agent-row:is(.selected, :hover, :focus-within) .agent-row-menu::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 40px;
+    height: 40px;
+    transform: translate(-50%, -50%);
+    content: "";
+  }
+}
