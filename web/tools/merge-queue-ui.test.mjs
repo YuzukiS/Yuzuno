@@ -460,3 +460,58 @@ test('the queue is read on its own changes and on refresh, once each, and never 
     assert.equal(lists(), before + 1, 'refresh reads the queue once');
   } finally { p.close(); }
 });
+
+// T-65 R3 (64b1bb5f): the banner that asked is gone once Core reads the
+// repository back unpaused; the card keeps Core's answer.
+test('the unpause answer stays on the repository once Core reads it back unpaused', async () => {
+  let unpaused = false;
+  const cleared = { ...repositories[7], paused: null, pauses: [{ ...redPause, clearedAt: at,
+    clearedBy: { by: 'You', actor: { kind: 'user', id: 'user', name: 'You' }, reason: 'Synthetic look' }, reanchoredAt: sha('c'), acceptedRun: { id: 9001, headSha: sha('c') } }] };
+  const p = mount({ answer: url => {
+    if (url === '/api/merge-queue/repositories/7/unpause') {
+      unpaused = true;
+      return { repository: cleared, reanchored: ['e-queued', 'e-waiting'], main: sha('c'), acceptedRun: { id: 9001, headSha: sha('c') } };
+    }
+    if (url === '/api/merge-queue/repositories/7' && unpaused) return cleared;
+  } });
+  try {
+    await opened(p);
+    const card = () => repoCard(p, 'owner/repo');
+    button(card().querySelector('.merge-pause'), 'Unpause').click();
+    await until(() => card().querySelector('textarea'));
+    button(card().querySelector('.merge-pause'), 'Unpause').click();
+    await until(() => !card().querySelector('.merge-pause'), 'Core read the repository back unpaused');
+    assert.equal(card().querySelector('.merge-unpaused')?.textContent,
+      'Unpaused. 2 waiting entries re-anchored at main ccccccc. Red run 9001 is accepted at that main.', 'the unpause answer stays after the pause clears');
+    assert.match(card().querySelector('.merge-last-pause').textContent, /Last pause: Main CI red, ended .* by You · accepted red run 9001/);
+  } finally { p.close(); }
+});
+
+// T-65 R3: which Projects link which repository is read again only when the
+// Projects change or on Refresh.
+test('the linked repositories are read again only when the Projects change or on refresh, not on a merge queue change', async () => {
+  const p = mount();
+  try {
+    await opened(p);
+    const linkedReads = () => p.calls.filter(c => c.url === '/api/collaboration/github_repositories').length;
+    const lists = () => p.calls.filter(c => c.url === '/api/merge-queue').length;
+    const settle = async () => { for (let n = 0; n < 8; n++) await wait(); };
+    await settle();
+    const start = linkedReads();
+    const startLists = lists();
+    p.rerender({ mergeQueueRevision: '2' });
+    await until(() => lists() > startLists);
+    await settle();
+    assert.equal(linkedReads(), start, 'a merge queue change reads no linked repositories');
+    const before = lists();
+    panel(p).querySelector('[aria-label="Refresh"]').click();
+    await until(() => lists() > before);
+    await settle();
+    assert.equal(linkedReads(), start + 1, 'refresh reads the linked repositories again');
+    const beforeProjects = lists();
+    p.rerender({ mergeQueueRevision: '2', projects: [project, { ...project, id: 'p2', name: 'Second project' }] });
+    await until(() => lists() > beforeProjects);
+    await settle();
+    assert.equal(linkedReads(), start + 3, 'a new Project reads the linked repositories of each');
+  } finally { p.close(); }
+});

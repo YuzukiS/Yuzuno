@@ -417,6 +417,10 @@ export function MergeQueue({
   const projectsNow = useRef(shownProjects);
   projectsNow.current = shownProjects;
   const projectKey = shownProjects.map((p) => p.id).join(" ");
+  // Which Projects link which repository, read again only when the Projects
+  // change or on Refresh, not on every change of the queue (T-65 R3).
+  const linkedRead = useRef<{ key: string; linked: Map<number, Linked> } | null>(null);
+  const relink = useRef(false);
   const signal = useCallback(() => {
     const controller = new AbortController();
     controllers.current.add(controller);
@@ -431,10 +435,13 @@ export function MergeQueue({
     const ticket = ++reads.current;
     const controller = signal();
     const current = () => g === generation.current && ticket === reads.current;
+    const key = projectsNow.current.map((p) => p.id).join(" ");
+    const cached = !relink.current && linkedRead.current?.key === key ? linkedRead.current : null;
+    relink.current = false;
     try {
       const [list, links] = await Promise.all([
         readEntries(taskId, controller.signal),
-        readLinked(projectsNow.current, controller.signal),
+        cached ? { linked: cached.linked, failure: "" } : readLinked(projectsNow.current, controller.signal),
       ]);
       if (!Array.isArray(list?.entries)) throw new Error(queueEn.updatedCore);
       // A task's view shows the repositories its entries are in; otherwise
@@ -457,6 +464,8 @@ export function MergeQueue({
         ),
       );
       if (!current()) return;
+      // A failed read is not kept: the next change reads it again.
+      if (!cached) linkedRead.current = links.failure ? null : { key, linked: links.linked };
       setEntries(list.entries);
       setLinked(links.linked);
       setLinkFailure(links.failure);
@@ -547,6 +556,7 @@ export function MergeQueue({
             onClick={() => {
               setError("");
               // One read: the change re-reads the list and the chosen entry.
+              relink.current = true;
               changed();
             }}
           >
@@ -795,6 +805,13 @@ function RepositoryCard({
   const state = read.state;
   const pause = state?.paused || null;
   const last = state?.pauses?.length ? state.pauses[state.pauses.length - 1] : null;
+  // The last unpause's answer: the pause it ends, and the banner that asked,
+  // are gone once Core reads back unpaused, so the card says it (T-65 R3).
+  const [unpaused, setUnpaused] = useState("");
+  const pausedAt = pause?.at;
+  useEffect(() => {
+    if (pausedAt) setUnpaused("");
+  }, [pausedAt]);
   return (
     <article className="merge-repository" aria-label={name}>
       <header className="merge-repository-heading">
@@ -829,11 +846,19 @@ function RepositoryCard({
           onSelect={onSelect}
           act={act}
           onChanged={onChanged}
+          onUnpaused={setUnpaused}
           t={t}
           language={language}
         />
       ) : (
-        last && <LastPause pause={last} t={t} language={language} />
+        <>
+          {unpaused && (
+            <p className="merge-action-done merge-unpaused" role="status">
+              {unpaused}
+            </p>
+          )}
+          {last && <LastPause pause={last} t={t} language={language} />}
+        </>
       )}
     </article>
   );
@@ -848,6 +873,7 @@ function PauseBanner({
   onSelect,
   act,
   onChanged,
+  onUnpaused,
   t,
   language,
 }: {
@@ -859,6 +885,8 @@ function PauseBanner({
   onSelect: (entryId: string) => void;
   act: Act;
   onChanged: () => void;
+  /** Core's answer, kept by the card once the pause is gone. */
+  onUnpaused: (said: string) => void;
   t: QueueText;
   language: Language;
 }) {
@@ -926,9 +954,11 @@ function PauseBanner({
             main?: string;
             acceptedRun?: { id?: number } | null;
           }>("unpause", repositoryId, reason);
-          onChanged();
           const accepted = answer?.acceptedRun?.id;
-          return `${t.unpaused(answer?.reanchored?.length ?? 0, short(answer?.main))}${typeof accepted === "number" ? t.accepted(accepted) : ""}`;
+          const said = `${t.unpaused(answer?.reanchored?.length ?? 0, short(answer?.main))}${typeof accepted === "number" ? t.accepted(accepted) : ""}`;
+          onUnpaused(said);
+          onChanged();
+          return said;
         }}
       />
     </div>
