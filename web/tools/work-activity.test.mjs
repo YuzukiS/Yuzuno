@@ -66,7 +66,7 @@ test("work that is not of a known kind is ignored rather than guessed at", () =>
   assert.equal(seen.current, 1);
 });
 
-const { jobWork, runWork, subAgentWork } = await import("../src/work-activity.ts");
+const { jobWork, runWork, subAgentWork, reviewWork } = await import("../src/work-activity.ts");
 
 test("a Job's normal ending is the only one that counts as done", () => {
   assert.equal(jobWork("succeeded"), "done");
@@ -102,6 +102,25 @@ test("CI counts by what it concluded", () => {
   assert.equal(runWork("completed", "skipped"), "uncounted");
   assert.equal(runWork("completed", "neutral"), "uncounted");
   assert.equal(runWork("completed", null), "uncounted");
+});
+
+test("a review counts by what Core made of it, and only a pass is done", () => {
+  for (const going of ["preparing", "running"])
+    assert.equal(reviewWork(going, false, null), "current", going);
+  // Only a passing review is done; its own rule for that is reviewPassed.
+  assert.equal(reviewWork("completed", true, "no_findings"), "done");
+  // The one that asks for something of the reader.
+  assert.equal(reviewWork("completed", false, "changes_requested"), "exception");
+  assert.equal(reviewWork("failed", false, null), "exception");
+  // An end Core could not confirm, or a conclusion this build has no word
+  // for, is said apart rather than called a pass or a failure -- the same
+  // rule the dock's marks follow.
+  for (const unsure of [null, "some_new_conclusion", "error"])
+    assert.equal(reviewWork("completed", false, unsure), "unrecognized", String(unsure));
+  assert.equal(reviewWork("some-new-status", false, null), "unrecognized");
+  // Cancelled is nobody's to count: its caller drops it, as the dock's Jobs
+  // drop a cancelled Job, so this only has to not call it a pass.
+  assert.notEqual(reviewWork("cancelled", false, null), "done");
 });
 
 test("a sub-agent paused or working in the background is still going", () => {

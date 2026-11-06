@@ -35,6 +35,7 @@ const column = strings({
   runs: "CI",
   subAgents: "Sub-agents",
   backgroundTasks: "Background tasks",
+  reviews: "Reviews",
   unknown: "Not recognised",
   openList: (what: string) => `Open ${what}`,
   empty: "Nothing is running for this Agent.",
@@ -46,6 +47,7 @@ const column = strings({
   runs: "CI",
   subAgents: "子 Agent",
   backgroundTasks: "后台任务",
+  reviews: "审查",
   unknown: "无法识别",
   openList: (what) => `打开${what}`,
   empty: "这个 Agent 没有在进行的工作。",
@@ -307,6 +309,7 @@ export function WorkActivityColumn({ onBack }: { onBack: () => void }) {
     { id: "runs", label: t.runs, items: rest("run"), openList: lists.run },
     { id: "subAgents", label: t.subAgents, items: rest("subAgent"), openList: lists.subAgent },
     { id: "backgroundTasks", label: t.backgroundTasks, items: rest("backgroundTask"), openList: lists.backgroundTask },
+    { id: "reviews", label: t.reviews, items: rest("review"), openList: lists.review },
     { id: "unknown", label: t.unknown, items: unknown, openList: undefined },
   ].filter((group) => group.items.length > 0);
   return (

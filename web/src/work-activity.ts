@@ -17,7 +17,7 @@
  * The list is the single place a kind is named. Everything below counts and
  * totals by walking it, so a kind added here cannot be half-added.
  */
-export const workKinds = ["job", "run", "subAgent", "backgroundTask"] as const;
+export const workKinds = ["job", "run", "subAgent", "backgroundTask", "review"] as const;
 export type WorkKind = (typeof workKinds)[number];
 /**
  * `unrecognized` is work this build has no word for -- a Core older or newer
@@ -106,6 +106,30 @@ export function jobWork(status: string): Counted {
       // below walks Core's own table, so a status added there without a word
       // here fails before anyone sees it; this branch is for a Core of
       // another age.
+      return "unrecognized";
+  }
+}
+
+/**
+ * A review, by what Core made of it. Only a passing review is done; changes
+ * requested is the one that needs a look. An end Core could not confirm, or
+ * a conclusion this build has no word for, is said apart rather than called
+ * a failure -- the same rule the dock's own marks follow (ReviewJobs.tsx
+ * `dockMark`). A review the reader cancelled is counted by nobody: its
+ * caller drops it, as the Jobs dock drops a cancelled Job (deviation row 14).
+ * `WorkState`, not `Counted`, because every branch here lands on one: this
+ * never has to say "uncounted", and saying so in the type saves its caller
+ * a cast that would hide it if that changed.
+ */
+export function reviewWork(status: string, passed: boolean, conclusion: string | null | undefined): WorkState {
+  switch (status) {
+    case "preparing": case "running":
+      return "current";
+    case "completed":
+      return passed ? "done" : conclusion === "changes_requested" ? "exception" : "unrecognized";
+    case "failed":
+      return "exception";
+    default:
       return "unrecognized";
   }
 }
