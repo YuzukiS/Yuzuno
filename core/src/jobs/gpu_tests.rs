@@ -553,7 +553,7 @@ fn the_budget_view_shows_devices_samples_and_what_managed_jobs_hold() {
 }
 
 #[test]
-fn host_gpu_sampling_and_device_injection() {
+fn host_gpu_device_injection() {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../acceptance/local-jobs/gpu_host_test.py");
     let output = std::process::Command::new("/usr/bin/python3")
