@@ -50,6 +50,11 @@ impl Workspace {
             return tokio::spawn(crate::handover_proposals::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Handover operation ended unexpectedly")?;
         }
+        if operation == "executor_release" {
+            // Its close is awaited in turn; a dropped request does not stop it.
+            return tokio::spawn(crate::executor_release::call(self.clone(), actor.map(str::to_owned), input))
+                .await.context("Releasing an executor ended unexpectedly")?;
+        }
         if operation.starts_with("brief_") {
             return tokio::spawn(crate::project_brief::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Brief operation ended unexpectedly")?;

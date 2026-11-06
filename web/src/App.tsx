@@ -3025,8 +3025,9 @@ export function App() {
       );
       live.sync.mutate((d) => (d.agent.id === id ? { ...d, agent: updated } : d));
       if (currentSelected.current === id)
-        setAgentScope(action === "close" ? "closed" : "active");
-      setNotice(action === "close" ? shell.closedSaved(agent.name) : shell.reopened(agent.name));
+        setAgentScope(action === "close" || action === "release" ? "closed" : "active");
+      setNotice(action === "close" ? shell.closedSaved(agent.name)
+        : action === "release" ? shell.released(agent.name) : shell.reopened(agent.name));
     }
     live.clearError();
     setCatchupSource(null);
@@ -3887,10 +3888,12 @@ export function App() {
                     <strong>This conversation is saved.</strong>
                     <p>
                       {hasDraft ? "Your unfinished draft is saved too. " : ""}
-                      Reopen this agent to continue from the same session.
+                      {agent.releasedAt
+                        ? "This executor was released and stays closed. Dispatch its task again for new work."
+                        : "Reopen this agent to continue from the same session."}
                     </p>
                   </div>
-                  <button
+                  {!agent.releasedAt && <button
                     type="button"
                     className="secondary-button"
                     disabled={previewMode || !!workspaceError}
@@ -3902,7 +3905,7 @@ export function App() {
                     }
                   >
                     <ArchiveRestore size={15} /> Reopen
-                  </button>
+                  </button>}
                 </div>
                 <div className="closed-conversation-metadata">
                   <ConversationMetadata

@@ -37,7 +37,7 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
 }
 
 /// The caller as the collaboration receipts key it.
-pub(super) fn actor_key(actor: &TaskActor) -> String {
+pub(crate) fn actor_key(actor: &TaskActor) -> String {
     if actor.kind == "agent" { format!("agent:{}", actor.id) } else { "user".into() }
 }
 
