@@ -341,7 +341,7 @@ pub(super) fn get(db: &Connection, input: &Value) -> Result<Value> {
         }
     }
     Ok(
-        json!({"taskId":task_number(task.seq),"taskVersion":task.version,
+        json!({"taskId":task_number(db, &task.id)?,"taskVersion":task.version,
         "currentResultId":task.result.as_ref().map(|r| &r["id"]),"result":result,
         "nextBefore":history.last().map(|r| &r["seq"]),"history":history,"hasMore":has_more,
         "artifacts":artifacts,"records":records,"note":NOTE}),

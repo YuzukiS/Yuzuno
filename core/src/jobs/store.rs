@@ -309,7 +309,7 @@ fn notify(db: &Connection, job: &mut Value) -> Result<()> {
         context = super::runs::mail_context(db, job)?;
     }
     let task = job["taskId"].as_str().context("Missing task")?.to_owned();
-    let public_task = format!("T-{}", collaboration::task_key(db, &task)?.1);
+    let public_task = collaboration::task_number(db, &collaboration::task_key(db, &task)?.0)?;
     let place = match job["executor"]["machineName"].as_str() {
         Some(machine) => format!("Job on {machine}"),
         None => "Local job".to_owned(),
@@ -442,7 +442,7 @@ pub(super) fn new_job(
     value["id"] = json!(id);
     value["attempt"] = json!(attempt);
     value["taskId"] = json!(task);
-    value["taskRef"] = json!(format!("T-{}", collaboration::task_key(tx, &task)?.1));
+    value["taskRef"] = json!(collaboration::task_number(tx, &collaboration::task_key(tx, &task)?.0)?);
     value["agentId"] = json!(agent_id);
     value["agent"] = json!(recipient);
     // The machine the submitting Agent runs on (null: this Core's host).

@@ -99,7 +99,9 @@ fn live_jobs(db: &Connection, agents: &HashMap<String, Agent>) -> Result<Vec<Liv
     let mut jobs = vec![];
     for row in rows {
         let (id, agent, status, data, task_project, agent_project) = row?;
-        let data: Value = serde_json::from_str(&data)?;
+        let mut data: Value = serde_json::from_str(&data)?;
+        // The key its task has now, not the one stored when it was submitted (T-56).
+        crate::task_keys::refresh(db, &mut data);
         let name = data["agent"]["name"].as_str().map(str::to_owned).or_else(|| agents.get(&agent).map(|a| a.name.clone()));
         jobs.push(LiveJob {
             project: task_project.or(agent_project),

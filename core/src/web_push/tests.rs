@@ -419,7 +419,7 @@ async fn the_push_read_holds_the_handover_proposals_home_shows() {
     let ids = |read: &notices::Read| read.proposals.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
     let shown = read_now(&ws.store).unwrap();
     assert_eq!(ids(&shown).len(), 1, "a waiting proposal is in the push read");
-    let archive = |archived| crate::projects::ProjectChange { name: None, default_dirs: Default::default(), archived: Some(archived) };
+    let archive = |archived| crate::projects::ProjectChange { name: None, key: None, default_dirs: Default::default(), archived: Some(archived) };
     ws.store.update_project(&p, archive(true)).unwrap();
     assert!(read_now(&ws.store).unwrap().proposals.is_empty(), "an archived Project's proposal is not in the push read, as Home doesn't show it");
     ws.store.update_project(&p, archive(false)).unwrap();

@@ -859,10 +859,7 @@ fn settle(_store: &Store, db: &Connection, run: &mut Value) -> Result<bool> {
                 }
             )
         };
-        let task = format!(
-            "T-{}",
-            collaboration::task_key(db, run["taskId"].as_str().unwrap_or(""))?.1
-        );
+        let task = collaboration::task_number(db, &collaboration::task_key(db, run["taskId"].as_str().unwrap_or(""))?.0)?;
         let resources = super::resource_summary::run_mail(&all);
         let body = format!(
             "Run {} ({id}) {status}: {}. {money} Task {task}.{resources} Read job_run_get(runId={id}) for each attempt's evidence and artifacts. A run's result does not complete the business task.",
@@ -1252,7 +1249,8 @@ impl Store {
             return Ok(run);
         }
         let (author, source) = collaboration::actor_context(self, &tx, actor)?;
-        let (task, number) = collaboration::task_key(&tx, &input.task_id)?;
+        let (task, _) = collaboration::task_key(&tx, &input.task_id)?;
+        let number = collaboration::task_number(&tx, &task)?;
         // Checked before anything is written: a run follows a method record
         // of its own task, as that record reads now.
         let method = input
@@ -1299,7 +1297,7 @@ impl Store {
                 params![id, stage.key, job["id"].as_str()],
             )?;
         }
-        let mut run = json!({"id":id,"requestId":input.request_id,"taskId":task,"taskRef":format!("T-{number}"),
+        let mut run = json!({"id":id,"requestId":input.request_id,"taskId":task,"taskRef":number,
             "agentId":owner["agentId"],"agent":owner["agent"],"requestedBy":author,"source":source,
             "name":input.name,"experiment":input.experiment,"costLimitUsd":input.cost_limit_usd,
             "stages":list,"createdAt":now(),"cancelRequestedAt":null,"notifications":{},"settledAt":null});

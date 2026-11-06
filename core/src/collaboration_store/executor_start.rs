@@ -82,7 +82,7 @@ fn mail(store: &Store, db: &Connection, task: &SharedTask, dispatcher: &str, age
     insert_message(db, json!({"id":id,"seq":0,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},
         "recipient":recipient,"body":body,"taskId":task.id,"replyTo":null,"threadId":id,"createdAt":now(),
         "priority":"normal","source":{"executorAgentId":agent},
-        "metadata":{"kind":"executor","status":status,"agentId":agent,"name":task_number(task.seq)}}))?;
+        "metadata":{"kind":"executor","status":status,"agentId":agent,"name":task_number(db, &task.id)?}}))?;
     Ok(true)
 }
 
@@ -238,7 +238,7 @@ impl Store {
             )?;
             let dispatcher = actor.strip_prefix("agent:");
             let blocker = format!("Its executor did not start, and Core restarted while it rebuilt it. {why}. Dispatch it again.");
-            let number = task_number(load_task(&tx, &task)?.seq);
+            let number = task_number(&tx, &load_task(&tx, &task)?.id)?;
             let body = format!("{number} is blocked: its executor did not start, and Core restarted while it rebuilt it, so no executor works on it. Dispatch it again.");
             block(self, &tx, &task, &from, dispatcher, &blocker, json!({"executors":[{"agentId":from}],"reason":why}), body)?;
         }

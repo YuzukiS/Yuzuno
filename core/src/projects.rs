@@ -21,6 +21,10 @@ pub struct Project {
     pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Its task key prefix (T-56), kept in the `projects.key` column and never
+    /// in `data`, which older Core builds rewrite through this record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// Runs on every open. Older builds set the same `user_version`, so this must
@@ -43,7 +47,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         DELETE FROM project_tasks WHERE task_id NOT IN (SELECT id FROM collaboration_tasks)
             OR project_id NOT IN (SELECT id FROM projects);",
     )?;
-    Ok(())
+    crate::task_keys::migrate(db)
 }
 
 fn validate_name(name: &str) -> Result<String> {
@@ -54,17 +58,33 @@ fn validate_name(name: &str) -> Result<String> {
     Ok(name.into())
 }
 
+fn read(data: &str, key: Option<String>) -> Result<Project> {
+    let mut project: Project = serde_json::from_str(data)?;
+    project.key = key;
+    Ok(project)
+}
+
+/// `data` without the key, which lives in its own column.
+fn data(project: &Project) -> Result<String> {
+    Ok(serde_json::to_string(&Project { key: None, ..project.clone() })?)
+}
+
 fn load(db: &Connection, id: &str) -> Result<Project> {
-    let raw: Option<String> = db
-        .query_row("SELECT data FROM projects WHERE id=?1", [id], |r| r.get(0))
+    let raw: Option<(String, Option<String>)> = db
+        .query_row("SELECT data, key FROM projects WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
-    Ok(serde_json::from_str(&raw.context("project_not_found: Project does not exist")?)?)
+    let (data, key) = raw.context("project_not_found: Project does not exist")?;
+    read(&data, key)
 }
 
 fn all(db: &Connection) -> Result<Vec<Project>> {
-    let mut query = db.prepare("SELECT data FROM projects ORDER BY rowid")?;
-    let rows = query.query_map([], |r| r.get::<_, String>(0))?;
-    rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+    let mut query = db.prepare("SELECT data, key FROM projects ORDER BY rowid")?;
+    let rows = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
+    rows.map(|r| {
+        let (data, key) = r?;
+        read(&data, key)
+    })
+    .collect()
 }
 
 fn ensure_unique_name(db: &Connection, name: &str, except: Option<&str>) -> Result<()> {
@@ -78,7 +98,7 @@ fn ensure_unique_name(db: &Connection, name: &str, except: Option<&str>) -> Resu
 fn save(db: &Connection, project: &Project) -> Result<()> {
     db.execute(
         "UPDATE projects SET data=?1 WHERE id=?2",
-        params![serde_json::to_string(project)?, project.id],
+        params![data(project)?, project.id],
     )?;
     Ok(())
 }
@@ -95,7 +115,7 @@ pub(crate) fn is_archived(db: &Connection, id: &str) -> Result<bool> {
 pub(crate) fn summaries(db: &Connection) -> Result<Vec<serde_json::Value>> {
     Ok(all(db)?
         .into_iter()
-        .map(|p| serde_json::json!({"id":p.id,"name":p.name,"archived":p.archived_at.is_some()}))
+        .map(|p| serde_json::json!({"id":p.id,"name":p.name,"key":p.key,"archived":p.archived_at.is_some()}))
         .collect())
 }
 
@@ -168,7 +188,16 @@ pub(crate) fn task_projects(db: &Connection, task_ids: &[&str]) -> Result<HashMa
     rows.map(|r| Ok(r?)).collect()
 }
 
+/// A real change of Project also changes the task's key (T-56); setting the
+/// Project it is already in changes nothing, so an existing task keeps T-<seq>.
 pub(crate) fn set_task_project(db: &Connection, task_id: &str, project_id: Option<&str>) -> Result<()> {
+    let current: Option<String> = db
+        .query_row("SELECT project_id FROM project_tasks WHERE task_id=?1", [task_id], |r| r.get(0))
+        .optional()?;
+    if current.as_deref() == project_id {
+        return Ok(());
+    }
+    crate::task_keys::moved(db, task_id, project_id)?;
     match project_id {
         None => {
             db.execute("DELETE FROM project_tasks WHERE task_id=?1", [task_id])?;
@@ -189,6 +218,8 @@ pub(crate) fn set_task_project(db: &Connection, task_id: &str, project_id: Optio
 /// that machine's default; existing Agents keep their own folders either way.
 pub struct ProjectChange {
     pub name: Option<String>,
+    /// A new task key prefix (T-56): taken back or new, never another Project's.
+    pub key: Option<String>,
     pub default_dirs: BTreeMap<String, Option<String>>,
     pub archived: Option<bool>,
 }
@@ -215,13 +246,15 @@ impl Store {
             archived_at: None,
             created_at: at.clone(),
             updated_at: at,
+            key: None,
         };
         tx.execute(
             "INSERT INTO projects(id,data) VALUES(?1,?2)",
-            params![project.id, serde_json::to_string(&project)?],
+            params![project.id, data(&project)?],
         )?;
+        let key = crate::task_keys::assign(&tx, &project.id, &project.name)?;
         tx.commit()?;
-        Ok(project)
+        Ok(Project { key: Some(key), ..project })
     }
 
     pub fn update_project(&self, id: &str, change: ProjectChange) -> Result<Project> {
@@ -247,6 +280,10 @@ impl Store {
                 None => project.default_dirs.remove(&machine),
             };
         }
+        if let Some(key) = change.key {
+            crate::task_keys::set(&tx, id, &key)?;
+            project.key = Some(key);
+        }
         project.updated_at = now();
         save(&tx, &project)?;
         tx.commit()?;
@@ -267,6 +304,7 @@ impl Store {
             "project_in_use: {} still has {agents} agent(s) and {tasks} task(s); archive it instead",
             project.name
         );
+        crate::task_keys::project_deleted(&tx, id)?;
         tx.execute("DELETE FROM projects WHERE id=?1", [id])?;
         // Its new-Agent and review defaults go with it (T-190), and its executor templates (T-34).
         tx.execute("DELETE FROM workspace_meta WHERE key=?1", [crate::agent_defaults::project_key(id)])?;
@@ -281,6 +319,7 @@ impl Store {
             name: None,
             default_dirs: BTreeMap::from([(machine.to_owned(), Some(folder.to_owned()))]),
             archived: None,
+            key: None,
         })
     }
 

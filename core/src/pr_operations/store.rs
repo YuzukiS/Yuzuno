@@ -157,7 +157,8 @@ impl Store {
             return Ok((old, false));
         }
         let (author, source) = crate::collaboration_store::actor_context(self, &tx, actor)?;
-        let (task, seq) = crate::collaboration_store::task_key(&tx, &input.task_id)?;
+        let (task, _) = crate::collaboration_store::task_key(&tx, &input.task_id)?;
+        let reference = crate::collaboration_store::task_number(&tx, &task)?;
         let repo = require_repository(&tx, &task, input.repository_id)?;
         require_idle(&tx, input.repository_id, &input.head)?;
         let count: i64 = tx.query_row(
@@ -184,7 +185,7 @@ impl Store {
             .map(|id| crate::collaboration_store::agent_actor(self, &tx, id))
             .transpose()?;
         let id = uuid::Uuid::new_v4().to_string();
-        let record = json!({"id":id,"operationId":id,"taskId":task,"taskReference":format!("T-{seq}"),"requestId":input.request_id,
+        let record = json!({"id":id,"operationId":id,"taskId":task,"taskReference":reference,"requestId":input.request_id,
             "input":value,"repositoryId":input.repository_id,"repository":repo["fullName"],"requestedBy":author,"source":source,
             "notificationRecipient":recipient,"status":"accepted","phase":"Checking pushed branches and existing PRs",
             "attempt":1,"history":[],"notificationId":null,"createdAt":now(),"finishedAt":null,

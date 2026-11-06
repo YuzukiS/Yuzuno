@@ -20,7 +20,8 @@ pub(super) const DESCRIPTION: &str = "Read what a task's Jobs have recorded spen
 impl Store {
     pub(super) fn task_cost(&self, reference: &str) -> Result<Value> {
         let db = self.db.read()?;
-        let (task, number) = collaboration::task_key(&db, reference)?;
+        let (task, _) = collaboration::task_key(&db, reference)?;
+        let number = collaboration::task_number(&db, &task)?;
         let rows = db
             .prepare("SELECT data FROM local_jobs WHERE task_id=?1 ORDER BY seq DESC LIMIT ?2")?
             .query_map(params![task, LIMIT as i64 + 1], |r| r.get::<_, String>(0))?
@@ -101,7 +102,7 @@ impl Store {
         }
         let round = |n: f64, places: f64| (n * places).round() / places;
         let attempts = rows.len().min(LIMIT);
-        Ok(json!({"taskId":format!("T-{number}"),"attempts":attempts,"byStatus":by_status,
+        Ok(json!({"taskId":number,"attempts":attempts,"byStatus":by_status,
             "usd":{"knownUsd":round(known, 1e6),"attemptsReporting":reporting,"attemptsNotRecorded":not_recorded,
                 "attemptsWithUnknown":unknown_attempts,"unknownEntries":unknown_entries,"invalidLines":invalid,
                 "attemptsRunning":live,"complete":not_recorded == 0 && unknown_attempts == 0 && live == 0 && !truncated},

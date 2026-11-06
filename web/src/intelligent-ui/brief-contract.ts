@@ -217,7 +217,7 @@ const researchDeskProps = z.strictObject({
         // attachment here.
         task: z
           .strictObject({
-            taskId: z.string().regex(/^T-[1-9][0-9]{0,9}$/, "Use the task ID, for example T-17."),
+            taskId: z.string().regex(/^(?:T|[A-Z][A-Z0-9]{1,9})-[1-9][0-9]{0,9}$/, "Use the task ID, for example T-17, or a Project task key such as YN-3."),
             activitySeq: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
           })
           .optional(),
@@ -395,7 +395,7 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   LineChart: "A line chart from inline points or a data attachment.",
   BarChart: "A bar chart from inline points or a data attachment; x is usually a label.",
   ScatterChart: "A scatter plot with numeric x, from inline points or a data attachment.",
-  LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12), pr (owner/repo#12), ci (run id), job, review (review id), agent or machine id. layout list shows one row per item in your order, with a short note of yours; for tasks Yuzuno fills in the title, state, assignee and last update, so write none of them. While Home cannot read Core, a list keeps the states it read last and says they are out of date.",
+  LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12, or a Project task key such as YN-3), pr (owner/repo#12), ci (run id), job, review (review id), agent or machine id. layout list shows one row per item in your order, with a short note of yours; for tasks Yuzuno fills in the title, state, assignee and last update, so write none of them. While Home cannot read Core, a list keeps the states it read last and says they are out of date.",
   Attachments: "Shows this section's attachments by name with optional captions.",
   Sources: "Explicit HTTPS or local file references; Table rows cite them by id in sourceIds.",
   ResearchDesk: "A research question as claims with intervals, the conditions and limits of what may be said, the sources and definitions each number rests on, and candidate next steps; see research.",

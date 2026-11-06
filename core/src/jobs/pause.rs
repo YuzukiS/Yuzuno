@@ -225,7 +225,7 @@ fn time_left(job: &Value, at: chrono::DateTime<chrono::FixedOffset>) -> Option<S
 /// failed one and is not resubmitted.
 fn tell(db: &Connection, job: &Value, event: &str) -> Result<()> {
     let task = job["taskId"].as_str().context("Missing task")?;
-    let public_task = format!("T-{}", collaboration::task_key(db, task)?.1);
+    let public_task = collaboration::task_number(db, &collaboration::task_key(db, task)?.0)?;
     let name = job["name"].as_str().unwrap_or("");
     let id = job["id"].as_str().unwrap_or("");
     // A remote attempt's scope is frozen on its machine (remote.rs).

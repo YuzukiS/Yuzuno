@@ -224,10 +224,10 @@ fn attempts(db: &Connection, result: &str) -> Result<Vec<Attempt>> {
 fn view(store: &Store, db: &Connection, result: &str) -> Result<View> {
     let loaded = load(store, db, result)?;
     let task = if loaded.task_id.is_empty() { None } else {
-        let (_, seq) = task_key(db, &loaded.task_id)?;
+        let (internal, _) = task_key(db, &loaded.task_id)?;
         let task = load_task(db, &loaded.task_id)?;
         Some(TaskFacts {
-            id: format!("T-{seq}"), title: task.title, status: task.status, version: task.version, blocker: task.blocker,
+            id: crate::collaboration_store::task_number(db, &internal)?, title: task.title, status: task.status, version: task.version, blocker: task.blocker,
             assignee: task.assignee.map(|a| a.name), archived: task.archived_at.is_some(),
         })
     };

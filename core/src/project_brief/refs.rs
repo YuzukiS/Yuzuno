@@ -98,7 +98,8 @@ impl<'a> Refs<'a> {
                 }
                 shown
             }),
-            "job" => data(db, "SELECT data FROM local_jobs WHERE id=?1", id)?.map(|job| {
+            "job" => data(db, "SELECT data FROM local_jobs WHERE id=?1", id)?.map(|mut job| {
+                crate::task_keys::refresh(db, &mut job);
                 let mut shown = state(json!({"found":true,"title":job["name"]}), job["status"].as_str().unwrap_or("unknown"));
                 shown["taskId"] = job["taskRef"].clone();
                 shown
@@ -107,12 +108,12 @@ impl<'a> Refs<'a> {
                 Some(run) => {
                     let status = run["status"].as_str().unwrap_or("unknown");
                     let conclusion = run["conclusion"].as_str().filter(|c| !matches!(*c, "unknown" | ""));
-                    let task: Option<i64> = db.query_row(
-                        "SELECT t.seq FROM pr_reviews r JOIN collaboration_tasks t ON t.id=r.task_id WHERE r.id=?1",
+                    let task: Option<String> = db.query_row(
+                        "SELECT t.id FROM pr_reviews r JOIN collaboration_tasks t ON t.id=r.task_id WHERE r.id=?1",
                         [id], |r| r.get(0)).optional()?;
                     let mut shown = state(json!({"found":true,"title":run["title"]}), conclusion.unwrap_or(status));
-                    if let Some(seq) = task {
-                        shown["taskId"] = json!(format!("T-{seq}"));
+                    if let Some(task) = task {
+                        shown["taskId"] = json!(crate::collaboration_store::task_number(db, &task)?);
                     }
                     for (field, from) in [("url", "url"), ("observedAt", "finishedAt")] {
                         if run[from].is_string() {

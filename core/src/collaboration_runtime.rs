@@ -22,6 +22,27 @@ impl Workspace {
         operation: &str,
         input: Value,
     ) -> Result<Value> {
+        let output = self.routed_call(actor, operation, input).await?;
+        // Jobs, runs, CI watches, reviews, PR operations and merge entries keep
+        // the task key they were written with; a read shows the key now (T-56).
+        if ["job_", "ci_", "review_", "merge_", "github_"].iter().any(|prefix| operation.starts_with(prefix)) {
+            return self
+                .stored(move |store| {
+                    let mut output = output;
+                    crate::task_keys::refresh(&*store.db.read()?, &mut output);
+                    Ok(output)
+                })
+                .await;
+        }
+        Ok(output)
+    }
+
+    async fn routed_call(
+        self: &Arc<Self>,
+        actor: Option<&str>,
+        operation: &str,
+        input: Value,
+    ) -> Result<Value> {
         if operation.starts_with("job_") {
             return tokio::spawn(crate::jobs::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Job operation ended unexpectedly")?;

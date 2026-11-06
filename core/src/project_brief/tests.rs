@@ -955,7 +955,7 @@ async fn home_orders_projects_and_needs_you_by_priority_then_wait() {
     assert!(home::set_order(&ws.store, &["nope".into()]).is_err());
     assert!(home::set_order(&ws.store, &[first.clone(), first.clone()]).is_err());
     // An archived Project leaves Home and needs no Brief.
-    ws.store.update_project(&second, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
+    ws.store.update_project(&second, crate::projects::ProjectChange { name: None, key: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
     assert_eq!(home::build(&ws.store).unwrap()["order"], json!([first]));
     assert_eq!(agent_edits_brief(&ws.store, "e").unwrap(), None);
 }
