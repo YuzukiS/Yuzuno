@@ -161,8 +161,8 @@ export function entryStatus(e: MergeEntry) {
   return (
     {
       queued: "queued",
-      waiting: "waiting",
-      ready: "waiting",
+      waiting: "pending",
+      ready: "pending",
       merging: "running",
       merged: "running",
       stopped: "failed",

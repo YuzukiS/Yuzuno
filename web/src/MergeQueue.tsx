@@ -788,20 +788,22 @@ function RepositoryCard({
         <strong>
           <Link href={github(name, "")?.replace(/\/$/, "")}>{name}</Link>
         </strong>
-        {state && (
-          <span
-            className={`merge-switch ${state.enabled ? "is-on" : "is-off"}`}
-            title={t.switchTitle}
-          >
-            {state.enabled ? t.switchOn : t.switchOff}
-          </span>
-        )}
-        {/* How a merge lands (T-37 S2b): shown once Core says it. */}
-        {typeof state?.landing === "string" && state.landing && (
-          <span className="merge-landing" title={t.landingTitle}>
-            {t.landings[state.landing] || state.landing}
-          </span>
-        )}
+        <span className="merge-repository-state">
+          {state && (
+            <span
+              className={`merge-switch ${state.enabled ? "is-on" : "is-off"}`}
+              title={t.switchTitle}
+            >
+              {state.enabled ? t.switchOn : t.switchOff}
+            </span>
+          )}
+          {/* How a merge lands (T-37 S2b): shown once Core says it. */}
+          {typeof state?.landing === "string" && state.landing && (
+            <span className="merge-landing" title={t.landingTitle}>
+              {t.landings[state.landing] || state.landing}
+            </span>
+          )}
+        </span>
       </header>
       {read.error && <p className="inline-error">{t.repositoryFailed(read.error)}</p>}
       {pause ? (
