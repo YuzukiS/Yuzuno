@@ -34,6 +34,10 @@ impl Workspace {
             return tokio::spawn(crate::pr_review::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Review operation ended unexpectedly")?;
         }
+        if operation.starts_with("merge_") {
+            return tokio::spawn(crate::merge_queue::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
+                .await.context("Merge queue operation ended unexpectedly")?;
+        }
         if operation.starts_with("github_pr_") {
             return tokio::spawn(crate::pr_operations::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("PR operation ended unexpectedly")?;
