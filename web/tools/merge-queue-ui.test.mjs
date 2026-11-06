@@ -54,7 +54,7 @@ const done = entry('e-done', 'done', {
   evidence: { gate: { kind: 'batch', tree: sha('e'), batch: { branch: 'queue/merge-e-done', commit: sha('d'), pr: 90, main: sha('b') },
     runs: [{ workflow: 'CI', run: 700, attempt: 1, conclusion: 'success' }, { workflow: 'Lint', run: 701, attempt: 2, conclusion: 'skipped' }] } },
   merge: { expectedMain: sha('b'), tree: sha('e'), gate: 'batch', head: sha('a'), attempts: 1, sha: sha('f'), mergedAt: at,
-    post: { ok: true, commit: sha('f'), at }, mainCi: { run: 800, attempt: 1, conclusion: 'success', url: 'https://github.com/owner/repo/actions/runs/800' } },
+    post: { ok: true, commit: { sha: sha('f'), parents: [sha('b'), sha('a')], tree: sha('e') }, at }, mainCi: { run: 800, attempt: 1, conclusion: 'success', url: 'https://github.com/owner/repo/actions/runs/800' } },
 });
 const history = [
   { at, state: 'queued', reason: null, detail: 'released' },
@@ -318,6 +318,31 @@ test('the chosen entry shows its anchor, batch, merge commit, post-check, main C
     // The event comes from the page: compare its fields, not its prototype.
     assert.deepEqual(tasks.map(d => Object.keys(d)), [['taskId']]);
     assert.equal(tasks[0].taskId, 'task-e-done');
+  } finally { p.close(); }
+});
+
+test('the merge card says where its one merge request stands: not sent and why, sent and waiting, or sent with an uncertain answer', async () => {
+  const merge = { expectedMain: sha('b'), tree: sha('e'), gate: 'slot', head: sha('a'), startedAt: at, sha: null, mergedAt: null, post: null, mainCi: null };
+  const entries = [
+    entry('m-limited', 'merging', { number: 21, merge: { ...merge, attempts: 0, notSent: 0, puts: [{ n: 1, at, limited: 'Synthetic rate limit until 21:00' }] } }),
+    entry('m-unsent', 'merging', { number: 22, merge: { ...merge, attempts: 0, notSent: 2, puts: [{ n: 1, at, notSent: 'Synthetic gh could not start' }, { n: 2, at, notSent: 'Synthetic gh could not start' }] } }),
+    entry('m-sent', 'merging', { number: 23, merge: { ...merge, attempts: 1, notSent: 0, puts: [{ n: 1, at }] } }),
+    entry('m-unknown', 'stopped', { number: 24, reason: 'merge_unknown', detail: 'Synthetic timeout on the merge request', merge: { ...merge, attempts: 1, notSent: 0, puts: [{ n: 1, at }] } }),
+    done,
+  ];
+  const p = mount({ entries });
+  try {
+    await opened(p);
+    const request = async number => { await choose(p, number); return detailText(p, 'Merge request')?.textContent ?? null; };
+    assert.equal(await request(21), 'Not sent yet · Synthetic rate limit until 21:00');
+    assert.equal(await request(22), 'Not sent yet · Synthetic gh could not start · 2 sends in a row could not leave Core; five stop the entry');
+    assert.equal(await request(23), 'Sent; waiting for GitHub’s answer');
+    assert.equal(await request(24), 'Sent; GitHub’s answer was uncertain, so it may have merged');
+    assert.match(p.doc.querySelector('.job-detail').textContent, /Merge outcome unknown/);
+    // Once GitHub merged it, the merge commit says it; the request has no row.
+    assert.equal(await request(16), null);
+    assert.equal(detailText(p, 'Merge commit').textContent, 'fffffff');
+    assert.equal(detailText(p, 'Post-check').textContent, 'Parents and tree as tested');
   } finally { p.close(); }
 });
 

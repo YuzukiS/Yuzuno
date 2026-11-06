@@ -53,7 +53,7 @@ const entries = [
     batch: { branch: "queue/merge-e-done", main: sha("b"), commit: sha("d"), tree: sha("e"), pr: 90, closed: true, deleted: true, cleanup: "done" },
     evidence: { gate: { kind: "batch", tree: sha("e"), runs: [{ workflow: "CI", run: 700, attempt: 1, conclusion: "success" }] } },
     merge: { expectedMain: sha("b"), tree: sha("e"), gate: "batch", head: sha("a"), attempts: 1, sha: sha("f"), mergedAt: now,
-      post: { ok: true, commit: sha("f"), at: now }, mainCi: { run: 800, attempt: 1, conclusion: "success", url: "https://github.com/owner/repo/actions/runs/800" } },
+      post: { ok: true, commit: { sha: sha("f"), parents: [sha("b"), sha("a")], tree: sha("e") }, at: now }, mainCi: { run: 800, attempt: 1, conclusion: "success", url: "https://github.com/owner/repo/actions/runs/800" } },
   }),
 ];
 const history = [

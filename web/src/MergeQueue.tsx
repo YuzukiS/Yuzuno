@@ -37,6 +37,7 @@ import {
   type MergeActor,
   type MergeEntry,
   type MergePause,
+  type MergeRecord,
   type MergeRepository,
   type MergeRun,
 } from "./merge-queue";
@@ -132,6 +133,12 @@ const queueEn = {
   runs: "CI runs",
   notYet: "Not yet",
   expectedMain: "Main before the merge",
+  request: "Merge request",
+  requestNotSent: "Not sent yet",
+  requestSent: "Sent; waiting for GitHub’s answer",
+  requestUncertain: "Sent; GitHub’s answer was uncertain, so it may have merged",
+  notSentRun: (count: number) =>
+    `${count} ${count === 1 ? "send" : "sends"} in a row could not leave Core; five stop the entry`,
   mergeCommit: "Merge commit",
   mergedAt: "Merged",
   postCheck: "Post-check",
@@ -255,6 +262,11 @@ const queueText = strings<QueueText>(queueEn, {
   runs: "CI 运行",
   notYet: "尚无",
   expectedMain: "合并前的主分支",
+  request: "合并请求",
+  requestNotSent: "尚未发送",
+  requestSent: "已发送；正在等待 GitHub 的回答",
+  requestUncertain: "已发送；GitHub 的回答不确定，可能已合并",
+  notSentRun: (count) => `连续 ${count} 次发送未能离开 Core；连续五次会停止该条目`,
   mergeCommit: "合并提交",
   mergedAt: "合并时间",
   postCheck: "合并后检查",
@@ -955,6 +967,24 @@ function Runs({ runs, repository, t }: { runs: MergeRun[]; repository: string; t
   );
 }
 
+/**
+ * Where the one merge request stands before GitHub merged it: not sent (and
+ * why the last send certainly merged nothing), sent and waiting, or sent
+ * with an uncertain answer, after which the entry stops with merge_unknown.
+ */
+function MergeRequest({ merge, merging, t }: { merge: MergeRecord; merging: boolean; t: QueueText }) {
+  if (merge.attempts === 1) return <>{merging ? t.requestSent : t.requestUncertain}</>;
+  const last = merge.puts?.length ? merge.puts[merge.puts.length - 1] : null;
+  const why = last?.notSent || last?.limited || "";
+  return (
+    <>
+      {t.requestNotSent}
+      {why && <span className="merge-core-text"> · {why}</span>}
+      {(merge.notSent ?? 0) > 0 && <> · {t.notSentRun(merge.notSent!)}</>}
+    </>
+  );
+}
+
 function EntryDetail({
   entry: e,
   whole,
@@ -1185,6 +1215,14 @@ function EntryDetail({
                 <dt>{t.expectedMain}</dt>
                 <dd>
                   <Sha sha={merge.expectedMain} repository={repo} />
+                </dd>
+              </>
+            )}
+            {!merge.sha && (
+              <>
+                <dt>{t.request}</dt>
+                <dd>
+                  <MergeRequest merge={merge} merging={e.state === "merging"} t={t} />
                 </dd>
               </>
             )}

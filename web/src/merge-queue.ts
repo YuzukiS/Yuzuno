@@ -72,14 +72,27 @@ export interface MergeBatch {
   cleanup?: string | null;
   cleanupError?: string | null;
 }
+/** One merge request per merge (#636): `attempts` is 1 once it is journaled
+ * and may have reached GitHub, 0 while it certainly has not. */
 export interface MergeRecord {
   expectedMain?: string | null;
   tree?: string | null;
   gate?: "slot" | "batch" | null;
   head?: string | null;
+  attempts?: number;
+  /** Each send; `notSent` or `limited` says why one certainly merged nothing. */
+  puts?: { n?: number; at?: string; notSent?: string | null; limited?: string | null }[];
+  /** Sends in a row that could not leave Core; five stop the entry. */
+  notSent?: number;
+  startedAt?: string | null;
   sha?: string | null;
   mergedAt?: string | null;
-  post?: { ok?: boolean; commit?: string | null; detail?: string | null; at?: string } | null;
+  post?: {
+    ok?: boolean;
+    commit?: { sha?: string; parents?: string[]; tree?: string } | string | null;
+    detail?: string | null;
+    at?: string;
+  } | null;
   mainCi?: {
     run?: number;
     attempt?: number;
