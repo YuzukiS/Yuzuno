@@ -45,8 +45,9 @@ export const lifecycleText = strings(
     queuedAt: (position: number) => `Queued · ${position} in line`,
     executor: "Executor",
     executors: "Task executors",
-    // How many of them run and how many wait for a slot (T-43 S2, g7).
-    slotUse: (running: number, queued: number) => `${running} running · ${queued} queued`,
+    // How many wait for a slot and how many run (T-43 S2, g7): the queue
+    // first, so a narrow rail that cuts the line keeps it.
+    slotUse: (running: number, queued: number) => `${queued} queued · ${running} running`,
     slotUseTitle: "Running: started and not released. Queued: waiting for an executor slot (Settings → Executor templates).",
     archived: "Archived",
     archivedToggle: (folded: boolean, count: number) => `${folded ? "Show" : "Hide"} ${count} archived ${count === 1 ? "executor" : "executors"}`,
@@ -69,7 +70,7 @@ export const lifecycleText = strings(
     queuedAt: (position) => `排队中 · 第 ${position} 位`,
     executor: "执行者",
     executors: "任务执行者",
-    slotUse: (running, queued) => `${running} 运行 · ${queued} 排队`,
+    slotUse: (running, queued) => `${queued} 排队 · ${running} 运行`,
     slotUseTitle: "运行：已启动、尚未放行。排队：在等执行者槽位（设置 → 执行者模板）。",
     archived: "已归档",
     archivedToggle: (folded, count) => `${folded ? "显示" : "隐藏"} ${count} 个已归档的执行者`,

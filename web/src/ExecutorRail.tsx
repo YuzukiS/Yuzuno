@@ -78,7 +78,9 @@ export function ExecutorRail({
         <section className="rail-executors" aria-label={t.executors} data-rail-part="executors">
           <h3 className="rail-subgroup-head">
             <span>{t.executors}</span>
-            {queued > 0 && <span className="rail-subgroup-slots" title={t.slotUseTitle}>{t.slotUse(running, queued)}</span>}
+            {queued > 0 && (
+              <span className="rail-subgroup-slots" title={`${t.slotUse(running, queued)}\n${t.slotUseTitle}`}>{t.slotUse(running, queued)}</span>
+            )}
             <span className="rail-subgroup-count">{parts.executors.length}</span>
           </h3>
           {parts.executors.map(renderAgent)}

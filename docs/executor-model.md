@@ -427,8 +427,8 @@ has the blocker (`blocked`); its state stays what it is.
   on you, or failed; delivered, awaiting release; running; archiving;
   queued or starting. A failed executor shows there only while its task is
   blocked on it; a released one, under Archived and in Closed. While some
-  wait for a slot, the group's heading says how many run and how many are
-  queued.
+  wait for a slot, the group's heading says how many are queued and how
+  many run.
 - **An executor's row** says one state under its name, from its lifecycle
   and its runtime together, in place of a runtime status and a lifecycle
   label. The first of these that holds: released (done, 完成); archiving

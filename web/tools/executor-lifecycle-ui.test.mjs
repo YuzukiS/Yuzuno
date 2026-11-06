@@ -141,8 +141,10 @@ test("the sidebar lists a Project's leads, its other Agents, its task executors 
       "lead; the other Agent; executors: failed, delivered awaiting release (two, as listed), running, archiving, queued");
     const executors = p.part("executors");
     assert.ok(executors, "a task executors group");
-    assert.equal(executors.querySelector(".rail-subgroup-head").textContent, "Task executors3 running · 1 queued6",
-      "while one waits for a slot, how many run and how many wait");
+    assert.equal(executors.querySelector(".rail-subgroup-head").textContent, "Task executors1 queued · 3 running6",
+      "while one waits for a slot, how many wait and how many run");
+    assert.match(executors.querySelector(".rail-subgroup-slots").title, /^1 queued · 3 running\nRunning: started and not released\./,
+      "the whole count in its title, where a narrow rail cuts the line");
     assert.deepEqual([...executors.querySelectorAll("article[data-agent-id]")].map((r) => r.dataset.agentId), ["f", "d", "e", "r", "g", "q"]);
     // Each executor's row says its one state; a lead's badge says Lead.
     assert.equal(p.badge("l"), "Lead");
@@ -186,7 +188,7 @@ test("with List order the parts stay, each in the workspace's order; and a reloa
 test("in Chinese the groups and states read in Chinese", async () => {
   const p = await mount({ storage: { ...attention, "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } });
   try {
-    assert.equal(p.part("executors").querySelector(".rail-subgroup-head").textContent, "任务执行者3 运行 · 1 排队6",
+    assert.equal(p.part("executors").querySelector(".rail-subgroup-head").textContent, "任务执行者1 排队 · 3 运行6",
       "in Chinese, how many run and how many wait");
     assert.equal(p.part("archived").querySelector(".rail-archived-toggle").textContent, "已归档1");
     assert.deepEqual(p.state("d"), ["审查", "等待放行"]);
