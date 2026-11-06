@@ -450,7 +450,13 @@ impl Lab {
         self.ws.opencode_compact(ID).await.unwrap();
         self.until("its summary", |d| compaction(d)["_opencodeCompact"]["summary"].is_object()).await;
         self.ws.interrupt(ID).await.unwrap();
-        let d = self.until("its request's end", |d| compaction(d)["_opencodeCompact"]["answer"]["kind"] == "ended").await;
+        // Its answer may be recorded before the read that ends it (its events,
+        // or the whole read after the answer): wait for both. Pending or
+        // unknown, it has not ended yet.
+        let d = self.until("its request's end, and its own", |d| {
+            let attempt = &compaction(d)["_opencodeCompact"];
+            attempt["answer"]["kind"] == "ended" && !matches!(attempt["state"].as_str(), Some("pending" | "unknown"))
+        }).await;
         let attempt = &compaction(&d)["_opencodeCompact"];
         assert_eq!((attempt["state"].as_str(), attempt["nativePending"].as_bool()), (Some("stopped"), Some(true)), "{attempt:#}");
         self.until("the read after the request's answer, published", |_| {
