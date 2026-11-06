@@ -443,3 +443,43 @@
     padding-inline: 11px;
   }
 }
+
+/* The way into where the reader is, beside what the conversation is doing:
+   the rail takes the index where there is a rail, a phone opens its drawer.
+   Same size as the entry beside it, so the two read as one row (T-15). */
+.conversation-index-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  margin: 0;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 11px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.conversation-index-entry:hover,
+.conversation-index-entry:focus-visible {
+  border-color: color-mix(in srgb, var(--ink) 26%, transparent);
+  color: var(--ink);
+}
+.conversation-index-entry:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+.conversation-index-entry[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent-ink, var(--ink)) 45%, transparent);
+  color: var(--accent-ink, var(--ink));
+}
+@media (hover: none) and (pointer: coarse) {
+  .conversation-index-entry {
+    min-height: 40px;
+    padding-inline: 11px;
+  }
+}

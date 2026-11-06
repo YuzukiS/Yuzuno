@@ -1,0 +1,100 @@
+/* The reading index in the rail, in place of the Agents while it shows. */
+.rail-turn-index {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+}
+.rail-turn-index-top {
+  flex: none;
+}
+.rail-turn-index-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 40px;
+  padding: 0 6px;
+}
+.rail-turn-index-title {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.rail-turn-index-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0 0 8px;
+  overflow: auto;
+  list-style: none;
+}
+.rail-turn-index-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  /* A finger's worth, two lines of words (T-15). */
+  min-height: 44px;
+  margin: 0 0 2px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rail-turn-index-row:hover,
+.rail-turn-index-row:focus-visible {
+  border-color: color-mix(in srgb, var(--ink) 14%, transparent);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.rail-turn-index-row:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+/* Where the reader is, said in words as well as in colour. */
+.rail-turn-index-row[data-here] {
+  border-color: color-mix(in srgb, var(--accent-ink, var(--ink)) 40%, transparent);
+  background: var(--accent-wash, color-mix(in srgb, var(--ink) 6%, transparent));
+}
+.rail-turn-index-number {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-weight: 650;
+}
+.rail-turn-index-row[data-here] .rail-turn-index-number {
+  color: var(--accent-ink, var(--ink));
+}
+.rail-turn-index-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.rail-turn-index-said {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-turn-index-empty {
+  margin: 0;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}

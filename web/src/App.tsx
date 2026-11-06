@@ -175,6 +175,7 @@ import { sendingInTurn } from "./delivery-note";
 import { CurrentTurnPrompt } from "./CurrentTurnPrompt";
 import { Jobs, ConversationJobs, openJobs } from "./Jobs";
 import { WorkActivityEntry, WorkActivityProvider } from "./WorkDock";
+import { RailTurnIndex } from "./RailTurnIndex";
 import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
 import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
 import { refreshLiveJobs } from "./live-jobs";
@@ -450,6 +451,10 @@ export function App() {
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.
   const [railOpen, setRailOpen] = useState(true);
+  // The rail shows where the reader is instead of the Agents, until they go
+  // back. One place for it, rather than a drawer of its own beside the one a
+  // phone already has (T-15).
+  const [railIndex, setRailIndex] = useState(false);
   // Phones (T-170): one screen at a time, the Agent list or what is open.
   // The list covers the open view instead of replacing it, so its drafts,
   // reading place and any annotation stay as they were.
@@ -2145,6 +2150,7 @@ export function App() {
   const [nameOpen, setNameOpen] = useState(false);
   const [nameCut, setNameCut] = useState(false);
   useLayoutEffect(() => setNameOpen(false), [selected]);
+  useLayoutEffect(() => setRailIndex(false), [selected]);
   useLayoutEffect(() => {
     const element = nameRef.current;
     if (!element || nameOpen) return;
@@ -2879,6 +2885,16 @@ export function App() {
       </header>
       <aside className="rail" id="agent-sidebar" ref={railBox} lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
         <PanelResizeHandle side="rail" size={panelWidths.rail} />
+        {railIndex && !phone ? (
+          <RailTurnIndex
+            turns={logicalTurns}
+            readingTurnId={readingTurn}
+            loadedNumbering={!!currentDetail?.history}
+            onNavigate={navigateToTurn}
+            onBack={() => setRailIndex(false)}
+          />
+        ) : (
+        <>
         <div className="rail-top">
           <RailHeading
             scope={agentScope}
@@ -3015,6 +3031,8 @@ export function App() {
           onOpenChange={setScopeMenuOpen}
           readOnly={previewMode}
         />
+        </>
+        )}
       </aside>
 
       <ClarificationHost.Provider value={{ workspaceId, detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
@@ -3110,6 +3128,25 @@ export function App() {
                       conversation has, where there is room to read it; the
                       dock keeps the detail (T-15). */}
                   <WorkActivityEntry onOpen={() => openJobs({ agentId: agent.id })} />
+                  {/* And beside it, the way into where the reader is: the
+                      rail takes the index where there is a rail, and a phone
+                      opens the drawer it already has. One entry either way,
+                      rather than one per shape (T-15). */}
+                  <button
+                    type="button"
+                    className="conversation-index-entry"
+                    aria-expanded={phone ? phoneDock === "turns" : railIndex}
+                    aria-label={shell.readingIndex}
+                    title={shell.readingIndex}
+                    onClick={() =>
+                      phone
+                        ? setPhoneDock((open) => (open === "turns" ? null : "turns"))
+                        : setRailIndex((open) => !open)
+                    }
+                  >
+                    <History size={14} aria-hidden="true" />
+                    <span>{readingTurnNumber || logicalTurns.length}/{logicalTurns.length}</span>
+                  </button>
                 </div>
               </div>
               <div

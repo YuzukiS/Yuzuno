@@ -12,6 +12,14 @@
 .conversation-header .conversation-title {
   flex: 1;
 }
+/* The entries beside the name take a line of their own rather than slide
+   under the conversation's tools when the name and the status leave them too
+   little: a chip that cannot be pressed is worse than a taller head, and
+   clipping their counts would hide the very thing they are there to say
+   (T-15). */
+.conversation-heading {
+  flex-wrap: wrap;
+}
 .conversation-heading {
   display: flex;
   align-items: center;

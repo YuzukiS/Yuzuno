@@ -6,6 +6,7 @@
 // in the Jobs panel; sub-agents open a card beside the dock.
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  BriefcaseBusiness,
   Check,
   CircleHelp,
   CircleMinus,
@@ -175,10 +176,14 @@ export function WorkActivityEntry({ onOpen }: { onOpen: (from: HTMLElement) => v
       type="button"
       className="work-activity-entry"
       data-needs-look={activity.exception > 0 || undefined}
+      // The counts are the words worth the room; what they are about is the
+      // icon and the name this carries, since the conversation's heading
+      // cannot hold both labels beside the Agent's name (T-15).
       aria-label={`${t.label}: ${parts.join(" · ") || t.quiet} · ${t.open}`}
+      title={t.label}
       onClick={(event) => onOpen(event.currentTarget)}
     >
-      <span className="work-activity-name">{t.label}</span>
+      <BriefcaseBusiness size={13} aria-hidden="true" />
       <span className="work-activity-counts">{parts.join(" · ") || t.quiet}</span>
     </button>
   );
