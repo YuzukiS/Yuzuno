@@ -132,17 +132,48 @@
   line-height: 1.4;
   opacity: 0.72;
 }
-/* An executor's state in its badge (T-36 S3): what needs someone stands out. */
-.agent-identity > .agent-kind-badge[data-state="failed"] {
+/* An executor's kind and state (T-36 S3) take their own line under its name
+   and status, as a combined status does: beside them the rail is too narrow
+   for "Executor · Delivered, awaiting release". */
+.agent-select:has(> .agent-state-badge) {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  row-gap: 4px;
+}
+.agent-select:has(> .agent-state-badge) .agent-rail-avatar {
+  grid-row: 1 / span 2;
+}
+.agent-select:has(> .agent-state-badge):has(.agent-runtime[data-combined]) {
+  grid-template-columns: 28px minmax(0, 1fr);
+}
+.agent-select:has(> .agent-state-badge):has(.agent-runtime[data-combined]) .agent-rail-avatar {
+  grid-row: 1 / span 3;
+}
+.agent-select > .agent-state-badge {
+  grid-column: 2 / -1;
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: calc(8px + var(--font-adjust, 3px));
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.72;
+}
+/* What needs someone stands out; what is over steps back. */
+.agent-state-badge[data-state="failed"] {
   color: var(--error-ink);
   opacity: 1;
 }
-.agent-identity > .agent-kind-badge[data-state="delivering"] {
+.agent-state-badge[data-state="delivering"] {
   color: var(--attention-ink);
   opacity: 1;
 }
-.agent-identity > .agent-kind-badge[data-state="archived"],
-.agent-identity > .agent-kind-badge[data-state="closed"] {
+.agent-state-badge[data-state="archived"],
+.agent-state-badge[data-state="closed"] {
   opacity: 0.55;
 }
 .agent-identity > .remote-machine-badge > svg {

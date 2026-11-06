@@ -218,7 +218,8 @@ test("Home's Needs you lists the executor you dispatched, never a lead's, and it
     await waitFor(() => rows().length > 0, "Needs you");
     const mine = rows().find((r) => r.dataset.needsYou === "executor:d:delivering");
     assert.ok(mine, "the executor you dispatched is listed");
-    assert.match(mine.textContent, /App · Agent d · Delivered, awaiting your release/);
+    assert.match(mine.textContent, /App · Delivered, awaiting your release/);
+    assert.match(mine.title, /^Agent d · Work d · waiting since /, "its name is in the row's title");
     assert.match(mine.textContent, /T-d · Work d/);
     // In the same render: the lead's executor, its result in too, is not.
     const leads = rows().some((r) => (r.dataset.needsYou ?? "").startsWith("executor:e:") || /Agent e/.test(r.textContent));

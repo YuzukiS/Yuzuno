@@ -221,7 +221,7 @@ export function AgentRailRow({
         <span className="agent-identity">
           <MachineBadge agent={agent} />
           <span className="agent-name">{agent.name}</span>
-          {kind && <span className="agent-kind-badge" data-kind={agent.kind} data-state={lifecycle?.state} title={kind.title}>{kind.name}</span>}
+          {kind && !lifecycle && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
         </span>
         <span
           className={`agent-runtime runtime-${agent.status}${unseen ? ` unseen-${unseen}` : ""}`}
@@ -236,6 +236,13 @@ export function AgentRailRow({
           <span className={`status-dot ${agent.status}`} aria-hidden="true" />
           {label}
         </span>
+        {/* An executor's kind and state take their own line under its name
+            and status (T-36 S3): beside them the rail is too narrow. */}
+        {kind && lifecycle && (
+          <span className="agent-kind-badge agent-state-badge" data-kind={agent.kind} data-state={lifecycle.state} title={kind.title}>
+            {kind.name}
+          </span>
+        )}
       </button>
       {/* After the card's own target in focus order; drawn at its top right. */}
       {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}

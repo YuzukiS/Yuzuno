@@ -64,7 +64,7 @@ export function NeedsYou({
                 type="button"
                 className={`home-needs-item kind-${item.kind}`}
                 data-needs-you={needsYouKey(item)}
-                title={t.waitingSince(item.title, absolute(item.since, time))}
+                title={t.waitingSince(item.kind === "executor" ? `${item.agentName} · ${item.title}` : item.title, absolute(item.since, time))}
                 onClick={() => onJump(item)}
               >
                 {item.kind === "approval" ? (
@@ -79,10 +79,10 @@ export function NeedsYou({
                   <MessageCircleQuestionMark size={14} />
                 )}
                 <span className="home-needs-text">
+                  {/* An executor you dispatched (T-36 S3): what it waits for,
+                      then its task; its name repeats its task's number. */}
                   <span className="home-needs-source">
-                    {projectName(item.projectId)} · {item.agentName}
-                    {/* An executor you dispatched (T-36 S3): what it waits for. */}
-                    {item.kind === "executor" && item.state && <> · {t.executorNeeds[item.state]}</>}
+                    {projectName(item.projectId)} · {item.kind === "executor" && item.state ? t.executorNeeds[item.state] : item.agentName}
                   </span>
                   <strong>{item.kind === "executor" && item.taskId ? `${item.taskId} · ${item.title}` : item.title}</strong>
                 </span>

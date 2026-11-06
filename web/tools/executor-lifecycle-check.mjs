@@ -235,7 +235,9 @@ async function run({ width, height, theme, language }) {
       await page.keyboard.press("Escape");
       if (phone) await page.locator(".phone-back").click({ timeout: 10_000 }).catch(() => {});
       await page.locator(`.agent-list article[data-agent-id="${archivingOne.id}"] .agent-select`).click({ timeout: 10_000 });
+      // The conversation's actions menu (T-184), then Manage… for Agent management.
       await page.getByRole("button", { name: "Conversation actions" }).first().click({ timeout: 10_000 });
+      await page.getByRole("menuitem", { name: "Manage…" }).click({ timeout: 10_000 });
       const archiving = page.locator(".agent-action-card", { has: page.locator("strong", { hasText: /^Archiving$/ }) });
       await archiving.waitFor({ timeout: 10_000 });
       assert.equal(await archiving.locator("small").textContent(), `${archivingOne.executor.reason} Releasing again tries now.`);
