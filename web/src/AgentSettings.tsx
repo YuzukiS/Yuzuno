@@ -7,6 +7,7 @@ import type { Agent, AgentSettings as Settings, ContextUsage, Model, PermissionC
 import { CodexContextSettings, TOKEN_INVALID, tokenSetting } from "./CodexContextSettings";
 import type { CodexContextSettings as ContextSettings } from "./types";
 import { CodexPermissions } from "./CodexPermissions";
+import { OpenCodeLogin } from "./OpenCodeLogin";
 import { langTag, strings, useLanguage } from "./i18n";
 import "./agent-settings.css";
 
@@ -568,6 +569,7 @@ export function AgentSettings({
           {opencode && openCodeNote && (
             <small className="model-catalog-note opencode-version-note">{t.openCodeNewer(openCodeNote.version, openCodeNote.verified)}</small>
           )}
+          {opencode && <OpenCodeLogin agentId={agent.id} disabled={loading || saving} />}
           {!claude && !opencode && (
             <>
               <div className="agent-setting">

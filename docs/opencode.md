@@ -14,7 +14,9 @@ events Core reads exist from 2.0.7. A newer one is noted in the Agent's
 settings, not refused. Before 2.0.29, a turn that ended unsuccessfully while no
 stream was open shows without OpenCode's error text. An older 2.x is refused
 with both versions, saying to update it, and an OpenCode that is not 2.x is
-refused with the version it says it is.
+refused with the version it says it is. Logging an Agent in to a provider here
+needs 2.0.20 or newer; an older 2.x says to update OpenCode to log in here,
+with the version it runs.
 
 Each part moves in two steps. First the routes: what connecting, a session's
 snapshot and its event stream read uses 2.x's own routes (`/api/…`), in 2.x's
@@ -167,6 +169,52 @@ a new one.
   ends by itself. On a Core that is not on Linux or macOS, Core ends OpenCode
   at once and its tools' commands are not ended: the SIGTERM and the wait are
   Unix-only, and OpenCode 2.2.5 has no route to ask it to stop.
+
+## Logging in to a provider
+
+An OpenCode Agent is logged in through its own OpenCode, from its settings
+("Log in to a provider"), once per Agent: Yuzuno copies no login from one
+Agent or from your own OpenCode to another, and never imports a 1.x
+`auth.json`.
+
+- **How:** with an API key, or a sign-in on the provider's own page that
+  gives a link and a code to enter (a device sign-in, GitHub Copilot's say).
+  A sign-in whose page sends your browser back to this computer (`localhost`)
+  isn't offered here: Yuzuno starts it, sees where it sends you, cancels it at
+  once and says to sign in from OpenCode itself. Methods that need anything
+  but text and choices, or a command, are signed in from OpenCode itself too.
+  A method's questions come filled in with their defaults, and a hidden one's
+  default is sent for it, as OpenCode itself does.
+  OpenCode's environment variables (an `OPENROUTER_API_KEY`, say) are listed
+  by name.
+- **Where the key goes:** to that Agent's OpenCode only, which keeps it in its
+  own database (`opencode/<agent>/opencode.db` in Yuzuno's data, readable by
+  you alone). Yuzuno passes it on once and keeps it nowhere: not in its
+  database or journal, which note which provider and label only, not in its
+  logs, not in an error, which gives OpenCode's status and kind only, and not
+  in the page, whose key field is emptied after each request. Yuzuno never
+  reads a login back from OpenCode. The Workspace backup leaves the Agents'
+  OpenCode folders out.
+- **When:** the Agent must be connected. A login applies from the Agent's
+  next model call, a running turn's included. Log out removes it from the
+  Agent's OpenCode.
+- **Only you:** the login is on Yuzuno's page on this computer only, not from
+  a phone, and no Agent can log an Agent in. A program on this computer that
+  can reach Yuzuno's local port is not stopped by this.
+- **When the Agent's database is kept or moved:** deleting an OpenCode Agent
+  keeps its folder, and a database Yuzuno moves aside (`set-aside-N`) is kept
+  too. Before either, with OpenCode stopped, Yuzuno removes every login from
+  that database, overwriting where it was. What can't be read as a database (a
+  WAL left without its database, or a damaged `opencode.db`) is overwritten
+  with zeros and removed instead, so it never keeps the Agent from starting or
+  being deleted. A database still in use refuses the start or the delete, with
+  the reason: stop what is using it, or try again.
+- **Needs** OpenCode 2.0.20 or newer.
+- **Limits:** a sign-in in progress is lost if the Agent's OpenCode restarts;
+  start it again. Overwriting acts on the files' contents: what the disk has
+  already freed (a WAL emptied by SQLite, a journal it made and removed while
+  trying a damaged file) or keeps elsewhere (copy-on-write, snapshots, flash
+  storage) isn't overwritten.
 
 ## What OpenCode does by itself
 
