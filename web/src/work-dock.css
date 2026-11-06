@@ -381,10 +381,15 @@
   .work-dock:is(:hover, :focus-within) .work-dock-item .work-dock-label .work-dock-when {
     opacity: 0.8;
   }
-  /* Beside the node already; the tip need not say it twice. */
-  .work-dock-tip > small.work-dock-when {
-    display: none;
-  }
+}
+/* Beside the node already; the tip need not say it twice. Keyed on the tip's
+   own flag, not on `@container conversation`: the tip is drawn into the page
+   so that it can escape the dock's scroll box, and there it has no
+   conversation container at all — this rule simply stopped matching, and a
+   wide conversation said the time twice (#459 R6, P3). WorkDock.tsx measures
+   the conversation where the container query reads it and sets `data-wide`. */
+.work-dock-tip[data-wide] > small.work-dock-when {
+  display: none;
 }
 /* The narrowest conversations keep a slimmer column. */
 @container conversation (max-width: 480px) {

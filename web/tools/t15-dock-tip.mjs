@@ -15,7 +15,15 @@
 // be — by pointer and by keyboard — while the composer's "+" keeps its 40px
 // and the dock's last entry stays above it.
 //
-// Two screens, because the two halves live under different conditions. The
+// A third screen, wide, because being drawn into the page costs the tip two
+// things that came from the nav it used to live in. The rule that stops a
+// wide conversation saying the time twice is inside
+// `@container conversation (min-width: 760px)`, and the body is in no such
+// container, so it stopped matching; and the nav's `lang` no longer reaches
+// it, so CJK in the tip broke and rendered as whatever the document says
+// (#459 R6, P3). Both are carried on the tip itself now, and read here.
+//
+// Two screens for the rest, because those halves live under different conditions. The
 // tip is a pointer's and a keyboard's, so it is read with a mouse; the 40px
 // "+" rule is a finger's (`(hover: none) and (pointer: coarse)`), and the
 // press the dock once stole was a finger's too, so that is read by touch.
@@ -37,6 +45,8 @@ import { idleJobsBudget, noLiveJobs, noReviews, unmanagedUpdates } from "./brows
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
+const lang = process.env.T15_LANG || "en";
+assert.ok(lang === "en" || lang === "zh-Hans", `T15_LANG must be en or zh-Hans, not ${lang}`);
 const now = Date.now();
 const iso = (ms) => new Date(now + ms).toISOString();
 let failed = 0;
@@ -114,9 +124,9 @@ const browser = await launchBrowser();
 const errors = [];
 
 /** The same 951x669 screen with an 84px inset, by mouse or by finger. */
-const open = async (touch) => {
+const open = async (touch, width = 951) => {
   const context = await browser.newContext({
-    viewport: { width: 951, height: 669 }, hasTouch: touch, isMobile: touch, reducedMotion: "reduce" });
+    viewport: { width, height: 669 }, hasTouch: touch, isMobile: touch, reducedMotion: "reduce" });
   const page = await context.newPage();
   await page.addInitScript((lang) => {
     window.EventSource = class { close() {} };
@@ -126,7 +136,7 @@ const open = async (touch) => {
       localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
     if (lang && lang !== "en") localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang }));
     localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
-  }, process.env.T15_LANG || "en");
+  }, lang);
   await page.route("**/*", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() !== "GET") return route.fulfill({ json: { ok: true } });
@@ -279,6 +289,45 @@ check(!!touchDrawn && touchDrawn.clip <= touchDrawn.composer && touchDrawn.dock 
 check(!!touchDrawn && touchDrawn.atTop <= touchDrawn.composer && touchDrawn.atEnd <= touchDrawn.composer,
   `and no entry is drawn over it either way it is scrolled (${touchDrawn?.atTop}, ${touchDrawn?.atEnd} <= ${touchDrawn?.composer})`);
 await touchContext.close();
+
+// A wide conversation: the time is beside the node there, so the tip must
+// not repeat it, and the tip must still be in the reader's language.
+const { context: wideContext, page: widePage } = await open(false, 1440);
+await widePage.locator(".work-dock-item").nth(2).hover();
+await widePage.waitForTimeout(300);
+const wide = await widePage.evaluate(() => {
+  const panel = document.querySelector(".main-panel");
+  const tip = document.querySelector(".work-dock-tip");
+  const label = document.querySelector(".work-dock-item .work-dock-label .work-dock-when");
+  const drawn = (el) => {
+    if (!el) return false;
+    if (el.checkVisibility) return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const inTip = tip?.querySelector("small.work-dock-when") ?? null;
+  return {
+    conversation: Math.round(panel?.getBoundingClientRect().width ?? 0),
+    tipThere: !!tip,
+    // What the nav used to give it, and the body does not.
+    lang: tip?.getAttribute("lang") ?? null,
+    closestLang: tip?.closest("[lang]")?.getAttribute("lang") ?? null,
+    wideFlag: tip?.hasAttribute("data-wide") ?? null,
+    besideTheNode: drawn(label),
+    timeInTip: !!inTip && drawn(inTip),
+  };
+});
+console.log(`\n--- 1440 wide, a mouse: what the tip kept of the nav ---\n  ${JSON.stringify(wide)}`);
+check(wide.conversation >= 760, `the conversation is wide enough to say the time beside the node (${wide.conversation}px)`);
+check(wide.tipThere, `the tip is there to read (${wide.tipThere})`);
+check(wide.besideTheNode, `and the time is beside the node (${wide.besideTheNode})`);
+check(wide.timeInTip === false,
+  `so the tip does not say it twice (in the tip: ${wide.timeInTip}, flag ${wide.wideFlag})`);
+check(wide.lang === "zh-Hans" || wide.lang === "en",
+  `the tip carries the reader's language itself, the nav's no longer reaching it (${wide.lang})`);
+check(wide.lang === (lang === "zh-Hans" ? "zh-Hans" : "en"),
+  `and it is the language being read (${wide.lang} for ${lang})`);
+await wideContext.close();
 
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ""}`);
 await browser.close();
