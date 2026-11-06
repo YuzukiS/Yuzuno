@@ -64,8 +64,8 @@ const fixture = () => [
   }),
 ];
 
-// `edit`: changes the fixture's tasks for one test.
-async function mount({ reduceMotion = false, language, edit } = {}) {
+// `edit`: changes the fixture's tasks for one test; `agents`: the Workspace's.
+async function mount({ reduceMotion = false, language, edit, agents = [] } = {}) {
   const errors = [];
   const calls = [];
   const tasks = edit ? edit(fixture()) : fixture();
@@ -86,7 +86,7 @@ async function mount({ reduceMotion = false, language, edit } = {}) {
   w.fetch = async (url, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : {};
     calls.push({ url, body });
-    if (url.endsWith("/workspace")) return response({ workspace: { id: "fixture" }, agents: [], projects: [project], runtime: { connected: false }, defaultCwd: "/fixture" });
+    if (url.endsWith("/workspace")) return response({ workspace: { id: "fixture" }, agents, projects: [project], runtime: { connected: false }, defaultCwd: "/fixture" });
     if (url.endsWith("/catchup")) return response({ items: [], coverage: {} });
     if (url.endsWith("/machines")) return response({ machines: [] });
     if (url.endsWith("/task_list")) return response({ tasks, counts: { todo: 1, doing: 2, review: 1, blocked: 1 }, hasMore: false });
@@ -199,8 +199,12 @@ test("a card says where its executor stands: queued with its place, starting wit
 // helper (T-35 S3c, agreed with T-36; #645 merged after #647).
 test("a card whose executor has a lifecycle names the machine auto chose on that chip, and so does the task view (T-35 S3)", async () => {
   const lifecycle = (id, patch) => ({ agentId: `e-${id}`, task: { id, title: `Task ${id}` }, dispatcher: { kind: "user" }, ...patch });
-  const p = await mount({ edit: (tasks) => tasks.map((t) =>
-    t.id === "T-2" ? { ...t, executor: lifecycle("T-2", { state: "running" }) }
+  // T-2's executor is its owner, so the task's view shows its chip beside it.
+  const owner = { id: "e-T-2", name: "T-2 · Reviewer", goal: "", cwd: "/fixture", model: "m", color: "sage", status: "working", harness: "claude",
+    createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, projectId: "p", kind: "executor",
+    executor: lifecycle("T-2", { state: "running" }) };
+  const p = await mount({ agents: [owner], edit: (tasks) => tasks.map((t) =>
+    t.id === "T-2" ? { ...t, assigneeAgentId: owner.id, assignee: { id: owner.id, name: owner.name }, executor: lifecycle("T-2", { state: "running" }) }
       : t.id === "T-3" ? { ...t, executor: lifecycle("T-3", { state: "queued", position: 2 }) } : t) });
   try {
     const chip = (id) => p.row(id).querySelector(".collab-executor-state");
