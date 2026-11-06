@@ -227,14 +227,15 @@ export function WorkActivityEntry({ onOpen }: { onOpen: (from: HTMLElement) => v
       type="button"
       className="work-activity-entry"
       data-needs-look={activity.exception > 0 || undefined}
-      // The counts are the words worth the room; what they are about is the
-      // icon and the name this carries, since the conversation's heading
-      // cannot hold both labels beside the Agent's name (T-15).
-      aria-label={`${t.label}: ${parts.join(" · ") || t.quiet} · ${t.open}`}
+      // The name is read from what is inside, so the counts a reader can see
+      // are the counts a screen reader says and the words voice control
+      // listens for. An aria-label would be a second copy of them, free to
+      // drift from the first (T-15, Dev 7).
       title={t.label}
       onClick={(event) => onOpen(event.currentTarget)}
     >
       <BriefcaseBusiness size={13} aria-hidden="true" />
+      <span className="sr-only">{t.label}: </span>
       <span className="work-activity-counts">{parts.join(" · ") || t.quiet}</span>
     </button>
   );

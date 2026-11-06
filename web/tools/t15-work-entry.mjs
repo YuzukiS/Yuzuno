@@ -81,12 +81,13 @@ const view = { name: "mid", width: 951, height: 669 };
 const context = await browser.newContext({ viewport: { width: view.width, height: view.height },
   hasTouch: true, isMobile: true, reducedMotion: "reduce" });
 const page = await context.newPage();
-await page.addInitScript(() => {
+await page.addInitScript((lang) => {
   window.EventSource = class { close() {} };
+  if (lang && lang !== "en") localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang }));
   if (!localStorage.getItem("yuzuno.appearance"))
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
   localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
-});
+}, process.env.T15_LANG || "en");
 let opened = null;
 await page.exposeFunction("__jobsOpened", (detail) => { opened = detail; });
 await page.addInitScript(() => {
@@ -121,7 +122,12 @@ const read = () => page.evaluate(() => {
   const r = el.getBoundingClientRect();
   return { shown: r.width > 0 && r.height > 0, text: el.textContent?.trim(),
     label: el.getAttribute("aria-label"), needsLook: el.hasAttribute("data-needs-look"),
-    height: Math.round(r.height), inHead: !!el.closest(".conversation-heading") };
+    height: Math.round(r.height), width: Math.round(r.width), inHead: !!el.closest(".conversation-heading"),
+    // What a screen reader says and voice control listens for, computed from
+    // what is inside rather than declared twice (T-15, Dev 7).
+    name: (el.getAttribute("aria-label") ?? el.textContent ?? "").replace(/\s+/g, " ").trim(),
+    counts: el.querySelector(".work-activity-counts")?.textContent?.trim() ?? "",
+    category: el.querySelector(".sr-only")?.textContent?.trim() ?? "" };
 });
 
 let failed = 0;
@@ -133,9 +139,10 @@ console.log(JSON.stringify(seen, null, 1));
 // 3 CI runs (1 running, 1 success, 1 failure).
 check(seen.shown, "the conversation says what it has running");
 check(seen.inHead, "beside its name, where there is room to read it");
-check(/need a look/.test(seen.text || ""), `what needs a look is named (${seen.text})`);
+// By the numbers, not by English words: the same entry is read in Chinese.
+check(/\b3\b/.test(seen.counts), `what needs a look is counted (${seen.counts})`);
 check(seen.needsLook, "and the entry says so to the eye as well");
-check(/running/.test(seen.text || ""), "and what is still going");
+check(/\b4\b/.test(seen.counts), `and what is still going (${seen.counts})`);
 // Never one number across the three kinds.
 check(!/\b\d+ (succeeded|done|passed)\b/.test(seen.text || ""),
   "nothing claims a total of successes across the kinds");
@@ -144,6 +151,14 @@ check(seen.height >= 40, `a finger can reach it (${seen.height}px)`);
 await page.locator(".work-activity-entry").click();
 await page.waitForTimeout(300);
 check(!!opened, `pressing it opens the list (${opened ?? "nothing"})`);
+// The name must carry the words that are on the screen: a label of its own
+// would hide the counts from a screen reader and from voice control, which
+// listens for what a reader can see.
+check(!seen.label, "no aria-label stands in front of what the button says");
+check(seen.name.startsWith(seen.category.replace(/:$/, "")),
+  `the name opens with what it is (${JSON.stringify(seen.name)})`);
+check(seen.counts.length > 0 && seen.name.includes(seen.counts),
+  `and carries the counts a reader can see (${JSON.stringify(seen.counts)})`);
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ""}`);
 await context.close();
 await browser.close();
