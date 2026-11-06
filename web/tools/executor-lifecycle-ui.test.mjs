@@ -138,7 +138,7 @@ test("the sidebar lists a Project's leads, its other Agents, its task executors 
     assert.deepEqual([...executors.querySelectorAll("article[data-agent-id]")].map((r) => r.dataset.agentId), ["f", "d", "e", "r", "g", "q"]);
     // Each executor's badge says its state; a lead's says Lead.
     assert.equal(p.badge("l"), "Lead");
-    assert.equal(p.badge("d"), "Executor · Delivered, awaiting release", "an executor's badge says its state");
+    assert.equal(p.badge("d"), "Executor · Awaiting release", "an executor's badge says its state");
     assert.equal(p.badge("q"), "Executor · Queued · 2 in line");
     assert.equal(p.badge("r"), "Executor · Running");
     assert.equal(p.badge("g"), "Executor · Archiving");
@@ -196,13 +196,13 @@ test("a task's card says its executor's state in place of its slot, and its view
     p.button("Tasks & messages").click();
     const card = (id) => p.doc.querySelector(`.collab-task-card[data-task-id="${id}"]`);
     await waitFor(() => card("T-d"), "the task list");
-    assert.equal(card("T-d").querySelector(".collab-executor-state")?.textContent, "Executor · Delivered, awaiting release", "the card says its executor's state");
+    assert.equal(card("T-d").querySelector(".collab-executor-state")?.textContent, "Executor · Awaiting release", "the card says its executor's state");
     assert.equal(card("T-q").querySelector(".collab-executor-state")?.textContent, "Executor · Queued · 2 in line");
     assert.equal(card("T-q").querySelector(".collab-executor-state").dataset.executorState, "queued");
     assert.ok(!card("T-q").querySelector(".collab-executor-slot"), "the lifecycle takes the slot's place");
     card("T-d").click();
     await waitFor(() => p.doc.querySelector(".collab-detail .collab-owner-line .collab-executor-state"), "the task's view");
-    assert.equal(p.doc.querySelector(".collab-detail .collab-owner-line .collab-executor-state").textContent, "Executor · Delivered, awaiting release");
+    assert.equal(p.doc.querySelector(".collab-detail .collab-owner-line .collab-executor-state").textContent, "Executor · Awaiting release");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -218,7 +218,7 @@ test("Home's Needs you lists the executor you dispatched, never a lead's, and it
     await waitFor(() => rows().length > 0, "Needs you");
     const mine = rows().find((r) => r.dataset.needsYou === "executor:d:delivering");
     assert.ok(mine, "the executor you dispatched is listed");
-    assert.match(mine.textContent, /App · Delivered, awaiting your release/);
+    assert.match(mine.textContent, /App · Awaiting your release/);
     assert.match(mine.title, /^Agent d · Work d · waiting since /, "its name is in the row's title");
     assert.match(mine.textContent, /T-d · Work d/);
     // In the same render: the lead's executor, its result in too, is not.

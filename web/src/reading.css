@@ -134,7 +134,7 @@
 }
 /* An executor's kind and state (T-36 S3) take their own line under its name
    and status, as a combined status does: beside them the rail is too narrow
-   for "Executor · Delivered, awaiting release". */
+   for "Executor · Queued · 2 in line". */
 .agent-select:has(> .agent-state-badge) {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;

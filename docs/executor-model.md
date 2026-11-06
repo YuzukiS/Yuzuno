@@ -402,7 +402,7 @@ first that holds names the state:
 | 4 | `closed` | 已关闭 · Closed | It is closed for another reason: closed by hand, or a failed start that Core rebuilt as a new executor. |
 | 5 | `queued` | 排队中 · Queued | It waits for an executor slot; `position` is its place, 1 first. |
 | 6 | `starting` | 启动中 · Starting | It holds a slot and its runtime is starting. |
-| 7 | `delivering` | 交付待放行 · Delivered, awaiting release | Its result is in, on its own dispatch, and its task is in review. |
+| 7 | `delivering` | 交付待放行 · Awaiting release | Its result is in, on its own dispatch, and its task is in review. |
 | 8 | `running` | 运行中 · Running | Anything else: it is at work. |
 
 Each also names its task (`task.id`, `task.title`), who dispatched it

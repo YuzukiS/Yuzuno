@@ -134,11 +134,16 @@ const fits = (box) => box.evaluate((el) => {
     .filter((c) => c.getBoundingClientRect().right > right).map((c) => c.textContent.trim().slice(0, 40));
 });
 
+// Needs you is one row that scrolls sideways (NeedsYou.tsx): each item fits
+// the row's width, however many there are.
+const fitsRow = (row) => row.evaluate((el) => [...el.querySelectorAll(".home-needs-item")]
+  .filter((item) => item.getBoundingClientRect().width > el.clientWidth + 1).map((item) => item.textContent.trim().slice(0, 40)));
+
 const english = {
-  states: { queued: "Queued", starting: "Starting", running: "Running", delivering: "Delivered, awaiting release", archiving: "Archiving",
+  states: { queued: "Queued", starting: "Starting", running: "Running", delivering: "Awaiting release", archiving: "Archiving",
     archived: "Archived", failed: "Failed", closed: "Closed" },
   queued: (n) => `Queued · ${n} in line`, executor: "Executor", lead: "Lead",
-  executors: "Task executors", delivering: "Delivered, awaiting your release", failed: "Its start failed", blocked: "Its task is blocked",
+  executors: "Task executors", delivering: "Awaiting your release", failed: "Its start failed", blocked: "Its task is blocked",
 };
 const chinese = {
   states: { queued: "排队中", starting: "启动中", running: "运行中", delivering: "交付待放行", archiving: "归档中", archived: "已归档", failed: "失败", closed: "已关闭" },
@@ -206,7 +211,7 @@ async function run({ width, height, theme, language }) {
     }
     // In the same render: the lead's executor, its result in too, is not listed.
     assert.ok(!rows.some((r) => r.startsWith("executor:e58:")), `${tag}: a lead's executor is never in Needs you`);
-    assert.deepEqual(await fits(needsYou), [], `${tag}: Needs you fits its width`);
+    assert.deepEqual(await fitsRow(needsYou.locator(".home-needs-list")), [], `${tag}: each Needs you item fits its row`);
     await shot(needsYou, `${tag}-3-needs-you`);
     check(`${tag}: Home's Needs you lists the failed start and the delivery awaiting release`);
 

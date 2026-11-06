@@ -43,7 +43,7 @@ export const homeText = strings({
   unseenFailed: "Failed",
   unseenFinished: "Finished, not seen",
   executorNeeds: {
-    delivering: "Delivered, awaiting your release",
+    delivering: "Awaiting your release",
     failed: "Its start failed",
     blocked: "Its task is blocked",
   } as Record<"delivering" | "failed" | "blocked", string>,

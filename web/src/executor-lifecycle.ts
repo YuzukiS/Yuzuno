@@ -29,7 +29,7 @@ export const lifecycleText = strings(
       queued: "Queued",
       starting: "Starting",
       running: "Running",
-      delivering: "Delivered, awaiting release",
+      delivering: "Awaiting release",
       archiving: "Archiving",
       archived: "Archived",
       failed: "Failed",
