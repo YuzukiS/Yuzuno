@@ -314,12 +314,14 @@ pub(super) fn checkouts(jobs: &[Checkout], main: &str, head: &str, tree: &str) -
 /// merges. A `main_red` pause clears itself once main has moved past the red
 /// commit and CI on the new main finished green: `Ok(Some(..))` says so, with
 /// what cleared it, and the store re-anchors every waiting entry there.
-pub(super) fn pause(paused: &Value, main: &str, runs: &[Value]) -> Check<Option<Value>> {
+pub(super) fn pause(paused: &Value, base: &str, main: &str, runs: &[Value]) -> Check<Option<Value>> {
     if paused.is_null() {
         return Ok(None);
     }
     let reason = paused["reason"].as_str().unwrap_or("paused");
-    if reason == "main_red" && paused["main"] != main {
+    // Only an entry on the base the pause was recorded on reads that branch's
+    // newer green main; another branch's green head says nothing about it.
+    if reason == "main_red" && paused["base"] == base && paused["main"] != main {
         let green = runs.iter().find(|r| r["name"] == CI && r["head_sha"] == main);
         if let Some(run) = green.filter(|r| r["status"] == "completed" && r["conclusion"] == "success") {
             return Ok(Some(json!({"by":"a newer green main","main":main,"run":run["id"]})));

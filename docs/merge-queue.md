@@ -46,6 +46,7 @@ entry is created:
   task's active dispatcher and a lead of the task's Project. The task's
   executor can never release its own PR.
 - **The PR is linked to the task** and its repository to the task's Project.
+- **The PR's base is the repository's default branch.** The queue merges into that branch only; a PR into another base is refused, naming both.
 - **The review passes.** Releasing is the lead's statement that the project's
   review pair is complete. Core checks that the last completed review round of
   the PR reviewed exactly the released head and passes the review policy
@@ -106,8 +107,10 @@ Once every check holds, the entry merges, one merge at a time per repository:
    If main moved since the check, nothing is sent and every check runs again on
    the new main. Reads that keep failing here (eight in a row) stop the entry
    with `github_unreachable`, with no pause: nothing was sent. Otherwise Core
-   journals the request, then sends it. The remaining window is one round
-   trip, which the post-check covers.
+   journals the request, then sends it, with a deadline of its own (60 s,
+   longer than a read's), since GitHub can take longer to merge than to
+   answer a read. The remaining window is one round trip, which the
+   post-check covers.
 2. A certain answer decides: merged goes on to the post-check, and a refusal
    stops the entry with `merge_refused`. An uncertain answer (a timeout, a
    dropped connection after sending, a 5xx, an answer Core cannot read) is
@@ -162,6 +165,10 @@ until a person has looked; a stop after which Core certainly merged nothing
 does not. While it is
 paused, entries are still checked but none merges, and the pause and its end
 are mailed, urgent, to the releaser and the leads of the repository's Projects.
+
+A pause belongs to the base branch it was recorded on. Only an entry on that
+branch can end it by a newer green main, and only that branch's waiting entries
+are re-anchored when it ends.
 
 `merge_unpause` ends a pause. Only a lead of a Project the repository is linked
 to, or the user, may call it. Retried with the same `requestId`, it returns its

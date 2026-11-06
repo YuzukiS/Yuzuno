@@ -112,7 +112,7 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     let repository = t.repository;
     let queue = ws.stored(move |s| s.merge_repository(repository)).await?;
     let paused = queue["paused"].clone();
-    if let Some(cleared) = hold!(checks::pause(&paused, &main, &main_runs)) {
+    if let Some(cleared) = hold!(checks::pause(&paused, &t.base, &main, &main_runs)) {
         // The pause ended at this main: the store re-anchors the entry here, so
         // main health counts from here too, not from before the red run.
         (since, anchored) = (main.clone(), crate::model::now());
@@ -514,6 +514,14 @@ fn limited(code: u16, answer: &Value) -> Result<()> {
 pub(super) async fn release_reads(ws: &Arc<Workspace>, repo: &str, number: u64) -> Result<(Value, String)> {
     let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
     let base = pr["base"]["ref"].as_str().context("The PR has no base branch")?.to_owned();
+    // The queue merges into the default branch only: one pause and one main
+    // per repository. Refused before anything of another branch is read.
+    let default = pr["base"]["repo"]["default_branch"].as_str().unwrap_or("");
+    ensure!(
+        !default.is_empty() && base == default,
+        "merge_not_default_branch: the merge queue merges only into the repository's default branch ({}); this PR's base is {base}",
+        if default.is_empty() { "not known" } else { default }
+    );
     let main = base_commit(ws, repo, &base).await?;
     Ok((pr, main))
 }

@@ -417,7 +417,8 @@ fn pause(store: &Store, db: &Connection, e: &Value, reason: &str, main: &str, ru
 }
 
 /// End the repository's pause: journal what ended it, and re-anchor every
-/// waiting entry at `main`, so main CI counts for them from there on.
+/// waiting entry on the paused base branch at `main` (that branch's head), so
+/// main CI counts for them from there on.
 /// `skip` is an entry the caller re-anchors itself. An unpause while main is
 /// still the red commit of a main_red pause accepts that red run; the journal
 /// keeps it, and every entry anchored at that main no longer counts it (by its
@@ -447,7 +448,12 @@ fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &s
     let waiting = q
         .query_map([repository_id], |row| row.get::<_, String>(0))?
         .map(|r| Ok(serde_json::from_str::<Value>(&r?)?))
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        // `main` is the paused branch's head: an entry on another base is not
+        // anchored there.
+        .filter(|e| !paused["base"].is_string() || e["baseBranch"] == paused["base"])
+        .collect::<Vec<_>>();
     let text = if accepted.is_null() {
         format!(
             "Merge queue: {} unpaused ({} cleared by {}). Waiting entries count main CI from main {} on.",

@@ -136,12 +136,17 @@ pub(super) fn failure(stderr: &[u8], code: Option<i32>) -> anyhow::Error {
 pub struct Client {
     pub(crate) program: String,
     pub(crate) deadline: Duration,
+    /// How long a merge request may take to answer. GitHub can take longer to
+    /// merge than to answer a read, and an answer lost to the read deadline
+    /// would stop the merge queue on an uncertain merge.
+    pub(crate) merge_deadline: Duration,
 }
 impl Default for Client {
     fn default() -> Self {
         Self {
             program: "gh".into(),
             deadline: Duration::from_secs(12),
+            merge_deadline: Duration::from_secs(60),
         }
     }
 }
@@ -554,6 +559,7 @@ impl Client {
         method: &str,
         endpoint: &str,
         body: Option<&Value>,
+        deadline: Duration,
     ) -> Result<(u16, Value)> {
         // `not_sent:` marks a failure before the request could reach GitHub;
         // every other failure may have reached it.
@@ -605,7 +611,7 @@ impl Client {
             let value = if rest.trim().is_empty() { Value::Null } else { serde_json::from_str(rest.trim()).unwrap_or(Value::Null) };
             Ok((code, value))
         };
-        match tokio::time::timeout(self.deadline, operation).await {
+        match tokio::time::timeout(deadline, operation).await {
             Ok(answer) => answer,
             Err(_) => {
                 let _ = child.kill().await;

@@ -102,7 +102,7 @@ fn green() -> Value {
     commits.insert(sha('9'), commit(sha('9'), sha('8'), vec![main_sha(), head()]));
     commits.insert(batch_merge_ref(), commit(batch_merge_ref(), tree(), vec![main_sha(), batch_commit()]));
     json!({"pull":{"number":11,"state":"open","draft":false,"merged":false,"merged_at":null,"mergeable":true,"mergeable_state":"clean",
-            "head":{"sha":head(),"ref":"feature"},"base":{"ref":"main","sha":main_sha()}},
+            "head":{"sha":head(),"ref":"feature"},"base":{"ref":"main","sha":main_sha(),"repo":{"default_branch":"main"}}},
         "main":main_sha(),"merge":merge_sha(),"commits":commits,
         "mainRuns":[{"id":90,"name":"CI","head_sha":main_sha(),"status":"completed","conclusion":"success","created_at":"2026-11-05T05:00:00Z"}],
         "runs":[{"id":41,"name":"CI","run_attempt":1,"status":"completed","conclusion":"failure","head_sha":head()},
@@ -196,6 +196,7 @@ if method=='PUT' and path=='pulls/11/merge':
     if answer=='429': out(429,{'message':'API rate limit exceeded'})
     if answer=='noauth':
         print('To get started with GitHub CLI, please run:  gh auth login',file=sys.stderr); sys.exit(4)
+    if answer=='slowok': time.sleep(2)
     if answer=='hang':
         time.sleep(5); out(502,{'message':'Bad gateway'})
     if answer=='502': out(502,{'message':'Bad gateway'})
@@ -224,6 +225,7 @@ if path.startswith('git/ref/heads/queue/'):
     name=path[len('git/ref/heads/'):]
     out(200,{'object':{'sha':s['refs'][name]}}) if name in s['refs'] else out(404,{})
 if path=='git/ref/heads/main': out(200,{'object':{'sha':s['main']}})
+if path.startswith('git/ref/heads/') and path[len('git/ref/heads/'):] in s.get('branches',{}): out(200,{'object':{'sha':s['branches'][path[len('git/ref/heads/'):]]}})
 if path=='branches/main': out(200,{'commit':{'sha':s.get('branchMain',s['main'])}})
 if path=='git/ref/pull/11/merge':
     out(200,{'object':{'sha':s['merge']}}) if s['merge'] else out(404,{})
@@ -1031,6 +1033,7 @@ async fn a_timed_out_merge_request_stays_uncertain() {
     let client = &mut Arc::get_mut(&mut ws).unwrap().github.client;
     client.program = program;
     client.deadline = std::time::Duration::from_secs(1);
+    client.merge_deadline = std::time::Duration::from_secs(1);
     let task = setup(&ws.store);
     let lab = Lab { dir, ws, task };
     lab.release(Some("lead"), "r1").await.unwrap();
@@ -1810,7 +1813,7 @@ async fn a_job_log_read_stops_at_its_limit() {
     let script = dir.path().join("gh.py");
     std::fs::write(&script, "#!/usr/bin/python3\nimport sys\nsys.stdout.write('x'*(5000 if 'jobs/1/logs' in ' '.join(sys.argv) else 10))\n").unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let client = crate::github::client::Client { program: script.to_string_lossy().into(), deadline: std::time::Duration::from_secs(5) };
+    let client = crate::github::client::Client { program: script.to_string_lossy().into(), deadline: std::time::Duration::from_secs(5), ..Default::default() };
     let (bytes, truncated) = client.log_prefix("repos/o/r/actions/jobs/1/logs", 1000).await.unwrap();
     assert_eq!((bytes.len(), truncated), (1000, true), "the read stops at the limit and says so");
     let (bytes, truncated) = client.log_prefix("repos/o/r/actions/jobs/2/logs", 1000).await.unwrap();
@@ -1832,4 +1835,77 @@ fn the_routes_and_tools_are_well_formed() {
         crate::collaboration_store::tool_definitions().iter().any(|t| t["name"] == "merge_enqueue"),
         "the queue's tools are offered to Agents"
     );
+}
+
+
+/// The queue merges only into the repository's default branch: a PR into any
+/// other base is refused at release, naming both, and nothing is queued.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pr_into_another_branch_than_the_default_is_refused_at_release() {
+    let lab = lab_with(|s| {
+        s["pull"]["base"]["ref"] = json!("release-1.x");
+        s["branches"] = json!({"release-1.x": sha('e')});
+    });
+    let released = lab.release(Some("lead"), "r1").await;
+    assert!(released.is_err(), "a PR into another base is refused at release: {released:?}");
+    let refused = released.unwrap_err().to_string();
+    assert!(refused.starts_with("merge_not_default_branch"), "it says why: {refused}");
+    assert!(refused.contains("(main)") && refused.contains("release-1.x"), "the refusal names both branches: {refused}");
+    let queued: i64 = lab.ws.store.db.read().unwrap().query_row("SELECT COUNT(*) FROM merge_entries", [], |r| r.get(0)).unwrap();
+    assert_eq!(queued, 0, "nothing is queued");
+}
+
+/// A pause belongs to the base it was recorded on: only that branch's newer
+/// green head ends it.
+#[test]
+fn a_pause_is_ended_only_by_a_newer_green_head_of_its_own_base() {
+    let paused = json!({"reason":"main_red","at":"2026-11-06T00:00:00Z","detail":"Main CI run 91 concluded failure","main":sha('b'),"run":91,"base":"main"});
+    let green = vec![json!({"id":92,"name":"CI","head_sha":main_sha(),"status":"completed","conclusion":"success"})];
+    assert!(checks::pause(&paused, "release-1.x", &main_sha(), &green).is_err(), "another base's green head does not end main's pause");
+    assert!(matches!(checks::pause(&paused, "main", &main_sha(), &green), Ok(Some(_))), "main's own newer green head does");
+}
+
+/// An entry on another base (one released before the default branch changed)
+/// is not re-anchored at main's head when main's pause ends.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_entry_on_another_base_is_not_reanchored_when_main_s_pause_ends() {
+    let paused = json!({"reason":"main_red","at":"2026-11-06T00:00:00Z","detail":"Main CI run 91 concluded failure","main":sha('b'),"run":91,"base":"main"});
+    let lab = lab(green());
+    let id = lab.release(Some("lead"), "r1").await.unwrap()["id"].as_str().unwrap().to_owned();
+    {
+        let db = lab.ws.store.db.write().unwrap();
+        db.execute("UPDATE merge_entries SET data=json_set(data,'$.baseBranch','release-1.x','$.mainAtRelease',?1) WHERE id=?2", rusqlite::params![sha('e'), id]).unwrap();
+        db.execute("UPDATE merge_repositories SET data=json_set(data,'$.paused',json(?1)) WHERE repository_id=7", [paused.to_string()]).unwrap();
+    }
+    unpause_by_lead2(&lab).await;
+    assert!(lab.paused()["paused"].is_null(), "the unpause ends the pause");
+    let e = entry_by_id(&lab, &id).await;
+    assert_eq!(e["mainAtRelease"], json!(sha('e')), "an entry on another base is not re-anchored at main's head: {e}");
+}
+
+/// A merge GitHub answers after the read deadline is still a certain answer:
+/// the merge request has its own, longer deadline.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_answered_after_the_read_deadline_is_merged_not_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = fake_gh(dir.path(), {
+        let mut s = green();
+        s["mergeAnswers"] = json!(["slowok"]);
+        s
+    });
+    let mut ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let client = &mut Arc::get_mut(&mut ws).unwrap().github.client;
+    client.program = program;
+    // Reads time out after 1 s; the merge answers after 2 s.
+    client.deadline = std::time::Duration::from_secs(1);
+    let task = setup(&ws.store);
+    let lab = Lab { dir, ws, task };
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "a merge answered after the read deadline is merged: {e}");
+    assert_eq!(writes(lab.dir.path()).len(), 1, "with one request");
 }

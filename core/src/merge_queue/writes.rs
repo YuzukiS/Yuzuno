@@ -49,6 +49,8 @@ pub(super) async fn write(ws: &Arc<Workspace>, repository: i64, repo: &str, w: W
     if !on {
         bail!("merge_queue_disabled: the merge queue is off for {repo}; Core writes nothing to GitHub until the user turns it on");
     }
+    let client = &ws.github.client;
+    let deadline = if matches!(w, Write::Merge { .. }) { client.merge_deadline } else { client.deadline };
     let (method, endpoint, body) = match w {
         Write::CreateBranch { branch, main } => {
             ours(branch)?;
@@ -74,5 +76,5 @@ pub(super) async fn write(ws: &Arc<Workspace>, repository: i64, repo: &str, w: W
         ),
     };
     let _slot = ws.github.slots.acquire().await?;
-    ws.github.client.answered_write(method, &endpoint, body.as_ref()).await
+    client.answered_write(method, &endpoint, body.as_ref(), deadline).await
 }
