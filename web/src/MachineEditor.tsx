@@ -314,7 +314,7 @@ export function MachineEditor({
           onChange={(e) => setExecutors(e.target.value)}
           placeholder={executorText.placeholder}
         />
-        <span className="field-hint">{executorLimit.error || executorText.help}</span>
+        <span className="field-hint">{executorLimit.readError || executorText.help}</span>
       </label>
       {error && (
         <p role="alert" className="remote-field-error">

@@ -44,36 +44,42 @@ export const parseMachineLimit = (draft: string, max: number): number | null | u
 export const versionConflict = (error: unknown) => errorText(error).startsWith("version_conflict");
 
 /** This machine's own limit as Core lists it, read while `active`; a machine
- * with none saved reads as version 0, no limit. `reload` reads it again. */
+ * with none saved reads as version 0, no limit. `reload` reads it again.
+ * `readError` is the last read's failure only: each read starts without it,
+ * so one that succeeds clears it (#645 R2 62b6a3ef). */
 export function useMachineLimit(machineId: string | undefined, active: boolean) {
   const [limit, setLimit] = useState<MachineSlots | null>(null);
   const [max, setMax] = useState(64);
-  const [error, setError] = useState("");
+  const [readError, setReadError] = useState("");
   const [reads, setReads] = useState(0);
   useEffect(() => {
     if (!active || !machineId) return;
     const controller = new AbortController();
+    setReadError("");
     readExecutorSlots(controller.signal).then((view) => {
       if (controller.signal.aborted) return;
       setMax(view.limits.max);
       setLimit(view.machines.find((m) => m.id === machineId) ?? { id: machineId, name: machineId, version: 0, slots: null, executors: 0 });
     }).catch((e) => {
-      if (!controller.signal.aborted) setError(errorText(e));
+      if (!controller.signal.aborted) setReadError(errorText(e));
     });
     return () => controller.abort();
   }, [active, machineId, reads]);
-  return { limit, max, error, setError, adopt: setLimit, reload: () => setReads((n) => n + 1) };
+  return { limit, max, readError, adopt: setLimit, reload: () => setReads((n) => n + 1) };
 }
 
 /** The Core host card's own control: the field and its Save. */
 export function MachineExecutorLimit({ machineId, language, disabled = false }: { machineId: string; language: Language; disabled?: boolean }) {
   const t = machineLimitText(language);
-  const { limit, max, error, setError, adopt, reload } = useMachineLimit(machineId, true);
+  const { limit, max, readError, adopt, reload } = useMachineLimit(machineId, true);
+  // What a save said (a refusal or a conflict), apart from the read's own
+  // failure: a conflict's reload keeps it in view.
+  const [error, setError] = useState("");
   // Untouched, the field shows what is saved.
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  if (!limit) return error ? <p className="inline-error" role="alert">{error}</p> : null;
+  if (!limit) return readError ? <p className="inline-error" role="alert">{readError}</p> : null;
   const shown = draft ?? (limit.slots === null ? "" : String(limit.slots));
   const parsed = parseMachineLimit(shown, max);
   const changed = parsed !== undefined && parsed !== limit.slots;
@@ -111,7 +117,7 @@ export function MachineExecutorLimit({ machineId, language, disabled = false }: 
         </button>
         {done && !changed && <span className="field-hint" role="status">{t.saved}</span>}
       </div>
-      {error && <p className="inline-error" role="alert">{error}</p>}
+      {(error || readError) && <p className="inline-error" role="alert">{[error, readError].filter(Boolean).join(" ")}</p>}
     </div>
   );
 }

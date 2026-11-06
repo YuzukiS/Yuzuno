@@ -718,6 +718,72 @@ test("the Core host card sets its own executor limit, through the route for loca
   }
 });
 
+// #645 R2 62b6a3ef: a failed read of the limit is said until a read succeeds;
+// a save's own message (a conflict) is kept apart, so its reload keeps it.
+test("the executor limit field says a failed read until a later read succeeds, and the Core host card keeps a conflict in view while its limit is read again", async () => {
+  const unavailable = { status: 503, ok: false, json: async () => ({ error: "executor slots are not available right now" }),
+    text: async () => JSON.stringify({ error: "executor slots are not available right now" }) };
+  const conflict = { status: 400, ok: false, json: async () => ({ error: "version_conflict: these executor slots changed; reload before saving" }),
+    text: async () => JSON.stringify({ error: "version_conflict: these executor slots changed; reload before saving" }) };
+  const reads = (page) => page.calls.filter((c) => c.method === "GET" && c.url.endsWith("/executor-slots")).length;
+  const hint = (page) => [...page.document.querySelectorAll(".remote-machine-editor label")]
+    .find((l) => l.textContent.trim().startsWith("Executors at once"))?.querySelector(".field-hint")?.textContent ?? "";
+  let failNext = false;
+  const page = mount((url, init) => {
+    const method = init.method || "GET";
+    if (url.endsWith("/machines/mini/executor-slots") && method === "PUT") return conflict;
+    if (url.endsWith("/executor-slots")) {
+      if (failNext) { failNext = false; return unavailable; }
+      return slotsView([{ id: "local", name: "Core host", version: 0, slots: null, executors: 0 }, { id: "mini", name: "Mac mini", version: 3, slots: 7, executors: 1 }]);
+    }
+    if (url.endsWith("/machines/mini") && method === "PUT") return { ...mini, ...JSON.parse(init.body), lastCheck: null };
+    return undefined;
+  });
+  try {
+    render(page);
+    await loaded(page);
+    await until(() => localLimit(page), "the Core host card control, read");
+    // The editor's own read fails once.
+    failNext = true;
+    page.document.querySelector('[aria-label="Edit Mac mini"]').click();
+    await until(() => /executor slots are not available right now/.test(hint(page)), "the failed read under the field");
+    type(page, "Executors at once", "5");
+    await tick();
+    const before = reads(page);
+    button(card(page, "mini"), "Save changes").click();
+    await until(() => card(page, "mini").querySelector('[role="alert"]') && reads(page) > before, "the conflict, and the limit read again");
+    await tick(60);
+    assert.match(hint(page), /Lowering it stops no running executor/, "a later read that succeeds brings back the help");
+    assert.doesNotMatch(hint(page), /not available/);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+
+  let version = 0;
+  const host = mount((url, init) => {
+    const method = init.method || "GET";
+    if (url.endsWith("/machines/local/executor-slots") && method === "PUT") { version = 2; return conflict; }
+    if (url.endsWith("/executor-slots")) return slotsView([{ id: "local", name: "Core host", version, slots: version ? 4 : null, executors: 0 }]);
+    return undefined;
+  });
+  try {
+    render(host);
+    await loaded(host);
+    await until(() => localLimit(host), "the Core host card control");
+    typeLocal(host, "2");
+    await tick();
+    const before = reads(host);
+    button(localLimit(host), "Save executors at once").click();
+    await until(() => localLimit(host)?.querySelector('[role="alert"]') && reads(host) > before, "the conflict, and the limit read again");
+    await tick(60);
+    assert.match(localLimit(host).querySelector('[role="alert"]').textContent, /changed meanwhile and was read again/, "the conflict is still said once the limit is read again");
+    assert.deepEqual(host.errors, []);
+  } finally {
+    host.close();
+  }
+});
+
 test("the executor limit reads in Chinese on the Machines page (T-189)", async () => {
   const page = mount((url) => (url.endsWith("/executor-slots")
     ? slotsView([{ id: "local", name: "Core host", version: 0, slots: null, executors: 0 }]) : undefined));
