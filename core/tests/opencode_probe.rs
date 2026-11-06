@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
 use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
 use yuzuno_workspace::opencode_v2::{admitted, is_v2, is_v2_request, read_messages, Cursor};
+use yuzuno_workspace::store::whole::WholeRecord;
 
 fn ended(pid: u64) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {

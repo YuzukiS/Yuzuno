@@ -1179,7 +1179,7 @@ async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session
         assert_eq!(added[0]["query"]["location[directory]"], json!([cwd]), "the Agent's folder, named as its sessions name it");
         let config = &added[0]["body"]["config"];
         assert_eq!((config["type"].as_str(), config["oauth"].as_bool(), config["codemode"].as_bool()),
-            (Some("remote"), Some(false), Some(false)));
+            (Some("remote"), Some(false), Some(false)), "remote, OAuth off, its tools as tools of their own");
         assert_eq!(config["timeout"], json!({"startup": 10000, "catalog": 10000}));
         assert!(config["url"].as_str().unwrap().ends_with(&format!("/mcp/{ID}")));
         assert!(config["headers"]["Authorization"].as_str().unwrap().starts_with("Bearer "));
@@ -1229,13 +1229,13 @@ async fn a_message_to_a_2x_agent_goes_once_its_opencode_lists_the_workspace_mcp_
 /// connect within the wait is not ready, and a message is refused.
 #[tokio::test]
 async fn a_workspace_mcp_still_connecting_is_waited_for_and_counts_only_once_connected() {
-    let lab = lab(&[("mcpPendingFor", "1")], true).await;
-    let shown = lab.ws.collaboration_status(ID).await.unwrap();
+    let waited = lab(&[("mcpPendingFor", "1")], true).await;
+    let shown = waited.ws.collaboration_status(ID).await.unwrap();
     assert!(shown.ready, "ready once OpenCode lists it connected: {:?}", shown.error);
-    let listed = lab.calls().iter().filter(|c| c["path"] == "/api/mcp").count();
+    let listed = waited.calls().iter().filter(|c| c["path"] == "/api/mcp").count();
     assert!(listed >= 2, "listed while it connected, then connected: {listed}");
-    lab.send("c1", "hello").await.unwrap();
-    lab.ws.close_agent(ID).await.unwrap();
+    waited.send("c1", "hello").await.unwrap();
+    waited.ws.close_agent(ID).await.unwrap();
 
     let stuck = lab(&[("mcp", "pending")], true).await;
     let shown = stuck.ws.collaboration_status(ID).await.unwrap();
@@ -1306,15 +1306,17 @@ async fn a_reconnect_has_opencode_try_a_failed_workspace_mcp_again_on_the_same_p
 async fn the_workspace_mcp_bearer_is_never_shown_or_kept_from_what_opencode_answers() {
     for (switches, shown_as) in [(vec![("mcpRefuse", "1")], "HTTP 400, InvalidRequestError"),
                                  (vec![("mcp", "failed"), ("mcpErrorEcho", "1")], "[redacted]")] {
-        let lab = lab(&switches, true).await;
-        let bearer = lab.bearer();
-        let error = lab.ws.collaboration_status(ID).await.unwrap().error.unwrap();
-        assert!(error.contains(shown_as) && !error.contains(&bearer), "{error}");
-        let refused = lab.send("c1", "hello").await.unwrap_err().to_string();
-        assert!(refused.contains(shown_as) && !refused.contains(&bearer), "{refused}");
-        let recorded = serde_json::to_string(&lab.detail()).unwrap();
-        assert!(!recorded.contains(&bearer), "not in the Agent's record");
-        lab.ws.close_agent(ID).await.unwrap();
+        let shown = lab(&switches, true).await;
+        let bearer = shown.bearer();
+        let error = shown.ws.collaboration_status(ID).await.unwrap().error.unwrap();
+        assert!(!error.contains(&bearer), "the bearer is shown in the readiness error: {error}");
+        assert!(error.contains(shown_as), "says what OpenCode reported, {shown_as}: {error}");
+        let refused = shown.send("c1", "hello").await.unwrap_err().to_string();
+        assert!(!refused.contains(&bearer), "the bearer is shown in the refusal: {refused}");
+        assert!(refused.contains(shown_as), "the refusal says what OpenCode reported, {shown_as}: {refused}");
+        let recorded = serde_json::to_string(&shown.detail()).unwrap();
+        assert!(!recorded.contains(&bearer), "the bearer is in the Agent's record");
+        shown.ws.close_agent(ID).await.unwrap();
     }
 }
 
