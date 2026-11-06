@@ -160,6 +160,17 @@ cooling down, the entry waits until the cooldown ends. Each GitHub read holds
 one of Core's shared GitHub slots only while it runs; job-log downloads hold
 none.
 
+## Landing
+
+Each repository names how its checked entries land: `landing` in
+`GET /api/merge-queue/repositories/{id}`. This Core has one landing,
+`core-merge`, the default: Core sends the merge itself, as described above.
+`github-auto-merge`, where GitHub merges once the repository's required checks
+pass, is planned for a later Core and does not exist yet. A merge records the
+landing it started with. If a repository names a landing this Core does not
+have (a later Core set it), a checked entry stays `ready` and Core sends
+nothing; a merge begun that way goes back to `waiting`, unsent.
+
 ## Pauses
 
 A repository's queue pauses on red main CI, a failed post-check, a

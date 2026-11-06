@@ -6,6 +6,7 @@
 //! evidence on the task. Core writes to GitHub only while the user's switch
 //! for the repository is on; `writes` holds every write it can make.
 mod checks;
+mod landing;
 mod remote;
 pub(crate) mod store;
 #[cfg(test)]
@@ -146,7 +147,7 @@ pub(super) async fn tick(ws: &Arc<Workspace>) -> Result<()> {
         }
         if let Some(e) = merging {
             announced = true;
-            let outcome = remote::merge(ws, &e).await.map_err(|e| format!("{e:#}"));
+            let outcome = landing::land(ws, &e).await.map_err(|e| format!("{e:#}"));
             let cooldown = ws.stored(crate::ci_monitor::read_cooldown).await.unwrap_or(0);
             let key = id.clone();
             merged = ws.stored(move |s| s.merge_answered(&key, attempt, outcome, cooldown)).await?;

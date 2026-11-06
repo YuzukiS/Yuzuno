@@ -119,6 +119,9 @@ fn repository(db: &Connection, id: i64) -> Result<Value> {
     if v.get("paused").is_none() {
         v["paused"] = Value::Null;
     }
+    if !v["landing"].is_string() {
+        v["landing"] = json!(super::landing::DEFAULT);
+    }
     Ok(v)
 }
 fn save_repository(db: &Connection, id: i64, data: &Value) -> Result<()> {
@@ -772,6 +775,8 @@ impl Store {
                             ("ready", format!("Every check held, but the merge queue is off for {}; Core writes nothing to GitHub until the user turns it on.", e["repository"].as_str().unwrap_or("?")), now_epoch + 300)
                         } else if !r["paused"].is_null() {
                             ("waiting", format!("Every check held, but the repository's queue is paused ({}).", r["paused"]["reason"].as_str().unwrap_or("?")), now_epoch + 60)
+                        } else if super::landing::Landing::named(&r["landing"]).is_none() {
+                            ("ready", format!("Every check held, but this Core cannot land with '{}', the landing set for {}; it sends nothing.", r["landing"].as_str().unwrap_or("?"), e["repository"].as_str().unwrap_or("?")), now_epoch + 300)
                         } else if let Some((other, other_state)) = busy {
                             let what = if other_state == "merging" { "whose merge is in flight" } else { "whose post-check has not run yet" };
                             ("ready", format!("Every check held; it merges after #{other}, {what}, and a fresh check."), now_epoch + 60)
@@ -786,7 +791,7 @@ impl Store {
                         e["waitingSince"] = Value::Null;
                         if state == "merging" {
                             e["merge"] = json!({"expectedMain":evidence["main"]["before"],"tree":evidence["gate"]["tree"],"gate":evidence["gate"]["kind"],
-                                "head":e["headSha"],"attempts":0,"puts":[],"startedAt":now(),"sha":null,"post":null,"mainCi":null});
+                                "landing":r["landing"],"head":e["headSha"],"attempts":0,"puts":[],"startedAt":now(),"sha":null,"post":null,"mainCi":null});
                         }
                     }
                     Err(Hold::Wait(detail)) => {

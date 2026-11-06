@@ -1943,3 +1943,54 @@ async fn a_merge_waiting_to_be_resent_is_not_sent_onto_a_paused_queue() {
         assert_eq!(puts(), sent + 1, "{answer}: with one more request");
     }
 }
+
+/// Each repository names how its entries land. `core-merge`, the only landing
+/// this Core has, is the default and is what a merge records; a landing this
+/// Core does not have keeps a checked entry ready and sends nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_entry_lands_with_core_merge_and_a_landing_this_core_lacks_sends_nothing() {
+    let lab = lab(green());
+    assert_eq!(lab.paused()["landing"], "core-merge", "a repository lands with core-merge unless set otherwise");
+    let set = |landing: &str| {
+        lab.ws.store.db.write().unwrap()
+            .execute("UPDATE merge_repositories SET data=json_set(data,'$.landing',?1) WHERE repository_id=7", [landing])
+            .unwrap();
+    };
+    set("github-auto-merge");
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "ready", "every check held, but this Core cannot land that way: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("cannot land with 'github-auto-merge'"), "the entry says why: {e}");
+    assert!(writes(lab.dir.path()).is_empty(), "nothing was sent to GitHub");
+    set("core-merge");
+    let e = lab.step().await;
+    assert_eq!(e["state"], "merged", "with core-merge the entry merges: {e}");
+    assert_eq!(e["merge"]["landing"], "core-merge", "the merge records how it lands: {e}");
+    assert_eq!(writes(lab.dir.path()), ["PUT repos/owner/repo/pulls/11/merge"]);
+}
+
+/// A merge that started with a landing this Core lacks (a later Core began
+/// it) is never sent from here: the entry goes back to waiting and says why.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_begun_with_a_landing_this_core_lacks_is_not_sent() {
+    let lab = lab(green());
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_repositories SET data=json_set(data,'$.landing','github-auto-merge') WHERE repository_id=7", [])
+        .unwrap();
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let merge = json!({"expectedMain":main_sha(),"tree":tree(),"gate":"slot","landing":"github-auto-merge","head":head(),
+        "attempts":0,"puts":[],"startedAt":"2026-11-06T00:00:00Z","sha":null,"post":null,"mainCi":null});
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_entries SET state='merging',next_check=0,data=json_set(data,'$.state','merging','$.merge',json(?1))", [merge.to_string()])
+        .unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "the merge is not sent and the entry is checked again: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("cannot land with 'github-auto-merge'; nothing was sent"), "it says why: {e}");
+    assert_eq!(e["retiredMerges"][0]["landing"], "github-auto-merge", "the unsent merge is kept: {e}");
+    assert!(writes(lab.dir.path()).is_empty(), "nothing was sent to GitHub");
+}

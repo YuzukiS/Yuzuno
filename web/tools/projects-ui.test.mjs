@@ -1053,3 +1053,103 @@ test("switching the language while a project's repositories are open keeps what 
   }
 });
 
+
+// T-37: each repository of a project has the merge queue switch, the user's
+// only. Turning it on names every write Core may then make; off saves at
+// once; a paused queue says why and offers Unpause.
+function queueCore(page, queue, { unpauseFails = 0 } = {}) {
+  const respond = (body, status = 200) => {
+    const text = JSON.stringify(body);
+    return { ok: status === 200, status, json: async () => JSON.parse(text), text: async () => text };
+  };
+  page.window.fetch = ((fetch) => async (url, init = {}) => {
+    if (url.includes("/api/collaboration/github_")) {
+      page.calls.push({ url, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : undefined });
+      return respond({ links: [], repositories: [{ id: 7, fullName: "owner/repo", url: "https://github.com/owner/repo", syncedAt: new Date().toISOString(), error: null }], refreshing: false });
+    }
+    if (url.includes("/api/merge-queue/repositories/7")) {
+      const body = init.body ? JSON.parse(init.body) : undefined;
+      page.calls.push({ url, method: init.method || "GET", body });
+      if (url.endsWith("/unpause")) {
+        if (unpauseFails > 0) { unpauseFails--; return respond({ error: "unavailable: GitHub is unreachable" }, 400); }
+        queue.paused = null;
+        return respond({ repositoryId: 7, unpaused: true });
+      }
+      if (init.method === "PUT") queue.enabled = body.enabled;
+      return respond(queue);
+    }
+    return fetch(url, init);
+  })(page.window.fetch);
+}
+async function openQueue(page, manage) {
+  await fromScopeMenu(page, manage);
+  const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+  button(page, "App", dialog).click();
+  return waitFor(() => dialog.querySelector(".merge-queue-switch input[role='switch']") && dialog.querySelector(".merge-queue-switch"),
+    "the repository shows its merge queue switch");
+}
+const queueWrites = (page) => page.calls.filter((call) => call.method === "PUT" && call.url.includes("/api/merge-queue/"));
+const within = (root, text) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
+
+test("the merge queue switch names every write before it turns on, and turns off at once (T-37)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+  try {
+    const queue = { repositoryId: 7, enabled: false, paused: null, landing: "core-merge" };
+    queueCore(page, queue);
+    const row = await openQueue(page, "Manage projects");
+    const toggle = () => row.querySelector("input[role='switch']");
+    assert.equal(row.getAttribute("aria-label"), "Merge queue for owner/repo");
+    assert.ok(row.textContent.includes("Off: Core writes nothing to GitHub here."), "off says Core writes nothing");
+    toggle().click(); await pause();
+    const confirm = row.querySelector(".merge-queue-confirm");
+    assert.ok(confirm, "turning it on asks first");
+    for (const words of ["Turn on the merge queue for owner/repo?", "a merge commit pinned to the released head",
+      "Never a squash, a rebase or an admin merge", "queue/merge-", "a draft PR from it", "closing that draft PR and deleting its branch",
+      "never force-pushes", "never starts, reruns or cancels a workflow"])
+      assert.ok(confirm.textContent.includes(words), words);
+    assert.equal(queueWrites(page).length, 0, "nothing is saved before the confirmation");
+    assert.equal(toggle().checked, false, "the switch stays off while it asks");
+    within(row, "Cancel").click(); await pause();
+    assert.ok(!row.querySelector(".merge-queue-confirm"), "Cancel closes the confirmation");
+    assert.equal(queueWrites(page).length, 0, "and saves nothing");
+    toggle().click(); await pause();
+    within(row, "Turn on").click();
+    await waitFor(() => row.textContent.includes("On: Core merges PRs released for merge in this repository."), "the switch is on");
+    assert.deepEqual(queueWrites(page).map((call) => call.body), [{ enabled: true }]);
+    assert.equal(toggle().checked, true);
+    toggle().click();
+    await waitFor(() => row.textContent.includes("Off: Core writes nothing to GitHub here."), "the switch is off again");
+    assert.deepEqual(queueWrites(page).map((call) => call.body), [{ enabled: true }, { enabled: false }], "off saves at once");
+    assert.ok(!row.querySelector(".merge-queue-confirm"), "with no confirmation");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
+test("a paused merge queue says why and unpauses with one request id until answered, in Chinese (T-37)", async () => {
+  const page = await mount({ storage: chinese });
+  try {
+    const queue = { repositoryId: 7, enabled: true, paused: { reason: "main_red", detail: "Main CI run 91 concluded failure", main: "b".repeat(40) }, landing: "core-merge" };
+    queueCore(page, queue, { unpauseFails: 1 });
+    const row = await openQueue(page, "管理项目");
+    const box = () => row.querySelector(".merge-queue-paused");
+    assert.equal(row.getAttribute("aria-label"), "owner/repo 的合并队列");
+    assert.ok(row.textContent.includes("已开启：Core 合并此仓库中已放行合并的 PR。"), "on, in Chinese");
+    assert.ok(box().textContent.includes("已暂停：main_red"), "the reason, as Core gave it");
+    assert.ok(box().textContent.includes("Main CI run 91 concluded failure"), "and Core's detail, as written");
+    within(row, "解除暂停").click();
+    await waitFor(() => row.querySelector("[role='alert']"), "the failed unpause says so");
+    assert.ok(box(), "the queue still shows paused");
+    within(row, "解除暂停").click();
+    await waitFor(() => !box(), "the second unpause is answered");
+    const sent = page.calls.filter((call) => call.url.endsWith("/api/merge-queue/repositories/7/unpause"));
+    assert.equal(sent.length, 2);
+    assert.match(sent[0].body.requestId, /^[0-9a-f-]{36}$/);
+    assert.equal(sent[1].body.requestId, sent[0].body.requestId, "the retry keeps its request id");
+    assert.ok(!row.querySelector("[role='alert']"), "the error clears once answered");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});
