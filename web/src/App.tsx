@@ -3968,9 +3968,12 @@ export function App() {
                       onOpen={(id) => selectAgent(id)}
                     />
                   )}
+                  {/* Each notice its own key, per Agent so it starts anew in another's
+                      conversation: siblings sharing one key are duplicated by React, a copy left in
+                      the page on every render (YN-1). */}
                   {currentDetail && recovery && (
                     <RecoveryNotice
-                      key={selected}
+                      key={`recovery:${selected}`}
                       detail={currentDetail}
                       disabled={closed || !!workspaceError}
                       hasDraft={hasDraft}
@@ -3979,7 +3982,7 @@ export function App() {
                     />
                   )}
                   {currentDetail?.agent.harness === "claude" && !currentDetail.agent.remote && (
-                    <QuotaResumeNotice key={selected} detail={currentDetail} disabled={closed || !!workspaceError} />
+                    <QuotaResumeNotice key={`quota:${selected}`} detail={currentDetail} disabled={closed || !!workspaceError} />
                   )}
                   {unconfirmedMessage && (
                     <div className="message-delivery-notice" role="status" lang={langTag(language)}>
