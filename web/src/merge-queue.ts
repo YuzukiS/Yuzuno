@@ -207,7 +207,10 @@ export const actionPath = (action: MergeAction, target: string | number) =>
 /**
  * One requestId per action, target and reason until Core answers it, so a
  * click again after a lost answer is the same request, not a second one.
- * Core keeps only the answers it accepted, so a refusal clears the key too.
+ * Core answers a refusal with a 4xx and keeps only the answers it accepted,
+ * so a refusal clears the key. A 5xx comes from between (Core answers every
+ * error with 400), and the request may have reached Core: like a lost answer,
+ * it keeps the key (T-65 R1).
  */
 export function mergeActions() {
   const pending = new Map<string, string>();
@@ -224,11 +227,15 @@ export function mergeActions() {
       pending.delete(key);
       return answer;
     } catch (error) {
-      if (error instanceof HttpError) pending.delete(key);
+      if (refused(error)) pending.delete(key);
       throw error;
     }
   };
 }
+
+/** Core's own answer against an action: a 4xx. A 5xx or no answer may have reached Core. */
+export const refused = (error: unknown): error is HttpError =>
+  error instanceof HttpError && error.status >= 400 && error.status < 500;
 
 /** A refusal's code, the word before its colon, as Core writes it. */
 export function refusalCode(message: string) {

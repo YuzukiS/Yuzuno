@@ -895,6 +895,10 @@ export function App() {
           liveChange.current = liveTurn.current = null;
           arrivalsSettle.current = { after: live.sync.reads };
           jobsRefresh.now();
+          // The merge queue: at once on a reconnect; while the stream is down,
+          // at most once a minute (T-65 R1).
+          if (event.reason === "poll") mergeQueueRefresh.atMostEvery(60_000);
+          else mergeQueueRefresh.now();
           presetRefresh.now();
           refresh();
           // Not each poll while the stream is down: a reconnect resets anew.

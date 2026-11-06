@@ -1053,7 +1053,9 @@ export function Jobs({
                   scope={scope}
                   agents={agents || []}
                   projects={projects || []}
-                  revision={`${revision}/${mergeQueueRevision}`}
+                  // Only Core's merge queue changes and reconnects (App's
+                  // mergeQueueRevision), not every Jobs change (T-65 R1).
+                  revision={mergeQueueRevision}
                   initial={mergeInitial}
                   onOpenTask={(taskId) => {
                     // One dialog at a time: Jobs closes, the task opens.

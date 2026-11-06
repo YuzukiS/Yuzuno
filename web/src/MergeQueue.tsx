@@ -7,7 +7,7 @@
 // refusals are shown as they came.
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowUpRight, ExternalLink, Play, RefreshCw, RotateCcw, X } from "lucide-react";
-import { api, errorText, HttpError, NetworkError } from "./api";
+import { api, errorText, NetworkError } from "./api";
 import { langTag, strings, useLanguage, type Language } from "./i18n";
 import {
   clock,
@@ -31,6 +31,7 @@ import {
   reasonWord,
   refusalCode,
   refusalsZh,
+  refused,
   retryable,
   stateWord,
   type MergeAction,
@@ -176,7 +177,7 @@ const queueEn = {
   sending: "Sending…",
   refused: (text: string) => `Refused: ${text}`,
   unconfirmed: (text: string) =>
-    `No answer from Core${text ? ` (${text})` : ""}: it may or may not have arrived. Trying again sends the same request.`,
+    `No certain answer from Core${text ? ` (${text})` : ""}: it may or may not have arrived. Trying again sends the same request.`,
   retried: "Retried: Core checks it again from the start.",
   cancelledNow: "Cancelled.",
   footnote:
@@ -301,7 +302,7 @@ const queueText = strings<QueueText>(queueEn, {
   back: "返回",
   sending: "正在发送…",
   refused: (text) => `已拒绝：${text}`,
-  unconfirmed: (text) => `没有收到 Core 的回答${text ? `（${text}）` : ""}：此操作可能已到达，也可能没有。再试一次会发送同一个请求。`,
+  unconfirmed: (text) => `没有收到 Core 的确定回答${text ? `（${text}）` : ""}：此操作可能已到达，也可能没有。再试一次会发送同一个请求。`,
   retried: "已重试：Core 将从头再检查。",
   cancelledNow: "已取消。",
   footnote: "Core 只以固定在放行合并时的头提交上的合并提交方式合并，绝不压缩、变基或以管理员身份合并。任务保留每个条目的证据记录。",
@@ -545,7 +546,7 @@ export function MergeQueue({
             title={t.refresh}
             onClick={() => {
               setError("");
-              void load();
+              // One read: the change re-reads the list and the chosen entry.
               changed();
             }}
           >
@@ -706,7 +707,7 @@ function MergeActionBox({
       setReason("");
     } catch (e) {
       if (!mounted.current) return;
-      if (e instanceof HttpError) setRefusal(errorText(e));
+      if (refused(e)) setRefusal(errorText(e));
       else setUnconfirmed(e instanceof NetworkError ? "" : errorText(e));
     } finally {
       if (mounted.current) setBusy(false);

@@ -232,7 +232,7 @@ test('unpause asks a reason, sends it on the unpause route, shows the refusal te
     assert.equal(banner().querySelector('.merge-refusal').textContent, 'Refused: merge_unpause_not_allowed: only a lead of a Project this repository is linked to, or the user, can unpause its merge queue');
     button(banner(), 'Unpause').click();
     await until(() => banner().querySelector('.merge-unconfirmed'));
-    assert.equal(banner().querySelector('.merge-unconfirmed').textContent, 'No answer from Core: it may or may not have arrived. Trying again sends the same request.');
+    assert.equal(banner().querySelector('.merge-unconfirmed').textContent, 'No certain answer from Core: it may or may not have arrived. Trying again sends the same request.');
     assert.equal(banner().querySelector('.merge-refusal'), null);
     button(banner(), 'Unpause').click();
     await until(() => p.doc.querySelector('.merge-action-done'));
@@ -404,5 +404,56 @@ test('a merge queue change from Core re-reads the list, the repositories and the
     p.open({ taskId: 'T-41' });
     await until(() => p.calls.some(c => c.url === '/api/merge-queue?taskId=T-41'));
     await until(() => /Entries of T-41 only/.test(panel(p)?.textContent || ''));
+  } finally { p.close(); }
+});
+
+// T-65 R1 (2604fb6c): a 5xx comes from between Core and the page, and the
+// action may have reached Core; only Core's 4xx is a refusal.
+test('a gateway error keeps the request id and says the action may have arrived; the next click repeats the same request', async () => {
+  const sent = [];
+  const replies = [
+    () => ({ httpStatus: 502, error: 'Synthetic bad gateway' }),
+    () => ({ repository: { ...repositories[7], paused: null }, reanchored: [], main: sha('c'), acceptedRun: null }),
+  ];
+  const p = mount({ answer: (url, body) => {
+    if (url === '/api/merge-queue/repositories/7/unpause') { sent.push(body); return replies.shift()(); }
+  } });
+  try {
+    await opened(p);
+    const banner = () => repoCard(p, 'owner/repo').querySelector('.merge-pause');
+    button(banner(), 'Unpause').click();
+    await until(() => banner().querySelector('textarea'));
+    button(banner(), 'Unpause').click();
+    await until(() => banner().querySelector('.merge-unconfirmed, .merge-refusal'));
+    const said = banner().querySelector('.merge-unconfirmed, .merge-refusal').textContent;
+    button(banner(), 'Unpause').click();
+    await until(() => p.doc.querySelector('.merge-action-done'));
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1].requestId, sent[0].requestId, 'a gateway error keeps the request id');
+    assert.equal(said, 'No certain answer from Core (Synthetic bad gateway): it may or may not have arrived. Trying again sends the same request.', 'a gateway error says it may have arrived');
+  } finally { p.close(); }
+});
+
+// T-65 R1: the queue is read for its own changes, not for every Jobs change.
+test('the queue is read on its own changes and on refresh, once each, and never on a local jobs change', async () => {
+  const p = mount();
+  try {
+    await opened(p);
+    const lists = () => p.calls.filter(c => c.url === '/api/merge-queue').length;
+    const settle = async () => { for (let n = 0; n < 8; n++) await wait(); };
+    await settle();
+    const start = lists();
+    // A local jobs change, then a merge queue change: its read is the barrier.
+    p.rerender({ revision: '2' });
+    await settle();
+    p.rerender({ revision: '2', mergeQueueRevision: '2' });
+    await until(() => lists() > start);
+    await settle();
+    assert.equal(lists(), start + 1, 'a local jobs change reads nothing from the merge queue');
+    const before = lists();
+    panel(p).querySelector('[aria-label="Refresh"]').click();
+    await until(() => lists() > before);
+    await settle();
+    assert.equal(lists(), before + 1, 'refresh reads the queue once');
   } finally { p.close(); }
 });
