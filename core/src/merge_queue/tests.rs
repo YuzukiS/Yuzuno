@@ -179,6 +179,9 @@ if method=='POST' and path=='pulls':
 if method=='PATCH' and path.startswith('pulls/') and path.split('/')[1] in s['pulls']:
     s['pulls'][path.split('/')[1]]['state']=body['state']; save(); out(200,s['pulls'][path.split('/')[1]])
 if method=='DELETE' and path.startswith('git/refs/heads/'):
+    q=s.get('deleteAnswers') or []
+    if q and q.pop(0)=='502':
+        save(); out(502,{'message':'Bad gateway'})
     s['refs'].pop(path[len('git/refs/heads/'):],None); save(); out(204,None)
 if method=='PUT' and path=='pulls/11/merge':
     answer=s['mergeAnswers'].pop(0) if s['mergeAnswers'] else 'ok'; save()
@@ -759,6 +762,71 @@ async fn red_ci_on_a_batch_stops_and_core_removes_the_batch() {
         "Core closes its batch PR and deletes its branch: {w:?}"
     );
     assert!(!w.iter().any(|w| w.starts_with("PUT")), "nothing merged");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_cleanup_never_skips_the_post_check_or_main_ci() {
+    let lab = lab(green());
+    change(lab.dir.path(), |s| {
+        s["logs"]["501"] = json!(log(&sha('7')));
+        s["logs"]["502"] = json!(log(&sha('7')));
+        s["deleteAnswers"] = json!(["502"]);
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    change(lab.dir.path(), batch_green);
+    let deletes = || writes(lab.dir.path()).iter().filter(|w| w.starts_with("DELETE")).count();
+    // The merge goes; deleting the batch branch then gets a 502.
+    let e = lab.step().await;
+    assert_eq!(e["merge"]["post"]["ok"], true, "a failed cleanup does not skip the post-check: {e}");
+    assert_eq!(e["state"], "merged");
+    assert_eq!(e["batch"]["cleanup"], "pending", "the failed removal is kept for a retry: {e}");
+    assert!(e["batch"]["cleanupError"].as_str().unwrap().contains("502"), "{}", e["batch"]["cleanupError"]);
+    // The switch goes off after the merge; main CI still finishes and is read.
+    lab.ws.store.merge_set_enabled(7, false).unwrap();
+    change(lab.dir.path(), |s| main_ci(s, "success"));
+    let e = lab.step().await;
+    assert_eq!(e["state"], "done", "main CI is followed though the cleanup failed: {e}");
+    assert_eq!(e["merge"]["mainCi"]["conclusion"], "success");
+    assert_eq!(e["batch"]["cleanup"], "pending");
+    lab.step().await;
+    assert_eq!(deletes(), 1, "with the switch off Core sends no DELETE");
+    // Back on: the cleanup pass removes the branch.
+    lab.ws.store.merge_set_enabled(7, true).unwrap();
+    let e = lab.step().await;
+    assert_eq!(e["batch"]["cleanup"], "done", "the cleanup is retried later and ends done: {e}");
+    assert_eq!(deletes(), 2);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_cleanup_still_pauses_on_a_failed_post_check_or_red_main_ci() {
+    let needs_batch = |s: &mut Value| {
+        s["logs"]["501"] = json!(log(&sha('7')));
+        s["logs"]["502"] = json!(log(&sha('7')));
+        s["deleteAnswers"] = json!(["502", "502", "502"]);
+    };
+    let lab = lab_with(|s| {
+        needs_batch(s);
+        s["mergeTree"] = json!(sha('8'));
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    change(lab.dir.path(), batch_green);
+    let e = lab.step().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("post_check_failed")), "a failed cleanup does not hide a failed post-check: {e}");
+    assert_eq!(lab.paused()["paused"]["reason"], "post_check_failed");
+
+    let lab = lab_with(needs_batch);
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    change(lab.dir.path(), batch_green);
+    assert_eq!(lab.step().await["state"], "merged");
+    change(lab.dir.path(), |s| main_ci(s, "failure"));
+    let e = lab.step().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("done"), json!("main_red")), "a failed cleanup does not hide red main CI: {e}");
+    assert_eq!(lab.paused()["paused"]["reason"], "main_red");
 }
 
 #[cfg(unix)]

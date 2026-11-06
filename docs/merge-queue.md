@@ -98,7 +98,10 @@ Once every check holds, the entry merges, one merge at a time per repository:
    head, and its tree is the tree CI tested. Otherwise the entry stops with
    `post_check_failed` and the repository's queue pauses: something landed that
    CI did not test, and a person has to look. Core makes no automatic revert.
-4. Core removes its batch, if there was one.
+4. Core removes its batch, if there was one. If the removal fails (for example
+   because the switch was turned off after the merge), Core records why and
+   tries again later; a failed removal never delays the post-check or following
+   main CI.
 5. Core follows main's push CI on the merge commit. Green ends the entry at
    `done`. Red ends it at `done` with the failure recorded, and pauses the
    repository's queue. The next entry does not wait for this run; only a red

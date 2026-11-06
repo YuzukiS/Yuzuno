@@ -449,7 +449,9 @@ pub(super) async fn follow(ws: &Arc<Workspace>, entry: &Value) -> Result<Followe
         followed.merge_commit = json!({"sha":commit["sha"],"parents":checks::parents(&commit),"tree":checks::tree_of(&commit)});
     }
     if entry["batch"].is_object() && entry["batch"]["cleanup"] != "done" {
-        followed.cleanup = Some(cleanup(ws, entry).await?);
+        // A failed removal is recorded and retried later; it never holds up
+        // the post-check or the main CI read.
+        followed.cleanup = Some(cleanup(ws, entry).await.unwrap_or_else(|e| json!({"error":format!("{e:#}"),"at":crate::model::now()})));
     }
     let runs = read(ws, format!("repos/{}/actions/runs?branch={}&event=push&head_sha={sha}&per_page=20", t.repo, segment(&t.base))).await?;
     followed.main_ci = array(&runs, "workflow_runs").into_iter().find(|r| r["name"] == checks::CI && r["head_sha"] == sha);

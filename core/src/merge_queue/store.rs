@@ -792,11 +792,18 @@ impl Store {
             Ok(f) => {
                 e["readFailures"] = json!(0);
                 if let Some(c) = f.cleanup {
-                    e["batch"]["closed"] = c["closed"].clone();
-                    e["batch"]["deleted"] = c["deleted"].clone();
-                    if c["closed"] == true && c["deleted"] == true {
-                        e["batch"]["cleanup"] = json!("done");
-                        e["batch"]["cleanedAt"] = c["at"].clone();
+                    if c["error"].is_string() {
+                        // Retried later, by this follow-up or the cleanup pass.
+                        e["batch"]["cleanup"] = json!("pending");
+                        e["batch"]["cleanupError"] = c["error"].clone();
+                        e["batch"]["cleanupAt"] = c["at"].clone();
+                    } else {
+                        e["batch"]["closed"] = c["closed"].clone();
+                        e["batch"]["deleted"] = c["deleted"].clone();
+                        if c["closed"] == true && c["deleted"] == true {
+                            e["batch"]["cleanup"] = json!("done");
+                            e["batch"]["cleanedAt"] = c["at"].clone();
+                        }
                     }
                 }
                 match f.post {
@@ -856,6 +863,9 @@ impl Store {
             }
         }
         let state = e["state"].as_str().unwrap_or("").to_owned();
+        if state == "done" && e["batch"]["cleanup"] == "pending" {
+            e["nextCheck"] = json!(now_epoch + 60);
+        }
         e["evidence"] = record(&e);
         if announce_as.is_some() {
             let (reason, detail) = (e["reason"].clone(), e["detail"].clone());
