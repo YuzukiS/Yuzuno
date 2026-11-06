@@ -251,7 +251,7 @@ function SettingCard({ entry, navigation, brief, onOpen }: {
     if (!navigation || navigation.disabled) return;
     if (target.kind === "agent" && selected) navigation.onNavigate({ ...target, agentId: selected.id });
     else if (target.kind === "project" && selected) navigation.onNavigate({ kind: "project", projectId: selected.id });
-    else if (target.kind === "jobs" || target.kind === "machines") navigation.onNavigate(target);
+    else if (target.kind === "machines") navigation.onNavigate(target);
   }
   return <section className={`settings-catalog-card${brief ? " is-brief" : ""}`} aria-labelledby={`setting-${entry.id}`}>
     <h4 id={`setting-${entry.id}`}>{entry.title}</h4>

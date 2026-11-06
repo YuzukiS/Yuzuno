@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
+import { LoaderCircle } from "lucide-react";
 import { post, errorText } from "./api";
 import { readMachineLoad } from "./home/home-api";
 import type { MachineLoad } from "./home/types";
@@ -60,7 +61,6 @@ export function useMachineLoad(): MachineLoad | null {
 // The budget's own words (T-189); device and machine names, paths, Core's
 // rules, scopes, reasons and errors are shown as they came.
 const text = strings({
-  machineBudget: "Machine budget",
   cpuQuota: "CPU quota",
   ram: "RAM (MiB)",
   swap: "Swap (MiB)",
@@ -74,7 +74,6 @@ const text = strings({
     `Each job also reserves ${cpu} CPU and ${memory} MiB RAM for collection. Two jobs with 2 CPU and 4096 MiB each need at least ${cpuNeeded} CPU and ${memoryNeeded} MiB RAM in this budget.`,
   saveBudget: "Save budget",
   read: (when: string | null) => `Read ${when}`,
-  keepFreeTitle: (read: string) => `Keep free · ${read}`,
   diskReserve: "Disk reserve",
   keepFreeGib: "Keep free (GiB)",
   default: "Default",
@@ -130,8 +129,21 @@ const text = strings({
   keepFreeMib: "Keep free (MiB)",
   sharingNote:
     "By default one managed GPU job uses a device at a time. Shared, jobs that ask for shared mode start while their declared memory fits in the sampled free memory, less what managed jobs reserve and this amount. Nothing limits what a job really uses.",
+  // Settings' Core host editor (T-55): the settings the Jobs card showed.
+  budgetGroup: "This host's Job budget",
+  jobsAtOnce: "Jobs at once",
+  jobsAtOnceNote: (min: number, max: number, preset: number) =>
+    `How many of this host's own jobs run at the same time, ${min}–${max}; ${preset} unless you change it. One more waits in the queue, and lowering it stops nothing that is running. The CPU and RAM budget still bounds them.`,
+  inEffect: (value: string) => `In effect: ${value}.`,
+  useDefaultN: (n: number) => `Use default (${n})`,
+  reserveInEffect: (reserve: number | null) =>
+    reserve == null ? "In effect: the default." : `In effect: keep ${reserve} GiB free.`,
+  saved: "Saved.",
+  unsaved: "Unsaved changes",
+  gpusGroup: "GPUs",
+  takesJobs: (shared: boolean): string =>
+    shared ? "Open to new jobs; managed jobs may share it." : "Open to new jobs, one managed GPU job at a time.",
 }, {
-  machineBudget: "机器预算",
   cpuQuota: "CPU 配额",
   ram: "内存（MiB）",
   swap: "交换空间（MiB）",
@@ -143,7 +155,6 @@ const text = strings({
     `每个 Job 还会为结果收集预留 ${cpu} CPU 和 ${memory} MiB 内存。两个各需 2 CPU 和 4096 MiB 的 Job，在此预算中至少需要 ${cpuNeeded} CPU 和 ${memoryNeeded} MiB 内存。`,
   saveBudget: "保存预算",
   read: (when) => `读取于 ${when}`,
-  keepFreeTitle: (read) => `保留空闲 · ${read}`,
   diskReserve: "磁盘保留",
   keepFreeGib: "保留空闲（GiB）",
   default: "默认",
@@ -193,6 +204,17 @@ const text = strings({
   share: "允许托管 Job 共享它",
   keepFreeMib: "保留空闲（MiB）",
   sharingNote: "默认情况下，一个设备同一时间只由一个托管 GPU Job 使用。设为共享后，请求共享模式的 Job 会在其声明的内存能放入采样的空闲内存（减去托管 Job 的预留和此数值）时启动。实际用量不受任何限制。",
+  budgetGroup: "此主机的 Job 预算",
+  jobsAtOnce: "同时运行的 Job 数",
+  jobsAtOnceNote: (min, max, preset) =>
+    `此主机自己的 Job 同时最多运行多少个，${min}–${max}；未更改时为 ${preset}。超出的会在队列中等待，降低它不会停止任何正在运行的 Job。它们仍受 CPU 和内存预算限制。`,
+  inEffect: (value) => `当前生效：${value}。`,
+  useDefaultN: (n) => `使用默认值（${n}）`,
+  reserveInEffect: (reserve) => (reserve == null ? "当前生效：默认值。" : `当前生效：保留 ${reserve} GiB 空闲。`),
+  saved: "已保存。",
+  unsaved: "有未保存的更改",
+  gpusGroup: "GPU",
+  takesJobs: (shared) => (shared ? "对新 Job 开放；托管 Job 可以共享它。" : "对新 Job 开放，同一时间一个托管 GPU Job。"),
 });
 type Text = ReturnType<typeof text>;
 
@@ -253,136 +275,291 @@ export type BudgetHost = {
   swapTotalMiB?: number | null;
   hostHeadroomMiB?: number;
 };
+/** How many of this host's own Jobs run at once (T-55): the number in
+ * effect, whether the user saved one, the default and what Core takes. */
+export type MaxActive = { value: number; set: boolean; preset: number; bounds: { minimum: number; maximum: number } };
 
+/** GET /api/jobs/budget, as the Jobs card and Settings read it. */
+export type JobsBudgetView = {
+  machine: BudgetHost & { name: string; memoryAvailableMiB: number | null; scope: string; suggestedBudget?: Resources };
+  collectorOverhead?: Resources;
+  budget: Resources;
+  /** Absent from Cores before T-160. */
+  budgetBounds?: BudgetBounds;
+  reserved: Resources;
+  queuedCount: number;
+  activeCount: number;
+  /** Absent from Cores before T-55. */
+  maxActive?: number;
+  maxActiveSet?: boolean;
+  maxActiveDefault?: number;
+  maxActiveBounds?: { minimum: number; maximum: number };
+  /** Absent from Cores before T-95. */
+  disk?: DiskView;
+  /** Absent from Cores before T-106. */
+  gpus?: GpuView;
+  /** Absent from Cores before T-108's Windows ceiling. */
+  windows?: WindowsJobsView;
+};
+export const validBudget = (value: JobsBudgetView) =>
+  !!value?.machine &&
+  !!value?.budget &&
+  !!value?.reserved &&
+  Number.isFinite(value.activeCount) &&
+  Number.isFinite(value.queuedCount);
+/** The Jobs at once Core reports, or null for a Core before T-55. */
+export const maxActiveOf = (view: JobsBudgetView): MaxActive | null =>
+  finite(view.maxActive)
+    ? {
+        value: view.maxActive!,
+        set: view.maxActiveSet === true,
+        preset: finite(view.maxActiveDefault) ? view.maxActiveDefault! : 4,
+        bounds: view.maxActiveBounds ?? { minimum: 1, maximum: 16 },
+      }
+    : null;
+
+/** A field of Settings' Core host editor: its words beside it, its input
+ * named so the label reads it. */
+function SettingField({
+  label,
+  help,
+  now,
+  children,
+  extra,
+}: {
+  label: string;
+  help?: ReactNode;
+  /** What Core has in effect, as its answer said. */
+  now?: ReactNode;
+  children: (id: string) => ReactNode;
+  /** A button beside the input, outside its label. */
+  extra?: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <div className="settings-row jobs-settings-row">
+      <span className="settings-row-main">
+        <label className="settings-row-title" htmlFor={id}>
+          {label}
+        </label>
+        {help && <span className="settings-row-help">{help}</span>}
+        {now && <span className="settings-row-help jobs-settings-now">{now}</span>}
+      </span>
+      <span className="jobs-settings-control">
+        {children(id)}
+        {extra}
+      </span>
+    </div>
+  );
+}
+
+/** A save's outcome under its group's buttons: Core's refusal as it came,
+ * or Saved once Core took it (until the next edit), or that the fields
+ * differ from what Core has. */
+function SaveState({ error, done, changed }: { error: string; done: boolean; changed: boolean }) {
+  const t = useStrings(text);
+  if (error)
+    return (
+      <p className="inline-error" role="alert">
+        {error}
+      </p>
+    );
+  if (done)
+    return (
+      <span className="settings-row-help" role="status">
+        {t.saved}
+      </span>
+    );
+  return changed ? <span className="settings-row-help">{t.unsaved}</span> : null;
+}
+
+/** Settings' editor of this host's budget and, from a Core that has it, how
+ * many of its Jobs run at once: saved together, one POST. Its fields follow
+ * what Core has whenever that changes; a refused save keeps what was typed. */
 export function BudgetSettings({
-  openRequest,
-  onOpenRequestHandled,
   budget,
   bounds,
   host,
   suggested,
   collector,
+  maxActive,
   onSaved,
 }: {
-  openRequest?: number;
-  onOpenRequestHandled?: () => void;
   budget: Resources;
   bounds?: BudgetBounds;
   host?: BudgetHost;
   suggested?: Resources;
   collector?: Resources;
+  /** Null from a Core before T-55: no field, never sent. */
+  maxActive?: MaxActive | null;
   onSaved: () => void;
 }) {
   const t = useStrings(text);
-  const [editing, setEditing] = useState(false);
-  const container = useRef<HTMLDetailsElement>(null);
-  useEffect(() => {
-    if (!openRequest) return;
-    setEditing(true);
-    container.current?.querySelector("summary")?.focus();
-    container.current?.scrollIntoView?.({ block: "start" });
-    onOpenRequestHandled?.();
-  }, [openRequest, onOpenRequestHandled]);
   const [value, setValue] = useState(budget);
+  useEffect(() => setValue(budget), [budget.cpuMillis, budget.memoryMiB, budget.swapMiB]);
+  const [slots, setSlots] = useState(maxActive ? String(maxActive.value) : "");
+  // Use default chosen: the default shows, and null is sent.
+  const [toDefault, setToDefault] = useState(false);
+  useEffect(() => {
+    setSlots(maxActive ? String(maxActive.value) : "");
+    setToDefault(false);
+  }, [maxActive?.value, maxActive?.set]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  // maxActive only when it differs from what was read: left out, Core keeps it.
+  const slotsChange: { maxActive?: number | null } = !maxActive
+    ? {}
+    : toDefault
+      ? maxActive.set
+        ? { maxActive: null }
+        : {}
+      : slots.trim() !== "" && Number(slots) !== maxActive.value
+        ? { maxActive: Number(slots) }
+        : {};
+  const changed =
+    value.cpuMillis !== budget.cpuMillis ||
+    value.memoryMiB !== budget.memoryMiB ||
+    value.swapMiB !== budget.swapMiB ||
+    "maxActive" in slotsChange;
+  const edit = (next: Resources) => {
+    setDone(false);
+    setValue(next);
+  };
   return (
-    <details
-      ref={container}
-      className="job-budget-settings"
-      open={editing}
-      onToggle={(e) => setEditing(e.currentTarget.open)}
+    <form
+      className="settings-group jobs-settings-group jobs-settings-budget"
+      aria-label={t.budgetGroup}
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError("");
+        setDone(false);
+        try {
+          await post("/jobs/budget", { ...value, ...slotsChange });
+          setDone(true);
+          onSaved();
+        } catch (error) {
+          setError(errorText(error));
+        } finally {
+          setBusy(false);
+        }
+      }}
     >
-      <summary
-        onClick={() => {
-          if (!editing) setValue(budget);
-        }}
-      >
-        {t.machineBudget}
-      </summary>
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault();
-          setBusy(true);
-          setError("");
-          try {
-            await post("/jobs/budget", value);
-            setEditing(false);
-            onSaved();
-          } catch (error) {
-            setError(errorText(error));
-          } finally {
-            setBusy(false);
+      {maxActive && (
+        <SettingField
+          label={t.jobsAtOnce}
+          help={t.jobsAtOnceNote(maxActive.bounds.minimum, maxActive.bounds.maximum, maxActive.preset)}
+          now={t.inEffect(t.ceiling(maxActive.value, maxActive.set))}
+          extra={
+            maxActive.set &&
+            !toDefault && (
+              <button
+                type="button"
+                className="quiet-button"
+                disabled={busy}
+                onClick={() => {
+                  setDone(false);
+                  setToDefault(true);
+                  setSlots(String(maxActive.preset));
+                }}
+              >
+                {t.useDefaultN(maxActive.preset)}
+              </button>
+            )
           }
-        }}
-      >
-        <label>
-          {t.cpuQuota}
+        >
+          {(id) => (
+            <input
+              id={id}
+              name="maxActive"
+              className="settings-input"
+              type="number"
+              inputMode="numeric"
+              min={maxActive.bounds.minimum}
+              max={maxActive.bounds.maximum}
+              step="1"
+              required
+              value={slots}
+              onChange={(e) => {
+                setDone(false);
+                setToDefault(false);
+                setSlots(e.target.value);
+              }}
+            />
+          )}
+        </SettingField>
+      )}
+      <SettingField label={t.cpuQuota}>
+        {(id) => (
           <input
+            id={id}
+            name="cpu"
+            className="settings-input"
             type="number"
             min={(bounds?.minimum.cpuMillis ?? 200) / 1000}
             max={bounds && bounds.maximum.cpuMillis / 1000}
             step="0.1"
             required
             value={value.cpuMillis / 1000}
-            onChange={(e) =>
-              setValue({
-                ...value,
-                cpuMillis: Math.round(Number(e.target.value) * 1000),
-              })
-            }
+            onChange={(e) => edit({ ...value, cpuMillis: Math.round(Number(e.target.value) * 1000) })}
           />
-        </label>
-        <label>
-          {t.ram}
+        )}
+      </SettingField>
+      <SettingField label={t.ram}>
+        {(id) => (
           <input
+            id={id}
+            name="memory"
+            className="settings-input"
             type="number"
             min={bounds?.minimum.memoryMiB ?? 128}
             max={bounds?.maximum.memoryMiB}
             required
             value={value.memoryMiB}
-            onChange={(e) =>
-              setValue({ ...value, memoryMiB: Number(e.target.value) })
-            }
+            onChange={(e) => edit({ ...value, memoryMiB: Number(e.target.value) })}
           />
-        </label>
-        <label>
-          {t.swap}
+        )}
+      </SettingField>
+      <SettingField label={t.swap}>
+        {(id) => (
           <input
+            id={id}
+            name="swap"
+            className="settings-input"
             type="number"
             min={bounds?.minimum.swapMiB ?? 0}
             max={bounds?.maximum.swapMiB}
             required
             value={value.swapMiB}
-            onChange={(e) =>
-              setValue({ ...value, swapMiB: Number(e.target.value) })
-            }
+            onChange={(e) => edit({ ...value, swapMiB: Number(e.target.value) })}
           />
-        </label>
-        <p className="job-footnote">{t.saving}</p>
+        )}
+      </SettingField>
+      <div className="jobs-settings-notes">
+        <p className="settings-row-help">{t.saving}</p>
         {(host?.logicalCpus != null || suggested) && (
-          <p className="job-footnote">
+          <p className="settings-row-help">
             {host?.logicalCpus != null && host.memoryTotalMiB != null &&
               t.reference(host.logicalCpus, host.memoryTotalMiB, host.swapTotalMiB ?? null)}
             {suggested && t.conservative(suggested.cpuMillis / 1000, suggested.memoryMiB, suggested.swapMiB)}
           </p>
         )}
-        <p className="job-footnote">{t.startsWhen(host?.hostHeadroomMiB ?? null)}</p>
+        <p className="settings-row-help">{t.startsWhen(host?.hostHeadroomMiB ?? null)}</p>
         {collector && (
-          <p className="job-footnote">
+          <p className="settings-row-help">
             {t.collector(collector.cpuMillis / 1000, collector.memoryMiB, 4 + (2 * collector.cpuMillis) / 1000, 8192 + 2 * collector.memoryMiB)}
           </p>
         )}
+      </div>
+      <div className="jobs-settings-actions">
         <button className="secondary-button" disabled={busy}>
+          {busy && <LoaderCircle size={13} className="spin" aria-hidden="true" />}
           {t.saveBudget}
         </button>
-        {error && (
-          <p className="inline-error" role="alert">
-            {error}
-          </p>
-        )}
-      </form>
-    </details>
+        <SaveState error={error} done={done} changed={changed} />
+      </div>
+    </form>
   );
 }
 
@@ -405,80 +582,13 @@ export type DiskView = {
 };
 const gib = (bytes: number) => `${(bytes / 1073741824).toFixed(1)} GiB`;
 
-/** Free space where jobs write, each disk as a bar of what is used, with the
- * reserve below which no new job starts. Its folders and the time it was read
- * are in its tip. */
-export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => void }) {
+/** Free space where jobs write, each disk as a bar of what is used. Its
+ * folders and the time it was read are in its tip; the reserve below which
+ * no new job starts is set in Settings (DiskReserveSettings). */
+export function DiskSpace({ disk }: { disk: DiskView }) {
   const t = useStrings(text);
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(disk.reserveGiB == null ? "" : String(disk.reserveGiB));
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const save = async (reserveGiB: number | null) => {
-    setBusy(true);
-    setError("");
-    try {
-      await post("/jobs/disk", { reserveGiB });
-      setEditing(false);
-      onSaved();
-    } catch (error) {
-      setError(errorText(error));
-    } finally {
-      setBusy(false);
-    }
-  };
   const read = t.read(clock(disk.observedAt));
-  // One reserve for every disk, under the first.
-  const reserve = (
-    <details
-                className="job-budget-settings jobs-disk"
-                open={editing}
-                onToggle={(e) => setEditing(e.currentTarget.open)}
-              >
-                <summary
-                  title={t.keepFreeTitle(read)}
-                  onClick={() => {
-                    if (!editing) setValue(disk.reserveGiB == null ? "" : String(disk.reserveGiB));
-                  }}
-                >
-                  {t.diskReserve}
-                </summary>
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void save(value === "" ? null : Number(value));
-                  }}
-                >
-                  <label>
-                    {t.keepFreeGib}
-                    <input
-                      type="number"
-                      min={disk.bounds.minGiB}
-                      max={disk.bounds.maxGiB}
-                      step="1"
-                      placeholder={t.default}
-                      value={value}
-                      onChange={(e) => setValue(e.target.value)}
-                    />
-                  </label>
-                  <p className="job-footnote">{t.diskNote(disk.defaultRule, disk.scope)}</p>
-                  <button className="secondary-button" disabled={busy}>
-                    {t.saveReserve}
-                  </button>
-                  {disk.reserveGiB != null && (
-                    <button type="button" className="quiet-button" disabled={busy} onClick={() => void save(null)}>
-                      {t.useDefault}
-                    </button>
-                  )}
-                  {error && (
-                    <p className="inline-error" role="alert">
-                      {error}
-                    </p>
-                  )}
-                </form>
-              </details>
-  );
-  // Core reported no disk: the reserve still has its place.
+  // Core reported no disk: one cell says so.
   if (!disk.volumes.length)
     return (
       <UsageMeter
@@ -489,9 +599,7 @@ export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => vo
         total={1}
         value={<span className="jobs-disk-free">{t.notReported}</span>}
         title={t.diskNotReported}
-      >
-        <span className="jobs-cell-foot">{reserve}</span>
-      </UsageMeter>
+      />
     );
   return (
     <>
@@ -517,10 +625,11 @@ export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => vo
             value={<span className="jobs-disk-free">{free}</span>}
             title={t.diskTitle(label, free, known ? gib(v.totalBytes!) : null)}
           >
-            <span className="jobs-cell-foot">
-              {known && <span className="jobs-disk-total">{t.of(gib(v.totalBytes!))}</span>}
-              {index === 0 && reserve}
-            </span>
+            {known && (
+              <span className="jobs-cell-foot">
+                <span className="jobs-disk-total">{t.of(gib(v.totalBytes!))}</span>
+              </span>
+            )}
             {v.error ? (
               <small role="status">{t.unreadable(v.error)}</small>
             ) : v.low ? (
@@ -530,6 +639,77 @@ export function DiskSpace({ disk, onSaved }: { disk: DiskView; onSaved: () => vo
         );
       })}
     </>
+  );
+}
+
+/** Settings' disk reserve, one for every disk: a number of GiB, or empty for
+ * Core's default rule. Saved alone; a refusal keeps what was typed. */
+export function DiskReserveSettings({ disk, onSaved }: { disk: DiskView; onSaved: () => void }) {
+  const t = useStrings(text);
+  const saved = disk.reserveGiB == null ? "" : String(disk.reserveGiB);
+  const [value, setValue] = useState(saved);
+  useEffect(() => setValue(saved), [saved]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const save = async (reserveGiB: number | null) => {
+    setBusy(true);
+    setError("");
+    setDone(false);
+    try {
+      await post("/jobs/disk", { reserveGiB });
+      setDone(true);
+      onSaved();
+    } catch (error) {
+      setError(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form
+      className="settings-group jobs-settings-group jobs-settings-disk"
+      aria-label={t.diskReserve}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save(value === "" ? null : Number(value));
+      }}
+    >
+      <SettingField
+        label={t.keepFreeGib}
+        help={t.diskNote(disk.defaultRule, disk.scope)}
+        now={t.reserveInEffect(disk.reserveGiB)}
+      >
+        {(id) => (
+          <input
+            id={id}
+            name="reserveGiB"
+            className="settings-input"
+            type="number"
+            min={disk.bounds.minGiB}
+            max={disk.bounds.maxGiB}
+            step="1"
+            placeholder={t.default}
+            value={value}
+            onChange={(e) => {
+              setDone(false);
+              setValue(e.target.value);
+            }}
+          />
+        )}
+      </SettingField>
+      <div className="jobs-settings-actions">
+        <button className="secondary-button" disabled={busy}>
+          {t.saveReserve}
+        </button>
+        {disk.reserveGiB != null && (
+          <button type="button" className="quiet-button" disabled={busy} onClick={() => void save(null)}>
+            {t.useDefault}
+          </button>
+        )}
+        <SaveState error={error} done={done} changed={value !== saved} />
+      </div>
+    </form>
   );
 }
 
@@ -545,28 +725,10 @@ export type WindowsJobsView = {
 
 /** Windows on this PC: the slots its attempts hold (starting and unknown ones
  * too, so "in use", not running; the job list says which run) against its own
- * ceiling, which the user may set (1–64) or leave at the default. Only a
+ * ceiling, which the user sets in Settings (WindowsJobsSettings). Only a
  * ceiling: Windows jobs keep sharing this host's CPU/RAM budget. */
-export function WindowsJobs({ windows, onSaved }: { windows: WindowsJobsView; onSaved: () => void }) {
+export function WindowsJobs({ windows }: { windows: WindowsJobsView }) {
   const t = useStrings(text);
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(windows.set ? String(windows.maxJobs) : "");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const save = async (maxJobs: number | null) => {
-    setBusy(true);
-    setError("");
-    try {
-      await post("/jobs/windows", { maxJobs });
-      setEditing(false);
-      onSaved();
-    } catch (error) {
-      // The typed value stays, so it can be corrected and saved again.
-      setError(errorText(error));
-    } finally {
-      setBusy(false);
-    }
-  };
   const ceiling = t.ceiling(windows.maxJobs, windows.set);
   return (
     <UsageMeter
@@ -583,56 +745,83 @@ export function WindowsJobs({ windows, onSaved }: { windows: WindowsJobsView; on
       title={t.windowsTitle(windows.activeCount, ceiling)}
     >
       <span className="jobs-cell-foot">
-        <span className="jobs-reserved-text">{t.sharesBudget}</span>
-        <details
-          className="job-budget-settings jobs-windows-settings"
-          open={editing}
-          onToggle={(e) => setEditing(e.currentTarget.open)}
-        >
-          <summary
-            title={t.windowsCeiling(ceiling)}
-            onClick={() => {
-              if (!editing) setValue(windows.set ? String(windows.maxJobs) : "");
-            }}
-          >
-            {t.windowsJobs}
-          </summary>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void save(value === "" ? null : Number(value));
-            }}
-          >
-            <label>
-              {t.atMost}
-              <input
-                type="number"
-                min={1}
-                max={64}
-                step="1"
-                placeholder={t.defaultN(windows.defaultMaxJobs)}
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-              />
-            </label>
-            <p className="job-footnote">{t.windowsNote(windows.defaultMaxJobs)}</p>
-            <button className="secondary-button" disabled={busy}>
-              {t.save}
-            </button>
-            {windows.set && (
-              <button type="button" className="quiet-button" disabled={busy} onClick={() => void save(null)}>
-                {t.useDefault}
-              </button>
-            )}
-            {error && (
-              <p className="inline-error" role="alert">
-                {error}
-              </p>
-            )}
-          </form>
-        </details>
+        <span className="jobs-reserved-text" title={t.windowsCeiling(ceiling)}>
+          {t.sharesBudget}
+        </span>
       </span>
     </UsageMeter>
+  );
+}
+
+/** Settings' ceiling on Windows jobs at once, 1–64, or empty for the
+ * default. Saved alone; a refusal keeps what was typed. */
+export function WindowsJobsSettings({ windows, onSaved }: { windows: WindowsJobsView; onSaved: () => void }) {
+  const t = useStrings(text);
+  const saved = windows.set ? String(windows.maxJobs) : "";
+  const [value, setValue] = useState(saved);
+  useEffect(() => setValue(saved), [saved]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const save = async (maxJobs: number | null) => {
+    setBusy(true);
+    setError("");
+    setDone(false);
+    try {
+      await post("/jobs/windows", { maxJobs });
+      setDone(true);
+      onSaved();
+    } catch (error) {
+      // The typed value stays, so it can be corrected and saved again.
+      setError(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form
+      className="settings-group jobs-settings-group jobs-settings-windows"
+      aria-label={t.windowsJobs}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save(value === "" ? null : Number(value));
+      }}
+    >
+      <SettingField
+        label={t.atMost}
+        help={t.windowsNote(windows.defaultMaxJobs)}
+        now={t.inEffect(t.ceiling(windows.maxJobs, windows.set))}
+      >
+        {(id) => (
+          <input
+            id={id}
+            name="windowsMaxJobs"
+            className="settings-input"
+            type="number"
+            min={1}
+            max={64}
+            step="1"
+            placeholder={t.defaultN(windows.defaultMaxJobs)}
+            value={value}
+            onChange={(e) => {
+              setDone(false);
+              setValue(e.target.value);
+            }}
+          />
+        )}
+      </SettingField>
+      <div className="jobs-settings-actions">
+        <button className="secondary-button" disabled={busy}>
+          {t.save}
+        </button>
+        {windows.set && (
+          <button type="button" className="quiet-button" disabled={busy} onClick={() => void save(null)}>
+            {t.useDefault}
+          </button>
+        )}
+        <SaveState error={error} done={done} changed={value !== saved} />
+      </div>
+    </form>
   );
 }
 
@@ -658,8 +847,12 @@ export type GpuView = {
   scope: string;
 };
 
+/** A device's name as the card and Settings show it. */
+const gpuName = (d: GpuDevice) => `${d.index == null ? "" : `GPU ${d.index} · `}${d.name}`;
+
 /** Local GPUs by UUID: the latest sample, what managed jobs hold on each,
- * and the user's choices — new jobs or not, sharing, memory kept free. */
+ * whether each takes new jobs and how, and the pause of the user's GPU work
+ * (T-107). Admission and sharing are set in Settings (GpuDeviceSettings). */
 export function GpuDevices({
   gpus,
   paused,
@@ -671,6 +864,7 @@ export function GpuDevices({
   paused?: Set<string>;
   /** The host's latest GPU reading, in device order, for how busy each is. */
   busyNow?: MachineLoad["gpus"];
+  /** After a pause or resume, to read the budget again. */
   onSaved: () => void;
 }) {
   const t = useStrings(text);
@@ -678,18 +872,6 @@ export function GpuDevices({
   const [acting, setActing] = useState("");
   // A host without NVIDIA devices shows nothing.
   if (!gpus.devices.length) return null;
-  const save = async (uuid: string, path: string, body: object) => {
-    setActing(uuid);
-    setError("");
-    try {
-      await post(`/jobs/gpus/${encodeURIComponent(uuid)}/${path}`, body);
-      onSaved();
-    } catch (error) {
-      setError(errorText(error));
-    } finally {
-      setActing("");
-    }
-  };
   // A device pause or resume reports every job; say which ones it could not change.
   const pauseGpu = async (uuid: string, resume: boolean) => {
     setActing(uuid);
@@ -717,7 +899,7 @@ export function GpuDevices({
         </p>
       )}
       {gpus.devices.map((d, position) => {
-        const name = `${d.index == null ? "" : `GPU ${d.index} · `}${d.name}`;
+        const name = gpuName(d);
         // The card's own name without the maker's prefix fits a cell; the tip has it whole.
         const short = `${d.index == null ? "" : `GPU ${d.index} · `}${d.name.replace(/^NVIDIA (GeForce )?/, "")}`;
         const used = d.memoryFreeMiB == null ? null : d.memoryTotalMiB - d.memoryFreeMiB;
@@ -756,7 +938,9 @@ export function GpuDevices({
                 </span>
               )}
               {busyPct != null && <span className="jobs-gpu-busy">{t.busy(Math.round(busyPct))}</span>}
-              <GpuSettings device={d} busy={acting === d.uuid} save={(path, body) => save(d.uuid, path, body)} />
+              <span className="jobs-gpu-mode">
+                {d.admission === "closed" ? t.closedState : d.sharing ? t.shared : t.exclusive}
+              </span>
               <GpuPause
                 resume={!!paused?.has(d.uuid) || (d.admission === "closed" && d.closedBy === "user" && d.closedReason === PAUSE_REASON)}
                 busy={acting === d.uuid}
@@ -806,51 +990,97 @@ function GpuPause({
   );
 }
 
-function GpuSettings({
-  device,
-  busy,
-  save,
-}: {
-  device: GpuDevice;
-  busy: boolean;
-  save: (path: string, body: object) => Promise<void>;
-}) {
+/** Settings' choices for each local GPU, by UUID: new jobs or not, and
+ * sharing with the memory kept free. Each is posted alone; Core's refusal is
+ * shown under that GPU as it came. */
+export function GpuDeviceSettings({ gpus, onSaved }: { gpus: GpuView; onSaved: () => void }) {
   const t = useStrings(text);
-  const [open, setOpen] = useState(false);
+  if (!gpus.devices.length) return null;
+  return (
+    <div className="jobs-settings-gpus" role="group" aria-label={t.gpusGroup}>
+      {gpus.devices.map((d) => (
+        <GpuSettings key={d.uuid} device={d} onSaved={onSaved} />
+      ))}
+    </div>
+  );
+}
+
+function GpuSettings({ device, onSaved }: { device: GpuDevice; onSaved: () => void }) {
+  const t = useStrings(text);
   const [reason, setReason] = useState("");
   const [sharing, setSharing] = useState(device.sharing);
   const [headroom, setHeadroom] = useState(String(device.headroomMiB));
+  // What Core has, again whenever it changes: after a save, or another window's.
+  useEffect(() => setSharing(device.sharing), [device.sharing]);
+  useEffect(() => setHeadroom(String(device.headroomMiB)), [device.headroomMiB]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const save = async (path: "admission" | "settings", body: object) => {
+    setBusy(true);
+    setError("");
+    setDone(false);
+    try {
+      await post(`/jobs/gpus/${encodeURIComponent(device.uuid)}/${path}`, body);
+      if (path === "admission") setReason("");
+      setDone(true);
+      onSaved();
+    } catch (error) {
+      setError(errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const name = gpuName(device);
+  const changed = sharing !== device.sharing || headroom !== String(device.headroomMiB);
   return (
-    <details
-      className="job-budget-settings"
-      open={open}
-      onToggle={(e) => {
-        setOpen(e.currentTarget.open);
-        if (e.currentTarget.open) {
-          setSharing(device.sharing);
-          setHeadroom(String(device.headroomMiB));
-        }
-      }}
-    >
-      <summary>{device.admission === "closed" ? t.closedState : device.sharing ? t.shared : t.exclusive}</summary>
-      {device.admission === "closed" ? (
-        <button type="button" className="secondary-button" disabled={busy} onClick={() => void save("admission", { open: true })}>
-          {t.open}
-        </button>
-      ) : (
+    <section className="settings-group jobs-settings-group jobs-settings-gpu" aria-label={name}>
+      <div className="settings-row">
+        <span className="settings-row-main">
+          <span className="settings-row-title jobs-settings-gpu-name" lang="">
+            {name}
+          </span>
+          <span className="settings-row-help jobs-settings-now" role="status">
+            {device.admission === "closed" ? t.closed(device.closedBy === "agent", device.closedReason) : t.takesJobs(device.sharing)}
+          </span>
+        </span>
+        {device.admission === "closed" && (
+          <span className="jobs-settings-control">
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => void save("admission", { open: true })}>
+              {t.open}
+            </button>
+          </span>
+        )}
+      </div>
+      {device.admission !== "closed" && (
         <form
           onSubmit={(e) => {
             e.preventDefault();
             void save("admission", { open: false, ...(reason.trim() ? { reason: reason.trim() } : {}) });
           }}
         >
-          <label>
-            {t.reason}
-            <input maxLength={200} value={reason} onChange={(e) => setReason(e.target.value)} />
-          </label>
-          <button className="secondary-button" disabled={busy}>
-            {t.close}
-          </button>
+          <SettingField
+            label={t.reason}
+            extra={
+              <button className="secondary-button" disabled={busy}>
+                {t.close}
+              </button>
+            }
+          >
+            {(id) => (
+              <input
+                id={id}
+                name="reason"
+                className="settings-input jobs-settings-reason"
+                maxLength={200}
+                value={reason}
+                onChange={(e) => {
+                  setDone(false);
+                  setReason(e.target.value);
+                }}
+              />
+            )}
+          </SettingField>
         </form>
       )}
       <form
@@ -859,19 +1089,44 @@ function GpuSettings({
           void save("settings", { sharing, headroomMiB: Number(headroom) });
         }}
       >
-        <label className="job-checkbox">
-          <input type="checkbox" checked={sharing} onChange={(e) => setSharing(e.target.checked)} />
-          {t.share}
+        <label className="settings-row jobs-settings-check">
+          <input
+            type="checkbox"
+            name="sharing"
+            checked={sharing}
+            onChange={(e) => {
+              setDone(false);
+              setSharing(e.target.checked);
+            }}
+          />
+          <span className="settings-row-title">{t.share}</span>
         </label>
-        <label>
-          {t.keepFreeMib}
-          <input type="number" min="0" max="65536" step="1" required value={headroom} onChange={(e) => setHeadroom(e.target.value)} />
-        </label>
-        <p className="job-footnote">{t.sharingNote}</p>
-        <button className="secondary-button" disabled={busy}>
-          {t.save}
-        </button>
+        <SettingField label={t.keepFreeMib} help={t.sharingNote}>
+          {(id) => (
+            <input
+              id={id}
+              name="headroomMiB"
+              className="settings-input"
+              type="number"
+              min="0"
+              max="65536"
+              step="1"
+              required
+              value={headroom}
+              onChange={(e) => {
+                setDone(false);
+                setHeadroom(e.target.value);
+              }}
+            />
+          )}
+        </SettingField>
+        <div className="jobs-settings-actions">
+          <button className="secondary-button" disabled={busy}>
+            {t.save}
+          </button>
+          <SaveState error={error} done={done} changed={changed} />
+        </div>
       </form>
-    </details>
+    </section>
   );
 }
