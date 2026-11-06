@@ -223,7 +223,6 @@ import {
   orderByAttention,
   unseenEnd,
   waitingSince,
-  proposersWaiting,
   type NeedsJump,
   type NeedsTarget,
 } from "./attention";
@@ -1615,7 +1614,7 @@ export function App() {
     [needsYouItems, activeAgents, turnSeen],
   );
   const lastNeedsJump = useRef<NeedsJump | null>(null);
-  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; proposalId?: string; n: number } | null>(null);
+  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; n: number } | null>(null);
   const goNextNeedsYou = () => {
     const shown: NeedsTarget | null = homeOpen
       ? lastNeedsJump.current && lastNeedsJump.current.target.kind !== "agent" ? lastNeedsJump.current.target : null
@@ -1628,8 +1627,7 @@ export function App() {
       selectAgent(target.agentId);
     } else {
       goHome();
-      setHomeJump((last) => ({ projectId: target.projectId, n: (last?.n ?? 0) + 1,
-        ...(target.kind === "handover" ? { proposalId: target.proposalId } : { sectionKey: target.sectionKey }) }));
+      setHomeJump((last) => ({ projectId: target.projectId, n: (last?.n ?? 0) + 1, sectionKey: target.sectionKey }));
     }
   };
   const nextNeedsYou = useRef(goNextNeedsYou);
@@ -3064,7 +3062,7 @@ export function App() {
   // ordered within each group as grouping keeps the list's order.
   const filteredAgents =
     appearance.agentOrder === "attention"
-      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems), waiting: proposersWaiting(needsYouItems) })
+      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems) })
       : searched;
 
   return (
@@ -3299,7 +3297,7 @@ export function App() {
               agentScope === "closed" ? agents.map(row) : (
                 <ExecutorRail agents={agents} listKey={key} workspaceId={workspaceId} selectedId={homeOpen ? null : selected}
                   searching={!!search.trim()} renderAgent={row}
-                  order={appearance.agentOrder === "attention" ? { seen: turnSeen, waiting: proposersWaiting(needsYouItems) } : undefined} />
+                  order={appearance.agentOrder === "attention" ? { seen: turnSeen } : undefined} />
               );
             return groups ? (
               <GroupedAgents

@@ -3,13 +3,15 @@
 //! an executor that starts cold. A dispatch from a template gives it to the
 //! executor in its materials.
 //!
-//! Each save is a new version, kept with who wrote it, who approved it and
-//! why; the document is the latest version. The user writes it through these
-//! browser routes; a lead proposes a version that the user approves on Home
-//! (handover_proposals.rs, S3b). A Project's versions go with it.
+//! Each save is a new version, kept with who wrote it and why (and, for one
+//! a lead proposed before YN-2 S3, who approved it); the document is the
+//! latest version. A lead of the Project writes it with `handover_update`
+//! (handover_tools.rs, YN-2 S3); the user reads every version, restores one or
+//! writes their own through these browser routes. A Project's versions go
+//! with it.
 use crate::{model::now, server::ApiError, store::Store, workspace::Workspace};
 use anyhow::{ensure, Result};
-use axum::{extract::{Path, Query, State}, routing::{get, post}, Json, Router};
+use axum::{extract::{Path, Query, State}, routing::get, Json, Router};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -33,7 +35,27 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             PRIMARY KEY(project_id, version));
         DELETE FROM project_handover_versions WHERE project_id NOT IN (SELECT id FROM projects);",
     )?;
-    crate::handover_proposals::migrate(db)
+    // The request a lead's write answers (YN-2 S3), so a retry gets the same
+    // version. Older Cores name their columns, and leave it as it is.
+    let has: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('project_handover_versions') WHERE name='request_id')", [], |r| r.get(0))?;
+    if !has {
+        db.execute_batch("ALTER TABLE project_handover_versions ADD COLUMN request_id TEXT")?;
+    }
+    db.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS project_handover_versions_request
+        ON project_handover_versions(project_id, written_by, request_id) WHERE request_id IS NOT NULL")?;
+    crate::handover_tools::migrate(db)
+}
+
+/// A new version, as the user's save or a lead's write makes it.
+pub(crate) fn insert_version(db: &Connection, project: &str, version: i64, markdown: &str, written_by: &str, name: &str,
+    reason: Option<&str>, request: Option<&str>) -> Result<()> {
+    db.execute(
+        "INSERT INTO project_handover_versions(project_id, version, markdown, written_by, written_by_name, approved_by, reason, at, request_id)
+         VALUES(?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)",
+        params![project, version, markdown, written_by, name, reason, now(), request],
+    )?;
+    Ok(())
 }
 
 /// The first character a handover may not hold, by line and column (from
@@ -119,14 +141,9 @@ pub(crate) fn read_in(db: &Connection, project: &str, version: Option<i64>) -> R
 }
 
 impl Store {
-    /// The document with the proposal waiting for the user, or one past version.
+    /// The document and its history, or one past version.
     pub(crate) fn handover(&self, project: &str, version: Option<i64>) -> Result<Value> {
-        let db = self.db.read()?;
-        let mut answer = read_in(&db, project, version)?;
-        if version.is_none() {
-            answer["proposal"] = json!(crate::handover_proposals::pending_summary(&db, project)?);
-        }
-        Ok(answer)
+        read_in(&*self.db.read()?, project, version)
     }
 
     /// The user's save: a new version, checked against the version read in
@@ -143,14 +160,8 @@ impl Store {
         let current: i64 = tx.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM project_handover_versions WHERE project_id=?1", [project], |r| r.get(0))?;
         ensure!(current == expected, "version_conflict: this Project's handover changed; reload before saving");
-        tx.execute(
-            "INSERT INTO project_handover_versions(project_id, version, markdown, written_by, written_by_name, approved_by, reason, at)
-             VALUES(?1, ?2, ?3, 'user', 'You', NULL, ?4, ?5)",
-            params![project, current + 1, markdown, reason, now()],
-        )?;
-        let mut saved = read_in(&tx, project, None)?;
-        // As a read answers it: a proposal still waits, now on an older version (#612 R4).
-        saved["proposal"] = json!(crate::handover_proposals::pending_summary(&tx, project)?);
+        insert_version(&tx, project, current + 1, markdown, "user", "You", reason, None)?;
+        let saved = read_in(&tx, project, None)?;
         tx.commit()?;
         Ok(saved)
     }
@@ -181,18 +192,12 @@ async fn put_handover(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, 
     let project = id.clone();
     let saved = ws.stored(move |s| s.save_handover(&project, input.expected_version, &input.markdown, input.reason.as_deref())).await?;
     ws.changes.send(json!({"handover": true, "projectId": id}));
-    // Home reads again, as on a Brief write: a waiting proposal's card sees the new version (#612 R1).
-    crate::project_brief::announce(&ws, Some(&id));
     Ok(Json(saved))
 }
 
-/// The user's routes: browser routes, never a collaboration operation. Only
-/// the user decides on a lead's proposal.
+/// The user's routes: browser routes, never a collaboration operation.
 pub fn router() -> Router<Arc<Workspace>> {
-    Router::new()
-        .route("/api/projects/{id}/handover", get(get_handover).put(put_handover))
-        .route("/api/projects/{id}/handover/proposals/{pid}", get(crate::handover_proposals::get_proposal))
-        .route("/api/projects/{id}/handover/proposals/{pid}/decision", post(crate::handover_proposals::post_decision))
+    Router::new().route("/api/projects/{id}/handover", get(get_handover).put(put_handover))
 }
 
 #[cfg(test)]

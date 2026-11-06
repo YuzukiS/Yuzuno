@@ -8,7 +8,7 @@ import { reportLinkHref, type MessageLink, type ReportLink } from "../deep-link"
 import { arrivalOf, sameSectionLive } from "../home-reply/home-reply-model";
 import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
-import { keepUnchanged, projectDomId, requestDomId, sectionDomId, handoverDomId } from "./brief-layout";
+import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief-layout";
 import { markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
 import { usePhone } from "../phone-layout";
 import { useDelayedPresence, useSurfaceIn } from "../surface";
@@ -114,7 +114,7 @@ export function Home({
   /** What this device has seen of each Agent's last Turn end (T-42). */
   turnSeen?: TurnSeen;
   /** An Ask "next needs you" goes to; another jump is another `n`. */
-  jumpTo?: { projectId: string | null; sectionKey?: string; proposalId?: string; n: number } | null;
+  jumpTo?: { projectId: string | null; sectionKey?: string; n: number } | null;
   /** "Open on Home" on a reply from Home (T-9): the section and version it
    * answered, and the message to go back to; another opening is another `n`. */
   arrival?: { origin: HomeReplyOrigin; back: MessageLink; n: number } | null;
@@ -151,9 +151,7 @@ export function Home({
   const jumped = useRef(0);
   useEffect(() => {
     if (!jumpTo || !data || jumped.current === jumpTo.n) return;
-    const item = data.needsYou.find((n) => n.projectId === jumpTo.projectId && (jumpTo.proposalId
-      ? n.kind === "handover" && n.proposalId === jumpTo.proposalId
-      : n.kind === "ask" && n.sectionKey === jumpTo.sectionKey));
+    const item = data.needsYou.find((n) => n.projectId === jumpTo.projectId && n.kind === "ask" && n.sectionKey === jumpTo.sectionKey);
     if (!item) return;
     jumped.current = jumpTo.n;
     jumpToItem.current(item);
@@ -354,9 +352,7 @@ export function Home({
     revealIn(panel.project.id, () =>
       item.kind === "approval" && item.requestId
         ? document.getElementById(requestDomId(item.requestId))
-        : item.kind === "handover" && item.proposalId
-          ? document.getElementById(handoverDomId(item.proposalId))
-          : item.sectionKey
+        : item.sectionKey
           ? document.getElementById(sectionDomId(panel.project.id, item.sectionKey))
           : null,
     );

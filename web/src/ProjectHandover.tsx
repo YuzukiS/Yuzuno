@@ -8,7 +8,7 @@ import "./project-handover.css";
 const text = strings({
   title: "Handover",
   section: "This project's handover document",
-  intro: "What this project already knows, for an executor that starts cold: how to build and test, where things are, what to avoid. A dispatch from a template gives it to the executor with its task. You change it here; a lead of the project can propose a version, which you approve or reject on Home.",
+  intro: "What this project already knows, for an executor that starts cold: how to build and test, where things are, what to avoid. Every executor of the project starts with it. The project's leads write it; here you can read every version, restore one, or change it yourself.",
   reading: "Reading the handover…",
   document: "Handover document",
   bytes: (used: number, limit: number) => `${used} of ${limit} bytes.`,
@@ -24,14 +24,15 @@ const text = strings({
   version: (n: number) => `Version ${n}`,
   by: (name: string, at: string) => `${name}, ${at}`,
   approvedBy: (name: string, at: string) => `${name}, approved by you, ${at}`,
-  proposal: (name: string) => `${name} proposed a new version; it waits for your decision on Home.`,
   show: (n: number) => `Show version ${n}`,
+  restore: (n: number) => `Restore version ${n}`,
+  restored: (n: number) => `Restored version ${n}`,
   hide: "Hide",
   emptyVersion: "This version is empty.",
 }, {
   title: "交接文档",
   section: "此项目的交接文档",
-  intro: "此项目已知的内容，供从零开始的执行者使用：如何构建与测试、东西在哪、要避免什么。按模板派发时，执行者会随任务一起得到它。你在这里更改它；项目的负责人可以提议一个版本，由你在首页批准或拒绝。",
+  intro: "此项目已知的内容，供从零开始的执行者使用：如何构建与测试、东西在哪、要避免什么。此项目的每个执行者开工时都会拿到它。由项目的负责人来写；你可以在这里查看每个版本、恢复某个版本，或者自己修改。",
   reading: "正在读取交接文档…",
   document: "交接文档",
   bytes: (used, limit) => `${used} / ${limit} 字节。`,
@@ -47,8 +48,9 @@ const text = strings({
   version: (n) => `第 ${n} 版`,
   by: (name, at) => `${name}，${at}`,
   approvedBy: (name, at) => `${name}，经你批准，${at}`,
-  proposal: (name) => `${name} 提议了新版本，等待你在首页决定。`,
   show: (n) => `查看第 ${n} 版`,
+  restore: (n) => `恢复第 ${n} 版`,
+  restored: (n) => `恢复为第 ${n} 版`,
   hide: "收起",
   emptyVersion: "此版本为空。",
 });
@@ -57,7 +59,8 @@ const bytes = (value: string) => new TextEncoder().encode(value).length;
 /** As Core's `handover::MAX_REASON`: the trimmed reason, in UTF-8 bytes. */
 const REASON_BYTES = 1_000;
 
-/** A Project's handover document in its settings (T-34): the user's editor, saved against the version read, with its versions. */
+/** A Project's handover document in its settings (T-34): the user's editor, saved against the version read, with its
+ * versions, who wrote each and why; a past one can be restored as a new version (YN-2 S3). */
 export function ProjectHandover({ projectId, disabled = false }: { projectId: string; disabled?: boolean }) {
   const language = useLanguage();
   const t = text(language);
@@ -94,9 +97,24 @@ export function ProjectHandover({ projectId, disabled = false }: { projectId: st
     setBusy(true);
     setError("");
     try {
-      const saved = await saveHandover(projectId, view.version, draft, reason);
-      // An answer that doesn't say leaves the proposal shown as it was (#612 R4).
-      adopt(saved.proposal === undefined ? { ...saved, proposal: view.proposal } : saved);
+      adopt(await saveHandover(projectId, view.version, draft, reason));
+      setDone(true);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  // A past version saved again as a new one, with why: the user's own save (YN-2 S3).
+  async function restore(version: number) {
+    if (!view) return;
+    setBusy(true);
+    setError("");
+    try {
+      const markdown = past?.version === version && typeof past.markdown === "string"
+        ? past.markdown : (await readHandoverVersion(projectId, version)).past.markdown ?? "";
+      adopt(await saveHandover(projectId, view.version, markdown, t.restored(version)));
+      setPast(null);
       setDone(true);
     } catch (e) {
       setError(errorText(e));
@@ -147,7 +165,6 @@ export function ProjectHandover({ projectId, disabled = false }: { projectId: st
           </button>
           {changed ? <span className="settings-row-help">{t.unsaved}</span> : done && <span className="settings-row-help" role="status">{t.saved}</span>}
         </div>
-        {view.proposal && <p className="settings-row-help" role="status">{t.proposal(view.proposal.proposer.name)}</p>}
         <h4 className="project-handover-history-title">{t.history}</h4>
         {view.history.length === 0 ? <p className="settings-row-help">{t.none}</p> : (
           <ol className="project-handover-history">
@@ -159,6 +176,11 @@ export function ProjectHandover({ projectId, disabled = false }: { projectId: st
                 <button type="button" className="quiet-button" aria-expanded={past?.version === v.version} onClick={() => void show(v.version)}>
                   {past?.version === v.version ? t.hide : t.show(v.version)}
                 </button>
+                {v.version !== view.version && (
+                  <button type="button" className="quiet-button" disabled={locked} onClick={() => void restore(v.version)}>
+                    {t.restore(v.version)}
+                  </button>
+                )}
                 {past?.version === v.version && (
                   <pre className="project-handover-past">{past.markdown?.trim() ? past.markdown : t.emptyVersion}</pre>
                 )}

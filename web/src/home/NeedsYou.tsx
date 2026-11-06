@@ -1,4 +1,4 @@
-import { BadgeCheck, Bell, CircleAlert, CircleCheck, FileText, MessageCircleQuestionMark, MessagesSquare, OctagonPause, ShieldCheck } from "lucide-react";
+import { BadgeCheck, Bell, CircleAlert, CircleCheck, MessageCircleQuestionMark, MessagesSquare, OctagonPause, ShieldCheck } from "lucide-react";
 import type { Agent } from "../types";
 import { useLanguage } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
@@ -12,9 +12,7 @@ export const needsYouKey = (item: NeedsYouItem) =>
     ? `approval:${item.requestId}`
     : item.kind === "question"
       ? `question:${item.agentId}:${item.turnId}:${item.itemId}`
-      : item.kind === "handover"
-        ? `handover:${item.proposalId}`
-        : item.kind === "executor"
+      : item.kind === "executor"
           ? `executor:${item.agentId}:${item.state}`
           : `ask:${item.projectId}:${item.sectionKey}`;
 
@@ -71,8 +69,6 @@ export function NeedsYou({
                   <ShieldCheck size={14} />
                 ) : item.kind === "question" ? (
                   <MessagesSquare size={14} />
-                ) : item.kind === "handover" ? (
-                  <FileText size={14} />
                 ) : item.kind === "executor" ? (
                   item.state === "delivering" ? <BadgeCheck size={14} /> : item.state === "failed" ? <CircleAlert size={14} /> : <OctagonPause size={14} />
                 ) : (

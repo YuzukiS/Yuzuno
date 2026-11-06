@@ -303,13 +303,12 @@ dispatchId). The mail says where to read them; it doesn't hold them.
 - **The Project's handover document** (`handover`): what the Project already
   knows, in Markdown, up to 32 KiB of text: line breaks (LF or CRLF) and
   tabs, but no other control characters; a save with one is refused at its
-  line and column. You keep it in the Project's settings,
-  under **Handover**, and a lead can propose a version for you to approve
-  (below). Each save is a new version, kept with who wrote it and
-  why, and a save against a document that changed meanwhile is refused. The
-  settings page lists the versions and shows any past one. A Project's
-  document goes with it when the Project is deleted. An archived Project's
-  document can't change.
+  line and column. The Project's leads write it
+  ([below](#a-lead-writes-it)); you read and change it in the Project's
+  settings, under **Handover**. Each save is a new version, kept with who
+  wrote it and why, and a save against a document that changed meanwhile is
+  refused. A Project's document goes with it when the Project is deleted. An
+  archived Project's document can't change.
 - **Core's summary of the task so far** (`contextSummary`): at most 4 KiB,
   written by Core from what it holds, in this order:
   - the latest result;
@@ -322,33 +321,36 @@ dispatchId). The mail says where to read them; it doesn't hold them.
 A dispatch to an existing Agent gets neither; that Agent already has its own
 context.
 
-### A lead proposes, you decide
+### A lead writes it
 
-A lead of the Project can propose a new handover document; nothing changes
-until you approve it on Home.
+A lead of the Project writes the handover document directly: no one
+approves it, and nothing about it waits on Home.
 
-- **Reading and proposing.** Agents of the Project read the document with
-  `handover_get`. A lead proposes a whole new document with
-  `handover_propose`, against the version it read. The same rules apply as
-  for a save: 32 KiB of text, and a proposal on an older version is refused
-  with the current one named. An executor never proposes, and no Agent tool
-  approves.
-- **One at a time.** A Project has at most one proposal waiting. A lead's new
-  proposal replaces its own waiting one, which is kept as superseded; another
-  lead's is refused until you decide, naming whose waits and since when.
-- **Waiting on you.** A waiting proposal shows in Home's **Needs you**, named
-  by its lead. That lead counts as waiting on you in the attention order,
-  Ctrl/⌘+J goes to the proposal, and it is in the title's count, the system
-  notification and push. On Home its card shows the reason and the changed
-  lines.
-- **Your decision.** Approve, and it becomes a normal version, written by the
-  lead and approved by you, with the lead's reason; the history shows both.
-  Reject, and nothing changes. Either way, one mail tells the lead, with your
-  note (up to 1,000 bytes). Both are checked against the document you read
-  and the proposal: a proposal made on a version you have since replaced
-  can't be approved, and its rejection tells the lead to propose again on
-  the current version. A decided or replaced proposal leaves Needs you at
-  once.
+- **Reading.** Every member of the Project, its executors too, reads the
+  document with `handover_get`; its answer's `canWrite` says whether the
+  caller may write it: a lead of the Project, while the Project is not
+  archived.
+- **Writing.** A lead writes a whole new document with `handover_update`,
+  against the version it read, and says why (`reason`, required, up to
+  1,000 bytes). It is saved at once as a new version, with the lead's name
+  and reason, and every executor dispatched from then on gets it. The same
+  rules apply as for your save: 32 KiB of text, and a write on an older
+  version is refused with the current one named. A retry with the same
+  `requestId` answers the same version; another payload under it is
+  refused. An executor and any other member are refused with `not_lead`.
+- **What you do.** In the Project's settings, under **Handover**, each
+  version says who wrote it (a lead's name, or You), when and why. **Show
+  version N** reads a past one, and **Restore version N** saves its text
+  again as a new version, "Restored version N"; or edit it and save your
+  own. A lead's next write is checked against your version, as yours is
+  against its.
+- **Proposals from before.** A lead used to propose a version for you to
+  approve on Home (`handover_propose`). That tool is gone: a call to it is
+  refused, naming `handover_update`. When this Core first opens a Workspace,
+  a proposal still waiting is marked superseded, its text kept, and its lead,
+  if open, gets one mail with that text, to write it with `handover_update`
+  if it is still needed. A version a lead proposed and you approved before
+  still says so in the history.
 
 A dispatch's materials are at most 128 KiB, counting only what the dispatcher
 can shorten: the task's own materials and the dispatch's. The template, the
