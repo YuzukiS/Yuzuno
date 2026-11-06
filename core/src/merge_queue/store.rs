@@ -1,7 +1,7 @@
 //! Merge entries: what was released, who released it, and every check's
 //! outcome. All GitHub I/O happens outside these transactions.
 use super::checks::{self, Hold};
-use super::remote::{Followed, Merged};
+use super::remote::{Followed, MergeOutcome};
 use super::{Change, Enqueue, Scope};
 use crate::collaboration_store::{self as collab, TaskActor};
 use crate::{model::now, store::Store};
@@ -715,7 +715,7 @@ impl Store {
 
     /// The merge request's outcome. Returns the entry when it merged: its
     /// follow-up (post-check, cleanup, main CI) runs next.
-    pub(super) fn merge_answered(&self, id: &str, attempt: i64, outcome: std::result::Result<Merged, String>) -> Result<Option<Value>> {
+    pub(super) fn merge_answered(&self, id: &str, attempt: i64, outcome: std::result::Result<MergeOutcome, String>) -> Result<Option<Value>> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let mut e = entry(&tx, id)?;
@@ -726,7 +726,7 @@ impl Store {
         e["updatedAt"] = json!(now());
         let mut urgent = false;
         match outcome {
-            Ok(Merged::Merged(sha)) => {
+            Ok(MergeOutcome::Merged(sha)) => {
                 e["state"] = json!("merged");
                 e["reason"] = Value::Null;
                 e["detail"] = json!(format!("Merged as {sha}; Core checks the merge commit and follows main's push CI."));
@@ -737,12 +737,12 @@ impl Store {
                 e["waitingSince"] = Value::Null;
                 e["nextCheck"] = json!(0);
             }
-            Ok(Merged::Refused(detail)) => stop(&mut e, "merge_refused", detail),
-            Ok(Merged::Unknown(detail)) => {
+            Ok(MergeOutcome::Refused(detail)) => stop(&mut e, "merge_refused", detail),
+            Ok(MergeOutcome::Unknown(detail)) => {
                 urgent = true;
                 stop(&mut e, "merge_unknown", detail);
             }
-            Ok(Merged::Moved(detail) | Merged::Held(detail)) => {
+            Ok(MergeOutcome::Moved(detail) | MergeOutcome::Held(detail)) => {
                 let old = e["merge"].take();
                 e["retiredMerges"] = json!([e["retiredMerges"].as_array().cloned().unwrap_or_default(), vec![old]].concat());
                 e["state"] = json!("waiting");

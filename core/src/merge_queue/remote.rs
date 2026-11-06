@@ -348,7 +348,7 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str)
 
 /// What the merge request came to (design §3, merging).
 #[derive(Debug)]
-pub(super) enum Merged {
+pub(super) enum MergeOutcome {
     Merged(String),
     Refused(String),
     /// No certain answer after the one reconciled retry.
@@ -362,7 +362,7 @@ pub(super) enum Merged {
 /// Send the merge, at most twice. Before any second request Core reads the PR:
 /// merged at the head is the answer; open at the head with main unchanged
 /// allows one more request; anything else is reported, never retried.
-pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<Merged> {
+pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<MergeOutcome> {
     let t = target(entry)?;
     let expected = entry["merge"]["expectedMain"].as_str().context("The merge has no expected main")?.to_owned();
     let mut sent = entry["merge"]["attempts"].as_i64().unwrap_or(0);
@@ -374,7 +374,7 @@ pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<Merged> 
             }
         }
         if sent >= 2 {
-            return Ok(Merged::Unknown(format!(
+            return Ok(MergeOutcome::Unknown(format!(
                 "{sent} merge requests got no certain answer ({last}), and the PR is still open at the head; nothing more is sent"
             )));
         }
@@ -385,11 +385,11 @@ pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<Merged> 
         match writes::write(ws, t.repository, &t.repo, Write::Merge { number: t.number, head: &t.head }).await {
             Ok((code, body)) => {
                 return Ok(match checks::merge_answer(code, &body) {
-                    Answer::Merged(sha) => Merged::Merged(sha),
-                    Answer::Refused(detail) => Merged::Refused(detail),
+                    Answer::Merged(sha) => MergeOutcome::Merged(sha),
+                    Answer::Refused(detail) => MergeOutcome::Refused(detail),
                 });
             }
-            Err(e) if e.to_string().starts_with("merge_queue_disabled") => return Ok(Merged::Held(e.to_string())),
+            Err(e) if e.to_string().starts_with("merge_queue_disabled") => return Ok(MergeOutcome::Held(e.to_string())),
             Err(e) => {
                 sent += 1;
                 last = e.to_string();
@@ -401,23 +401,23 @@ pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<Merged> 
 /// The PR as GitHub has it now, after a merge request without a certain
 /// answer: None means it is open at the head on the expected main, so one
 /// more request may go.
-async fn reconcile(ws: &Arc<Workspace>, t: &Target, expected: &str) -> Result<Option<Merged>> {
+async fn reconcile(ws: &Arc<Workspace>, t: &Target, expected: &str) -> Result<Option<MergeOutcome>> {
     let pr = read(ws, format!("repos/{}/pulls/{}", t.repo, t.number)).await?;
     if pr["merged"] == true {
         return Ok(Some(match pr["merge_commit_sha"].as_str() {
-            Some(sha) if pr["head"]["sha"] == t.head.as_str() => Merged::Merged(sha.to_owned()),
-            _ => Merged::Unknown(format!("The PR was merged, at head {}", pr["head"]["sha"])),
+            Some(sha) if pr["head"]["sha"] == t.head.as_str() => MergeOutcome::Merged(sha.to_owned()),
+            _ => MergeOutcome::Unknown(format!("The PR was merged, at head {}", pr["head"]["sha"])),
         }));
     }
     if pr["state"] != "open" {
-        return Ok(Some(Merged::Refused("The PR was closed without a merge".into())));
+        return Ok(Some(MergeOutcome::Refused("The PR was closed without a merge".into())));
     }
     if pr["head"]["sha"] != t.head.as_str() {
-        return Ok(Some(Merged::Refused(format!("The PR head moved to {}", pr["head"]["sha"]))));
+        return Ok(Some(MergeOutcome::Refused(format!("The PR head moved to {}", pr["head"]["sha"]))));
     }
     let main = read(ws, format!("repos/{}/git/ref/heads/{}", t.repo, t.base)).await?["object"]["sha"].as_str().unwrap_or("").to_owned();
     if main != expected {
-        return Ok(Some(Merged::Moved(format!("Main moved to {} before the merge was certain; every check runs again", short(&main)))));
+        return Ok(Some(MergeOutcome::Moved(format!("Main moved to {} before the merge was certain; every check runs again", short(&main)))));
     }
     Ok(None)
 }
