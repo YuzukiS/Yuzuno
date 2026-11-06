@@ -348,7 +348,7 @@ test("the update status is not read while the page is hidden, and is read at onc
     await wait(30);
     const hidden = statusReads(f);
     await timers(f, 10000, 2);
-    assert.equal(statusReads(f), hidden, "the update status is not read while the page is hidden");
+    assert.equal(statusReads(f), hidden, "no status read while hidden, over two intervals");
     const shownAt = Date.now();
     showPage(f, true);
     assert.ok(await until(() => statusReads(f) > hidden, 2000), "shown again, the status is read");
@@ -370,7 +370,7 @@ test("an update under way keeps reading its status while the page is hidden", as
     await wait(30);
     const hidden = statusReads(f);
     await timers(f, PRODUCT_POLL_MS, 3);
-    assert.ok(statusReads(f) >= hidden + 2, "an update under way keeps reading its status while the page is hidden");
+    assert.ok(statusReads(f) >= hidden + 2, "followed while hidden: two more status reads");
     assert.deepEqual(f.errors, []);
   } finally {
     f.dom.window.close();
