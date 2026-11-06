@@ -61,6 +61,10 @@ pub(crate) fn redirect(db: &Connection, message: &mut Value) -> Result<()> {
     if matches!(message["sender"]["kind"].as_str(), Some("agent" | "user")) {
         return Ok(());
     }
+    // An update's request to end the recipient's own Turn means nothing to another Agent.
+    if message["metadata"]["kind"] == "update_wait" {
+        return Ok(());
+    }
     let Some(recipient) = message["recipient"]["id"].as_str() else { return Ok(()) };
     let Some(executor) = archived(db, recipient)? else { return Ok(()) };
     let Some(dispatcher) = executor.dispatcher else { return Ok(()) };

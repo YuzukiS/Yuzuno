@@ -19,7 +19,7 @@ async fn a_released_executors_ask_is_its_dispatchers_to_answer_and_resolve() {
     // A Home that still showed the executor as the owner.
     let reply = home::ReplyInput { key: Some("question".into()), agent_id: "c".into(), text: String::new(), client_message_id: "r1".into(),
         choice: Some("left".into()), version: None, title: None, ask_version: Some(1), workspace_id: Some(workspace), form: None };
-    home::reply(&ws, project.clone(), reply).await.unwrap();
+    home::reply(&ws, project.clone(), reply).await.unwrap_or_else(|error| panic!("the reply goes to the dispatcher: {error}"));
     assert!(ws.store.receipt("a", "r1").unwrap().is_some(), "the reply reaches the dispatcher");
     assert!(ws.store.receipt("c", "r1").unwrap().is_none(), "not the released executor");
     let row = sections::find(&ws.store.db.read().unwrap(), &project, "question", None).unwrap().unwrap();

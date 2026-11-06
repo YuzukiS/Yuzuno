@@ -84,7 +84,7 @@ fn refused(answer: Result<Value>, code: &str) -> String {
         Ok(answer) => panic!("refused with {code}, not answered: {answer}"),
         Err(error) => {
             let error = error.to_string();
-            assert!(error.starts_with(code), "{error}");
+            assert!(error.starts_with(code), "refused with {code}: {error}");
             error
         }
     }
@@ -206,7 +206,7 @@ async fn the_dispatcher_any_lead_of_the_tasks_project_or_the_user_releases_it() 
             refused(release(&ws, Some("plain"), &id).await, "not_dispatcher:");
             assert!(!closed(s, &id), "nothing changed");
         }
-        let answer = release(&ws, actor, &id).await.unwrap();
+        let answer = release(&ws, actor, &id).await.unwrap_or_else(|error| panic!("{actor:?} may release it: {error}"));
         released.push((answer["releasedAt"].is_string(), answer["releasedBy"].clone()));
     }
     assert_eq!(released, vec![(true, json!("agent:lead")), (true, json!("agent:colead")), (true, json!("user"))],
