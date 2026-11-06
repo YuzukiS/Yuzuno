@@ -68,14 +68,20 @@ async function open({ width, height, coarse, inset, quiet }) {
   // there is the browser's, not this script's.
   await page.addInitScript(([right, lang]) => {
     // Enough of an EventSource for useWorkspaceEvents, and reachable from the
-    // test so a workspace event can be delivered on purpose.
+    // test so a workspace event can be delivered on purpose. It opens,
+    // because this check's quiet screen has to be quiet in every respect: a
+    // stream that never opened is itself something needing a look, and
+    // counts (#459 new pair, P3 — t15-status-stream.mjs reads that case).
     window.EventSource = class {
       constructor(url) {
         this.url = url;
+        this.readyState = 0;
         this.onopen = this.onmessage = this.onerror = null;
         window.__sse = this;
+        setTimeout(() => { this.readyState = 1; this.onopen?.(); }, 60);
       }
-      close() {}
+      addEventListener() {}
+      close() { this.readyState = 2; }
     };
     window.__event = (data) =>
       window.__sse?.onmessage?.({ data: JSON.stringify(data), lastEventId: "1" });

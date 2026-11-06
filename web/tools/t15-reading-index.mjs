@@ -14,18 +14,6 @@ const dist = resolve(process.env.YUZUNO_UI_DIST);
 const now = Date.now();
 const iso = (ms) => new Date(now + ms).toISOString();
 
-const VIEWS_UNUSED = process.env.T15_VIEWS
-  ? process.env.T15_VIEWS.split(",").map((pair) => {
-      const [width, height] = pair.split("x").map(Number);
-      return { name: `${width}x${height}`, width, height };
-    })
-  : [
-      { name: "folded-320", width: 320, height: 844 },
-      { name: "short-594", width: 594, height: 500 },
-      { name: "inner-669", width: 669, height: 844 },
-      { name: "unfolded-951", width: 951, height: 844 },
-    ];
-
 const agent = {
   id: "a", name: "Dev 8 · Mac / iOS", status: "working", harness: "claude", cwd: "/Users/yuzuki/work",
   model: "claude-opus-5", color: "sage", createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0,

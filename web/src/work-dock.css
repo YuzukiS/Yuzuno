@@ -34,17 +34,30 @@
   align-items: center;
   width: var(--work-dock-width);
   max-height: calc(100% - 16px);
-  /* max-height alone only capped the box: a conversation with jobs, runs and
-     sub-agents all at their Appearance limits draws more than fits, and the
-     entries spilled out of the bottom of the conversation and over the
-     composer — measured, the last one took 2px of the "+" beside the input
-     area, so a press aimed at "+" landed on a Job (#459 round 1, P2a). The
-     dock scrolls within its own height instead; nothing is clipped away and
-     nothing is drawn outside. */
-  overflow-y: auto;
-  overscroll-behavior: contain;
   padding-block: 8px;
   color: var(--text-quiet);
+}
+/* max-height alone only capped the box: a conversation with jobs, runs and
+   sub-agents all at their Appearance limits draws more than fits, and the
+   entries spilled out of the bottom of the conversation and over the composer
+   — measured, the last one took 2px of the "+" beside the input area, so a
+   press aimed at "+" landed on a Job (#459 round 1, P2a).
+   The scrolling is this inner box, not the dock: a scroll container on the
+   dock itself also clipped what belongs outside its 40px — each item's tip
+   and the hover strip below — because a non-visible overflow on one axis
+   makes the other non-visible too (#459 new pair, P2). */
+.work-dock-scroll {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Nothing to show: the dock's own hover strip should not be there either. */
+.work-dock:has(> .work-dock-scroll:empty) {
+  display: none;
 }
 /* A little room above and below counts as coming near the dock. */
 .work-dock::before {
@@ -262,15 +275,16 @@
 
 /* Each node names itself beside the dock while pointed at or focused. */
 .work-dock-tip {
-  position: absolute;
-  z-index: 12;
-  left: calc(100% + 8px);
-  top: 50%;
+  /* Drawn into the body (WorkDock.tsx), so its place is set from the item's
+     own rect and its width from the room beside it: the container units it
+     used have no container there, and the dock's scrolling box would clip it
+     wherever it sat inside. */
+  position: fixed;
+  z-index: 60;
   translate: 0 -50%;
   display: grid;
   gap: 2px;
   width: max-content;
-  max-width: min(280px, calc(100cqw - 70px));
   padding: 8px 11px;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -282,12 +296,7 @@
   text-align: left;
   white-space: normal;
   overflow-wrap: anywhere;
-  opacity: 0;
-  visibility: hidden;
   pointer-events: none;
-  transition:
-    opacity var(--motion-micro) var(--ease-standard),
-    visibility var(--motion-micro);
 }
 .work-dock-tip > span {
   color: var(--text-secondary);
@@ -296,10 +305,7 @@
   color: var(--text-quiet);
   font-size: 0.92em;
 }
-.work-dock-item:is(:hover, :focus-visible) .work-dock-tip {
-  opacity: 1;
-  visibility: visible;
-}
+
 
 /* A wide conversation has room for a narrow column: each run reads its
    status, and coming near the dock unfolds the names. The tip keeps the

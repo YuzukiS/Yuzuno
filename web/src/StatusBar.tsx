@@ -189,6 +189,16 @@ export function StatusBar({
       document.removeEventListener("pointerdown", onDown);
     };
   }, [open]);
+  // The live updates, said in words when they are not simply open. Core can
+  // answer while its stream is reconnecting, and the bar shows that on its
+  // own line; folded into the entry it was neither counted nor announced,
+  // because the entry read `coreHealthy` only (#459 new pair, P3).
+  const stream =
+    previewMode || eventConnection === "open"
+      ? ""
+      : eventConnection === "reconnecting"
+        ? t.reconnecting
+        : t.connecting;
   // What the entry says while it is closed, so that folding the bar away
   // hides nothing that was asking for attention. Counts of work in progress
   // (reviews, CI runs) are not in it: those are going on, not waiting.
@@ -196,7 +206,13 @@ export function StatusBar({
     (background.notice && !background.notice.ok ? 1 : 0) +
     (machines?.unreachable || 0) +
     (plan?.limited ? 1 : 0) +
-    (codex?.limited ? 1 : 0);
+    (codex?.limited ? 1 : 0) +
+    (stream ? 1 : 0);
+  // "Simply connected" is Core answering *and* its updates open: either one
+  // short of that is written out, not left to the dot's colour (row 6).
+  const settled = coreHealthy && !stream;
+  // Both states in the words it is read by, each said once.
+  const said = [coreLabel, stream].filter(Boolean).join(" · ");
   return (
     <footer className="statusbar" id="core-status-details" ref={panel} data-open={open ? "" : undefined}>
       {slot &&
@@ -215,11 +231,16 @@ export function StatusBar({
                 same thing in its place rather than beside it.
                 The name is read, not seen — Core's state and the count are
                 both in it, and no aria-label stands in front of either. */}
-            <span className="core-status-mark" data-healthy={coreHealthy ? "" : undefined} aria-hidden="true" />
-            <span className="sr-only">{t.detailsCore(coreLabel, needsLook > 0 ? t.detailsNeed(needsLook) : t.detailsQuiet)}</span>
-            {/* Connected, the dot alone says it. Anything else — reconnecting,
-                offline, an update wanted — is not a colour a reader can be
-                asked to tell apart, so it is written out. */}
+            <span className="core-status-mark" data-healthy={settled ? "" : undefined} aria-hidden="true" />
+            <span className="sr-only">{t.detailsCore(said, needsLook > 0 ? t.detailsNeed(needsLook) : t.detailsQuiet)}</span>
+            {/* Core not answering is written out: that is not a colour a
+                reader can be asked to tell apart. The stream's own state is
+                not — the words are in the name above and in the panel, and
+                the count below stands for it here. Measured on the screen
+                this entry exists for, "Live updates reconnecting" takes the
+                entry to 289px of a 413px actions area and lies over the
+                toolbar's Jobs and Tasks buttons; ellipsised it still eats
+                the room and says less (t15-touch, t15-status-stream). */}
             {!coreHealthy && (
               <span className="core-status-state" aria-hidden="true">{coreLabel}</span>
             )}

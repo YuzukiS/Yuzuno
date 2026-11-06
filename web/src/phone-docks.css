@@ -178,6 +178,18 @@
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+/* The panel above is the thing that scrolls here. A floating column caps its
+   own height and scrolls in an inner box instead, so that what belongs
+   outside its 40px — each item's tip, its hover strip — is not clipped away
+   with it (work-dock.css, #459 new pair P2). In this panel that box would be
+   a second scroller inside the first, and its centring would undo the rows'
+   stretch: a job in the open drawer then took no press at all, the nav over
+   its middle (phone-conversation-check, sideways). Here it is nothing. */
+.app.phone .conversation-body[data-phone-dock="work"] > .work-dock > .work-dock-scroll {
+  max-height: none;
+  align-items: stretch;
+  overflow: visible;
+}
 .app.phone .conversation-body[data-phone-dock="work"] > .work-dock {
   --node-hole: var(--surface-raised);
   --node-x: 14px;

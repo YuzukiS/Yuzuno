@@ -184,3 +184,29 @@
     padding: 0;
   }
 }
+/* Narrower still: the name, the work entry and the reading index cannot have
+   a row each. Measured at a 320px screen, the heading took three rows and
+   118px and the header 139px against 55px before this task, and the request
+   pin — which sits at the header's foot — then covered an approval's Allow
+   once and Decline, the one thing that must stay pressable, with the
+   conversation already scrolled to its end (phone-conversation-check,
+   t15-folded-head.mjs). Bounded, the two entries share a row and their text
+   clips as the name above them already does; neither loses a word a reader
+   hears, and each keeps it in its own title. Only here: by a 383px
+   conversation the two already sit on one row at their full width, and
+   clipping them there would cost reading for nothing. */
+@container conversation (max-width: 380px) {
+  .conversation-heading > .work-activity-entry {
+    max-width: 55%;
+  }
+  .conversation-heading > .conversation-index-entry {
+    max-width: 40%;
+  }
+  .work-activity-entry .work-activity-counts,
+  .conversation-index-entry > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

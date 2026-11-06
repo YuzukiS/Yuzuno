@@ -8,6 +8,7 @@ import {
   createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type ReactNode, type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   BriefcaseBusiness,
@@ -369,9 +370,14 @@ export function WorkDock({
   label: string;
   children: ReactNode;
 }) {
+  // The scrolling is an inner box, so the dock itself clips nothing: its
+  // hover strip (`.work-dock::before`, inset -20px) and each item's tip live
+  // outside the dock's 40px, and a scroll container on the dock clipped both
+  // — a non-visible overflow on one axis makes the other non-visible too, so
+  // `overflow-y: auto` cost the tip its place (#459 new pair, P2).
   return (
     <nav className="work-dock" aria-label={label} lang={langTag(useLanguage())}>
-      {children}
+      <div className="work-dock-scroll">{children}</div>
     </nav>
   );
 }
@@ -469,12 +475,49 @@ export function WorkDockItem({
 }) {
   const Mark = marks[status] || CircleHelp;
   const node = useRef<HTMLSpanElement>(null);
+  const self = useRef<HTMLButtonElement>(null);
   useSettleOnEnd(node, status);
+  // Where the tip goes, in the page's own coordinates. It is drawn into the
+  // body because the dock's scrolling box would clip it, and because the
+  // dock's `translate` makes it a containing block, so `position: fixed`
+  // inside the dock would not escape either.
+  const [tip, setTip] = useState<{ top: number; left?: number; right?: number; maxWidth: number } | null>(null);
+  const place = useCallback(() => {
+    const button = self.current;
+    if (!button) return;
+    // The phone shows this dock as a drawer with the names already on it, and
+    // hid the tip with a descendant rule the page-level tip escapes.
+    if (button.closest('.app.phone .conversation-body[data-phone-dock="work"]')) return setTip(null);
+    const r = button.getBoundingClientRect();
+    const room = window.innerWidth - r.right - 20;
+    const top = Math.round(r.top + r.height / 2);
+    // Beside the dock where there is room for it; on its other side where
+    // there is not, so the tip is always wholly on screen.
+    setTip(room >= 140
+      ? { top, left: Math.round(r.right + 8), maxWidth: Math.min(280, Math.floor(room)) }
+      : { top, right: Math.round(window.innerWidth - r.left + 8), maxWidth: Math.min(280, Math.max(120, Math.floor(r.left - 20))) });
+  }, []);
+  // While it shows, the dock may scroll under it and the window may change.
+  useEffect(() => {
+    if (!tip) return;
+    const again = () => place();
+    window.addEventListener("scroll", again, true);
+    window.addEventListener("resize", again);
+    return () => {
+      window.removeEventListener("scroll", again, true);
+      window.removeEventListener("resize", again);
+    };
+  }, [tip, place]);
   return (
     <button
+      ref={self}
       type="button"
       className={`work-dock-item state-${status} ${className}`.trim()}
       aria-label={[name, state, detail, when].filter(Boolean).join(" · ")}
+      onPointerEnter={place}
+      onPointerLeave={() => setTip(null)}
+      onFocus={place}
+      onBlur={() => setTip(null)}
       onClick={(event) => onOpen(event.currentTarget)}
     >
       <span className="work-dock-node" aria-hidden="true" ref={node}>
@@ -488,12 +531,20 @@ export function WorkDockItem({
         <small>{sub ?? state}</small>
         {when && <small className="work-dock-when">{when}</small>}
       </span>
-      <span className="work-dock-tip" aria-hidden="true">
-        <strong>{name}</strong>
-        <span>{state}</span>
-        {detail && <small>{detail}</small>}
-        {when && <small className="work-dock-when">{when}</small>}
-      </span>
+      {tip &&
+        createPortal(
+          <span
+            className="work-dock-tip"
+            aria-hidden="true"
+            style={{ top: tip.top, left: tip.left, right: tip.right, maxWidth: tip.maxWidth }}
+          >
+            <strong>{name}</strong>
+            <span>{state}</span>
+            {detail && <small>{detail}</small>}
+            {when && <small className="work-dock-when">{when}</small>}
+          </span>,
+          document.body,
+        )}
     </button>
   );
 }
