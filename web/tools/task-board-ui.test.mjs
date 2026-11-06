@@ -64,10 +64,11 @@ const fixture = () => [
   }),
 ];
 
-async function mount({ reduceMotion = false, language } = {}) {
+// `edit`: changes the fixture's tasks for one test.
+async function mount({ reduceMotion = false, language, edit } = {}) {
   const errors = [];
   const calls = [];
-  const tasks = fixture();
+  const tasks = edit ? edit(fixture()) : fixture();
   const vc = new VirtualConsole();
   vc.on("jsdomError", (e) => errors.push(e.message));
   const dom = new JSDOM('<html><body><div id="root"></div></body></html>', {
@@ -187,6 +188,30 @@ test("a card says where its executor stands: queued with its place, starting wit
     assert.ok(!/chosen automatically/.test(slot("T-3").textContent + slot("T-5").textContent), "without a choice, a card reads as before");
     // Booleans only: a failing assert must never print a jsdom node.
     for (const id of ["T-1", "T-4"]) assert.ok(!slot(id), `${id} has no executor slot`);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// T-36 S3's lifecycle chip stands in for the slot chip on a task whose
+// executor has a lifecycle; it names the machine auto chose too, from the same
+// helper (T-35 S3c, agreed with T-36; #645 merged after #647).
+test("a card whose executor has a lifecycle names the machine auto chose on that chip, and so does the task view (T-35 S3)", async () => {
+  const lifecycle = (id, patch) => ({ agentId: `e-${id}`, task: { id, title: `Task ${id}` }, dispatcher: { kind: "user" }, ...patch });
+  const p = await mount({ edit: (tasks) => tasks.map((t) =>
+    t.id === "T-2" ? { ...t, executor: lifecycle("T-2", { state: "running" }) }
+      : t.id === "T-3" ? { ...t, executor: lifecycle("T-3", { state: "queued", position: 2 }) } : t) });
+  try {
+    const chip = (id) => p.row(id).querySelector(".collab-executor-state");
+    assert.equal(chip("T-2").textContent, "Executor · Running · Lab box (chosen automatically)", "the lifecycle chip names the machine auto chose");
+    assert.match(chip("T-2").title, /Chosen automatically\. The machines in the order Core weighed them:/);
+    assert.match(chip("T-2").title, /Lab box: a free executor slot \(0 running, no limit of its own\)/);
+    assert.equal(p.row("T-2").querySelector(".collab-executor-slot"), null, "the lifecycle chip stands in for the slot chip");
+    assert.equal(chip("T-3").textContent, "Executor · Queued · 2 in line", "without a choice, the lifecycle chip reads as before");
+    await open(p, "T-2");
+    const shown = p.detail().querySelector(".collab-owner-line .collab-executor-state");
+    assert.equal(shown?.textContent, "Executor · Running · Lab box (chosen automatically)", "the task view names it too");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

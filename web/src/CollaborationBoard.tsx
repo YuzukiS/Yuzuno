@@ -382,12 +382,17 @@ function useMutation() {
 }
 
 /** A task's executor and its state (T-36 S3): on its card, and beside its
- * owner in the task's view. Its title says why, and who dispatched it. */
-function ExecutorChip({ lifecycle }: { lifecycle: ExecutorLifecycle }) {
+ * owner in the task's view. Its title says why, and who dispatched it. On a
+ * machine `auto` chose, it names that machine, with how in its title, from
+ * the same helper as the slot chip (T-35 S3c, agreed with T-36). */
+function ExecutorChip({ lifecycle, choice }: { lifecycle: ExecutorLifecycle; choice?: ExecutorChoice | null }) {
   const t = useStrings(lifecycleText);
+  const chosen = executorChoiceText(choice, useLanguage());
+  const title = [...stateDetail(lifecycle, t), ...(chosen ? [chosen.title] : [])].join("\n");
   return (
-    <span className="collab-executor-state" data-executor-state={lifecycle.state} title={stateDetail(lifecycle, t).join("\n")}>
+    <span className="collab-executor-state" data-executor-state={lifecycle.state} title={title}>
       {t.executor} · {stateLabel(lifecycle, t)}
+      {chosen && ` · ${chosen.text}`}
     </span>
   );
 }
@@ -954,7 +959,7 @@ export function CollaborationBoard({
               </span>
             )}
           {task.executor ? (
-            <ExecutorChip lifecycle={task.executor} />
+            <ExecutorChip lifecycle={task.executor} choice={task.executorSlot?.choice} />
           ) : task.executorSlot && (() => {
             // The machine `auto` chose, and how, when it did (T-35 S3).
             const choice = executorChoiceText(task.executorSlot.choice, language);
@@ -1810,7 +1815,7 @@ function TaskPane({
                     {owner.name}
                     <ArrowUpRight size={13} />
                   </button>
-                  {task.executor && <ExecutorChip lifecycle={task.executor} />}
+                  {task.executor && <ExecutorChip lifecycle={task.executor} choice={task.executorSlot?.choice} />}
                 </>
               ) : (
                 <span>{task.assignee?.name || t.notAssigned}</span>

@@ -181,8 +181,10 @@ until fewer hold a slot.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
   whether its executor is queued, with its place (`position`, 1 first),
   starting (with `reason` when its start did not finish), or running. On a
-  machine `auto` chose, the card names it, with every candidate's numbers,
-  or why it was left out, in its title.
+  machine `auto` chose, the card's executor chip names it, with every
+  candidate's numbers, or why it was left out, in its title: the lifecycle
+  chip (see [An executor's lifecycle](#an-executors-lifecycle)), which the
+  task's view shows too, or the slot chip for a task without one.
 - **Holding a slot.** An executor holds its slot from when it starts until
   it is closed, by anyone and in any way. A disconnect keeps it, so
   reconnecting never passes the limit. Closing one frees its slot for the
