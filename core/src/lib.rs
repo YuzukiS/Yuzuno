@@ -64,6 +64,7 @@ pub mod older_cores;
 pub mod opencode;
 mod opencode_agent;
 pub mod opencode_commands;
+pub mod opencode_login;
 mod opencode_fork_check;
 pub mod opencode_v2;
 pub mod opencode_revert_files;

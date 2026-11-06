@@ -89,7 +89,8 @@ fn budget() -> Resources {
     Resources { cpu_millis: 1000, memory_mi_b: 1024, swap_mi_b: 0 }
 }
 async fn put_budget(ws: &Arc<Workspace>) -> Result<Value, String> {
-    match set_budget(AppState(ws.clone()), Json(budget())).await {
+    let Resources { cpu_millis, memory_mi_b, swap_mi_b } = budget();
+    match set_budget(AppState(ws.clone()), Json(BudgetSave { cpu_millis, memory_mi_b, swap_mi_b, max_active: None })).await {
         Ok(Json(value)) => Ok(value),
         Err(error) => {
             let body = axum::body::to_bytes(error.into_response().into_body(), usize::MAX).await.unwrap();

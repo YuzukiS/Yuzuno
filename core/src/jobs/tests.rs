@@ -1041,6 +1041,46 @@ fn the_disk_reserve_setting_is_bounded_kept_and_can_return_to_the_default() {
     assert_eq!(s.job_disk_reserve().unwrap(), None);
 }
 
+/// T-55: how many of this host's own Jobs run at once is the user's, 1–16,
+/// kept beside the budget. A save without it leaves it, null returns it to
+/// the default, and the route's body reads it that way.
+#[test]
+fn max_active_is_bounded_kept_and_can_return_to_the_default() {
+    let (dir, s) = setup();
+    let budget = Resources { cpu_millis: 600, memory_mi_b: 192, swap_mi_b: 0 };
+    let slots = |s: &Store| {
+        let view = s.job_budget_view(machine()).unwrap();
+        (view["maxActive"].clone(), view["maxActiveSet"].clone())
+    };
+    assert_eq!(slots(&s), (json!(4), json!(false)), "four unless the user saved another");
+    let view = s.job_budget_view(machine()).unwrap();
+    assert_eq!((view["maxActiveDefault"].clone(), view["maxActiveBounds"].clone()), (json!(4), json!({"minimum":1,"maximum":16})));
+    for refused in [0, 17] {
+        let error = s.set_job_budget_with(budget.clone(), Some(Some(refused))).err().map(|e| e.to_string());
+        assert_eq!(error.as_deref(), Some("maxActive must be 1–16, or null for the default (4)"), "{refused} is refused");
+    }
+    assert_eq!(slots(&s), (json!(4), json!(false)), "a refused save changes nothing");
+    assert_eq!(s.set_job_budget_with(budget.clone(), Some(Some(6))).unwrap(), json!(budget), "the save answers with the budget, as before");
+    drop(s);
+    let s = Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    assert_eq!(slots(&s), (json!(6), json!(true)), "the view says the saved number, kept across a reopen");
+    s.set_job_budget(budget.clone()).unwrap();
+    assert_eq!(slots(&s), (json!(6), json!(true)), "a budget save without maxActive leaves it");
+    s.set_job_budget_with(budget, Some(None)).unwrap();
+    assert_eq!(slots(&s), (json!(4), json!(false)), "null returns it to the default");
+
+    // POST /api/jobs/budget's body, as the route reads it.
+    let body = |extra: Value| {
+        let mut value = json!({"cpuMillis":600,"memoryMiB":192,"swapMiB":0});
+        value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value::<BudgetSave>(value).map(|b| b.max_active)
+    };
+    assert_eq!(body(json!({})).unwrap(), None, "a body without maxActive leaves it");
+    assert_eq!(body(json!({"maxActive":null})).unwrap(), Some(None), "null asks for the default");
+    assert_eq!(body(json!({"maxActive":8})).unwrap(), Some(Some(8)));
+    assert!(body(json!({"maxJobs":8})).is_err(), "an unknown field is refused, as before");
+}
+
 /// The 2026-10-17 incident (T-32 Job 159e79c0): the disk filled while the
 /// launch record was written. Before, the job stayed "unknown", held its
 /// reservation, and later read "Core stopped". Now it is not started, for

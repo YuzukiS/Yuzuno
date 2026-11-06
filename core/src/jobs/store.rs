@@ -1,4 +1,4 @@
-use super::{Resources, Submit, MAX_ACTIVE};
+use super::{Resources, Submit, DEFAULT_MAX_ACTIVE, MAX_ACTIVE_RANGE};
 use crate::{collaboration_store as collaboration, model::now, store::Store};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -19,7 +19,11 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         -- The most Windows attempts at once on the PC this Core's WSL runs on;
         -- NULL (or no row) is the default. Kept apart from local_job_settings,
         -- whose document older Cores read strictly.
-        CREATE TABLE IF NOT EXISTS local_job_windows (id INTEGER PRIMARY KEY CHECK(id=1), max_jobs INTEGER);")?;
+        CREATE TABLE IF NOT EXISTS local_job_windows (id INTEGER PRIMARY KEY CHECK(id=1), max_jobs INTEGER);
+        -- How many of this host's own Jobs run at once (T-55); NULL (or no
+        -- row) is the default. Kept apart from local_job_settings for the same
+        -- reason. An older Core ignores it and runs its own four.
+        CREATE TABLE IF NOT EXISTS local_job_slots (id INTEGER PRIMARY KEY CHECK(id=1), max_active INTEGER);")?;
     super::runs::migrate(db)?;
     super::gpu::migrate(db)?;
     super::queue::migrate(db)
@@ -116,6 +120,17 @@ pub(super) fn budget(db: &Connection, fallback: Option<&Value>) -> Result<Resour
 pub(super) fn windows_max_jobs(db: &Connection) -> Result<Option<u32>> {
     Ok(db
         .query_row("SELECT max_jobs FROM local_job_windows WHERE id=1", [], |r| r.get::<_, Option<u32>>(0))
+        .optional()?
+        .flatten())
+}
+/// The most of this host's own Jobs that hold a slot at once: the number the
+/// user saved, or DEFAULT_MAX_ACTIVE.
+pub(super) fn max_active(db: &Connection) -> Result<usize> {
+    Ok(saved_max_active(db)?.map_or(DEFAULT_MAX_ACTIVE, |n| n as usize))
+}
+fn saved_max_active(db: &Connection) -> Result<Option<u32>> {
+    Ok(db
+        .query_row("SELECT max_active FROM local_job_slots WHERE id=1", [], |r| r.get::<_, Option<u32>>(0))
         .optional()?
         .flatten())
 }
@@ -868,7 +883,7 @@ impl Store {
             Some(format!("Waiting for outstanding reservations to fit the lowered budget: reserved {} mCPU / {} MiB RAM / {} MiB swap; budget {} mCPU / {} MiB RAM / {} MiB swap",
                 used.cpu_millis, used.memory_mi_b, used.swap_mi_b,
                 limit.cpu_millis, limit.memory_mi_b, limit.swap_mi_b))
-        } else if count >= MAX_ACTIVE {
+        } else if count >= max_active(&tx)? {
             Some("Waiting for an execution/collector slot".to_owned())
         } else {
             None
@@ -1243,17 +1258,38 @@ impl Store {
         let windows = json!({"maxJobs": windows_cap.map_or(super::remote::SLOTS, i64::from), "set": windows_cap.is_some(),
             "defaultMaxJobs": super::remote::SLOTS, "activeCount": windows_active, "sharesThisBudget": true});
         Ok(
-            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"maxActive":MAX_ACTIVE,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
+            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
         )
     }
+    /// A budget save that leaves maxActive as it is (tests; the route takes both).
+    #[cfg(test)]
     pub(super) fn set_job_budget(&self, value: Resources) -> Result<Value> {
+        self.set_job_budget_with(value, None)
+    }
+    /// The budget, and with `slots` how many of this host's own Jobs run at
+    /// once (None leaves it, Some(None) returns it to the default), in one
+    /// transaction (T-55).
+    pub(super) fn set_job_budget_with(&self, value: Resources, slots: Option<Option<u32>>) -> Result<Value> {
+        ensure!(
+            slots.flatten().is_none_or(|n| MAX_ACTIVE_RANGE.contains(&n)),
+            "maxActive must be {}–{}, or null for the default ({DEFAULT_MAX_ACTIVE})",
+            MAX_ACTIVE_RANGE.start(), MAX_ACTIVE_RANGE.end()
+        );
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         // Budget edits affect admission only. Keep accepted jobs and their
         // snapshots intact, even when the new budget is below reservations.
         // The queue resumes once capacity is released or the budget is raised.
+        // So does a lower maxActive: an attempt holding a slot keeps it.
         tx.execute("INSERT INTO local_job_settings(id,data) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET data=excluded.data",[serde_json::to_string(&value)?])?;
+        if let Some(saved) = slots {
+            tx.execute(
+                "INSERT INTO local_job_slots(id,max_active) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET max_active=excluded.max_active",
+                [saved],
+            )?;
+        }
         tx.commit()?;
+        // The answer stays the budget, as before; the view names maxActive.
         Ok(json!(value))
     }
     /// Set (or, with None, clear) the most Windows attempts at once. Like a
