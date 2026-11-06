@@ -41,6 +41,8 @@ export const stopReasons = [
   "dry_run_ended",
 ] as const;
 export type StopReason = (typeof stopReasons)[number];
+/** Reasons of the dry-run queue (T-37 S1) that entries stopped then still carry. */
+export const dryRunReasons = ["needs_batch"] as const;
 
 /** Who did something, as Core records it. */
 export interface MergeActor {
@@ -289,6 +291,7 @@ export const mergeWords = strings(
       dry_run_ended: "Dry run ended",
     } as Record<StopReason, string>,
     unknownState: (state: string) => `Unknown state (${state})`,
+    dryRunReasons: { needs_batch: "Needs a batch (dry run)" } as Record<string, string>,
     unknownReason: (reason: string) => `Other reason (${reason})`,
   },
   {
@@ -335,6 +338,7 @@ export const mergeWords = strings(
       dry_run_ended: "试运行已结束",
     },
     unknownState: (state) => `未知状态（${state}）`,
+    dryRunReasons: { needs_batch: "需要批次（试运行）" },
     unknownReason: (reason) => `其他原因（${reason}）`,
   },
 );
@@ -364,7 +368,6 @@ export function stateWord(state: string, language: Language) {
 /** A stop reason's word, or the reason as Core named it. */
 export function reasonWord(reason: string, language: Language) {
   const words = mergeWords(language);
-  return (stopReasons as readonly string[]).includes(reason)
-    ? words.reasons[reason as StopReason]
-    : words.unknownReason(reason);
+  if ((stopReasons as readonly string[]).includes(reason)) return words.reasons[reason as StopReason];
+  return words.dryRunReasons[reason] ?? words.unknownReason(reason);
 }

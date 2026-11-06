@@ -23,9 +23,10 @@ try {
   bundle = (Array.isArray(result) ? result[0] : result).output.find(v => v.type === 'chunk').code;
 } finally { await rm(fixture, { recursive: true, force: true }); }
 
-// The merge queue's vocabulary as docs/merge-queue.md names it: the States
-// table's codes and the stopped row's reasons. The doc comes with #636; while
-// a tree has it, these must equal what it says (the vocabulary test reads it).
+// The merge queue's vocabulary: the States table's codes and the stopped
+// row's reasons, as #636's docs/merge-queue.md names them, and the dry run's
+// needs_batch that old entries still carry. Every code the doc in this tree
+// names must have its word too (main has the dry run's doc until #636).
 const docStates = ['queued', 'waiting', 'ready', 'merging', 'merged', 'done', 'stopped', 'cancelled'];
 const docReasons = ['head_moved', 'pr_not_open', 'base_changed', 'review_not_passing', 'main_red', 'ci_red', 'conflict', 'nothing_to_merge',
   'merge_blocked', 'batch_changed', 'checkout_mismatch', 'checkout_unproven', 'merge_refused', 'merge_unknown', 'post_check_failed',
@@ -152,12 +153,14 @@ test('the merge queue source lists entries with state, PR, frozen head and task,
 });
 
 test('every state and stop reason of the merge queue doc has its word, in English and in Chinese', async t => {
-  if (doc) assert.deepEqual(vocabularyOf(doc), { states: docStates, reasons: docReasons }, 'the codes are the doc codes');
-  else t.diagnostic('docs/merge-queue.md is not in this tree (it comes with #636): checked against the codes listed here');
-  assert.equal(docReasons.length, 20);
+  const read = doc ? vocabularyOf(doc) : { states: [], reasons: [] };
+  if (doc) assert.ok(read.states.length >= 5 && read.reasons.length >= 10, 'the doc table was read');
+  else t.diagnostic('docs/merge-queue.md is not in this tree: checked against the codes listed here');
+  const states = [...new Set([...docStates, ...read.states])];
+  const reasons = [...new Set([...docReasons, 'needs_batch', ...read.reasons])];
   const entries = [
-    ...docStates.map((state, n) => entry(`s-${n}`, state, { number: 100 + n })),
-    ...docReasons.map((reason, n) => entry(`r-${n}`, 'stopped', { number: 200 + n, reason })),
+    ...states.map((state, n) => entry(`s-${n}`, state, { number: 100 + n })),
+    ...reasons.map((reason, n) => entry(`r-${n}`, 'stopped', { number: 200 + n, reason })),
   ];
   const en = { queued: 'Queued', waiting: 'Waiting', ready: 'Ready', merging: 'Merging', merged: 'Merged', done: 'Done', stopped: 'Stopped', cancelled: 'Cancelled' };
   const zh = { queued: '已排队', waiting: '等待中', ready: '就绪', merging: '合并中', merged: '已合并', done: '已完成', stopped: '已停止', cancelled: '已取消' };
@@ -169,14 +172,14 @@ test('every state and stop reason of the merge queue doc has its word, in Englis
       await until(() => p.doc.querySelector('.merge-queue .job-group-more'));
       p.doc.querySelector('.merge-queue .job-group-more').click();
       await until(() => rows(p).length === entries.length);
-      docStates.forEach((state, n) => assert.equal(rowOf(p, 100 + n).querySelector('.job-state').textContent, words[state], `${language} word for ${state}`));
-      for (const [n, reason] of docReasons.entries()) {
+      states.forEach((state, n) => assert.equal(rowOf(p, 100 + n).querySelector('.job-state').textContent, words[state], `${language} word for ${state}`));
+      for (const [n, reason] of reasons.entries()) {
         const said = rowOf(p, 200 + n).querySelector('.job-state').textContent;
         assert.doesNotMatch(said, unknown, `${language} has no word for ${reason}`);
         assert.ok(said.startsWith(`${words.stopped} · `), said);
       }
-      const reasonWords = docReasons.map((_, n) => rowOf(p, 200 + n).querySelector('.job-state').textContent);
-      assert.equal(new Set(reasonWords).size, docReasons.length, 'each reason has its own word');
+      const reasonWords = reasons.map((_, n) => rowOf(p, 200 + n).querySelector('.job-state').textContent);
+      assert.equal(new Set(reasonWords).size, reasons.length, 'each reason has its own word');
       if (language === 'zh-Hans') assert.doesNotMatch(reasonWords.join(' ').replace(/\b(PR|CI|GitHub|gh)\b/g, ''), /[A-Za-z]{2,}/, 'no English in the Chinese reasons');
     } finally { p.close(); }
   }
