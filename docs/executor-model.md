@@ -22,8 +22,9 @@ Every Agent has one kind:
 | **lead** | You mark it | A standing Agent you chose as a lead of its Project. |
 | **executor** | Core | An Agent made for one task by a [dispatch from an executor template](#dispatching-from-a-template). |
 
-- **Where it shows.** The sidebar shows a **Lead** or **Executor** label under
-  the Agent's name. Agents see each Agent's kind in `peers_list` (`lead`,
+- **Where it shows.** The sidebar shows a **Lead** label under a lead's
+  name, and an executor's row its state (see
+  [An executor's lifecycle](#an-executors-lifecycle)). Agents see each Agent's kind in `peers_list` (`lead`,
   `executor` or `standing`), and can list only one kind with its `kind`
   filter.
 - **How it is stored.** Core keeps the kind in a table of its own,
@@ -412,17 +413,46 @@ first that holds names the state:
 | 7 | `delivering` | 交付待放行 · Awaiting release | Its result is in, on its own dispatch, and its task is in review. |
 | 8 | `running` | 运行中 · Running | Anything else: it is at work. |
 
-Each also names its task (`task.id`, `task.title`), who dispatched it
-(`dispatcher`: `user`, or an Agent with its ID and name), and since when
-(`since`). An executor at work whose task is blocked also has the blocker
-(`blocked`); its state stays what it is.
+Each also names its task (`task.id`, the key the task has now, such as
+`YN-3`, or `T-<n>` while it has none; `task.title`), who dispatched it
+(`dispatcher`: `user`, or an Agent with its ID and name), the template it
+was made from (`template`: its `id`, and its `label` as its dispatch's
+materials give it), when it was dispatched (`dispatchedAt`), and since when
+it is in its state (`since`). An executor at work whose task is blocked also
+has the blocker (`blocked`); its state stays what it is.
 
 - **The sidebar.** In each Project's list, leads come first, then the
   other Agents, then a 任务执行者 · Executors group and, folded by default,
   已归档 · Archived. With attention order, executors are ordered by: waiting
   on you, or failed; delivered, awaiting release; running; archiving;
   queued or starting. A failed executor shows there only while its task is
-  blocked on it; a released one, under Archived and in Closed.
+  blocked on it; a released one, under Archived and in Closed. While some
+  wait for a slot, the group's heading says how many run and how many are
+  queued.
+- **An executor's row** says one state under its name, from its lifecycle
+  and its runtime together, in place of a runtime status and a lifecycle
+  label. The first of these that holds: released (done, 完成); archiving
+  (done, with what it waits for); failed (失败, with why); closed (stopped,
+  已停止); queued or starting (排队); a request or question waiting for you
+  (等你, with how long, from Home's Needs you, said once: what it asks is
+  the row's work summary); its Turn failed (failed); offline or
+  disconnected (stopped); delivering (审查 · Review, at its PR's rounds, or
+  awaiting release); otherwise at work (在做 · Working, with its task's
+  blocker, a result to check, its PR, or its unfinished Jobs and CI). Beside
+  it: the template, when the executor's name doesn't say it; its PR; and
+  its time on the task since its dispatch, which stops once it is released
+  or closed. With the compact Agent list (Settings → Appearance), only the
+  state, its wait and the time show.
+- **Its PR** comes from `GET /api/executors/live`: for each open executor
+  (not archived, its Agent not closed) whose task links a PR, the open or
+  draft one with the highest number, else the highest-numbered; its state;
+  the checks on its head as Core last read them (`unknown` when Core last
+  saw them for another commit); and the review rounds on that head, the
+  approvals since the newest that asked for changes, and whether one is
+  under way. A review whose reviewer never started is no round. The read
+  uses Core's records only and never asks GitHub; the web reads it again on
+  every collaboration change, which a GitHub refresh, a link and a review
+  each announce. Two rounds count as approved, the standard flow.
 - **The task's card** shows its executor and its state, with its place
   while it is queued.
 - **Home's Needs you** lists, for an executor you dispatched, a result

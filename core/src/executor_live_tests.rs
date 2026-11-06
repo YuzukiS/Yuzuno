@@ -50,7 +50,8 @@ fn pr(store: &Store, agent: &str) -> Value {
 
 /// T-43 S2: the sidebar's PR chip for each open executor, from Core's own
 /// records: the open PR with the highest number (a sliced task's merged PRs
-/// come before it), the CI on its head and only that head's review rounds.
+/// come before it, and a superseded one closed after it is not it), the CI
+/// on its head and only that head's review rounds.
 #[test]
 fn an_open_executor_shows_its_tasks_open_pr_with_ci_and_rounds_on_its_head() {
     let (_dir, s) = store();
@@ -60,6 +61,8 @@ fn an_open_executor_shows_its_tasks_open_pr_with_ci_and_rounds_on_its_head() {
     link(&s, &public, 2, "merged", &old, json!({"state":"success","headSha":old}));
     let open = link(&s, &public, 3, "open", &head, json!({"state":"success","headSha":head}));
     link(&s, &public, 1, "closed", &old, Value::Null);
+    // A higher-numbered PR closed unmerged (superseded) is not the one it delivers on.
+    link(&s, &public, 9, "closed", &old, Value::Null);
     let shown = pr(&s, "e1");
     assert_eq!((shown["number"].clone(), shown["state"].clone(), shown["ci"].clone()), (json!(3), json!("open"), json!("success")), "{shown}");
     assert_eq!(shown["url"], "https://github.com/owner/repo/pull/3");

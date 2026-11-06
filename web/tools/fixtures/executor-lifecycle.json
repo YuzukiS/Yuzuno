@@ -22,6 +22,7 @@
       "closedAt": "2026-11-06T06:30:00Z",
       "executor": {
         "agentId": "e50",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -30,6 +31,10 @@
         "task": {
           "id": "T-1",
           "title": "Review the release notes"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "e50",
@@ -42,6 +47,7 @@
       "closedAt": null,
       "executor": {
         "agentId": "e51",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -51,6 +57,10 @@
         "task": {
           "id": "T-2",
           "title": "Review the parser change"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "e51",
@@ -63,6 +73,7 @@
       "closedAt": null,
       "executor": {
         "agentId": "e52",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -71,6 +82,10 @@
         "task": {
           "id": "T-3",
           "title": "Review the import change"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "e52",
@@ -83,6 +98,7 @@
       "closedAt": null,
       "executor": {
         "agentId": "e53",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "id": "mori",
           "kind": "agent",
@@ -93,6 +109,10 @@
         "task": {
           "id": "T-4",
           "title": "Build the export"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "e53",
@@ -105,6 +125,7 @@
       "closedAt": null,
       "executor": {
         "agentId": "e54",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "id": "mori",
           "kind": "agent",
@@ -116,6 +137,10 @@
         "task": {
           "id": "T-5",
           "title": "Review the docs change"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "e54",
@@ -128,6 +153,7 @@
       "closedAt": null,
       "executor": {
         "agentId": "e55",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "id": "mori",
           "kind": "agent",
@@ -139,6 +165,10 @@
         "task": {
           "id": "T-6",
           "title": "Build the installer"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "e55",
@@ -151,6 +181,7 @@
       "closedAt": null,
       "executor": {
         "agentId": "e56",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -159,6 +190,10 @@
         "task": {
           "id": "T-7",
           "title": "Review the settings change"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "e56",
@@ -172,6 +207,7 @@
       "executor": {
         "agentId": "e57",
         "blocked": "Waiting for the signing keys",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -180,6 +216,10 @@
         "task": {
           "id": "T-8",
           "title": "Sign the release build"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "e57",
@@ -192,6 +232,7 @@
       "closedAt": null,
       "executor": {
         "agentId": "e58",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "id": "mori",
           "kind": "agent",
@@ -202,6 +243,10 @@
         "task": {
           "id": "T-9",
           "title": "Review the API change"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "e58",
@@ -214,6 +259,7 @@
       "closedAt": "2026-11-06T06:30:00Z",
       "executor": {
         "agentId": "e59",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -221,6 +267,10 @@
         "task": {
           "id": "T-10",
           "title": "Draft the changelog"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "e59",
@@ -270,6 +320,7 @@
     {
       "executor": {
         "agentId": "e50",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -278,6 +329,10 @@
         "task": {
           "id": "T-1",
           "title": "Review the release notes"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "T-1",
@@ -287,6 +342,7 @@
     {
       "executor": {
         "agentId": "e51",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -296,6 +352,10 @@
         "task": {
           "id": "T-2",
           "title": "Review the parser change"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "T-2",
@@ -305,6 +365,7 @@
     {
       "executor": {
         "agentId": "e52",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -313,6 +374,10 @@
         "task": {
           "id": "T-3",
           "title": "Review the import change"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "T-3",
@@ -322,6 +387,7 @@
     {
       "executor": {
         "agentId": "e53",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "id": "mori",
           "kind": "agent",
@@ -332,6 +398,10 @@
         "task": {
           "id": "T-4",
           "title": "Build the export"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "T-4",
@@ -341,6 +411,7 @@
     {
       "executor": {
         "agentId": "e54",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "id": "mori",
           "kind": "agent",
@@ -352,6 +423,10 @@
         "task": {
           "id": "T-5",
           "title": "Review the docs change"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "T-5",
@@ -361,6 +436,7 @@
     {
       "executor": {
         "agentId": "e55",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "id": "mori",
           "kind": "agent",
@@ -372,6 +448,10 @@
         "task": {
           "id": "T-6",
           "title": "Build the installer"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "T-6",
@@ -381,6 +461,7 @@
     {
       "executor": {
         "agentId": "e56",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -389,6 +470,10 @@
         "task": {
           "id": "T-7",
           "title": "Review the settings change"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "T-7",
@@ -399,6 +484,7 @@
       "executor": {
         "agentId": "e57",
         "blocked": "Waiting for the signing keys",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -407,6 +493,10 @@
         "task": {
           "id": "T-8",
           "title": "Sign the release build"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "T-8",
@@ -416,6 +506,7 @@
     {
       "executor": {
         "agentId": "e58",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "id": "mori",
           "kind": "agent",
@@ -426,6 +517,10 @@
         "task": {
           "id": "T-9",
           "title": "Review the API change"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "T-9",
@@ -435,6 +530,7 @@
     {
       "executor": {
         "agentId": "e59",
+        "dispatchedAt": "2026-11-06T01:00:00Z",
         "dispatcher": {
           "kind": "user"
         },
@@ -442,6 +538,10 @@
         "task": {
           "id": "T-10",
           "title": "Draft the changelog"
+        },
+        "template": {
+          "id": "reviewer",
+          "label": null
         }
       },
       "id": "T-10",
