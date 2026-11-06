@@ -398,11 +398,17 @@ fn project_task_key(reference: &str) -> Option<(&str, &str)> {
 
 /// One task as a Live Reference shows it (T-9): read as its compact row
 /// (compact.rs), so nothing past the title, status, assignee, update time and
-/// archive mark is kept. None when no task has this reference.
+/// archive mark is kept, with the key it has now (T-56), whatever key the
+/// reference used. None when no task has this reference.
 pub(crate) fn task_live(db: &Connection, reference: &str) -> Result<Option<Value>> {
     let Ok((id, _)) = task_key(db, reference) else { return Ok(None) };
     let raw: Option<String> = db.query_row("SELECT data FROM collaboration_tasks WHERE id=?1", [&id], |r| r.get(0)).optional()?;
-    raw.map(|raw| Ok(serde_json::from_str::<compact::Row>(&raw)?.live())).transpose()
+    raw.map(|raw| {
+        let mut live = serde_json::from_str::<compact::Row>(&raw)?.live();
+        live["key"] = json!(task_number(db, &id)?);
+        Ok(live)
+    })
+    .transpose()
 }
 
 /// The runtime's shaCheck, taken out of a task_create, task_update or

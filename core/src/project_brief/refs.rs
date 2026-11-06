@@ -91,6 +91,7 @@ impl<'a> Refs<'a> {
             // for a list the Agent ordered (T-9), and never its text.
             "task" => crate::collaboration_store::task_live(db, id)?.map(|task| {
                 let mut shown = state(json!({"found":true,"title":task["title"]}), task["status"].as_str().unwrap_or("unknown"));
+                shown["key"] = task["key"].clone();
                 shown["assignee"] = task["assignee"].clone();
                 shown["updatedAt"] = task["updatedAt"].clone();
                 if task["archived"] == true {
