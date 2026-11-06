@@ -61,6 +61,8 @@ const queueEn = {
   switchOn: "On: Core merges released PRs here",
   switchOff: "Off: Core writes nothing to GitHub here",
   switchTitle: "Only the user turns it on or off, in the Project’s repositories.",
+  landingTitle: "How a released PR lands on main",
+  landings: { "core-merge": "Core merges", "github-auto-merge": "GitHub auto-merge" } as Record<string, string>,
   paused: (reason: string) => `Paused: ${reason}`,
   sinceAt: (at: string) => `since ${at}`,
   causedBy: "Caused by",
@@ -178,7 +180,7 @@ type QueueText = typeof queueEn;
 const queueText = strings<QueueText>(queueEn, {
   region: "合并队列",
   title: "合并队列",
-  intro: "CI 测试过合并将落到主分支上的确切内容后，Core 才会合并已放行的 PR。每个仓库的开关由用户在其项目的仓库设置中控制。",
+  intro: "CI 测试过合并将落到主分支上的确切内容后，Core 才会合并已放行合并的 PR。每个仓库的开关由用户在其项目的仓库设置中控制。",
   taskOnly: (task) => ` 仅显示 ${task} 的条目。`,
   workspaceWide: " 队列属于整个工作区。",
   refresh: "刷新",
@@ -187,9 +189,11 @@ const queueText = strings<QueueText>(queueEn, {
   noRepositories: "还没有仓库关联到项目。",
   linkedReadFailed: (error) => `部分项目的仓库无法读取：${error}`,
   repositoryFailed: (error) => `无法读取此仓库的队列状态：${error}`,
-  switchOn: "已开启：Core 合并此仓库中已放行的 PR",
+  switchOn: "已开启：Core 合并此仓库中已放行合并的 PR",
   switchOff: "已关闭：Core 不向 GitHub 写入任何内容",
   switchTitle: "只有用户能在项目的仓库设置中开启或关闭它。",
+  landingTitle: "已放行合并的 PR 如何落到主分支",
+  landings: { "core-merge": "由 Core 合并", "github-auto-merge": "GitHub 自动合并" },
   paused: (reason) => `已暂停：${reason}`,
   sinceAt: (at) => `自 ${at}`,
   causedBy: "起因",
@@ -280,9 +284,9 @@ const queueText = strings<QueueText>(queueEn, {
   retryHelp: "从头再检查一次，锚定在 Core 此时读取的主分支上。不会重新运行 CI：请先重新运行失败的作业。",
   cancelHelp: "将该 PR 移出队列；如有批次，Core 会将其移除。",
   changeWho: (who) => `可操作者：${who}，或你。`,
-  releaser: (name) => `放行它的 Agent（${name}）`,
-  youReleased: "由你放行，因此只有你可以操作。",
-  dryRunEnded: "在 Core 真正合并之前放行：请重新放行该 PR，而不是重试。",
+  releaser: (name) => `放行合并的 Agent（${name}）`,
+  youReleased: "由你放行合并，因此只有你可以操作。",
+  dryRunEnded: "在 Core 真正合并之前放行合并：请重新将该 PR 放行合并，而不是重试。",
   reasonLabel: "原因（可选，记入记录）",
   back: "返回",
   sending: "正在发送…",
@@ -290,7 +294,7 @@ const queueText = strings<QueueText>(queueEn, {
   unconfirmed: (text) => `没有收到 Core 的回答${text ? `（${text}）` : ""}：此操作可能已到达，也可能没有。再试一次会发送同一个请求。`,
   retried: "已重试：Core 将从头再检查。",
   cancelledNow: "已取消。",
-  footnote: "Core 只以固定在放行头提交上的合并提交方式合并，绝不压缩、变基或以管理员身份合并。任务保留每个条目的证据记录。",
+  footnote: "Core 只以固定在放行合并时的头提交上的合并提交方式合并，绝不压缩、变基或以管理员身份合并。任务保留每个条目的证据记录。",
 });
 
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -792,6 +796,12 @@ function RepositoryCard({
             title={t.switchTitle}
           >
             {state.enabled ? t.switchOn : t.switchOff}
+          </span>
+        )}
+        {/* How a merge lands (T-37 S2b): shown once Core says it. */}
+        {typeof state?.landing === "string" && state.landing && (
+          <span className="merge-landing" title={t.landingTitle}>
+            {t.landings[state.landing] || state.landing}
           </span>
         )}
       </header>

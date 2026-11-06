@@ -137,6 +137,8 @@ export interface MergePause {
 export interface MergeRepository {
   repositoryId: number;
   enabled: boolean;
+  /** How a merge lands: "core-merge" (Core merges) from T-37 S2b; absent before. */
+  landing?: string;
   paused: MergePause | null;
   pauses?: MergePause[];
   switches?: { at?: string; enabled?: boolean; by?: string; detail?: string }[];
@@ -282,14 +284,14 @@ export const mergeWords = strings(
       cancelled: "已取消",
     },
     stateMeaning: {
-      queued: "已放行，尚未检查。",
+      queued: "已放行合并，尚未检查。",
       waiting: "有项检查暂时无法判定。",
       ready: "各项检查均已通过，但还不能合并：开关已关闭，或该仓库的另一项合并仍在进行或尚未完成合并后检查。",
       merging: "合并请求已记入日志或已发送。",
       merged: "GitHub 已合并；Core 正在跟踪主分支的推送 CI。",
       done: "主分支上合并提交的推送 CI 已结束。",
       stopped: "某项检查判定不通过。",
-      cancelled: "已由放行它的 Agent 或用户取消。",
+      cancelled: "已由放行合并的 Agent 或用户取消。",
     },
     reasons: {
       head_moved: "头提交已变",
@@ -328,7 +330,7 @@ export const refusalsZh: Record<string, string> = {
   merge_release_not_allowed: "只有放行此合并的 Agent 或用户，才能更改它。",
   merge_not_active: "此条目已不再占用它的 PR，无法取消。",
   merge_not_stopped: "只有已停止的条目才能重试。",
-  merge_dry_run_ended: "此条目是在 Core 真正合并之前放行的；请重新放行该 PR。",
+  merge_dry_run_ended: "此条目是在 Core 真正合并之前放行合并的；请重新将该 PR 放行合并。",
   merge_cleanup_pending: "Core 仍在移除此条目的批次；完成后再试。",
   merge_already_queued: "另一条目已占用此 PR。",
   idempotency_conflict: "此请求已以另一个原因发送过。",

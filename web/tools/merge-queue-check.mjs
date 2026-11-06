@@ -63,7 +63,7 @@ const history = [
 const CORE_DETAIL = "Synthetic main CI run 9001 failed on the main branch";
 const REFUSAL = "merge_unpause_not_allowed: only a lead of a Project this repository is linked to, or the user, can unpause its merge queue";
 const repositories = {
-  7: { repositoryId: 7, enabled: true, paused: { reason: "main_red", at: now, entryId: "e-stopped", number: 12, main: sha("c"), run: 9001, base: "main", detail: CORE_DETAIL }, pauses: [], switches: [] },
+  7: { repositoryId: 7, enabled: true, landing: "core-merge", paused: { reason: "main_red", at: now, entryId: "e-stopped", number: 12, main: sha("c"), run: 9001, base: "main", detail: CORE_DETAIL }, pauses: [], switches: [] },
   8: { repositoryId: 8, enabled: false, paused: null, switches: [],
     pauses: [{ reason: "post_check_failed", at: now, number: 3, main: sha("c"), clearedAt: now, clearedBy: { by: "Lead Sora", actor: { kind: "agent", id: "lead-1", name: "Lead Sora" } }, acceptedRun: null }] },
 };
@@ -140,6 +140,8 @@ try {
   assert.match(banner, /run 9001/);
   assert.match(banner, new RegExp(CORE_DETAIL));
   assert.match(banner, /Who can unpause: a lead of Synthetic project \(Lead Sora\), or you\./);
+  assert.equal(await queue().locator('.merge-repository[aria-label="owner/repo"] .merge-landing').textContent(), "Core merges");
+  assert.equal(await queue().locator('.merge-repository[aria-label="owner/other"] .merge-landing').count(), 0);
   const other8 = await queue().locator('.merge-repository[aria-label="owner/other"]').textContent();
   assert.match(other8, /Off: Core writes nothing to GitHub here/);
   assert.match(other8, /Last pause: Post-check failed, ended .* by Lead Sora/);
@@ -178,13 +180,14 @@ try {
   assert.equal(await queue().getAttribute("lang"), "zh-Hans");
   const zhBanner = await queue().locator(".merge-pause").textContent();
   assert.match(zhBanner, /已暂停：主分支 CI 失败/);
+  assert.equal(await queue().locator('.merge-repository[aria-label="owner/repo"] .merge-landing').textContent(), "由 Core 合并");
   assert.match(zhBanner, /可恢复者：Synthetic project 的负责人（Lead Sora），或你。/);
   assert.match(zhBanner, new RegExp(CORE_DETAIL), "Core's detail as it came");
   assert.equal(await unpause.locator(".merge-refusal span").textContent(), "已拒绝：只有关联此仓库的项目的负责人或用户，才能恢复它的合并队列。");
   assert.equal(await unpause.locator(".merge-refusal small").textContent(), REFUSAL, "Core's text as it came");
   const zhDetail = await queue().locator(".job-detail").textContent();
   assert.match(zhDetail, /某项检查判定不通过。/);
-  assert.match(zhDetail, /可操作者：放行它的 Agent（Dev Kai），或你。/);
+  assert.match(zhDetail, /可操作者：放行合并的 Agent（Dev Kai），或你。/);
   assert.match(zhDetail, /Synthetic CI run 501 ended failure on the head/, "Core's detail as it came");
   assert.deepEqual(await queue().locator(".job-group-title").allTextContents(), ["运行中与排队2", "已结束2"]);
   await shot("merge-queue-zh-1280.png");

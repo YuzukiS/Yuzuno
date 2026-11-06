@@ -44,6 +44,12 @@
 .merge-switch.is-on {
   color: var(--accent-ink);
 }
+.merge-landing {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-secondary);
+}
 .merge-link-button {
   padding: 0;
   border: 0;

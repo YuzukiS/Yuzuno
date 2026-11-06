@@ -63,7 +63,7 @@ const history = [
 ];
 const redPause = { reason: 'main_red', at, entryId: 'e-stopped', number: 12, main: sha('c'), run: 9001, base: 'main', detail: 'Synthetic main CI run 9001 failed' };
 const repositories = {
-  7: { repositoryId: 7, enabled: true, paused: redPause, pauses: [], switches: [] },
+  7: { repositoryId: 7, enabled: true, landing: 'core-merge', paused: redPause, pauses: [], switches: [] },
   8: { repositoryId: 8, enabled: false, paused: null, switches: [],
     pauses: [{ reason: 'main_red', at, number: 3, main: sha('c'), run: 77, clearedAt: at, clearedBy: { by: 'Lead Sora', actor: { kind: 'agent', id: 'lead-1', name: 'Lead Sora' }, reason: 'looked' }, reanchoredAt: sha('c'), acceptedRun: { id: 77, headSha: sha('c') } }] },
 };
@@ -111,7 +111,8 @@ const rows = p => [...p.doc.querySelectorAll('.merge-queue .job-row')];
 const rowOf = (p, number) => rows(p).find(r => r.querySelector('strong').textContent === `owner/repo #${number}`);
 const button = (scope, text) => [...scope.querySelectorAll('button')].find(b => b.textContent.trim() === text);
 const repoCard = (p, name) => [...p.doc.querySelectorAll('.merge-repository')].find(c => c.getAttribute('aria-label') === name);
-async function opened(p, detail) { p.open(detail); await until(() => panel(p) && rows(p).length > 0, 'the merge queue did not list its entries'); }
+// Jobs listens for its open event once it has rendered: send it until the dialog is open.
+async function opened(p, detail) { await until(() => { if (!p.doc.querySelector('[role="dialog"]')) p.open(detail); return panel(p) && rows(p).length > 0; }, 'the merge queue did not list its entries'); }
 async function choose(p, number) { rowOf(p, number).click(); await until(() => p.doc.querySelector('.job-detail h3')?.textContent === `owner/repo #${number}`); await until(() => !p.doc.querySelector('.job-detail').textContent.includes('Reading the history')); }
 async function type(p, el, value) { Object.getOwnPropertyDescriptor(p.window.HTMLTextAreaElement.prototype, 'value').set.call(el, value); el.dispatchEvent(new p.window.Event('input', { bubbles: true })); await wait(); }
 const detailText = (p, label) => [...p.doc.querySelectorAll('.job-detail dt')].find(dt => dt.textContent === label)?.nextElementSibling;
@@ -174,6 +175,7 @@ test('the pause banner names the reason, the entry and PR that caused it, the re
     const banner = paused.querySelector('.merge-pause');
     assert.match(banner.querySelector('.merge-pause-title').textContent, /^Paused: Main CI red/);
     assert.match(paused.querySelector('.merge-switch').textContent, /^On: Core merges released PRs here$/);
+    assert.equal(paused.querySelector('.merge-landing').textContent, 'Core merges');
     assert.match(banner.textContent, /the entry for #12 · PR #12 · on main ccccccc/);
     assert.equal([...banner.querySelectorAll('a')].find(a => a.textContent === 'PR #12').href, 'https://github.com/owner/repo/pull/12');
     assert.equal([...banner.querySelectorAll('a')].find(a => a.textContent === 'run 9001').href, 'https://github.com/owner/repo/actions/runs/9001');
@@ -188,6 +190,7 @@ test('the pause banner names the reason, the entry and PR that caused it, the re
     assert.equal(other.querySelector('.merge-pause'), null);
     assert.equal(button(other, 'Unpause'), undefined);
     assert.match(other.querySelector('.merge-switch').textContent, /^Off: Core writes nothing to GitHub here$/);
+    assert.equal(other.querySelector('.merge-landing'), null, 'no landing label when Core does not say one');
     assert.match(other.querySelector('.merge-last-pause').textContent, /Last pause: Main CI red, ended .* by Lead Sora · accepted red run 77/);
   } finally { p.close(); }
 });
@@ -320,6 +323,8 @@ test('in Chinese the pause, actions and refusals are Chinese, and Core text stay
     assert.equal(p.doc.querySelector('#jobs-tab-merge_queue').textContent.trim(), '合并队列');
     const banner = repoCard(p, 'owner/repo').querySelector('.merge-pause');
     assert.match(banner.querySelector('.merge-pause-title').textContent, /^已暂停：主分支 CI 失败/);
+    assert.equal(repoCard(p, 'owner/repo').querySelector('.merge-landing').textContent, '由 Core 合并');
+    assert.equal(repoCard(p, 'owner/repo').querySelector('.merge-switch').textContent, '已开启：Core 合并此仓库中已放行合并的 PR');
     assert.equal(banner.querySelector('.merge-action-who').textContent, '可恢复者：Synthetic project 的负责人（Lead Sora），或你。');
     button(banner, '恢复').click();
     await until(() => banner.querySelector('textarea'));
