@@ -42,7 +42,7 @@ fn dispatch(task: &str, request: &str) -> Value {
 }
 
 fn begun(store: &Store, actor: Option<&str>, input: Value) -> Result<Plan, String> {
-    match store.executor_dispatch_begin(actor, input) {
+    match store.executor_dispatch_begin(actor, input, LocalDefault::Read(None)) {
         Ok(Next::Create(plan)) => Ok(*plan),
         Ok(Next::Dispatch(_)) => Err("went on to a dispatch".into()),
         Err(error) => Err(error.to_string()),
@@ -73,7 +73,7 @@ fn a_retry_with_the_same_request_finds_its_dispatch_and_never_makes_a_second_age
     let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
     assert_eq!((plan.name.as_str(), plan.folders.as_slice()), ("T-1 · Reviewer", ["/synthetic/project".to_owned()].as_slice()));
     assert_eq!(row(&store, "user", "first").0, "pending");
-    let busy = store.executor_dispatch_begin(None, dispatch(&t, "first"));
+    let busy = store.executor_dispatch_begin(None, dispatch(&t, "first"), LocalDefault::Read(None));
     assert!(matches!(&busy, Err(e) if e.to_string().starts_with("dispatch_in_progress:")),
         "a retry while the first creates its executor waits for it: only one Agent");
 
@@ -87,7 +87,7 @@ fn a_retry_with_the_same_request_finds_its_dispatch_and_never_makes_a_second_age
     assert_eq!(given["dispatchMaterials"]["template"], json!({"id":"reviewer","label":"Reviewer","source":"workspace","instructions":"Review the change."}),
         "the template and its instructions reach the executor with its materials");
     for _ in 0..2 {
-        let again = store.executor_dispatch_begin(None, dispatch(&t, "first"));
+        let again = store.executor_dispatch_begin(None, dispatch(&t, "first"), LocalDefault::Read(None));
         let Ok(Next::Dispatch(again)) = again else {
             panic!("a retry with the same requestId finds the first dispatch: only one Agent");
         };
@@ -285,6 +285,62 @@ fn machine(store: &Store, id: &str, name: &str, contained: bool) {
     store.add_machine(&crate::remote::RemoteMachine {
         id: id.into(), name: name.into(), target: "tester@192.0.2.10".into(), contained, ..Default::default()
     }).unwrap();
+}
+
+/// T-35 S3b (Lead 2 Q2, mail 5898): `auto`, from the dispatch or its
+/// template, is chosen at dispatch time and kept on the dispatch with the
+/// numbers it was chosen by; the request and the template keep `auto`, and
+/// the task's card has the choice. A worktree, a path on this Core host,
+/// chooses this Core host.
+#[test]
+fn auto_chooses_a_machine_at_dispatch_and_keeps_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    store.add_machine(&crate::remote::RemoteMachine {
+        id: "lab-box".into(), name: "Lab box".into(), target: "tester@192.0.2.10".into(),
+        budget: Some(crate::remote::MachineBudget { cpu_millis: 4000, memory_mib: 16384 }), ..Default::default()
+    }).unwrap();
+    store.db.write().unwrap().execute("INSERT INTO local_job_settings(id,data) VALUES(1,?1)",
+        [json!({"cpuMillis":2000,"memoryMiB":4096,"swapMiB":0}).to_string()]).unwrap();
+    let p = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into()),
+        ("lab-box".into(), "/srv/lab/project".into())])).unwrap().id;
+    templates(&store, json!([reviewer(), {"id":"chooser","label":"Chooser","harness":"claude","machineId":"auto"}]));
+    let t = task(&store, "Review", Some(&p), None);
+    let with = |request: &str, executor: Value| json!({"requestId":request,"taskId":t,"expectedVersion":1,"executor":executor});
+    let choice_of = |request: &str| -> (String, Value, Value) {
+        let (machine, choice, input): (String, String, String) = store.db.read().unwrap().query_row(
+            "SELECT machine_id, choice_json, input_json FROM executor_dispatches WHERE request_id=?1", [request],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        (machine, serde_json::from_str(&choice).unwrap(), serde_json::from_str(&input).unwrap())
+    };
+
+    let asked = begun(&store, None, with("asked", json!({"templateId":"reviewer","machineId":"auto"}))).unwrap();
+    assert_eq!((asked.machine.as_str(), asked.folders.as_slice()), ("lab-box", ["/srv/lab/project".to_owned()].as_slice()),
+        "the more spare memory, in the Project's folder there");
+    let (machine, choice, input) = choice_of("asked");
+    assert_eq!(machine, "lab-box", "the dispatch records the machine chosen");
+    assert_eq!((choice["requested"].as_str(), choice["chosen"].as_str()), (Some("auto"), Some("lab-box")), "{choice}");
+    assert_eq!(choice["candidates"][1]["machine"], "local", "{choice}");
+    assert_eq!(input["executor"]["machineId"], "auto", "the request keeps auto");
+
+    let template = begun(&store, None, with("template", json!({"templateId":"chooser"}))).unwrap();
+    assert_eq!(template.machine, "lab-box", "the template's auto");
+    begun(&store, None, with("named", json!({"templateId":"chooser","machineId":"local"}))).unwrap();
+    let unchosen = store.db.read().unwrap().query_row(
+        "SELECT choice_json IS NULL FROM executor_dispatches WHERE request_id='named'", [], |r| r.get::<_, bool>(0)).unwrap();
+    assert!(unchosen, "a machine the dispatch names is no choice");
+
+    let carried = task(&store, "With a worktree", Some(&p), Some("/synthetic/worktree"));
+    let worktree = begun(&store, None, json!({"requestId":"carried","taskId":carried,"expectedVersion":1,
+        "executor":{"templateId":"reviewer","machineId":"auto"}})).unwrap();
+    assert_eq!(worktree.machine, "local", "a worktree is a path on this Core host");
+
+    create(&store, &asked);
+    store.collaboration_call(None, "task_dispatch", asked.dispatch.input.clone()).unwrap();
+    let current = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"current"})).unwrap();
+    let slot = &current["current"]["executorSlot"];
+    assert_eq!((slot["machine"].as_str(), slot["choice"]["chosen"].as_str()), (Some("lab-box"), Some("lab-box")),
+        "the task's card has the choice: {slot}");
 }
 
 /// T-35 S3a (D8, Lead 2 Q1/Q3): an executor runs on the dispatch's machine,

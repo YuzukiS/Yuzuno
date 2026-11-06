@@ -391,7 +391,12 @@ fn stand_in(machine: &RemoteMachine) -> Option<(Arc<dyn Fn(&Value) -> Result<Val
 async fn helper(machine: &RemoteMachine, request: Value, maximum: usize) -> Result<Vec<u8>> {
     #[cfg(test)]
     if let Some((answer, _)) = stand_in(machine) {
-        return Ok(serde_json::to_vec(&answer(&request)?)?);
+        let answered = answer(&request)?;
+        // A test's machine that never answers this request.
+        if answered == "never" {
+            std::future::pending::<()>().await;
+        }
+        return Ok(serde_json::to_vec(&answered)?);
     }
     validate_machine(machine)?;
     let operation = async {
@@ -1332,7 +1337,7 @@ with tempfile.TemporaryDirectory() as directory:
             ..Default::default()
         };
         // An Agent from before data roots: its runtime is in the legacy root.
-        let mut old = serde_json::to_value(crate::model::RemoteAgent { machine: registered.clone(), runtime: None }).unwrap();
+        let mut old = serde_json::to_value(crate::model::RemoteAgent { machine: registered.clone(), runtime: None, launch_requested: false, host_instance: None }).unwrap();
         old["machine"].as_object_mut().unwrap().remove("dataRoot");
         let old: crate::model::RemoteAgent = serde_json::from_value(old).unwrap();
         assert_eq!(old.machine.root(), LEGACY_ROOT);

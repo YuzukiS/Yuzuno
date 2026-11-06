@@ -13,13 +13,23 @@ pub struct RemoteAgent {
     #[serde(deserialize_with = "agent_machine")]
     pub machine: RemoteMachine,
     pub runtime: Option<RuntimeRef>,
+    /// Core asked the machine to launch this Agent's runtime (Codex's
+    /// `ensure`, Claude Code's host), recorded and committed before the
+    /// request went (T-35 S3b, Lead 2 mail 5898). Until then a failed start
+    /// launched nothing there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub launch_requested: bool,
+    /// Claude Code: the host instance the machine answered that request
+    /// with, as `runtime` is Codex's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_instance: Option<String>,
 }
 
 impl RemoteAgent {
     /// A new Agent on `machine`, fixed to the data root the machine names now.
     pub fn new(mut machine: RemoteMachine) -> Self {
         machine.data_root = Some(machine.root().to_owned());
-        Self { machine, runtime: None }
+        Self { machine, runtime: None, launch_requested: false, host_instance: None }
     }
 }
 
