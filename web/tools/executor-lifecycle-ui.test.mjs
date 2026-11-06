@@ -116,7 +116,9 @@ async function mount({ storage = {} } = {}) {
   const row = (id) => doc.querySelector(`.agent-list article[data-agent-id="${id}"]`);
   return {
     w, doc, calls, errors, row,
-    order: () => [...doc.querySelectorAll(".agent-list article[data-agent-id]")].map((r) => r.dataset.agentId),
+    // The rows in the list's parts, the archived fold's apart.
+    order: () => [...doc.querySelectorAll(".agent-list article[data-agent-id]")].filter((r) => !r.closest('[data-rail-part="archived"]')).map((r) => r.dataset.agentId),
+    all: () => [...doc.querySelectorAll(".agent-list article[data-agent-id]")].map((r) => r.dataset.agentId),
     badge: (id) => row(id)?.querySelector(".agent-kind-badge")?.textContent ?? null,
     part: (name) => doc.querySelector(`.agent-list [data-rail-part="${name}"]`),
     button: (text) => [...doc.querySelectorAll("button")].find((b) => b.textContent.trim() === text),
@@ -163,7 +165,7 @@ test("the sidebar lists a Project's leads, its other Agents, its task executors 
 test("with List order the parts stay, each in the workspace's order; and a reload keeps the fold open", async () => {
   const p = await mount({ storage: { "yuzuno.archivedExecutorsOpen.ws-exec": JSON.stringify(["all"]) } });
   try {
-    assert.deepEqual(p.order(), ["l", "s", "q", "r", "d", "g", "e", "f", "a"], "leads first, then the others, then executors and the opened fold");
+    assert.deepEqual(p.all(), ["l", "s", "q", "r", "d", "g", "e", "f", "a"], "leads first, then the others, then executors and the opened fold");
     assert.equal(p.part("archived").querySelector(".rail-archived-toggle").getAttribute("aria-expanded"), "true");
     assert.deepEqual(p.errors, []);
   } finally {
