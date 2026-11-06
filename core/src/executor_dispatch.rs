@@ -69,12 +69,20 @@ impl Workspace {
     }
 
     async fn create_executor(self: &Arc<Self>, plan: &Plan) -> Result<()> {
-        // Core makes no folder (task_workspaces.rs is the user's alone).
-        let cwd = plan.folders.iter().find(|f| Path::new(f).is_absolute() && Path::new(f).is_dir()).cloned().with_context(|| {
-            format!("no_folder: an executor works in a folder on this host, and {} is not one", plan.folders.join(", nor "))
-        })?;
+        // Core makes no folder (task_workspaces.rs is the user's alone). On
+        // another machine its Project's folder there is checked over SSH, as
+        // creating any Agent there checks it (T-35 S3a).
+        let (cwd, machine) = if plan.machine == "local" {
+            let cwd = plan.folders.iter().find(|f| Path::new(f).is_absolute() && Path::new(f).is_dir()).cloned().with_context(|| {
+                format!("no_folder: an executor works in a folder on this host, and {} is not one", plan.folders.join(", nor "))
+            })?;
+            (cwd, None)
+        } else {
+            let cwd = plan.folders.first().cloned().context("no_folder: an executor on another machine works in its Project's folder there")?;
+            (cwd, Some(plan.machine.clone()))
+        };
         let birth = Birth { id: plan.dispatch.agent_id.clone(), then: plan.then() };
-        crate::server::create_executor(self, &plan.template, plan.name.clone(), cwd, plan.project_id.clone(), birth).await?;
+        crate::server::create_executor(self, &plan.template, plan.name.clone(), cwd, machine, plan.project_id.clone(), birth).await?;
         Ok(())
     }
 

@@ -87,6 +87,53 @@ impl Lab {
         self.ws.executor_slots.quiet.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// A registered SSH machine `id` ("Lab box"), standing in for one
+    /// (remote::STAND_INS). Its helper answers canonicalize with the path it
+    /// was given, ensure with a new runtime instance each time, and stop as
+    /// `stop` says: `ok` (that instance stopped) or `missing` (no metadata,
+    /// "stopped" without an instance). `program` runs as its Codex
+    /// app-server. The Project has `folder` there. The helper's requests are
+    /// kept.
+    fn ssh_machine(&self, id: &str, folder: &str, program: String, stop: &'static str) -> Arc<std::sync::Mutex<Vec<Value>>> {
+        self.ws.store.add_machine(&crate::remote::RemoteMachine {
+            id: id.into(), name: "Lab box".into(), target: "tester@192.0.2.10".into(), ..Default::default()
+        }).unwrap();
+        self.ws.store.set_project_default_dir(&self.project, id, folder).unwrap();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let seen = requests.clone();
+        let answer = move |request: &Value| -> anyhow::Result<Value> {
+            let mut seen = seen.lock().unwrap();
+            seen.push(request.clone());
+            let ensured = seen.iter().filter(|r| r["action"] == "ensure").count();
+            match request["action"].as_str() {
+                Some("canonicalize") => Ok(request["path"].clone()),
+                Some("ensure") => Ok(json!({"root":"/r","socket":"/r/rpc.sock","pid":4242,"codex":"/c","instanceId":format!("inst-{ensured}")})),
+                Some("stop") if stop == "ok" => Ok(json!({"stopped":true,"instanceId":request["runtime"]["instanceId"]})),
+                Some("stop") => Ok(json!({"stopped":true})),
+                other => Err(anyhow::anyhow!("unexpected helper action {other:?}")),
+            }
+        };
+        crate::remote::STAND_INS.lock().unwrap().push((id.into(), crate::remote::StandIn { answer: Arc::new(answer), program }));
+        requests
+    }
+
+    /// The Workspace's executor templates are now `templates`.
+    fn templates(&self, templates: Value) {
+        self.ws.store.db.write().unwrap().execute("UPDATE workspace_meta SET value=?1 WHERE key='executors.templates'",
+            [json!({"version":1,"templates":templates}).to_string()]).unwrap();
+    }
+
+    /// The lead dispatches `task` from `template` to run on `machine`.
+    async fn dispatch_on(&self, task: &str, request: &str, template: &str, machine: &str) -> String {
+        let input = json!({"requestId":request,"taskId":task,"expectedVersion":1,"executor":{"templateId":template,"machineId":machine}});
+        self.ws.collaboration_call(Some("lead"), "task_dispatch", input).await.unwrap()["agentId"].as_str().unwrap().to_owned()
+    }
+
+    /// The machine `agent` runs on, as its record says: none for this host.
+    fn machine_of(&self, agent: &str) -> Option<String> {
+        self.ws.store.agent(agent).unwrap().remote.map(|r| r.machine.id)
+    }
+
     /// `agent` as a pass that took it leaves it: starting, with no reason.
     fn taken(&self, agent: &str, attempt: i64) {
         self.ws.store.db.write().unwrap().execute(
@@ -99,6 +146,15 @@ fn agent(store: &Store, id: &str, harness: &str) {
         "model":"","harness":harness,"color":"sage","status":"offline","createdAt":"now","updatedAt":"now",
         "unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
     store.insert(&detail).unwrap();
+}
+
+/// A Codex app-server that reads every request and answers none: its start
+/// never finishes.
+fn hanging(dir: &Path) -> String {
+    let script = dir.join("hanging-codex");
+    std::fs::write(&script, "#!/usr/bin/python3\nimport sys\nfor line in sys.stdin:\n    pass\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script.to_string_lossy().into_owned()
 }
 
 /// What Core says when a Codex start is refused for want of the program.
@@ -617,4 +673,158 @@ async fn a_rebuild_whose_task_changed_as_it_dispatched_waits_for_the_next_pass()
     assert_eq!(state, "done", "the next pass makes the rebuild");
     assert_eq!(lab.slot(&to.unwrap()).2, seq, "in the first's place");
     assert_eq!(lab.task_view(&task)["task"]["status"], "doing");
+}
+
+/// T-35 S3a (D8, Lead 2 Q5, gap 1): on another machine, cutting a start off
+/// stops nothing there. It counts as failed only on a stop that confirms the
+/// runtime instance it recorded; it is then closed and rebuilt on that same
+/// machine, even once its template names another. A stop that confirms no
+/// instance holds it, open with its slot, mailed once, never rebuilt.
+#[tokio::test]
+async fn a_cut_off_remote_start_is_failed_only_on_a_stop_that_confirms_its_instance() {
+    for (machine, stop) in [("lab-confirms", "ok"), ("lab-unconfirmed", "missing")] {
+        let lab = Lab::new(missing).await;
+        lab.quiet();
+        *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(Duration::from_secs(1));
+        let requests = lab.ssh_machine(machine, "/srv/lab/project", hanging(lab._dir.path()), stop);
+        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex","machineId":machine}]));
+        let task = lab.task("Review on the lab box").await;
+        let first = lab.dispatch(&task, "remote").await;
+        assert_eq!(lab.machine_of(&first).as_deref(), Some(machine), "made on its template's machine");
+        assert_eq!(lab.ws.store.agent(&first).unwrap().cwd, "/srv/lab/project", "in the Project's folder there");
+        // Its template now names this Core host; its rebuild stays where it was made.
+        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex"}]));
+        for started in lab.ws.executor_slots_pass().await {
+            started.await.unwrap();
+        }
+        let stops: Vec<Value> = requests.lock().unwrap().iter().filter(|r| r["action"] == "stop").cloned().collect();
+        assert!(stops.first().is_some_and(|s| s["runtime"]["instanceId"] == "inst-1"), "it stops the instance it recorded: {stops:?}");
+        if stop == "ok" {
+            assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_some(), "a confirmed stop: failed, and closed");
+            let (state, to) = rebuild_state(&lab, &first).unwrap();
+            assert_eq!(state, "done", "and rebuilt");
+            assert_eq!(lab.machine_of(&to.unwrap()).as_deref(), Some(machine), "rebuilt on the same machine");
+        } else {
+            assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_none(), "a stop that confirms no instance holds it, open");
+            let (state, reason, _, _) = lab.slot(&first);
+            assert_eq!(state, "starting");
+            assert!(reason.as_deref().is_some_and(|r| r.contains("didn't confirm that runtime inst-1 stopped")), "{reason:?}");
+            assert_eq!(rebuild_state(&lab, &first), None, "never rebuilt");
+            assert_eq!(lab.executor_mail().iter().filter(|m| m["metadata"]["status"] == "uncertain").count(), 1, "mailed once");
+        }
+    }
+}
+
+/// Gap 1's other half: a remote start cut off before its runtime was
+/// recorded has no instance to confirm, and the helper calls what it can't
+/// find stopped, so nothing confirms its stop.
+#[tokio::test]
+async fn a_remote_start_cut_off_before_its_runtime_was_recorded_has_no_confirmed_stop() {
+    let lab = Lab::new(missing).await;
+    lab.quiet();
+    lab.occupy_the_slot();
+    let requests = lab.ssh_machine("lab-unrecorded", "/srv/lab/project", hanging(lab._dir.path()), "ok");
+    let task = lab.task("Review before its runtime is recorded").await;
+    let first = lab.dispatch_on(&task, "unrecorded", "reviewer", "lab-unrecorded").await;
+    let error = format!("{:#}", lab.ws.remote_start_stopped(&first).await.unwrap_err());
+    assert!(error.contains("before its runtime on Lab box was recorded"), "{error}");
+    assert!(!requests.lock().unwrap().iter().any(|r| r["action"] == "stop"), "no stop is asked, so none is taken for a confirmation");
+}
+
+/// Stands in for SSH and a machine's Claude host (remote-host.mjs): `start`
+/// is never answered, and `host_stop` is answered as `mode` says (`ok`:
+/// stopped; `busy`: refused).
+const HOST: &str = r#"
+const [mode] = process.argv.slice(2);
+const out = v => process.stdout.write(JSON.stringify(v) + '\n');
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const c = JSON.parse(line);
+  const reply = result => out({ type: 'response', id: c.id, result });
+  if (c.op === 'start') return;
+  if (c.op === 'status') return reply({ ready: true, turnId: null, pendingCount: 0, configuring: false, interrupting: false });
+  if (c.op !== 'host_stop') return reply({});
+  if (mode === 'ok') return reply({ stopped: true, exit: { code: 0, signal: null } });
+  return reply({ stopped: false, reason: 'Claude on this machine is not idle' });
+});
+process.stdin.on('end', () => process.exit(0));
+"#;
+
+/// T-35 S3a (Lead 2 Q5, gap 2): a Claude Code executor's start cut off on
+/// another machine counts as failed only when its host confirms, through the
+/// connection the start made, that it stopped the bridge (`host_stop`, as
+/// Disconnect asks); then it is rebuilt there. A host that doesn't confirm
+/// holds it.
+#[tokio::test]
+async fn a_cut_off_remote_claude_start_is_failed_only_when_its_host_confirms_the_stop() {
+    if std::process::Command::new("node").arg("--version").output().is_err() {
+        eprintln!("node is not installed; skipped");
+        return;
+    }
+    for (machine, mode) in [("lab-host-stops", "ok"), ("lab-host-busy", "busy")] {
+        let lab = Lab::new(missing).await;
+        lab.quiet();
+        *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(Duration::from_secs(1));
+        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex"},
+            {"id":"writer","label":"Writer","harness":"claude"}]));
+        lab.ssh_machine(machine, "/srv/lab/project", "unused".into(), "ok");
+        let script = lab._dir.path().join(format!("{machine}.cjs"));
+        std::fs::write(&script, HOST).unwrap();
+        crate::claude::REMOTE_ATTACH.lock().unwrap().push((machine.to_owned(),
+            vec!["node".to_owned(), script.to_string_lossy().into_owned(), mode.to_owned()]));
+        let task = lab.task("Write on the lab box").await;
+        let first = lab.dispatch_on(&task, "claude-remote", "writer", machine).await;
+        assert_eq!(lab.machine_of(&first).as_deref(), Some(machine));
+        for started in lab.ws.executor_slots_pass().await {
+            started.await.unwrap();
+        }
+        if mode == "ok" {
+            assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_some(), "a confirmed host_stop: failed, and closed");
+            let (state, to) = rebuild_state(&lab, &first).unwrap();
+            assert_eq!(state, "done");
+            assert_eq!(lab.machine_of(&to.unwrap()).as_deref(), Some(machine), "rebuilt on the same machine");
+        } else {
+            assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_none(), "a host that doesn't confirm holds it, open");
+            let (state, reason, _, _) = lab.slot(&first);
+            assert_eq!(state, "starting");
+            assert!(reason.as_deref().is_some_and(|r| r.contains("didn't confirm it stopped")), "{reason:?}");
+            assert_eq!(rebuild_state(&lab, &first), None, "never rebuilt");
+        }
+    }
+}
+
+/// R6 135c4a8c (known limit 2): a store error early in a start must not
+/// leave its slot starting with nothing settled. A failed read of the time
+/// limit takes the default, and of the attempt counts as the first: the start
+/// goes on, and its failure is settled (here rebuilt).
+#[tokio::test]
+async fn a_store_error_before_a_start_takes_the_defaults_and_its_failure_is_still_settled() {
+    let lab = Lab::new(missing).await;
+    lab.quiet();
+    let task = lab.task("Review despite a store error").await;
+    let first = lab.dispatch(&task, "faulty-reads").await;
+    lab.ws.executor_slots.fault_reads.store(true, std::sync::atomic::Ordering::Relaxed);
+    for started in lab.ws.executor_slots_pass().await {
+        started.await.unwrap();
+    }
+    lab.ws.executor_slots.fault_reads.store(false, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(rebuild_state(&lab, &first).map(|r| r.0).as_deref(), Some("done"),
+        "a failed limit or attempt read takes the default, and the start is still settled");
+}
+
+/// R6 135c4a8c: a start the time limit cut off is closed, freeing its slot,
+/// even when its settling record can't be written.
+#[tokio::test]
+async fn a_cut_off_start_is_closed_even_when_its_record_cannot_be_written() {
+    let lab = Lab::new(silent).await;
+    lab.quiet();
+    *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(Duration::from_secs(1));
+    let task = lab.task("Review the slow one despite a store error").await;
+    let first = lab.dispatch(&task, "faulty-record").await;
+    lab.ws.executor_slots.fault_settling.store(true, std::sync::atomic::Ordering::Relaxed);
+    for started in lab.ws.executor_slots_pass().await {
+        started.await.unwrap();
+    }
+    lab.ws.executor_slots.fault_settling.store(false, std::sync::atomic::Ordering::Relaxed);
+    assert!(lab.ws.store.agent(&first).unwrap().closed_at.is_some(), "closed even when its record can't be written");
+    assert_eq!(lab.slot(&first).0, "released", "and its slot is free");
 }

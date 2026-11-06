@@ -682,10 +682,11 @@ async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiR
 }
 
 /// The executor a template dispatch makes (T-34), created as POST
-/// /api/agents creates an Agent with what the template names, in `cwd`, a
-/// member of the task's Project; its runtime is left for the dispatch.
+/// /api/agents creates an Agent with what the template names, in `cwd` on
+/// `machine` (none: this Core host; T-35 S3a), a member of the task's
+/// Project; its runtime is left for the dispatch.
 pub(crate) async fn create_executor(ws: &Arc<Workspace>, template: &crate::executor_templates::Template, name: String,
-    cwd: String, project_id: Option<String>, birth: crate::workspace::Birth) -> anyhow::Result<crate::model::Agent> {
+    cwd: String, machine: Option<String>, project_id: Option<String>, birth: crate::workspace::Birth) -> anyhow::Result<crate::model::Agent> {
     let p = Create {
         name,
         goal: String::new(),
@@ -693,7 +694,7 @@ pub(crate) async fn create_executor(ws: &Arc<Workspace>, template: &crate::execu
         cwd,
         model: template.model.clone().map_or(crate::agent_defaults::ModelAsk::Inherit, crate::agent_defaults::ModelAsk::Named),
         reasoning_effort: template.reasoning_effort.clone().map(Some),
-        machine_id: None,
+        machine_id: machine,
         project_id,
         save_project_default: false,
         permission_preset: template.permission_preset.clone(),
