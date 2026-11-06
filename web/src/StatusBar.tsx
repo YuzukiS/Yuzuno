@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Check, GitPullRequest, Server, Sparkles, Workflow, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Bot, Check, ChevronDown, GitPullRequest, Server, Sparkles, Workflow, X } from "lucide-react";
 import { api } from "./api";
 import { CoreBacklog } from "./CoreBacklog";
 import { limitWindows } from "./ClaudeControls";
@@ -57,6 +58,11 @@ const words = strings({
   unchecked: "not checked yet",
   machine: (name: string, check: string, off: number) => `${name}: ${check}${off ? `; ${off} Agent${off === 1 ? "" : "s"} disconnected` : ""}`,
   openMachines: "Open Machines",
+  // The way into all of this from the toolbar, where the bar itself has no
+  // room to stand (T-15 V5).
+  details: "Core and background work",
+  detailsNeed: (count: number) => `${count} need${count === 1 ? "s" : ""} a look`,
+  detailsQuiet: "nothing needs a look",
 }, {
   specimen: "视觉样本",
   reconnecting: "实时更新正在重新连接",
@@ -97,6 +103,9 @@ const words = strings({
   unchecked: "尚未检查",
   machine: (name, check, off) => `${name}：${check}${off ? `；${off} 个 Agent 已断开` : ""}`,
   openMachines: "打开“机器”",
+  details: "Core 与后台工作",
+  detailsNeed: (count) => `${count} 个待查看`,
+  detailsQuiet: "没有待查看的",
 });
 type Words = ReturnType<typeof words>;
 
@@ -138,8 +147,73 @@ export function StatusBar({
   const plan = usePlan(claudeRuntime, language);
   const codex = useCodex(previewMode ? null : codexAgent ?? null, eventConnection === "open", language);
   const machines = useMachines(machinesRevision, !previewMode, agents, language);
+  // On a middle-sized workbench this bar costs 27px of a 669px-tall screen to
+  // hold what is quiet most of the time, so there it stops being a bar and
+  // becomes a panel under the toolbar, opened from the Core status entry
+  // (T-15 V5). Which of the two applies is decided in CSS — statusbar.css,
+  // by the same screen it is a rule about — and this subtree is mounted once
+  // either way: as two copies, everything in it that reads from Core (its
+  // backlog among them) would have asked Core twice.
+  const [open, setOpen] = useState(false);
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  const entry = useRef<HTMLButtonElement | null>(null);
+  const panel = useRef<HTMLElement | null>(null);
+  useEffect(() => setSlot(document.getElementById("core-status-slot")), []);
+  // Escape and a press outside close it, and Escape hands focus back, which
+  // a press does not: the press has already chosen where it is going.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      entry.current?.focus();
+    };
+    const onDown = (event: PointerEvent) => {
+      const at = event.target as Node | null;
+      if (!at || panel.current?.contains(at) || entry.current?.contains(at)) return;
+      setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [open]);
+  // What the entry says while it is closed, so that folding the bar away
+  // hides nothing that was asking for attention. Counts of work in progress
+  // (reviews, CI runs) are not in it: those are going on, not waiting.
+  const needsLook =
+    (background.notice && !background.notice.ok ? 1 : 0) +
+    (machines?.unreachable || 0) +
+    (plan?.limited ? 1 : 0) +
+    (codex?.limited ? 1 : 0);
   return (
-    <footer className="statusbar">
+    <footer className="statusbar" id="core-status-details" ref={panel} data-open={open ? "" : undefined}>
+      {slot &&
+        createPortal(
+          <button
+            type="button"
+            ref={entry}
+            className={`core-status-entry${needsLook ? " needs-look" : ""}`}
+            aria-expanded={open}
+            aria-controls="core-status-details"
+            onClick={() => setOpen((was) => !was)}
+          >
+            {/* No dot of its own: the toolbar's Core dot beside it is the one
+                Core indicator, and two would say the same thing twice. The
+                name is read, not seen — beside it the count is what there is
+                room for, and an aria-label would stand in front of it. */}
+            <span className="sr-only">{t.details}: </span>
+            {needsLook > 0 ? (
+              <span className="core-status-count">{t.detailsNeed(needsLook)}</span>
+            ) : (
+              <span className="sr-only">{t.detailsQuiet}</span>
+            )}
+            <ChevronDown className="core-status-chevron" size={14} aria-hidden="true" />
+          </button>,
+          slot,
+        )}
       <div className="statusbar-start">
         {previewMode && <span className="statusbar-item">{t.specimen}</span>}
         {!previewMode && eventConnection !== "open" && (

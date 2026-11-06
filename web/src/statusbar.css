@@ -88,3 +88,100 @@ button.statusbar-item:focus-visible {
     display: none;
   }
 }
+
+/* A middle-sized workbench (T-15 V5). This bar costs 27px of a 669px-tall
+   screen to hold things that are quiet most of the time — plan usage, how
+   much RAM jobs reserve, how the remote machines answered. On a short screen,
+   or one worked by touch, it stops lying across the bottom and hangs under
+   the toolbar instead, a press away from the Core status entry. The entry
+   keeps saying how many things need a look, so folding the bar away hides
+   nothing that was asking for one; what is merely in progress is inside.
+   It is the same bar either way — moved, not copied — so nothing in it reads
+   from Core twice. A screen with the room keeps the bar it had, and the
+   entry is not there at all. */
+.core-status-slot,
+.core-status-entry {
+  display: none;
+}
+@media (max-height: 820px), (hover: none) and (pointer: coarse) {
+  .app:not(.phone) .core-status-slot {
+    display: inline-flex;
+  }
+  .app:not(.phone) .core-status-entry {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 40px;
+    min-width: 40px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--text-secondary, #8b937f);
+    font: inherit;
+    font-size: calc(10px + var(--font-adjust, 3px));
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .app:not(.phone) .core-status-entry:hover,
+  .app:not(.phone) .core-status-entry[aria-expanded="true"] {
+    color: var(--ink);
+    background: var(--input);
+  }
+  .app:not(.phone) .core-status-entry:focus-visible {
+    outline: 2px solid var(--focus, #9caa76);
+    outline-offset: 1px;
+  }
+  .app:not(.phone) .core-status-entry.needs-look {
+    color: var(--attention-ink, #a77b4f);
+  }
+  .app:not(.phone) .core-status-entry[aria-expanded="true"] .core-status-chevron {
+    transform: rotate(180deg);
+  }
+  /* Core keeps its dot and its title in the toolbar — it is the one Core
+     indicator — and gives up only the words beside it, which the entry and
+     the panel now have the room for. */
+  .app:not(.phone) .toolbar-actions .connection-label {
+    display: none;
+  }
+  /* The bar as a panel: out of the grid (its row is 0 in styles.css), under
+     the toolbar, against the right edge the entry is at. */
+  .app:not(.phone) > .statusbar {
+    position: fixed;
+    top: calc(var(--safe-top) + 48px + 4px);
+    right: calc(var(--safe-right) + 12px);
+    bottom: auto;
+    left: auto;
+    z-index: 40;
+    display: none;
+    width: min(320px, calc(100vw - var(--safe-left) - var(--safe-right) - 24px));
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-top: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--cream, #f1f4e9);
+    box-shadow: 0 10px 28px rgb(50 54 44 / 18%);
+    /* Read as a list, not as a line of small print. */
+    font-size: calc(10px + var(--font-adjust, 3px));
+  }
+  .app:not(.phone) > .statusbar[data-open] {
+    display: flex;
+  }
+  .app:not(.phone) > .statusbar > .statusbar-start,
+  .app:not(.phone) > .statusbar > .statusbar-end {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    margin-left: 0;
+    overflow: visible;
+  }
+  /* Each line in the panel is a row a finger can hit, which the 13px it had
+     as a bar was not. */
+  .app:not(.phone) > .statusbar .statusbar-item {
+    min-height: 40px;
+  }
+}

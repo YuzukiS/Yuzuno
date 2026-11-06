@@ -3783,11 +3783,14 @@ p {
    inside a padded group cost the same 40px of header that a 40px button
    costs without the padding. A tall screen with a mouse is left as it was. */
 @media (max-height: 820px), (hover: none) and (pointer: coarse) {
+  /* The last row is the bottom bar's, and on this screen the bar is not in
+     the grid at all: it hangs under the toolbar instead, opened from the
+     toolbar's Core status entry (V5, statusbar.css). */
   .app:not(.phone) {
-    grid-template-rows: 48px minmax(0, 1fr) 27px;
+    grid-template-rows: 48px minmax(0, 1fr) 0;
   }
   .app:not(.phone):has(.preview-strip) {
-    grid-template-rows: 28px 48px minmax(0, 1fr) 27px;
+    grid-template-rows: 28px 48px minmax(0, 1fr) 0;
   }
   .app:not(.phone) .conversation-header {
     padding-block: 6px;

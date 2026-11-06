@@ -3,6 +3,9 @@
 // entry beside the conversation's name says it once: what needs a look
 // first, then what is going on, never a total across the three.
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-work-entry.mjs
+// T15_LANG=zh-Hans reads the same screen in Chinese. That exact value: a
+// language this does not know falls back to English and passes, which is
+// the one way these checks can come back green without having run.
 import assert from "node:assert/strict";
 import { mkdir, readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";

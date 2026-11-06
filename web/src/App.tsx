@@ -3255,8 +3255,13 @@ export function App() {
             data-core-status={core.status}
           >
             <span />
-            {core.label}
+            {/* Named, so a screen too short for the words can keep the dot
+                and its title (T-15 V5). */}
+            <span className="connection-label">{core.label}</span>
           </span>
+          {/* Where the bottom bar has no room to stand, its way in stands
+              here instead; StatusBar.tsx fills this (T-15 V5). */}
+          <span className="core-status-slot" id="core-status-slot" />
           {updatesNeedReload && <UpdateBanner onOpen={() => setUpdatesOpen(true)} />}
             <button
               className="icon-button workspace-settings"

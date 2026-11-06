@@ -9,6 +9,9 @@
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-composer.mjs
 // With an Agent at work, so Interrupt is there to press:
 //   T15_WORKING=1 YUZUNO_UI_DIST=<isolated build> node tools/t15-composer.mjs
+// T15_LANG=zh-Hans reads the same screen in Chinese. That exact value: a
+// language this does not know falls back to English and passes, which is
+// the one way these checks can come back green without having run.
 import assert from "node:assert/strict";
 import { mkdir, readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
