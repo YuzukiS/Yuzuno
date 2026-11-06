@@ -12,7 +12,8 @@
 //! stored that this one can't read. Only the user saves them: these are
 //! browser routes, never a collaboration operation.
 //!
-//! Executors run on this Core host only. A template's `maxConcurrent` limits
+//! A template's executors run on this Core host, or on the machine it names
+//! (a dispatch's own machineId wins; T-35 S3a). Its `maxConcurrent` limits
 //! how many of its executors hold a slot at once (executor_slots.rs, T-35).
 use crate::{
     agent_defaults::{catalog_entry, catalog_name, check_in_catalog, CLAUDE_MODES, CODEX_PRESETS},
@@ -67,7 +68,8 @@ pub struct Template {
     /// Claude Code only; unset inherits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
-    /// Unset, or `local`: this Core host (phase 1 has no other).
+    /// Where its executors run: unset or `local` for this Core host, or a
+    /// registered machine's id (T-35 S3); a dispatch's own machineId wins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
     /// Given to the executor with its dispatch's materials, at most 8 KiB.
@@ -126,11 +128,16 @@ fn check_pattern(pattern: &str) -> Result<()> {
     Ok(())
 }
 
-/// Phase 1 makes executors on this Core host only: no machine, or `local`.
-pub(crate) fn this_host_only(machine: Option<&str>) -> Result<()> {
-    if let Some(machine) = machine.filter(|m| *m != "local") {
-        bail!("Executors run on this Core host in this phase, not on {machine}; other machines come with phase 2 (T-35)");
-    }
+/// A machine a template or a dispatch names for its executors: `local`, or
+/// a registered machine's id, which a dispatch checks against the Machines
+/// list. Choosing one by itself comes later (T-35 S3b). OpenCode runs on
+/// this Core host only (`opencode_create_on`).
+pub(crate) fn machine_named(machine: Option<&str>, harness: &str) -> Result<()> {
+    let Some(machine) = machine else { return Ok(()) };
+    ensure!(!machine.is_empty() && machine.len() <= 128 && !machine.chars().any(char::is_control),
+        "A machine is named by its id, at most 128 characters");
+    ensure!(machine != "auto", "Choosing the machine by itself isn't available yet: name one, or leave it unset for this Core host");
+    ensure!(machine == "local" || harness != "opencode", "OpenCode executors run on this Core host only, not on {machine}");
     Ok(())
 }
 
@@ -171,7 +178,7 @@ impl Template {
                     "OpenCode takes its permissions from its own configuration");
             }
         }
-        this_host_only(self.machine_id.as_deref())?;
+        machine_named(self.machine_id.as_deref(), &self.harness)?;
         if let Some(text) = &self.instructions {
             ensure!(text.len() <= MAX_INSTRUCTIONS, "A template's instructions are at most 8 KiB");
         }

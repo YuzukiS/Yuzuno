@@ -11,7 +11,7 @@ import { rememberSeenBlocks } from "./brief/block-changes";
 import { keepUnchanged, projectDomId, requestDomId, sectionDomId, handoverDomId } from "./brief-layout";
 import { markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
 import { usePhone } from "../phone-layout";
-import { useSurfaceIn } from "../surface";
+import { useDelayedPresence, useSurfaceIn } from "../surface";
 import { HomePanel } from "./HomePanel";
 import { HomeNavigation, type HomeTarget } from "./home-navigation";
 import { HomeReadContext, type HomeRead } from "./home-read";
@@ -169,6 +169,14 @@ export function Home({
   useSurfaceIn(view, "home", "medium", !phone);
   const [errorState, setErrorState] = useState<(HomeError & { workspaceId: string }) | null>(null);
   const error = errorState?.workspaceId === workspaceId ? errorState : null;
+  // The error floats over the top of what is below it, which stays where it was as it comes and goes; it fades in
+  // over small and out over exit-small, saying what it said, and goes at once with its Workspace (T-19 HM:H2).
+  const banner = useDelayedPresence(!!error, 0);
+  const lastError = useRef(errorState);
+  if (error) lastError.current = errorState;
+  // While the banner is shown, the error it says stays: when the next read answers, the same banner takes its way
+  // out (is-leaving, set after that render), never unmounted and put back as a second alert (#620 R1).
+  const bannerError = error ?? (banner.shown && lastError.current?.workspaceId === workspaceId ? lastError.current : null);
   const setError = useCallback((value: HomeError | null) => {
     if (activeWorkspace.current === workspaceId) setErrorState(value ? { workspaceId, ...value } : null);
   }, [workspaceId]);
@@ -188,8 +196,11 @@ export function Home({
   // The Needs you area's landing mark, from the return overview (T-19).
   const needsSettled = useRef<(() => void) | null>(null);
   useEffect(() => () => needsSettled.current?.(), []);
-  const pendingJump = useRef<{ target: () => HTMLElement | null; n: number } | null>(null);
+  const pendingJump = useRef<{ target: () => HTMLElement | null; n: number; block?: ScrollLogicalPosition } | null>(null);
   const reload = useCallback(() => setTick((n) => n + 1), []);
+  // Refresh asked for and not yet answered (T-19 HM:H3): its icon turns and it says it is busy. The reads Home makes
+  // on its own (a revision, the safety net) show nothing.
+  const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
     if (readOnly) return;
     const controller = new AbortController();
@@ -201,6 +212,7 @@ export function Home({
     readHome(controller.signal)
       .then((value) => {
         if (controller.signal.aborted) return;
+        setRefreshing(false);
         if (!value || !Array.isArray(value.projects) || !Array.isArray(value.needsYou)) {
           setError({ kind: "unavailable", reason: "" });
           failed();
@@ -217,6 +229,7 @@ export function Home({
       .catch((e) => {
         // The last read stays on screen; nothing is blanked while retrying.
         if (controller.signal.aborted) return;
+        setRefreshing(false);
         setError({ kind: "read", reason: errorText(e) });
         failed();
       });
@@ -262,12 +275,25 @@ export function Home({
     // A saved order shows as soon as Core reports it.
     if (localOrder && data && !saving && data.order.join("\n") === localOrder.join("\n")) setLocalOrder(null);
   }, [data, localOrder, saving]);
+  // The arrow just pressed keeps the focus as its panel moves, and as a refused order puts it back (T-19 HM:H7).
+  // The panels change places at once, as Home's layout does (no motion: HM:H7 and H8's moves are not animated).
+  const movedArrow = useRef<{ id: string; by: -1 | 1 } | null>(null);
+  useLayoutEffect(() => {
+    const moved = movedArrow.current;
+    if (!moved) return;
+    movedArrow.current = null;
+    const arrow = document.getElementById(projectDomId(moved.id))
+      ?.querySelector<HTMLElement>(`.home-reorder [data-move="${moved.by < 0 ? "up" : "down"}"]`);
+    if (arrow && document.activeElement !== arrow) arrow.focus();
+  }, [panels]);
   async function move(index: number, by: -1 | 1) {
     const ids = panels.map((p) => p.project.id);
     const target = index + by;
     if (target < 0 || target >= ids.length) return;
     [ids[index], ids[target]] = [ids[target], ids[index]];
     const previous = localOrder;
+    const moved = { id: ids[target], by };
+    movedArrow.current = moved;
     setLocalOrder(ids);
     setSaving(true);
     setError(null);
@@ -275,6 +301,7 @@ export function Home({
       await saveHomeOrder(ids);
       reload();
     } catch (e) {
+      movedArrow.current = moved;
       setLocalOrder(previous);
       setError({ kind: "order", reason: errorText(e) });
     } finally {
@@ -344,7 +371,7 @@ export function Home({
     const show = () => {
       // Only the user's click scrolls Home; new content never does.
       const smooth = !reducedMotion();
-      target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
+      target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: jumpTo.block ?? "center" });
       target.focus({ preventScroll: true });
       // Where it landed, once the scroll has (T-19): kept until the next press.
       settled = settleWhenLanded(target, "data-home-highlight", smooth);
@@ -375,6 +402,14 @@ export function Home({
     if (!arrival || !landed || report || arrived.current === arrival.n) return;
     arrived.current = arrival.n;
     const { projectId, key } = arrival.origin;
+    if (landed.kind === "gone") {
+      // No panel to go to: the note saying so, below the overview and Needs you and often out of view, is brought
+      // into view (nearest) and settles (T-19 HM:H15).
+      const n = reveal.n + 1;
+      pendingJump.current = { target: () => document.querySelector<HTMLElement>(".home-main > .home-reply-arrival"), n, block: "nearest" };
+      setReveal({ n, projects: reveal.projects });
+      return;
+    }
     revealIn(projectId, () => (key !== null && sameSectionLive(landed) ? document.getElementById(sectionDomId(projectId, key)) : null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arrival, data, report]);
@@ -743,8 +778,18 @@ export function Home({
             </button>
           )}
           {!readOnly && (
-            <button type="button" className="icon-button" aria-label={t.refresh} title={t.refresh} onClick={reload}>
-              <RefreshCw size={14} />
+            <button
+              type="button"
+              className="icon-button home-refresh"
+              aria-label={t.refresh}
+              title={t.refresh}
+              aria-busy={refreshing || undefined}
+              onClick={() => {
+                setRefreshing(true);
+                reload();
+              }}
+            >
+              <RefreshCw size={14} className={refreshing ? "spin" : undefined} />
             </button>
           )}
         </span>
@@ -754,11 +799,13 @@ export function Home({
           {t.densityNotKept(densityRefusal.detail)}
         </p>
       )}
-      {error && (
-        <p className="inline-error home-error-banner" role="alert">
-          {error.kind === "unavailable" ? t.unavailable : error.kind === "order" ? t.orderNotSaved(error.reason) : error.reason}
-          {data && t.lastReading}
-        </p>
+      {banner.shown && bannerError && (
+        <div className="home-error-slot">
+          <p className={`inline-error home-error-banner${banner.leaving ? " is-leaving" : ""}`} role="alert">
+            {bannerError.kind === "unavailable" ? t.unavailable : bannerError.kind === "order" ? t.orderNotSaved(bannerError.reason) : bannerError.reason}
+            {data && t.lastReading}
+          </p>
+        </div>
       )}
       {!data ? (
         !error && (

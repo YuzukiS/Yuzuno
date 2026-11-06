@@ -74,8 +74,11 @@ its settings.
 - **Which template a dispatch gets.** A dispatch of a task in a Project uses
   that Project's template of the named id, else the Workspace's. A task in no
   Project uses the Workspace's.
-- **Where executors run.** On this Core host. Other machines, and choosing
-  one automatically, come in phase 2.
+- **Where executors run.** On the machine the dispatch names, else the one
+  its template names, else this Core host. A machine is one from the
+  Machines list. Choosing one automatically comes later. OpenCode executors
+  run on this Core host only, and a Codex executor can't run on a machine
+  that keeps its Agents contained.
 - **Who changes them.** Only you. Saving replaces the whole list, and a save
   against a list changed meanwhile is refused, so the page reloads first.
   Removing a template, or a Project, changes no executor already made.
@@ -94,9 +97,11 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
    dispatching, and the template. Nothing is written before these pass.
 2. **Creates the executor**, as **New Agent** creates an Agent. It is made
    from the template, in the task's Project, and named by the template's
-   pattern. It works in the dispatch's worktree when that is a folder on this
-   host, else in the Project's folder on this host. Core makes no folder: with
-   neither, the dispatch is refused. When an Agent dispatches, that folder
+   pattern. On this Core host it works in the dispatch's worktree when that is
+   a folder here, else in the Project's folder here. On another machine it
+   works in the Project's folder on that machine; a dispatch there that
+   carries a worktree is refused, since a worktree is a path on this Core
+   host. Core makes no folder: with none, the dispatch is refused. When an Agent dispatches, that folder
    must be the worktree you registered on the task or lie inside the
    Project's folder; any other is refused, since a path an Agent gives, in a
    dispatch's or a task's materials, is information, not permission. Your own
@@ -128,7 +133,10 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
   the update is done: one that had not been made goes ahead then, and nothing
   was written for it before. A retry of one already made is refused during
   the update too, and gets its recorded answer after it.
-- **This host only.** A dispatch's `machineId` may be empty or `local`.
+- **Which machine.** A dispatch's `machineId` names a machine from the
+  Machines list, or `local` for this Core host. Left out, the template's
+  machine holds, else this Core host. A machine that isn't registered, or
+  can't run the template's harness, is refused before anything is written.
 
 ## Executors at once
 
@@ -165,10 +173,18 @@ applies. Only you change them.
   too, or Core can't make the rebuild, Core blocks the task with every
   reason, and a dispatching Agent gets one mail. A start cut off by the time
   limit counts as failed only when closing the executor confirmed its
-  runtime stopped. A rebuild that meets an update draining waits for it,
+  runtime stopped. On another machine, cutting the start off stops nothing
+  there, so Core stops its runtime first and counts the start as failed only
+  when that stop is confirmed. For Codex, the stop must confirm the runtime
+  instance the start recorded; a start cut off before its runtime was
+  recorded has no instance to confirm. For Claude Code, the host must confirm
+  through the start's connection that it stopped the bridge. Anything less
+  holds the executor, as when Core can't tell. A rebuild is made on the first
+  executor's machine. A rebuild that meets an update draining waits for it,
   with no block and no mail: the first pass after the update makes it. So
   does one whose task changed while Core dispatched it: the next pass makes
-  it.
+  it. A change Core meets later, once the rebuilt executor exists, fails that
+  dispatch and blocks the task.
 - **When Core can't tell.** If Core can't tell whether a start happened
   (its runtime may be running), the executor stays open and keeps its slot.
   Its card says its start did not finish, and why, and a dispatching Agent
