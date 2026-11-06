@@ -78,7 +78,8 @@ impl Workspace {
                 .await.context("Dispatch from an executor template ended unexpectedly")?;
         }
         let permit = self.admission.enter_completion()?;
-        let done = operation == "task_update" && input["patch"]["status"] == "done";
+        let done = (operation == "task_update" && input["patch"]["status"] == "done")
+            || (operation == "task_submit_result" && input["status"] == "done");
         let answer = self.collaboration_stored(permit, actor, operation, input).await?;
         // Its dispatcher, a lead of its Project or the user set the task
         // done: its executor is released (T-36), after this answer.

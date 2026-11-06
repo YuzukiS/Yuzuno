@@ -227,7 +227,9 @@ def main():
         current = collaboration('task_get', {'taskId': t2['id']})['task']
         REPORT['reasons']['own done'] = exe.refused('task_update', {'requestId': 'done', 'taskId': t2['id'], 'expectedVersion': current['version'],
                                                                      'patch': {'status': 'done'}}, 'executor_done_refused')
-        check('the executor cannot set its own task done (executor_done_refused)')
+        REPORT['reasons']['own done result'] = exe.refused('task_submit_result', {'requestId': 'done-result', 'taskId': t2['id'],
+            'expectedVersion': current['version'], 'summary': 'Finished.', 'status': 'done'}, 'executor_done_refused')
+        check('the executor cannot set its own task done, with task_update or with its result (executor_done_refused)')
         brief = exe.call('brief_get', {})
         exe.call('brief_update', {'requestId': 'ask', 'expectedVersion': brief['version'], 'changes': [{
             'op': 'put', 'key': 'question', 'kind': 'ask', 'title': 'Which way?',
