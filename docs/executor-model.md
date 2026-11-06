@@ -194,13 +194,31 @@ applies. Only you change them.
 
 Once an executor's work is accepted, it is released: Core closes it for good.
 
-- **Who.** The Agent that dispatched it from a template, with
-  `executor_release`, or you, with **Release executor** in its actions
-  (**Manage…**). Anyone else is refused with `not_dispatcher`, and a
-  standing Agent or a lead with `not_executor`. If its dispatcher no longer
-  exists, only you can release it.
+- **Who.** The Agent that dispatched it from a template, or any lead of its
+  task's Project, with `executor_release`, or you, with **Release executor**
+  in its actions (**Manage…**). A lead of another Project is refused with
+  `not_project_lead`, naming both Projects; anyone else with
+  `not_dispatcher`, and a standing Agent or a lead with `not_executor`.
+- **Setting its task done releases it too,** when its dispatcher, a lead of
+  its Project or you set it. An executor can't set its own task done.
+- **While its work is still going, it is archiving.** A Job of its still
+  running, its delivery flow under way, or a pull request operation of its
+  in flight: the release waits for it, and its answer's `archiving.reason`
+  says what it waits for. Meanwhile Core stops the executor's CI watches
+  (what they saw stays), holds its queued Jobs (they are refused once it
+  closes, saying it was released), and it starts nothing new: `job_submit`,
+  `job_run_submit`, `ci_subscribe`, `github_pr_submit`, `review_start` and
+  `delivery_enable` are refused with `executor_archiving`. It can still
+  report with `peer_send`, `task_comment` and `task_submit_result`. Core
+  closes it within seconds of the last of that ending, and after Core
+  restarts too. A close that can't be confirmed (a remote one) is tried
+  again, after a wait that doubles up to five minutes, with the error as the
+  reason.
 - **What it does.** Its runtime stops as on Close, and its slot goes to the
-  next executor waiting. Its history's close says it was a release, and who
+  next executor waiting. Its live Home sections and Asks become its
+  dispatcher's, as a claim would make them, so your replies and their
+  resolve go to the dispatcher; one you dispatched keeps them. Each task
+  status proposal it left undecided is mailed to its dispatcher. Its history's close says it was a release, and who
   made it. The close, the release and the slot are one change: all of it
   happens, or none of it. An executor that was already closed is only marked
   released. Who released is on the executor (`releasedBy`); an executor

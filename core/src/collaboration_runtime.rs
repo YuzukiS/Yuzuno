@@ -22,6 +22,11 @@ impl Workspace {
         operation: &str,
         input: Value,
     ) -> Result<Value> {
+        // An executor being released starts nothing new (T-36).
+        if let Some(agent) = actor.filter(|_| crate::executor_archiving::starts_work(operation)) {
+            let (agent, call) = (agent.to_owned(), operation.to_owned());
+            self.stored(move |store| crate::executor_archiving::refuse_while_archiving(&*store.db.read()?, &agent, &call)).await?;
+        }
         if operation.starts_with("job_") {
             return tokio::spawn(crate::jobs::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Job operation ended unexpectedly")?;
@@ -73,7 +78,15 @@ impl Workspace {
                 .await.context("Dispatch from an executor template ended unexpectedly")?;
         }
         let permit = self.admission.enter_completion()?;
-        self.collaboration_stored(permit, actor, operation, input).await
+        let done = operation == "task_update" && input["patch"]["status"] == "done";
+        let answer = self.collaboration_stored(permit, actor, operation, input).await?;
+        // Its dispatcher, a lead of its Project or the user set the task
+        // done: its executor is released (T-36), after this answer.
+        if let (true, Some(task)) = (done, answer["task"]["id"].as_str()) {
+            let (ws, actor, task) = (self.clone(), actor.map(str::to_owned), task.to_owned());
+            tokio::spawn(async move { ws.release_on_done(actor, task).await });
+        }
+        Ok(answer)
     }
 
     /// The store's part of a collaboration call, under `permit`.

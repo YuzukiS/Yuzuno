@@ -7,6 +7,8 @@ mod backfill_tests;
 mod gpu_tests;
 #[cfg(test)]
 mod limit_tests;
+#[cfg(test)]
+mod release_tests;
 mod checkpoint;
 mod host;
 mod ids;

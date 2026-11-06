@@ -1167,3 +1167,20 @@ async fn an_abbreviated_expected_sha_is_refused_with_how_to_get_the_full_one() {
     let tool = tool_definitions().into_iter().find(|tool| tool["name"] == "ci_subscribe").unwrap();
     assert_eq!(tool["inputSchema"]["properties"]["expectedSha"]["pattern"], "^[0-9a-fA-F]{40}$");
 }
+/// T-36: an executor's release stops its own CI subscriptions, closed as
+/// `executor_released`, what they observed kept; another Agent's stay.
+#[test]
+fn a_release_stops_the_executors_own_subscriptions_and_no_one_elses() {
+    let (_dir, s) = setup();
+    let mine = subscribe(&s, "a", "mine");
+    let theirs = subscribe(&s, "b", "theirs");
+    assert!(crate::executor_archiving::begin(&s, "a", "user").unwrap(), "the release begins");
+    let read = |id: &Value| {
+        s.ci_list(None, None, None).unwrap()["subscriptions"].as_array().unwrap().iter()
+            .find(|sub| sub["id"] == *id).cloned().unwrap()
+    };
+    let stopped = read(&mine["id"]);
+    assert_eq!((stopped["active"].clone(), stopped["closure"]["reason"].clone()), (json!(false), json!("executor_released")),
+        "the executor's own watch stops: {stopped}");
+    assert_eq!(read(&theirs["id"])["active"], true, "another Agent's watch goes on");
+}

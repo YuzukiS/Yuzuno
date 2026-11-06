@@ -504,6 +504,7 @@ pub(super) fn delivered(receipt: &MessageReceipt) -> bool {
 /// sent as the composer sends it. Returns its receipt.
 pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInput) -> Result<MessageReceipt> {
     ensure!(input.text.len() <= MAX_REPLY, "A reply is at most {MAX_REPLY} bytes");
+    let input = reply_target(ws, &project, input).await?;
     if let Some(version) = input.version {
         ensure!(input.ask_version.is_none() && input.workspace_id.is_none(), "A reply answers a card or an ask, not both");
         return card_reply(ws, project, input, version).await;
@@ -558,6 +559,37 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
         },
     };
     ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await
+}
+
+/// A reply meant for a released executor (from a Home that showed it as the
+/// section's owner before its release) goes to whoever owns the section now:
+/// its dispatcher, once its archive handed the section over (T-36). With no
+/// other owner it is refused, and nothing is sent.
+async fn reply_target(ws: &Arc<Workspace>, project: &str, mut input: ReplyInput) -> Result<ReplyInput> {
+    let (agent, key, project) = (input.agent_id.clone(), input.key.clone(), project.to_owned());
+    let owner = ws.stored(move |store| {
+        let db = store.db.read()?;
+        if crate::executor_release::release_of(&db, &agent)?.is_none() {
+            return Ok(None);
+        }
+        let owner = match &key {
+            Some(key) => sections::find(&db, &project, key, None)?.filter(|row| row.live).map(|row| row.owner_id),
+            None => None,
+        };
+        Ok(Some(owner.filter(|owner| *owner != agent)))
+    }).await?;
+    match owner {
+        None => Ok(input),
+        Some(Some(owner)) => {
+            input.agent_id = owner;
+            Ok(input)
+        }
+        Some(None) => Err(not_submitted(
+            "executor_archived: the executor this reply is for was released, and no other Agent owns this section. \
+             Nothing was sent, and your reply is kept."
+                .into(),
+        )),
+    }
 }
 
 /// Refused before anything was recorded: the client keeps its reply, and
