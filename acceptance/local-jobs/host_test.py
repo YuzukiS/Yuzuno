@@ -232,6 +232,19 @@ class SharedEndTests(unittest.TestCase):
         self.assertEqual((outcome['status'], outcome['reason']), ('unknown', 'No verified worker start receipt; reconcile before retry'))
         self.assertEqual(show.call_count, 2, 'its identity, then once its group is empty')
 
+    def test_a_failed_launch_keeps_the_units_systemd_state(self):
+        # R1 1604b96b: the unknown outcome of a failed systemd-run records the unit as systemd shows it, as before T-59.
+        clock, sleep = self.fake_time()
+        state = {'LoadState':'loaded','ActiveState':'active','SubState':'running','Description':'another job','MainPID':'7','ControlGroup':''}
+        with clock, sleep, patch.object(host.time,'monotonic',side_effect=lambda: self.clock[0]), \
+                patch.object(host,'command',return_value=MagicMock(returncode=1, stdout='', stderr='Unit worker.service already exists.')), \
+                patch.object(host,'show',return_value=state) as show:
+            outcome = host.supervise(self.spec, self.folder)
+        self.assertEqual((outcome['status'], outcome['reason']), ('unknown', 'No verified worker start receipt; reconcile before retry'))
+        self.assertEqual(outcome['evidence']['systemd'], state, "a failed launch's outcome carries the unit's systemd state")
+        self.assertEqual(outcome['evidence']['launch'], {'returnCode': 1, 'stderr': 'Unit worker.service already exists.'})
+        self.assertEqual(show.call_count, 1)
+
     def test_the_collector_samples_the_group_files_while_the_worker_runs(self):
         proof = {'jobId':'one','attempt':'attempt','bootId':host.boot_id(),'invocationId':'invocation','controlGroup':'/fake-worker',
                  'pids':{'max':512,'events':{'max':0}}}

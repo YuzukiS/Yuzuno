@@ -1313,11 +1313,12 @@ def supervise(spec, folder):
     launch = command(args, check=False)
     launch_evidence = {'returnCode': launch.returncode, 'stderr': launch.stderr[:1000]}
     deadline = time.monotonic() + runtime + 20
-    # systemd is asked about the worker once now, for its identity and cgroup,
+    # systemd is asked about the worker once now, for its identity and cgroup
+    # (and, if the launch failed, for the state an unknown outcome records),
     # and again only once that cgroup is empty, until its ending is classified
     # (T-59). Meanwhile each poll reads only the cgroup's own files: whether
     # anything still runs in it, and its pids counters.
-    last = show(spec['unit']) if not launch.returncode else {}
+    last = show(spec['unit'])
     pids = None
     asked, wait = None, 0
     while time.monotonic() < deadline:
