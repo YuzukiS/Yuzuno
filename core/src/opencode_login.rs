@@ -317,13 +317,11 @@ impl Workspace {
     /// per attempt, however often it is asked about, and only while the
     /// connection it went through is still the Agent's.
     async fn logged_in(&self, id: &str, generation: u64, integration: &str, attempt: &str) -> Result<()> {
-        let first = {
-            let connections = self.opencodes.lock().unwrap();
-            let Some(c) = connections.get(id).filter(|c| c.generation == generation) else {
-                bail!("OpenCode 连接已变化；请重新打开登录");
-            };
-            c.logins.lock().unwrap().insert(attempt.to_owned())
+        let current = self.opencodes.lock().unwrap().get(id).filter(|c| c.generation == generation).map(|c| c.logins.clone());
+        let Some(logins) = current else {
+            bail!("OpenCode 连接已变化；请重新打开登录");
         };
+        let first = logins.lock().unwrap().insert(attempt.to_owned());
         if first {
             self.record_meta(id, "opencode/loggedIn", json!({"integration":integration,"method":"oauth"}), |_| {}).await?;
             self.changed(id);
