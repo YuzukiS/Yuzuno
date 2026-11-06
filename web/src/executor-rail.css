@@ -55,3 +55,16 @@
     transition: none;
   }
 }
+/* How many run and how many wait for a slot (T-43 S2): quieter than the
+   heading, beside its count. */
+.rail-subgroup-slots {
+  margin-left: auto;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+.rail-subgroup-slots + .rail-subgroup-count {
+  margin-left: 0;
+}

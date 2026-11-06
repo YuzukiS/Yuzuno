@@ -185,6 +185,7 @@ import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
 import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
 import { refreshLiveJobs } from "./live-jobs";
 import { clearLiveCI, refreshLiveCI } from "./live-ci";
+import { clearLiveExecutors, refreshLiveExecutors } from "./live-executors";
 import { TurnNavigator } from "./TurnNavigator";
 import { useConversationInputs } from "./useConversationInputs";
 import { entryInput, inputEntries, readingEntry, type ReadBy } from "./input-dock";
@@ -1056,6 +1057,14 @@ export function App() {
     const timer = setInterval(() => refreshLiveCI(workspaceId), 30_000);
     return () => { clearInterval(timer); clearLiveCI(); };
   }, [workspaceId, previewMode]);
+  // Each open executor's PR for its row (T-43 S2): read again on every
+  // collaboration change (a link, a GitHub refresh, a review's end) and
+  // when the open executors change; one local read, never GitHub.
+  const openExecutors = workspace?.agents.filter((a) => a.kind === "executor" && !a.closedAt).map((a) => a.id).join(",") ?? "";
+  useEffect(() => {
+    if (previewMode || !workspaceId || !openExecutors) { clearLiveExecutors(); return; }
+    refreshLiveExecutors(workspaceId);
+  }, [boardRevision, openExecutors, workspaceId, previewMode]);
   const scope = validScope(storedScope, projects);
   scopeRef.current = scope;
   const panelWidths = usePanelWidths(
@@ -3260,6 +3269,8 @@ export function App() {
         )}
         <nav className="agent-list" aria-label={shell.agents}>
           {(() => {
+            // How long each has waited for you, from Home's Needs you (T-43 S2).
+            const waited = waitingSince(needsYouItems);
             const row = (a: Agent) => {
             const unseen = unseenEnd(a, turnSeen);
             return (
@@ -3282,6 +3293,7 @@ export function App() {
                 !(a.id === selected && compacting) &&
                 a.status === "idle"
               }
+              waitingSince={waited.get(a.id) ?? null}
               onSelect={() => openFromList(a.id)}
               actions={agentActions}
             />

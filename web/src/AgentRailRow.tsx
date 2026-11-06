@@ -10,7 +10,10 @@ import { useAgentJobs } from "./live-jobs";
 import { useAgentCI, waitingSummary } from "./live-ci";
 import { useHandoffDrop } from "./SendToAgent";
 import { strings, useLanguage, type Language } from "./i18n";
-import { lifecycleText, stateDetail, stateLabel } from "./executor-lifecycle";
+import { lifecycleText, stateDetail } from "./executor-lifecycle";
+import { executorView } from "./executor-display";
+import { ExecutorRowState, stateText } from "./ExecutorRowState";
+import { useExecutorPR } from "./live-executors";
 import "./reading.css";
 
 export function workingFolder(cwd: string): string {
@@ -135,6 +138,7 @@ export function AgentRailRow({
   statusLabel,
   idle = false,
   unseen = null,
+  waitingSince = null,
   onSelect,
   actions,
 }: {
@@ -146,6 +150,8 @@ export function AgentRailRow({
   /** Only an Agent shown as plainly idle can show its unfinished Job/CI work; any
    * other state (working, waiting for you, compacting, closed…) comes first. */
   idle?: boolean;
+  /** Its oldest wait in Home's Needs you (ms): how long an executor has waited for you. */
+  waitingSince?: number | null;
   onSelect: () => void;
   /** Its actions (T-184): a "…" button, a right-click or a long-press. */
   actions?: AgentActionHandlers;
@@ -171,13 +177,22 @@ export function AgentRailRow({
   // (T-36 S3); the button's label is its name only.
   const lifecycle = agent.kind === "executor" && agent.executor ? agent.executor : null;
   const states = lifecycleText(language);
+  // An executor's one state (T-43 S2): its row's second line says it, in
+  // place of a runtime status and a lifecycle badge, and says it once.
+  const pr = useExecutorPR(agent.id);
+  const executor = lifecycle ? executorView({ agent, lifecycle, unseen, waiting: waiting?.label ?? null, pr, waitingSince }) : null;
+  const shown = executor ? stateText(executor, language) : label;
+  // Its template beside its state when its name doesn't already say it.
+  const template = lifecycle?.template?.label && !agent.name.includes(lifecycle.template.label) ? lifecycle.template.label : null;
   const kind = agent.kind === "lead" ? { name: t.lead, title: t.leadTitle }
     : agent.kind === "executor"
-      ? lifecycle
-        ? { name: `${t.executor} · ${stateLabel(lifecycle, states)}`, title: [t.executorTitle, ...stateDetail(lifecycle, states)].join("\n") }
-        : { name: t.executor, title: t.executorTitle }
+      ? {
+          name: t.executor,
+          title: [t.executorTitle, ...(lifecycle?.task ? [`${lifecycle.task.id} · ${lifecycle.task.title}`] : []),
+            ...(lifecycle ? stateDetail(lifecycle, states) : [])].join("\n"),
+        }
       : null;
-  const description = t.description(label, waiting?.detail ?? null, machine, agent.unreadCount);
+  const description = t.description(shown, executor ? null : waiting?.detail ?? null, machine, agent.unreadCount);
   return (
     <article
       className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}${press.holding ? " is-holding" : ""}`}
@@ -208,7 +223,7 @@ export function AgentRailRow({
         aria-label={t.open(agent.name)}
         aria-description={kind ? `${kind.name} · ${description}` : description}
         aria-current={selected ? "true" : undefined}
-        title={`${t.title(agent.name, label, waiting?.detail ?? null, agent.unreadCount)}${kind ? ` · ${kind.name}` : ""}`}
+        title={`${t.title(agent.name, shown, executor ? null : waiting?.detail ?? null, agent.unreadCount)}${kind ? ` · ${kind.name}` : ""}`}
       >
         {/* Unread updates ring the avatar, never a dot: dots beside the
             status say what the Agent is doing. */}
@@ -221,9 +236,9 @@ export function AgentRailRow({
         <span className="agent-identity">
           <MachineBadge agent={agent} />
           <span className="agent-name">{agent.name}</span>
-          {kind && !lifecycle && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
+          {kind && !executor && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
         </span>
-        <span
+        {executor ? <ExecutorRowState view={executor} template={template} title={kind?.title} /> : <span
           className={`agent-runtime runtime-${agent.status}${unseen ? ` unseen-${unseen}` : ""}`}
           data-jobs={waiting ? jobs?.active : undefined}
           data-ci={
@@ -235,14 +250,7 @@ export function AgentRailRow({
         >
           <span className={`status-dot ${agent.status}`} aria-hidden="true" />
           {label}
-        </span>
-        {/* An executor's kind and state take their own line under its name
-            and status (T-36 S3): beside them the rail is too narrow. */}
-        {kind && lifecycle && (
-          <span className="agent-kind-badge agent-state-badge" data-kind={agent.kind} data-state={lifecycle.state} title={kind.title}>
-            {kind.name}
-          </span>
-        )}
+        </span>}
       </button>
       {/* After the card's own target in focus order; drawn at its top right. */}
       {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
@@ -266,7 +274,7 @@ export function AgentRailRow({
           {drop.state === "accept" ? t.drop(agent.name) : drop.refusal}
         </p>
       )}
-      {agent.pendingCount > 0 && (
+      {agent.pendingCount > 0 && executor?.shown !== "needsYou" && (
         <div className="agent-row-bottom">
           <span className="needs-you">
             <Bell size={10} />

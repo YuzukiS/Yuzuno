@@ -20,7 +20,7 @@ fn link(store: &Store, task: &str, number: u64, state: &str, head: &str, ci: Val
     let repo = Repository { id: 7, full_name: "owner/repo".into() };
     store.github_link_object(task, &repo, "pull", number, json!({"title":format!("PR {number}"),"state":state,
         "baseSha":"a".repeat(40),"headSha":head,"baseBranch":"main","ci":ci})).unwrap();
-    store.db.read().unwrap().query_row("SELECT id FROM github_objects WHERE number=?1", [number], |r| r.get(0)).unwrap()
+    store.db.read().unwrap().query_row("SELECT id FROM github_objects WHERE number=?1", [number as i64], |r| r.get(0)).unwrap()
 }
 
 /// A review round of `task`'s PR link `link` at `head`: `status`, and with a

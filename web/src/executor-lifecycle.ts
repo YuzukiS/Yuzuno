@@ -12,7 +12,12 @@ export type ExecutorState = "queued" | "starting" | "running" | "delivering" | "
 export type ExecutorLifecycle = {
   state: ExecutorState;
   agentId: string;
+  /** Its task: `id` is the key it has now (YN-3), `T-<n>` while it has none (T-43 S2). */
   task?: { id: string; title: string } | null;
+  /** The template it was made from (T-43 S2); `label` as its dispatch's materials give it, null for an older dispatch. */
+  template?: { id: string; label?: string | null } | null;
+  /** When it was dispatched: its time on the task starts here (T-43 S2). */
+  dispatchedAt?: string | null;
   /** Who dispatched it; absent from a release's answer, which doesn't say. */
   dispatcher?: { kind: "user" } | { kind: "agent"; id: string; name?: string | null };
   since?: string | null;
@@ -39,6 +44,9 @@ export const lifecycleText = strings(
     queuedAt: (position: number) => `Queued · ${position} in line`,
     executor: "Executor",
     executors: "Task executors",
+    // How many of them run and how many wait for a slot (T-43 S2, g7).
+    slotUse: (running: number, queued: number) => `${running} running · ${queued} queued`,
+    slotUseTitle: "Running: started and not released. Queued: waiting for an executor slot (Settings → Executor templates).",
     archived: "Archived",
     archivedToggle: (folded: boolean, count: number) => `${folded ? "Show" : "Hide"} ${count} archived ${count === 1 ? "executor" : "executors"}`,
     archivingReason: (reason: string) => `Archiving: ${reason}`,
@@ -60,6 +68,8 @@ export const lifecycleText = strings(
     queuedAt: (position) => `排队中 · 第 ${position} 位`,
     executor: "执行者",
     executors: "任务执行者",
+    slotUse: (running, queued) => `${running} 运行 · ${queued} 排队`,
+    slotUseTitle: "运行：已启动、尚未放行。排队：在等执行者槽位（设置 → 执行者模板）。",
     archived: "已归档",
     archivedToggle: (folded, count) => `${folded ? "显示" : "隐藏"} ${count} 个已归档的执行者`,
     archivingReason: (reason) => `归档中：${reason}`,

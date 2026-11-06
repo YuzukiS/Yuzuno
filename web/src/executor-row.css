@@ -1,0 +1,105 @@
+/* An executor's row in the Agent list (ExecutorRowState.tsx, T-43 S2): its
+   one state on the second line under its name, in place of a runtime status
+   and a lifecycle badge, and its template, PR and time beside it. The
+   detail is what gives way when the rail is narrow; the state word, the
+   wait and the time keep their whole selves. */
+.agent-select:has(> .executor-row-state) {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  row-gap: 3px;
+}
+.agent-select:has(> .executor-row-state) .agent-rail-avatar {
+  grid-row: 1 / span 2;
+}
+.agent-select > .executor-row-state {
+  grid-column: 2 / -1;
+}
+.executor-row-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  color: var(--muted);
+}
+.executor-state {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+}
+.executor-state > .status-dot {
+  align-self: center;
+}
+.executor-state-word {
+  flex: none;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.executor-state-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.executor-state-detail::before,
+.executor-state-waited::before {
+  content: "· ";
+  opacity: 0.6;
+}
+.executor-state-waited,
+.executor-elapsed {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* What needs someone stands out, as the lifecycle badge did (reading.css):
+   failed in the error ink, waiting for you and in review in the attention
+   ink; what is over steps back. */
+.executor-row-state[data-shown="needsYou"] .executor-state,
+.executor-row-state[data-shown="review"] .executor-state {
+  color: var(--attention-ink, var(--accent-ink));
+}
+.executor-row-state[data-shown="failed"] .executor-state {
+  color: var(--error-ink, var(--coral));
+}
+.executor-row-state[data-shown="done"],
+.executor-row-state[data-shown="stopped"] {
+  opacity: 0.78;
+}
+.executor-row-facts {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  margin-left: auto;
+}
+.executor-template-chip,
+.executor-pr-chip {
+  overflow: hidden;
+  max-width: 14ch;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.executor-template-chip {
+  opacity: 0.8;
+}
+.executor-pr-chip[data-tone="ok"] {
+  color: var(--state-working, #5f7f52);
+}
+.executor-pr-chip[data-tone="bad"] {
+  color: var(--error-ink, var(--coral));
+}
+/* Compact Agent list (Settings → Appearance): the state, its wait and the
+   time only. */
+:root[data-agent-list="compact"] .executor-state-detail,
+:root[data-agent-list="compact"] .executor-template-chip,
+:root[data-agent-list="compact"] .executor-pr-chip {
+  display: none;
+}
