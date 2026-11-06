@@ -175,7 +175,9 @@ def agent(agent_id):
 def dispatch(lead, t):
     answer = lead.call('task_dispatch', {'requestId': str(uuid.uuid4()), 'taskId': t['id'], 'expectedVersion': t['version'],
                                          'executor': {'templateId': 'worker'}})
-    executor = answer['agentId']
+    # Over MCP a task write answers with its short receipt: the executor is the task's assignee now.
+    REPORT.setdefault('dispatches', []).append(answer)
+    executor = answer.get('agentId') or answer['task']['assignee']['id']
     wait_for(lambda: agent(executor), lambda a: a.get('connectionState') == 'connected' and a.get('status') == 'idle',
              'the executor of ' + t['id'] + ' starts and finishes its dispatch turn', seconds=90)
     return executor
