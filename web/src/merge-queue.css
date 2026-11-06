@@ -1,0 +1,173 @@
+/* The Jobs panel's merge queue (T-65): the repositories' switches and
+   pauses above the entries, as GitHub Actions keeps its watches above runs. */
+.merge-repositories {
+  display: grid;
+  flex: none;
+  gap: 10px;
+  max-height: 40%;
+  overflow: auto;
+}
+.merge-repositories > .inline-error,
+.merge-repository > .inline-error {
+  margin: 0;
+}
+.merge-repository {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--jobs-card);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.merge-repository-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+.merge-repository-heading strong {
+  color: var(--ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.merge-repository a,
+.merge-link-button {
+  color: var(--accent-ink);
+  overflow-wrap: anywhere;
+}
+.merge-switch {
+  color: var(--text-secondary);
+}
+.merge-switch.is-on {
+  color: var(--accent-ink);
+}
+.merge-link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+/* A pause stops every merge of its repository until a person looks: it
+   reads as the inline errors do, and keeps its unpause beside it. */
+.merge-pause {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #ebd8cb;
+  border-radius: 8px;
+  background: #fcf5ee;
+  color: #a37961;
+  line-height: 1.55;
+}
+:root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"])) .merge-pause {
+  border-color: var(--error-line, #6d4738);
+  background: var(--error-wash, #422f29);
+  color: var(--error-ink, #efb49a);
+}
+.merge-pause-title {
+  margin: 0;
+}
+.merge-pause dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+}
+.merge-pause dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.merge-pause .job-footnote {
+  color: inherit;
+}
+.merge-last-pause {
+  overflow-wrap: anywhere;
+}
+/* Core's own words (details, refusals) as they came. */
+.merge-core-text {
+  overflow-wrap: anywhere;
+}
+.merge-refusal {
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+}
+.merge-refusal small {
+  opacity: 0.85;
+}
+.merge-entry-actions {
+  display: grid;
+  flex: none;
+  grid-template-columns: repeat(auto-fit, minmax(14em, 1fr));
+  gap: 10px;
+}
+.merge-action {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: 6px;
+  min-width: 0;
+}
+.merge-action-who,
+.merge-action-done {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.merge-action-done {
+  color: var(--ink);
+}
+.merge-action > button,
+.merge-action-buttons button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.merge-action-form {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+.merge-action-form label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.merge-action-form textarea {
+  width: 100%;
+  min-height: 3.2em;
+  resize: vertical;
+  font: inherit;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.merge-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.merge-runs,
+.merge-history {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.merge-history li {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 10px;
+  overflow-wrap: anywhere;
+}
+.merge-history-at {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}

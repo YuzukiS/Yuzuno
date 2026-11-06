@@ -6,6 +6,7 @@ import {
   ArrowRight,
   BriefcaseBusiness,
   Github,
+  GitMerge,
   GitPullRequest,
   Pause,
   Play,
@@ -31,8 +32,9 @@ import {
 import type { SettingsEditor } from "./settings-catalog";
 import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, TaskSpendCard, type Artifact, type Cost, type Progress } from "./JobRun";
 import { ConversationReviews, openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
+import { MergeQueue, type MergeQueueOpen } from "./MergeQueue";
 import { ProvenanceCard } from "./Provenance";
-import type { Agent } from "./types";
+import type { Agent, Project } from "./types";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import type { HandoffSource } from "./handoff";
 import "./jobs.css";
@@ -321,10 +323,11 @@ const when = (job: Job, t: JobsText) =>
     .filter(Boolean)
     .join(" · ") || undefined;
 type JobScope = { agentId?: string; taskId?: string };
-type JobSource = "local" | "github_actions" | "reviews";
+type JobSource = "local" | "github_actions" | "reviews" | "merge_queue";
 type JobOpen = JobScope &
   Omit<CiOpen, "source"> &
-  ReviewOpen & {
+  ReviewOpen &
+  MergeQueueOpen & {
     source?: JobSource;
     jobId?: string;
     /** Reviews only: this Agent's own reviews, as its conversation's dock lists them (T-25). */
@@ -442,14 +445,19 @@ export function Jobs({
   workspaceId,
   agent,
   agents,
+  projects,
   revision,
+  mergeQueueRevision = "",
   disabled,
   onOpenSettings,
 }: {
   workspaceId: string;
   agent?: Agent | null;
   agents?: Agent[];
+  projects?: Project[];
   revision: string;
+  /** Core said the merge queue changed (T-65). */
+  mergeQueueRevision?: string;
   disabled: boolean;
   /** Opens Settings at an editor: the machine card's Edit in Settings (T-55). */
   onOpenSettings?: (editor: SettingsEditor) => void;
@@ -479,6 +487,7 @@ export function Jobs({
   const [source, setSource] = useState<JobSource>("local");
   const [ciInitial, setCiInitial] = useState<CiOpen>({});
   const [reviewInitial, setReviewInitial] = useState<ReviewOpen>({});
+  const [mergeInitial, setMergeInitial] = useState<MergeQueueOpen>({});
   // Reviews read as the conversation's dock reads them (T-25): those the
   // scope's Agent requested, was sent, or has on its tasks. Other sources
   // keep that Agent's scope.
@@ -641,6 +650,7 @@ export function Jobs({
           ? { reviewId: detail.reviewId, taskId: detail.taskId }
           : {},
       );
+      setMergeInitial(detail.source === "merge_queue" ? { entryId: detail.entryId } : {});
       setSelected(detail.jobId || "");
       setCreating(false);
       setOpen(true);
@@ -1037,6 +1047,20 @@ export function Jobs({
                     openTaskReview({ taskId: review.taskRef, reviewId: review.id });
                   }}
                 />
+              ) : source === "merge_queue" ? (
+                <MergeQueue
+                  key={JSON.stringify([scope, mergeInitial])}
+                  scope={scope}
+                  agents={agents || []}
+                  projects={projects || []}
+                  revision={`${revision}/${mergeQueueRevision}`}
+                  initial={mergeInitial}
+                  onOpenTask={(taskId) => {
+                    // One dialog at a time: Jobs closes, the task opens.
+                    setOpen(false);
+                    window.dispatchEvent(new CustomEvent("yuzuno:open-task-review", { detail: { taskId } }));
+                  }}
+                />
               ) : source === "github_actions" ? (
                 <CiJobs
                   key={JSON.stringify([scope, ciInitial])}
@@ -1229,6 +1253,7 @@ const jobSources: { id: JobSource; Icon: typeof BriefcaseBusiness }[] = [
   { id: "local", Icon: BriefcaseBusiness },
   { id: "github_actions", Icon: Github },
   { id: "reviews", Icon: GitPullRequest },
+  { id: "merge_queue", Icon: GitMerge },
 ];
 
 /**
