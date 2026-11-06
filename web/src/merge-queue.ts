@@ -77,7 +77,6 @@ export interface MergeRecord {
   tree?: string | null;
   gate?: "slot" | "batch" | null;
   head?: string | null;
-  attempts?: number;
   sha?: string | null;
   mergedAt?: string | null;
   post?: { ok?: boolean; commit?: string | null; detail?: string | null; at?: string } | null;

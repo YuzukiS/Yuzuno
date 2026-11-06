@@ -134,7 +134,6 @@ const queueEn = {
   expectedMain: "Main before the merge",
   mergeCommit: "Merge commit",
   mergedAt: "Merged",
-  requests: "Merge requests sent",
   postCheck: "Post-check",
   postOk: "Parents and tree as tested",
   postFailed: (detail: string) => `Failed${detail ? `: ${detail}` : ""}`,
@@ -258,7 +257,6 @@ const queueText = strings<QueueText>(queueEn, {
   expectedMain: "合并前的主分支",
   mergeCommit: "合并提交",
   mergedAt: "合并时间",
-  requests: "已发送的合并请求",
   postCheck: "合并后检查",
   postOk: "父提交和树与测试一致",
   postFailed: (detail) => `未通过${detail ? `：${detail}` : ""}`,
@@ -1196,8 +1194,6 @@ function EntryDetail({
                 <dd>{clock(merge.mergedAt)}</dd>
               </>
             )}
-            <dt>{t.requests}</dt>
-            <dd>{merge.attempts ?? 0}</dd>
             <dt>{t.postCheck}</dt>
             <dd>
               {!merge.post ? (

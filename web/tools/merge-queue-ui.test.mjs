@@ -27,7 +27,7 @@ const doc = await readFile(path.join(root, '../docs/merge-queue.md'), 'utf8');
 const table = doc.slice(doc.indexOf('## States'), doc.indexOf('`merge_retry` checks'));
 const docStates = [...table.matchAll(/^\| `([a-z_]+)` \|/gm)].map(m => m[1]);
 const stoppedRow = table.split('\n').find(line => line.startsWith('| `stopped` |'));
-const docReasons = [...stoppedRow.slice(stoppedRow.indexOf('`reason` is')).matchAll(/`([a-z_]+)`/g)].map(m => m[1]);
+const docReasons = [...stoppedRow.slice(stoppedRow.indexOf('`reason` is one of') + '`reason` is one of'.length).matchAll(/`([a-z_]+)`/g)].map(m => m[1]);
 
 const wait = () => new Promise(r => setTimeout(r, 25));
 async function until(fn, what = 'Expected bounded UI state did not appear') { for (let n = 0; n < 120; n++) { if (fn()) return; await wait(); } assert.fail(what); }
@@ -308,11 +308,11 @@ test('the chosen entry shows its anchor, batch, merge commit, post-check, main C
     const lines = [...p.doc.querySelectorAll('.merge-history li')].map(li => li.children[1].textContent);
     assert.deepEqual(lines, ['Done · Synthetic main CI green', 'Ready · Synthetic checks held', 'Queued · released']);
     assert.equal([...p.doc.querySelectorAll('.job-detail a')].find(a => a.textContent === 'Open PR').href, 'https://github.com/owner/repo/pull/16');
-    const opened = [];
-    p.window.addEventListener('yuzuno:open-task-review', e => opened.push(e.detail));
+    const tasks = [];
+    p.window.addEventListener('yuzuno:open-task-review', e => tasks.push(e.detail));
     button(p.doc.querySelector('.job-detail'), 'Open T-43').click();
     await until(() => !p.doc.querySelector('[role="dialog"]'), 'Jobs did not close for the task');
-    assert.deepEqual(opened, [{ taskId: 'task-e-done' }]);
+    assert.deepEqual(tasks, [{ taskId: 'task-e-done' }]);
   } finally { p.close(); }
 });
 
