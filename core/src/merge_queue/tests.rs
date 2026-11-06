@@ -1010,7 +1010,8 @@ async fn one_merge_at_a_time_per_repository() {
         rusqlite::params![other["id"].as_str(), other["taskId"].as_str(), other.to_string()],
     ).unwrap();
     tick(&lab.ws).await.unwrap();
-    let e = lab.entry().await;
+    // The task's newest entry is #12's now: read #11's by its id.
+    let e = lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":e["id"]})).await.unwrap();
     assert_eq!(e["state"], "ready", "another merge of the repository is in flight: {e}");
     assert!(e["detail"].as_str().unwrap().contains("it merges after #12"), "{}", e["detail"]);
     assert!(writes(lab.dir.path()).is_empty(), "one merge at a time per repository");
