@@ -616,7 +616,8 @@ try {
         const editor = settings.locator("#settings-editor-jobs-budget:not([hidden])");
         for (const group of ["This host's Job budget", "Disk reserve", "GPU 0 · NVIDIA GeForce RTX 5090"])
           await editor.locator(`[aria-label="${group}"]`).waitFor();
-        assert.equal(await page.locator(".jobs-dialog").count(), 0, "Jobs closed as Settings opened");
+        // By role: a closing dialog's fading copy keeps its classes, not its role.
+        assert.equal(await page.getByRole("dialog", { name: "Jobs", exact: true }).count(), 0, "Jobs closed as Settings opened");
         assert.equal(await editor.locator(".jobs-gpu-pause").count(), 0, "the GPU pause stays on the card");
         assert.ok(await noSideways(".modal.settings-modal"));
         await shot(settings, `settings-jobs-budget-${theme}.png`);

@@ -111,7 +111,11 @@ try {
   check('budget search opens the Core host budget editor in Settings, focused, with Jobs at once');
   await closeDialog();
   await page.getByRole('button', { name: 'Jobs', exact: true }).click();
-  const card = page.locator('.jobs-budget');
+  // The open Jobs dialog's card. Closing a dialog leaves a fading copy of it
+  // (DialogExitGhost) for a moment, with no role: reopened at once, the page
+  // has two cards, and only this one is the panel's.
+  const jobsDialog = page.getByRole('dialog', { name: 'Jobs', exact: true });
+  const card = jobsDialog.locator('.jobs-budget');
   await card.waitFor();
   assert.match(await card.locator('.jobs-budget-counts').innerText(), /^0 of 4 active · 0 queued$/, 'the card shows active against Jobs at once');
   assert.equal(await card.locator('input, select, textarea, details, form').count(), 0, 'the Jobs card has no budget editor');
@@ -121,8 +125,11 @@ try {
   assert.equal(await page.locator('.settings-modal').count(), 0, 'an ordinary openJobs request opens no Settings');
   await card.getByRole('button', { name: 'Edit in Settings', exact: true }).click();
   await page.locator('.settings-modal #settings-editor-jobs-budget:not([hidden])').waitFor();
-  await page.waitForFunction(() => document.activeElement?.id === 'settings-editor-jobs-budget');
-  assert.equal(await page.locator('.jobs-dialog').count(), 0, 'Jobs closes as Settings opens');
+  // Settings opens with its dialog here: focus is put on the editor once the
+  // dialog and the closing Jobs dialog have placed theirs (SettingsCenter).
+  const reached = await page.waitForFunction(() => !!document.activeElement?.closest('#settings-editor-jobs-budget'), null, { timeout: 5000 }).then(() => true, () => false);
+  assert.ok(reached, `focus is in the Core host editor (it is on ${await page.evaluate(() => { const el = document.activeElement; return el ? el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') : 'nothing'; })})`);
+  assert.equal(await jobsDialog.count(), 0, 'Jobs closes as Settings opens');
   check('the Jobs card has no editor and ordinary openings open no Settings; its Edit in Settings opens the Core host budget, focused');
   await closeDialog();
   await open(); await search('自动继续');
