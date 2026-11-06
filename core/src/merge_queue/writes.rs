@@ -39,7 +39,7 @@ pub(super) enum Write<'a> {
 
 /// One write to `repo`, refused unless the user's switch for `repository` is
 /// on at this moment. Answers GitHub's status and body; an uncertain outcome
-/// is an error for the caller to reconcile by reading GitHub.
+/// is an error; for the merge it stops the entry with merge_unknown.
 pub(super) async fn write(ws: &Arc<Workspace>, repository: i64, repo: &str, w: Write<'_>) -> Result<(u16, Value)> {
     let on = ws
         .stored(move |s| s.merge_repository(repository))

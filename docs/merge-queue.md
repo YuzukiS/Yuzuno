@@ -99,32 +99,30 @@ removed, and a new one is built.
 
 Once every check holds, the entry merges, one merge at a time per repository:
 
-1. Right before each merge request, the first included, Core reads the PR and
-   main again. The request pins the head but not the base, so this is what
+1. Core sends one merge request per merge. Right before it, Core reads the PR
+   and main again. The request pins the head but not the base, so this is what
    keeps an untested merge off main. If the head moved, or the PR is no longer
    open (merged outside the queue too), the entry stops with `merge_refused`.
    If main moved since the check, nothing is sent and every check runs again on
-   the new main. Otherwise Core journals the request, then sends it. The
-   remaining window is one round trip, which the post-check covers.
-2. If GitHub's answer is uncertain (a timeout, a 5xx, a dropped connection),
-   Core reads the PR before anything else. If it is merged at the head, that is
-   the merge; merged at another head, it was merged outside the queue, and
-   the entry stops with `merge_refused`. If it is still open at the head and
-   main has not moved, Core sends the request once more. Otherwise, or after
-   that second request, or when Core cannot read GitHub eight times in a row
-   after a request, the entry stops with `merge_unknown`: the PR may have
-   merged unchecked, so the repository's queue pauses too, and the mail is
-   urgent. Reads that fail before any request was sent stop the entry with
-   `github_unreachable` instead, with no pause: nothing merged. A request that
-   never reached GitHub (gh could not start, has no login, or could not open a
-   connection) is not an uncertain one either: the entry stays `merging` and
-   tries again shortly; after five such requests in a row it stops with
-   `github_unreachable`, no pause. A timeout or a broken connection after
-   sending stays uncertain. A refusal from
-   GitHub stops it with `merge_refused`, except one from its rate limit (a 429,
-   or a 403 that names the rate limit): that request certainly merged nothing,
-   so the entry stays `merging`, waits for the cooldown and sends it again, and
-   it is not one of the two uncertain requests.
+   the new main. Reads that keep failing here (eight in a row) stop the entry
+   with `github_unreachable`, with no pause: nothing was sent. Otherwise Core
+   journals the request, then sends it. The remaining window is one round
+   trip, which the post-check covers.
+2. A certain answer decides: merged goes on to the post-check, and a refusal
+   stops the entry with `merge_refused`. An uncertain answer (a timeout, a
+   dropped connection after sending, a 5xx, an answer Core cannot read) is
+   never followed by a second request, and Core does not try to work out
+   whether it merged: the entry stops with `merge_unknown`, the repository's
+   queue pauses, and the mail is urgent. A person checks main before
+   unpausing. The same holds when Core finds a journaled request with no
+   recorded answer, for example after it stopped while the request was in
+   flight. Two answers certainly merged nothing, and the entry stays
+   `merging` and sends the request again:
+   - a request that never reached GitHub (gh could not start, has no login,
+     or could not open a connection) is tried again shortly; after five in a
+     row the entry stops with `github_unreachable`, no pause;
+   - a refusal from GitHub's rate limit (a 429, or a 403 that names the rate
+     limit) is sent again after the cooldown.
 3. The post-check: the merge commit's parents are the main before and the
    head, and its tree is the tree CI tested. Otherwise the entry stops with
    `post_check_failed` and the repository's queue pauses: something landed that

@@ -360,9 +360,9 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str)
 pub(super) enum MergeOutcome {
     Merged(String),
     Refused(String),
-    /// No certain answer after the one reconciled retry.
+    /// The one request got no certain answer: it may have merged.
     Unknown(String),
-    /// Main moved before a second request could be sent: check again.
+    /// Main moved since the check, so nothing was sent: check again.
     Moved(String),
     /// Nothing was sent (the switch is off): check again later.
     Held(String),
@@ -374,72 +374,53 @@ pub(super) enum MergeOutcome {
     NotSent(String),
 }
 
-/// Send the merge, at most twice. Right before every request, the first
-/// included, Core reads the PR and main again: the request pins the head but
-/// not the base, so a main that moved since the check would get a merge CI
-/// never tested. Open at the head on the expected main allows the request;
-/// after an uncertain answer, merged at the head is the answer; anything else
-/// is reported, never retried.
+/// Send the merge, once. Right before it, Core reads the PR and main again:
+/// the request pins the head but not the base, so a main that moved since the
+/// check would get a merge CI never tested. Open at the head on the expected
+/// main allows the request. A certain answer is the outcome. An uncertain one
+/// is never sent again or reconciled: the entry stops with merge_unknown and
+/// the repository's queue pauses until a person has looked.
 pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<MergeOutcome> {
     let t = target(entry)?;
     let expected = entry["merge"]["expectedMain"].as_str().context("The merge has no expected main")?.to_owned();
-    let mut sent = entry["merge"]["attempts"].as_i64().unwrap_or(0);
-    let mut last = String::from("no answer");
-    loop {
-        if let Some(found) = reconcile(ws, &t, &expected, sent > 0).await? {
-            return Ok(found);
-        }
-        if sent >= 2 {
-            return Ok(MergeOutcome::Unknown(format!(
-                "{sent} merge requests got no certain answer ({last}), and the PR is still open at the head; nothing more is sent"
-            )));
-        }
-        let (id, attempt, n) = (t.id.clone(), t.attempt, sent + 1);
-        if !ws.stored(move |s| s.merge_put_journal(&id, attempt, n)).await? {
-            bail!("merge_moved_on: the entry is no longer merging");
-        }
-        match writes::write(ws, t.repository, &t.repo, Write::Merge { number: t.number, head: &t.head }).await {
-            Ok((code, body)) => {
-                if let Err(e) = limited(code, &body) {
-                    return Ok(MergeOutcome::Limited(e.to_string()));
-                }
-                return Ok(match checks::merge_answer(code, &body) {
-                    Answer::Merged(sha) => MergeOutcome::Merged(sha),
-                    Answer::Refused(detail) => MergeOutcome::Refused(detail),
-                });
+    if entry["merge"]["attempts"].as_i64().unwrap_or(0) > 0 {
+        // Journaled before an earlier run of Core stopped, with no answer
+        // recorded: it may have been sent.
+        return Ok(MergeOutcome::Unknown("A merge request was journaled and may have been sent, but no answer to it was recorded".into()));
+    }
+    if let Some(found) = reconcile(ws, &t, &expected).await? {
+        return Ok(found);
+    }
+    let (id, attempt) = (t.id.clone(), t.attempt);
+    if !ws.stored(move |s| s.merge_put_journal(&id, attempt)).await? {
+        bail!("merge_moved_on: the entry is no longer merging");
+    }
+    match writes::write(ws, t.repository, &t.repo, Write::Merge { number: t.number, head: &t.head }).await {
+        Ok((code, body)) => {
+            if let Err(e) = limited(code, &body) {
+                return Ok(MergeOutcome::Limited(e.to_string()));
             }
-            Err(e) if e.to_string().starts_with("merge_queue_disabled") => return Ok(MergeOutcome::Held(e.to_string())),
-            Err(e) if e.to_string().starts_with("not_sent") => return Ok(MergeOutcome::NotSent(format!("{e:#}"))),
-            Err(e) => {
-                sent += 1;
-                last = e.to_string();
-            }
+            Ok(match checks::merge_answer(code, &body) {
+                Answer::Merged(sha) => MergeOutcome::Merged(sha),
+                Answer::Refused(detail) => MergeOutcome::Refused(detail),
+            })
         }
+        Err(e) if e.to_string().starts_with("merge_queue_disabled") => Ok(MergeOutcome::Held(e.to_string())),
+        Err(e) if e.to_string().starts_with("not_sent") => Ok(MergeOutcome::NotSent(format!("{e:#}"))),
+        Err(e) => Ok(MergeOutcome::Unknown(format!("The merge request got no certain answer: {e:#}"))),
     }
 }
 
-/// The PR and main as GitHub has them now, before a merge request: None
+/// The PR and main as GitHub has them now, before the merge request: None
 /// means the PR is open at the head on the expected main, so the request may
-/// go. `sent` says an earlier request got no certain answer; before the first
-/// one, a merged PR is someone else's merge.
-async fn reconcile(ws: &Arc<Workspace>, t: &Target, expected: &str, sent: bool) -> Result<Option<MergeOutcome>> {
+/// go. Nothing was sent yet, so a merged PR is someone else's merge.
+async fn reconcile(ws: &Arc<Workspace>, t: &Target, expected: &str) -> Result<Option<MergeOutcome>> {
     let pr = read(ws, format!("repos/{}/pulls/{}", t.repo, t.number)).await?;
-    if pr["merged"] == true && !sent {
+    if pr["merged"] == true {
         return Ok(Some(MergeOutcome::Refused(format!(
             "The PR was merged outside the queue, as {}",
             pr["merge_commit_sha"].as_str().unwrap_or("?")
         ))));
-    }
-    if pr["merged"] == true {
-        return Ok(Some(match pr["merge_commit_sha"].as_str() {
-            Some(sha) if pr["head"]["sha"] == t.head.as_str() => MergeOutcome::Merged(sha.to_owned()),
-            // Core's request carries the released head: a merge at another
-            // head is not Core's.
-            Some(_) if pr["head"]["sha"] != t.head.as_str() => MergeOutcome::Refused(format!(
-                "The PR was merged outside the queue at head {}, not the released head", short(pr["head"]["sha"].as_str().unwrap_or("?"))
-            )),
-            _ => MergeOutcome::Unknown(format!("The PR was merged, at head {}, but GitHub names no merge commit", pr["head"]["sha"])),
-        }));
     }
     if pr["state"] != "open" {
         return Ok(Some(MergeOutcome::Refused("The PR was closed without a merge".into())));
@@ -449,8 +430,7 @@ async fn reconcile(ws: &Arc<Workspace>, t: &Target, expected: &str, sent: bool) 
     }
     let main = read(ws, format!("repos/{}/git/ref/heads/{}", t.repo, t.base)).await?["object"]["sha"].as_str().unwrap_or("").to_owned();
     if main != expected {
-        let when = if sent { "before the merge was certain" } else { "since the check, so no merge was sent" };
-        return Ok(Some(MergeOutcome::Moved(format!("Main moved to {} {when}; every check runs again", short(&main)))));
+        return Ok(Some(MergeOutcome::Moved(format!("Main moved to {} since the check, so no merge was sent; every check runs again", short(&main)))));
     }
     Ok(None)
 }

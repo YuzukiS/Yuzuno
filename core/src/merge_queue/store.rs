@@ -812,18 +812,18 @@ impl Store {
         Ok(Recorded { announced, merge: merge_now })
     }
 
-    /// Journal the `n`th merge request of `id` before it is sent, so a
-    /// restart never sends one blind. False when the entry is not merging.
-    pub(super) fn merge_put_journal(&self, id: &str, attempt: i64, n: i64) -> Result<bool> {
+    /// Journal the merge request of `id` before it is sent, so a restart
+    /// never sends a second one. False when the entry is not merging.
+    pub(super) fn merge_put_journal(&self, id: &str, attempt: i64) -> Result<bool> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let mut e = entry(&tx, id)?;
         if e["attempt"].as_i64() != Some(attempt) || e["state"] != "merging" {
             return Ok(false);
         }
-        e["merge"]["attempts"] = json!(n);
+        e["merge"]["attempts"] = json!(1);
         if let Some(puts) = e["merge"]["puts"].as_array_mut() {
-            puts.push(json!({"n":n,"at":now()}));
+            puts.push(json!({"n":puts.len() + 1,"at":now()}));
         }
         e["nextCheck"] = json!(epoch() + 120);
         save(&tx, &e)?;
@@ -857,10 +857,9 @@ impl Store {
             }
             Ok(MergeOutcome::Refused(detail)) => stop(&mut e, "merge_refused", detail),
             Ok(MergeOutcome::Limited(detail)) => {
-                // A certain non-merge: the request is not one of the two
-                // uncertain ones, and the entry stays merging with its journal.
-                let sent = e["merge"]["attempts"].as_i64().unwrap_or(1);
-                e["merge"]["attempts"] = json!((sent - 1).max(0));
+                // A certain non-merge: the entry stays merging, and the
+                // request is sent again after the cooldown.
+                e["merge"]["attempts"] = json!(0);
                 e["merge"]["notSent"] = json!(0);
                 if let Some(put) = e["merge"]["puts"].as_array_mut().and_then(|p| p.last_mut()) {
                     put["limited"] = json!(detail);
@@ -869,20 +868,15 @@ impl Store {
                 e["nextCheck"] = json!((now_epoch + 60).max(cooldown + 5));
             }
             Ok(MergeOutcome::NotSent(detail)) => {
-                // The request never reached GitHub: it is not one of the two
-                // uncertain ones, and the entry stays merging with its journal
-                // (an earlier uncertain request, if any, still counts).
-                let sent = (e["merge"]["attempts"].as_i64().unwrap_or(1) - 1).max(0);
-                e["merge"]["attempts"] = json!(sent);
+                // The request never reached GitHub, so nothing merged: the
+                // entry stays merging and tries again shortly.
+                e["merge"]["attempts"] = json!(0);
                 if let Some(put) = e["merge"]["puts"].as_array_mut().and_then(|p| p.last_mut()) {
                     put["notSent"] = json!(detail);
                 }
                 let n = e["merge"]["notSent"].as_i64().unwrap_or(0) + 1;
                 e["merge"]["notSent"] = json!(n);
-                if n >= NOT_SENT_LIMIT && sent > 0 {
-                    urgent = true;
-                    unknown(self, &tx, &mut e, format!("{n} merge requests in a row could not be sent after an uncertain one; the last: {detail}"))?;
-                } else if n >= NOT_SENT_LIMIT {
+                if n >= NOT_SENT_LIMIT {
                     stop(&mut e, "github_unreachable", format!("{n} merge requests could not be sent; nothing merged. The last: {detail}"));
                 } else {
                     e["detail"] = json!(format!("The merge request could not be sent ({detail}), so nothing merged; Core tries again shortly."));
@@ -894,6 +888,8 @@ impl Store {
                 unknown(self, &tx, &mut e, detail)?;
             }
             Ok(MergeOutcome::Moved(detail) | MergeOutcome::Held(detail)) => {
+                // Nothing was sent: the merge is set aside and every check
+                // runs again.
                 let old = e["merge"].take();
                 e["retiredMerges"] = json!([e["retiredMerges"].as_array().cloned().unwrap_or_default(), vec![old]].concat());
                 e["state"] = json!("waiting");
@@ -904,14 +900,15 @@ impl Store {
             Err(error) => {
                 let failures = e["readFailures"].as_i64().unwrap_or(0) + 1;
                 e["readFailures"] = json!(failures);
-                if failures >= READ_FAILURES && e["merge"]["attempts"].as_i64().unwrap_or(0) == 0 {
-                    // No request was ever sent: nothing merged.
-                    stop(&mut e, "github_unreachable", format!("{failures} reads failed before any merge request was sent; nothing merged. The last: {error}"));
-                } else if failures >= READ_FAILURES {
+                if e["merge"]["attempts"].as_i64().unwrap_or(0) > 0 {
+                    // A journaled request may have been sent: never again.
                     urgent = true;
-                    unknown(self, &tx, &mut e, format!("{failures} reads after a merge request failed; the last: {error}. Whether the PR merged is not known"))?;
+                    unknown(self, &tx, &mut e, format!("The merge request may have been sent, and Core then failed: {error}"))?;
+                } else if failures >= READ_FAILURES {
+                    // No request was sent: nothing merged.
+                    stop(&mut e, "github_unreachable", format!("{failures} reads failed before the merge request was sent; nothing merged. The last: {error}"));
                 } else {
-                    e["detail"] = json!(format!("Reading GitHub after the merge request failed ({error}); checking again"));
+                    e["detail"] = json!(format!("Reading GitHub before the merge request failed ({error}); checking again"));
                     e["nextCheck"] = json!(now_epoch + (60i64 << (failures - 1).min(3)).min(600));
                 }
             }
@@ -1226,9 +1223,8 @@ fn released_for_merge(e: &Value) -> Result<()> {
 /// looked, so nothing merges on top of it.
 fn unknown(store: &Store, db: &Connection, e: &mut Value, detail: String) -> Result<()> {
     let main = e["merge"]["expectedMain"].as_str().unwrap_or("").to_owned();
-    let sent = e["merge"]["attempts"].as_i64().unwrap_or(0);
     let why = format!(
-        "#{} may have merged without a check: {sent} merge request(s) got no certain answer ({detail}). A lead or the user checks whether it landed before unpausing",
+        "#{} may have merged without a check: its merge request got no certain answer ({detail}). A lead or the user checks whether it landed before unpausing",
         e["number"]
     );
     pause(store, db, e, "merge_unknown", &main, &Value::Null, &why)?;
