@@ -92,7 +92,7 @@ async fn a_save_keeps_what_a_later_core_stored() {
     let later = json!({"id":"z","label":"A later shape","laterHarness":{"kind":"remote"}});
     // A later Core's templates that read, but hold what this Core refuses (R2 70093e91).
     let refused = [json!({"id":"g","label":"Another harness","harness":"gemini"}),
-        json!({"id":"m","label":"On another machine","harness":"codex","machineId":"lab-mac"})];
+        json!({"id":"m","label":"More at once","harness":"codex","maxConcurrent":65})];
     ws.store.db.write().unwrap().execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)", params![KEY,
         json!({"version":1,"laterList":"kept","templates":[{"id":"a","label":"A","harness":"codex","laterField":"kept"}, later.clone(),
             refused[0].clone(), refused[1].clone()]}).to_string()]).unwrap();
