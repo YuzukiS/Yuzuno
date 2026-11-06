@@ -75,6 +75,8 @@ const budgetView = () => ({
 const answers = {
   "/api/workspace": () => ({ workspace: { id: "ws-jobs-settings" }, agents: [agent], projects: [], runtime: { connected: true }, defaultCwd: "/fixture/project" }),
   "/api/agents/a": () => ({ agent, pending: [], messageReceipts: [], artifacts: [], turns: [] }),
+  // The open conversation's Codex MCP services, as Codex last reported them: none.
+  "/api/agents/a/codex/mcp": () => ({ state: "observed", reason: "", generation: 1, servers: [], more: 0 }),
   "/api/home": () => emptyHome,
   "/api/updates": () => unmanagedUpdates,
   "/api/machines": () => ({ machines: state.machines }),
@@ -148,6 +150,20 @@ const fits = (box) => box.evaluate((el) => {
     .map((c) => c.getAttribute("name") || c.textContent.trim() || c.tagName);
   return { scrolls: el.scrollWidth > el.clientWidth + 1, wider };
 });
+/** The focused element, named for a failure message. */
+const focused = (page) => page.evaluate(() => {
+  const el = document.activeElement;
+  if (!el) return "nothing";
+  return `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}${el.getAttribute("aria-label") ? ` "${el.getAttribute("aria-label")}"` : ""}`;
+});
+/** Waits until focus is on the Core host editor or in it, as Settings puts it
+ * when it opens there; says where focus is if it never gets there. */
+async function focusInHostEditor(page) {
+  const reached = await page
+    .waitForFunction(() => !!document.activeElement?.closest("#settings-editor-jobs-budget"), null, { timeout: 5000 })
+    .then(() => true, () => false);
+  assert.ok(reached, `focus is in the Core host editor (it is on ${await focused(page)})`);
+}
 const dialogFits = (page) => page.locator(".modal.settings-modal").evaluate((el) => {
   const r = el.getBoundingClientRect();
   return r.left >= 0 && r.right <= innerWidth + 1 && el.scrollWidth <= el.clientWidth + 1;
@@ -171,7 +187,8 @@ try {
       const before = state.maxActive ?? 4;
       // ---- The Jobs card: read only, with the way to Settings.
       await page.locator("[aria-label='Jobs']").first().click({ timeout: 10_000 });
-      const card = page.locator(".jobs-budget");
+      // The open Jobs dialog's card: a closing dialog's fading copy has no role.
+      const card = page.getByRole("dialog", { name: "Jobs", exact: true }).locator(".jobs-budget");
       await card.locator(".jobs-gpu").waitFor({ timeout: 10_000 });
       assert.equal(await card.locator(".jobs-budget-counts").innerText(), `3 of ${before} active · 1 queued`, "active against Jobs at once");
       assert.equal(await card.locator("input, select, textarea, details, form").count(), 0, "the card has no editor");
@@ -182,8 +199,8 @@ try {
       const settings = page.locator(".modal.settings-modal");
       const host = settings.locator("#settings-editor-jobs-budget:not([hidden])");
       await host.waitFor({ timeout: 10_000 });
-      await page.waitForFunction(() => document.activeElement?.id === "settings-editor-jobs-budget");
-      assert.equal(await page.locator(".jobs-dialog").count(), 0, "Jobs closed as Settings opened");
+      await focusInHostEditor(page);
+      assert.equal(await page.getByRole("dialog", { name: "Jobs", exact: true }).count(), 0, "Jobs closed as Settings opened");
       if (width > 720) assert.equal(await settings.getByRole("tab", { name: "Jobs & resources", exact: true }).getAttribute("aria-selected"), "true");
       else assert.equal(await settings.getByRole("combobox", { name: "Settings category", exact: true }).inputValue(), "jobs");
       check(`${tag}: the Jobs card only shows, and its Edit in Settings opens the Core host budget, focused`);

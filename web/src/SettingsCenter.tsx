@@ -136,9 +136,19 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   }, [openAt?.nonce]);
   useEffect(() => {
     if (!focusEditor || !editor) return;
-    const target = document.getElementById(`settings-editor-${editor}`);
+    const id = `settings-editor-${editor}`;
+    const target = document.getElementById(id);
     target?.focus();
     target?.scrollIntoView?.({ block: "start" });
+    // Opened together with its dialog (openAt, T-55: the Jobs card's Edit in
+    // Settings), the dialog's own first focus and the focus a dialog that
+    // just closed gives back can both come after this; they have by the next
+    // frame, and focus goes back to the editor unless it is already in it.
+    const frame = requestAnimationFrame(() => {
+      const again = document.getElementById(id);
+      if (again && !again.contains(document.activeElement)) again.focus();
+    });
+    return () => cancelAnimationFrame(frame);
   }, [focusEditor, editor]);
   // This shell and its directory are in the language shown; an editor is
   // only when this version translates it (translatedEditors).
