@@ -20,12 +20,12 @@ assert.ok(entry, "index.html must name the current JavaScript bundle");
 const { uiTestBundle } = await import("./ui-test-bundle.mjs");
 const bundle = await uiTestBundle(new URL(entry, distUrl));
 const pause = (ms = 25) => new Promise((done) => setTimeout(done, ms));
-async function waitFor(check, label, timeout = 5_000) {
+async function waitFor(check, label, timeout = 5_000, why = () => "") {
   const deadline = performance.now() + timeout;
   for (;;) {
     const value = check();
     if (value) return value;
-    if (performance.now() > deadline) assert.fail(`${label} (not within ${timeout} ms)`);
+    if (performance.now() > deadline) assert.fail(`${label} (not within ${timeout} ms) ${why()}`.trim());
     await pause(5);
   }
 }
@@ -43,7 +43,7 @@ const turn = (status) => ({
 });
 
 function mount(harness) {
-  const state = { agent: { ...afterRestart }, turn: "inProgress", reads: 0 };
+  const state = { agent: { ...afterRestart }, turn: "inProgress", reads: 0, workspaceReads: 0, calls: [] };
   const agent = () => ({
     ...base, id: "a", name: "Dev 9", harness, ...state.agent,
     ...(harness === "claude" ? { claudeSessionId: "session-a" } : { threadId: "019a1234-5678-4321-aaaa-123456789abc" }),
@@ -77,10 +77,14 @@ function mount(harness) {
     const text = JSON.stringify(body);
     return { ok: true, status: 200, json: async () => JSON.parse(text), text: async () => text };
   };
-  window.fetch = async (url) => {
-    if (url.endsWith("/api/workspace"))
+  window.fetch = async (url, init = {}) => {
+    state.calls.push(`${init.method ?? "GET"} ${url}`);
+    if (url.endsWith("/api/workspace")) {
+      state.workspaceReads++;
       return respond({ workspace: { id: "ws-1" }, projects: [], agents: [agent()], runtime: { connected: true }, defaultCwd: "/work" });
-    if (/\/api\/agents\/a$/.test(url)) {
+    }
+    // The Agent's record, whole or a window of it (`?…`), as Core answers both.
+    if (/\/api\/agents\/a(\?.*)?$/.test(url)) {
       state.reads++;
       return respond({ agent: agent(), pending: [], artifacts: [], messageReceipts: [], turns: [turn(state.turn)] });
     }
@@ -93,18 +97,30 @@ function mount(harness) {
   window.eval(bundle);
   const stream = () => streams.at(-1);
   const notices = () => window.document.querySelectorAll(".recovery-notice:not(.quota-resume-notice)").length;
-  /** Core says to read everything again (a reconnect, a reset); resolves once the Agent was read again and drawn. */
+  const say = (event) => stream().onmessage?.({ data: JSON.stringify(event), lastEventId: "" });
+  const why = () => state.calls.slice(-12).join("; ");
+  /** Core says to read everything again (a reconnect, a reset); resolves once the workspace was read again and drawn. */
   const reset = async () => {
-    const before = state.reads;
-    stream().onmessage?.({ data: JSON.stringify({ type: "reset", reason: "open" }), lastEventId: "" });
-    await waitFor(() => state.reads > before, "the Agent is read again after a reset");
-    await pause(60);
+    const before = state.workspaceReads;
+    say({ type: "reset", reason: "open" });
+    await waitFor(() => state.workspaceReads > before, "the workspace is read again after a reset", 5_000, why);
+    await pause(150);
   };
-  return { window, state, stream, streams, notices, reset, errors, close: () => window.close() };
+  /** Core says the Agent changed (its connection or state); resolves once it was read again and drawn. */
+  const changed = async () => {
+    const before = state.reads;
+    say({ type: "agent.changed", agentId: "a" });
+    await waitFor(() => state.reads > before, "the Agent is read again after it changed", 5_000, why);
+    await pause(150);
+  };
+  return { window, state, stream, streams, notices, reset, changed, errors, close: () => window.close() };
 }
 
+// A local Claude Agent's notice shares its place with the quota notice (QuotaResume.tsx), which a Codex Agent's
+// does not: Codex is the control, through the reads and the stream's drops.
 for (const harness of ["claude", "codex"]) {
-  test(`a ${harness} Agent's recovery notice shows once through any number of reads, reconnects and flips (YN-1)`, async () => {
+  const flips = harness === "claude";
+  test(`a ${harness} Agent's recovery notice shows once through any number of reads, reconnects${flips ? " and flips" : ""} (YN-1)`, async () => {
     const page = mount(harness);
     try {
       await waitFor(() => page.stream(), "the page opens Core's event stream");
@@ -128,22 +144,24 @@ for (const harness of ["claude", "codex"]) {
         await page.reset();
         assert.equal(page.notices(), 1, `one recovery notice after the stream came back ${drop} time(s)`);
       }
+      if (!flips) return;
       // The Agent's state flips: connected (no notice), its connection ended again (the notice), offline.
       for (let flip = 1; flip <= 3; flip++) {
         Object.assign(page.state.agent, connected);
-        await page.reset();
+        await page.changed();
         assert.equal(page.notices(), 0, `no recovery notice while connected (flip ${flip})`);
         Object.assign(page.state.agent, afterRestart);
-        await page.reset();
+        await page.changed();
         await page.reset();
         assert.equal(page.notices(), 1, `one recovery notice when its connection ended again (flip ${flip})`);
       }
       page.state.turn = "completed";
+      await page.changed();
       await page.reset();
       assert.equal(page.notices(), 1, "one notice, now saying the session is offline");
       assert.match(page.window.document.querySelector(".recovery-notice").textContent, /This agent’s session isn’t connected/);
       Object.assign(page.state.agent, connected);
-      await page.reset();
+      await page.changed();
       assert.equal(page.notices(), 0, "none once connected");
       assert.deepEqual(page.errors, []);
     } finally {
