@@ -508,21 +508,29 @@ export function App() {
   // view it renders changed nothing a reader could see — while the index
   // beside it still reported itself open. On a touched screen that is the
   // whole way in to the work list and the Turn index, since the docks there
-  // take no presses, so it was a dead path (#459 R1, P2). Closing a view
-  // leaves the rail as the reader had it: they may have collapsed it on
-  // purpose, and this is not the place to decide otherwise.
+  // take no presses, so it was a dead path (#459 R1, P2).
+  //
+  // Each press answers what is *on screen*, not what was last asked for.
+  // Reading the view's own state instead left a second dead press: with the
+  // work view open and the rail then collapsed from the toolbar, the state
+  // still said open, so a press turned it off behind a hidden rail and a
+  // second press was needed to see anything (#459 R2, P3-1). Closing a view
+  // that is on screen leaves the rail as it is: the reader asked for the
+  // view to go, not for the column to.
   const openWorkView = useCallback(() => {
     if (phone) return setPhoneDock((open) => (open === "work" ? null : "work"));
+    if (railWork && railOpen) return setRailWork(false);
     setRailIndex(false);
-    if (!railWork) setRailOpen(true);
-    setRailWork((open) => !open);
-  }, [phone, railWork]);
+    setRailWork(true);
+    setRailOpen(true);
+  }, [phone, railWork, railOpen]);
   const openIndexView = useCallback(() => {
     if (phone) return setPhoneDock((open) => (open === "turns" ? null : "turns"));
+    if (railIndex && railOpen) return setRailIndex(false);
     setRailWork(false);
-    if (!railIndex) setRailOpen(true);
-    setRailIndex((open) => !open);
-  }, [phone, railIndex]);
+    setRailIndex(true);
+    setRailOpen(true);
+  }, [phone, railIndex, railOpen]);
   // Touch rows wherever a finger is the pointer, not only where the phone
   // layout applies: a folding phone opened is wide and still all touch (T-15).
   const touchInput = useTouchInput();
@@ -2561,7 +2569,19 @@ export function App() {
   useLayoutEffect(() => {
     const element = nameRef.current;
     if (!element || nameOpen) return;
-    const measure = () => setNameCut(element.scrollWidth > element.clientWidth + 1);
+    const measure = () => {
+      // Whatever is doing the clipping. Once the name is cut the h1 holds a
+      // `.conversation-name` button that clips its own overflow, so the h1
+      // stops overflowing and measuring the h1 answered "it fits" — which
+      // rendered plain text, which overflowed, which cut it again. Each
+      // frame and each ResizeObserver tick flipped it, and whichever
+      // happened to be last decided whether a cut name had anything to
+      // press at all: after closing an expanded name, the third measurement
+      // left it truncated and unpressable, the one case this exists for
+      // (#459 R2, P2).
+      const box = element.querySelector<HTMLElement>(".conversation-name") ?? element;
+      setNameCut(box.scrollWidth > box.clientWidth + 1);
+    };
     measure();
     // Somewhere without one, the first measurement is the only one, as the
     // conversation's own layout does (ConversationWindow, useAutoRead).

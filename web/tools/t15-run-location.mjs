@@ -87,7 +87,13 @@ await page.waitForTimeout(350);
 const byMouse = await where();
 console.log("mouse   ", JSON.stringify(byMouse));
 check(byMouse.shown, `a click shows where it runs (${byMouse.text ?? "nothing"})`);
-check(byMouse.text?.includes("Core host"), "and names the machine as the badge did");
+// The words this Core's own host is named by, in the language being read.
+// This check asked for the English "Core host" in both, which is how a
+// hard-coded fallback inside a localized string got past it (#459 R2, P3-2).
+const HOST = LANG === "zh-Hans" ? "Core 主机" : "Core host";
+check(byMouse.text?.includes(HOST), `and names the machine as the badge did (${HOST})`);
+check(LANG !== "zh-Hans" || !byMouse.text?.includes("Core host"),
+  `and names it in the language being read, with no English left in it (${byMouse.text})`);
 check(byMouse.tag !== "button" && byMouse.describes, "as words the menu is described by, not a label on a button");
 // It stays until it is closed.
 await page.waitForTimeout(1200);

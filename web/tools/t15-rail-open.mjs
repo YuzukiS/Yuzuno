@@ -58,6 +58,13 @@ const detail = {
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png",
   ".svg": "image/svg+xml", ".woff2": "font/woff2", ".webmanifest": "application/manifest+json" };
 
+// The toolbar's rail toggle, by the name it carries rather than by its place
+// in the row: a button added before it would otherwise send these presses
+// somewhere else and fail further down, where the cause is not obvious.
+const RAIL_TOGGLE = lang === "zh-Hans"
+  ? ["隐藏 Agent 侧栏", "显示 Agent 侧栏"]
+  : ["Hide agent sidebar", "Show agent sidebar"];
+
 const browser = await launchBrowser();
 const errors = [];
 // Wide enough to keep the side-by-side layout, and worked by a finger: the
@@ -137,7 +144,11 @@ for (const [what, t] of [["the work entry", before.workTarget], ["the reading in
   check(!!t && Math.min(t.w, t.h) >= 40 && t.own, `${what} is a finger's worth and takes its own press (${t ? `${t.w}x${t.h}, own ${t.own}` : "missing"})`);
 
 // Put the rail away, the way a reader does: the toolbar's own toggle.
-await page.locator(".toolbar .icon-button").first().click();
+const toggle = page.locator(".toolbar .icon-button").first();
+const toggleName = await toggle.getAttribute("aria-label");
+check(RAIL_TOGGLE.includes(toggleName || ""),
+  `the toolbar button these presses use is the rail's own ("${toggleName}")`);
+await toggle.click();
 await page.waitForTimeout(400);
 const away = await state();
 console.log(`\n--- the rail put away from the toolbar ---\n  ${JSON.stringify(away)}`);
@@ -180,13 +191,40 @@ check(shut.indexSays !== "true", `and the index no longer says it is open (${shu
 // put the rail away while a view is open and nothing may still claim it.
 await page.locator(".conversation-index-entry").click();
 await page.waitForTimeout(400);
-await page.locator(".toolbar .icon-button").first().click();
+await toggle.click();
 await page.waitForTimeout(400);
 const hiddenAgain = await state();
 console.log(`\n--- the rail put away while the index was open ---\n  ${JSON.stringify(hiddenAgain)}`);
 check(!hiddenAgain.railDrawn, `the rail is away again (drawn ${hiddenAgain.railDrawn})`);
 check(hiddenAgain.indexSays !== "true",
   `and the index does not say it is open while it cannot be seen (${hiddenAgain.indexSays})`);
+
+// And the press has to answer what is on screen, not what was last asked
+// for. A view left open behind a collapsed rail still said open, so the next
+// press turned it off where nothing could be seen and a second was needed
+// (#459 R2, P3-1). One press, from there.
+for (const [what, entry, view] of [
+  ["the work view", ".work-activity-entry", "workView"],
+  ["the reading index", ".conversation-index-entry", "indexView"],
+]) {
+  await page.locator(entry).click();
+  await page.waitForTimeout(400);
+  const opened = await state();
+  check(opened[view] && opened.railDrawn, `${what} opens with the rail there`);
+  await toggle.click();
+  await page.waitForTimeout(400);
+  const put = await state();
+  check(!put.railDrawn, `${what}: the rail is put away over it (drawn ${put.railDrawn})`);
+  await page.locator(entry).click();
+  await page.waitForTimeout(500);
+  const back = await state();
+  console.log(`\n--- one press on ${what} with the rail away over it ---\n  ${JSON.stringify(back)}`);
+  check(back.railDrawn && back[view],
+    `${what} comes back in one press, not two (drawn ${back.railDrawn}, view ${back[view]})`);
+  // Leave it closed for the next pass.
+  await page.locator(entry).click();
+  await page.waitForTimeout(400);
+}
 
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ""}`);
 await context.close();

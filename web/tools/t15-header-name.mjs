@@ -34,7 +34,12 @@ const LANG = process.env.T15_LANG || "en";
 await page.addInitScript((lang) => {
   window.EventSource = class { close() {} };
   localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme: "light", fontSize: 16, palette: "garden" }));
-  localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
+  // Per Workspace since T-195: the unscoped `yuzuno.selected` is written by
+  // the other fixtures here and read by nothing, which passes only because
+  // the agent they want is the first in the list. This one needs a different
+  // agent, so it uses the key the app actually reads (App.tsx
+  // `selectedStorageKey`).
+  localStorage.setItem("yuzuno.selected.ws", JSON.stringify("along"));
   if (lang !== "en") localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang }));
 }, LANG);
 const summary = { text: "正在量测中屏工作台两侧轴占用的宽度与高度，并记录每个状态下的实际像素", kind: "progress", source: "agent" };
@@ -43,13 +48,23 @@ const summary = { text: "正在量测中屏工作台两侧轴占用的宽度与�
 // percentage.
 const NAMES = [process.env.T15_NAME || "Dev 8 · Mac / iOS", "Dev 3 · public", "Dev 5 · public", "Dev 2 · public",
   "Dev 9 CI", "Dev Lead", "Dev 7", "elasticLM"];
-const agents = NAMES.map((name, i) => ({ ...agent, id: i === 0 ? "a" : `a${i}`, name,
-  status: ["idle", "working", "offline"][i % 3], ...(i ? { workSummary: summary } : {}) }));
+// One no header here can fit, which is what this check is for, and the short
+// one above it for the other half: a name that fits must get no button.
+const LONG = "Dev 8 · Mac / iOS · 折叠屏工作台与阅读空间的自适应布局量测";
+const agents = [
+  ...NAMES.map((name, i) => ({ ...agent, id: i === 0 ? "a" : `a${i}`, name,
+    status: ["idle", "working", "offline"][i % 3], ...(i ? { workSummary: summary } : {}) })),
+  { ...agent, id: "along", name: LONG, status: "idle" },
+];
+const byId = Object.fromEntries(agents.map((each) => [each.id, each]));
 await page.route("**/*", async (r) => {
   const p = new URL(r.request().url()).pathname;
   if (r.request().method() !== "GET") return r.fulfill({ json: { ok: true } });
   if (p === "/api/workspace") return r.fulfill({ json: { workspace: { id: "ws" }, projects: [], projectUsage: {}, agents, runtime: { connected: true }, defaultCwd: "/w" } });
-  if (/^\/api\/agents\/a\d*$/.test(p)) return r.fulfill({ json: { agent, pending: [], messageReceipts: [], artifacts: [], turns } });
+  if (/^\/api\/agents\/[a-z0-9]+$/.test(p)) {
+    const asked = byId[p.slice("/api/agents/".length)];
+    if (asked) return r.fulfill({ json: { agent: asked, pending: [], messageReceipts: [], artifacts: [], turns } });
+  }
   if (p === "/api/updates") return r.fulfill({ json: unmanagedUpdates });
   if (p === "/api/jobs") return r.fulfill({ json: noJobs });
   if (p === "/api/jobs/live") return r.fulfill({ json: noLiveJobs });
@@ -83,17 +98,29 @@ const read = () => page.evaluate(() => {
 let failed = 0;
 const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if (!ok) failed++; };
 const SIZES = [[951, 669, "220px rail beside the conversation"], [400, 844, "phone"], [1400, 900, "rail expanded"]];
+// Part of the long name, for finding its row and for knowing which
+// conversation is open. CSS truncation does not change the text in the DOM.
+const MARK = "折叠屏";
+/** The long-named conversation open, whatever the viewport just did. */
+const openLong = async () => {
+  const heading = page.locator(".conversation-heading h1");
+  const showing = async () =>
+    (await heading.isVisible().catch(() => false)) &&
+    ((await heading.textContent().catch(() => "")) || "").includes(MARK);
+  if (await showing()) return;
+  // A phone shows one thing at a time, and the list covers the conversation.
+  const row = page.locator(".agent-row .agent-select").filter({ hasText: MARK }).first();
+  if (await row.count()) await row.click();
+  await heading.waitFor({ state: "visible", timeout: 10_000 });
+  await page.waitForTimeout(500);
+};
 for (const [w, h, what] of SIZES) {
   await page.setViewportSize({ width: w, height: h });
   await page.waitForTimeout(500);
-  // A phone shows one thing at a time: open the conversation to see its head.
+  await openLong();
   const heading = page.locator(".conversation-heading h1");
-  if (!(await heading.isVisible().catch(() => false))) {
-    await page.locator(".agent-row .agent-select").first().click();
-    await heading.waitFor({ state: "visible", timeout: 10_000 });
-    await page.waitForTimeout(500);
-  }
   const shut = await read();
+  check(shut.text?.includes(MARK), `${what}: the head is showing the name that does not fit`);
   let open = null;
   if (shut.pressable) {
     await page.locator(".conversation-heading h1 .conversation-name").click();
@@ -101,6 +128,7 @@ for (const [w, h, what] of SIZES) {
     open = await read();
   }
   console.log(`\n${w}x${h} (${what})`);
+  console.log(`   name: ${JSON.stringify(shut.text)}`);
   console.log(`   closed: text ${shut.textWidth}px in ${shut.shown}px, whole=${shut.whole}, pressable=${shut.pressable}`);
   if (open) console.log(`   opened: ${open.height}px tall, whole=${open.whole}, expanded=${open.expanded}`);
   check(shut.whole || shut.pressable, `${what}: a name the header cannot fit can be pressed`);
@@ -110,8 +138,53 @@ for (const [w, h, what] of SIZES) {
     await page.waitForTimeout(250);
     const again = await read();
     check(!again.expanded, `${what}: pressing again puts it back`);
+    // And it is still there to press. Closing re-runs the measure, which
+    // used to read the h1 — an h1 that stops overflowing the moment the
+    // button exists — so the answer flipped with every frame and every
+    // ResizeObserver tick, and the third measurement after a close left a
+    // cut name with nothing on it (#459 R2, P2). Two frames and a settle.
+    await page.evaluate(() => new Promise((done) =>
+      requestAnimationFrame(() => requestAnimationFrame(done))));
+    await page.waitForTimeout(450);
+    const settled = await read();
+    console.log(`   closed again: whole=${settled.whole}, pressable=${settled.pressable}`);
+    check(settled.pressable,
+      `${what}: and after closing it can still be pressed, two frames and a tick on`);
+    check(!settled.whole,
+      `${what}: with the name still cut, which is why it can (${settled.textWidth}px in ${settled.shown}px)`);
+    // A resize that leaves it just as long: the observer ticks, the answer
+    // must not move.
+    await page.setViewportSize({ width: w - 40, height: h });
+    await page.waitForTimeout(500);
+    await openLong();
+    const resized = await read();
+    console.log(`   after a resize: whole=${resized.whole}, pressable=${resized.pressable}`);
+    check(resized.pressable || resized.whole,
+      `${what}: a resize that keeps it too long keeps the button (${resized.shown}px)`);
+    if (!resized.whole) check(resized.pressable, `${what}: and it is the button, not plain text`);
+    await page.setViewportSize({ width: w, height: h });
+    await page.waitForTimeout(300);
   }
 }
+
+// The other half: a name the header can fit gets no button at all. Chosen by
+// pressing its row, not by storage — the init script above runs again on
+// every load, so a reload would only put the long name back.
+await page.setViewportSize({ width: 1400, height: 900 });
+await page.waitForTimeout(400);
+const shortRow = page
+  .locator(".agent-row .agent-select")
+  .filter({ hasText: "Dev 8 · Mac / iOS" })
+  .filter({ hasNotText: MARK })
+  .first();
+await shortRow.click();
+await page.locator(".conversation-heading h1").waitFor({ state: "visible", timeout: 10_000 });
+await page.waitForTimeout(700);
+const fits = await read();
+check(!fits.text?.includes(MARK), `the short-named conversation is the one open (${JSON.stringify(fits.text)})`);
+console.log(`\na name that fits: ${JSON.stringify(fits.text)} — text ${fits.textWidth}px in ${fits.shown}px, whole=${fits.whole}, pressable=${fits.pressable}`);
+check(fits.whole, `a name the header can fit is whole (${fits.textWidth}px in ${fits.shown}px)`);
+check(!fits.pressable, `and gets no button, since there is nothing to open`);
 await b.close();
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);

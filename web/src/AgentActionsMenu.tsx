@@ -14,11 +14,15 @@ const menuText = strings({
   menu: (name: string) => `${name} actions`,
   // Where the Agent runs, which the list no longer keeps a line for (T-15).
   runsOn: (machine: string, harness: string) => `Runs on ${machine} · ${harness}`,
+  /** This Core's own host, where an Agent with no remote machine runs. The
+   * rail's rows name it too (AgentRailRow). */
+  host: "Core host",
 }, {
   actionsFor: (name) => `${name} 的操作`,
   actions: "操作",
   menu: (name) => `${name} 的操作`,
   runsOn: (machine, harness) => `运行位置：${machine} · ${harness}`,
+  host: "Core 主机",
 });
 /** The harness as it is written, not as it is keyed. */
 const harnessName: Record<string, string> = {
@@ -323,7 +327,7 @@ export function AgentActionsMenu({
                 answer a pointer. Named by the menu as well, so it is spoken
                 when the menu opens however it was opened (T-15). */}
             <p className="agent-actions-where" id={`${menuId}-where`} role="note">
-              {t.runsOn(agent.remote?.machine.name || "Core host",
+              {t.runsOn(agent.remote?.machine.name || t.host,
                 harnessName[agent.harness ?? ""] ?? agent.harness ?? "Codex")}
             </p>
             {menu.items.map((item) => {
