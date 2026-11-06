@@ -267,6 +267,9 @@ pub(super) async fn launch(data: &Path, job: &Value) -> Result<(), LaunchError> 
     let (script, spec) = async {
         let script = helper(data).await?;
         let (_, spec) = prepare(data, job).await?;
+        // What the Job reads its grant from (T-64), there before it starts.
+        let granted = job["cpuGrantedAtStart"].as_u64().or(job["resources"]["cpuMillis"].as_u64()).context("Missing CPU grant")?;
+        write_cpu_file(data, job, granted).await?;
         write_once(
             &marker,
             &serde_json::to_vec(
@@ -408,6 +411,32 @@ pub(super) async fn limit(data: &Path, job: &Value, memory_mib: u64) -> Result<V
         "The attempt has no launch record; nothing was changed"
     );
     invoke(&script, "limit", Some(&spec), Some(serde_json::json!({"memoryMiB": memory_mib}))).await
+}
+
+/// Raise this attempt's own worker's CPU quota to `millis` (host.py `cpu`, T-64).
+pub(super) async fn raise_cpu(data: &Path, job: &Value, millis: u64) -> Result<Value> {
+    let script = helper(data).await?;
+    let spec = folder(data, job)?.join("spec.json");
+    ensure!(
+        tokio::fs::try_exists(&spec).await?,
+        "The attempt has no launch record; nothing was changed"
+    );
+    invoke(&script, "cpu", Some(&spec), Some(serde_json::json!({"cpuMillis": millis}))).await
+}
+
+/// The file YUZUNO_JOB_CPU_FILE names: the Job's CPU grant now, in
+/// millicores, on one line (T-64). Written before its launch and after each
+/// raise, never before its cgroup allows it, and replaced whole.
+pub(super) const CPU_FILE: &str = "cpu-millis";
+pub(super) async fn write_cpu_file(data: &Path, job: &Value, millis: u64) -> Result<()> {
+    let dir = folder(data, job)?;
+    let staged = dir.join(format!("{CPU_FILE}.{}", uuid::Uuid::new_v4()));
+    tokio::fs::write(&staged, format!("{millis}\n")).await?;
+    if let Err(error) = tokio::fs::rename(&staged, dir.join(CPU_FILE)).await {
+        let _ = tokio::fs::remove_file(&staged).await;
+        return Err(error).context("The CPU grant file was not replaced");
+    }
+    Ok(())
 }
 
 /// Whether this attempt's wrapper recorded that its command has exited

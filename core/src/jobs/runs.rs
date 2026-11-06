@@ -6,7 +6,7 @@
 use super::{
     host,
     store::{get, insert_job, new_job, notify_message, save, summary, QueueState},
-    Artifact, Resources, Submit,
+    Artifact, Requested, Submit,
 };
 use crate::{collaboration_store as collaboration, model::now, store::Store, workspace::Workspace};
 use anyhow::{ensure, Context, Result};
@@ -87,7 +87,7 @@ pub(super) struct Stage {
     argv: Vec<String>,
     #[serde(default)]
     pub(super) env: BTreeMap<String, String>,
-    resources: Resources,
+    resources: Requested,
     #[serde(default)]
     exclusive: bool,
     #[serde(default = "super::default_timeout")]
