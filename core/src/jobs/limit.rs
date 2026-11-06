@@ -12,6 +12,13 @@
 //! fails with a reason naming the lowered limit (store.rs `oom_after_limit`).
 //! A Job on another machine is refused: neither remote helper has such an
 //! action.
+//!
+//! A lowering that took effect but whose answer never reached Core (the
+//! helper timed out after systemd applied it) leaves the request as it was:
+//! Core never holds less than the Job may use. The same value asked again
+//! finds the cgroup at it already; host.py answers `limited` with
+//! `confirmedByRetry`, changing nothing, and the request, the reservation and
+//! the audit follow then, the audit marked as confirmed by that retry (T-57).
 use super::{changed, host, ids, store::{get, save}, Resources};
 use crate::{collaboration_store as collaboration, model::now, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
@@ -98,18 +105,28 @@ impl Store {
             resources.memory_mi_b = memory_mib;
             job["reservation"] = json!(resources.reservation());
             job["resources"] = json!(resources);
+            // A retry of the same value found an earlier lowering in effect (T-57).
+            let retry = answer["confirmedByRetry"] == true;
+            let mut change = json!({"by":by,"at":now(),"fromMiB":from,"toMiB":memory_mib,"evidence":answer["evidence"]});
+            if retry {
+                change["confirmedByRetry"] = json!(true);
+            }
             let mut changes = job["limitChanges"].as_array().cloned().unwrap_or_default();
-            changes.push(json!({"by":by,"at":now(),"fromMiB":from,"toMiB":memory_mib,"evidence":answer["evidence"]}));
+            changes.push(change);
             let skip = changes.len().saturating_sub(HISTORY);
             job["limitChanges"] = json!(changes.split_off(skip));
             if let Some(fields) = job.as_object_mut() {
                 fields.remove("limitRefusal");
             }
             let task = job["taskId"].as_str().context("Missing task")?.to_owned();
-            collaboration::activity(&tx, &task, "comment", &by, &source, json!({
-                "body": format!("Memory limit of job {} ({}) lowered from {from} MiB to {memory_mib} MiB by {}; its reservation is lowered with it. Swap stays as reserved.",
-                    job["name"].as_str().unwrap_or(""), job["id"].as_str().unwrap_or(""), by.name),
-                "jobId": job["id"]}))?;
+            let (name, job_id) = (job["name"].as_str().unwrap_or(""), job["id"].as_str().unwrap_or(""));
+            let body = if retry {
+                format!("Memory limit of job {name} ({job_id}) lowered from {from} MiB to {memory_mib} MiB by {}, confirmed by a retry of the same value: \
+                    an earlier lowering had taken effect without its answer reaching Core. Its reservation is lowered with it. Swap stays as reserved.", by.name)
+            } else {
+                format!("Memory limit of job {name} ({job_id}) lowered from {from} MiB to {memory_mib} MiB by {}; its reservation is lowered with it. Swap stays as reserved.", by.name)
+            };
+            collaboration::activity(&tx, &task, "comment", &by, &source, json!({"body": body, "jobId": job["id"]}))?;
         } else {
             job["limitRefusal"] = json!({"by":by,"at":now(),"toMiB":memory_mib,"state":state,"reason":reason,"evidence":answer["evidence"]});
         }
