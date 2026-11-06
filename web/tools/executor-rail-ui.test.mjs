@@ -154,7 +154,7 @@ test("its PR chip, its template when its name lacks it, and its time on the task
   try {
     await waitFor(() => p.chip("v"), "the PR chip, from /api/executors/live");
     assert.ok(p.calls.some((c) => c.url.endsWith("/api/executors/live") && c.method === "GET"), "one local read");
-    assert.deepEqual(p.state("v"), ["Review", "Review 1/2"], "in review, at its rounds");
+    assert.deepEqual(p.state("v"), ["Review", "1/2"], "in review, at its rounds, without saying Review twice");
     assert.equal(p.chip("v").textContent, "PR #688");
     assert.equal(p.chip("v").dataset.tone, "wait");
     assert.equal(p.chip("v").title, "PR #688 · Review 1/2");
@@ -177,7 +177,7 @@ test("in Chinese the row reads in Chinese", async () => {
     await waitFor(() => p.chip("v") && p.waited("w"), "the PR chip and the wait");
     assert.deepEqual(p.state("w"), ["等你", null]);
     assert.equal(p.waited("w"), "等了 12 分钟");
-    assert.deepEqual(p.state("v"), ["审查", "审查 1/2"]);
+    assert.deepEqual(p.state("v"), ["审查", "1/2"]);
     assert.deepEqual(p.state("k"), ["在做", "草稿"]);
     assert.equal(p.elapsed("v"), "1 小时 05 分");
     assert.deepEqual(p.state("a"), ["完成", "已放行"]);

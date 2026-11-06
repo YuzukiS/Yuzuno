@@ -32,6 +32,8 @@ export const executorRowText = strings({
   ciFailed: "CI failed",
   rounds: (approved: number, of: number) => `Review ${approved}/${of}`,
   reviewing: (approved: number, of: number) => `Reviewing · ${approved}/${of}`,
+  // In review already, its rounds alone: "Review · 1/2", not "Review · Review 1/2".
+  roundsOnly: (approved: number, of: number, running: boolean) => `${approved}/${of}${running ? " · under way" : ""}`,
   approved: (of: number) => `${of} rounds approved`,
   ciPending: "CI not green yet",
   draft: "Draft",
@@ -66,6 +68,7 @@ export const executorRowText = strings({
   ciFailed: "CI 失败",
   rounds: (approved, of) => `审查 ${approved}/${of}`,
   reviewing: (approved, of) => `审查中 · ${approved}/${of}`,
+  roundsOnly: (approved, of, running) => `${approved}/${of}${running ? " · 进行中" : ""}`,
   approved: (of) => `${of} 轮通过`,
   ciPending: "CI 未绿",
   draft: "草稿",
@@ -95,13 +98,16 @@ export function prText(status: PRStatus, t: Text): string {
   }
 }
 
-export function detailText(detail: ExecutorDetail | null, t: Text): string | null {
+export function detailText(detail: ExecutorDetail | null, t: Text, shown?: ExecutorShown): string | null {
   if (!detail) return null;
   switch (detail.kind) {
     case "position": return t.position(detail.position);
     case "starting": return t.starting;
     case "awaitingRelease": return t.awaitingRelease;
-    case "pr": return prText(detail.status, t);
+    case "pr":
+      return shown === "review" && detail.status.kind === "rounds"
+        ? t.roundsOnly(detail.status.approved, detail.status.of, detail.status.running)
+        : prText(detail.status, t);
     case "blocked": return t.blocked(detail.text);
     case "check": return t.check;
     case "waiting": return detail.label;
@@ -118,7 +124,7 @@ export function detailText(detail: ExecutorDetail | null, t: Text): string | nul
  * description and title say it so. */
 export function stateText(view: ExecutorView, language: Language): string {
   const t = executorRowText(language);
-  const detail = detailText(view.detail, t);
+  const detail = detailText(view.detail, t, view.shown);
   return detail ? `${t.shown[view.shown]} · ${detail}` : t.shown[view.shown];
 }
 
@@ -133,7 +139,7 @@ export function ExecutorRowState({ view, template, title }: { view: ExecutorView
   const language = useLanguage();
   const t = executorRowText(language);
   const now = useMinute();
-  const detail = detailText(view.detail, t);
+  const detail = detailText(view.detail, t, view.shown);
   const waited = view.waitingSince != null ? elapsedText(now - view.waitingSince, language) : null;
   const elapsed = view.started != null ? elapsedText((view.ended ?? now) - view.started, language) : null;
   const pr = view.pr ? `${t.pr(view.pr.number)} · ${prText(view.pr.status, t)}` : null;

@@ -57,7 +57,15 @@
 }
 /* How many run and how many wait for a slot (T-43 S2): quieter than the
    heading, beside its count. */
+/* The heading's own words keep one line; the counts give way. */
+.rail-executors > .rail-subgroup-head > span:first-child {
+  flex: none;
+  white-space: nowrap;
+}
 .rail-subgroup-slots {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   margin-left: auto;
   font-weight: 500;
   font-variant-numeric: tabular-nums;

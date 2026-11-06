@@ -168,7 +168,7 @@ const english = {
   // The row's one state (ExecutorRowState.tsx, T-43 S2).
   shown: { queued: "Queued", working: "Working", review: "Review", done: "Done", failed: "Failed", stopped: "Stopped" },
   position: (n) => `${n} in line`, starting: "Starting", awaitingRelease: "Awaiting release", released: "Released", closing: "Closing",
-  taskBlocked: (text) => `Task blocked: ${text}`, rounds: "Review 1/2", draft: "Draft", closed: "Closed",
+  taskBlocked: (text) => `Task blocked: ${text}`, rounds: "1/2", draft: "Draft", closed: "Closed",
 };
 const chinese = {
   states: { queued: "排队中", starting: "启动中", running: "运行中", delivering: "交付待放行", archiving: "归档中", archived: "已归档", failed: "失败", closed: "已关闭" },
@@ -176,7 +176,7 @@ const chinese = {
   executors: "任务执行者", delivering: "交付待你放行", failed: "启动失败", blocked: "任务受阻",
   shown: { queued: "排队", working: "在做", review: "审查", done: "完成", failed: "失败", stopped: "已停止" },
   position: (n) => `第 ${n} 位`, starting: "启动中", awaitingRelease: "等待放行", released: "已放行", closing: "收尾中",
-  taskBlocked: (text) => `任务受阻：${text}`, rounds: "审查 1/2", draft: "草稿", closed: "已关闭",
+  taskBlocked: (text) => `任务受阻：${text}`, rounds: "1/2", draft: "草稿", closed: "已关闭",
 };
 // What an executor's badge and chip say (executor-lifecycle.ts), from its state.
 const says = (words, lifecycle) =>
@@ -245,6 +245,13 @@ async function run({ width, height, theme, language, density = "detailed" }) {
         `${tag}: compact, the state and the time only`);
     }
     assert.equal(await list.locator('[data-rail-part="executors"] .rail-subgroup-head > span').first().textContent(), words.executors);
+    // Its words keep one line beside how many run and wait (T-43 S2).
+    const headLines = await list.locator('[data-rail-part="executors"] .rail-subgroup-head > span').first().evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+    });
+    assert.equal(headLines, 1, `${tag}: the Task executors heading is one line`);
     const fold = list.locator('[data-rail-part="archived"] .rail-archived-toggle');
     assert.equal(await fold.getAttribute("aria-expanded"), "false", `${tag}: the archived fold starts folded`);
     assert.deepEqual(await fits(list), [], `${tag}: the sidebar fits its width`);
