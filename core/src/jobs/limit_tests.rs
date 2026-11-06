@@ -1,6 +1,8 @@
 //! T-38 B: lowering a running Job's memory limit. The host's answer is given
-//! here as host.py `limit` writes it; acceptance/t38-shrink/check.py runs the
-//! real set-property and read-back on systemd user Jobs of a lab Core.
+//! here as host.py `limit` writes it (acceptance/local-jobs/limit_host_test.py
+//! tests that); acceptance/t38-shrink/check.py runs the real set-property and
+//! read-back on systemd user Jobs of a lab Core, and acceptance/t57-limit-retry
+//! a retry of the same value after a lowering whose answer was lost.
 use super::*;
 use crate::{model::AgentDetail, store::Store};
 
@@ -50,6 +52,7 @@ fn a_lowered_limit_lowers_the_request_and_reservation_at_once_and_a_queued_job_s
     assert_eq!(after["resources"]["swapMiB"], 0, "swap stays as reserved");
     let change = &after["limitChanges"][0];
     assert_eq!((change["fromMiB"].clone(), change["toMiB"].clone(), change["by"]["kind"].clone()), (json!(3968), json!(1024), json!("user")));
+    assert!(change["confirmedByRetry"].is_null(), "an ordinary lowering is not marked as a retry");
     // The task says so too.
     let activity: String = s.db.read().unwrap().query_row(
         "SELECT data FROM collaboration_task_activity WHERE json_extract(data,'$.jobId')=?1", [id(&big)], |r| r.get(0)).unwrap();
@@ -99,4 +102,38 @@ fn a_job_killed_for_memory_after_a_lowering_names_the_lowered_limit() {
     let plain = running(&s, "plain", 1024);
     s.update_job_evidence(id(&plain), oom(&plain)).unwrap();
     assert_eq!(s.job(id(&plain)).unwrap()["reason"], "oom-kill");
+}
+
+/// T-57: a lowering that took effect without its answer reaching Core left
+/// the request and reservation as they were: Core never holds less than the
+/// Job may use. The same value asked again is confirmed, as host.py answers
+/// it (`limited`, `confirmedByRetry`): the request and reservation follow,
+/// with one audit entry marked so, and what they free starts queued work.
+#[test]
+fn a_retry_of_the_same_value_confirms_a_lowering_whose_answer_was_lost() {
+    let (_dir, s) = setup();
+    let big = running(&s, "calibration", 3968);
+    let next = job(&s, "next", 1024);
+    let lost = json!({"state":"unknown","reason":"The host helper did not confirm the new limit: timed out after 30 s"});
+    let first = s.record_job_limit(None, id(&big), &big["attempt"], 1024, &lost).unwrap();
+    assert_eq!((first["resources"]["memoryMiB"].clone(), first["reservation"]["memoryMiB"].clone()), (json!(3968), json!(4032)),
+        "unconfirmed, the Job holds what it held");
+    assert!(s.reserve_next_job(None, None, None).unwrap().is_none(), "nothing starts on an unconfirmed lowering");
+    s.check_job_limit(None, id(&big), 1024).expect("the same value may be asked again");
+    let retry = json!({"state":"limited","confirmedByRetry":true,
+        "reason":"The memory limit is already 1024 MiB: an earlier lowering took effect, and this retry confirms it; nothing was changed",
+        "evidence":{"memoryMaxBefore":1073741824u64,"memoryMaxAfter":1073741824u64}});
+    let after = s.record_job_limit(None, id(&big), &big["attempt"], 1024, &retry).unwrap();
+    assert_eq!(after["resources"]["memoryMiB"], 1024, "the retry confirms the request");
+    assert_eq!(after["reservation"]["memoryMiB"], 1088, "the reservation follows, with its collector");
+    let changes = after["limitChanges"].as_array().unwrap();
+    assert_eq!(changes.len(), 1, "one audit entry: {changes:?}");
+    assert_eq!((changes[0]["fromMiB"].clone(), changes[0]["toMiB"].clone(), changes[0]["by"]["kind"].clone()), (json!(3968), json!(1024), json!("user")));
+    assert_eq!(changes[0]["confirmedByRetry"], true, "the audit says a retry confirmed it");
+    assert!(after["limitRefusal"].is_null(), "the lost answer is no longer the last word");
+    let activity: String = s.db.read().unwrap().query_row(
+        "SELECT data FROM collaboration_task_activity WHERE json_extract(data,'$.jobId')=?1", [id(&big)], |r| r.get(0)).unwrap();
+    assert!(activity.contains("lowered from 3968 MiB to 1024 MiB by You, confirmed by a retry of the same value"),
+        "the task says a retry confirmed it: {activity}");
+    assert_eq!(s.reserve_next_job(None, None, None).unwrap().unwrap()["id"], next["id"], "the queued job starts");
 }

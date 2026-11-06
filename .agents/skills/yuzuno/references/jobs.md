@@ -50,6 +50,7 @@ Use the parameters your session advertises: a session that loaded its tool schem
 A running local Job that holds far more memory than it uses can have its limit lowered, by the user in its Jobs card or by its own Agent with `job_lower_memory`, so the budget it frees starts queued work at once.
 - **Only down.** The new limit must be below the current request, and at least what the Job's cgroup uses now plus 256 MiB. It is never raised again.
 - **How it is applied.** systemd applies it to the running worker (`systemctl --user set-property --runtime … MemoryMax=`), and the cgroup's `memory.max`, read back, confirms it. Only then are the Job's `resources.memoryMiB` and reservation lowered, in one step with the record of it on the Job (`limitChanges`) and a line in its task's activity.
+- **An answer that never came.** If a lowering took effect but its answer never reached Core (the Job keeps its old request, with an `unknown` limitRefusal), ask for the same value again. The cgroup already reads it, so nothing is changed: the Job's request and reservation are lowered then, and the record is marked `confirmedByRetry`. Core never holds less than a Job may use in the meantime.
 - **Swap stays as reserved** (Jobs reserve 0 swap by default).
 - **Over the new limit.** A Job that then needs more memory than the lowered limit is killed for memory, and its reason names the lowered limit, who lowered it and when.
 - **Where.** Jobs on SSH machines and Windows cannot be lowered: their helpers have no such action.
