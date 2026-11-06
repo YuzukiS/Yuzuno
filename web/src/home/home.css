@@ -349,8 +349,35 @@
   align-items: center;
   gap: 5px;
 }
+/* Home's error says itself over the top of what is below, which stays where it
+   was (T-19 HM:H2): it fades in over small and out over exit-small; under
+   reduced motion it is there and gone at once. */
+.home-error-slot {
+  position: relative;
+  z-index: 3;
+  height: 0;
+}
 .home-error-banner {
-  margin-bottom: 12px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  margin: 0;
+  box-shadow: 0 8px 16px -14px var(--palette-shadow, #00000040);
+  animation: home-banner-in var(--motion-small) var(--ease-standard);
+}
+.home-error-banner.is-leaving {
+  animation: home-banner-out var(--motion-exit-small) var(--ease-exit) forwards;
+}
+@keyframes home-banner-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes home-banner-out {
+  to {
+    opacity: 0;
+  }
 }
 .home-view h2,
 .home-view h3,
@@ -778,6 +805,11 @@ button.home-machine-job-line:focus-visible {
 .home-reorder {
   display: flex;
   gap: 2px;
+}
+/* As a disabled button looks, while it keeps its focus (HomePanel.tsx). */
+.home-reorder [aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
 }
 /* A project's content is its deck's container: the deck's columns follow
    its own width (T-18, Dev 7's v12). */
@@ -1433,6 +1465,14 @@ ul.home-widget {
 }
 @media (prefers-reduced-motion: reduce) {
   [data-home-highlight] {
+    animation: none;
+  }
+  /* Refresh's icon stands still while it reads; aria-busy still says so (T-19 HM:H3). */
+  .home-refresh .spin {
+    animation: none;
+  }
+  .home-error-banner,
+  .home-error-banner.is-leaving {
     animation: none;
   }
 }

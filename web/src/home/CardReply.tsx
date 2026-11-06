@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Copy, LoaderCircle, MessageSquareReply, Send, Trash2, X } from "lucide-react";
+import { LoaderCircle, MessageSquareReply, Send, Trash2, X } from "lucide-react";
 import { errorText, HttpError, shortcutModifier } from "../api";
+import { CopyButton } from "../components";
 import { useStrings } from "../i18n";
 import { useSurfaceIn } from "../surface";
 import type { Agent } from "../types";
@@ -346,9 +347,8 @@ export function KeptCardReplies({
             )}
             <span className="home-kept-reply-actions">
               {!inHistory && (
-                <button type="button" className="quiet-button" onClick={() => void navigator.clipboard?.writeText(draft.text)}>
-                  <Copy size={13} /> {t.copyText}
-                </button>
+                // Says it copied, or that it could not (T-19 HM:S11).
+                <CopyButton text={draft.text} label={t.copyText} />
               )}
               <button
                 type="button"
