@@ -192,3 +192,23 @@ test("a release that waits for its work leaves the executor open, archiving, and
   assert.ok(!card(page, "Release executor"), "in place of the plain Release card");
   assert.deepEqual(page.errors, []);
 });
+
+test("a release that waits carries what it waits for even when the listing had no lifecycle (T-36 S3, #647 R1 333f9680)", async () => {
+  const reason = "Waiting to close: a delivery flow is still running.";
+  const page = mount((url) => url === "/api/agents/e1/release"
+    ? [200, { agentId: "e1", closedAt: null, releasedAt: null, releasedBy: null, archiving: { since: RELEASED, releasedBy: "user", reason } }]
+    : [404, { error: "unexpected" }]);
+  // As a Core that lists no `executor` field shows it.
+  page.window.renderAgent(agent({ kind: "executor" }));
+  await until(() => named(page, "Close agent"), "the close button");
+  await openActions(page);
+  card(page, "Release executor").click();
+  await until(() => named(page, "Release executor"), "the confirm button");
+  named(page, "Release executor").click();
+  await until(() => page.window.changes.length === 1, "the release");
+  const { updated } = page.window.changes[0];
+  assert.deepEqual([updated.executor?.state ?? null, updated.executor?.reason ?? null], ["archiving", reason],
+    "the archiving reason comes with the answer, even without a listed lifecycle");
+  assert.equal(updated.releasedAt, null, "and it is not released yet");
+  assert.deepEqual(page.errors, []);
+});

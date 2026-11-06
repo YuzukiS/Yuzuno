@@ -156,6 +156,8 @@ async fn the_listing_and_its_task_show_each_executors_lifecycle() {
 
 /// T-36 S3: a task write naming an executor as its assignee announces it:
 /// its Agent, so the sidebar and Home read it again, and the task board.
+/// Only a write that can move its lifecycle does (#647 R1 333f9680): a
+/// progress-only update announces nothing.
 #[tokio::test]
 async fn a_task_write_for_an_executor_announces_its_lifecycle() {
     let (_dir, ws) = workspace();
@@ -167,17 +169,40 @@ async fn a_task_write_for_an_executor_announces_its_lifecycle() {
     ws.collaboration_call(Some("e1"), "task_claim", claim(&public)).await.unwrap();
     ws.collaboration_call(Some("plain"), "task_claim", claim(&other)).await.unwrap();
     let mut events = ws.changes.subscribe(None);
-    let blocked = |task: &str| json!({"requestId":format!("block {task}"),"taskId":task,"expectedVersion":2,
-        "patch":{"status":"blocked","blocker":"Waiting for a licence"}});
-    ws.collaboration_call(Some("e1"), "task_update", blocked(&public)).await.unwrap();
-    ws.collaboration_call(Some("plain"), "task_update", blocked(&other)).await.unwrap();
-    let mut announced = vec![];
-    while let Some(entry) = events.try_next() {
-        let event: Value = serde_json::from_str(&entry.data).unwrap();
-        if event["type"] == "agent.changed" || event["scope"] == "executors" {
-            announced.push(event["agentId"].as_str().map_or_else(|| event["scope"].as_str().unwrap().to_owned(), str::to_owned));
+    let mut announced = || {
+        let mut seen = vec![];
+        while let Some(entry) = events.try_next() {
+            let event: Value = serde_json::from_str(&entry.data).unwrap();
+            if event["type"] == "agent.changed" || event["scope"] == "executors" {
+                seen.push(event["agentId"].as_str().map_or_else(|| event["scope"].as_str().unwrap().to_owned(), str::to_owned));
+            }
         }
-    }
-    assert_eq!(announced, vec!["e1".to_owned(), "executors".to_owned()], "the executor's, once; the plain Agent's task write, none");
+        seen
+    };
+    let progress = json!({"requestId":"progress","taskId":public,"expectedVersion":2,"patch":{"progress":"Halfway through"}});
+    ws.collaboration_call(Some("e1"), "task_update", progress).await.unwrap();
+    assert!(announced().is_empty(), "a progress-only update announces nothing");
+    let blocked = |task: &str, version: i64| json!({"requestId":format!("block {task}"),"taskId":task,"expectedVersion":version,
+        "patch":{"status":"blocked","blocker":"Waiting for a licence"}});
+    ws.collaboration_call(Some("e1"), "task_update", blocked(&public, 3)).await.unwrap();
+    ws.collaboration_call(Some("plain"), "task_update", blocked(&other, 2)).await.unwrap();
+    assert_eq!(announced(), vec!["e1".to_owned(), "executors".to_owned()], "the executor's, once; the plain Agent's task write, none");
     assert_eq!(listed(&ws.store, "e1")["blocked"], "Waiting for a licence");
+}
+
+/// T-36 S3 (#647 R1 333f9680): which task writes can move an executor's
+/// lifecycle: a result, a dispatch, a claim, and an update of the status or
+/// the blocker; not a progress-only update, nor a new task.
+#[test]
+fn only_a_write_that_can_move_a_lifecycle_announces_it() {
+    let update = |changes: Value| json!({"activity":{"changes":changes}});
+    assert!(!moves("task_update", &update(json!({"progress":"Halfway"}))), "a progress-only update");
+    assert!(!moves("task_update", &update(json!({"title":"Renamed","description":"More"}))), "a title or description");
+    assert!(moves("task_update", &update(json!({"status":"review"}))), "a status");
+    assert!(moves("task_update", &update(json!({"blocker":"Waiting for the keys"}))), "a blocker");
+    for call in ["task_submit_result", "task_dispatch", "task_claim"] {
+        assert!(moves(call, &json!({})), "{call}");
+    }
+    assert!(!moves("task_create", &json!({})), "a new task has no executor yet");
+    assert!(!moves("task_comment", &json!({})), "a comment");
 }

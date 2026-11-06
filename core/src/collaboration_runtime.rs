@@ -123,10 +123,16 @@ impl Workspace {
                 ws.collaboration_wakeup.notify_one();
                 ws.delivery.wake.notify_one();
                 // A task an executor works on: its lifecycle may show
-                // differently now (T-36 S3: its result in, its task blocked).
-                if let Some(assignee) = value["task"]["assignee"]["id"].as_str().filter(|_| tasks) {
-                    if crate::agent_roles::kind(&*ws.store.db.read()?, assignee)? == "executor" {
-                        ws.executor_changed(assignee);
+                // differently now, if the write could move it (T-36 S3,
+                // #647 R1 333f9680). The write is saved and announced
+                // already: a failed read skips this, never fails the call.
+                if let Some(assignee) = value["task"]["assignee"]["id"].as_str()
+                    .filter(|_| crate::executor_lifecycle::moves(&call, &value))
+                {
+                    match ws.store.db.read().and_then(|db| crate::agent_roles::kind(&db, assignee)) {
+                        Ok(kind) if kind == crate::agent_roles::EXECUTOR => ws.executor_changed(assignee),
+                        Ok(_) => {}
+                        Err(error) => eprintln!("Executor {assignee}'s lifecycle was not announced: {error:#}"),
                     }
                 }
             }

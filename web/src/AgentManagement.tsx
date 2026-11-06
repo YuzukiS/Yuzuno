@@ -179,7 +179,8 @@ export function AgentManagement({
             ? await post<Pick<Agent, "closedAt" | "releasedAt" | "releasedBy"> & { archiving?: { since: string; reason: string } | null }>(`${path}/release`)
               // Waiting for its work to end, it is archiving (T-36 S3), with what it waits for.
               .then(({ closedAt, releasedAt, releasedBy, archiving }) => ({ ...agent, closedAt, releasedAt, releasedBy,
-                executor: archiving && agent.executor ? { ...agent.executor, state: "archiving" as const, since: archiving.since, reason: archiving.reason }
+                // From the answer even when the listing had none (#647 R1 333f9680).
+                executor: archiving ? { ...(agent.executor ?? {}), agentId: agent.id, state: "archiving" as const, since: archiving.since, reason: archiving.reason }
                   : agent.executor }))
             : await post<Agent>(`${path}/${action}`);
       onChanged(action, updated);

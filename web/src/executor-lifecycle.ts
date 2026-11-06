@@ -13,7 +13,8 @@ export type ExecutorLifecycle = {
   state: ExecutorState;
   agentId: string;
   task?: { id: string; title: string } | null;
-  dispatcher: { kind: "user" } | { kind: "agent"; id: string; name?: string | null };
+  /** Who dispatched it; absent from a release's answer, which doesn't say. */
+  dispatcher?: { kind: "user" } | { kind: "agent"; id: string; name?: string | null };
   since?: string | null;
   /** What an archiving one waits for, or why a start failed. */
   reason?: string | null;
@@ -80,7 +81,8 @@ export function stateDetail(lifecycle: ExecutorLifecycle, t: Text): string[] {
   const lines: string[] = [];
   if (lifecycle.reason) lines.push(lifecycle.state === "archiving" ? t.archivingReason(lifecycle.reason) : lifecycle.reason);
   if (lifecycle.blocked) lines.push(t.blocked(lifecycle.blocked));
-  lines.push(lifecycle.dispatcher.kind === "user" ? t.byUser : t.byAgent(lifecycle.dispatcher.name || lifecycle.dispatcher.id));
+  const by = lifecycle.dispatcher;
+  if (by) lines.push(by.kind === "user" ? t.byUser : t.byAgent(by.name || by.id));
   return lines;
 }
 

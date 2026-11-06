@@ -26,6 +26,20 @@ impl Workspace {
     }
 }
 
+/// Whether a task write `call` (its answer `value`) can move its executor's
+/// lifecycle (#647 R1 333f9680): a result, a dispatch or a claim always
+/// can; an update only when it sets the status or the blocker. A
+/// progress-only update never does, so it announces nothing.
+pub(crate) fn moves(call: &str, value: &Value) -> bool {
+    match call {
+        "task_submit_result" | "task_dispatch" | "task_claim" => true,
+        "task_update" => value["activity"]["changes"]
+            .as_object()
+            .is_some_and(|changes| changes.contains_key("status") || changes.contains_key("blocker")),
+        _ => false,
+    }
+}
+
 /// An executor's role row: its Agent, its task (internal ID), its dispatch
 /// and who dispatched it (`agent:<id>` or `user`).
 struct Role {

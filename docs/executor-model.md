@@ -428,7 +428,9 @@ Each also names its task (`task.id`, `task.title`), who dispatched it
 Clients read a state again when it changes: an executor's Agent is
 announced as changed (`agent.changed`), and the task board is told with
 `workspace.changed` scope `executors`. An archiving executor's reason is
-announced only when it changes, not on every check.
+announced only when it changes, not on every check. A write to its task
+announces it only when it can change the state: a result, a dispatch, a
+claim, or a new status or blocker. A progress-only update doesn't.
 
 ## Phases
 
