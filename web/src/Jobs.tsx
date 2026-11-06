@@ -598,10 +598,12 @@ export function Jobs({
       if (stamp === generation.current)
         setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
       try {
-        const [job, output] = await Promise.all([
-          api<Job>(`/jobs/${selected}`),
-          api<Log>(`/jobs/${selected}/logs`),
-        ]);
+        // Its details first, then its output: output read after a finished
+        // job's details has all of it, so only that read settles the job.
+        // Read side by side, the output could be from before it finished
+        // (T-60, #642 R2 1e487ee9).
+        const job = await api<Job>(`/jobs/${selected}`);
+        const output = await api<Log>(`/jobs/${selected}/logs`);
         if (stamp === generation.current) {
           setDetail(job);
           setLog(output);

@@ -29,7 +29,8 @@ const job = { usage:{MemoryCurrent:'18446744073709551615',MemoryPeak:'1844674407
 const page = jobs => ({ jobs, hasMore: false, nextBefore: null });
 // `pollMs`: the panel's 3 s poll runs every pollMs instead, its firings
 // counted (`ticks`); every other timer is as the product sets it (T-60).
-function mount(handler = () => page([]), stored = {}, { pollMs } = {}) {
+// `logs`: answers a job's output instead of the fixed one.
+function mount(handler = () => page([]), stored = {}, { pollMs, logs } = {}) {
   const vc = new VirtualConsole(), errors = [], calls = [];
   vc.on('jsdomError', e => errors.push(e.message));
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://isolated.test', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: vc });
@@ -40,7 +41,7 @@ function mount(handler = () => page([]), stored = {}, { pollMs } = {}) {
     calls.push({ url, body });
     let value;
     if (url === '/api/jobs/budget' && !body) value = { budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount: 1, queuedCount: 1, collectorOverhead: {cpuMillis:100,memoryMiB:64,swapMiB:0}, budgetBounds: {minimum:{cpuMillis:200,memoryMiB:128,swapMiB:0},maximum:{cpuMillis:4096000,memoryMiB:67108864,swapMiB:67108864}}, machine: { name: 'WSL', memoryAvailableMiB: 2000, logicalCpus: 32, memoryTotalMiB: 40107, swapTotalMiB: 16384, hostHeadroomMiB: 2048, suggestedBudget:{cpuMillis:4000,memoryMiB:8192,swapMiB:0} } };
-    else if (url.endsWith('/logs')) value = { text: 'bounded output', oldestOffset: 1000, totalBytes: 1200 };
+    else if (url.endsWith('/logs')) value = logs ? await logs(url) : { text: 'bounded output', oldestOffset: 1000, totalBytes: 1200 };
     else value = await handler(url, body);
     if (value instanceof Error) throw value;
     const status = value?.httpStatus || 200;
@@ -181,6 +182,40 @@ test('an unknown job: its details and output keep being read', async () => {
     await wait();
     assert.ok(reads(p, '/api/jobs/job-one') >= details + 2, 'an unknown job: its details keep being read');
     assert.ok(reads(p, '/api/jobs/job-one/logs') >= output + 2, 'an unknown job: its output keeps being read');
+  } finally { p.close(); }
+});
+
+// T-60, #642 R2 1e487ee9: the job finishes while its details are being read.
+// Its output answered before then lacks the last lines, so the job settles
+// only on output read after its finish was seen: one more read, then none.
+test('a job that finishes during a read settles on output read after its finish, not on output read beside it', async () => {
+  const running = { ...job, status: 'running', reserved: true, reason: 'Running with verified cgroup limits', attempt: 'attempt-one' };
+  let finishing = false, finished = false, readAfterFinish = 0;
+  const current = () => finished ? { ...running, status: 'succeeded', reserved: false, finishedAt: new Date().toISOString() } : running;
+  const p = mount(async url => {
+    if (url !== '/api/jobs/job-one') return page([current()]);
+    // The detail read the finish lands in: answered after the output.
+    if (finishing && !finished) { await new Promise(r => setTimeout(r, 60)); finished = true; }
+    return current();
+  }, {}, {
+    pollMs: 300,
+    logs: () => {
+      if (finished) readAfterFinish++;
+      return finished ? { text: 'first lines\nlast lines', oldestOffset: 0, totalBytes: 22 } : { text: 'first lines', oldestOffset: 0, totalBytes: 11 };
+    },
+  });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click();
+    await until(() => p.doc.querySelector('.job-log')?.textContent.includes('first lines'));
+    finishing = true;
+    await until(() => finished);
+    const ticked = p.ticks();
+    await until(() => p.ticks() >= ticked + 3);
+    await wait();
+    assert.match(p.doc.querySelector('.job-log').textContent, /last lines/, 'the output read after its finish is shown');
+    assert.equal(readAfterFinish, 1, 'its output is read once after its finish, then no more');
+    assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
 
