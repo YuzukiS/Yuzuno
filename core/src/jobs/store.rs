@@ -208,6 +208,12 @@ pub(super) fn save(db: &Connection, value: &Value) -> Result<()> {
     )?;
     Ok(())
 }
+/// A Job as a summary shows it: with its task's key now (T-56), which needs
+/// the taskId the summary leaves out.
+pub(super) fn current_ref(db: &Connection, mut job: Value) -> Value {
+    crate::task_keys::refresh(db, &mut job);
+    job
+}
 pub(super) fn summary(job: Value) -> Value {
     let mut result = json!({});
     for field in [
@@ -686,7 +692,7 @@ impl Store {
         let jobs = ids
             .iter()
             .take(50)
-            .map(|id| get(&db, id).map(|job| summary(queue.view(job))))
+            .map(|id| get(&db, id).map(|job| summary(queue.view(current_ref(&db, job)))))
             .collect::<Result<Vec<_>>>()?;
         // The bounded live queue must remain visible even when its sequence is
         // older than the newest history page (long jobs can span many completions).
@@ -696,7 +702,7 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let live_jobs = live_ids
             .iter()
-            .map(|id| get(&db, id).map(|job| summary(queue.view(job))))
+            .map(|id| get(&db, id).map(|job| summary(queue.view(current_ref(&db, job)))))
             .collect::<Result<Vec<_>>>()?;
         Ok(
             json!({"jobs":jobs,"liveJobs":live_jobs,"hasMore":more,"nextBefore":jobs.last().map(|j|j["cursor"].clone())}),

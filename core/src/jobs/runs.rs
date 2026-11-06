@@ -1117,7 +1117,7 @@ pub(super) fn run_view(db: &Connection, id: &str) -> Result<Value> {
                 .into_iter()
                 .flatten()
                 .map(|job| {
-                    let mut attempt = summary(queue.view(job.clone()));
+                    let mut attempt = summary(queue.view(super::store::current_ref(db, job.clone())));
                     for field in ["retryOf", "retriedBy", "cwd"] {
                         attempt[field] = job[field].clone();
                     }
