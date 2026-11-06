@@ -3806,7 +3806,7 @@ p {
     grid-template-rows: 28px 48px minmax(0, 1fr) 0;
   }
   .app:not(.phone) .conversation-header {
-    padding-block: 6px;
+    padding-block: 4px;
   }
   /* The group keeps its outline — it reads as one set of tools — and loses
      only the padding inside it. */
@@ -3832,6 +3832,18 @@ p {
    entry beside the conversation's name opens the same work as a column of
    44px rows (work-dock.css, V9). */
 @media (hover: none) and (pointer: coarse) {
+  /* The ring that marks where the keyboard is reaches 6px past a button here
+     (a 2px outline at 4px of offset, styles.css). The desktop toolbar has
+     13-15px around its buttons and loses none of it; a 40px target in this
+     48px row has 4px, and measured, all seven rings were cut 3px by `.app`'s
+     own clipping at its padding box. The ring is brought in to 1px of offset
+     on this row rather than the row made 52px tall: it needs 3px then, which
+     the 4px holds, and the head above the conversation keeps 7-14px and is
+     left alone. (This is also why the row is not d6's 44: that leaves 2px,
+     which even a 1px ring does not fit in.) */
+  .app:not(.phone) .toolbar button:focus-visible {
+    outline-offset: 1px;
+  }
   .app:not(.phone) .toolbar .icon-button,
   .app:not(.phone) .toolbar-nav .catchup-nav,
   .app:not(.phone) .rail-actions .icon-button,

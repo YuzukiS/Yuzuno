@@ -234,6 +234,54 @@ async function read({ width, height, coarse, inset }) {
           };
         },
       ),
+      // A keyboard's focus ring is part of the target. This codebase draws it
+      // at outline-offset 3px + 2px wide (styles.css), so it reaches 5px past
+      // the button, and `.app` clips at its padding box: a row too shallow
+      // for 40px plus that ring shows a cut ring to whoever is on a keyboard.
+      rings: (() => {
+        const app = document.querySelector(".app");
+        if (!app) return [];
+        const ar = app.getBoundingClientRect();
+        const st = getComputedStyle(app);
+        const pad = (v) => parseFloat(v || "0") || 0;
+        const clipTop = ar.top + pad(st.paddingTop);
+        const clipBottom = ar.bottom - pad(st.paddingBottom);
+        return [
+          [".toolbar", "toolbar"],
+          [".conversation-header", "conversation head"],
+        ].flatMap(([sel, where]) => {
+          const row = document.querySelector(sel);
+          if (!row) return [];
+          const rr = row.getBoundingClientRect();
+          return [...row.querySelectorAll("button")]
+            .map((el) => {
+              const r = el.getBoundingClientRect();
+              if (r.height === 0) return null;
+              // Focused, because the ring is drawn by :focus-visible: reading
+              // an unfocused button gives the offset it is NOT about to use.
+              el.focus();
+              const es = getComputedStyle(el);
+              const ring =
+                es.outlineStyle === "none"
+                  ? 0
+                  : (parseFloat(es.outlineWidth) || 0) + Math.max(0, parseFloat(es.outlineOffset) || 0);
+              el.blur();
+              const reach = ring;
+              return {
+                where,
+                h: Math.round(r.height),
+                reach: Math.round(reach),
+                room: Math.round(Math.min(r.top - rr.top, rr.bottom - r.bottom)),
+                cut: Math.round(
+                  Math.max(0, clipTop - (r.top - reach)) +
+                    Math.max(0, r.bottom + reach - clipBottom),
+                ),
+                what: el.className?.toString?.().trim().split(/\s+/)[0] || el.tagName,
+              };
+            })
+            .filter(Boolean);
+        });
+      })(),
       // Nothing in the head may hang out of it: a shorter head that merely
       // clips its own contents is not a shorter head.
       spill: (() => {
@@ -340,18 +388,53 @@ check(
   `no page errors${errors.length ? `: ${errors[0]}` : ""}`,
 );
 
+// What the rows leave around a 40px target, and whether the window's own
+// clipping cuts a focus ring off at the top.
+{
+  const worst = bench.rings.reduce((a, b) => (b.cut > (a?.cut ?? -1) ? b : a), null);
+  console.log(`\n--- room around the targets, and the focus ring ---`);
+  for (const [screen, m] of [["workbench", bench], ["desktop", desk]])
+  for (const where of ["toolbar", "conversation head"]) {
+    const list = m.rings.filter((r) => r.where === where);
+    if (!list.length) continue;
+    const room = [...new Set(list.map((r) => r.room))].sort((a, b) => a - b).join("/");
+    const tall = [...new Set(list.map((r) => r.h))].join("/");
+    const cut = list.filter((r) => r.cut > 0);
+    // Per row, not across the screen: the toolbar and the head draw different
+    // rings here, and one number for both hid which was which.
+    const need = [...new Set(list.map((r) => r.reach))].sort((a, b) => a - b).join("/");
+    console.log(
+      `  ${screen} ${where}: ${list.length} buttons ${tall}px tall, ${room}px around them, the ring needs ${need}px` +
+        `${cut.length ? `, ${cut.length} cut (worst ${Math.max(...cut.map((c) => c.cut))}px)` : ", none cut"}`,
+    );
+  }
+  const deskWorst = desk.rings.reduce((a, b) => (b.cut > (a?.cut ?? -1) ? b : a), null);
+  check(
+    !worst || worst.cut === 0,
+    worst && worst.cut
+      ? `no focus ring is cut on the workbench, but ${worst.what} loses ${worst.cut}px` +
+          `${deskWorst?.cut ? ` (the desktop loses ${deskWorst.cut}px too, so this is not only the short screen)` : " (the desktop loses none)"}`
+      : "no focus ring is cut on the workbench",
+  );
+}
+
 console.log(
   `\nnote (synthetic, from the screenshot — not a Duo): top chrome ${chrome(bench)}px at 951x669,`,
 );
+console.log(`  was 122 (toolbar 57 + header 65). The conversation reads ${bench.body}px, was 408.`);
 console.log(
-  `  was 122 (toolbar 57 + header 65). d6's reference is 92; the ${chrome(bench) - 92}px above it is the`,
+  `  d6's reference is 92 — a 44px toolbar row and a 48px head, with 40px targets in both`,
 );
 console.log(
-  `  header's own buttons at 40px for a finger (V3), which 92 did not budget for, and a 48px`,
+  `  (duo6.html \`.toolbar .ic, .chead .ic { width: 40px; height: 40px }\`, which overrides the`,
 );
 console.log(
-  `  toolbar that keeps 4px around a 40px target. The conversation reads ${bench.body}px, was 408.`,
+  `  32px \`.ic\` above it; d6's own capture records "m-top": "44 + 48 = 92"). So the ${chrome(bench) - 92}px above`,
 );
+console.log(
+  `  it is room inside the rows, not the targets: this toolbar row is 48 against 44 and this head`,
+);
+console.log(`  is ${bench.header} against 48. What that room is for is measured just above.`);
 
 await browser.close();
 console.log(failed ? `\n${failed} failed` : "\nall passed");

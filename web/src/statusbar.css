@@ -100,7 +100,8 @@ button.statusbar-item:focus-visible {
    from Core twice. A screen with the room keeps the bar it had, and the
    entry is not there at all. */
 .core-status-slot,
-.core-status-entry {
+.core-status-entry,
+.statusbar-core {
   display: none;
 }
 @media (max-height: 820px), (hover: none) and (pointer: coarse) {
@@ -139,11 +140,34 @@ button.statusbar-item:focus-visible {
   .app:not(.phone) .core-status-entry[aria-expanded="true"] .core-status-chevron {
     transform: rotate(180deg);
   }
-  /* Core keeps its dot and its title in the toolbar — it is the one Core
-     indicator — and gives up only the words beside it, which the entry and
-     the panel now have the room for. */
-  .app:not(.phone) .toolbar-actions .connection-label {
+  /* The toolbar's own `.connection` is the one thing in the page carrying
+     data-core-status, and it stays in the page for that; on this screen the
+     entry shows Core's state in its place rather than beside it, so that
+     there is one dot and not two. */
+  .app:not(.phone) .toolbar-actions .connection {
     display: none;
+  }
+  .app:not(.phone) .core-status-mark {
+    width: 7px;
+    height: 7px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--attention-ink, #a77b4f);
+  }
+  .app:not(.phone) .core-status-mark[data-healthy] {
+    background: #7b9671;
+  }
+  /* Connected, the dot alone says it. Anything else is written out: a reader
+     cannot be asked to tell "reconnecting" from "connected" by a colour. */
+  .app:not(.phone) .core-status-state {
+    color: var(--attention-ink, #a77b4f);
+    white-space: nowrap;
+  }
+  /* How Core is, in words, in the panel. Only in the panel: as a bar this
+     deliberately does not repeat what the toolbar already says
+     (connection-ui.test.mjs). */
+  .app:not(.phone) > .statusbar[data-open] .statusbar-core {
+    display: inline-flex;
   }
   /* The bar as a panel: out of the grid (its row is 0 in styles.css), under
      the toolbar, against the right edge the entry is at. */

@@ -63,6 +63,9 @@ const words = strings({
   details: "Core and background work",
   detailsNeed: (count: number) => `${count} need${count === 1 ? "s" : ""} a look`,
   detailsQuiet: "nothing needs a look",
+  // Core's own state, said in words: in the entry's name always, beside the
+  // dot whenever it is not simply connected, and in the panel (T-15 V5).
+  detailsCore: (core: string, work: string) => `${core} · ${work}`,
 }, {
   specimen: "视觉样本",
   reconnecting: "实时更新正在重新连接",
@@ -106,6 +109,7 @@ const words = strings({
   details: "Core 与后台工作",
   detailsNeed: (count) => `${count} 个待查看`,
   detailsQuiet: "没有待查看的",
+  detailsCore: (core, work) => `${core} · ${work}`,
 });
 type Words = ReturnType<typeof words>;
 
@@ -125,6 +129,8 @@ export function StatusBar({
   machinesRevision,
   claudeRuntime,
   codexAgent,
+  coreLabel,
+  coreHealthy,
   onMachines,
 }: {
   previewMode: boolean;
@@ -139,6 +145,9 @@ export function StatusBar({
   claudeRuntime?: ClaudeRuntime | null;
   /** The selected Agent when it is a Codex one: its plan usage shows. */
   codexAgent?: Agent | null;
+  /** How Core is, in the words the toolbar says it in (coreConnection). */
+  coreLabel: string;
+  coreHealthy: boolean;
   onMachines: () => void;
 }) {
   const language = useLanguage();
@@ -200,21 +209,29 @@ export function StatusBar({
             aria-controls="core-status-details"
             onClick={() => setOpen((was) => !was)}
           >
-            {/* No dot of its own: the toolbar's Core dot beside it is the one
-                Core indicator, and two would say the same thing twice. The
-                name is read, not seen — beside it the count is what there is
-                room for, and an aria-label would stand in front of it. */}
-            <span className="sr-only">{t.details}: </span>
-            {needsLook > 0 ? (
-              <span className="core-status-count">{t.detailsNeed(needsLook)}</span>
-            ) : (
-              <span className="sr-only">{t.detailsQuiet}</span>
+            {/* The dot and the chevron are one target. The toolbar's own
+                `.connection` keeps data-core-status and is the one indicator
+                in the page; on this screen it is not shown, and this says the
+                same thing in its place rather than beside it.
+                The name is read, not seen — Core's state and the count are
+                both in it, and no aria-label stands in front of either. */}
+            <span className="core-status-mark" data-healthy={coreHealthy ? "" : undefined} aria-hidden="true" />
+            <span className="sr-only">{t.detailsCore(coreLabel, needsLook > 0 ? t.detailsNeed(needsLook) : t.detailsQuiet)}</span>
+            {/* Connected, the dot alone says it. Anything else — reconnecting,
+                offline, an update wanted — is not a colour a reader can be
+                asked to tell apart, so it is written out. */}
+            {!coreHealthy && (
+              <span className="core-status-state" aria-hidden="true">{coreLabel}</span>
+            )}
+            {needsLook > 0 && (
+              <span className="core-status-count" aria-hidden="true">{t.detailsNeed(needsLook)}</span>
             )}
             <ChevronDown className="core-status-chevron" size={14} aria-hidden="true" />
           </button>,
           slot,
         )}
       <div className="statusbar-start">
+        <span className="statusbar-item statusbar-core">{coreLabel}</span>
         {previewMode && <span className="statusbar-item">{t.specimen}</span>}
         {!previewMode && eventConnection !== "open" && (
           <span className="statusbar-item event-connection-status" role="status">

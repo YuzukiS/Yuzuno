@@ -4620,6 +4620,8 @@ export function App() {
         machinesRevision={String(machinesRevision)}
         claudeRuntime={isClaude ? currentDetail?.claudeRuntime : undefined}
         codexAgent={agent?.harness === "codex" ? agent : null}
+        coreLabel={core.label}
+        coreHealthy={core.healthy}
         onMachines={() => setMachinesOpen(true)}
       />
       <WorkspaceUpdatesHost

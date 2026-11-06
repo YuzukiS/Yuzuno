@@ -55,6 +55,11 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 const browser = await launchBrowser();
 const errors = [];
 
+// Flipped by the test: the workspace read then fails, and with a snapshot
+// already in hand that is what makes Core unhealthy (connection-status.ts
+// `healthy: hasSnapshot && !error`).
+let failWorkspace = false;
+
 async function open({ width, height, coarse, inset, quiet }) {
   const context = await browser.newContext({
     viewport: { width, height }, hasTouch: coarse, isMobile: coarse, reducedMotion: "reduce" });
@@ -62,7 +67,18 @@ async function open({ width, height, coarse, inset, quiet }) {
   // The language is read inside the page, so it is passed in: process.env
   // there is the browser's, not this script's.
   await page.addInitScript(([right, lang]) => {
-    window.EventSource = class { close() {} };
+    // Enough of an EventSource for useWorkspaceEvents, and reachable from the
+    // test so a workspace event can be delivered on purpose.
+    window.EventSource = class {
+      constructor(url) {
+        this.url = url;
+        this.onopen = this.onmessage = this.onerror = null;
+        window.__sse = this;
+      }
+      close() {}
+    };
+    window.__event = (data) =>
+      window.__sse?.onmessage?.({ data: JSON.stringify(data), lastEventId: "1" });
     if (right)
       addEventListener("DOMContentLoaded", () =>
         document.documentElement.style.setProperty("--safe-right", `${right}px`));
@@ -74,10 +90,12 @@ async function open({ width, height, coarse, inset, quiet }) {
   await page.route("**/*", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() !== "GET") return route.fulfill({ json: { ok: true } });
-    if (path === "/api/workspace")
+    if (path === "/api/workspace") {
+      if (failWorkspace) return route.fulfill({ status: 503, json: { error: "fixture: Core unreachable" } });
       return route.fulfill({ json: { workspace: { id: "ws" }, projects: [], projectUsage: {},
         agents: quiet ? [agent, { ...remoteAgent, connectionState: "connected" }] : agents,
         runtime: { connected: true }, defaultCwd: "/work" } });
+    }
     if (/^\/api\/agents\/[ab]$/.test(path)) return route.fulfill({ json: detail });
     if (path === "/api/machines")
       return route.fulfill({ json: { machines: [quiet ? { ...machine, lastCheck: { reachable: true, checkedAt: new Date(now - 120_000).toISOString() } } : machine] } });
@@ -119,7 +137,21 @@ const look = () => ({
       // and separately what is actually on the screen.
       text: (el.textContent || "").replace(/\s+/g, " ").trim(),
       seen: (el.querySelector(".core-status-count")?.textContent || "").replace(/\s+/g, " ").trim(),
-      name: (el.getAttribute("aria-label") || el.textContent || "").replace(/\s+/g, " ").trim(),
+      state: (el.querySelector(".core-status-state")?.textContent || "").replace(/\s+/g, " ").trim(),
+      dots: [...el.querySelectorAll(".core-status-mark")].filter((m) => {
+        const mr = m.getBoundingClientRect();
+        return mr.width > 0 && mr.height > 0;
+      }).length,
+      name: (() => {
+        if (el.getAttribute("aria-label")) return el.getAttribute("aria-label");
+        const walk = (node) => {
+          if (node.nodeType === 3) return node.nodeValue || "";
+          if (node.nodeType !== 1) return "";
+          if (node.getAttribute("aria-hidden") === "true") return "";
+          return [...node.childNodes].map(walk).join("");
+        };
+        return walk(el).replace(/\s+/g, " ").trim();
+      })(),
       expanded: el.getAttribute("aria-expanded"),
       focused: document.activeElement === el };
   })(),
@@ -150,6 +182,24 @@ const look = () => ({
       title: (el.getAttribute("title") || "").slice(0, 40) };
   })(),
   marks: document.querySelectorAll(".core-status-entry .core-status-mark").length,
+  // Does everything in the toolbar still stand inside the app's content box?
+  toolbar: (() => {
+    const bar = document.querySelector(".toolbar");
+    const app = document.querySelector(".app");
+    if (!bar || !app) return { fits: false, spill: 0 };
+    const st = getComputedStyle(app);
+    const pad = (v) => parseFloat(v || "0") || 0;
+    const ar = app.getBoundingClientRect();
+    const left = ar.left + pad(st.paddingLeft);
+    const right = ar.right - pad(st.paddingRight);
+    let spill = 0;
+    for (const el of bar.querySelectorAll("*")) {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      spill = Math.max(spill, Math.max(0, left - r.left) + Math.max(0, r.right - right));
+    }
+    return { fits: spill <= 1, spill: Math.round(spill) };
+  })(),
   statusAttrs: document.querySelectorAll("[data-core-status]").length,
   // What the window allows, to see whether the panel opened whole inside it.
   view: { w: window.innerWidth, h: window.innerHeight },
@@ -178,15 +228,22 @@ const look = () => ({
   check(shut.entry.lands, "a press in the middle or just inside an edge lands on it");
   // By the number, not by an English word: the same entry is read in Chinese.
   check(/\d/.test(shut.entry.seen), `it says how many need a look while it is shut, on the screen ("${shut.entry.seen}")`);
-  check(/Core|后台/.test(shut.entry.name) && shut.entry.name.includes(shut.entry.text),
-    `and it is named by what it holds, counts and all (${shut.entry.name})`);
+  check(/Core|后台/.test(shut.entry.name) && shut.entry.name.includes(shut.entry.seen),
+    `and it is named by what it holds, including the count on the screen (${shut.entry.name})`);
   check(shut.bar.h === 0, `the bar itself costs the conversation nothing while it is shut (${shut.bar.h}px)`);
-  // One Core indicator, not two: the dot keeps its place and its title, and
-  // gives up only the words beside it.
-  check(shut.coreDot.there && shut.coreDot.shown, `Core's own dot stays in the toolbar (${shut.coreDot.status})`);
-  check(shut.coreDot.words === false, "and gives up only the words beside it, which the panel has room for");
-  check(shut.marks === 0 && shut.statusAttrs === 1,
-    `nothing says how Core is twice (${shut.statusAttrs} indicator, ${shut.marks} extra dots)`);
+  // One Core indicator, not two. d6 keeps a single dot for Core, so on this
+  // screen the entry carries it and the toolbar's own `.connection` is not
+  // shown — it stays in the page because it is the one element carrying
+  // data-core-status, which connection-ui.test.mjs counts.
+  check(!shut.coreDot.shown, "the toolbar's own Core line gives way to the entry rather than sitting beside it");
+  check(shut.coreDot.there && shut.statusAttrs === 1,
+    `and it is still the one thing in the page saying how Core is (${shut.statusAttrs} with data-core-status)`);
+  check(shut.entry.dots === 1, `the entry shows one dot, not a second one (${shut.entry.dots})`);
+  // Connected, the dot alone says so: the recorded deviation.
+  check(shut.entry.state === "",
+    `connected, Core's state is the dot alone ("${shut.entry.state}")`);
+  check(/Core|核心/.test(shut.entry.name) && /\d|nothing|没有/.test(shut.entry.name),
+    `and the name carries Core's state and the count both (${shut.entry.name})`);
   check(Math.abs(shut.panelBottom - shut.appBottom) <= 1,
     `the conversation reaches the bottom of the window (${shut.panelBottom} vs ${shut.appBottom})`);
 
@@ -206,6 +263,7 @@ const look = () => ({
   // What the bar held is in it: the machines that answered, and the RAM.
   check(/owl-linux|2 |机器|machines/i.test(up.bar.text) || up.bar.rows.length >= 2,
     `what the bar held is in the panel (${up.bar.rows.length} rows)`);
+  check(/Core|核心/.test(up.bar.text), `and the panel says how Core is in words (${up.bar.rows[0]?.text || "-"})`);
   const squashed = up.bar.rows.filter((r) => r.h > 0 && r.h < 40);
   check(squashed.length === 0,
     squashed.length ? `every row is a 40px target, but ${squashed.map((r) => `${r.text}=${r.h}`).join(", ")}` : "every row in it is a 40px target");
@@ -219,6 +277,46 @@ const look = () => ({
 
   console.log(`\nnote (synthetic, from the screenshot — not a Duo): the conversation reads ${shut.body}px with`);
   console.log(`  the bar folded away, where the bar as a bar left it 427px and 27px went to the bar.`);
+  await context.close();
+}
+
+// --- the same workbench with Core no longer answering, at three widths ---
+// Spelling the state out makes the entry much wider, and a toolbar that
+// cannot hold it would push a control out of the window: the same fault the
+// Work activity entry had at 248px.
+for (const width of [951, 820, 669]) {
+  const { context, page } = await open({ width, height: 669, coarse: true, inset: 84 });
+  const before = await page.evaluate(look);
+  check(before.entry.state === "", "with Core answering, the entry shows no state text");
+  // The read fails from here, and an Agent event asks for a fresh one
+  // (App.tsx: agent.changed -> workspaceRefresh.soon(250)).
+  failWorkspace = true;
+  await page.evaluate(() => window.__event({ type: "agent.changed", agentId: "a" }));
+  await page.waitForTimeout(1500);
+  const bad = await page.evaluate(look);
+  console.log(`\n--- workbench ${width}x669 touch, Core not answering ---`);
+  console.log(`  entry ${bad.entry.w}x${bad.entry.h} state "${bad.entry.state}" named "${bad.entry.name}"`);
+  check(bad.entry.state !== "",
+    `not connected, the state is written out beside the dot rather than left to a colour ("${bad.entry.state}")`);
+  check(bad.entry.min >= 40, `and it is still one 40px target (${bad.entry.w}x${bad.entry.h})`);
+  check(bad.entry.dots === 1, `still one dot (${bad.entry.dots})`);
+  check(/\d|nothing|没有/.test(bad.entry.name) && bad.entry.name.includes(bad.entry.state),
+    `and the name still carries both Core's state and the count (${bad.entry.name})`);
+  // Once, not twice: the words beside the dot and the words read aloud are
+  // the same words, and a reader should hear them one time.
+  const said = bad.entry.name.split(bad.entry.state).length - 1;
+  check(said === 1, `and says Core's state once, not twice (${said}x in "${bad.entry.name}")`);
+  // A 253px entry has to fit the toolbar it stands in: a control pushed out
+  // of the window is worse than a shorter word.
+  check(bad.toolbar.fits,
+    `the toolbar still holds everything with the state spelled out (entry ${bad.entry.w}px, ${bad.toolbar.spill}px past its edge)`);
+  // And the panel says it in words as well.
+  await page.click(".core-status-entry");
+  await page.waitForTimeout(250);
+  const open2 = await page.evaluate(look);
+  check(/Core|核心/.test(open2.bar.text),
+    `the panel says how Core is in words too (${open2.bar.rows[0]?.text || "-"})`);
+  failWorkspace = false;
   await context.close();
 }
 
