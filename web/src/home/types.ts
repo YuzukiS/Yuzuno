@@ -57,6 +57,9 @@ export type LiveRefState = {
   url?: string;
   /** For a review: the task it belongs to, so Jobs can open it. */
   taskId?: string;
+  /** For a task (T-56): the key it has now, which may differ from the one
+   * the Agent wrote (an old key, or `T-<n>`); every key it had still names it. */
+  key?: string;
   observedAt?: string;
   /** For a task (T-9): who has it, null when no one does. */
   assignee?: { kind: string; id: string; name: string } | null;

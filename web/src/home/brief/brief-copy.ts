@@ -26,6 +26,7 @@ import {
   type AttachmentsProps,
   type ResearchDeskProps,
   researchPath,
+  shownRefId,
 } from "./brief-catalog";
 
 // T-9: a Home report as Markdown to paste elsewhere, written from the
@@ -274,7 +275,7 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
         const { items } = part.props as LiveRefsProps;
         return [...heading(depth, b.references), items.map((item) => {
           const state = section.refs?.[`${item.kind}:${item.id}`];
-          const name = `${b.refKind[item.kind]} ${item.id}`;
+          const name = `${b.refKind[item.kind]} ${shownRefId(item, state)}`;
           const named = link(name, state?.url) ?? inline(name);
           // Unread is not missing: Core couldn't read it this time.
           const about = [item.label ?? state?.title, state?.found === false ? (state.unavailable ? b.refUnavailable : b.notFound) : state?.state]

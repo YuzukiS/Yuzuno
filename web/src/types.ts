@@ -79,6 +79,9 @@ export interface Agent {
 export interface Project {
   id: string;
   name: string;
+  /** The prefix of its tasks' keys (T-56), such as `YN` for `YN-3`; absent
+   * from a Core without keys. */
+  key?: string;
   /** Machine ID to the folder that pre-fills new agents there. */
   defaultDirs: Record<string, string>;
   archivedAt?: string | null;
