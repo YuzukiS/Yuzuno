@@ -415,10 +415,10 @@
   color: var(--green);
 }
 .collab-executor-state[data-executor-state="delivering"] {
-  color: var(--attention-ink);
+  color: var(--attention-ink, #987344);
 }
 .collab-executor-state[data-executor-state="failed"] {
-  color: var(--error-ink);
+  color: var(--error-ink, var(--coral));
 }
 .collab-owner-line > .collab-executor-state {
   margin-left: 6px;
