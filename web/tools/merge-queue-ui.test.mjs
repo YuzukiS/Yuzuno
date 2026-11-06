@@ -153,6 +153,9 @@ test('every state and stop reason of the merge queue doc has its word, in Englis
     const p = mount({ entries, language });
     try {
       await opened(p);
+      // Finished rows fold after ten: unfold them, as a person would.
+      await until(() => p.doc.querySelector('.merge-queue .job-group-more'));
+      p.doc.querySelector('.merge-queue .job-group-more').click();
       await until(() => rows(p).length === entries.length);
       docStates.forEach((state, n) => assert.equal(rowOf(p, 100 + n).querySelector('.job-state').textContent, words[state], state));
       for (const [n, reason] of docReasons.entries()) {
@@ -312,7 +315,9 @@ test('the chosen entry shows its anchor, batch, merge commit, post-check, main C
     p.window.addEventListener('yuzuno:open-task-review', e => tasks.push(e.detail));
     button(p.doc.querySelector('.job-detail'), 'Open T-43').click();
     await until(() => !p.doc.querySelector('[role="dialog"]'), 'Jobs did not close for the task');
-    assert.deepEqual(tasks, [{ taskId: 'task-e-done' }]);
+    // The event comes from the page: compare its fields, not its prototype.
+    assert.deepEqual(tasks.map(d => Object.keys(d)), [['taskId']]);
+    assert.equal(tasks[0].taskId, 'task-e-done');
   } finally { p.close(); }
 });
 
