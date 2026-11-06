@@ -1,15 +1,41 @@
-//! One gate check: fresh reads in the order `checks` decides on them, so a
-//! later, costlier read (job logs) happens only when everything before it held.
-use super::checks::{self, Check, Checkout};
+//! GitHub I/O of the queue, in the order `checks` decides on it: a later,
+//! costlier read (job logs) or a write happens only when everything before it
+//! held. Each read takes one GitHub slot and gives it back; job-log downloads
+//! take none, so a check never holds the CI monitor's reads up.
+use super::checks::{self, Answer, Check, Checkout, Hold};
+use super::writes::{self, Write};
 use crate::workspace::Workspace;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-/// Through the CI monitor's shared read: its ETag cache and cooldown.
+/// At most this many pages of a paged list are read (100 items each).
+const PAGES: u64 = 10;
+
+/// One read through the CI monitor's shared read (its ETag cache and
+/// cooldown), holding a GitHub slot only while it runs.
 async fn read(ws: &Arc<Workspace>, endpoint: String) -> Result<Value> {
+    let _slot = ws.github.slots.acquire().await?;
     crate::ci_monitor::shared_read(ws, endpoint).await
+}
+/// Every page of a list, up to `PAGES`: its items, GitHub's `total_count`,
+/// and whether GitHub named a page past the last one read.
+async fn pages(ws: &Arc<Workspace>, endpoint: String, key: &str) -> Result<(Vec<Value>, Option<u64>, bool)> {
+    let (mut items, mut total, mut next, mut page) = (Vec::new(), None, Some(endpoint), 1);
+    while let Some(at) = next.take() {
+        let (value, more) = {
+            let _slot = ws.github.slots.acquire().await?;
+            crate::ci_monitor::shared_page(ws, at, page).await?
+        };
+        total = total.or(value["total_count"].as_u64());
+        items.extend(array(&value, key));
+        if page == PAGES {
+            return Ok((items, total, more.is_some()));
+        }
+        (next, page) = (more, page + 1);
+    }
+    Ok((items, total, false))
 }
 /// A branch name as one URL path segment.
 fn segment(s: &str) -> String {
@@ -26,14 +52,37 @@ fn segment(s: &str) -> String {
 fn array(value: &Value, key: &str) -> Vec<Value> {
     value[key].as_array().cloned().unwrap_or_default()
 }
+fn short(sha: &str) -> &str {
+    &sha[..12.min(sha.len())]
+}
 
-/// The evidence read so far, and the decision: `Ok(())` means ready.
+/// What one entry is: its repository, PR and released head.
+struct Target {
+    id: String,
+    attempt: i64,
+    repository: i64,
+    repo: String,
+    number: u64,
+    head: String,
+    base: String,
+}
+fn target(entry: &Value) -> Result<Target> {
+    Ok(Target {
+        id: entry["id"].as_str().context("The entry has no id")?.to_owned(),
+        attempt: entry["attempt"].as_i64().unwrap_or(0),
+        repository: entry["repositoryId"].as_i64().context("The entry has no repository id")?,
+        repo: entry["repository"].as_str().context("The entry has no repository")?.to_owned(),
+        number: entry["number"].as_u64().context("The entry has no PR number")?,
+        head: entry["headSha"].as_str().context("The entry has no head")?.to_owned(),
+        base: entry["baseBranch"].as_str().context("The entry has no base branch")?.to_owned(),
+    })
+}
+
+/// The evidence read so far, and the decision: `Ok(())` means every gate
+/// check held and the entry may merge now.
 pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, Check<()>)> {
-    let _slot = ws.github.slots.acquire().await?;
-    let repo = entry["repository"].as_str().context("The entry has no repository")?.to_owned();
-    let number = entry["number"].as_u64().context("The entry has no PR number")?;
-    let head = entry["headSha"].as_str().context("The entry has no head")?.to_owned();
-    let base = entry["baseBranch"].as_str().context("The entry has no base branch")?.to_owned();
+    let t = target(entry)?;
+    let (repo, number, head) = (t.repo.clone(), t.number, t.head.clone());
     let link = entry["linkId"].as_str().context("The entry has no PR link")?.to_owned();
     let mut evidence = json!({"checkedAt":crate::model::now()});
     macro_rules! hold {
@@ -47,11 +96,10 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
     hold!(checks::pull(entry, &pr));
     let (latest, running) = ws.stored(move |s| s.merge_review(&link)).await?;
-    let review = hold!(checks::review(entry, latest.as_ref(), running));
-    evidence["review"] = review;
+    evidence["review"] = hold!(checks::review(entry, latest.as_ref(), running));
 
-    let by_ref = read(ws, format!("repos/{repo}/git/ref/heads/{base}")).await?;
-    let by_branch = read(ws, format!("repos/{repo}/branches/{}", segment(&base))).await?;
+    let by_ref = read(ws, format!("repos/{repo}/git/ref/heads/{}", t.base)).await?;
+    let by_branch = read(ws, format!("repos/{repo}/branches/{}", segment(&t.base))).await?;
     let main = hold!(checks::main_agrees(
         by_ref["object"]["sha"].as_str().unwrap_or(""),
         by_branch["commit"]["sha"].as_str().unwrap_or("")
@@ -60,13 +108,25 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     let since = entry["mainAtRelease"].as_str().unwrap_or(&main).to_owned();
     let anchored = entry["mainAnchoredAt"].as_str().or(entry["release"]["at"].as_str()).unwrap_or("").to_owned();
     evidence["main"] = json!({"atRelease":since,"anchoredAt":anchored,"before":main,"beforeTree":checks::tree_of(&main_commit)});
-    let main_runs = read(ws, format!("repos/{repo}/actions/runs?branch={}&event=push&per_page=20", segment(&base))).await?;
-    let main_ci = hold!(checks::main_health(&array(&main_runs, "workflow_runs"), &since, &anchored));
-    evidence["main"]["ci"] = main_ci;
+    let main_runs = read(ws, format!("repos/{repo}/actions/runs?branch={}&event=push&per_page=20", segment(&t.base))).await?;
+    let main_runs = array(&main_runs, "workflow_runs");
+    let repository = t.repository;
+    let paused = ws.stored(move |s| s.merge_repository(repository)).await?["paused"].clone();
+    if let Some(cleared) = hold!(checks::pause(&paused, &main, &main_runs)) {
+        evidence["pauseCleared"] = cleared;
+    }
+    let (seen, red) = checks::main_runs_since(&main_runs, &since, &anchored);
+    evidence["main"]["ci"] = json!(seen);
+    if let Some(red) = red {
+        evidence["mainRed"] = red.clone();
+        hold!(checks::main_health(&main_runs, &since, &anchored));
+    }
 
-    let runs = read(ws, format!("repos/{repo}/actions/runs?head_sha={head}&event=pull_request&per_page=100")).await?;
     let required: Vec<String> = serde_json::from_value(entry["requireWorkflows"].clone()).unwrap_or_default();
-    let newest = hold!(checks::head_runs(&array(&runs, "workflow_runs"), &required));
+    let (runs, total, more) =
+        pages(ws, format!("repos/{repo}/actions/runs?head_sha={head}&event=pull_request&per_page=100&page=1"), "workflow_runs").await?;
+    hold!(checks::complete("workflow runs on the head", runs.len(), total, more));
+    let newest = hold!(checks::head_runs(&runs, &required));
     // GitHub's merge verdict from before the runs finished may be stale: read the PR again.
     let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
     hold!(checks::pull(entry, &pr));
@@ -79,6 +139,16 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     };
     hold!(checks::mergeable(&pr, pending.as_deref()));
 
+    // A batch built on this main is the gate; one on an older main is retired.
+    let batch = &entry["batch"];
+    if batch["main"] == main.as_str() && batch["pr"].is_u64() && batch["commit"].is_string() {
+        let (gate, decision) = batch_gate(ws, &t, &main, batch, &required).await?;
+        evidence["gate"] = gate;
+        hold!(decision);
+        evidence["wouldMerge"] = json!({"method":"merge","sha":head,"endpoint":format!("repos/{repo}/pulls/{number}/merge")});
+        return Ok((evidence, Ok(())));
+    }
+
     let merge = match read(ws, format!("repos/{repo}/git/ref/pull/{number}/merge")).await {
         Ok(r) => match r["object"]["sha"].as_str() {
             Some(sha) => Some(read(ws, format!("repos/{repo}/git/commits/{sha}")).await?),
@@ -89,12 +159,41 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     };
     let tree = hold!(checks::slot(merge.as_ref(), &main, &head));
     let merge = merge.context("The PR's merge ref vanished")?;
-
     let ci = newest.iter().find(|r| r["name"] == checks::CI).context("The CI run vanished")?;
+    let proofs = hold!(job_proofs(ws, &repo, ci).await?);
+    let proved = match checks::checkouts(&proofs, &main, &head, &tree) {
+        Ok(proved) => proved,
+        Err(Hold::Stop("needs_batch", detail)) => {
+            let made = build_batch(ws, &t, entry, &main).await?;
+            evidence["batch"] = made.0.clone();
+            hold!(made.1);
+            let b = &made.0;
+            return Ok((evidence.clone(), Err(Hold::Wait(format!(
+                "{detail}. Core opened batch #{} on {} (main {} + the head, tree {}); it waits for CI on it",
+                b["pr"], b["branch"].as_str().unwrap_or("?"), short(&main), short(b["tree"].as_str().unwrap_or("?"))
+            )))));
+        }
+        Err(other) => return Ok((evidence, Err(other))),
+    };
+    evidence["gate"] = json!({"kind":"slot","tree":tree,
+        "mergeRef":{"sha":merge["sha"],"parents":checks::parents(&merge),"tree":tree},
+        "runs":newest.iter().map(|r| json!({"workflow":r["name"],"run":r["id"],"attempt":r["run_attempt"],"conclusion":r["conclusion"],
+            "jobs":if r["id"] == ci["id"] { json!(proved) } else { json!([]) }})).collect::<Vec<_>>()});
+    evidence["wouldMerge"] = json!({"method":"merge","sha":head,"endpoint":format!("repos/{repo}/pulls/{number}/merge")});
+    Ok((evidence, Ok(())))
+}
+
+/// Every job of a CI run attempt, each with its log's checkout line resolved
+/// to a commit. Logs are downloaded without a GitHub slot.
+async fn job_proofs(ws: &Arc<Workspace>, repo: &str, ci: &Value) -> Result<Check<Vec<Checkout>>> {
     let attempt = ci["run_attempt"].as_u64().unwrap_or(1);
-    let jobs = read(ws, format!("repos/{repo}/actions/runs/{}/attempts/{attempt}/jobs?per_page=100", ci["id"])).await?;
+    let (jobs, total, more) =
+        pages(ws, format!("repos/{repo}/actions/runs/{}/attempts/{attempt}/jobs?per_page=100&page=1", ci["id"]), "jobs").await?;
+    if let Err(hold) = checks::complete(&format!("jobs of CI run {}", ci["id"]), jobs.len(), total, more) {
+        return Ok(Err(hold));
+    }
     let mut proofs = Vec::new();
-    for job in array(&jobs, "jobs") {
+    for job in jobs {
         if job["conclusion"] == "skipped" {
             proofs.push(Checkout { job, line: None, commit: None, sha256: String::new(), bytes: 0, truncated: false });
             continue;
@@ -116,29 +215,281 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
         };
         proofs.push(Checkout { sha256: format!("{:x}", Sha256::digest(&log)), bytes: log.len(), truncated, line, commit, job });
     }
-    let proved = hold!(checks::checkouts(&proofs, &main, &head, &tree));
-    evidence["gate"] = json!({"kind":"slot","tree":tree,
-        "mergeRef":{"sha":merge["sha"],"parents":checks::parents(&merge),"tree":tree},
-        "runs":newest.iter().map(|r| json!({"workflow":r["name"],"run":r["id"],"attempt":r["run_attempt"],"conclusion":r["conclusion"],
-            "jobs":if r["id"] == ci["id"] { json!(proved) } else { json!([]) }})).collect::<Vec<_>>()});
-    evidence["wouldMerge"] = json!({"method":"merge","sha":head,"endpoint":format!("repos/{repo}/pulls/{number}/merge")});
-    Ok((evidence, Ok(())))
+    Ok(Ok(proofs))
+}
+
+/// CI on the entry's batch: the batch PR is still Core's own, open at the batch
+/// commit, every workflow run on that commit is green, and every CI job
+/// checked out the merge of main and the batch commit, whose tree is the
+/// batch tree, the tree a merge of the head would land.
+async fn batch_gate(ws: &Arc<Workspace>, t: &Target, main: &str, b: &Value, required: &[String]) -> Result<(Value, Check<()>)> {
+    let (repo, branch) = (&t.repo, b["branch"].as_str().unwrap_or(""));
+    let (commit, tree) = (b["commit"].as_str().unwrap_or(""), b["tree"].as_str().unwrap_or(""));
+    let mut gate = json!({"kind":"batch","tree":tree,"batch":{"branch":branch,"commit":commit,"pr":b["pr"],"main":main}});
+    let pull = read(ws, format!("repos/{repo}/pulls/{}", b["pr"])).await?;
+    if pull["head"]["ref"] != branch || pull["state"] != "open" || pull["head"]["sha"] != commit {
+        return Ok((gate, Err(Hold::Stop("batch_changed", format!(
+            "Core's batch PR #{} is no longer open at its batch commit {} on {branch}", b["pr"], short(commit))))));
+    }
+    let (runs, total, more) =
+        pages(ws, format!("repos/{repo}/actions/runs?head_sha={commit}&event=pull_request&per_page=100&page=1"), "workflow_runs").await?;
+    if let Err(hold) = checks::complete("workflow runs on the batch", runs.len(), total, more) {
+        return Ok((gate, Err(hold)));
+    }
+    let newest = match checks::head_runs(&runs, required) {
+        Ok(newest) => newest,
+        Err(hold) => return Ok((gate, Err(hold))),
+    };
+    let ci = newest.iter().find(|r| r["name"] == checks::CI).context("The batch's CI run vanished")?;
+    let proofs = match job_proofs(ws, repo, ci).await? {
+        Ok(proofs) => proofs,
+        Err(hold) => return Ok((gate, Err(hold))),
+    };
+    let proved = match checks::checkouts(&proofs, main, commit, tree) {
+        Ok(proved) => proved,
+        Err(hold) => return Ok((gate, Err(hold))),
+    };
+    gate["runs"] = json!(newest.iter().map(|r| json!({"workflow":r["name"],"run":r["id"],"attempt":r["run_attempt"],"conclusion":r["conclusion"],
+        "jobs":if r["id"] == ci["id"] { json!(proved) } else { json!([]) }})).collect::<Vec<_>>());
+    Ok((gate, Ok(())))
+}
+
+/// Build the entry's batch on `main` (design §3, batching), resuming whatever
+/// an earlier, interrupted check of it already wrote. Each step is recorded on
+/// the entry before the next write, so nothing Core made is ever forgotten.
+async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str) -> Result<(Value, Check<()>)> {
+    let old = &entry["batch"];
+    if old.is_object() && old["main"] != main {
+        let retired = cleanup(ws, entry).await?;
+        let (id, attempt) = (t.id.clone(), t.attempt);
+        ws.stored(move |s| s.merge_batch_retired(&id, attempt, retired)).await?;
+    }
+    let branch = writes::branch(&t.id);
+    let mut b = if old["main"] == main { old.clone() } else {
+        json!({"branch":branch,"main":main,"createdAt":crate::model::now(),"ref":false,"commit":null,"tree":null,"pr":null,"closed":false,"deleted":false})
+    };
+    let save = |b: Value| {
+        let (id, attempt) = (t.id.clone(), t.attempt);
+        async move {
+            ensure!(ws.stored(move |s| s.merge_batch(&id, attempt, b)).await?, "merge_moved_on: the entry was cancelled or retried meanwhile");
+            Ok::<_, anyhow::Error>(())
+        }
+    };
+    save(b.clone()).await?;
+    let (repo, repository) = (t.repo.as_str(), t.repository);
+    if b["ref"] != true {
+        let (code, answer) = writes::write(ws, repository, repo, Write::CreateBranch { branch: &branch, main }).await?;
+        match code {
+            201 => {}
+            422 => {
+                let at = read(ws, format!("repos/{repo}/git/ref/heads/{branch}")).await?;
+                ensure!(at["object"]["sha"].is_string(), "GitHub refused to create {branch}: {}", answer["message"]);
+            }
+            _ => bail!("GitHub answered {code} creating {branch}: {}", answer["message"]),
+        }
+        b["ref"] = json!(true);
+        save(b.clone()).await?;
+    }
+    if !b["commit"].is_string() {
+        let at = read(ws, format!("repos/{repo}/git/ref/heads/{branch}")).await?["object"]["sha"].as_str().unwrap_or("").to_owned();
+        let commit = if at != main {
+            // An interrupted earlier check already merged the head here.
+            read(ws, format!("repos/{repo}/git/commits/{at}")).await?
+        } else {
+            let message = format!("{branch}: main {} + #{} at {} (CI only, do not merge)", short(main), t.number, short(&t.head));
+            let (code, answer) = writes::write(ws, repository, repo, Write::MergeIntoBranch { branch: &branch, head: &t.head, message }).await?;
+            match code {
+                201 => answer,
+                409 => {
+                    b["cleanup"] = json!("pending");
+                    save(b.clone()).await?;
+                    return Ok((b, Err(Hold::Stop("conflict", format!(
+                        "GitHub could not merge the head into main {}: {}", short(main), answer["message"].as_str().unwrap_or("merge conflict"))))));
+                }
+                204 => {
+                    b["cleanup"] = json!("pending");
+                    save(b.clone()).await?;
+                    return Ok((b, Err(Hold::Stop("nothing_to_merge", format!("Main {} already contains the head", short(main))))));
+                }
+                _ => bail!("GitHub answered {code} merging the head into {branch}: {}", answer["message"]),
+            }
+        };
+        if checks::parents(&commit) != [main, t.head.as_str()] {
+            b["cleanup"] = json!("pending");
+            save(b.clone()).await?;
+            return Ok((b, Err(Hold::Stop("batch_changed", format!(
+                "{branch} holds {}, which is not the merge of main {} and the head", commit["sha"], short(main))))));
+        }
+        b["commit"] = commit["sha"].clone();
+        b["tree"] = json!(checks::tree_of(&commit));
+        save(b.clone()).await?;
+    }
+    if !b["pr"].is_u64() {
+        let title = format!("queue: #{} at {} on main {} (CI only, do not merge)", t.number, short(&t.head), short(main));
+        let body = format!(
+            "**CI only. Do not merge or review this PR.** Yuzuno Core's merge queue opened it to run CI on main {main} with #{} at {} merged in. Core closes it and deletes `{branch}` once #{} is merged or the entry ends.",
+            t.number, t.head, t.number
+        );
+        let (code, answer) = writes::write(ws, repository, repo, Write::OpenBatchPull { branch: &branch, base: &t.base, title, body }).await?;
+        let number = match code {
+            201 => answer["number"].as_u64(),
+            422 => {
+                let owner = repo.split('/').next().unwrap_or("");
+                let open = read(ws, format!("repos/{repo}/pulls?head={owner}:{}&state=open&per_page=5", segment(&branch))).await?;
+                open.as_array().and_then(|l| l.first()).and_then(|p| p["number"].as_u64())
+            }
+            _ => None,
+        };
+        b["pr"] = json!(number.with_context(|| format!("GitHub answered {code} opening the batch PR: {}", answer["message"]))?);
+        save(b.clone()).await?;
+    }
+    Ok((b, Ok(())))
+}
+
+/// What the merge request came to (design §3, merging).
+#[derive(Debug)]
+pub(super) enum Merged {
+    Merged(String),
+    Refused(String),
+    /// No certain answer after the one reconciled retry.
+    Unknown(String),
+    /// Main moved before a second request could be sent: check again.
+    Moved(String),
+    /// Nothing was sent (the switch is off): check again later.
+    Held(String),
+}
+
+/// Send the merge, at most twice. Before any second request Core reads the PR:
+/// merged at the head is the answer; open at the head with main unchanged
+/// allows one more request; anything else is reported, never retried.
+pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<Merged> {
+    let t = target(entry)?;
+    let expected = entry["merge"]["expectedMain"].as_str().context("The merge has no expected main")?.to_owned();
+    let mut sent = entry["merge"]["attempts"].as_i64().unwrap_or(0);
+    let mut last = String::from("no answer");
+    loop {
+        if sent > 0 {
+            if let Some(found) = reconcile(ws, &t, &expected).await? {
+                return Ok(found);
+            }
+        }
+        if sent >= 2 {
+            return Ok(Merged::Unknown(format!(
+                "{sent} merge requests got no certain answer ({last}), and the PR is still open at the head; nothing more is sent"
+            )));
+        }
+        let (id, attempt, n) = (t.id.clone(), t.attempt, sent + 1);
+        if !ws.stored(move |s| s.merge_put_journal(&id, attempt, n)).await? {
+            bail!("merge_moved_on: the entry is no longer merging");
+        }
+        match writes::write(ws, t.repository, &t.repo, Write::Merge { number: t.number, head: &t.head }).await {
+            Ok((code, body)) => {
+                return Ok(match checks::merge_answer(code, &body) {
+                    Answer::Merged(sha) => Merged::Merged(sha),
+                    Answer::Refused(detail) => Merged::Refused(detail),
+                });
+            }
+            Err(e) if e.to_string().starts_with("merge_queue_disabled") => return Ok(Merged::Held(e.to_string())),
+            Err(e) => {
+                sent += 1;
+                last = e.to_string();
+            }
+        }
+    }
+}
+
+/// The PR as GitHub has it now, after a merge request without a certain
+/// answer: None means it is open at the head on the expected main, so one
+/// more request may go.
+async fn reconcile(ws: &Arc<Workspace>, t: &Target, expected: &str) -> Result<Option<Merged>> {
+    let pr = read(ws, format!("repos/{}/pulls/{}", t.repo, t.number)).await?;
+    if pr["merged"] == true {
+        return Ok(Some(match pr["merge_commit_sha"].as_str() {
+            Some(sha) if pr["head"]["sha"] == t.head.as_str() => Merged::Merged(sha.to_owned()),
+            _ => Merged::Unknown(format!("The PR was merged, at head {}", pr["head"]["sha"])),
+        }));
+    }
+    if pr["state"] != "open" {
+        return Ok(Some(Merged::Refused("The PR was closed without a merge".into())));
+    }
+    if pr["head"]["sha"] != t.head.as_str() {
+        return Ok(Some(Merged::Refused(format!("The PR head moved to {}", pr["head"]["sha"]))));
+    }
+    let main = read(ws, format!("repos/{}/git/ref/heads/{}", t.repo, t.base)).await?["object"]["sha"].as_str().unwrap_or("").to_owned();
+    if main != expected {
+        return Ok(Some(Merged::Moved(format!("Main moved to {} before the merge was certain; every check runs again", short(&main)))));
+    }
+    Ok(None)
+}
+
+/// After a merge: the post-check (once), the batch cleanup, and main's push CI
+/// on the merge commit.
+pub(super) struct Followed {
+    pub post: Option<Check<()>>,
+    pub merge_commit: Value,
+    pub cleanup: Option<Value>,
+    pub main_ci: Option<Value>,
+}
+pub(super) async fn follow(ws: &Arc<Workspace>, entry: &Value) -> Result<Followed> {
+    let t = target(entry)?;
+    let m = &entry["merge"];
+    let sha = m["sha"].as_str().context("The merge has no commit")?;
+    let mut followed = Followed { post: None, merge_commit: Value::Null, cleanup: None, main_ci: None };
+    if m["post"].is_null() {
+        let commit = read(ws, format!("repos/{}/git/commits/{sha}", t.repo)).await?;
+        followed.post = Some(checks::post_check(
+            &commit,
+            m["expectedMain"].as_str().unwrap_or(""),
+            &t.head,
+            m["tree"].as_str().unwrap_or(""),
+        ));
+        followed.merge_commit = json!({"sha":commit["sha"],"parents":checks::parents(&commit),"tree":checks::tree_of(&commit)});
+    }
+    if entry["batch"].is_object() && entry["batch"]["cleanup"] != "done" {
+        followed.cleanup = Some(cleanup(ws, entry).await?);
+    }
+    let runs = read(ws, format!("repos/{}/actions/runs?branch={}&event=push&head_sha={sha}&per_page=20", t.repo, segment(&t.base))).await?;
+    followed.main_ci = array(&runs, "workflow_runs").into_iter().find(|r| r["name"] == checks::CI && r["head_sha"] == sha);
+    Ok(followed)
+}
+
+/// Close Core's own batch PR and delete Core's own batch branch, whichever of
+/// them it made and has not yet removed. The PR is closed only if its head is
+/// still the entry's own branch.
+pub(super) async fn cleanup(ws: &Arc<Workspace>, entry: &Value) -> Result<Value> {
+    let t = target(entry)?;
+    let b = &entry["batch"];
+    let branch = b["branch"].as_str().context("The batch has no branch")?;
+    ensure!(branch == writes::branch(&t.id), "merge_write_refused: the batch branch is not this entry's own");
+    let (mut closed, mut deleted) = (b["closed"] == true || !b["pr"].is_u64(), b["deleted"] == true || b["ref"] != true);
+    if !closed {
+        let pull = read(ws, format!("repos/{}/pulls/{}", t.repo, b["pr"])).await?;
+        ensure!(pull["head"]["ref"] == branch, "merge_write_refused: PR #{} is not Core's batch PR for {branch}", b["pr"]);
+        if pull["state"] == "open" {
+            let number = b["pr"].as_u64().unwrap_or(0);
+            let (code, answer) = writes::write(ws, t.repository, &t.repo, Write::CloseBatchPull { number }).await?;
+            ensure!(code == 200, "GitHub answered {code} closing batch PR #{number}: {}", answer["message"]);
+        }
+        closed = true;
+    }
+    if !deleted {
+        let (code, answer) = writes::write(ws, t.repository, &t.repo, Write::DeleteBranch { branch }).await?;
+        ensure!(matches!(code, 204 | 404 | 422), "GitHub answered {code} deleting {branch}: {}", answer["message"]);
+        deleted = true;
+    }
+    Ok(json!({"closed":closed,"deleted":deleted,"at":crate::model::now()}))
 }
 
 /// At release: the PR's base branch and head, and the main of that moment.
 pub(super) async fn release_reads(ws: &Arc<Workspace>, repo: &str, number: u64) -> Result<(Value, String)> {
-    let _slot = ws.github.slots.acquire().await?;
     let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
     let base = pr["base"]["ref"].as_str().context("The PR has no base branch")?.to_owned();
     let main = base_commit(ws, repo, &base).await?;
     Ok((pr, main))
 }
 
-/// At a retry: the main the entry is anchored to from then on.
-pub(super) async fn retry_reads(ws: &Arc<Workspace>, entry: &Value) -> Result<String> {
-    let repo = entry["repository"].as_str().context("The entry has no repository")?;
-    let base = entry["baseBranch"].as_str().context("The entry has no base branch")?;
-    let _slot = ws.github.slots.acquire().await?;
+/// At a retry or an unpause: the main the entries are anchored to from then on.
+pub(super) async fn main_now(ws: &Arc<Workspace>, repo: &str, base: &str) -> Result<String> {
     base_commit(ws, repo, base).await
 }
 

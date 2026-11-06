@@ -97,6 +97,17 @@ pub(super) fn main_agrees(by_ref: &str, by_branch: &str) -> Check<String> {
 /// of an older commit created before the anchor does not. Running, queued,
 /// superseded (cancelled) and green runs are fine. `runs` are newest first.
 pub(super) fn main_health(runs: &[Value], since: &str, anchored_at: &str) -> Check<Value> {
+    match main_runs_since(runs, since, anchored_at) {
+        (_, Some(run)) => stop(
+            "main_red",
+            format!("Main CI run {} on {} concluded {}", run["id"], short(&run["head_sha"]), run["conclusion"].as_str().unwrap_or("?")),
+        ),
+        (seen, None) => Ok(json!(seen)),
+    }
+}
+
+/// The main CI runs `main_health` counts, newest first, and the first red one.
+pub(super) fn main_runs_since(runs: &[Value], since: &str, anchored_at: &str) -> (Vec<Value>, Option<Value>) {
     // GitHub's run times have whole seconds: a run of the anchor's own second counts.
     let anchor = chrono::DateTime::parse_from_rfc3339(anchored_at).ok().map(|t| t.timestamp());
     let mut seen = Vec::new();
@@ -109,16 +120,13 @@ pub(super) fn main_health(runs: &[Value], since: &str, anchored_at: &str) -> Che
         let conclusion = run["conclusion"].as_str().unwrap_or("");
         seen.push(json!({"run":run["id"],"headSha":run["head_sha"],"createdAt":run["created_at"],"status":run["status"],"conclusion":run["conclusion"]}));
         if matches!(conclusion, "failure" | "timed_out" | "startup_failure") {
-            return stop(
-                "main_red",
-                format!("Main CI run {} on {} concluded {conclusion}", run["id"], short(&run["head_sha"])),
-            );
+            return (seen, Some(json!({"id":run["id"],"headSha":run["head_sha"],"conclusion":conclusion})));
         }
         if at_anchor {
             break;
         }
     }
-    Ok(json!(seen))
+    (seen, None)
 }
 
 /// The newest run of each workflow on the head. Every one has finished green
@@ -277,4 +285,70 @@ pub(super) fn checkouts(jobs: &[Checkout], main: &str, head: &str, tree: &str) -
         return stop("checkout_unproven", "No CI job on the head ran, so nothing shows what was tested");
     }
     Ok(proved)
+}
+
+/// The repository's pause (design §5). While it holds, entries wait and none
+/// merges. A `main_red` pause clears itself once main has moved past the red
+/// commit and CI on the new main finished green: `Ok(Some(..))` says so, with
+/// what cleared it, and the store re-anchors every waiting entry there.
+pub(super) fn pause(paused: &Value, main: &str, runs: &[Value]) -> Check<Option<Value>> {
+    if paused.is_null() {
+        return Ok(None);
+    }
+    let reason = paused["reason"].as_str().unwrap_or("paused");
+    if reason == "main_red" && paused["main"] != main {
+        let green = runs.iter().find(|r| r["name"] == CI && r["head_sha"] == main);
+        if let Some(run) = green.filter(|r| r["status"] == "completed" && r["conclusion"] == "success") {
+            return Ok(Some(json!({"by":"a newer green main","main":main,"run":run["id"]})));
+        }
+    }
+    wait(format!(
+        "The repository's merge queue is paused ({reason}) since {}: {}. It waits until a lead or the user unpauses it{}",
+        paused["at"].as_str().unwrap_or("?"),
+        paused["detail"].as_str().unwrap_or(""),
+        if reason == "main_red" { ", or CI on a newer main is green" } else { "" }
+    ))
+}
+
+/// Every item of a paged list was read: GitHub's `total_count` is no more
+/// than the items Core holds. Otherwise what was not read proves nothing.
+pub(super) fn complete(what: &str, read: usize, total: Option<u64>, more: bool) -> Check<()> {
+    if more || total.is_some_and(|t| t as usize > read) {
+        return stop(
+            "checkout_unproven",
+            format!("Core read {read} of {} {what}; the rest prove nothing, so the entry cannot merge", total.map_or("more".into(), |t| t.to_string())),
+        );
+    }
+    Ok(())
+}
+
+/// GitHub's answer to the merge PUT (design §3, ready → merging).
+#[derive(Debug, PartialEq)]
+pub(super) enum Answer {
+    Merged(String),
+    Refused(String),
+}
+pub(super) fn merge_answer(code: u16, body: &Value) -> Answer {
+    match (code, body["merged"].as_bool(), body["sha"].as_str()) {
+        (200, Some(true), Some(sha)) if sha.len() == 40 => Answer::Merged(sha.to_owned()),
+        _ => Answer::Refused(format!("GitHub answered {code}: {}", body["message"].as_str().unwrap_or("no message"))),
+    }
+}
+
+/// After a merge: main's new commit is (main before, head) with the tree CI
+/// tested. Anything else landed something CI did not test.
+pub(super) fn post_check(commit: &Value, main: &str, head: &str, tree: &str) -> Check<()> {
+    if parents(commit) != [main, head] {
+        return stop(
+            "post_check_failed",
+            format!("The merge commit {} has parents {:?}, not main {} and the head", short(&commit["sha"]), parents(commit), &main[..12.min(main.len())]),
+        );
+    }
+    if tree_of(commit) != Some(tree) {
+        return stop(
+            "post_check_failed",
+            format!("The merge commit {} has tree {}, not the tested tree {}", short(&commit["sha"]), tree_of(commit).unwrap_or("?"), &tree[..12.min(tree.len())]),
+        );
+    }
+    Ok(())
 }

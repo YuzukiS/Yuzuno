@@ -1,6 +1,7 @@
 //! Merge entries: what was released, who released it, and every check's
 //! outcome. All GitHub I/O happens outside these transactions.
 use super::checks::{self, Hold};
+use super::remote::{Followed, Merged};
 use super::{Change, Enqueue, Scope};
 use crate::collaboration_store::{self as collab, TaskActor};
 use crate::{model::now, store::Store};
@@ -9,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
 /// Entries that still hold their PR: a second release of it is refused.
-const ACTIVE: &str = "('queued','waiting','ready')";
+const ACTIVE: &str = "('queued','waiting','ready','merging')";
 /// A check that has waited this long stops instead (seconds).
 const WAIT_LIMIT: i64 = 6 * 3600;
 /// Consecutive failed reads before an entry stops.
@@ -23,8 +24,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         next_check INTEGER NOT NULL DEFAULT 0,data TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS merge_entries_task ON merge_entries(task_id);
         CREATE INDEX IF NOT EXISTS merge_entries_due ON merge_entries(state,next_check);
-        CREATE UNIQUE INDEX IF NOT EXISTS merge_entries_active ON merge_entries(repository_id,number)
-        WHERE state IN ('queued','waiting','ready');
+        DROP INDEX IF EXISTS merge_entries_active;
+        CREATE UNIQUE INDEX IF NOT EXISTS merge_entries_holding ON merge_entries(repository_id,number)
+        WHERE state IN ('queued','waiting','ready','merging');
         CREATE TABLE IF NOT EXISTS merge_repositories(repository_id INTEGER PRIMARY KEY,data TEXT NOT NULL);",
     )?;
     Ok(())
@@ -65,12 +67,30 @@ fn history(e: &mut Value, state: &str, reason: &Value, detail: &Value) {
     }
 }
 
-/// A repository's switch, set by the user only (design §2).
-fn enabled(db: &Connection, repository: i64) -> Result<bool> {
+/// A repository's queue state: the user's switch (design §2) and its pause.
+fn repository(db: &Connection, id: i64) -> Result<Value> {
     let raw: Option<String> = db
-        .query_row("SELECT data FROM merge_repositories WHERE repository_id=?1", [repository], |r| r.get(0))
+        .query_row("SELECT data FROM merge_repositories WHERE repository_id=?1", [id], |r| r.get(0))
         .optional()?;
-    Ok(raw.map(|r| serde_json::from_str::<Value>(&r)).transpose()?.is_some_and(|v| v["enabled"] == true))
+    let mut v = raw.map(|r| serde_json::from_str::<Value>(&r)).transpose()?.unwrap_or_else(|| json!({}));
+    v["repositoryId"] = json!(id);
+    if !v["enabled"].is_boolean() {
+        v["enabled"] = json!(false);
+    }
+    if v.get("paused").is_none() {
+        v["paused"] = Value::Null;
+    }
+    Ok(v)
+}
+fn save_repository(db: &Connection, id: i64, data: &Value) -> Result<()> {
+    db.execute(
+        "INSERT INTO merge_repositories(repository_id,data) VALUES(?1,?2) ON CONFLICT(repository_id) DO UPDATE SET data=excluded.data",
+        params![id, data.to_string()],
+    )?;
+    Ok(())
+}
+fn enabled(db: &Connection, repository_id: i64) -> Result<bool> {
+    Ok(repository(db, repository_id)?["enabled"] == true)
 }
 
 /// The newest completed review of a PR link (on any task), and whether a
@@ -233,27 +253,58 @@ fn receipt(db: &Connection, actor: Option<&str>, operation: &str, key: &str, inp
     Ok(())
 }
 
-/// The comment and mail for an entry that became ready or stopped.
+fn short(sha: &Value) -> String {
+    sha.as_str().unwrap_or("?").chars().take(12).collect()
+}
+
+/// The evidence record of an entry as it stands: what was released, what the
+/// last check read, the batch, the merge and its follow-up, and any stop.
+fn record(e: &Value) -> Value {
+    let last = &e["lastEvidence"];
+    json!({"entry":e["id"],"repository":e["repository"],"pr":e["number"],"head":e["headSha"],"state":e["state"],
+        "release":e["release"],"review":last["review"],"main":last["main"],"gate":last["gate"],"checkedAt":last["checkedAt"],
+        "batch":e["batch"],"merge":e["merge"],
+        "stop":if e["state"] == "stopped" { json!({"reason":e["reason"],"detail":e["detail"]}) } else { Value::Null }})
+}
+
+/// System mail to each of `recipients`.
+fn mail(db: &Connection, recipients: &[Value], body: &str, task: &Value, priority: &str, metadata: Value) -> Result<()> {
+    let actor = system();
+    for recipient in recipients {
+        let message = uuid::Uuid::new_v4().to_string();
+        collab::insert_message(db, json!({"id":message,"seq":0,"sender":actor,"recipient":recipient,"body":body,"taskId":task,
+            "replyTo":null,"threadId":message,"createdAt":now(),"source":{"mergeQueue":true},"priority":priority,"metadata":metadata}))?;
+    }
+    Ok(())
+}
+
+/// The comment and mail for an entry that merged, ended or stopped: on its
+/// task, to the Agent that released it and to the task's executor.
 fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
     let head: String = e["headSha"].as_str().unwrap_or("").chars().take(12).collect();
     let n = e["number"].as_u64().unwrap_or(0);
     let id = e["id"].as_str().unwrap_or("");
-    let body = match e["state"].as_str() {
-        Some("ready") => {
-            let ev = &e["evidence"];
-            let jobs = ev["gate"]["runs"].as_array().map(|r| r.iter().map(|r| r["jobs"].as_array().map_or(0, Vec::len)).sum::<usize>()).unwrap_or(0);
-            format!("Merge queue (dry run): #{n} at {head} is ready to merge. Review {} at this head concluded {}. Main {} with CI since release green. Gate: the PR's merge ref {} is the merge of that main and the head (tree {}); {jobs} CI jobs checked out exactly that merge. Would merge: {} with sha={} as a merge commit. Nothing was written to GitHub. Entry {id}: merge_get(entryId) has the evidence record.",
-                ev["review"]["id"].as_str().unwrap_or("?"), ev["review"]["conclusion"].as_str().unwrap_or("?"),
-                ev["main"]["before"].as_str().unwrap_or("?"), ev["gate"]["mergeRef"]["sha"].as_str().unwrap_or("?"),
-                ev["gate"]["tree"].as_str().unwrap_or("?"), ev["wouldMerge"]["endpoint"].as_str().unwrap_or("?"), e["headSha"].as_str().unwrap_or("?"))
-        }
-        _ => format!("Merge queue: #{n} at {head} stopped ({}): {}. Nothing was written to GitHub. merge_retry rechecks it from the start on fresh reads; it never reruns CI. Entry {id}.",
-            e["reason"].as_str().unwrap_or("?"), e["detail"].as_str().unwrap_or("")),
+    let m = &e["merge"];
+    let gate = &e["lastEvidence"]["gate"];
+    let body = match (e["state"].as_str(), e["reason"].as_str()) {
+        (Some("merged"), _) => format!(
+            "Merge queue: merged #{n} at {head} as {}, a merge commit pinned to that head. Gate: {} (tree {}), with every CI job on exactly that merge. Post-check: parents main {} and the head, tree as tested. Core now follows main's push CI on it. Entry {id}: merge_get(entryId) has the evidence record.",
+            short(&m["sha"]), gate["kind"].as_str().unwrap_or("?"), short(&gate["tree"]), short(&m["expectedMain"])),
+        (Some("done"), _) => format!(
+            "Merge queue: main's push CI on {} (#{n}) concluded {}.{} Entry {id}.",
+            short(&m["sha"]), m["mainCi"]["conclusion"].as_str().unwrap_or("?"),
+            if e["reason"] == "main_red" { " The repository's queue is paused until a lead or the user unpauses it, or CI on a newer main is green." } else { "" }),
+        (_, Some("post_check_failed")) => format!(
+            "Merge queue: #{n} at {head} was merged as {}, but the post-check failed: {}. The repository's queue is paused; a person has to look. Entry {id}.",
+            short(&m["sha"]), e["detail"].as_str().unwrap_or("")),
+        _ => format!(
+            "Merge queue: #{n} at {head} stopped ({}): {}. Core merged nothing{}. merge_retry checks it again from the start on fresh reads; Core never reruns CI. Entry {id}.",
+            e["reason"].as_str().unwrap_or("?"), e["detail"].as_str().unwrap_or(""),
+            if e["batch"].is_object() { " and removes its own batch branch and PR" } else { "" }),
     };
-    let actor = system();
     let source = json!({"mergeEntryId":id});
-    collab::activity(db, e["taskId"].as_str().unwrap_or(""), "comment", &actor, &source,
-        json!({"mergeEntryId":id,"mergeEvidence":e["evidence"],"body":body}))?;
+    collab::activity(db, e["taskId"].as_str().unwrap_or(""), "comment", &system(), &source,
+        json!({"mergeEntryId":id,"mergeEvidence":record(e),"body":body}))?;
     let mut recipients: Vec<Value> = Vec::new();
     if e["release"]["by"]["kind"] == "agent" {
         recipients.push(e["release"]["by"].clone());
@@ -265,13 +316,121 @@ fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
             recipients.push(assignee);
         }
     }
-    for recipient in recipients {
-        let message = uuid::Uuid::new_v4().to_string();
-        collab::insert_message(db, json!({"id":message,"seq":0,"sender":actor,"recipient":recipient,"body":body,"taskId":e["taskId"],
-            "replyTo":null,"threadId":message,"createdAt":now(),"source":source,"priority":priority,
-            "metadata":{"kind":"merge","entryId":id,"status":e["state"],"reason":e["reason"],"name":format!("PR #{n}")}}))?;
+    mail(db, &recipients, &body, &e["taskId"], priority,
+        json!({"kind":"merge","entryId":id,"status":e["state"],"reason":e["reason"],"name":format!("PR #{n}")}))
+}
+
+/// Who is told of a pause or its end: the releasers of `entries` and the
+/// leads of every Project the repository is linked to.
+fn pause_recipients(store: &Store, db: &Connection, repository_id: i64, entries: &[Value]) -> Result<Vec<Value>> {
+    let mut ids: Vec<String> = entries
+        .iter()
+        .filter(|e| e["release"]["by"]["kind"] == "agent")
+        .filter_map(|e| e["release"]["by"]["id"].as_str().map(String::from))
+        .collect();
+    let mut q = db.prepare(
+        "SELECT DISTINCT r.agent_id FROM agent_roles r JOIN project_agents p ON p.agent_id=r.agent_id AND p.project_id=r.project_id
+         JOIN github_project_repos g ON g.project_id=r.project_id WHERE r.kind='lead' AND g.repo_id=?1",
+    )?;
+    for id in q.query_map([repository_id], |r| r.get::<_, String>(0))? {
+        ids.push(id?);
     }
-    Ok(())
+    ids.sort();
+    ids.dedup();
+    ids.iter()
+        .filter_map(|id| collab::agent_actor(store, db, id).ok())
+        .map(|a| Ok(serde_json::to_value(a)?))
+        .collect()
+}
+
+/// Pause the repository's queue because of `e` (design §5): no entry merges
+/// until a lead or the user unpauses it, or, for main_red, CI on a newer main
+/// is green. A repository already paused keeps its first pause.
+fn pause(store: &Store, db: &Connection, e: &Value, reason: &str, main: &str, detail: &str) -> Result<()> {
+    let repository_id = e["repositoryId"].as_i64().unwrap_or(0);
+    let mut r = repository(db, repository_id)?;
+    if !r["paused"].is_null() {
+        return Ok(());
+    }
+    r["paused"] = json!({"reason":reason,"at":now(),"entryId":e["id"],"number":e["number"],"main":main,"base":e["baseBranch"],"detail":detail});
+    save_repository(db, repository_id, &r)?;
+    let body = format!(
+        "Merge queue: {} is paused ({reason}) by entry {} for #{}: {detail}. No entry merges until a lead or the user unpauses it (merge_unpause){}.",
+        e["repository"].as_str().unwrap_or("?"), e["id"].as_str().unwrap_or("?"), e["number"],
+        if reason == "main_red" { ", or CI on a newer main is green" } else { "" }
+    );
+    collab::activity(db, e["taskId"].as_str().unwrap_or(""), "comment", &system(), &json!({"mergeEntryId":e["id"]}),
+        json!({"mergeEntryId":e["id"],"mergePause":r["paused"],"body":body}))?;
+    let recipients = pause_recipients(store, db, repository_id, std::slice::from_ref(e))?;
+    mail(db, &recipients, &body, &e["taskId"], "urgent", json!({"kind":"merge","status":"paused","reason":reason,"name":e["repository"]}))
+}
+
+/// End the repository's pause: journal what ended it, and re-anchor every
+/// waiting entry at `main`, so main CI counts for them from there on.
+/// `skip` is an entry the caller re-anchors itself.
+fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &str, skip: Option<&str>) -> Result<Vec<Value>> {
+    let mut r = repository(db, repository_id)?;
+    let paused = std::mem::take(&mut r["paused"]);
+    ensure!(!paused.is_null(), "merge_not_paused: the merge queue of this repository is not paused");
+    let mut ended = paused.clone();
+    ended["clearedAt"] = json!(now());
+    ended["clearedBy"] = by.clone();
+    ended["reanchoredAt"] = json!(main);
+    let mut pauses = r["pauses"].as_array().cloned().unwrap_or_default();
+    pauses.push(ended);
+    let excess = pauses.len().saturating_sub(20);
+    pauses.drain(..excess);
+    r["pauses"] = json!(pauses);
+    save_repository(db, repository_id, &r)?;
+    let mut q = db.prepare("SELECT data FROM merge_entries WHERE repository_id=?1 AND state IN ('queued','waiting','ready') ORDER BY rowid")?;
+    let waiting = q
+        .query_map([repository_id], |row| row.get::<_, String>(0))?
+        .map(|r| Ok(serde_json::from_str::<Value>(&r?)?))
+        .collect::<Result<Vec<_>>>()?;
+    let text = format!(
+        "Merge queue: {} unpaused ({} cleared by {}). Waiting entries count main CI from main {} on.",
+        r["repositoryId"], paused["reason"].as_str().unwrap_or("pause"), by["by"].as_str().unwrap_or("?"), &main[..12.min(main.len())]
+    );
+    for mut e in waiting.iter().cloned() {
+        if Some(e["id"].as_str().unwrap_or("")) != skip {
+            reanchor(&mut e, main, &text);
+            save(db, &e)?;
+        }
+        collab::activity(db, e["taskId"].as_str().unwrap_or(""), "comment", &system(), &json!({"mergeEntryId":e["id"]}),
+            json!({"mergeEntryId":e["id"],"body":text}))?;
+    }
+    let recipients = pause_recipients(store, db, repository_id, &waiting)?;
+    let task = waiting.first().map(|e| e["taskId"].clone()).unwrap_or(Value::Null);
+    mail(db, &recipients, &text, &task, "urgent", json!({"kind":"merge","status":"unpaused","name":format!("repository {repository_id}")}))?;
+    Ok(waiting)
+}
+fn reanchor(e: &mut Value, main: &str, why: &str) {
+    e["mainAtRelease"] = json!(main);
+    e["mainAnchoredAt"] = json!(now());
+    e["nextCheck"] = json!(0);
+    let (state, reason) = (e["state"].as_str().unwrap_or("").to_owned(), e["reason"].clone());
+    history(e, &state, &reason, &json!(why));
+}
+
+/// A stopped or cancelled entry still owns its batch: Core removes it next.
+fn stop(e: &mut Value, reason: &str, detail: String) {
+    e["state"] = json!("stopped");
+    e["reason"] = json!(reason);
+    e["detail"] = json!(detail);
+    release_batch(e);
+}
+fn release_batch(e: &mut Value) {
+    let b = &mut e["batch"];
+    if b.is_object() && (b["ref"] == true || b["pr"].is_u64()) && b["cleanup"] != "done" {
+        b["cleanup"] = json!("pending");
+        e["nextCheck"] = json!(0);
+    }
+}
+
+/// What a check, merge or follow-up of an entry may do next.
+pub(super) struct Recorded {
+    pub announced: bool,
+    pub merge: Option<Value>,
 }
 
 impl Store {
@@ -317,8 +476,8 @@ impl Store {
             "requireWorkflows":input.require_workflows.clone().unwrap_or_default(),"note":input.note,
             "release":{"by":p.author,"requestId":input.request_id,"at":at,"source":p.source,"reviewId":latest.as_ref().map(|r| r["id"].clone())},
             "state":"queued","reason":null,"detail":"Released; Core checks it before anything else happens.","attempt":0,"checks":0,
-            "waits":0,"readFailures":0,"waitingSince":null,"nextCheck":0,"evidence":null,"lastEvidence":null,
-            "history":[{"at":at,"state":"queued","reason":null,"detail":"released"}],"dryRun":true,"createdAt":at,"updatedAt":at});
+            "waits":0,"readFailures":0,"waitingSince":null,"nextCheck":0,"evidence":null,"lastEvidence":null,"batch":null,"merge":null,
+            "history":[{"at":at,"state":"queued","reason":null,"detail":"released"}],"createdAt":at,"updatedAt":at});
         tx.execute(
             "INSERT INTO merge_entries(id,task_id,repository_id,number,state,next_check,data) VALUES(?1,?2,?3,?4,'queued',0,?5)",
             params![id, p.task, p.repository_id, p.number as i64, e.to_string()],
@@ -326,8 +485,8 @@ impl Store {
         receipt(&tx, actor, "merge_enqueue", &input.request_id, &value, &id)?;
         let head: String = input.head_sha.chars().take(12).collect();
         collab::activity(&tx, &p.task, "comment", &p.author, &p.source, json!({"mergeEntryId":id,
-            "body":format!("Merge queue: released #{} at {head} on main {} (entry {id}). The release says the review pair is complete; Core checks the last round at this head, CI and main before anything else. This slice is a dry run: it ends at ready and writes nothing to GitHub.",
-                p.number, &main[..12.min(main.len())])}))?;
+            "body":format!("Merge queue: released #{} at {head} on main {} (entry {id}). The release says the review pair is complete. Core checks the last round at this head, CI and main, and merges the PR as a merge commit pinned to this head once every check holds, while the queue is on for {}.",
+                p.number, &main[..12.min(main.len())], p.repository)}))?;
         tx.commit()?;
         Ok(e)
     }
@@ -359,8 +518,16 @@ impl Store {
         Ok(json!({"entries":rows}))
     }
 
+    /// Whether `actor` may cancel or retry entry `id`: the Agent that released
+    /// it, or the user. Checked before a retry reads anything from GitHub.
+    pub(super) fn merge_change_allowed(&self, actor: Option<&str>, id: &str) -> Result<Value> {
+        let db = self.db.read()?;
+        let e = entry(&db, id)?;
+        may_change(actor, &e)?;
+        Ok(e)
+    }
+
     /// Cancel an entry that still holds its PR, or retry a stopped one.
-    /// A retry re-anchors the entry to `main`, read just before it.
     pub(super) fn merge_change(&self, actor: Option<&str>, operation: &str, input: &Change, main: Option<&str>) -> Result<Value> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
@@ -370,16 +537,14 @@ impl Store {
         }
         let (author, source) = collab::actor_context(self, &tx, actor)?;
         let mut e = entry(&tx, &input.entry_id)?;
-        ensure!(
-            actor.is_none() || (e["release"]["by"]["kind"] == "agent" && e["release"]["by"]["id"] == actor.unwrap_or("")),
-            "merge_release_not_allowed: only the Agent that released this merge, or the user, can change it"
-        );
+        may_change(actor, &e)?;
         let state = e["state"].as_str().unwrap_or("").to_owned();
         let (next, text) = if operation == "merge_cancel" {
             ensure!(matches!(state.as_str(), "queued" | "waiting" | "ready"), "merge_not_active: the entry is {state}");
             ("cancelled", format!("Merge queue: entry {} for #{} cancelled by {}. {}", input.entry_id, e["number"], author.name, input.reason.as_deref().unwrap_or("")))
         } else {
             ensure!(state == "stopped", "merge_not_stopped: only a stopped entry can be retried; it is {state}");
+            ensure!(e["batch"]["cleanup"] != "pending", "merge_cleanup_pending: Core is still removing this entry's batch; retry shortly");
             let busy: bool = tx.query_row(
                 &format!("SELECT EXISTS(SELECT 1 FROM merge_entries WHERE repository_id=?1 AND number=?2 AND state IN {ACTIVE})"),
                 params![e["repositoryId"].as_i64(), e["number"].as_i64()],
@@ -389,6 +554,11 @@ impl Store {
             let main = main.context("A retry needs the current main")?;
             e["mainAtRelease"] = json!(main);
             e["mainAnchoredAt"] = json!(now());
+            if e["batch"].is_object() {
+                let old = e["batch"].take();
+                e["retiredBatches"] = json!([e["retiredBatches"].as_array().cloned().unwrap_or_default(), vec![old]].concat());
+            }
+            e["merge"] = Value::Null;
             ("queued", format!("Merge queue: entry {} for #{} retried by {}; every check runs again on fresh reads, and main CI counts from main {} on.",
                 input.entry_id, e["number"], author.name, &main[..12.min(main.len())]))
         };
@@ -401,6 +571,9 @@ impl Store {
         e["waitingSince"] = Value::Null;
         e["attempt"] = json!(e["attempt"].as_i64().unwrap_or(0) + 1);
         e["updatedAt"] = json!(now());
+        if next == "cancelled" {
+            release_batch(&mut e);
+        }
         history(&mut e, next, &Value::Null, &json!(text));
         save(&tx, &e)?;
         receipt(&tx, actor, operation, &input.request_id, &value, &input.entry_id)?;
@@ -409,11 +582,14 @@ impl Store {
         Ok(e)
     }
 
-    /// Entries whose next check is due, oldest release first.
+    /// Entries with something due, oldest release first: a check, a merge to
+    /// reconcile, a merge to follow, or a batch of Core's own to remove.
     pub(super) fn merge_due(&self) -> Result<Vec<Value>> {
         let db = self.db.read()?;
         let mut q = db.prepare(
-            "SELECT data FROM merge_entries WHERE state IN ('queued','waiting') AND next_check<=?1 ORDER BY rowid LIMIT 8",
+            "SELECT data FROM merge_entries WHERE next_check<=?1
+             AND (state IN ('queued','waiting','ready','merging','merged') OR json_extract(data,'$.batch.cleanup')='pending')
+             ORDER BY rowid LIMIT 8",
         )?;
         let rows = q
             .query_map([epoch()], |r| r.get::<_, String>(0))?
@@ -423,108 +599,435 @@ impl Store {
     }
 
     /// Record one check of `id` that started at `attempt`. A cancel or retry
-    /// in between moved the attempt on, and the outcome is then dropped.
+    /// in between moved the attempt on, and the outcome is then dropped. When
+    /// every gate check held, the entry merges now if the queue is on, not
+    /// paused, and no other merge of its repository is in flight: it becomes
+    /// `merging`, journaled before any request is sent, and is returned.
     pub(super) fn merge_record(
         &self,
         id: &str,
         attempt: i64,
         outcome: std::result::Result<(Value, checks::Check<()>), String>,
         cooldown: i64,
-    ) -> Result<bool> {
+    ) -> Result<Recorded> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let mut e = entry(&tx, id)?;
-        if e["attempt"].as_i64() != Some(attempt) || !matches!(e["state"].as_str(), Some("queued" | "waiting")) {
-            return Ok(false);
+        if e["attempt"].as_i64() != Some(attempt) || !matches!(e["state"].as_str(), Some("queued" | "waiting" | "ready")) {
+            return Ok(Recorded { announced: false, merge: None });
         }
         let now_epoch = epoch();
         e["checks"] = json!(e["checks"].as_i64().unwrap_or(0) + 1);
         e["updatedAt"] = json!(now());
-        let wait = |e: &mut Value, detail: String, at_least: i64| {
-            let waits = e["waits"].as_i64().unwrap_or(0);
-            let since = e["waitingSince"].as_i64().unwrap_or(now_epoch);
-            e["waits"] = json!(waits + 1);
-            e["waitingSince"] = json!(since);
-            e["nextCheck"] = json!((now_epoch + (60i64 << waits.min(3)).min(600)).max(at_least));
-            if now_epoch - since > WAIT_LIMIT {
-                e["state"] = json!("stopped");
-                e["reason"] = json!("wait_timeout");
-                e["detail"] = json!(format!("Still waiting after six hours: {detail}"));
-            } else {
-                e["state"] = json!("waiting");
-                e["reason"] = json!("waiting");
-                e["detail"] = json!(detail);
-            }
-        };
+        let mut merge_now = None;
         match outcome {
             Ok((evidence, decision)) => {
                 e["readFailures"] = json!(0);
                 e["lastEvidence"] = evidence.clone();
+                let repository_id = e["repositoryId"].as_i64().unwrap_or(0);
+                let still_paused = !repository(&tx, repository_id)?["paused"].is_null();
+                if let Some(by) = evidence["pauseCleared"].as_object().filter(|_| still_paused).map(|b| Value::Object(b.clone())) {
+                    let main = by["main"].as_str().unwrap_or("").to_owned();
+                    clear(self, &tx, e["repositoryId"].as_i64().unwrap_or(0), by, &main, Some(id))?;
+                    reanchor(&mut e, &main, "Re-anchored: CI on a newer main is green, which cleared the pause");
+                }
                 match decision {
                     Ok(()) => {
-                        e["state"] = json!("ready");
+                        let repository_id = e["repositoryId"].as_i64().unwrap_or(0);
+                        let r = repository(&tx, repository_id)?;
+                        let busy: Option<i64> = tx
+                            .query_row(
+                                "SELECT number FROM merge_entries WHERE repository_id=?1 AND state='merging' AND id<>?2 LIMIT 1",
+                                params![repository_id, id],
+                                |row| row.get(0),
+                            )
+                            .optional()?;
+                        let (state, detail, next) = if r["enabled"] != true {
+                            ("ready", format!("Every check held, but the merge queue is off for {}; Core writes nothing to GitHub until the user turns it on.", e["repository"].as_str().unwrap_or("?")), now_epoch + 300)
+                        } else if !r["paused"].is_null() {
+                            ("waiting", format!("Every check held, but the repository's queue is paused ({}).", r["paused"]["reason"].as_str().unwrap_or("?")), now_epoch + 60)
+                        } else if let Some(other) = busy {
+                            ("ready", format!("Every check held; it merges after #{other}, whose merge is in flight, and a fresh check."), now_epoch + 60)
+                        } else {
+                            ("merging", "Every check held; Core sends the merge now.".to_owned(), now_epoch + 120)
+                        };
+                        e["state"] = json!(state);
                         e["reason"] = Value::Null;
-                        e["detail"] = json!("Every gate check passed; the merge would run now.");
-                        e["nextCheck"] = json!(0);
-                    }
-                    Err(Hold::Wait(detail)) => wait(&mut e, detail, 0),
-                    Err(Hold::Stop(reason, detail)) => {
-                        e["state"] = json!("stopped");
-                        e["reason"] = json!(reason);
                         e["detail"] = json!(detail);
+                        e["nextCheck"] = json!(next);
+                        e["waits"] = json!(0);
+                        e["waitingSince"] = Value::Null;
+                        if state == "merging" {
+                            e["merge"] = json!({"expectedMain":evidence["main"]["before"],"tree":evidence["gate"]["tree"],"gate":evidence["gate"]["kind"],
+                                "head":e["headSha"],"attempts":0,"puts":[],"startedAt":now(),"sha":null,"post":null,"mainCi":null});
+                        }
+                    }
+                    Err(Hold::Wait(detail)) => wait(&mut e, detail, 0, now_epoch),
+                    Err(Hold::Stop(reason, detail)) => {
+                        if reason == "main_red" {
+                            let red = evidence["mainRed"]["headSha"].as_str().unwrap_or("").to_owned();
+                            pause(self, &tx, &e, "main_red", &red, &detail)?;
+                        }
+                        stop(&mut e, reason, detail);
                     }
                 }
             }
-            Err(error) if error.starts_with("rate_limited") => wait(&mut e, error, cooldown + 5),
-            Err(error) if error.starts_with("gh_too_old") => {
-                e["state"] = json!("stopped");
-                e["reason"] = json!("gh_too_old");
-                e["detail"] = json!(error);
+            Err(error) if error.starts_with("rate_limited") => wait(&mut e, error, cooldown + 5, now_epoch),
+            Err(error) if error.starts_with("merge_moved_on") => return Ok(Recorded { announced: false, merge: None }),
+            Err(error) if error.starts_with("merge_queue_disabled") => wait(&mut e, error, now_epoch + 300, now_epoch),
+            Err(error) if error.starts_with("gh_too_old") => stop(&mut e, "gh_too_old", error),
+            Err(error) => failed_read(&mut e, error, now_epoch),
+        }
+        let state = e["state"].as_str().unwrap_or("").to_owned();
+        e["evidence"] = record(&e);
+        let (reason, detail) = (e["reason"].clone(), e["detail"].clone());
+        history(&mut e, &state, &reason, &detail);
+        save(&tx, &e)?;
+        let announced = state == "stopped";
+        if announced {
+            announce(&tx, &e, if e["reason"] == "main_red" { "urgent" } else { "normal" })?;
+        }
+        if state == "merging" {
+            merge_now = Some(e.clone());
+        }
+        tx.commit()?;
+        Ok(Recorded { announced, merge: merge_now })
+    }
+
+    /// Journal the `n`th merge request of `id` before it is sent, so a
+    /// restart never sends one blind. False when the entry is not merging.
+    pub(super) fn merge_put_journal(&self, id: &str, attempt: i64, n: i64) -> Result<bool> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut e = entry(&tx, id)?;
+        if e["attempt"].as_i64() != Some(attempt) || e["state"] != "merging" {
+            return Ok(false);
+        }
+        e["merge"]["attempts"] = json!(n);
+        if let Some(puts) = e["merge"]["puts"].as_array_mut() {
+            puts.push(json!({"n":n,"at":now()}));
+        }
+        e["nextCheck"] = json!(epoch() + 120);
+        save(&tx, &e)?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The merge request's outcome. Returns the entry when it merged: its
+    /// follow-up (post-check, cleanup, main CI) runs next.
+    pub(super) fn merge_answered(&self, id: &str, attempt: i64, outcome: std::result::Result<Merged, String>) -> Result<Option<Value>> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut e = entry(&tx, id)?;
+        if e["attempt"].as_i64() != Some(attempt) || e["state"] != "merging" {
+            return Ok(None);
+        }
+        let now_epoch = epoch();
+        e["updatedAt"] = json!(now());
+        let mut urgent = false;
+        match outcome {
+            Ok(Merged::Merged(sha)) => {
+                e["state"] = json!("merged");
+                e["reason"] = Value::Null;
+                e["detail"] = json!(format!("Merged as {sha}; Core checks the merge commit and follows main's push CI."));
+                e["merge"]["sha"] = json!(sha);
+                e["merge"]["mergedAt"] = json!(now());
+                e["readFailures"] = json!(0);
+                e["waits"] = json!(0);
+                e["waitingSince"] = Value::Null;
+                e["nextCheck"] = json!(0);
+            }
+            Ok(Merged::Refused(detail)) => stop(&mut e, "merge_refused", detail),
+            Ok(Merged::Unknown(detail)) => {
+                urgent = true;
+                stop(&mut e, "merge_unknown", detail);
+            }
+            Ok(Merged::Moved(detail) | Merged::Held(detail)) => {
+                let old = e["merge"].take();
+                e["retiredMerges"] = json!([e["retiredMerges"].as_array().cloned().unwrap_or_default(), vec![old]].concat());
+                e["state"] = json!("waiting");
+                e["reason"] = json!("waiting");
+                e["detail"] = json!(detail);
+                e["nextCheck"] = json!(now_epoch + 60);
             }
             Err(error) => {
                 let failures = e["readFailures"].as_i64().unwrap_or(0) + 1;
                 e["readFailures"] = json!(failures);
                 if failures >= READ_FAILURES {
-                    e["state"] = json!("stopped");
-                    e["reason"] = json!("github_unreachable");
-                    e["detail"] = json!(format!("{failures} reads in a row failed; the last: {error}"));
+                    urgent = true;
+                    stop(&mut e, "merge_unknown", format!("{failures} reads after a merge request failed; the last: {error}. Whether the PR merged is not known"));
                 } else {
-                    wait(&mut e, format!("A GitHub read failed ({error}); checking again"), 0);
+                    e["detail"] = json!(format!("Reading GitHub after the merge request failed ({error}); checking again"));
+                    e["nextCheck"] = json!(now_epoch + (60i64 << (failures - 1).min(3)).min(600));
                 }
             }
         }
         let state = e["state"].as_str().unwrap_or("").to_owned();
-        if matches!(state.as_str(), "ready" | "stopped") {
-            let last = e["lastEvidence"].clone();
-            e["evidence"] = json!({"entry":e["id"],"repository":e["repository"],"pr":e["number"],"head":e["headSha"],
-                "release":e["release"],"review":last["review"],"main":last["main"],"gate":last["gate"],
-                "wouldMerge":last["wouldMerge"],"checkedAt":last["checkedAt"],"dryRun":true,
-                "stop":if state == "stopped" { json!({"reason":e["reason"],"detail":e["detail"]}) } else { Value::Null }});
-        }
+        e["evidence"] = record(&e);
         let (reason, detail) = (e["reason"].clone(), e["detail"].clone());
         history(&mut e, &state, &reason, &detail);
         save(&tx, &e)?;
-        if matches!(state.as_str(), "ready" | "stopped") {
-            announce(&tx, &e, if e["reason"] == "main_red" { "urgent" } else { "normal" })?;
+        if state == "stopped" {
+            announce(&tx, &e, if urgent { "urgent" } else { "normal" })?;
         }
         tx.commit()?;
-        Ok(matches!(state.as_str(), "ready" | "stopped"))
+        Ok((state == "merged").then_some(e))
     }
 
-    /// The user's switch for one linked repository.
-    pub(super) fn merge_set_enabled(&self, repository: i64, on: bool) -> Result<Value> {
-        let db = self.db.write()?;
-        let known: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM github_repositories WHERE id=?1)", [repository], |r| r.get(0))?;
-        ensure!(known, "not_found: link the repository to a Project first");
-        let data = json!({"repositoryId":repository,"enabled":on,"updatedAt":now()});
-        db.execute(
-            "INSERT INTO merge_repositories(repository_id,data) VALUES(?1,?2) ON CONFLICT(repository_id) DO UPDATE SET data=excluded.data",
-            params![repository, data.to_string()],
+    /// The follow-up of a merged entry: its post-check (a failure pauses the
+    /// repository), the cleanup of its batch, and main's push CI on the merge
+    /// commit (red pauses the repository; the next entry never waits for it).
+    pub(super) fn merge_followed(&self, id: &str, attempt: i64, outcome: std::result::Result<Followed, String>) -> Result<bool> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut e = entry(&tx, id)?;
+        if e["attempt"].as_i64() != Some(attempt) || e["state"] != "merged" {
+            return Ok(false);
+        }
+        let now_epoch = epoch();
+        e["updatedAt"] = json!(now());
+        let sha = e["merge"]["sha"].as_str().unwrap_or("").to_owned();
+        let mut announce_as = None;
+        match outcome {
+            Ok(f) => {
+                e["readFailures"] = json!(0);
+                if let Some(c) = f.cleanup {
+                    e["batch"]["closed"] = c["closed"].clone();
+                    e["batch"]["deleted"] = c["deleted"].clone();
+                    if c["closed"] == true && c["deleted"] == true {
+                        e["batch"]["cleanup"] = json!("done");
+                        e["batch"]["cleanedAt"] = c["at"].clone();
+                    }
+                }
+                match f.post {
+                    Some(Ok(())) => {
+                        e["merge"]["post"] = json!({"ok":true,"commit":f.merge_commit,"at":now()});
+                        announce_as = Some("normal");
+                    }
+                    Some(Err(hold)) => {
+                        let detail = match hold { Hold::Stop(_, d) | Hold::Wait(d) => d };
+                        e["merge"]["post"] = json!({"ok":false,"commit":f.merge_commit,"detail":detail,"at":now()});
+                        pause(self, &tx, &e, "post_check_failed", &sha, &detail)?;
+                        stop(&mut e, "post_check_failed", detail);
+                        announce_as = Some("urgent");
+                    }
+                    None => {}
+                }
+                if e["state"] == "merged" && announce_as.is_none() {
+                    match f.main_ci.filter(|run| run["status"] == "completed") {
+                        Some(run) => {
+                            let conclusion = run["conclusion"].as_str().unwrap_or("").to_owned();
+                            e["merge"]["mainCi"] = json!({"run":run["id"],"attempt":run["run_attempt"],"conclusion":conclusion,"url":run["html_url"]});
+                            e["state"] = json!("done");
+                            e["detail"] = json!(format!("Main's push CI on the merge commit concluded {conclusion}."));
+                            let red = matches!(conclusion.as_str(), "failure" | "timed_out" | "startup_failure");
+                            if red {
+                                e["reason"] = json!("main_red");
+                                pause(self, &tx, &e, "main_red", &sha, &format!("Main CI run {} on {} concluded {conclusion} after #{} merged", run["id"], &sha[..12.min(sha.len())], e["number"]))?;
+                            }
+                            announce_as = Some(if red { "urgent" } else { "normal" });
+                        }
+                        None => {
+                            let waits = e["waits"].as_i64().unwrap_or(0);
+                            let since = e["waitingSince"].as_i64().unwrap_or(now_epoch);
+                            e["waits"] = json!(waits + 1);
+                            e["waitingSince"] = json!(since);
+                            e["nextCheck"] = json!(now_epoch + (60i64 << waits.min(3)).min(600));
+                            if now_epoch - since > WAIT_LIMIT {
+                                e["merge"]["mainCi"] = json!({"conclusion":"unobserved","detail":"No finished push run of CI on the merge commit within six hours"});
+                                e["state"] = json!("done");
+                                e["detail"] = json!("No finished push run of CI on the merge commit within six hours.");
+                                announce_as = Some("urgent");
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                let failures = e["readFailures"].as_i64().unwrap_or(0) + 1;
+                e["readFailures"] = json!(failures);
+                e["nextCheck"] = json!(now_epoch + (60i64 << (failures - 1).min(3)).min(600));
+                if failures >= READ_FAILURES {
+                    e["merge"]["mainCi"] = json!({"conclusion":"unobserved","detail":error});
+                    e["state"] = json!("done");
+                    e["detail"] = json!(format!("{failures} reads after the merge failed; the last: {error}"));
+                    announce_as = Some("urgent");
+                }
+            }
+        }
+        let state = e["state"].as_str().unwrap_or("").to_owned();
+        e["evidence"] = record(&e);
+        if announce_as.is_some() {
+            let (reason, detail) = (e["reason"].clone(), e["detail"].clone());
+            history(&mut e, &state, &reason, &detail);
+        }
+        save(&tx, &e)?;
+        if let Some(priority) = announce_as {
+            announce(&tx, &e, priority)?;
+        }
+        tx.commit()?;
+        Ok(announce_as.is_some())
+    }
+
+    /// A new batch, or a step of one, written to GitHub: recorded before the
+    /// next write. False when a cancel or retry moved the entry on.
+    pub(super) fn merge_batch(&self, id: &str, attempt: i64, batch: Value) -> Result<bool> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut e = entry(&tx, id)?;
+        if e["attempt"].as_i64() != Some(attempt) || !matches!(e["state"].as_str(), Some("queued" | "waiting" | "ready")) {
+            return Ok(false);
+        }
+        e["batch"] = batch;
+        save(&tx, &e)?;
+        tx.commit()?;
+        Ok(true)
+    }
+    /// A batch on an older main, removed before a new one is built.
+    pub(super) fn merge_batch_retired(&self, id: &str, attempt: i64, cleanup: Value) -> Result<()> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut e = entry(&tx, id)?;
+        if e["attempt"].as_i64() != Some(attempt) {
+            return Ok(());
+        }
+        let mut old = e["batch"].take();
+        old["closed"] = cleanup["closed"].clone();
+        old["deleted"] = cleanup["deleted"].clone();
+        old["cleanup"] = json!("done");
+        e["retiredBatches"] = json!([e["retiredBatches"].as_array().cloned().unwrap_or_default(), vec![old]].concat());
+        save(&tx, &e)?;
+        tx.commit()?;
+        Ok(())
+    }
+    /// The removal of a stopped, cancelled or ended entry's batch.
+    pub(super) fn merge_cleaned(&self, id: &str, outcome: std::result::Result<Value, String>) -> Result<()> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut e = entry(&tx, id)?;
+        if e["batch"]["cleanup"] != "pending" {
+            return Ok(());
+        }
+        match outcome {
+            Ok(c) => {
+                e["batch"]["closed"] = c["closed"].clone();
+                e["batch"]["deleted"] = c["deleted"].clone();
+                e["batch"]["cleanup"] = json!("done");
+                e["batch"]["cleanedAt"] = c["at"].clone();
+                let (state, reason) = (e["state"].as_str().unwrap_or("").to_owned(), e["reason"].clone());
+                history(&mut e, &state, &reason, &json!("Core removed its batch branch and PR"));
+            }
+            Err(error) => {
+                let failures = e["batch"]["cleanupFailures"].as_i64().unwrap_or(0) + 1;
+                e["batch"]["cleanupFailures"] = json!(failures);
+                e["batch"]["cleanupError"] = json!(error);
+                if failures >= READ_FAILURES {
+                    e["batch"]["cleanup"] = json!("failed");
+                } else {
+                    e["nextCheck"] = json!(epoch() + (60i64 << (failures - 1).min(3)).min(600));
+                }
+            }
+        }
+        save(&tx, &e)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Whether `actor` may unpause repository `id`: the user, or a lead of a
+    /// Project the repository is linked to. Answers the repository and the
+    /// branch whose main the waiting entries are re-anchored at.
+    pub(super) fn merge_unpause_allowed(&self, actor: Option<&str>, id: i64) -> Result<(String, String)> {
+        let db = self.db.read()?;
+        if let Some(agent) = actor {
+            let lead: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_roles r JOIN project_agents p ON p.agent_id=r.agent_id AND p.project_id=r.project_id
+                 JOIN github_project_repos g ON g.project_id=r.project_id WHERE r.kind='lead' AND r.agent_id=?1 AND g.repo_id=?2)",
+                params![agent, id],
+                |r| r.get(0),
+            )?;
+            ensure!(lead, "merge_unpause_not_allowed: only a lead of a Project this repository is linked to, or the user, can unpause its merge queue");
+        }
+        let r = repository(&db, id)?;
+        ensure!(!r["paused"].is_null(), "merge_not_paused: the merge queue of this repository is not paused");
+        let name: String = db
+            .query_row("SELECT json_extract(data,'$.fullName') FROM github_repositories WHERE id=?1", [id], |r| r.get(0))
+            .optional()?
+            .context("not_found: no such linked repository")?;
+        Ok((name, r["paused"]["base"].as_str().unwrap_or("main").to_owned()))
+    }
+
+    /// Unpause repository `id` by hand, re-anchoring every waiting entry at `main`.
+    pub(super) fn merge_unpause(&self, actor: Option<&str>, id: i64, request_id: &str, reason: Option<&str>, main: &str) -> Result<Value> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let input = json!({"requestId":request_id,"repositoryId":id,"reason":reason});
+        let receipt_row: Option<String> = tx
+            .query_row(
+                "SELECT response_json FROM collaboration_requests WHERE actor=?1 AND operation='merge_unpause' AND request_id=?2",
+                params![actor_key(actor), request_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(answer) = receipt_row {
+            return Ok(serde_json::from_str(&answer)?);
+        }
+        let (author, _) = collab::actor_context(self, &tx, actor)?;
+        let by = json!({"by":author.name,"actor":author,"reason":reason});
+        let waiting = clear(self, &tx, id, by, main, None)?;
+        let answer = json!({"repository":repository(&tx, id)?,"reanchored":waiting.iter().map(|e| e["id"].clone()).collect::<Vec<_>>(),"main":main});
+        tx.execute(
+            "INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'merge_unpause',?2,?3,?4)",
+            params![actor_key(actor), request_id, input.to_string(), answer.to_string()],
         )?;
+        tx.commit()?;
+        Ok(answer)
+    }
+
+    /// The user's switch for one linked repository. Its pause is kept.
+    pub(super) fn merge_set_enabled(&self, repository_id: i64, on: bool) -> Result<Value> {
+        let db = self.db.write()?;
+        let known: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM github_repositories WHERE id=?1)", [repository_id], |r| r.get(0))?;
+        ensure!(known, "not_found: link the repository to a Project first");
+        let mut data = repository(&db, repository_id)?;
+        data["enabled"] = json!(on);
+        data["updatedAt"] = json!(now());
+        save_repository(&db, repository_id, &data)?;
         Ok(data)
     }
-    pub(super) fn merge_repository(&self, repository: i64) -> Result<Value> {
+    pub(super) fn merge_repository(&self, repository_id: i64) -> Result<Value> {
         let db = self.db.read()?;
-        Ok(json!({"repositoryId":repository,"enabled":enabled(&db, repository)?}))
+        repository(&db, repository_id)
+    }
+}
+
+fn may_change(actor: Option<&str>, e: &Value) -> Result<()> {
+    ensure!(
+        actor.is_none() || (e["release"]["by"]["kind"] == "agent" && e["release"]["by"]["id"] == actor.unwrap_or("")),
+        "merge_release_not_allowed: only the Agent that released this merge, or the user, can change it"
+    );
+    Ok(())
+}
+
+fn wait(e: &mut Value, detail: String, at_least: i64, now_epoch: i64) {
+    let waits = e["waits"].as_i64().unwrap_or(0);
+    let since = e["waitingSince"].as_i64().unwrap_or(now_epoch);
+    e["waits"] = json!(waits + 1);
+    e["waitingSince"] = json!(since);
+    e["nextCheck"] = json!((now_epoch + (60i64 << waits.min(3)).min(600)).max(at_least));
+    if now_epoch - since > WAIT_LIMIT {
+        stop(e, "wait_timeout", format!("Still waiting after six hours: {detail}"));
+    } else {
+        e["state"] = json!("waiting");
+        e["reason"] = json!("waiting");
+        e["detail"] = json!(detail);
+    }
+}
+fn failed_read(e: &mut Value, error: String, now_epoch: i64) {
+    let failures = e["readFailures"].as_i64().unwrap_or(0) + 1;
+    e["readFailures"] = json!(failures);
+    if failures >= READ_FAILURES {
+        stop(e, "github_unreachable", format!("{failures} reads in a row failed; the last: {error}"));
+    } else {
+        wait(e, format!("A GitHub read failed ({error}); checking again"), 0, now_epoch);
     }
 }
