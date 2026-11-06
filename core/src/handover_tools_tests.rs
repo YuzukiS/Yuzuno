@@ -97,7 +97,8 @@ async fn a_lead_writes_the_handover_at_once_with_its_name_and_reason() {
 #[tokio::test]
 async fn a_retry_of_a_leads_write_is_the_same_version_and_another_payload_is_refused() {
     let (_dir, ws, p) = fixture();
-    let first = ws.collaboration_call(Some("lead"), "handover_update", write("same", 1, "# Lab\nOne.")).await.unwrap();
+    let first = ws.collaboration_call(Some("lead"), "handover_update", write("same", 1, "# Lab\nOne.")).await
+        .unwrap_or_else(|e| panic!("a lead writes the handover at once: {e:#}"));
     let again = ws.collaboration_call(Some("lead"), "handover_update", write("same", 1, "# Lab\nOne.")).await.unwrap();
     assert_eq!(again["written"], first["written"], "a retry gets the same version");
     let refused = error_of(ws.collaboration_call(Some("lead"), "handover_update", write("same", 2, "# Lab\nTwo.")).await);
@@ -178,7 +179,9 @@ fn a_waiting_proposal_is_superseded_at_open_and_its_lead_is_mailed_its_text_once
     let store = Store::open(&path).unwrap();
     let state = |id: &str| -> (String, Option<String>, String) { store.db.read().unwrap().query_row(
         "SELECT state, note, markdown FROM project_handover_proposals WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap() };
-    assert_eq!(state("waiting"), ("superseded".into(), Some(SUPERSEDED.into()), "# Lab\nProposed by lead.".into()),
+    // As written, not the constant: the same test runs against a Core from before.
+    let note = "Leads write the handover directly now (handover_update); this proposal was not applied.";
+    assert_eq!(state("waiting"), ("superseded".into(), Some(note.into()), "# Lab\nProposed by lead.".into()),
         "a waiting proposal is superseded at open, its text kept");
     assert_eq!(state("closed").0, "superseded");
     let mail = mail_to(&store, "lead");
