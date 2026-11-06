@@ -147,8 +147,9 @@ pub(super) async fn tick(ws: &Arc<Workspace>) -> Result<()> {
         if let Some(e) = merging {
             announced = true;
             let outcome = remote::merge(ws, &e).await.map_err(|e| format!("{e:#}"));
+            let cooldown = ws.stored(crate::ci_monitor::read_cooldown).await.unwrap_or(0);
             let key = id.clone();
-            merged = ws.stored(move |s| s.merge_answered(&key, attempt, outcome)).await?;
+            merged = ws.stored(move |s| s.merge_answered(&key, attempt, outcome, cooldown)).await?;
         }
         if let Some(e) = merged {
             let outcome = remote::follow(ws, &e).await.map_err(|e| format!("{e:#}"));
@@ -343,7 +344,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         def(
             "merge_unpause",
-            "Unpause a repository's merge queue after red main CI, a failed post-check, or a post-check Core could not run. Core reads main now and re-anchors every waiting entry there, so their main CI counts from that main on. Only a lead of a Project the repository is linked to, or the user. Retry an identical request with the same requestId.",
+            "Unpause a repository's merge queue after red main CI, a failed post-check, or a post-check Core could not run. Core reads main now and re-anchors every waiting entry there, so their main CI counts from that main on. If main is still the red commit of a main_red pause, the unpause accepts that red run: waiting entries no longer count it, and each still needs green CI on that main before it merges. Only a lead of a Project the repository is linked to, or the user. Retry an identical request with the same requestId.",
             json!({"requestId":text,"repositoryId":{"type":"integer","minimum":1},"reason":{"type":"string","maxLength":2000}}),
             &["requestId", "repositoryId"],
         ),

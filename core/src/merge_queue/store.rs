@@ -393,13 +393,15 @@ fn pause_recipients(store: &Store, db: &Connection, repository_id: i64, entries:
 /// Pause the repository's queue because of `e` (design §5): no entry merges
 /// until a lead or the user unpauses it, or, for main_red, CI on a newer main
 /// is green. A repository already paused keeps its first pause.
-fn pause(store: &Store, db: &Connection, e: &Value, reason: &str, main: &str, detail: &str) -> Result<()> {
+/// Pause the repository's queue. `run` is the red main CI run behind a
+/// main_red pause, so an unpause at that same main can accept it.
+fn pause(store: &Store, db: &Connection, e: &Value, reason: &str, main: &str, run: &Value, detail: &str) -> Result<()> {
     let repository_id = e["repositoryId"].as_i64().unwrap_or(0);
     let mut r = repository(db, repository_id)?;
     if !r["paused"].is_null() {
         return Ok(());
     }
-    r["paused"] = json!({"reason":reason,"at":now(),"entryId":e["id"],"number":e["number"],"main":main,"base":e["baseBranch"],"detail":detail});
+    r["paused"] = json!({"reason":reason,"at":now(),"entryId":e["id"],"number":e["number"],"main":main,"run":run,"base":e["baseBranch"],"detail":detail});
     save_repository(db, repository_id, &r)?;
     let body = format!(
         "Merge queue: {} is paused ({reason}) by entry {} for #{}: {detail}. No entry merges until a lead or the user unpauses it (merge_unpause){}.",
@@ -414,15 +416,24 @@ fn pause(store: &Store, db: &Connection, e: &Value, reason: &str, main: &str, de
 
 /// End the repository's pause: journal what ended it, and re-anchor every
 /// waiting entry at `main`, so main CI counts for them from there on.
-/// `skip` is an entry the caller re-anchors itself.
-fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &str, skip: Option<&str>) -> Result<Vec<Value>> {
+/// `skip` is an entry the caller re-anchors itself. An unpause while main is
+/// still the red commit of a main_red pause accepts that red run: the
+/// re-anchored entries no longer count it (by its id). Answers the waiting
+/// entries and the accepted run, if any.
+fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &str, skip: Option<&str>) -> Result<(Vec<Value>, Value)> {
     let mut r = repository(db, repository_id)?;
     let paused = std::mem::take(&mut r["paused"]);
     ensure!(!paused.is_null(), "merge_not_paused: the merge queue of this repository is not paused");
+    let accepted = if paused["reason"] == "main_red" && paused["main"] == main && !paused["run"].is_null() {
+        json!({"id":paused["run"],"headSha":main})
+    } else {
+        Value::Null
+    };
     let mut ended = paused.clone();
     ended["clearedAt"] = json!(now());
     ended["clearedBy"] = by.clone();
     ended["reanchoredAt"] = json!(main);
+    ended["acceptedRun"] = accepted.clone();
     let mut pauses = r["pauses"].as_array().cloned().unwrap_or_default();
     pauses.push(ended);
     let excess = pauses.len().saturating_sub(20);
@@ -434,13 +445,25 @@ fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &s
         .query_map([repository_id], |row| row.get::<_, String>(0))?
         .map(|r| Ok(serde_json::from_str::<Value>(&r?)?))
         .collect::<Result<Vec<_>>>()?;
-    let text = format!(
-        "Merge queue: {} unpaused ({} cleared by {}). Waiting entries count main CI from main {} on.",
-        r["repositoryId"], paused["reason"].as_str().unwrap_or("pause"), by["by"].as_str().unwrap_or("?"), &main[..12.min(main.len())]
-    );
+    let text = if accepted.is_null() {
+        format!(
+            "Merge queue: {} unpaused ({} cleared by {}). Waiting entries count main CI from main {} on.",
+            r["repositoryId"], paused["reason"].as_str().unwrap_or("pause"), by["by"].as_str().unwrap_or("?"), &main[..12.min(main.len())]
+        )
+    } else {
+        format!(
+            "Merge queue: {} unpaused (main_red cleared by {}). Main is still {}; its red run {} is accepted by this unpause. Waiting entries count main CI from now on, and each still needs green CI on this main before it merges.",
+            r["repositoryId"], by["by"].as_str().unwrap_or("?"), &main[..12.min(main.len())], accepted["id"]
+        )
+    };
     for mut e in waiting.iter().cloned() {
         if Some(e["id"].as_str().unwrap_or("")) != skip {
             reanchor(&mut e, main, &text);
+            if !accepted.is_null() {
+                let mut runs = e["acceptedRuns"].as_array().cloned().unwrap_or_default();
+                runs.push(accepted["id"].clone());
+                e["acceptedRuns"] = json!(runs);
+            }
             save(db, &e)?;
         }
         collab::activity(db, e["taskId"].as_str().unwrap_or(""), "comment", &system(), &json!({"mergeEntryId":e["id"]}),
@@ -449,7 +472,7 @@ fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &s
     let recipients = pause_recipients(store, db, repository_id, &waiting)?;
     let task = waiting.first().map(|e| e["taskId"].clone()).unwrap_or(Value::Null);
     mail(db, &recipients, &text, &task, "urgent", json!({"kind":"merge","status":"unpaused","name":format!("repository {repository_id}")}))?;
-    Ok(waiting)
+    Ok((waiting, accepted))
 }
 /// The main an entry counts main CI from, and since when. A check records its
 /// outcome only if the entry still has the anchor the check read.
@@ -457,6 +480,10 @@ pub(super) fn anchor(e: &Value) -> Value {
     json!([e["mainAtRelease"], e["mainAnchoredAt"]])
 }
 fn reanchor(e: &mut Value, main: &str, why: &str) {
+    // Runs an unpause accepted belong to the main they were accepted at.
+    if e["mainAtRelease"] != main {
+        e["acceptedRuns"] = json!([]);
+    }
     e["mainAtRelease"] = json!(main);
     e["mainAnchoredAt"] = json!(now());
     e["nextCheck"] = json!(0);
@@ -608,6 +635,7 @@ impl Store {
             let main = main.context("A retry needs the current main")?;
             e["mainAtRelease"] = json!(main);
             e["mainAnchoredAt"] = json!(now());
+            e["acceptedRuns"] = json!([]);
             if e["batch"].is_object() {
                 let old = e["batch"].take();
                 e["retiredBatches"] = json!([e["retiredBatches"].as_array().cloned().unwrap_or_default(), vec![old]].concat());
@@ -721,19 +749,23 @@ impl Store {
                     Ok(()) => {
                         let repository_id = e["repositoryId"].as_i64().unwrap_or(0);
                         let r = repository(&tx, repository_id)?;
-                        let busy: Option<i64> = tx
+                        // A merge is in flight until its post-check has run: the
+                        // next one never lands on an unchecked merge commit.
+                        let busy: Option<(i64, String)> = tx
                             .query_row(
-                                "SELECT number FROM merge_entries WHERE repository_id=?1 AND state='merging' AND id<>?2 LIMIT 1",
+                                "SELECT number,state FROM merge_entries WHERE repository_id=?1 AND id<>?2
+                                 AND (state='merging' OR (state='merged' AND json_extract(data,'$.merge.post') IS NULL)) LIMIT 1",
                                 params![repository_id, id],
-                                |row| row.get(0),
+                                |row| Ok((row.get(0)?, row.get(1)?)),
                             )
                             .optional()?;
                         let (state, detail, next) = if r["enabled"] != true {
                             ("ready", format!("Every check held, but the merge queue is off for {}; Core writes nothing to GitHub until the user turns it on.", e["repository"].as_str().unwrap_or("?")), now_epoch + 300)
                         } else if !r["paused"].is_null() {
                             ("waiting", format!("Every check held, but the repository's queue is paused ({}).", r["paused"]["reason"].as_str().unwrap_or("?")), now_epoch + 60)
-                        } else if let Some(other) = busy {
-                            ("ready", format!("Every check held; it merges after #{other}, whose merge is in flight, and a fresh check."), now_epoch + 60)
+                        } else if let Some((other, other_state)) = busy {
+                            let what = if other_state == "merging" { "whose merge is in flight" } else { "whose post-check has not run yet" };
+                            ("ready", format!("Every check held; it merges after #{other}, {what}, and a fresh check."), now_epoch + 60)
                         } else {
                             ("merging", "Every check held; Core sends the merge now.".to_owned(), now_epoch + 120)
                         };
@@ -759,7 +791,7 @@ impl Store {
                     Err(Hold::Stop(reason, detail)) => {
                         if reason == "main_red" {
                             let red = evidence["mainRed"]["headSha"].as_str().unwrap_or("").to_owned();
-                            pause(self, &tx, &e, "main_red", &red, &detail)?;
+                            pause(self, &tx, &e, "main_red", &red, &evidence["mainRed"]["id"], &detail)?;
                         }
                         stop(&mut e, reason, detail);
                     }
@@ -808,7 +840,7 @@ impl Store {
 
     /// The merge request's outcome. Returns the entry when it merged: its
     /// follow-up (post-check, cleanup, main CI) runs next.
-    pub(super) fn merge_answered(&self, id: &str, attempt: i64, outcome: std::result::Result<MergeOutcome, String>) -> Result<Option<Value>> {
+    pub(super) fn merge_answered(&self, id: &str, attempt: i64, outcome: std::result::Result<MergeOutcome, String>, cooldown: i64) -> Result<Option<Value>> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let mut e = entry(&tx, id)?;
@@ -831,6 +863,17 @@ impl Store {
                 e["nextCheck"] = json!(0);
             }
             Ok(MergeOutcome::Refused(detail)) => stop(&mut e, "merge_refused", detail),
+            Ok(MergeOutcome::Limited(detail)) => {
+                // A certain non-merge: the request is not one of the two
+                // uncertain ones, and the entry stays merging with its journal.
+                let sent = e["merge"]["attempts"].as_i64().unwrap_or(1);
+                e["merge"]["attempts"] = json!((sent - 1).max(0));
+                if let Some(put) = e["merge"]["puts"].as_array_mut().and_then(|p| p.last_mut()) {
+                    put["limited"] = json!(detail);
+                }
+                e["detail"] = json!(format!("GitHub's rate limit refused the merge request, so nothing merged; Core sends it again after the cooldown ({detail})."));
+                e["nextCheck"] = json!((now_epoch + 60).max(cooldown + 5));
+            }
             Ok(MergeOutcome::Unknown(detail)) => {
                 urgent = true;
                 stop(&mut e, "merge_unknown", detail);
@@ -907,7 +950,7 @@ impl Store {
                     Some(Err(hold)) => {
                         let detail = match hold { Hold::Stop(_, d) | Hold::Wait(d) => d };
                         e["merge"]["post"] = json!({"ok":false,"commit":f.merge_commit,"detail":detail,"at":now()});
-                        pause(self, &tx, &e, "post_check_failed", &sha, &detail)?;
+                        pause(self, &tx, &e, "post_check_failed", &sha, &Value::Null, &detail)?;
                         stop(&mut e, "post_check_failed", detail);
                         announce_as = Some("urgent");
                     }
@@ -923,7 +966,7 @@ impl Store {
                             let red = matches!(conclusion.as_str(), "failure" | "timed_out" | "startup_failure");
                             if red {
                                 e["reason"] = json!("main_red");
-                                pause(self, &tx, &e, "main_red", &sha, &format!("Main CI run {} on {} concluded {conclusion} after #{} merged", run["id"], &sha[..12.min(sha.len())], e["number"]))?;
+                                pause(self, &tx, &e, "main_red", &sha, &run["id"], &format!("Main CI run {} on {} concluded {conclusion} after #{} merged", run["id"], &sha[..12.min(sha.len())], e["number"]))?;
                             }
                             announce_as = Some(if red { "urgent" } else { "normal" });
                         }
@@ -951,7 +994,7 @@ impl Store {
                     // The merge commit's parents and tree were never checked:
                     // nothing merges on top of it until a person has looked.
                     let detail = format!("{failures} reads of the merge commit failed, so its parents and tree were never checked; the last: {error}");
-                    pause(self, &tx, &e, "post_check_unverified", &sha, &detail)?;
+                    pause(self, &tx, &e, "post_check_unverified", &sha, &Value::Null, &detail)?;
                     stop(&mut e, "post_check_unverified", detail);
                     announce_as = Some("urgent");
                 } else if failures >= READ_FAILURES {
@@ -1098,8 +1141,8 @@ impl Store {
         }
         let (author, _) = collab::actor_context(self, &tx, actor)?;
         let by = json!({"by":author.name,"actor":author,"reason":reason});
-        let waiting = clear(self, &tx, id, by, main, None)?;
-        let answer = json!({"repository":repository(&tx, id)?,"reanchored":waiting.iter().map(|e| e["id"].clone()).collect::<Vec<_>>(),"main":main});
+        let (waiting, accepted) = clear(self, &tx, id, by, main, None)?;
+        let answer = json!({"repository":repository(&tx, id)?,"reanchored":waiting.iter().map(|e| e["id"].clone()).collect::<Vec<_>>(),"main":main,"acceptedRun":accepted});
         tx.execute(
             "INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,'merge_unpause',?2,?3,?4)",
             params![actor_key(actor), request_id, input.to_string(), answer.to_string()],

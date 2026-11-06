@@ -111,14 +111,18 @@ Once every check holds, the entry merges, one merge at a time per repository:
    the merge. If it is still open at the head and main has not moved, Core
    sends the request once more. Otherwise, or after that second request, the
    entry stops with `merge_unknown`, and the mail is urgent. A refusal from
-   GitHub stops it with `merge_refused`.
+   GitHub stops it with `merge_refused`, except one from its rate limit (a 429,
+   or a 403 that names the rate limit): that request certainly merged nothing,
+   so the entry stays `merging`, waits for the cooldown and sends it again, and
+   it is not one of the two uncertain requests.
 3. The post-check: the merge commit's parents are the main before and the
    head, and its tree is the tree CI tested. Otherwise the entry stops with
    `post_check_failed` and the repository's queue pauses: something landed that
    CI did not test, and a person has to look. Core makes no automatic revert.
    If the merge commit cannot be read eight times in a row, the entry stops
    with `post_check_unverified` and the queue pauses the same way; an entry
-   never ends `done` without its post-check.
+   never ends `done` without its post-check. The repository's next merge
+   waits until this post-check has run.
 4. Core removes its batch, if there was one. If the removal fails, Core
    records why and tries again later; a failed removal never delays the
    post-check or following main CI. While the switch is off, or GitHub's rate
@@ -155,13 +159,20 @@ main has moved past the red commit and CI on the new main is green. Either way,
 Core journals what ended the pause and re-anchors every waiting entry at the
 current main, so their main CI counts from there on.
 
+An unpause while main is still the red commit of a red-main pause accepts that
+red run: the lead has looked at it and lets the queue go on, for example so a
+fix can merge onto that main. The re-anchored entries no longer count that one
+run (by its id); any other red run still stops them, and each entry still needs
+green CI of its own on that main, by slot or batch, before it merges. The
+unpause's answer, its journal line and its mail name the accepted run.
+
 ## States
 
 | State | Meaning |
 | --- | --- |
 | `queued` | Released, not yet checked. |
 | `waiting` | A check could not decide yet. `detail` says why. |
-| `ready` | Every check held, but the entry cannot merge yet: the switch is off, or another merge of the repository is in flight. It is checked again before it merges. |
+| `ready` | Every check held, but the entry cannot merge yet: the switch is off, or another merge of the repository is in flight or has not had its post-check yet. It is checked again before it merges. |
 | `merging` | The merge request is journaled or sent. |
 | `merged` | GitHub merged it; Core follows main's push CI. |
 | `done` | Main's push CI on the merge commit finished. |

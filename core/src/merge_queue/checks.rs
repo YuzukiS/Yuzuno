@@ -94,10 +94,11 @@ pub(super) fn main_agrees(by_ref: &str, by_branch: &str) -> Check<String> {
 /// branch since the entry's anchor concluded failure, timed_out or
 /// startup_failure. The anchor is the main read at release, or at the last
 /// retry, and the time of that read. The anchor commit's own runs count; a run
-/// of an older commit created before the anchor does not. Running, queued,
-/// superseded (cancelled) and green runs are fine. `runs` are newest first.
-pub(super) fn main_health(runs: &[Value], since: &str, anchored_at: &str) -> Check<Value> {
-    match main_runs_since(runs, since, anchored_at) {
+/// of an older commit created before the anchor does not, nor does a run an
+/// unpause accepted. Running, queued, superseded (cancelled) and green runs
+/// are fine. `runs` are newest first.
+pub(super) fn main_health(runs: &[Value], since: &str, anchored_at: &str, accepted: &[Value]) -> Check<Value> {
+    match main_runs_since(runs, since, anchored_at, accepted) {
         (_, Some(run)) => stop(
             "main_red",
             format!("Main CI run {} on {} concluded {}", run["id"], short(&run["head_sha"]), run["conclusion"].as_str().unwrap_or("?")),
@@ -107,7 +108,8 @@ pub(super) fn main_health(runs: &[Value], since: &str, anchored_at: &str) -> Che
 }
 
 /// The main CI runs `main_health` counts, newest first, and the first red one.
-pub(super) fn main_runs_since(runs: &[Value], since: &str, anchored_at: &str) -> (Vec<Value>, Option<Value>) {
+/// A run an unpause accepted (`accepted`, by id) is listed but never counts.
+pub(super) fn main_runs_since(runs: &[Value], since: &str, anchored_at: &str, accepted: &[Value]) -> (Vec<Value>, Option<Value>) {
     // GitHub's run times have whole seconds: a run of the anchor's own second counts.
     let anchor = chrono::DateTime::parse_from_rfc3339(anchored_at).ok().map(|t| t.timestamp());
     let mut seen = Vec::new();
@@ -118,6 +120,13 @@ pub(super) fn main_runs_since(runs: &[Value], since: &str, anchored_at: &str) ->
             continue;
         }
         let conclusion = run["conclusion"].as_str().unwrap_or("");
+        if accepted.contains(&run["id"]) {
+            seen.push(json!({"run":run["id"],"headSha":run["head_sha"],"createdAt":run["created_at"],"status":run["status"],"conclusion":run["conclusion"],"accepted":true}));
+            if at_anchor {
+                break;
+            }
+            continue;
+        }
         seen.push(json!({"run":run["id"],"headSha":run["head_sha"],"createdAt":run["created_at"],"status":run["status"],"conclusion":run["conclusion"]}));
         if matches!(conclusion, "failure" | "timed_out" | "startup_failure") {
             return (seen, Some(json!({"id":run["id"],"headSha":run["head_sha"],"conclusion":conclusion})));

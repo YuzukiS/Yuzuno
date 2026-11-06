@@ -118,11 +118,12 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
         evidence["pauseCleared"] = cleared;
     }
     evidence["main"] = json!({"atRelease":since,"anchoredAt":anchored,"before":main,"beforeTree":checks::tree_of(&main_commit)});
-    let (seen, red) = checks::main_runs_since(&main_runs, &since, &anchored);
+    let accepted = entry["acceptedRuns"].as_array().cloned().unwrap_or_default();
+    let (seen, red) = checks::main_runs_since(&main_runs, &since, &anchored, &accepted);
     evidence["main"]["ci"] = json!(seen);
     if let Some(red) = red {
         evidence["mainRed"] = red.clone();
-        hold!(checks::main_health(&main_runs, &since, &anchored));
+        hold!(checks::main_health(&main_runs, &since, &anchored, &accepted));
     }
 
     let required: Vec<String> = serde_json::from_value(entry["requireWorkflows"].clone()).unwrap_or_default();
@@ -364,6 +365,9 @@ pub(super) enum MergeOutcome {
     Moved(String),
     /// Nothing was sent (the switch is off): check again later.
     Held(String),
+    /// GitHub's rate limit refused the request: nothing merged, send it again
+    /// after the cooldown.
+    Limited(String),
 }
 
 /// Send the merge, at most twice. Right before every request, the first
@@ -392,6 +396,9 @@ pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<MergeOut
         }
         match writes::write(ws, t.repository, &t.repo, Write::Merge { number: t.number, head: &t.head }).await {
             Ok((code, body)) => {
+                if let Err(e) = limited(code, &body) {
+                    return Ok(MergeOutcome::Limited(e.to_string()));
+                }
                 return Ok(match checks::merge_answer(code, &body) {
                     Answer::Merged(sha) => MergeOutcome::Merged(sha),
                     Answer::Refused(detail) => MergeOutcome::Refused(detail),

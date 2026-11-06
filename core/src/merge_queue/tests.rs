@@ -193,6 +193,7 @@ if method=='DELETE' and path.startswith('git/refs/heads/'):
 if method=='PUT' and path=='pulls/11/merge':
     answer=s['mergeAnswers'].pop(0) if s['mergeAnswers'] else 'ok'; save()
     if answer in ('405','409'): out(int(answer),{'message':'Pull Request is not mergeable'})
+    if answer=='429': out(429,{'message':'API rate limit exceeded'})
     if answer=='502': out(502,{'message':'Bad gateway'})
     if answer=='502move':
         s['main']=s['movedMain']; save(); out(502,{'message':'Bad gateway'})
@@ -219,7 +220,8 @@ if path=='git/ref/heads/main': out(200,{'object':{'sha':s['main']}})
 if path=='branches/main': out(200,{'commit':{'sha':s.get('branchMain',s['main'])}})
 if path=='git/ref/pull/11/merge':
     out(200,{'object':{'sha':s['merge']}}) if s['merge'] else out(404,{})
-if path.startswith('git/commits/') and s.get('commitDown'): out(502,{'message':'Bad gateway'})
+down=s.get('commitDown')
+if path.startswith('git/commits/') and (down is True or down==path.split('/')[-1]): out(502,{'message':'Bad gateway'})
 if path.startswith('git/commits/'):
     k=c[path.split('/')[-1]]; out(200,{'sha':k['sha'],'tree':{'sha':k['tree']},'parents':[{'sha':x} for x in k['parents']]})
 if path.startswith('commits/') and '/check-runs' in path: out(200,{'total_count':len(s.get('checkRuns',[])),'check_runs':s.get('checkRuns',[])})
@@ -794,6 +796,107 @@ async fn a_pause_longer_than_the_wait_limit_keeps_its_entries_waiting_for_the_un
     let answer = lab.ws.collaboration_call(Some("lead2"), "merge_unpause", json!({"requestId":"u","repositoryId":7})).await.unwrap();
     assert_eq!(answer["reanchored"], json!([id]), "the unpause re-anchors the waiting entry");
     assert_eq!(lab.entry().await["mainAtRelease"], sha('b'));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_whose_post_check_has_not_run_holds_the_next_one() {
+    let lab = lab(green());
+    let next = lab.release(Some("lead"), "r1").await.unwrap()["id"].as_str().unwrap().to_owned();
+    // #12 merged as e, but its merge commit cannot be read yet.
+    let earlier = {
+        let db = lab.ws.store.db.read().unwrap();
+        let mut w: Value = serde_json::from_str(&db.query_row("SELECT data FROM merge_entries", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+        w["id"] = json!(uuid::Uuid::new_v4().to_string());
+        w["entryId"] = w["id"].clone();
+        w["number"] = json!(12);
+        w["state"] = json!("merged");
+        w["merge"] = json!({"expectedMain":main_sha(),"tree":tree(),"gate":"slot","head":head(),"attempts":1,"puts":[{"n":1}],"sha":sha('e'),"post":null,"mainCi":null});
+        w
+    };
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO merge_entries(id,task_id,repository_id,number,state,next_check,data) VALUES(?1,?2,7,12,'merged',0,?3)",
+        rusqlite::params![earlier["id"].as_str(), earlier["taskId"].as_str(), earlier.to_string()],
+    ).unwrap();
+    change(lab.dir.path(), |s| {
+        s["commits"][sha('e')] = json!({"sha":sha('e'),"tree":tree(),"parents":[main_sha(),head()]});
+        s["commitDown"] = json!(sha('e'));
+    });
+    tick(&lab.ws).await.unwrap();
+    let get = |id: String| lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":id}));
+    let e = get(next.clone()).await.unwrap();
+    assert_eq!(e["state"], "ready", "a merge whose post-check has not run holds the next one: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("whose post-check has not run yet"), "{}", e["detail"]);
+    assert!(!writes(lab.dir.path()).iter().any(|w| w.starts_with("PUT")), "nothing merges on top of an unchecked merge commit");
+    // The merge commit can be read again: #12's post-check runs, then the next entry merges.
+    change(lab.dir.path(), |s| s["commitDown"] = Value::Null);
+    lab.step().await;
+    lab.step().await;
+    assert_eq!(get(earlier["id"].as_str().unwrap().to_owned()).await.unwrap()["merge"]["post"]["ok"], true);
+    assert_eq!(get(next).await.unwrap()["state"], "merged", "once the post-check has run, the next entry merges");
+}
+
+/// Main moves on to b, whose CI goes red: the first release stops and pauses
+/// the queue there; a second release of the PR waits at the pause.
+#[cfg(unix)]
+async fn waiting_at_a_red_main(lab: &Lab) -> String {
+    lab.release(Some("lead"), "r1").await.unwrap();
+    let after = chrono::Utc::now().to_rfc3339();
+    change(lab.dir.path(), |s| {
+        move_main(s, sha('b'), sha('d'));
+        let red = json!({"id":91,"name":"CI","head_sha":sha('b'),"status":"completed","conclusion":"failure","created_at":after});
+        s["mainRuns"].as_array_mut().unwrap().insert(0, red);
+    });
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.paused()["paused"]["run"], 91, "the pause records the red run");
+    let second = lab.release(Some("lead"), "r2").await.unwrap()["id"].as_str().unwrap().to_owned();
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":second})).await.unwrap()["state"], "waiting");
+    second
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unpause_at_a_main_still_red_accepts_that_run_and_no_other() {
+    let lab = lab(green());
+    let second = waiting_at_a_red_main(&lab).await;
+    // A lead unpauses while main is still b and run 91 is still red.
+    let answer = lab.ws.collaboration_call(Some("lead2"), "merge_unpause", json!({"requestId":"u","repositoryId":7})).await.unwrap();
+    assert_eq!(answer["acceptedRun"]["id"], 91, "the unpause accepts the red run at the unchanged main: {answer}");
+    lab.step().await;
+    let e = lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":second})).await.unwrap();
+    assert_eq!(e["state"], "merged", "the accepted run no longer stops the entry: {e}");
+    assert!(lab.paused()["paused"].is_null(), "nothing pauses the queue again");
+
+    // A later red run on a newer main still stops the entry.
+    let lab = lab_with(|_| {});
+    let second = waiting_at_a_red_main(&lab).await;
+    lab.ws.collaboration_call(Some("lead2"), "merge_unpause", json!({"requestId":"u","repositoryId":7})).await.unwrap();
+    let later = chrono::Utc::now().to_rfc3339();
+    change(lab.dir.path(), |s| {
+        move_main(s, sha('c'), sha('f'));
+        let red = json!({"id":93,"name":"CI","head_sha":sha('c'),"status":"completed","conclusion":"failure","created_at":later});
+        s["mainRuns"].as_array_mut().unwrap().insert(0, red);
+    });
+    lab.step().await;
+    let e = lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":second})).await.unwrap();
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("main_red")), "only the accepted run is accepted: {e}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_rate_limited_merge_request_waits_and_is_sent_again() {
+    // An uncertain answer, then the rate limit: neither merged.
+    let lab = lab_with(|s| s["mergeAnswers"] = json!(["502", "429"]));
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merging", "a rate-limited merge request waits, it is not refused: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("rate_limited"), "{}", e["detail"]);
+    assert_eq!(e["merge"]["attempts"], 1, "the rate-limited request is not one of the two uncertain ones: {e}");
+    let e = lab.step().await;
+    assert_eq!(e["state"], "merged", "after the cooldown the merge is sent again and merges: {e}");
+    assert_eq!(writes(lab.dir.path()).iter().filter(|w| w.starts_with("PUT")).count(), 3);
 }
 
 #[cfg(unix)]
@@ -1548,18 +1651,18 @@ fn the_checkout_line_and_the_newest_run_of_each_workflow_are_read_exactly() {
         json!({"id":8,"name":"CI","head_sha":"since","conclusion":"cancelled","status":"completed","created_at":"2026-11-06T01:00:00Z"}),
         json!({"id":7,"name":"CI","head_sha":"older","conclusion":"failure","status":"completed","created_at":"2026-11-06T00:30:00Z"}),
     ];
-    assert!(checks::main_health(&main, "since", "2026-11-06T01:30:00Z").is_ok(), "runs before the release main do not count");
+    assert!(checks::main_health(&main, "since", "2026-11-06T01:30:00Z", &[]).is_ok(), "runs before the release main do not count");
     assert!(
-        checks::main_health(&main, "elsewhere", "2026-11-06T01:30:00Z").is_ok(),
+        checks::main_health(&main, "elsewhere", "2026-11-06T01:30:00Z", &[]).is_ok(),
         "a release main without a run of its own does not count the red runs from before the release"
     );
     assert!(
-        matches!(checks::main_health(&main, "elsewhere", "2026-11-06T00:15:00Z"), Err(Hold::Stop("main_red", _))),
+        matches!(checks::main_health(&main, "elsewhere", "2026-11-06T00:15:00Z", &[]), Err(Hold::Stop("main_red", _))),
         "a red run newer than the anchor stops the entry"
     );
     let red_anchor = vec![json!({"id":6,"name":"CI","head_sha":"since","conclusion":"failure","status":"completed","created_at":"2026-11-06T00:10:00Z"})];
     assert!(
-        matches!(checks::main_health(&red_anchor, "since", "2026-11-06T01:00:00Z"), Err(Hold::Stop("main_red", _))),
+        matches!(checks::main_health(&red_anchor, "since", "2026-11-06T01:00:00Z", &[]), Err(Hold::Stop("main_red", _))),
         "the anchor main's own red run counts, though it began before the release"
     );
 }

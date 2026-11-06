@@ -112,7 +112,7 @@ In source versions supporting `recoveryReceipts` evidence, a failed `source_read
 
 - `merge_enqueue` releases one reviewed PR head into Core's merge queue. Only the task's dispatching lead, or the user, may release; the task's executor may not. Releasing states that the review pair is complete; Core refuses a head whose last completed review round did not review it or does not pass.
 - Core then checks on fresh reads that CI tested exactly the merge of the current main and the head. If CI tested an older main, Core opens a CI-only batch PR on the current main and waits for its CI. Once every check holds, Core merges the PR as a merge commit pinned to the head, checks the merge commit's parents and tree, removes its batch, and follows main's push CI. The outcome and evidence go to the task. Core never reruns CI.
-- `merge_get` reads an entry. `merge_retry` checks a stopped one again, by its releaser or the user. A red main or a failed post-check pauses the repository's queue; `merge_unpause` (a lead of the repository's Project, or the user) ends the pause and re-anchors the waiting entries at the current main.
+- `merge_get` reads an entry. `merge_retry` checks a stopped one again, by its releaser or the user. A red main, a failed post-check, or a post-check Core could not run pauses the repository's queue; `merge_unpause` (a lead of the repository's Project, or the user) ends the pause and re-anchors the waiting entries at the current main. Unpausing while main is still the red commit accepts that one red run; each entry still needs its own green CI on that main.
 
 ## Result
 
