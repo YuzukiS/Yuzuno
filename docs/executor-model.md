@@ -60,9 +60,14 @@ executor by you only.
 
 ## Executor templates
 
-A template says what an executor is made of. You keep the Workspace's
-templates in Settings, under **Executor templates**, and a Project's own in
-its settings.
+A template says what an executor is made of: a named kind of executor that
+a dispatch can ask for. Without one, a dispatch makes a
+[general executor](#the-general-executor). Templates are the Workspace's,
+for every Project: you keep them in Settings, under **Executor templates**.
+A new template needs only a **Label** and a **Harness**; the other fields
+are under **More settings**, and left unset each inherits as described
+below. A Project's page has no templates of its own, only its own
+[Executors at once](#executors-at-once).
 
 | Field | What it is |
 | --- | --- |
@@ -74,9 +79,30 @@ its settings.
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
 | **At most at once** | At most this many of the template's executors run at once, a whole number from 1 to 64; empty, it has no limit of its own. See [Executors at once](#executors-at-once). |
 
-- **Which template a dispatch gets.** A dispatch of a task in a Project uses
-  that Project's template of the named id, else the Workspace's. A task in no
-  Project uses the Workspace's.
+- **Which template a dispatch gets.** The Workspace's template of the named
+  id, whatever the task's Project. A dispatch naming an id the Workspace
+  doesn't have is refused with `template_not_found`, naming the ids it has.
+- **Presets.** Where Core ships template presets, Settings offers them under
+  **Add from a preset**. Choosing one adds an unsaved template filled from
+  it, with a free id if its id is taken; **Save templates** saves it as any
+  other edit. No Agent saves templates or presets.
+- **Templates a Project had.** Before this version, a Project could keep
+  templates of its own, used before the Workspace's of the same id. When this
+  Core first opens a Workspace, it copies each Project's own templates into
+  the Workspace's list, once, and leaves the Project's list as it was, so an
+  older Core opened later still finds it:
+  - a template the Workspace already has as it is is not copied;
+  - one whose id the Workspace uses for another template gets the first free
+    id (`reviewer-2`, `reviewer-3`, …) and its Project's name in its label,
+    such as "Reviewer (Lab)". A dispatch naming `reviewer` in that Project
+    then gets the Workspace's `reviewer`;
+  - each copy says where it came from, shown under its label as "Copied from
+    the project Lab, where its id was reviewer";
+  - a template this Core can't read stays in its Project's list.
+
+  If an older Core saves a Project's list again, the next open copies what
+  changed in it. The copies may take the list past 50 templates: a save
+  then keeps what the list holds, but can't add more.
 - **Where executors run.** On the machine the dispatch names, else the one
   its template names, else this Core host. A machine is one from the
   Machines list, or `auto`, for Core to choose one at each dispatch (see
@@ -210,9 +236,8 @@ until fewer hold a slot.
   order: any waiting more than 30 minutes first, then Projects in turn, each
   Project's in the order they were dispatched. Executors in no Project take
   their turn together. One whose Project or template is at its own limit is
-  passed by the next that has room. A Project's own template of an id has
-  its own limit; a task in a Project without one uses the Workspace's
-  template, and counts with it.
+  passed by the next that has room. A template's limit counts its executors
+  in every Project together; a general executor has no template limit.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
   whether its executor is queued, with its place (`position`, 1 first),
   starting (with `reason` when its start did not finish), or running. On a

@@ -37,7 +37,7 @@ import "./projects.css";
 import { GitHubLinks } from "./GitHubLinks";
 import { ProjectServices } from "./ProjectServices";
 import { AgentDefaults } from "./AgentDefaults";
-import { ExecutorTemplates } from "./ExecutorTemplates";
+import { ProjectExecutors } from "./ExecutorTemplates";
 import { ProjectHandover } from "./ProjectHandover";
 import { ReviewSettings } from "./ReviewSettings";
 import { HomeContentEditors } from "./home/HomeContentEditors";
@@ -795,7 +795,7 @@ function ProjectDetail({
       <ProjectLeads key={`leads:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
       <HomeContentEditors key={`editors:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
       <AgentDefaults key={`defaults:${project.id}`} active projectId={project.id} disabled={archived} />
-      <ExecutorTemplates key={`templates:${project.id}`} active projectId={project.id} disabled={archived} />
+      <ProjectExecutors key={`executors:${project.id}`} projectId={project.id} disabled={archived} />
       <ProjectHandover key={`handover:${project.id}`} projectId={project.id} disabled={archived} />
       <ReviewSettings key={`review:${project.id}`} active projectId={project.id} disabled={archived} />
       {archived && (

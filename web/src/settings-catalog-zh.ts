@@ -35,7 +35,7 @@ export const entriesZh: Record<string, EntryText> = {
   "auto-continue": { title: "Claude 用量限额重置后继续", scope: "所选本地 Claude Agent", source: "Agent 可以选择继续或等待，也可以跟随 Workspace 默认值（它有自己的条目）。", effect: "当用量限额让 Agent 停下时，此策略决定重置后 Yuzuno 是否发送继续消息。" },
   "auto-continue-default": { title: "用量限额后继续：Workspace 默认值", scope: "此 Workspace · 未自行选择的本地 Claude Agent", source: "由 Core 保存；未保存时为内置：等你处理。", effect: "立即作用于跟随它的 Agent，包括现有 Agent。Agent 自己的选择保持不变。" },
   "agent-defaults": { title: "新 Agent 默认值", scope: "此 Workspace，或项目页面中的项目 · 此后创建的 Agent", source: "由 Core 为 Workspace 保存；项目可以在其页面中覆盖。未设置即 Yuzuno 的内置行为。“跟随 Codex 配置”使用每台机器自己的配置。", effect: "在创建 Agent 时使用。现有 Agent 保留各自的设置，机器仍会在启动时决定是否允许某项权限。" },
-  "executor-templates": { title: "执行者模板", scope: "此 Workspace，或项目页面中的项目 · 此后按模板的派发", source: "由 Core 为 Workspace 或项目（在其页面中）保存；项目中同 id 的模板优先于 Workspace 的。", effect: "按模板派发时，Core 据此在此 Core 主机上为该任务创建 Agent。已创建的执行者保留各自的设置。“同时运行的执行者”限制同时运行的数量，其余排队等候。" },
+  "executor-templates": { title: "执行者模板", scope: "此 Workspace，所有项目通用 · 此后的派发", source: "由 Core 为整个 Workspace 保存；以前项目自己的模板已复制到这里。", effect: "派发时指定模板，Core 据此为该任务创建 Agent；不指定时，按新 Agent 的默认设置创建通用执行者。已创建的执行者保留各自的设置。“同时运行的执行者”限制同时运行的数量，其余排队等候。" },
   review: { title: "代码审查", scope: "此 Workspace，或项目页面中的项目", source: "Core 为 Workspace 或项目（在其页面中）保存的审查 harness 与模型；未保存时使用内置审查者。", effect: "任务的新审查使用其项目的审查者，否则使用 Workspace 的。进行中的审查保留原来的设置。" },
   credentials: { title: "账户、凭据与 MCP", scope: "执行机器 · 原生 harness", source: "登录与凭据属于执行机器上的原生工具。", effect: "Agent 运行环境与 MCP 状态可在会话检查器中查看，也都在“运行环境与版本”中。", reason: "此设置中心不保存 API 密钥，也不编辑原生登录与 MCP 配置。" },
   machines: { title: "执行机器与 SSH", scope: "所选执行机器", source: "机器注册由 Core 保存；SSH 密钥与主机配置属于 OpenSSH。", effect: "在“机器”中选择一台机器，编辑它的连接和新 Agent 默认文件夹。现有 Agent 不会移动。" },
