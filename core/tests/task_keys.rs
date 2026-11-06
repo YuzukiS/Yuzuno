@@ -260,9 +260,22 @@ fn a_project_an_older_core_deleted_keeps_its_key() {
     let gone = store.create_project("Gone", BTreeMap::new()).unwrap();
     assert_eq!(create(&store, "g1", Some(&gone.id)), "GON-1");
     moved(&store, "out", "GON-1", None);
+    store.update_project(&gone.id, key_change("GNE")).unwrap();
+    store.update_project(&gone.id, key_change("GON")).unwrap();
     drop(store);
+    let db = Connection::open(&path).unwrap();
+    let given: Vec<(String, String)> = db
+        .prepare("SELECT key, project_id FROM project_keys_given ORDER BY key")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let pair = |key: &str| (key.to_owned(), gone.id.clone());
+    assert_eq!(given, [pair("GNE"), pair("GON")], "a key taken back is given again to the same Project, once");
     // An older Core's delete_project: only `DELETE FROM projects` (and its settings).
-    Connection::open(&path).unwrap().execute("DELETE FROM projects WHERE id=?1", [&gone.id]).unwrap();
+    db.execute("DELETE FROM projects WHERE id=?1", [&gone.id]).unwrap();
+    drop(db);
     let store = open(&dir);
     assert_eq!(named(&store, "GON-1").as_deref(), Some("T-1"), "a Project an older Core deleted: its old key still names the task");
     let similar = store.create_project("Gonzo", BTreeMap::new()).unwrap();
