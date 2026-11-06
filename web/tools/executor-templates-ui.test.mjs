@@ -434,6 +434,26 @@ test("Runs on (T-35 S3): a machine the list no longer has is shown as unknown an
   assert.equal(puts(page)[0].body.templates[0].machineId, "gone", "kept until changed");
 });
 
+// #645 R1 1342ccdd: a machine still in the list that this harness cannot use
+// is named, with why, rather than called unknown; a save keeps it.
+test("Runs on (T-35 S3): a Codex template saved with a machine that keeps its Agents contained names that machine and why, and keeps it until changed", async () => {
+  const workspace = { version: 1, templates: [{ id: "c", label: "Coder", harness: "codex", machineId: "boxed" }] };
+  const page = mount((url, method) => {
+    if (url.endsWith("/machines")) return [200, machineList];
+    return [200, view(workspace)];
+  });
+  page.window.renderTemplates();
+  await until(() => runsOn(page)?.value === "boxed" && offered(page).length === 4, "the saved machine, with the machines read");
+  assert.deepEqual(offered(page), ["", "lab", "boxed", "auto"]);
+  assert.equal(runsOn(page).selectedOptions[0].textContent, "Boxed (keeps Agents contained: no Codex)", "the machine is named with why Codex cannot run there");
+  assert.ok(!shown(page).some((text) => /not in the Machines list/.test(text)), "it is not called unknown");
+  await type(page, "Label", "Lead coder");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1, "the save");
+  assert.equal(puts(page)[0].body.templates[0].machineId, "boxed", "kept until changed");
+  assert.deepEqual(page.errors, []);
+});
+
 test("Runs on (T-35 S3) reads in Chinese (T-189)", async () => {
   const workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", machineId: "auto" }] };
   const page = mount((url) => [200, url.endsWith("/machines") ? machineList : view(workspace)]);

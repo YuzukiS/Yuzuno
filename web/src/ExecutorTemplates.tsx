@@ -25,6 +25,7 @@ const text = strings({
   thisHost: "This Core host",
   auto: "Choose automatically",
   unknownMachine: (id: string) => `${id} (not in the Machines list)`,
+  containedNoCodex: (name: string) => `${name} (keeps Agents contained: no Codex)`,
   machineHelp: "Where its executors run. A dispatch may name another machine.",
   autoHelp: "Core chooses at each dispatch: a machine with a free executor slot first, then the most spare Jobs memory, then CPU. The task shows which it chose and why.",
   opencodeHost: "OpenCode executors run on this Core host.",
@@ -68,6 +69,7 @@ const text = strings({
   thisHost: "此 Core 主机",
   auto: "自动选择",
   unknownMachine: (id) => `${id}（不在机器列表中）`,
+  containedNoCodex: (name) => `${name}（隔离其 Agent：不运行 Codex）`,
   machineHelp: "其执行者运行的地方。派发时可以指定其他机器。",
   autoHelp: "Core 在每次派发时选择：先选有空闲执行者槽位的机器，再选 Job 剩余内存最多的，然后是 CPU。任务上会显示选了哪台以及原因。",
   opencodeHost: "OpenCode 执行者在此 Core 主机上运行。",
@@ -324,7 +326,13 @@ export function ExecutorTemplates({ active, projectId, disabled = false }: { act
                   <option value="">{t.thisHost}</option>
                   {machineOptions(d.harness, machines).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                   {d.harness !== "opencode" && d.machine && d.machine !== "auto" && !machineOptions(d.harness, machines).some(m => m.id === d.machine) && (
-                    <option value={d.machine}>{t.unknownMachine(d.machine)}</option>
+                    // Kept as saved. A machine still listed is one this harness can't
+                    // use: Codex on a machine that keeps its Agents contained (#645 R1 1342ccdd).
+                    <option value={d.machine}>
+                      {machines.some(m => m.id === d.machine)
+                        ? t.containedNoCodex(machines.find(m => m.id === d.machine)!.name)
+                        : t.unknownMachine(d.machine)}
+                    </option>
                   )}
                   {d.harness !== "opencode" && <option value="auto">{t.auto}</option>}
                 </select>
