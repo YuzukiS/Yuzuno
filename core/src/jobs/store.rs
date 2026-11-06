@@ -1302,6 +1302,11 @@ impl Store {
         )?;
         Ok(max_jobs)
     }
+    /// Whether this host's Jobs budget is saved (`init_job_budget`, or the user's).
+    pub(super) fn job_budget_saved(&self) -> Result<bool> {
+        Ok(self.db.read()?.query_row("SELECT EXISTS(SELECT 1 FROM local_job_settings WHERE id=1)", [], |r| r.get(0))?)
+    }
+
     /// Store this host's suggested budget if none is stored yet, as its first
     /// local job does; a stored budget is never replaced here.
     pub(super) fn init_job_budget(&self, suggested: &Value) -> Result<()> {

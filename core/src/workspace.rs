@@ -618,6 +618,9 @@ impl Workspace {
             let result = async {
                 if let Some(remote_agent) = agent.remote {
                     self.ensure_collaboration_tunnel(&remote_agent.machine).await?;
+                    // Committed before the machine is asked to launch anything
+                    // (T-35 S3b): a failure before it launched nothing there.
+                    self.launch_requested(id, "runtime/ensuring").await?;
                     let runtime = remote::ensure_runtime(&remote_agent.machine,
                         &self.stored(|store| store.workspace_id()).await?, id).await?;
                     if let Some(previous) = &remote_agent.runtime {

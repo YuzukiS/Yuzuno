@@ -1510,7 +1510,7 @@ pub(super) fn machine_settings(tx: &rusqlite::Connection, id: &str) -> Result<Op
 }
 
 /// What the attempts holding a slot on this machine reserve of its budget.
-fn machine_reserved(tx: &rusqlite::Connection, id: &str) -> Result<super::Resources> {
+pub(super) fn machine_reserved(tx: &rusqlite::Connection, id: &str) -> Result<super::Resources> {
     let mut q = tx.prepare("SELECT data FROM local_jobs WHERE reserved=1 AND json_extract(data,'$.executor.machineId')=?1")?;
     let mut total = super::Resources::default();
     for row in q.query_map([id], |r| r.get::<_, String>(0))? {

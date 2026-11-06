@@ -5,13 +5,15 @@
 //! A start ends without its runtime in one of two ways. **Definite**: the
 //! runtime refused (an ensure error that is not OutcomeUnknown), or the start
 //! was cut off by the Workspace's time limit and closing the executor
-//! confirmed its runtime ended. **Uncertain**: the runtime may be running
-//! after all. Then the executor keeps its slot as starting, with why, and the
+//! confirmed its runtime ended; on another machine, either only when nothing
+//! was launched there or a stop confirmed it ended (`remote_start_stopped`,
+//! T-35 S3b). **Uncertain**: the runtime may be running after all. Then the executor keeps its slot as starting, with why, and the
 //! dispatcher gets one mail; Core neither closes nor rebuilds it, for two
 //! executors must never work in one folder (D4; Lead 2, mail 5367).
 //!
-//! After a definite failure, a fresh dispatch's executor is recorded as
-//! settling, then closed and kept, and rebuilt once: a new dispatch of the
+//! After a definite failure, a fresh dispatch's executor is closed and kept,
+//! its close carrying the record of its settling (executor_slots.rs
+//! `follow_agent`), and rebuilt once: a new dispatch of the
 //! same request by the same dispatcher (D3), whose executor keeps the queue
 //! place of the one it replaces. When that one fails too, or no rebuild can
 //! be made, the task is blocked, by Core, with every reason, and an Agent
@@ -21,6 +23,7 @@
 use crate::{
     collaboration_store::executor_start::{rebuild_request, Made},
     executor_dispatch::WaitsForUpdate,
+    executor_slots::START_FAILED,
     updates::admission::Permit,
     workspace::Workspace,
 };
@@ -40,36 +43,38 @@ pub(crate) enum Failure {
 /// may run on: uncertain, held, never rebuilt, so that no second executor
 /// ever works in its folder.
 pub(crate) fn cut_off(closed: &Result<()>, limit: Duration) -> Failure {
-    let why = format!("its start did not finish within {} s, the Workspace's limit", limit.as_secs());
     match closed {
-        Ok(()) => Failure::Definite(format!("{why}; Core closed it")),
-        Err(error) => Failure::Uncertain(format!("{why}, and Core could not confirm its runtime stopped: {error:#}")),
+        Ok(()) => Failure::Definite(closed_when_cut(limit)),
+        Err(error) => Failure::Uncertain(format!("{}, and Core could not confirm its runtime stopped: {error:#}", cut(limit))),
     }
 }
 
+/// Why a start the time limit cut off ended.
+pub(crate) fn cut(limit: Duration) -> String {
+    format!("its start did not finish within {} s, the Workspace's limit", limit.as_secs())
+}
+
+/// Why, once Core closed it: what its close records (`cut_off`'s definite).
+pub(crate) fn closed_when_cut(limit: Duration) -> String {
+    format!("{}; Core closed it", cut(limit))
+}
+
 impl Workspace {
-    /// Records a fresh executor's failed start as settling, before Core
-    /// closes it (R1 dde34160): its dispatch made it from a template and is
-    /// still its task's. A stop after the close then leaves the record for a
-    /// pass, or the next start, to finish. Its dispatch, or none.
-    pub(crate) async fn settling(&self, id: &str, why: &str) -> Result<Option<Made>> {
-        #[cfg(test)]
-        if self.executor_slots.fault_settling.load(std::sync::atomic::Ordering::Relaxed) {
-            anyhow::bail!("a test's store error");
-        }
-        let agent = id.to_owned();
-        let Some(made) = self.stored(move |store| store.executor_made(&agent)).await? else { return Ok(None) };
-        let (task, agent) = (made.task_id.clone(), id.to_owned());
-        if !self.stored(move |store| store.executor_still_dispatched(&task, &agent)).await? {
-            return Ok(None);
-        }
-        let (record, agent, reason) = (made.clone(), id.to_owned(), why.to_owned());
-        self.stored(move |store| store.executor_rebuild_begin(&record, &agent, &reason)).await?;
-        Ok(Some(made))
+    /// Closes a fresh executor whose start failed, its close carrying why:
+    /// in the close's own transaction its slot says why and, when its
+    /// template dispatch is still its task's, the record of its settling is
+    /// written (executor_slots.rs `follow_agent`, T-35 S3b). Both commit, or
+    /// neither: an error leaves it open, its slot starting.
+    pub(crate) async fn close_start_failed(self: &Arc<Self>, id: &str, permit: &Permit, why: &str) -> Result<()> {
+        permit.validate(&self.admission)?;
+        let gate = self.gate(id).await;
+        let _held = gate.lock().await;
+        self.close_agent_locked(id, json!({"reason": START_FAILED, "why": why})).await.map(drop)
     }
 
     /// Settles a start from the slot that ended without its runtime.
-    /// `closed`: a cut-off start whose close confirmed its runtime ended.
+    /// `closed`: a cut-off start Core already closed, its runtime confirmed
+    /// ended (or never launched) and its record carried by that close.
     pub(crate) async fn settle_start(self: &Arc<Self>, id: &str, permit: &Permit, failure: Failure, closed: bool) -> Result<()> {
         let agent = id.to_owned();
         let attempt = self.stored(move |store| store.executor_slot_attempt(&agent)).await?;
@@ -85,19 +90,26 @@ impl Workspace {
             }
             return Ok(());
         }
-        let made = self.settling(id, &why).await?;
         if !closed {
-            // Its runtime ended; closing is what releases its slot. A close
-            // that can't confirm the runtime stopped leaves it uncertain.
-            if let Err(error) = self.close_agent_admitted(id, permit).await {
+            // On another machine its runtime may have been launched: a stop
+            // that confirms it ended comes first (Lead 2, mail 5898).
+            if let Err(error) = self.remote_start_stopped(id).await {
+                let held = format!("{why}, and Core could not confirm its runtime stopped: {error:#}");
+                return self.hold_uncertain(id, held).await;
+            }
+            // Its runtime ended; closing is what releases its slot, and the
+            // close carries the record. A close that can't confirm the runtime
+            // stopped, or can't be written, leaves it uncertain.
+            if let Err(error) = self.close_start_failed(id, permit, &why).await {
                 let held = format!("{why}, and Core could not close it: {error:#}");
                 return self.hold_uncertain(id, held).await;
             }
         }
-        let (agent, reason) = (id.to_owned(), why.clone());
-        self.stored(move |store| store.executor_slot_released_because(&agent, &reason)).await?;
-        // Not made by a template dispatch Core can repeat: closed, as in S1.
-        let Some(made) = made else { return Ok(()) };
+        // Not made by a template dispatch Core can repeat, or its task moved
+        // on: its close wrote no record, and it stays closed, as in S1. A
+        // store error here leaves the record, for a pass to finish.
+        let agent = id.to_owned();
+        let Some(made) = self.stored(move |store| store.executor_settling(&agent)).await? else { return Ok(()) };
         self.finish(made, id, why).await
     }
 
@@ -254,29 +266,65 @@ impl Workspace {
         Ok(())
     }
 
-    /// Before a cut-off start's close (executor_slots.rs): its runtime, on
-    /// another machine, confirmed stopped (T-35 S3a, Lead 2 Q5). For a Codex
-    /// executor, exactly the instance it recorded; one cut off before its
-    /// runtime was located recorded none, and the helper calls what it can't
-    /// find stopped, so that is no confirmation. For a Claude Code executor,
-    /// its host, through the connection the start made (`host_stop`, as
-    /// Disconnect asks it). Ok at once on this Core host, where the dropped
-    /// start ended its own process.
+    /// Before a failed start's close, cut off or refused (T-35 S3a/S3b,
+    /// Lead 2 mails 5775, 5872 and 5898): on another machine, Ok only when
+    /// nothing was launched there or a stop confirmed it ended. Nothing was
+    /// launched when the start never asked (`launch_requested`, committed
+    /// before the request went: a tunnel or admission refusal). Once it asked,
+    /// for a Codex executor, exactly the runtime instance it recorded must be
+    /// confirmed stopped: none recorded is no confirmation, for the helper
+    /// calls what it can't find stopped. For a Claude Code executor, the host
+    /// instance it recorded must answer `host_stop` (as Disconnect asks it)
+    /// through this start's own connection to that instance: none recorded,
+    /// or no such connection, is no confirmation. Ok at once on this Core
+    /// host, where the dropped start ended its own process; that is read from
+    /// the slot's row (R1 ec161975).
     pub(crate) async fn remote_start_stopped(self: &Arc<Self>, id: &str) -> Result<()> {
-        let agent = self.listed(id).await?;
-        let Some(remote) = agent.remote else { return Ok(()) };
-        let machine = remote.machine.name.clone();
-        if agent.harness == "claude" {
-            let connection = self.claudes.lock().unwrap().get(id).map(|c| c.bridge.clone());
-            let bridge = connection.with_context(|| format!("its start never connected to Claude's host on {machine}, so nothing confirmed it stopped"))?;
-            let answer = bridge.request(json!({"op":"host_stop"})).await?;
-            ensure!(answer["stopped"] == true, "Claude's host on {machine} didn't confirm it stopped: {answer}");
+        let agent = id.to_owned();
+        if self.stored(move |store| store.executor_slot_machine(&agent)).await?.is_none_or(|m| m == "local") {
             return Ok(());
         }
-        let runtime = remote.runtime.as_ref()
-            .with_context(|| format!("its start was cut off before its runtime on {machine} was recorded, so no stop could confirm it ended"))?;
+        let agent = self.listed(id).await?;
+        let Some(remote) = agent.remote else { return Ok(()) };
+        if !remote.launch_requested {
+            return Ok(());
+        }
+        let machine = remote.machine.name.clone();
+        if agent.harness == "claude" {
+            let instance = remote.host_instance.as_deref().with_context(|| {
+                format!("Core asked {machine} to start Claude's host, and no host answered, so nothing confirmed it stopped")
+            })?;
+            let connection = self.claudes.lock().unwrap().get(id)
+                .filter(|c| c.remote_instance.as_deref() == Some(instance)).map(|c| c.bridge.clone());
+            let bridge = connection.with_context(|| {
+                format!("this start has no connection to Claude's host {instance} on {machine}, so nothing confirmed it stopped")
+            })?;
+            let answer = bridge.request(json!({"op":"host_stop"})).await?;
+            ensure!(answer["stopped"] == true, "Claude's host {instance} on {machine} didn't confirm it stopped: {answer}");
+            return Ok(());
+        }
+        let runtime = remote.runtime.as_ref().with_context(|| {
+            format!("Core asked {machine} to start its runtime, and none was recorded, so no stop could confirm it ended")
+        })?;
         let workspace = self.stored(|store| store.workspace_id()).await?;
         crate::remote::stop_runtime_instance(&remote.machine, &workspace, id, runtime).await
+    }
+
+    /// A remote start is about to ask its machine to launch the runtime
+    /// (`kind`: Codex's `runtime/ensuring`, Claude Code's
+    /// `claude/hostEnsuring`): recorded and committed first, so a failed
+    /// start knows whether anything could have been launched there
+    /// (`remote_start_stopped`, Lead 2 mail 5898).
+    pub(crate) async fn launch_requested(&self, id: &str, kind: &str) -> Result<()> {
+        #[cfg(test)]
+        if self.executor_slots.fault_before_launch.load(std::sync::atomic::Ordering::Relaxed) {
+            anyhow::bail!("a test's refusal before the machine was asked to launch anything");
+        }
+        self.record_meta(id, kind, json!({}), |m| {
+            if let Some(remote) = &mut m.agent.remote {
+                remote.launch_requested = true;
+            }
+        }).await
     }
 
     async fn agent_name(&self, id: &str) -> String {
