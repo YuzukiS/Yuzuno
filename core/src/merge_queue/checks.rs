@@ -85,7 +85,7 @@ pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool) -> Ch
 /// Two reads of the base branch (its ref and the branch API) name one commit.
 pub(super) fn main_agrees(by_ref: &str, by_branch: &str) -> Check<String> {
     if by_ref.len() != 40 || by_ref != by_branch {
-        return wait(format!("The base branch moved between reads ({} and {})", &by_ref.get(..12).unwrap_or(by_ref), &by_branch.get(..12).unwrap_or(by_branch)));
+        return wait(format!("The base branch moved between reads ({} and {})", by_ref.get(..12).unwrap_or(by_ref), by_branch.get(..12).unwrap_or(by_branch)));
     }
     Ok(by_ref.to_owned())
 }
