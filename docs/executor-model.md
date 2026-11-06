@@ -330,7 +330,8 @@ A released executor takes no more mail or work:
 - **Its proposals are its dispatcher's.** A task status change it proposed
   with `result_publish` is decided by the Agent that dispatched it: the
   proposal shows who, and can't be decided there. You decide it if you
-  dispatched the executor, or if its dispatcher no longer exists.
+  dispatched the executor, or if its dispatcher is closed or no longer
+  exists.
 
 ## Phases
 

@@ -601,6 +601,10 @@ mod tests {
         let refused = ws.decide_task_proposal("r1", confirm("c1", "review", version)).await.unwrap_err();
         assert_eq!(refused.to_string(), format!("not_decidable: {dispatcher}"));
         assert_eq!(current(&ws, "T-1")["task"]["version"].as_i64(), Some(version), "nothing changed");
+        ws.store.update("lead", "test/closed", &json!({}), |d| d.agent.closed_at = Some("then".into())).unwrap();
+        assert_eq!(ws.task_proposal("r1").await.unwrap().blocked, None, "its dispatcher is closed: the user decides");
+        ws.store.update("lead", "test/reopened", &json!({}), |d| d.agent.closed_at = None).unwrap();
+        assert_eq!(ws.task_proposal("r1").await.unwrap().blocked.as_deref(), Some(dispatcher), "open again, it decides");
         ws.store.db.write().unwrap().execute("DELETE FROM agents WHERE id='lead'", []).unwrap();
         assert_eq!(ws.task_proposal("r1").await.unwrap().blocked, None, "its dispatcher is gone: the user decides");
         let applied = ws.decide_task_proposal("r1", confirm("c2", "review", version)).await.unwrap();
