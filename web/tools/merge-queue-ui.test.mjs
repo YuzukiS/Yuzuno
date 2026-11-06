@@ -5,6 +5,7 @@
 import './jsdom-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,12 +23,22 @@ try {
   bundle = (Array.isArray(result) ? result[0] : result).output.find(v => v.type === 'chunk').code;
 } finally { await rm(fixture, { recursive: true, force: true }); }
 
-// The doc's vocabulary: the States table's codes and the stopped row's reasons.
-const doc = await readFile(path.join(root, '../docs/merge-queue.md'), 'utf8');
-const table = doc.slice(doc.indexOf('## States'), doc.indexOf('`merge_retry` checks'));
-const docStates = [...table.matchAll(/^\| `([a-z_]+)` \|/gm)].map(m => m[1]);
-const stoppedRow = table.split('\n').find(line => line.startsWith('| `stopped` |'));
-const docReasons = [...stoppedRow.slice(stoppedRow.indexOf('`reason` is one of') + '`reason` is one of'.length).matchAll(/`([a-z_]+)`/g)].map(m => m[1]);
+// The merge queue's vocabulary as docs/merge-queue.md names it: the States
+// table's codes and the stopped row's reasons. The doc comes with #636; while
+// a tree has it, these must equal what it says (the vocabulary test reads it).
+const docStates = ['queued', 'waiting', 'ready', 'merging', 'merged', 'done', 'stopped', 'cancelled'];
+const docReasons = ['head_moved', 'pr_not_open', 'base_changed', 'review_not_passing', 'main_red', 'ci_red', 'conflict', 'nothing_to_merge',
+  'merge_blocked', 'batch_changed', 'checkout_mismatch', 'checkout_unproven', 'merge_refused', 'merge_unknown', 'post_check_failed',
+  'post_check_unverified', 'gh_too_old', 'wait_timeout', 'github_unreachable', 'dry_run_ended'];
+const docPath = path.join(root, '../docs/merge-queue.md');
+const doc = existsSync(docPath) ? await readFile(docPath, 'utf8') : null;
+function vocabularyOf(text) {
+  const table = text.slice(text.indexOf('## States'), text.indexOf('`merge_retry` checks'));
+  const states = [...table.matchAll(/^\| `([a-z_]+)` \|/gm)].map(m => m[1]);
+  const row = table.split('\n').find(line => line.startsWith('| `stopped` |')) || '';
+  const reasons = [...row.slice(row.indexOf('`reason` is one of') + '`reason` is one of'.length).matchAll(/`([a-z_]+)`/g)].map(m => m[1]);
+  return { states, reasons };
+}
 
 const wait = () => new Promise(r => setTimeout(r, 25));
 async function until(fn, what = 'Expected bounded UI state did not appear') { for (let n = 0; n < 120; n++) { if (fn()) return; await wait(); } assert.fail(what); }
@@ -140,8 +151,9 @@ test('the merge queue source lists entries with state, PR, frozen head and task,
   } finally { p.close(); }
 });
 
-test('every state and stop reason of the merge queue doc has its word, in English and in Chinese', async () => {
-  assert.deepEqual(docStates, ['queued', 'waiting', 'ready', 'merging', 'merged', 'done', 'stopped', 'cancelled']);
+test('every state and stop reason of the merge queue doc has its word, in English and in Chinese', async t => {
+  if (doc) assert.deepEqual(vocabularyOf(doc), { states: docStates, reasons: docReasons }, 'the codes are the doc codes');
+  else t.diagnostic('docs/merge-queue.md is not in this tree (it comes with #636): checked against the codes listed here');
   assert.equal(docReasons.length, 20);
   const entries = [
     ...docStates.map((state, n) => entry(`s-${n}`, state, { number: 100 + n })),
@@ -157,7 +169,7 @@ test('every state and stop reason of the merge queue doc has its word, in Englis
       await until(() => p.doc.querySelector('.merge-queue .job-group-more'));
       p.doc.querySelector('.merge-queue .job-group-more').click();
       await until(() => rows(p).length === entries.length);
-      docStates.forEach((state, n) => assert.equal(rowOf(p, 100 + n).querySelector('.job-state').textContent, words[state], state));
+      docStates.forEach((state, n) => assert.equal(rowOf(p, 100 + n).querySelector('.job-state').textContent, words[state], `${language} word for ${state}`));
       for (const [n, reason] of docReasons.entries()) {
         const said = rowOf(p, 200 + n).querySelector('.job-state').textContent;
         assert.doesNotMatch(said, unknown, `${language} has no word for ${reason}`);
@@ -181,10 +193,10 @@ test('the pause banner names the reason, the entry and PR that caused it, the re
     assert.equal(paused.querySelector('.merge-landing').textContent, 'Core merges');
     assert.match(banner.textContent, /the entry for #12 · PR #12 · on main ccccccc/);
     assert.equal([...banner.querySelectorAll('a')].find(a => a.textContent === 'PR #12').href, 'https://github.com/owner/repo/pull/12');
-    assert.equal([...banner.querySelectorAll('a')].find(a => a.textContent === 'run 9001').href, 'https://github.com/owner/repo/actions/runs/9001');
+    assert.equal([...banner.querySelectorAll('a')].find(a => a.textContent === 'run 9001')?.href, 'https://github.com/owner/repo/actions/runs/9001', 'the banner links the red run');
     assert.match(banner.textContent, /Synthetic main CI run 9001 failed/);
     assert.match(banner.textContent, /Unpausing while main is still ccccccc accepts red run 9001/);
-    assert.equal(banner.querySelector('.merge-action-who').textContent, 'Who can unpause: a lead of Synthetic project (Lead Sora), or you.');
+    assert.equal(banner.querySelector('.merge-action-who').textContent, 'Who can unpause: a lead of Synthetic project (Lead Sora), or you.', 'who can unpause names the leads of the linked Projects');
     // The entry that caused it opens from the banner.
     button(banner, 'the entry for #12').click();
     await until(() => p.doc.querySelector('.job-detail h3')?.textContent === 'owner/repo #12');
@@ -229,8 +241,8 @@ test('unpause asks a reason, sends it on the unpause route, shows the refusal te
     assert.deepEqual(sent.map(s => s.body.reason), ['Synthetic red run looked at', 'Synthetic red run looked at', 'Synthetic red run looked at']);
     assert.ok(sent.every(s => Object.keys(s.body).sort().join() === 'reason,requestId'));
     // A refusal is Core's answer, so the next try is a new request; a lost answer is the same request again.
-    assert.notEqual(sent[1].body.requestId, sent[0].body.requestId);
-    assert.equal(sent[2].body.requestId, sent[1].body.requestId);
+    assert.notEqual(sent[1].body.requestId, sent[0].body.requestId, 'a refusal clears the request id');
+    assert.equal(sent[2].body.requestId, sent[1].body.requestId, 'a lost answer keeps the request id');
   } finally { p.close(); }
 });
 
@@ -240,15 +252,15 @@ test('retry and cancel show by state, each with who may take it', async () => {
     await opened(p);
     const actions = () => [...p.doc.querySelectorAll('.job-detail .merge-action')].map(a => [a.dataset.action, a.querySelector('.merge-action-who').textContent]);
     await choose(p, 12);
-    assert.deepEqual(actions(), [['retry', 'Who can: the Agent that released it (Dev Kai), or you.']]);
+    assert.deepEqual(actions(), [['retry', 'Who can: the Agent that released it (Dev Kai), or you.']], 'a stopped entry offers retry only');
     await choose(p, 13);
-    assert.deepEqual(actions(), [['cancel', 'You released it, so only you can.']]);
+    assert.deepEqual(actions(), [['cancel', 'You released it, so only you can.']], 'a queued entry the user released offers cancel only');
     await choose(p, 14);
-    assert.deepEqual(actions(), [['cancel', 'Who can: the Agent that released it (Dev Kai), or you.']]);
+    assert.deepEqual(actions(), [['cancel', 'Who can: the Agent that released it (Dev Kai), or you.']], 'a waiting entry offers cancel only');
     await choose(p, 16);
-    assert.deepEqual(actions(), []);
+    assert.deepEqual(actions(), [], 'a done entry offers nothing');
     await choose(p, 15);
-    assert.deepEqual(actions(), []);
+    assert.deepEqual(actions(), [], 'a dry run entry offers no retry');
     assert.match(p.doc.querySelector('.job-detail').textContent, /Released before Core merged for real: release the PR again instead of retrying/);
     // Unpause is on the paused repository only, never on an entry.
     assert.equal([...p.doc.querySelectorAll('.merge-action[data-action="unpause"]')].length, 1);
@@ -316,7 +328,7 @@ test('the chosen entry shows its anchor, batch, merge commit, post-check, main C
     button(p.doc.querySelector('.job-detail'), 'Open T-43').click();
     await until(() => !p.doc.querySelector('[role="dialog"]'), 'Jobs did not close for the task');
     // The event comes from the page: compare its fields, not its prototype.
-    assert.deepEqual(tasks.map(d => Object.keys(d)), [['taskId']]);
+    assert.deepEqual(tasks.map(d => Object.keys(d)), [['taskId']], 'the entry opens its task');
     assert.equal(tasks[0].taskId, 'task-e-done');
   } finally { p.close(); }
 });
@@ -337,7 +349,7 @@ test('the merge card says where its one merge request stands: not sent and why, 
     assert.equal(await request(21), 'Not sent yet · Synthetic rate limit until 21:00');
     assert.equal(await request(22), 'Not sent yet · Synthetic gh could not start · 2 sends in a row could not leave Core; five stop the entry');
     assert.equal(await request(23), 'Sent; waiting for GitHub’s answer');
-    assert.equal(await request(24), 'Sent; GitHub’s answer was uncertain, so it may have merged');
+    assert.equal(await request(24), 'Sent; GitHub’s answer was uncertain, so it may have merged', 'an uncertain answer says it may have merged');
     assert.match(p.doc.querySelector('.job-detail').textContent, /Merge outcome unknown/);
     // Once GitHub merged it, the merge commit says it; the request has no row.
     assert.equal(await request(16), null);
@@ -361,7 +373,7 @@ test('in Chinese the pause, actions and refusals are Chinese, and Core text stay
     button(banner, '恢复').click();
     await until(() => banner.querySelector('.merge-refusal'));
     const refusal = banner.querySelector('.merge-refusal');
-    assert.equal(refusal.querySelector('span').textContent, '已拒绝：此仓库的合并队列没有暂停。');
+    assert.equal(refusal.querySelector('span').textContent, '已拒绝：此仓库的合并队列没有暂停。', 'the refusal is said in Chinese');
     assert.equal(refusal.querySelector('small').textContent, 'merge_not_paused: the merge queue of this repository is not paused');
     assert.equal(refusal.querySelector('small').getAttribute('lang'), 'en');
     await choose(p, 12);
@@ -387,7 +399,7 @@ test('a merge queue change from Core re-reads the list, the repositories and the
     const count = url => p.calls.filter(c => c.url === url).length;
     const before = [count('/api/merge-queue'), count('/api/merge-queue/repositories/7'), count('/api/merge-queue/e-stopped')];
     p.rerender({ mergeQueueRevision: '2' });
-    await until(() => count('/api/merge-queue') > before[0] && count('/api/merge-queue/repositories/7') > before[1] && count('/api/merge-queue/e-stopped') > before[2]);
+    await until(() => count('/api/merge-queue') > before[0] && count('/api/merge-queue/repositories/7') > before[1] && count('/api/merge-queue/e-stopped') > before[2], 'a merge queue change re-reads the list, the repository and the entry');
     // A task's view reads that task's entries only.
     p.open({ taskId: 'T-41' });
     await until(() => p.calls.some(c => c.url === '/api/merge-queue?taskId=T-41'));
