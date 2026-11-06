@@ -151,6 +151,12 @@
   padding: 3px;
   overflow: hidden;
 }
+/* A search opens every group at once, and clearing it folds them back at
+   once (ProjectGroups.tsx, T-19 PG-03). */
+.project-group.is-instant > .project-group-body,
+.project-group.is-instant .project-group-chevron {
+  transition: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .project-group-body,
   .project-group-chevron {

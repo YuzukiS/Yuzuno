@@ -25,8 +25,8 @@ try {
 import {GroupedAgents} from ${JSON.stringify(path.join(root, "src/ProjectGroups.tsx"))};
 const root=createRoot(document.getElementById('root'));
 // grouped: false shows the plain list App shows when not grouping.
-window.show=({groups,selectedId,grouped=true,workspaceId='w1'})=>flushSync(()=>root.render(grouped
-  ?<GroupedAgents groups={groups} style="headers" workspaceId={workspaceId} selectedId={selectedId} searching={false}
+window.show=({groups,selectedId,grouped=true,workspaceId='w1',searching=false})=>flushSync(()=>root.render(grouped
+  ?<GroupedAgents groups={groups} style="headers" workspaceId={workspaceId} selectedId={selectedId} searching={searching}
      renderAgent={(a)=><div key={a.id} data-agent={a.id}>{a.name}</div>} onCreate={()=>{}}/>
   :<div>{groups.flatMap((g)=>g.agents).map((a)=><div key={a.id} data-agent={a.id}>{a.name}</div>)}</div>));`,
   );
@@ -219,6 +219,35 @@ test("a closed Agent chosen opens its group once the Closed list shows it", asyn
     p.w.show({ groups: closed, selectedId: "c1" });
     await settle();
     assert.equal(p.folded("B"), false, "c1's row is shown");
+  } finally {
+    p.close();
+  }
+});
+
+test("a search opens every group, and its end folds them back, without their transition; a fold by hand keeps it (T-19 PG-03)", async () => {
+  const p = page();
+  const instant = (key) => p.w.document.querySelector(`[data-group="${key}"]`).classList.contains("is-instant");
+  try {
+    p.w.show({ groups: twoProjects(), selectedId: "a1" });
+    await settle();
+    p.fold("B");
+    await settle();
+    assert.equal(p.folded("B"), true);
+    assert.equal(instant("B"), false, "a fold by hand plays its transition");
+    p.w.show({ groups: twoProjects(), selectedId: "a1", searching: true });
+    assert.equal(p.folded("B"), false, "a search opens it");
+    assert.equal(instant("B"), true, "at once");
+    await settle();
+    p.w.show({ groups: twoProjects(), selectedId: "a1", searching: false });
+    assert.equal(p.folded("B"), true, "the search's end folds it back");
+    assert.equal(instant("B"), true, "at once too");
+    await settle();
+    p.w.show({ groups: twoProjects(), selectedId: "a1" });
+    assert.equal(instant("B"), false, "then a fold plays as before");
+    p.w.document.querySelector('[data-group="B"] .project-group-toggle').click();
+    await settle();
+    assert.equal(p.folded("B"), false);
+    assert.equal(instant("B"), false, "opened by hand, with its transition");
   } finally {
     p.close();
   }
