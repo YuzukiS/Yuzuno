@@ -661,6 +661,8 @@ fn changed(ws: &Workspace) {
     ws.changes
         .publish(&json!({"type":"workspace.changed","scope":"jobs"}));
     ws.collaboration_wakeup.notify_one();
+    // A release may wait for a delivery flow this observation ended (T-36).
+    ws.wake_archive_passes();
 }
 impl Workspace {
     pub(crate) fn start_ci_monitor(self: &Arc<Self>) {

@@ -755,6 +755,46 @@ fn stop_releases_automatic_interest_only_including_lost_reply_and_legacy_shared_
         );
     }
 }
+/// T-36 S2 (#635 R1 8c63e739): the flow owner, an executor, is released
+/// while its delivery flow waits for CI. The release stops its own watch
+/// only; the flow keeps its CI interest, a later observation still ends the
+/// flow, and then nothing holds the release.
+#[test]
+fn a_release_keeps_its_delivery_flows_ci_so_the_flow_still_ends() {
+    let (_d, s, t) = setup();
+    let f = enable(&s, &t);
+    s.collaboration_call(None, "task_submit_result", result(&s, &t, Some(f["candidate"].clone()), "result")).unwrap();
+    let (plan, sub) = subscribe_plan(&s, &t);
+    s.delivery_finish(&internal(&s, &t), &plan, Ok(sub.clone())).unwrap();
+    let mut manual = plan.input.clone();
+    manual["requestId"] = json!("manual-shared");
+    let manual = s.ci_subscribe(Some("owner"), serde_json::from_value(manual).unwrap(),
+        Repository { id: 7, full_name: "o/r".into() }, "pull", 1).unwrap();
+    assert_eq!(manual["id"], sub["id"], "one subscription, two interests");
+    assert!(crate::executor_archiving::begin(&s, "owner", "user").unwrap(), "the release begins");
+    let listed = s.ci_list(None, Some(&t), None).unwrap()["subscriptions"][0].clone();
+    let interests = listed["interests"].as_array().unwrap();
+    assert!(interests.iter().any(|i| i["owner"] == "manual" && i["active"] == false), "its own watch stops: {listed}");
+    assert!(interests.iter().any(|i| i["owner"].as_str().unwrap().starts_with("delivery:") && i["active"] == true),
+        "the flow's CI interest stays: {listed}");
+    let waits = |s: &Store| crate::executor_archiving::waits(&s.db.read().unwrap(), "owner").unwrap();
+    assert!(waits(&s).iter().any(|w| w.starts_with("its delivery flow")), "the release waits for the flow: {:?}", waits(&s));
+    s.ci_observe(
+        sub["watchId"].as_str().unwrap(),
+        Ok(crate::ci_monitor::Observed {
+            runs: vec![],
+            head: Some("b".repeat(40)),
+            pr: Some(json!({"state":"closed","merged":true,"baseSha":"a".repeat(40)})),
+            truncated: false,
+            checked: chrono::Utc::now().timestamp(),
+            wait: 0,
+            excluded: 0,
+        }),
+    )
+    .unwrap();
+    assert_eq!(get(&s, &t)["state"], "merged", "a later observation still ends the flow");
+    assert!(waits(&s).is_empty(), "then nothing holds the release: {:?}", waits(&s));
+}
 #[test]
 fn pending_subscription_cannot_commit_after_stop_or_assignment_change() {
     for stop in [false, true] {

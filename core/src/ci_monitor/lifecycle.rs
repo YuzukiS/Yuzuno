@@ -192,14 +192,16 @@ fn close_where(
 pub(super) fn stop_subscription(db: &Connection, sid: &str) -> Result<()> {
     close_where(db, Some(sid), None, "explicit_stop")
 }
-/// Every active subscription of `agent`, closed with `reason`, as its
-/// executor's release does (T-36): what they observed stays.
+/// The manual interests of `agent`'s active subscriptions, closed with
+/// `reason`, as its executor's release does (T-36): what they observed
+/// stays. A delivery flow's interest stays with the flow, which the release
+/// waits for, so the flow still sees CI and can end (#635 R1 8c63e739).
 pub(crate) fn close_agent_subscriptions(db: &Connection, agent: &str, reason: &str) -> Result<usize> {
     backfill(db)?;
     let mut q = db.prepare("SELECT id FROM ci_subscriptions WHERE agent_id=?1 AND active=1")?;
     let ids = q.query_map([agent], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     for sid in &ids {
-        close_where(db, Some(sid), None, reason)?;
+        close_where(db, Some(sid), Some("manual"), reason)?;
     }
     Ok(ids.len())
 }

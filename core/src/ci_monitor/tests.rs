@@ -1167,20 +1167,29 @@ async fn an_abbreviated_expected_sha_is_refused_with_how_to_get_the_full_one() {
     let tool = tool_definitions().into_iter().find(|tool| tool["name"] == "ci_subscribe").unwrap();
     assert_eq!(tool["inputSchema"]["properties"]["expectedSha"]["pattern"], "^[0-9a-fA-F]{40}$");
 }
-/// T-36: an executor's release stops its own CI subscriptions, closed as
-/// `executor_released`, what they observed kept; another Agent's stay.
+/// T-36: an executor's release stops its own CI watches, closed as
+/// `executor_released`, what they observed kept; another Agent's stay. A
+/// delivery round of its flow on the same subscription keeps its interest,
+/// so the flow, which the release waits for, still sees CI (#635 R1 8c63e739).
 #[test]
 fn a_release_stops_the_executors_own_subscriptions_and_no_one_elses() {
     let (_dir, s) = setup();
     let mine = subscribe(&s, "a", "mine");
     let theirs = subscribe(&s, "b", "theirs");
+    let expires = chrono::Utc::now().timestamp() + 3600;
+    lifecycle::register(&s.db.write().unwrap(), mine["id"].as_str().unwrap(), "delivery:flow-1:1", "agent:a", "flow-ci", expires).unwrap();
     assert!(crate::executor_archiving::begin(&s, "a", "user").unwrap(), "the release begins");
     let read = |id: &Value| {
         s.ci_list(None, None, None).unwrap()["subscriptions"].as_array().unwrap().iter()
             .find(|sub| sub["id"] == *id).cloned().unwrap()
     };
-    let stopped = read(&mine["id"]);
-    assert_eq!((stopped["active"].clone(), stopped["closure"]["reason"].clone()), (json!(false), json!("executor_released")),
-        "the executor's own watch stops: {stopped}");
+    let after = read(&mine["id"]);
+    let interests = after["interests"].as_array().unwrap();
+    let manual = interests.iter().find(|i| i["owner"] == "manual").unwrap();
+    assert_eq!((manual["active"].clone(), manual["closure"]["reason"].clone()), (json!(false), json!("executor_released")),
+        "the executor's own watch stops: {after}");
+    let flow = interests.iter().find(|i| i["owner"] == "delivery:flow-1:1").unwrap();
+    assert_eq!(flow["active"], true, "its delivery flow's interest stays with the flow: {after}");
+    assert_eq!(after["active"], true, "so the subscription goes on for the flow");
     assert_eq!(read(&theirs["id"])["active"], true, "another Agent's watch goes on");
 }

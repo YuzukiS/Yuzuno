@@ -266,3 +266,23 @@ async fn its_archive_mails_its_dispatcher_each_proposal_it_left_undecided() {
     assert!(mail[0]["body"].as_str().unwrap().starts_with("Agent e1 (the executor of T-1 you dispatched, now released) left a task status proposal \
         undecided: T-1 to review, because \"Merged; acceptance is open\"."), "{}", mail[0]["body"]);
 }
+
+/// T-36 S2 (#635 R1 8c63e739): a pass runs as soon as it is woken, as a
+/// Job's end wakes it (jobs `changed`), not only at its 5 s tick.
+#[tokio::test]
+async fn a_pass_runs_on_its_wake_up_before_its_tick() {
+    let (_dir, ws) = workspace();
+    agent(&ws.store, "lead");
+    let (_, t) = task(&ws.store, "Review", None);
+    executor(&ws.store, "e1", &t, "agent:lead");
+    job(&ws.store, "j1", "build", "e1", &t, true);
+    release(&ws, Some("lead"), "e1").await.unwrap();
+    ws.start_archive_passes();
+    end_job(&ws.store, "j1");
+    let woken = std::time::Instant::now();
+    ws.wake_archive_passes();
+    while !closed(&ws.store, "e1") {
+        assert!(woken.elapsed() < std::time::Duration::from_secs(2), "the pass runs on its wake-up, before its 5 s tick");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}

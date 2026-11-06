@@ -7,8 +7,10 @@
 //! ([`refuse_while_archiving`]). It is closed for good only once nothing of
 //! its is still going: no Job running, no delivery flow under way, no pull
 //! request operation in flight ([`waits`]). Until then it stays archiving,
-//! with what it waits for as its reason, and a pass tries again every few
-//! seconds while any executor is archiving, and after Core starts
+//! with what it waits for as its reason. A pass tries again as soon as a
+//! Job, a delivery flow, CI or a PR operation changes
+//! ([`Workspace::wake_archive_passes`], called where those wake
+//! collaboration), every 5 s besides, and after Core starts
 //! ([`Workspace::start_archive_passes`]). A close that fails (a remote
 //! close not confirmed) stays archiving as well, its error as the reason,
 //! tried again after a wait that doubles up to five minutes.
@@ -264,8 +266,14 @@ impl Workspace {
         }
     }
 
-    /// The loop that finishes releases: a pass every few seconds and on a
-    /// wake-up, so one archiving when Core stopped goes on after it starts.
+    /// A Job, a delivery flow, CI or a PR operation changed: what a release
+    /// waits for may have ended, so a pass runs now rather than at its tick.
+    pub(crate) fn wake_archive_passes(&self) {
+        self.executor_archiving.wakeup.notify_one();
+    }
+
+    /// The loop that finishes releases: a pass on each wake-up and every 5 s
+    /// besides, so one archiving when Core stopped goes on after it starts.
     pub fn start_archive_passes(self: &Arc<Self>) {
         if self.executor_archiving.started.set(()).is_err() {
             return;
