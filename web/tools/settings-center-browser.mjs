@@ -135,9 +135,9 @@ try {
   await open(); await search('自动继续');
   await page.getByLabel('Continue after Claude’s usage limit resets agent').selectOption('maple');
   await page.getByRole('button', { name: 'Open Continue after Claude’s usage limit resets' }).click();
-  await page.getByLabel('After Claude’s usage limit resets').waitFor();
+  await page.getByLabel('After Claude’s usage limit resets', { exact: true }).waitFor();
   await page.waitForFunction(() => document.activeElement?.id === 'agent-auto-continue');
-  assert.equal(await page.getByLabel('After Claude’s usage limit resets').inputValue(), 'default');
+  assert.equal(await page.getByLabel('After Claude’s usage limit resets', { exact: true }).inputValue(), 'default');
   check('auto-continue search selects the eligible Claude Agent and focuses its unique inspector editor');
   for (const width of [1360, 320]) {
     await page.setViewportSize({ width, height: 900 });
