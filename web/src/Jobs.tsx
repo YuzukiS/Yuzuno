@@ -560,6 +560,8 @@ export function Jobs({
   const load = useCallback(
     async (before?: number) => {
       const stamp = generation.current;
+      // The selected job's row in the list just read, if it is there (T-60).
+      let row: Job | undefined;
       try {
         const query = new URLSearchParams(scope);
         if (before) query.set("before", String(before));
@@ -575,6 +577,7 @@ export function Jobs({
         if (stamp !== generation.current) return;
         if (!Array.isArray(next.jobs))
           throw new Error(en.updatedCore);
+        row = [...next.jobs, ...(next.liveJobs || [])].find((j) => j.id === selected);
         setPage((old) => {
           const retained = old.jobs.filter((j) => !active(j));
           const jobs = uniqueJobs([
@@ -615,7 +618,6 @@ export function Jobs({
       if (!selected) return;
       // Finished as last read, and the list still says so: nothing to read
       // again (T-60). A row turning finished gives one more read, then none.
-      const row = [...next.jobs, ...(next.liveJobs || [])].find((j) => j.id === selected);
       const done = settled.current;
       if (done?.id === selected && (!row || (row.status === done.status && row.attempt === done.attempt))) return;
       // A failure already shown for this job stays until its read succeeds.
