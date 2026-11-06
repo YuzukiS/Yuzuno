@@ -188,6 +188,18 @@ def dispatch(lead, t):
     return executor
 
 
+def held_turn(agent_id, wake):
+    """Wake `agent_id` and keep its Turn running (the lab's stub holds Turns
+    while hold-turns exists): a Brief write needs one."""
+    (LAB / 'hold-turns').write_text('hold')
+    wake()
+    wait_for(lambda: agent(agent_id), lambda a: a.get('status') == 'working', agent_id + ' works on a held Turn', seconds=60)
+
+
+def end_turns():
+    (LAB / 'hold-turns').unlink()
+
+
 HOLD = """import pathlib,time
 pathlib.Path("started-hold").write_text(str(time.time()))
 while not pathlib.Path("stop-hold").exists(): time.sleep(0.2)
@@ -238,12 +250,15 @@ def main():
             'expectedVersion': current['version'], 'dispatchId': DISPATCH[t2['id']], 'summary': 'Finished.', 'status': 'done'},
             'executor_done_refused')
         check('the executor cannot set its own task done, with task_update or with its result (executor_done_refused)')
+        held_turn(executor, lambda: collaboration('peer_send', {'requestId': 'ask-the-user', 'toAgentId': executor,
+                                                               'body': 'Ask the user which way to go.'}))
         brief = exe.call('brief_get', {})
         exe.call('brief_update', {'requestId': 'ask', 'expectedVersion': brief['version'], 'changes': [{
             'op': 'put', 'key': 'question', 'kind': 'ask', 'title': 'Which way?',
             'body': {'root': 'body', 'elements': {'body': {'type': 'BriefBody', 'props': {}, 'children': ['note']},
                                                   'note': {'type': 'Markdown', 'props': {'text': 'Left or right?'}}}},
             'ask': {'question': 'Which way?', 'reply': {'options': [{'id': 'left', 'label': 'Left'}, {'id': 'right', 'label': 'Right'}], 'freeText': True}}}]})
+        end_turns()
         check('the executor asks the user on Home, as any member may')
         held = submit('hold', executor, t2['id'], 3000)
         wait_for(lambda: get('/jobs/' + held['id']), lambda j: j['status'] == 'running', 'its Job runs')
@@ -291,13 +306,17 @@ def main():
         assert section['owner']['agentId'] == 'lab-a', section.get('owner')
         workspace = get('/workspace')['workspace']['id']
         assert 'Which way?' not in json.dumps(get('/agents/lab-a')), 'lab-a has not seen the question before'
-        status, receipt = request('/projects/' + p + '/brief/reply', {'key': 'question', 'agentId': executor, 'text': '', 'choice': 'left',
-                                                                      'clientMessageId': 't36-home-reply-1', 'askVersion': section['version'],
-                                                                      'workspaceId': workspace})
-        assert status == 200, (status, receipt)
+        reply = {'key': 'question', 'agentId': executor, 'text': '', 'choice': 'left', 'clientMessageId': 't36-home-reply-1',
+                 'askVersion': section['version'], 'workspaceId': workspace}
+        # The reply starts lab-a's Turn, held so lab-a resolves the Ask in it.
+        held_turn('lab-a', lambda: REPORT.__setitem__('reply', request('/projects/' + p + '/brief/reply', reply)))
+        assert REPORT['reply'][0] == 200, REPORT['reply']
         wait_for(lambda: json.dumps(get('/agents/lab-a')), lambda text: 'Which way?' in text, 'the reply is in lab-a\'s conversation')
         brief = lead.call('brief_get', {})
+        replied = next(s for s in brief['sections'] if s['key'] == 'question')
+        REPORT['replied'] = replied.get('ask')
         lead.call('brief_update', {'requestId': 'resolve', 'expectedVersion': brief['version'], 'changes': [{'op': 'resolve', 'key': 'question'}]})
+        end_turns()
         assert not [s for s in lead.call('brief_get', {})['sections'] if s['key'] == 'question'], 'resolved'
         check('its Ask is lab-a\'s now: the Home reply, from a Home that showed the executor, reaches lab-a, and lab-a resolves it')
         executor3 = dispatch(lead, t3)

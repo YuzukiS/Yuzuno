@@ -34,6 +34,8 @@ lock=threading.Lock()
 def emit(value):
  with lock: print(json.dumps(value),flush=True)
 def complete(turn):
+ # A check that needs a Turn running (a Brief write) holds Turns while hold-turns exists.
+ while (root/'hold-turns').exists(): time.sleep(0.1)
  time.sleep(1)
  emit({'method':'turn/completed','params':{'turn':{'id':turn,'status':'completed','items':[]}}})
 for line in sys.stdin:
