@@ -284,9 +284,6 @@ impl Workspace {
         });
     }
 
-    pub(crate) fn wake_archive_passes(&self) {
-        self.executor_archiving.wakeup.notify_one();
-    }
 }
 
 #[cfg(test)]

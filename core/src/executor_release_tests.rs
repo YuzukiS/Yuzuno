@@ -153,7 +153,8 @@ async fn a_closed_executor_is_released_without_a_second_close_and_a_released_one
 
 /// T-34 S4: the close, the archive and the slot commit together or not at
 /// all. A close that fails archives nothing; an archive that fails leaves
-/// the executor open, its slot held.
+/// the executor open, its slot held. Since T-36 S2 either keeps the release
+/// archiving, the failure its reason, and a release asked again tries again.
 #[tokio::test]
 async fn a_release_commits_with_its_close_and_its_slot_or_not_at_all() {
     let (_dir, ws) = workspace();
@@ -161,10 +162,14 @@ async fn a_release_commits_with_its_close_and_its_slot_or_not_at_all() {
     agent(store, "lead");
     executor(store, "e5", "agent:lead");
     let fail = |sql: &str| store.db.write().unwrap().execute_batch(sql).unwrap();
+    let archiving = |answer: Value, why: &str| {
+        let reason = answer["archiving"]["reason"].as_str().unwrap_or_default().to_owned();
+        assert!(answer["releasedAt"].is_null() && reason.contains(why), "archiving, saying why: {answer}");
+    };
 
     fail("CREATE TRIGGER t34_no_close BEFORE INSERT ON journal WHEN NEW.kind='agent/closed'
           BEGIN SELECT RAISE(ABORT,'synthetic: the close fails'); END;");
-    assert!(release(&ws, Some("lead"), "e5").await.is_err());
+    archiving(release(&ws, Some("lead"), "e5").await.unwrap(), "synthetic: the close fails");
     assert!(!closed(store, "e5"), "a failed close leaves it open");
     assert_eq!(role(store, "e5").0, None, "a failed close archives nothing");
     assert_eq!(slot(store, "e5"), "waiting");
@@ -172,7 +177,7 @@ async fn a_release_commits_with_its_close_and_its_slot_or_not_at_all() {
 
     fail("CREATE TRIGGER t34_no_archive BEFORE UPDATE OF archived_at ON agent_roles
           BEGIN SELECT RAISE(ABORT,'synthetic: the archive fails'); END;");
-    assert!(release(&ws, Some("lead"), "e5").await.is_err());
+    archiving(release(&ws, Some("lead"), "e5").await.unwrap(), "synthetic: the archive fails");
     assert!(!closed(store, "e5"), "a failed archive leaves the executor open");
     assert_eq!(slot(store, "e5"), "waiting", "its slot held");
     assert!(closes(store, "e5").is_empty(), "with no close in its history");
