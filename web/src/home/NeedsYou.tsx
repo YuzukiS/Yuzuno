@@ -1,4 +1,4 @@
-import { Bell, CircleAlert, CircleCheck, FileText, MessageCircleQuestionMark, MessagesSquare, ShieldCheck } from "lucide-react";
+import { BadgeCheck, Bell, CircleAlert, CircleCheck, FileText, MessageCircleQuestionMark, MessagesSquare, OctagonPause, ShieldCheck } from "lucide-react";
 import type { Agent } from "../types";
 import { useLanguage } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
@@ -14,7 +14,9 @@ export const needsYouKey = (item: NeedsYouItem) =>
       ? `question:${item.agentId}:${item.turnId}:${item.itemId}`
       : item.kind === "handover"
         ? `handover:${item.proposalId}`
-        : `ask:${item.projectId}:${item.sectionKey}`;
+        : item.kind === "executor"
+          ? `executor:${item.agentId}:${item.state}`
+          : `ask:${item.projectId}:${item.sectionKey}`;
 
 /** Turn ends this device hasn't shown (T-42), failed and finished. */
 export type UnseenEnds = { failed: Agent[]; finished: Agent[] };
@@ -62,7 +64,7 @@ export function NeedsYou({
                 type="button"
                 className={`home-needs-item kind-${item.kind}`}
                 data-needs-you={needsYouKey(item)}
-                title={t.waitingSince(item.title, absolute(item.since, time))}
+                title={t.waitingSince(item.kind === "executor" ? `${item.agentName} · ${item.title}` : item.title, absolute(item.since, time))}
                 onClick={() => onJump(item)}
               >
                 {item.kind === "approval" ? (
@@ -71,14 +73,18 @@ export function NeedsYou({
                   <MessagesSquare size={14} />
                 ) : item.kind === "handover" ? (
                   <FileText size={14} />
+                ) : item.kind === "executor" ? (
+                  item.state === "delivering" ? <BadgeCheck size={14} /> : item.state === "failed" ? <CircleAlert size={14} /> : <OctagonPause size={14} />
                 ) : (
                   <MessageCircleQuestionMark size={14} />
                 )}
                 <span className="home-needs-text">
+                  {/* An executor you dispatched (T-36 S3): what it waits for,
+                      then its task; its name repeats its task's number. */}
                   <span className="home-needs-source">
-                    {projectName(item.projectId)} · {item.agentName}
+                    {projectName(item.projectId)} · {item.kind === "executor" && item.state ? t.executorNeeds[item.state] : item.agentName}
                   </span>
-                  <strong>{item.title}</strong>
+                  <strong>{item.kind === "executor" && item.taskId ? `${item.taskId} · ${item.title}` : item.title}</strong>
                 </span>
                 <span className="home-needs-since">{relative(item.since, language)}</span>
               </button>

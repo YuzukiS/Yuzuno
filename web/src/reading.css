@@ -132,6 +132,52 @@
   line-height: 1.4;
   opacity: 0.72;
 }
+/* An executor's kind and state (T-36 S3) take their own line under its name
+   and status, as a combined status does: beside them the rail is too narrow
+   for "Executor · Queued · 2 in line". */
+.agent-select:has(> .agent-state-badge) {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  row-gap: 4px;
+}
+.agent-select:has(> .agent-state-badge) .agent-rail-avatar {
+  grid-row: 1 / span 2;
+}
+.agent-select:has(> .agent-state-badge):has(.agent-runtime[data-combined]) {
+  grid-template-columns: 28px minmax(0, 1fr);
+}
+.agent-select:has(> .agent-state-badge):has(.agent-runtime[data-combined]) .agent-rail-avatar {
+  grid-row: 1 / span 3;
+}
+.agent-select > .agent-state-badge {
+  grid-column: 2 / -1;
+  justify-self: start;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: calc(8px + var(--font-adjust, 3px));
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* Its own colour, not the row's: a dark theme recolours only named parts. */
+  color: var(--muted);
+}
+/* What needs someone stands out; what is over steps back. The default
+   palette has neither ink: failed falls back to coral, as elsewhere in the
+   app, and delivered to the accent ink every other palette's attention ink
+   is (#987344 reads at about 3:1 on a dark row). */
+.agent-state-badge[data-state="failed"] {
+  color: var(--error-ink, var(--coral));
+}
+.agent-state-badge[data-state="delivering"] {
+  color: var(--attention-ink, var(--accent-ink));
+}
+.agent-state-badge[data-state="archived"],
+.agent-state-badge[data-state="closed"] {
+  opacity: 0.7;
+}
 .agent-identity > .remote-machine-badge > svg {
   flex-shrink: 0;
   width: 11px;

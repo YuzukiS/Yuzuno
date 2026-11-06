@@ -204,7 +204,7 @@ impl Workspace {
             // nothing new; it is closed once nothing of its is still going.
             let (agent, releaser) = (id.to_owned(), by.clone());
             if self.stored(move |store| crate::executor_archiving::begin(store, &agent, &releaser)).await? {
-                self.changed(id);
+                self.executor_changed(id);
             }
             // Whoever asks again, the release is the first releaser's.
             let agent = id.to_owned();
@@ -234,9 +234,9 @@ impl Workspace {
         }
         // Closed before, or by another close meanwhile.
         let (agent, by) = (id.to_owned(), by.to_owned());
-        if self.stored(move |store| archive_closed(store, &agent, &by)).await? {
-            self.changed(id);
-        }
+        self.stored(move |store| archive_closed(store, &agent, &by)).await?;
+        // Archived now, by its close or here: what shows it reads it again.
+        self.executor_changed(id);
         Ok(())
     }
 

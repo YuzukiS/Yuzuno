@@ -157,7 +157,7 @@ export type ProjectPanel = {
 };
 
 export type NeedsYouItem = {
-  kind: "approval" | "ask" | "question" | "handover";
+  kind: "approval" | "ask" | "question" | "handover" | "executor";
   projectId: string | null;
   agentId: string;
   agentName: string;
@@ -168,6 +168,11 @@ export type NeedsYouItem = {
   itemId?: string;
   /** A lead's handover proposal (T-34 S3b), named by its proposer. */
   proposalId?: string;
+  /** An executor the user dispatched (T-36 S3): its result waits for the
+   * user's release, its start failed, or its task is blocked while it runs. */
+  state?: "delivering" | "failed" | "blocked";
+  taskId?: string;
+  reason?: string | null;
   title: string;
   since: string;
 };

@@ -386,6 +386,52 @@ A released executor takes no more mail or work:
   dispatched the executor, or if its dispatcher is closed or no longer
   exists.
 
+## An executor's lifecycle
+
+Each executor has one state, shown on its row in the sidebar, on its task's
+card and, when it needs you, on Home. Core works it out from what it already
+records (`executor_lifecycle.rs`); the Agent listing has it as `executor`, and
+a task's views as `task.executor`. The rules are tried in this order, and the
+first that holds names the state:
+
+| # | State | Shown as | When |
+| --- | --- | --- | --- |
+| 1 | `archived` | 已归档 · Archived | It was released and closed for good. |
+| 2 | `archiving` | 归档中 · Archiving | It was released and waits for its work to end, or for its close to be confirmed. `reason` says what it waits for. |
+| 3 | `failed` | 失败 · Failed | Its start stopped short: it is held open with its slot and a reason (an uncertain start, or a reopened executor's start that failed), or it is closed while its task is blocked and the task's newest dispatch is still its own. |
+| 4 | `closed` | 已关闭 · Closed | It is closed for another reason: closed by hand, or a failed start that Core rebuilt as a new executor. |
+| 5 | `queued` | 排队中 · Queued | It waits for an executor slot; `position` is its place, 1 first. |
+| 6 | `starting` | 启动中 · Starting | It holds a slot and its runtime is starting. |
+| 7 | `delivering` | 交付待放行 · Awaiting release | Its result is in, on its own dispatch, and its task is in review. |
+| 8 | `running` | 运行中 · Running | Anything else: it is at work. |
+
+Each also names its task (`task.id`, `task.title`), who dispatched it
+(`dispatcher`: `user`, or an Agent with its ID and name), and since when
+(`since`). An executor at work whose task is blocked also has the blocker
+(`blocked`); its state stays what it is.
+
+- **The sidebar.** In each Project's list, leads come first, then the
+  other Agents, then a 任务执行者 · Executors group and, folded by default,
+  已归档 · Archived. With attention order, executors are ordered by: waiting
+  on you, or failed; delivered, awaiting release; running; archiving;
+  queued or starting. A failed executor shows there only while its task is
+  blocked on it; a released one, under Archived and in Closed.
+- **The task's card** shows its executor and its state, with its place
+  while it is queued.
+- **Home's Needs you** lists, for an executor you dispatched, a result
+  waiting for your release, a failed start, and a task blocked while it
+  runs. A lead's executors are that lead's to follow and never show there.
+  Its row opens the executor, where its result and Release are.
+- **Release** says, while the executor is archiving, what it waits for.
+  Asking again tries at once.
+
+Clients read a state again when it changes: an executor's Agent is
+announced as changed (`agent.changed`), and the task board is told with
+`workspace.changed` scope `executors`. An archiving executor's reason is
+announced only when it changes, not on every check. A write to its task
+announces it only when it can change the state: a result, a dispatch, a
+claim, or a new status or blocker. A progress-only update doesn't.
+
 ## Phases
 
 | Phase | What it adds |
