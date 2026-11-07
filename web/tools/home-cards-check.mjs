@@ -159,6 +159,9 @@ async function check(run) {
       return route.abort();
     }
     if (/^\/api\/agents\/\w\/reading$/.test(path)) return route.fulfill({ json: method === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
+    // The Project's linked repositories: a list read sent as a POST, which starts no sync (home-api.ts),
+    // as home-ui.test.mjs counts it too.
+    if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     if (method !== "GET") {
       // Marking a conversation read is a read receipt, not a change to Home.
       if (/^\/api\/agents\/\w\/review$/.test(path)) return route.fulfill({ json: { ok: true } });
