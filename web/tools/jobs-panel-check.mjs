@@ -417,7 +417,7 @@ try {
     await jobsButton.click();
     await dialog.waitFor();
     const tabs = page.getByRole("tablist", { name: "Job source" }).getByRole("tab");
-    assert.deepEqual(await tabs.allTextContents(), ["Local2", "GitHub Actions", "Reviews"]);
+    assert.deepEqual(await tabs.allTextContents(), ["Local2", "GitHub Actions", "Reviews", "Merge queue"]);
     assert.equal(await tabs.first().getAttribute("aria-selected"), "true");
     const groups = () => page.locator(".job-group-title").evaluateAll((els) => els.map((el) => el.textContent));
     assert.deepEqual(await groups(), ["Running and queued2", "Finished13"]);

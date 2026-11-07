@@ -26,10 +26,10 @@ import {createRoot} from 'react-dom/client';
 import {Turn} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
 import {conversationTimeMarks} from ${JSON.stringify(path.join(root, "src/conversation-time.ts"))};
 const root=createRoot(document.getElementById('root'));
-window.renderTurns=({turns,agent,shells,latest})=>{
-  const marks=conversationTimeMarks(turns);
+window.renderTurns=({turns,agent,shells,latest,time})=>{
+  const marks=conversationTimeMarks(turns,time);
   flushSync(()=>root.render(<>{turns.map((turn,i)=><Turn key={turn.id} turn={turn} index={i} agent={agent}
-    onFile={()=>{}} onRewindDraft={()=>{}} isLatestAgentTurn={turn.id===latest} timeMarks={marks} backgroundShells={shells}/>)}</>));
+    onFile={()=>{}} onRewindDraft={()=>{}} isLatestAgentTurn={turn.id===latest} timeMarks={marks} backgroundShells={shells} time={time}/>)}</>));
 };`,
   );
   const result = await build({
@@ -51,6 +51,9 @@ const agent = {
 };
 /** Local wall time in Asia/Shanghai (UTC+8), as Unix ms. */
 const at = (day, hour, minute, second = 0) => Date.UTC(2026, 9, day, hour - 8, minute, second);
+/** "Now" for every page here: the evening of the 13th, so the 13th is today
+ * (T-70 dates a footer against it). */
+const NOW = at(13, 23, 0);
 const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const label = (ms) => clock.format(new Date(ms));
 const timed = (ms, source = "codex") => ({ _yuzunoTime: { at: ms, source } });
@@ -58,7 +61,9 @@ const user = (id, text, time) => ({ id, type: "userMessage", content: [{ type: "
 const reply = (id, text, time, phase) => ({ id, type: "agentMessage", text, ...(phase ? { phase } : {}), ...(time ? timed(time) : {}) });
 const shell = (id) => ({ id, type: "commandExecution", command: "npm test", status: "completed" });
 
-function mount() {
+/** `language` as this device saved it; `time` as the app passes the Turn
+ * (useTimeDisplay); `now` as Date.now. */
+function mount({ language, time, now = NOW } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
@@ -68,10 +73,12 @@ function mount() {
   const { window } = dom;
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   window.ResizeObserver = class { observe() {} disconnect() {} };
+  if (language) window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+  window.Date.now = () => now;
   window.eval(bundle);
   const document = window.document;
   const render = (turns, { shells, latest = turns.at(-1)?.id } = {}) =>
-    window.renderTurns({ turns: JSON.parse(JSON.stringify(turns)), agent, shells, latest });
+    window.renderTurns({ turns: JSON.parse(JSON.stringify(turns)), agent, shells, latest, time });
   /** Item id → visible minute label, for every message that shows one. */
   const marks = () =>
     Object.fromEntries([...document.querySelectorAll("[data-item-id]")]
@@ -225,5 +232,93 @@ test("finished turns without a final reply still expose Rewind, including untime
     assert.equal(row.querySelector(".turn-footer"), null, "no invented timing");
   }
   assert.equal(page.document.querySelector('[data-turn-id="running"] .rewind-open'), null);
+  assert.deepEqual(page.errors, []);
+});
+
+// T-70: a finished Turn's end time says its day when that is not today.
+const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short" });
+/** Shanghai wall time on 31 December 2025, the year before `at`'s. */
+const lastYear = (hour, minute) => Date.UTC(2025, 11, 31, hour - 8, minute);
+const ended = (id, end) => ({ id, status: "completed", durationMs: 60_000, completedAt: end / 1000,
+  items: [user(`${id}-u`, "Go", end - 60_000), reply(`${id}-r`, "Done", end - 30_000)] });
+/** Turn id → the footer's time as shown and its tooltip. */
+const endings = (page) => Object.fromEntries([...page.document.querySelectorAll(".turn-footer time")]
+  .map((node) => [node.closest("article").dataset.turnId, { text: node.textContent, title: node.getAttribute("title") }]));
+const fourDays = [
+  ended("today", at(13, 14, 3)),
+  ended("yesterday", at(12, 15, 45)),
+  ended("earlier", at(5, 9, 30)),
+  ended("lastyear", lastYear(22, 10)),
+];
+
+test("a footer says yesterday or the date when its Turn ended before today, in English", (t) => {
+  const page = mount({ language: "en" });
+  t.after(page.close);
+  page.render(fourDays);
+  const shown = endings(page);
+  t.diagnostic(`rendered en: ${JSON.stringify(page.footers().map((f) => f.text))}`);
+  assert.deepEqual(Object.fromEntries(Object.entries(shown).map(([id, e]) => [id, e.text])), {
+    today: label(at(13, 14, 3)),
+    yesterday: `yesterday ${label(at(12, 15, 45))}`,
+    earlier: `Oct 5, ${label(at(5, 9, 30))}`,
+    lastyear: `Dec 31, 2025, ${label(lastYear(22, 10))}`,
+  });
+  assert.equal(page.footers().find((f) => f.turn === "yesterday").text, `Cooked for 1m 00s · done yesterday ${label(at(12, 15, 45))}`);
+  for (const [id, end] of [["today", at(13, 14, 3)], ["yesterday", at(12, 15, 45)], ["earlier", at(5, 9, 30)], ["lastyear", lastYear(22, 10)]])
+    assert.equal(shown[id].title, `Finished ${fullDate.format(new Date(end))}`, `${id}: the tooltip has the full date and time`);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a footer says yesterday or the date when its Turn ended before today, in Chinese", (t) => {
+  const page = mount({ language: "zh-Hans" });
+  t.after(page.close);
+  page.render(fourDays);
+  const shown = endings(page);
+  t.diagnostic(`rendered zh-Hans: ${JSON.stringify(page.footers().map((f) => f.text))}`);
+  assert.deepEqual(Object.fromEntries(Object.entries(shown).map(([id, e]) => [id, e.text])), {
+    today: label(at(13, 14, 3)),
+    yesterday: `昨天 ${label(at(12, 15, 45))}`,
+    earlier: `10月5日 ${label(at(5, 9, 30))}`,
+    lastyear: `2025年12月31日 ${label(lastYear(22, 10))}`,
+  });
+  assert.equal(page.footers().find((f) => f.turn === "earlier").text, `用时 1m 00s · 完成于 10月5日 ${label(at(5, 9, 30))}`);
+  assert.equal(shown.lastyear.title, `完成于 ${fullDate.format(new Date(lastYear(22, 10)))}`);
+  assert.deepEqual(page.errors, []);
+});
+
+test("today and yesterday are calendar days where times are shown, not 24-hour windows", (t) => {
+  // Half past midnight on the 13th: 40 minutes earlier is yesterday, and a
+  // day and a half hour earlier is already the 11th.
+  const page = mount({ language: "en", now: at(13, 0, 30) });
+  t.after(page.close);
+  page.render([ended("late", at(12, 23, 50)), ended("dayBefore", at(11, 23, 59))]);
+  const shown = endings(page);
+  assert.equal(shown.late.text, `yesterday ${label(at(12, 23, 50))}`);
+  assert.equal(shown.dayBefore.text, `Oct 11, ${label(at(11, 23, 59))}`);
+  // In New York the same instants fall on the 12th and the 11th, and it is
+  // still the 12th there: the first is today, the second yesterday.
+  const newYork = mount({ language: "en", now: at(13, 0, 30), time: { clock: "h24", timeZone: "America/New_York" } });
+  t.after(newYork.close);
+  newYork.render([ended("late", at(12, 23, 50)), ended("dayBefore", at(11, 23, 59))]);
+  assert.deepEqual(Object.fromEntries(Object.entries(endings(newYork)).map(([id, e]) => [id, e.text])), {
+    late: "11:50",
+    dayBefore: "yesterday 11:59",
+  });
+  assert.deepEqual([...page.errors, ...newYork.errors], []);
+});
+
+test("interrupted and failed endings are dated by the same rule", (t) => {
+  const page = mount({ language: "en" });
+  t.after(page.close);
+  page.render([
+    { id: "stopped", status: "interrupted", _yuzunoStartedAt: at(12, 9, 0), _yuzunoCompletedAt: at(12, 9, 1, 2),
+      items: [user("su", "Long task", at(12, 9, 0)), reply("sr", "Partial answer", at(12, 9, 0, 30))] },
+    { id: "failed", status: "failed", error: { message: "boom" }, _yuzunoCompletedAt: at(5, 9, 5),
+      items: [user("fu", "Try again", at(5, 9, 4))] },
+  ]);
+  assert.deepEqual(page.footers().map((f) => f.text), [
+    `Interrupted after 1m 02s · yesterday ${label(at(12, 9, 1))}`,
+    `Failed at Oct 5, ${label(at(5, 9, 5))}`,
+  ]);
   assert.deepEqual(page.errors, []);
 });

@@ -209,3 +209,59 @@
     flex-wrap: wrap;
   }
 }
+/* T-37: a repository's merge queue switch. */
+.merge-queue-switch {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 0.7rem;
+  line-height: 1.55;
+}
+/* Classed so they outrank the project form's own label and input rules
+   (.project-form label is a grid; .project-form input a full-width field). */
+.merge-queue-switch > .merge-queue-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+.merge-queue-switch > .merge-queue-toggle input {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin: 3px 0 0;
+  padding: 0;
+  accent-color: var(--green);
+}
+.merge-queue-switch > .merge-queue-toggle span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.merge-queue-switch small {
+  color: var(--muted);
+}
+.merge-queue-landing {
+  display: block;
+  margin-top: 4px;
+}
+.merge-queue-confirm,
+.merge-queue-paused {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.merge-queue-confirm p,
+.merge-queue-paused p {
+  margin: 0 0 6px;
+}
+.merge-queue-confirm ul {
+  margin: 0 0 6px;
+  padding-left: 18px;
+}
+.merge-queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

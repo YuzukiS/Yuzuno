@@ -238,6 +238,170 @@ export function GitHubSummary({
   );
 }
 
+type QueueRepository = {
+  repositoryId: number;
+  enabled: boolean;
+  paused: { reason: string; detail?: string; main?: string } | null;
+  landing?: string;
+};
+// T-37: the repository's merge queue switch, the user's only (Agents have no
+// tool for it). Turning it on names every write Core may then make; turning
+// it off saves at once.
+const queueText = strings({
+  label: (name: string) => `Merge queue for ${name}`,
+  title: "Merge queue",
+  on: "On: Core merges PRs released for merge in this repository.",
+  off: "Off: Core writes nothing to GitHub here.",
+  loading: "Reading the merge queue…",
+  confirm: (name: string) => `Turn on the merge queue for ${name}? While it is on, Core makes only these writes to GitHub, with the Core host's gh login:`,
+  writes: [
+    "The merge of a PR released for merge: a merge commit pinned to the released head. Never a squash, a rebase or an admin merge.",
+    "When CI tested an older main: a branch queue/merge-… at the current main with the head merged in, and a draft PR from it so CI runs there.",
+    "Afterwards: closing that draft PR and deleting its branch.",
+  ],
+  never: "Core never force-pushes, and never starts, reruns or cancels a workflow. Turning it off takes effect at once.",
+  turnOn: "Turn on",
+  cancel: "Cancel",
+  paused: (reason: string) => `Paused: ${reason}`,
+  pausedHint: "No PR merges here until the queue is unpaused. Look at main first.",
+  unpause: "Unpause",
+  landing: (name: string) =>
+    name === "core-merge"
+      ? "Lands with core-merge: Core sends the merge itself. GitHub auto-merge and GitHub's merge queue come in core.25."
+      : `Lands with ${name}, which this Core does not have: nothing merges here.`,
+}, {
+  label: (name) => `${name} 的合并队列`,
+  title: "合并队列",
+  on: "已开启：Core 合并此仓库中已放行合并的 PR。",
+  off: "已关闭：Core 不向 GitHub 写入任何内容。",
+  loading: "正在读取合并队列…",
+  confirm: (name) => `为 ${name} 开启合并队列？开启后，Core 只用 Core 主机上的 gh 登录向 GitHub 做这些写入：`,
+  writes: [
+    "合并已放行合并的 PR：一个固定在放行的头上的合并提交。从不压缩、变基或用管理员权限合并。",
+    "CI 测的是较旧的 main 时：在当前 main 上建分支 queue/merge-…，把这个头合进去，并从它开一个草稿 PR，让 CI 在那里运行。",
+    "之后：关闭这个草稿 PR 并删除它的分支。",
+  ],
+  never: "Core 从不强制推送，也从不启动、重跑或取消 workflow。关闭立即生效。",
+  turnOn: "开启",
+  cancel: "取消",
+  paused: (reason) => `已暂停：${reason}`,
+  pausedHint: "解除暂停之前，这里不会合并任何 PR。请先查看 main。",
+  unpause: "解除暂停",
+  landing: (name) =>
+    name === "core-merge"
+      ? "落地方式 core-merge：由 Core 自己发出合并。GitHub 自动合并与 GitHub 合并队列将在 core.25 提供。"
+      : `落地方式 ${name}：此 Core 没有这种方式，这里不会合并任何 PR。`,
+});
+
+function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
+  repositoryId: number;
+  name: string;
+  language: Language;
+  disabled: boolean;
+}) {
+  const t = queueText(language);
+  const [state, setState] = useState<QueueRepository | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const mounted = useRef(true);
+  // One unpause, retried with the same requestId until it is answered.
+  const unpauseId = useRef<string | null>(null);
+  const path = `/merge-queue/repositories/${repositoryId}`;
+  useEffect(() => {
+    mounted.current = true;
+    const controller = new AbortController();
+    api<QueueRepository>(path, { signal: controller.signal })
+      .then((value) => { if (mounted.current) setState(value); })
+      .catch((e) => { if (!controller.signal.aborted && mounted.current) setError(errorText(e)); });
+    return () => {
+      mounted.current = false;
+      controller.abort();
+    };
+  }, [path]);
+  const send = async (call: () => Promise<QueueRepository>) => {
+    setBusy(true);
+    setError("");
+    try {
+      const value = await call();
+      if (mounted.current) {
+        setState(value);
+        setConfirming(false);
+      }
+      return true;
+    } catch (e) {
+      if (mounted.current) setError(errorText(e));
+      return false;
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+  const save = (enabled: boolean) =>
+    send(() => api<QueueRepository>(path, { method: "PUT", body: JSON.stringify({ enabled }) }));
+  const unpause = async () => {
+    unpauseId.current ||= crypto.randomUUID();
+    const requestId = unpauseId.current;
+    const done = await send(async () => {
+      await api(`${path}/unpause`, { method: "POST", body: JSON.stringify({ requestId }) });
+      return api<QueueRepository>(path);
+    });
+    if (done) unpauseId.current = null;
+  };
+  return (
+    <div className="merge-queue-switch" role="group" aria-label={t.label(name)}>
+      {!state && !error && <small>{t.loading}</small>}
+      {state && (
+        <label className="merge-queue-toggle">
+          <input
+            type="checkbox"
+            role="switch"
+            checked={state.enabled}
+            aria-checked={state.enabled}
+            disabled={disabled || busy}
+            onChange={() => {
+              if (state.enabled) void save(false);
+              else setConfirming(true);
+            }}
+          />
+          <span>
+            <strong>{t.title}</strong>
+            <small>{state.enabled ? t.on : t.off}</small>
+          </span>
+        </label>
+      )}
+      {state?.landing && <small className="merge-queue-landing">{t.landing(state.landing)}</small>}
+      {confirming && state && !state.enabled && (
+        <div className="merge-queue-confirm">
+          <p>{t.confirm(name)}</p>
+          <ul>
+            {t.writes.map((write) => <li key={write}>{write}</li>)}
+          </ul>
+          <p>{t.never}</p>
+          <div className="merge-queue-actions">
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void save(true)}>
+              {t.turnOn}
+            </button>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirming(false)}>
+              {t.cancel}
+            </button>
+          </div>
+        </div>
+      )}
+      {state?.paused && (
+        <div className="merge-queue-paused" role="status">
+          <strong>{t.paused(state.paused.reason)}</strong>
+          {state.paused.detail && <p>{state.paused.detail}</p>}
+          <p>{t.pausedHint}</p>
+          <button type="button" className="secondary-button" disabled={disabled || busy} onClick={() => void unpause()}>
+            {t.unpause}
+          </button>
+        </div>
+      )}
+      {error && <p role="alert" className="github-error">{error}</p>}
+    </div>
+  );
+}
+
 export function GitHubLinks({
   projectId,
   taskId,
@@ -422,6 +586,7 @@ export function GitHubLinks({
                     {t.lastKnown}
                   </p>
                 )}
+                <MergeQueueSwitch repositoryId={repo.id} name={repo.fullName} language={repoMode ? language : shown} disabled={disabled} />
               </article>
             ))
           : (page?.links || []).map((link) => (

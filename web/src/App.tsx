@@ -351,6 +351,8 @@ export function App() {
   const [boardRevision, boardRefresh] = useRefreshTrigger();
   const [machinesRevision, machinesRefresh] = useRefreshTrigger();
   const [jobsRevision, jobsRefresh] = useRefreshTrigger();
+  // Core's merge queue (T-65): its tick and actions say `mergeQueue`.
+  const [mergeQueueRevision, mergeQueueRefresh] = useRefreshTrigger();
   // Only for the Home tab's count of open Asks while Home is closed.
   const [asksRevision, asksRefresh] = useRefreshTrigger();
   // The shared Appearance preset, for a device that follows it (T-194).
@@ -862,6 +864,7 @@ export function App() {
           return;
         }
         case "workspace.changed":
+          if (event.mergeQueue) mergeQueueRefresh.atMostEvery(1_000);
           // A conversation that shows mail delivery gets its own notice.
           if (event.scope === "collaboration") {
             boardRefresh.now();
@@ -892,6 +895,10 @@ export function App() {
           liveChange.current = liveTurn.current = null;
           arrivalsSettle.current = { after: live.sync.reads };
           jobsRefresh.now();
+          // The merge queue: at once on a reconnect; while the stream is down,
+          // at most once a minute (T-65 R1).
+          if (event.reason === "poll") mergeQueueRefresh.atMostEvery(60_000);
+          else mergeQueueRefresh.now();
           presetRefresh.now();
           refresh();
           // Not each poll while the stream is down: a reconnect resets anew.
@@ -899,7 +906,7 @@ export function App() {
           return;
       }
     },
-    [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, presetRefresh, live.sync, refresh],
+    [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, mergeQueueRefresh, presetRefresh, live.sync, refresh],
   );
   const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent, onReplay);
   // The stream broke (T-19 CV:Q-01, Lead 3299): nothing arrives live until it is open again and
@@ -3155,7 +3162,7 @@ export function App() {
               <MessageSquare size={15} />
               <span className="toolbar-nav-label">{shell.tasks}</span>
             </button>
-            <Jobs key={`jobs-${workspaceId}`} workspaceId={workspaceId} agent={agent} agents={workspace?.agents || []} revision={String(jobsRevision)} disabled={previewMode || loading} onOpenSettings={openSettingsAt} />
+            <Jobs key={`jobs-${workspaceId}`} workspaceId={workspaceId} agent={agent} agents={workspace?.agents || []} projects={workspace?.projects || []} revision={String(jobsRevision)} mergeQueueRevision={String(mergeQueueRevision)} disabled={previewMode || loading} onOpenSettings={openSettingsAt} />
           </nav>
         </div>
         <div className="toolbar-actions">
@@ -3968,9 +3975,12 @@ export function App() {
                       onOpen={(id) => selectAgent(id)}
                     />
                   )}
+                  {/* Each notice its own key, per Agent so it starts anew in another's
+                      conversation: siblings sharing one key are duplicated by React, a copy left in
+                      the page on every render (YN-1). */}
                   {currentDetail && recovery && (
                     <RecoveryNotice
-                      key={selected}
+                      key={`recovery:${selected}`}
                       detail={currentDetail}
                       disabled={closed || !!workspaceError}
                       hasDraft={hasDraft}
@@ -3979,7 +3989,7 @@ export function App() {
                     />
                   )}
                   {currentDetail?.agent.harness === "claude" && !currentDetail.agent.remote && (
-                    <QuotaResumeNotice key={selected} detail={currentDetail} disabled={closed || !!workspaceError} />
+                    <QuotaResumeNotice key={`quota:${selected}`} detail={currentDetail} disabled={closed || !!workspaceError} />
                   )}
                   {unconfirmedMessage && (
                     <div className="message-delivery-notice" role="status" lang={langTag(language)}>
