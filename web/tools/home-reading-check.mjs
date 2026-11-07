@@ -192,14 +192,17 @@ try {
       continue;
     }
 
-    // On Home a card says what it is about without guessing from its body
-    // (2292): no fold, no excerpt; the closed author's card says nobody keeps it.
+    // On Home a card whose author named no summary shows how its body opens, as a folded
+    // card does (YN-3): its first paragraph only, none for a body opening with a plain
+    // Group; the closed author's card says nobody keeps it.
     const development = card("development"), reconnect = card("reconnect"), layout = card("home-layout");
     for (const key of keys) {
       assert.equal(await card(key).locator(".home-fold").count(), 0, `${key}: a summary card has no fold`);
-      assert.equal(await card(key).locator(".home-summary-unnamed").innerText(), "No summary named", `${key}: no excerpt taken for a summary`);
+      assert.doesNotMatch(await card(key).innerText(), /No summary named/, `${key}: never "No summary named"`);
     }
-    assert.equal(await development.locator(".brief-markdown").count(), 0, "no first paragraph on the card");
+    assert.equal(await development.locator(".home-summary-lead").innerText(), "Release core.15 is installed. Two fixes are accepted and wait for main; nothing is blocked.");
+    assert.equal(await reconnect.locator(".home-summary-lead").count(), 0, "a body opening with a plain Group shows no paragraph");
+    assert.equal(await layout.locator(".home-summary-lead").innerText(), "Daily runs core.12; the narrow layout is checked on Chromium only.");
     assert.ok(await layout.locator(".home-summary-head .home-unmaintained").isVisible());
     assert.match(await layout.locator(".home-summary-foot").innerText(), /Data as of/);
     check(`${viewport.name}: summary cards name no summary their author didn't write, show data time and maintenance, and have no fold`);

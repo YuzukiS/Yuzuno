@@ -106,18 +106,6 @@
 .home-summary-body {
   flex: 1 1 auto;
 }
-/* A card whose author named no summary says so, lightly, and no more. It
-   keeps its own height at the top of its row: stretched beside a tall
-   summary, its empty middle would look broken (Dev 7). */
-.home-section.home-summary-card.is-unnamed {
-  align-self: start;
-}
-.home-summary-unnamed {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: calc(9.5px + var(--font-adjust, 3px));
-}
-
 /* The conditions on a card: chips in two lines, or two lines of text. */
 .home-card-condition-chips {
   display: flex;
@@ -200,6 +188,52 @@
 @container deck (max-width: 559px) {
   .home-card-frame-body {
     height: 118px;
+  }
+}
+/* A kept image on a card opens whole in place (YN-3): the frame is its
+   button, drawn as the frame is, with the report page's sign that it opens
+   larger (brief.css .brief-image-zoom), clearer on hover and focus. */
+button.home-card-frame-body.home-card-image-open {
+  position: relative;
+  display: block;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: zoom-in;
+}
+button.home-card-image-open:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+button.home-card-image-open:hover .brief-image-zoom,
+button.home-card-image-open:focus-visible .brief-image-zoom {
+  opacity: 1;
+}
+/* On a small card, an action in the accent ink, as "Open report" is; both
+   classes, as the quiet button's own styles load after this sheet. */
+.quiet-button.home-card-image-view {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.quiet-button.home-card-image-view:hover:not(:disabled),
+.quiet-button.home-card-image-view:focus-visible {
+  background: var(--home-soft);
+  color: var(--accent-ink);
+}
+.quiet-button.home-card-image-view:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+@media (pointer: coarse) {
+  .quiet-button.home-card-image-view {
+    min-height: 44px;
   }
 }
 /* A kept image is unseen until it is decoded; then it fades in over small, or under reduced motion is
