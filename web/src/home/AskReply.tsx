@@ -228,9 +228,18 @@ const formVersions = draftStore<FormBegun>("yuzuno.home-ask-form-versions.v1");
  * user message through Core, to the section's owner unless the user picks
  * another Agent. Nothing here acts on the Agent's behalf.
  */
-/** `inRow`: in a replied Ask's one-line row (YN-3), which already says it is
- * replied and whom it waits for: the reply is labelled as the user's. */
-export function AskReply({ section, inRow = false, ...context }: ReplyContext & { section: Section; inRow?: boolean }) {
+/** `inRow`: in a replied Ask's answer card (YN-3), which already says it is
+ * replied and whom it waits for: the reply is labelled as the user's.
+ * `face`: the answer card shows the reply and Reply again itself, so until a
+ * reply is sent from here the replied block is not drawn again; each step of
+ * `againRequest` is the card's Reply again, as the button below is. */
+export function AskReply({
+  section,
+  inRow = false,
+  face = false,
+  againRequest = 0,
+  ...context
+}: ReplyContext & { section: Section; inRow?: boolean; face?: boolean; againRequest?: number }) {
   const language = useLanguage();
   const t = homeText(language);
   const ask = section.ask!;
@@ -472,8 +481,19 @@ export function AskReply({ section, inRow = false, ...context }: ReplyContext & 
     // Only as Reply again brings it back.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reopened]);
+  // The answer card's Reply again (YN-3): what the button below does.
+  const askedAgain = useRef(againRequest);
+  useEffect(() => {
+    if (againRequest === askedAgain.current) return;
+    askedAgain.current = againRequest;
+    setReopened((n) => n + 1);
+    setAgain(true);
+  }, [againRequest]);
   // A pick sends only its id: Core quotes the label, and text would repeat it.
   const pick = (id: string, label: string) => void deliver("", id, label, section.version).catch(() => {});
+  // On the answer card, the reply is on its face: only a draft kept since is said here.
+  if (replied && face && delivered === 0)
+    return draft?.text.trim() ? <p className="home-note">{t.askDraftAfterReply}</p> : null;
   if (replied)
     return (
       <div className="home-ask-replied" role="status" ref={repliedBlock} tabIndex={-1}>
