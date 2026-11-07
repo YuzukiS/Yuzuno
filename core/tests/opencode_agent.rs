@@ -850,13 +850,17 @@ async fn a_sub_agents_requests_are_shown_with_it_and_answered_in_its_own_session
     // they are answered, T-61 slice 2).
     lab.control("idle", json!({"sessionID":child})).await;
 
-    // A request of a sub-agent whose run ended is not answered.
+    // A request of a sub-agent whose session ended is not answered: 2.x no longer holds it and says so (404; Core
+    // reads no list first, D-10 (a)), and Core removes it.
     lab.control("ask", json!({"sessionID":child})).await;
     let gone = lab.until("the next request", |d| !d.pending.is_empty()).await.pending[0].clone();
     lab.control("close", json!({"sessionID":child})).await;
-    assert!(lab.ws.respond(&gone.id, json!({"decision":"once"})).await.is_err());
-    assert_eq!(lab.replies().iter().filter(|c| c["path"].as_str().unwrap().contains("/permission/")).count(), 1,
-        "only the first permission answer was sent");
+    let refused = lab.ws.respond(&gone.id, json!({"decision":"once"})).await.map_err(|e| e.to_string());
+    assert!(refused.as_ref().is_err_and(|e| e.contains("no longer holds")), "refused as gone: {refused:?}");
+    assert!(lab.detail().pending.iter().all(|r| r.id != gone.id), "and removed");
+    let first = asked["id"].as_str().unwrap();
+    assert_eq!(lab.replies().iter().filter(|c| c["path"].as_str().unwrap().contains(first)).count(), 1,
+        "the first permission request answered once");
 
     // The Agent's own session ends its Turn.
     assert_eq!(turn(&lab.detail(), &running)["status"], "inProgress");
