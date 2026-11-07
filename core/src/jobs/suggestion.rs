@@ -57,12 +57,12 @@ impl Store {
     /// Null without one. Jobs of `except` (a Job ID, or a run ID for its
     /// stages) are not counted.
     pub(super) fn resource_suggestion(&self, query: &Query, except: Option<&str>) -> Result<Value> {
-        read(&self.db.read()?, query, None, except)
+        read(&*self.db.read()?, query, None, except)
     }
     /// The same for `actor` (None: the user): another Agent's Jobs in it by
     /// their numbers and IDs only.
     pub(super) fn resource_suggestion_for(&self, query: &Query, actor: Option<&str>) -> Result<Value> {
-        read(&self.db.read()?, query, actor, None)
+        read(&*self.db.read()?, query, actor, None)
     }
 }
 
