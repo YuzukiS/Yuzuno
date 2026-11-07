@@ -155,7 +155,8 @@ def save(): p.write_text(json.dumps(s))
 def out(code,data,link=None):
     if include:
         status={200:'200 OK',201:'201 Created',204:'204 No Content',404:'404 Not Found',405:'405 Method Not Allowed',409:'409 Conflict',422:'422 Unprocessable Entity',429:'429 Too Many Requests',502:'502 Bad Gateway'}[code]
-        sys.stdout.write('HTTP/2.0 '+status+'\r\nEtag: "'+str(len(s['calls']))+'"\r\n'+('Link: '+link+'\r\n' if link else '')+'\r\n'+('' if data is None else json.dumps(data)))
+        poll='X-Poll-Interval: '+str(s['pollInterval'])+'\r\n' if s.get('pollInterval') and path.startswith('git/ref') else ''
+        sys.stdout.write('HTTP/2.0 '+status+'\r\nEtag: "'+str(len(s['calls']))+'"\r\n'+poll+('Link: '+link+'\r\n' if link else '')+'\r\n'+('' if data is None else json.dumps(data)))
     else:
         sys.stdout.write(data if isinstance(data,str) else json.dumps(data))
     if code>=300:
@@ -1299,6 +1300,33 @@ async fn a_conflicting_pr_without_ci_stops_with_conflict_in_one_tick() {
             lab.mail(agent)
         );
     }
+}
+
+/// GitHub answers git/ref reads with X-Poll-Interval: 300, and the shared read
+/// kept such a body for that long without asking again. After main moved, the
+/// queue then read the old main from git/ref beside the new one from
+/// branches/main and waited "The base branch moved between reads" for up to
+/// five minutes (YN-18 lab, after scenario A merged). The queue's reads ask
+/// GitHub every time; a 304 still reuses the cached body.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_ref_read_inside_githubs_poll_interval_is_asked_again() {
+    let lab = lab_with(|s| {
+        s["pollInterval"] = json!(300);
+        s["runs"][1]["status"] = json!("in_progress");
+        s["runs"][1]["conclusion"] = Value::Null;
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.entry().await["state"], "waiting", "CI on the head is still running");
+    change(lab.dir.path(), |s| {
+        s["runs"][1]["status"] = json!("completed");
+        s["runs"][1]["conclusion"] = json!("success");
+        move_main(s, sha('c'), sha('d'));
+    });
+    let e = lab.step().await;
+    assert_eq!(e["state"], "merged", "both reads of main name the new main at once: {}", e["detail"]);
+    assert_eq!(e["merge"]["expectedMain"], sha('c'), "the merge is checked against the new main: {e}");
 }
 
 /// While GitHub is still computing whether the PR can merge, nothing is
