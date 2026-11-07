@@ -39,8 +39,8 @@ const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if
 
 // The words the column and the entry are read by.
 const words = lang === "zh-Hans"
-  ? { reviews: "审查", attention: "需要注意", title: "工作活动" }
-  : { reviews: "Reviews", attention: "Needs a look", title: "Work activity" };
+  ? { reviews: "审查", gone: /需要注意|待查看/, title: "工作活动" }
+  : { reviews: "Reviews", gone: /Needs a look|need a look/i, title: "Work activity" };
 
 const agent = {
   id: "a", name: "Dev 8 · Mac / iOS", status: "idle", harness: "claude", cwd: "/Users/yuzuki/work",
@@ -163,8 +163,10 @@ check(seen.entryThere && seen.entryDrawn,
 check(!!seen.entryTarget && Math.min(seen.entryTarget.w, seen.entryTarget.h) >= 40 && seen.entryTarget.own,
   `a finger's worth and it takes its own press (${seen.entryTarget ? `${seen.entryTarget.w}x${seen.entryTarget.h}, own ${seen.entryTarget.own}` : "missing"})`);
 check(!!seen.entrySays && /[1-9]/.test(seen.entrySays), `and it says what is going on (${JSON.stringify(seen.entrySays)})`);
-check(seen.entryNeedsLook === true,
-  `and marks itself, the review that asked for changes being one to look at (${seen.entryNeedsLook})`);
+// No "need a look" count or mark since YN-17 S2 (the user's decision): the
+// review that asked for changes is in the Reviews group instead.
+check(seen.entryNeedsLook === false && !words.gone.test(seen.entrySays || ""),
+  `and names nothing as needing a look (${JSON.stringify(seen.entrySays)}, marked ${seen.entryNeedsLook})`);
 
 // The column it opens lists them under their own heading, and a row opens
 // the review it names.
@@ -179,12 +181,12 @@ if (seen.entryThere) {
       rows: [...s.querySelectorAll(".work-activity-row")].map((b) => ({
         name: (b.querySelector(".work-activity-row-name")?.textContent || "").trim(),
         says: (b.querySelector(".work-activity-row-says")?.textContent || "").trim(),
+        state: b.getAttribute("data-state"),
         disabled: b.disabled,
       })),
     }));
     const group = sections.find((s) => s.label === reviewsLabel);
-    return { there: true, sections: sections.map((s) => s.label), group,
-      attention: sections.find((s) => s.rows.length && s.label !== reviewsLabel)?.rows ?? [] };
+    return { there: true, sections: sections.map((s) => s.label), group };
   }, words.reviews);
   console.log(`  column: ${JSON.stringify(column)}`);
   check(column.there, `pressing it opens the column (${column.there})`);
@@ -192,10 +194,11 @@ if (seen.entryThere) {
     `which lists the reviews under their own heading (${words.reviews}: ${column.group?.rows.length ?? 0})`);
   check(!!column.group && column.group.rows.every((r) => !r.disabled),
     `each one openable, not a dead row (${JSON.stringify(column.group?.rows.map((r) => r.disabled))})`);
-  check(column.sections.includes(words.attention),
-    `and the one that asked for changes is under ${words.attention} (${JSON.stringify(column.sections)})`);
-  check(column.attention.some((r) => /459/.test(r.name)),
-    `that group holding the review itself, named (${JSON.stringify(column.attention.map((r) => r.name))})`);
+  check(!column.sections.some((label) => words.gone.test(label || "")),
+    `with no "needs a look" group (${JSON.stringify(column.sections)})`);
+  const first = column.group?.rows[0];
+  check(!!first && /459/.test(first.name) && first.state === "exception",
+    `the one that asked for changes first under ${words.reviews}, with its state (${JSON.stringify(first)})`);
 
   // Pressing a review's row reaches that review.
   const row = page.locator(".work-activity-column section .work-activity-row").first();
