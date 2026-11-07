@@ -272,28 +272,6 @@ pub enum RevertAnswer {
     Unknown(String),
 }
 
-/// What a fork request is known to have done (T-10 Fork, Lead 3525).
-#[derive(Debug, PartialEq)]
-pub enum ForkAnswer {
-    /// 200 with the whole body a session: OpenCode's handler made it and
-    /// copied what it copies (`session/session.ts` fork). Whether it is the
-    /// fork asked for is for the caller to check.
-    Answered(Value),
-    /// Anything else: no answer, a lost connection, any other status or
-    /// body. A new session may have been written, in part or whole: the
-    /// session is made first, then each message, and a 400 or 404 of this
-    /// route can come after that too (`mapStorageNotFound` covers the copy).
-    Unknown(String),
-}
-
-/// At most this much of `/sync/history` is read (T-10 Fork): it lists the
-/// durable events of every session in the database, with no paging.
-pub const HISTORY_BYTES: usize = if cfg!(test) { 1 << 20 } else { 64 << 20 };
-pub const HISTORY_EVENTS: usize = 200_000;
-const HISTORY_LIMIT: Duration = Duration::from_secs(60);
-/// How long a replay may take: each event is its own transaction.
-const REPLAY_LIMIT: Duration = Duration::from_secs(120);
-
 /// An answer to a permission request. OpenCode's third answer, `always`,
 /// is not offered (T-61 D-12): 2.x would keep it as a saved rule of the
 /// Agent's database, allowing later requests of the project by patterns the
@@ -979,13 +957,6 @@ impl Server {
         self.data(Method::GET, &format!("/api/session/{}", segment(session)?), &[], None).await
     }
 
-    /// OpenCode's own folders and this instance's worktree and directory
-    /// (`GET /path`, `handlers/instance.ts`): `home`, `state`, `config`,
-    /// `worktree`, `directory`.
-    pub async fn path(&self) -> Result<Value> {
-        self.json(Method::GET, "/path", None).await
-    }
-
     /// Where 2.x holds `directory` (T-61 slice 5: `GET /api/location`, its
     /// `location[directory]` as a deepObject query, protocol/src/groups/
     /// location.ts): `{directory, project: {id, directory, canonical}}`, the
@@ -993,11 +964,6 @@ impl Server {
     /// `directory` is the Git top level its snapshots are taken from.
     pub async fn location(&self, directory: &str) -> Result<Value> {
         self.json_with(Method::GET, "/api/location", &[(LOCATION, directory)], None).await
-    }
-
-    /// The project OpenCode holds this instance's folder for (`GET /project/current`).
-    pub async fn project(&self) -> Result<Value> {
-        self.json(Method::GET, "/project/current", None).await
     }
 
     /// The session's messages now, `[{info, parts}]`, as a snapshot reads them.
@@ -1090,74 +1056,34 @@ impl Server {
         Ok(())
     }
 
-    /// The request that forks `session` (`POST /session/:id/fork`, T-10
-    /// Fork), with every message before `before` copied into a new session,
-    /// or every message without it. OpenCode 1.19.3 checks nothing: one it
-    /// does not hold copies every message, and a busy session is copied as it
-    /// is (`session/session.ts` fork). So `before` must be one just read in
-    /// the session, under its gate. Sent once, with no time limit of its own.
-    pub fn fork(&self, session: &str, before: Option<&str>) -> Result<impl std::future::Future<Output = ForkAnswer> + Send + 'static> {
-        let path = format!("/session/{}/fork", segment(session)?);
-        let body = match before { Some(message) => json!({"messageID": message}), None => json!({}) };
-        let request = self.request(Method::POST, &path).json(&body);
-        Ok(async move {
-            match request.send().await {
-                Err(error) => ForkAnswer::Unknown(format!("OpenCode did not answer: {error}")),
-                Ok(response) if response.status().as_u16() == 200 => match response.text().await {
-                    Ok(body) => match serde_json::from_str::<Value>(&body) {
-                        Ok(session) if session["id"].is_string() => ForkAnswer::Answered(session),
-                        _ => ForkAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
-                    },
-                    Err(error) => ForkAnswer::Unknown(format!("OpenCode's answer broke off: {error}")),
+    /// Writes `payload` as a new session through 2.x's import (T-61 slice 7,
+    /// `POST /api/experimental/session/import {info, messages, location}`,
+    /// 2.2.5 core/src/session/transfer.ts), once, waiting at most `limit`.
+    /// 2.x writes it in one transaction, so whatever the answer, only a read
+    /// says what it holds.
+    pub async fn import(&self, payload: &crate::opencode_transfer::Payload, limit: Duration) -> crate::opencode_transfer::ImportAnswer {
+        use crate::opencode_transfer::{import_answer, ImportAnswer};
+        let request = self.request(Method::POST, "/api/experimental/session/import").timeout(limit).json(&payload.body());
+        match request.send().await {
+            Err(error) => ImportAnswer::Unknown(format!("OpenCode did not answer: {}", error.without_url())),
+            Ok(response) if response.status().as_u16() == 200 => match response.text().await {
+                Ok(body) => match serde_json::from_str::<Value>(&body) {
+                    Ok(answer) if answer["data"].is_object() => ImportAnswer::Imported(answer["data"].clone()),
+                    _ => ImportAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
                 },
-                Ok(response) => ForkAnswer::Unknown(status(response).await.to_string()),
+                Err(error) => ImportAnswer::Unknown(format!("OpenCode's answer broke off: {}", error.without_url())),
+            },
+            Ok(response) => {
+                let status = status(response).await;
+                import_answer(&status, payload.id()).unwrap_or_else(|| ImportAnswer::Unknown(status.to_string()))
             }
-        })
+        }
     }
 
-    /// One session's durable events (T-10 Fork), as `POST /sync/history`
-    /// lists them: in 1.19.3 that is every durable event in this OpenCode's
-    /// database, by sequence number across sessions, but those `known` cuts
-    /// at the sequence it gives (`handlers/sync.ts`). Read up to
-    /// HISTORY_BYTES within HISTORY_LIMIT, and at most HISTORY_EVENTS events
-    /// in all, refused past any; of them only `aggregate`'s are kept, in the
-    /// order listed. Nothing else read is kept, logged or written.
-    pub async fn history_of(&self, aggregate: &str, known: &serde_json::Map<String, Value>) -> Result<Vec<Value>> {
-        Ok(self.history(known).await?.into_iter().filter(|event| event["aggregate_id"] == aggregate).collect())
-    }
-
-    /// Every durable event `/sync/history` lists but those `known` cuts, as
-    /// `history_of` reads them, all kept: for a database that should hold
-    /// little or nothing (T-10 Fork).
-    pub async fn history(&self, known: &serde_json::Map<String, Value>) -> Result<Vec<Value>> {
-        let read = async {
-            let mut response = success(self.request(Method::POST, "/sync/history").json(known).send().await
-                .context("OpenCode did not answer /sync/history")?).await?;
-            let mut body = Vec::new();
-            while let Some(chunk) = response.chunk().await.context("OpenCode's /sync/history broke off")? {
-                ensure!(body.len() + chunk.len() <= HISTORY_BYTES, "OpenCode's event history is larger than {} MiB; nothing was forked from it", HISTORY_BYTES >> 20);
-                body.extend_from_slice(&chunk);
-            }
-            Ok::<_, anyhow::Error>(body)
-        };
-        let body = timeout(HISTORY_LIMIT, read).await
-            .map_err(|_| anyhow!("OpenCode's event history took longer than {:?}", HISTORY_LIMIT))??;
-        let listed: Vec<Value> = serde_json::from_slice(&body).context("OpenCode's /sync/history is not a list")?;
-        drop(body);
-        ensure!(listed.len() <= HISTORY_EVENTS, "OpenCode's event history holds more than {HISTORY_EVENTS} events");
-        Ok(listed)
-    }
-
-    /// Replays `events`, one session's durable events, into this OpenCode
-    /// (`POST /sync/replay`, T-10 Fork): each is committed on its own, and
-    /// one already stored at its sequence number is passed over only if it
-    /// is the same (`core/src/event.ts` replayAll). So the same events may be
-    /// replayed again; whatever its answer, only a read says what is stored.
-    pub async fn replay(&self, events: &[Value]) -> Result<Value> {
-        let body = json!({"directory": self.directory, "events": events});
-        let response = self.request(Method::POST, "/sync/replay").timeout(REPLAY_LIMIT).json(&body).send().await
-            .context("OpenCode did not answer /sync/replay")?;
-        success(response).await?.json().await.context("OpenCode's answer to /sync/replay is not JSON")
+    /// Every session this OpenCode lists (`GET /api/session`), every page,
+    /// oldest first.
+    pub async fn sessions(&self) -> Result<Vec<Value>> {
+        self.all("/api/session", &[("order", "asc")]).await
     }
 
     /// The sessions OpenCode started under `session` (its sub-agents,

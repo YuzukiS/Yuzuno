@@ -1,162 +1,186 @@
 use super::*;
-use std::path::Path;
+use serde_json::Map;
 
+// A 2.x session's messages as 2.x lists them (schema/src/session-message.ts).
 fn user(id: &str) -> Value {
-    json!({"info":{"id":id,"sessionID":"ses_a","role":"user","time":{"created":1}},
-        "parts":[{"id":format!("prt_{id}"),"sessionID":"ses_a","messageID":id,"type":"text","text":id}]})
+    json!({"id": id, "type": "user", "text": id, "time": {"created": 1}})
 }
 
-fn answer(id: &str, parent: &str) -> Value {
-    json!({"info":{"id":id,"sessionID":"ses_a","role":"assistant","parentID":parent,"time":{"created":2,"completed":3}},
-        "parts":[{"id":format!("prt_{id}"),"sessionID":"ses_a","messageID":id,"type":"text","text":"done"}]})
+fn answer(id: &str) -> Value {
+    json!({"id": id, "type": "assistant", "agent": "build", "model": {"id": "m", "providerID": "p"}, "content": [], "time": {"created": 1, "completed": 2}})
 }
 
+fn idle(id: &str) -> Value {
+    json!({"id": id, "type": "idle", "outcome": "succeeded", "time": {"created": 3}})
+}
+
+fn model(id: &str) -> Value {
+    json!({"id": id, "type": "model-switched", "model": {"id": "m2", "providerID": "p"}, "time": {"created": 1}})
+}
+
+/// A prompt's Turn as Core keeps it, answered by `answers`.
 fn turn(id: &str, answers: &[&str]) -> Value {
-    let answers: serde_json::Map<String, Value> = answers.iter().map(|a| (a.to_string(), json!({"completed":3,"parent":id}))).collect();
-    json!({"id":id,"status":"completed","_opencodeConfirmed":true,"_opencodeAnswers":answers,"items":[]})
+    let answered: Map<String, Value> = answers.iter().map(|a| (a.to_string(), json!({"parent": id, "completed": 2}))).collect();
+    json!({"id": id, "status": "completed", "_opencodeConfirmed": true, "items": [], "_opencodeAnswers": answered})
 }
 
+/// U1: a fork copies up to the idle that ended the Turn's last run: what
+/// Core sets before the next Turn (its model) and the next Turn stay out; an
+/// input added to the Turn, and a run 2.x started itself after it, are in.
 #[test]
-fn a_boundary_is_the_next_turns_own_start_and_everything_a_kept_turn_holds_comes_before_it() {
-    let list = vec![user("msg_1"), answer("msg_2", "msg_1"), user("msg_3"), answer("msg_4", "msg_3")];
-    let turns = vec![turn("msg_1", &["msg_2"]), turn("msg_3", &["msg_4"])];
-    assert_eq!(check::boundary(&turns, &list, "msg_1").unwrap(), (Some("msg_3".into()), 2));
-    // Through the newest Turn: no cutoff, every message kept.
-    assert_eq!(check::boundary(&turns, &list, "msg_3").unwrap(), (None, 4));
-    // OpenCode's own follow-up and its answer stay with the Turn they follow.
-    let list = vec![user("msg_1"), answer("msg_2", "msg_1"), user("msg_2b"), answer("msg_2c", "msg_2b"), user("msg_3"), answer("msg_4", "msg_3")];
-    let mut first = turn("msg_1", &["msg_2"]);
-    first["_opencodeFollowed"] = json!("msg_2b");
-    let turns = vec![first, turn("msg_3", &["msg_4"])];
-    assert_eq!(check::boundary(&turns, &list, "msg_1").unwrap(), (Some("msg_3".into()), 4));
+fn the_cut_ends_at_the_idle_that_ended_the_turns_last_run() {
+    let list = [model("msg_m0"), user("msg_1"), answer("msg_a1"), idle("msg_i1"), model("msg_m1"), user("msg_2"), answer("msg_a2"), idle("msg_i2")];
+    let turns = [turn("msg_1", &["msg_a1"]), turn("msg_2", &["msg_a2"])];
+    assert_eq!(check::cut(&turns, &list, "msg_1").unwrap(), 4, "through the first idle, not the model set for the next Turn");
+    assert_eq!(check::cut(&turns, &list, "msg_2").unwrap(), 8, "the newest Turn: every message");
+
+    // An input added while it ran, and 2.x's own run after it (a sub-agent's result delivered), are the Turn's.
+    let mut first = turn("msg_1", &["msg_a1", "msg_a1b"]);
+    first["_opencodeInputs"] = json!({"msg_s": {"confirmed": true}});
+    first["_opencodeAnswers"]["msg_a1b"]["parent"] = json!("msg_s");
+    let synthetic = json!({"id": "msg_y", "type": "synthetic", "text": "<subagent/>", "time": {"created": 4}});
+    let list = [user("msg_1"), answer("msg_a1"), user("msg_s"), answer("msg_a1b"), idle("msg_i1"), synthetic, answer("msg_a1c"), idle("msg_i1b"),
+        user("msg_2"), answer("msg_a2"), idle("msg_i2")];
+    assert_eq!(check::cut(&[first, turn("msg_2", &["msg_a2"])], &list, "msg_1").unwrap(), 8, "through the idle of 2.x's own run after it");
 }
 
-/// A completed `/compact` Turn bound to `message`, summarised by `summary`.
-fn compact(turn: &str, message: &str, summary: &str, known: &[&str]) -> Value {
-    let candidates: serde_json::Map<String, Value> = known.iter().chain([&message]).map(|k| (k.to_string(), json!({"model":true}))).collect();
-    json!({"id":turn,"status":"completed","items":[{"id":format!("{turn}:compaction"),"type":"contextCompaction","trigger":"manual","text":"short"}],
-        "_opencodeCompact":{"state":"completed","session":"ses_a","generation":1,"known":known,"candidates":candidates,
-            "message":message,"part":format!("prt_{message}"),"summary":{"id":summary,"completed":3,"finish":"stop"},
-            "text":{format!("prt_{summary}"):"short"}}})
-}
-
-fn compaction(id: &str) -> Value {
-    let mut message = user(id);
-    message["parts"][0]["type"] = json!("compaction");
-    message
-}
-
+/// U2: a cut that cannot be proven refuses the fork, saying why.
 #[test]
-fn a_fork_between_two_compactions_ends_at_the_later_ones_own_message() {
-    // `/compact` A, a Turn T, then `/compact` B, whose `known` and
-    // `candidates` name A's message: what B looked at, not what it owns.
-    let mut summary_a = answer("msg_sa", "msg_ca");
-    summary_a["info"]["summary"] = json!(true);
-    let mut summary_b = answer("msg_sb", "msg_cb");
-    summary_b["info"]["summary"] = json!(true);
-    let list = vec![compaction("msg_ca"), summary_a, user("msg_t"), answer("msg_ta", "msg_t"), compaction("msg_cb"), summary_b];
-    let turns = vec![compact("compact_a", "msg_ca", "msg_sa", &[]), turn("msg_t", &["msg_ta"]), compact("compact_b", "msg_cb", "msg_sb", &["msg_ca"])];
-    assert_eq!(check::boundary(&turns, &list, "msg_t").unwrap(), (Some("msg_cb".into()), 4));
-    // Through A itself: up to T's own start.
-    assert_eq!(check::boundary(&turns, &list, "compact_a").unwrap(), (Some("msg_t".into()), 2));
-    // A summary that answers another message is not that compaction's.
-    let mut wrong = list.clone();
-    wrong[1]["info"]["parentID"] = json!("msg_t");
-    let refused = check::boundary(&turns, &wrong, "msg_t").unwrap_err().to_string();
-    assert!(refused.contains("压缩与 OpenCode 会话对不上"), "{refused}");
+fn the_cut_refuses_an_unsettled_or_unknown_message_or_a_location_switch() {
+    let turns = [turn("msg_1", &["msg_a1"]), turn("msg_2", &["msg_a2"])];
+    let refused = |turns: &[Value], list: &[Value], through: &str, said: &str| {
+        let error = check::cut(turns, list, through).expect_err(said).to_string();
+        assert!(error.contains(said) && error.contains("没有 fork"), "{said:?}: {error}");
+    };
+    let whole = vec![user("msg_1"), answer("msg_a1"), idle("msg_i1"), user("msg_2"), answer("msg_a2"), idle("msg_i2")];
+    let mut running = turns.clone();
+    running[0]["status"] = json!("inProgress");
+    refused(&running, &whole, "msg_1", "只能从已完成的 Turn fork");
+    let mut unfinished = whole.clone();
+    unfinished[1]["time"].as_object_mut().unwrap().remove("completed");
+    refused(&turns, &unfinished, "msg_1", "还没有结束");
+    let mut odd = whole.clone();
+    odd.insert(1, json!({"id": "msg_w", "type": "weird", "time": {"created": 1}}));
+    refused(&turns, &odd, "msg_1", "类型 weird 不认识");
+    let mut moved = whole.clone();
+    moved.insert(1, json!({"id": "msg_l", "type": "location-switched", "location": {"directory": "/elsewhere"}, "time": {"created": 1}}));
+    refused(&turns, &moved, "msg_1", "换过目录");
+    let mut between = whole.clone();
+    between.insert(3, json!({"id": "msg_y", "type": "synthetic", "text": "x", "time": {"created": 4}}));
+    refused(&turns, &between, "msg_1", "无法确定它属于哪一段");
+    refused(&turns[..1], &whole[..2], "msg_1", "运行还没有结束");
+    refused(&turns, &[user("msg_1"), idle("msg_i1"), user("msg_2"), answer("msg_a2"), idle("msg_i2")], "msg_1", "不在 OpenCode 会话里");
+    let early = [user("msg_2"), user("msg_1"), answer("msg_a1"), idle("msg_i1"), answer("msg_a2"), idle("msg_i2")];
+    refused(&turns, &early, "msg_1", "在 fork 的这个 Turn 之前");
+    let mut added = turns.clone();
+    added[0]["_opencodeInputs"] = json!({"msg_s": {"confirmed": false}});
+    refused(&added, &whole, "msg_1", "没有确认送到");
+    let compacting = json!({"id": "compact_1", "status": "completed", "items": [], "_opencodeCompact": {"state": "pending", "input": "msg_c"}});
+    refused(&[compacting, turns[0].clone()], &whole, "msg_1", "压缩结果还没有确认");
+    let mut unsent = turns.clone();
+    unsent[0].as_object_mut().unwrap().remove("_opencodeConfirmed");
+    refused(&unsent, &whole, "msg_1", "没有确认送到");
 }
 
+/// An Agent's detail with no Turns, as a test makes it.
+fn agent_detail(cwd: &str) -> AgentDetail {
+    serde_json::from_value(json!({"agent": {
+        "id":"oc", "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap()
+}
+
+/// U3: the copy is a session of its own: a new ID, this request's marker,
+/// no usage (D-34), its times and outcome from the source's start and the
+/// cut's idle, the model of its newest selection, and nothing null.
 #[test]
-fn a_boundary_that_cannot_be_proven_refuses_the_fork() {
-    let list = vec![user("msg_1"), answer("msg_2", "msg_1"), user("msg_3"), answer("msg_4", "msg_3")];
-    // The next Turn's start is not in the session: OpenCode would copy everything.
-    let turns = vec![turn("msg_1", &["msg_2"]), turn("msg_9", &["msg_4"])];
-    let refused = check::boundary(&turns, &list, "msg_1").unwrap_err().to_string();
-    assert!(refused.contains("起点无法确定"), "{refused}");
-    // A kept Turn's answer past the boundary.
-    let turns = vec![turn("msg_1", &["msg_2", "msg_4"]), turn("msg_3", &[])];
-    let refused = check::boundary(&turns, &list, "msg_1").unwrap_err().to_string();
-    assert!(refused.contains("越过了 fork 的边界"), "{refused}");
-    // A later Turn's answer before it.
-    let turns = vec![turn("msg_1", &[]), turn("msg_3", &["msg_2", "msg_4"])];
-    let refused = check::boundary(&turns, &list, "msg_1").unwrap_err().to_string();
-    assert!(refused.contains("在 fork 的边界之前"), "{refused}");
-    // An answer not yet ended, through the newest Turn.
-    let mut open = answer("msg_4", "msg_3");
-    open["info"]["time"] = json!({"created":2});
-    let list = vec![user("msg_1"), answer("msg_2", "msg_1"), user("msg_3"), open];
-    let turns = vec![turn("msg_1", &["msg_2"]), turn("msg_3", &["msg_4"])];
-    let refused = check::boundary(&turns, &list, "msg_3").unwrap_err().to_string();
-    assert!(refused.contains("还没有结束"), "{refused}");
-    // An input added to a kept Turn and never confirmed.
-    let list = vec![user("msg_1"), answer("msg_2", "msg_1")];
-    let mut added = turn("msg_1", &["msg_2"]);
-    added["_opencodeInputs"] = json!({"msg_1b":{"confirmed":false,"previous":null}});
-    let refused = check::boundary(&[added], &list, "msg_1").unwrap_err().to_string();
-    assert!(refused.contains("没有确认送到"), "{refused}");
-}
-
-fn copied(source: &Value, id: &str, parent: Option<&str>) -> Value {
-    let mut copy = source.clone();
-    copy["info"]["id"] = json!(id);
-    copy["info"]["sessionID"] = json!("ses_b");
-    if let Some(parent) = parent {
-        copy["info"]["parentID"] = json!(parent);
+fn the_copy_chooses_a_new_id_and_marker_and_zero_usage() {
+    let info = json!({"id": "ses_source", "projectID": "prj", "title": "Source", "cost": 1.5,
+        "tokens": {"input": 9, "output": 9, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+        "time": {"created": 100, "updated": 900, "idle": 900}, "outcome": "succeeded", "location": {"directory": "/work"},
+        "model": {"id": "m", "providerID": "p", "variant": "default"}, "agent": "build", "permissions": null});
+    let prefix = vec![user("msg_1"), model("msg_m"), answer("msg_a1"), json!({"id": "msg_i", "type": "idle", "outcome": "failed", "time": {"created": 300}})];
+    let read = Read { session: "ses_source".into(), generation: 1, detail: agent_detail("/work"), info, folder: "/work".into(),
+        project: "prj".into(), prefix: prefix.clone(), kept: 1, later: 0 };
+    let payload = fork_payload(&read, "Forked", "req-1").unwrap();
+    let sent = &payload.info;
+    assert!(sent["id"].as_str().unwrap().starts_with("ses_") && sent["id"] != "ses_source", "{sent}");
+    assert_eq!(payload.id(), sent["id"].as_str().unwrap());
+    assert_eq!((&sent["title"], &sent["metadata"], &sent["location"]), (&json!("Forked"), &json!({"yuzuno": {"fork": "req-1"}}), &json!({"directory": "/work"})));
+    assert_eq!((&sent["cost"], &sent["tokens"]), (&json!(0), &transfer::no_tokens()), "no usage, as 2.x's own fork");
+    assert_eq!(sent["time"], json!({"created": 100, "updated": 300, "idle": 300}), "the source's start, the cut's idle");
+    assert_eq!(sent["outcome"], "failed", "the cut's idle's outcome");
+    assert_eq!(sent["model"], json!({"id": "m2", "providerID": "p"}), "the copy's newest selection");
+    assert_eq!(sent["agent"], "build");
+    for absent in ["permissions", "parentID", "fork", "revert", "subpath"] {
+        assert!(sent.get(absent).is_none(), "no {absent}: {sent}");
     }
-    for part in copy["parts"].as_array_mut().unwrap() {
-        part["id"] = json!(format!("prt_{id}"));
-        part["messageID"] = json!(id);
-        part["sessionID"] = json!("ses_b");
+    assert_eq!(payload.messages, prefix);
+    assert_eq!(payload.body()["location"], json!({"directory": "/work"}));
+    assert_ne!(fork_payload(&read, "Forked", "req-1").unwrap().id(), payload.id(), "each payload its own ID");
+}
+
+struct Paths;
+
+impl check::ImagePaths for Paths {
+    fn path(&mut self, path: &str) -> Result<String> {
+        Ok(path.replace("/src/", "/dst/"))
     }
-    copy
 }
 
+/// U4: a copied Turn keeps every native ID and what it was; drops what tied
+/// it to the source's process, session or sends; rewrites its images and its
+/// compaction's session; is marked as copied; and a field this does not know
+/// refuses the fork.
 #[test]
-fn a_fork_pairs_with_what_it_copies_only_as_opencodes_exact_copy() {
-    let prefix = [user("msg_1"), answer("msg_2", "msg_1")];
-    let fork = vec![copied(&prefix[0], "msg_7", None), copied(&prefix[1], "msg_8", Some("msg_7"))];
-    let ids = check::pair(&prefix, &fork, "ses_b").unwrap();
-    assert_eq!(ids.get("msg_1").map(String::as_str), Some("msg_7"));
-    assert_eq!(ids.get("prt_msg_2").map(String::as_str), Some("prt_msg_8"));
-    // OpenCode keeps an old parent it did not map: a reference out of the fork.
-    let dangling = vec![copied(&prefix[0], "msg_7", None), copied(&prefix[1], "msg_8", Some("msg_1"))];
-    assert!(check::pair(&prefix, &dangling, "ses_b").unwrap_err().to_string().contains("不是原消息"));
-    // One message short.
-    assert!(check::pair(&prefix, &fork[..1], "ses_b").unwrap_err().to_string().contains("应为 2 条"));
-    // A copy whose text differs.
-    let mut changed = fork.clone();
-    changed[1]["parts"][0]["text"] = json!("other");
-    assert!(check::pair(&prefix, &changed, "ses_b").unwrap_err().to_string().contains("不是原部分"));
-}
-
-#[test]
-fn a_forks_events_are_exactly_its_copy_numbered_from_zero() {
-    let prefix = [user("msg_1"), answer("msg_2", "msg_1")];
-    let fork = vec![copied(&prefix[0], "msg_7", None), copied(&prefix[1], "msg_8", Some("msg_7"))];
-    let info = json!({"id":"ses_b","directory":"/w","projectID":"p","title":"t (fork #1)"});
-    let mut events = vec![json!({"id":"evt_0","aggregate_id":"ses_b","seq":0,"type":"session.created.1","data":{"sessionID":"ses_b","info":info}})];
-    for message in &fork {
-        events.push(json!({"id":format!("evt_{}", events.len()),"aggregate_id":"ses_b","seq":events.len(),"type":"message.updated.1",
-            "data":{"sessionID":"ses_b","info":message["info"]}}));
-        for part in message["parts"].as_array().unwrap() {
-            events.push(json!({"id":format!("evt_{}", events.len()),"aggregate_id":"ses_b","seq":events.len(),"type":"message.part.updated.1",
-                "data":{"sessionID":"ses_b","part":part,"time":1}}));
-        }
+fn the_copy_keeps_ids_rewrites_images_and_refuses_unknown_fields() {
+    let prompt = json!({
+        "id": "msg_1", "status": "completed", "_opencodeConfirmed": true, "interruptRequested": true, "deliveryUnconfirmed": true,
+        "_yuzunoStartedAt": 5, "_opencodeLastInput": "msg_s", "_opencodeFollowed": "msg_y", "_opencodeShells": {"msg_sh": "msg_1"},
+        "_opencodeAnswers": {"msg_a": {"parent": "msg_1", "completed": 2, "error": null, "finish": "stop"}},
+        "_opencodeInputs": {"msg_s": {"confirmed": true, "previous": "msg_1", "clientMessageId": "c2", "deliveryUnconfirmed": true}},
+        "_opencodeSessionError": {"name": "X"}, "error": {"message": "m"}, "_yuzunoCopiedFrom": {"agentId": "older"},
+        "items": [
+            {"id": "msg_1:input", "type": "userMessage", "nativeMessageId": "msg_1", "clientId": "c1", "deliveryUnconfirmed": true,
+             "_yuzunoTime": {"at": 1}, "content": [{"type": "text", "text": "hi"}, {"type": "localImage", "path": "/data/src/a.png"}]},
+            {"id": "msg_a:0", "type": "agentMessage", "text": "done", "nativeMessageId": "msg_a"},
+            {"id": "msg_sh", "type": "commandExecution", "command": "ls", "status": "completed", "aggregatedOutput": "x", "exitCode": 0, "nativeMessageId": "msg_sh"},
+        ]});
+    let compact = json!({"id": "compact_1", "status": "completed", "items": [{"id": "compact_1:compaction", "type": "contextCompaction", "trigger": "manual", "text": "s"}],
+        "_opencodeCompact": {"state": "completed", "session": "ses_source", "generation": 3, "askedBy": "srv", "answered": 7, "input": "msg_c",
+            "model": "p/m", "variant": null, "native": {"status": "completed"}}});
+    let legacy = json!({"id": "compact_0", "status": "failed", "items": [], "_opencodeCompact": {"state": "lost", "message": "msg_old", "known": []}});
+    let from = json!({"agentId": "oc", "sessionId": "ses_source", "requestId": "req-1"});
+    let copied = check::copy(&[prompt, compact, legacy], "ses_new", &from, &mut Paths).unwrap();
+    let p = &copied[0];
+    assert_eq!((&p["id"], &p["_opencodeLastInput"], &p["_opencodeFollowed"], &p["_opencodeShells"]),
+        (&json!("msg_1"), &json!("msg_s"), &json!("msg_y"), &json!({"msg_sh": "msg_1"})), "native IDs as they are");
+    assert_eq!(p["_opencodeAnswers"]["msg_a"]["parent"], "msg_1");
+    assert_eq!(p["_opencodeInputs"], json!({"msg_s": {"confirmed": true}}), "its sends left behind");
+    for gone in ["interruptRequested", "deliveryUnconfirmed"] {
+        assert!(p.get(gone).is_none(), "no {gone}");
     }
-    let chain = check::chain(&events, "ses_b", &info, &fork).unwrap();
-    assert_eq!((chain.len(), &chain[0]["aggregateID"], &chain[0]["seq"]), (5, &json!("ses_b"), &json!(0)));
-    // A gap.
-    let gap: Vec<Value> = events.iter().filter(|e| e["seq"] != 2).cloned().collect();
-    assert!(check::chain(&gap, "ses_b", &info, &fork).unwrap_err().to_string().contains("连续编号"));
-    // An event the fork did not write.
-    let mut other = events.clone();
-    other.push(json!({"id":"evt_x","aggregate_id":"ses_b","seq":5,"type":"session.updated.1","data":{"sessionID":"ses_b","info":info}}));
-    assert!(check::chain(&other, "ses_b", &info, &fork).unwrap_err().to_string().contains("不是 fork 写的"));
-    // Events that make something else than the fork read.
-    assert!(check::chain(&events[..4], "ses_b", &info, &fork).unwrap_err().to_string().contains("与读到的 fork 不同"));
-}
+    assert_eq!(p["_yuzunoCopiedFrom"], from, "marked as this fork's copy, a copy of a copy too");
+    let item = &p["items"][0];
+    assert!(item.get("clientId").is_none() && item.get("deliveryUnconfirmed").is_none(), "{item}");
+    assert_eq!(item["content"][1]["path"], "/data/dst/a.png", "the image is the new Agent's");
+    assert_eq!(p["items"][2]["aggregatedOutput"], "x");
+    let c = &copied[1]["_opencodeCompact"];
+    assert_eq!((&c["session"], &c["input"], &c["state"]), (&json!("ses_new"), &json!("msg_c"), &json!("completed")));
+    for gone in ["generation", "askedBy", "answered"] {
+        assert!(c.get(gone).is_none(), "no {gone}: {c}");
+    }
+    assert_eq!(copied[2]["_opencodeCompact"], json!({"state": "lost"}), "one from 1.19.3's time: only that it was lost");
 
-// With the stand-in of OpenCode 1.19.3 (`tests/fixtures/opencode_server.py`).
+    let refused = |turn: Value, said: &str| {
+        let error = check::copy(&[turn], "ses_new", &from, &mut Paths).expect_err(said).to_string();
+        assert!(error.contains(said) && error.contains("没有 fork"), "{error}");
+    };
+    refused(json!({"id": "msg_1", "status": "completed", "_somethingNew": 1}), "_somethingNew");
+    refused(json!({"id": "msg_1", "status": "completed", "items": [{"id": "x", "type": "userMessage", "_new": 1}]}), "_new");
+    refused(json!({"id": "c", "status": "completed", "_opencodeCompact": {"state": "completed", "input": "msg_c", "_new": 1}}), "_new");
+}
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 
@@ -180,15 +204,8 @@ fn program() {
 async fn lab(dir: &Path, cwd: &Path) -> Arc<Workspace> {
     program();
     let ws = Workspace::new(dir.join("data"), dir.to_string_lossy().into(), "unused".into()).unwrap();
-    let detail: AgentDetail = serde_json::from_value(json!({"agent": {
-        "id":"oc", "name":"OpenCode", "cwd":cwd.to_string_lossy(), "model":"", "color":"sage", "harness":"opencode",
-        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
-        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
-    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
-    ws.store.insert(&detail).unwrap();
+    ws.store.insert(&agent_detail(&cwd.to_string_lossy())).unwrap();
     std::fs::create_dir_all(dir.join("data/opencode/oc")).unwrap();
-    // Fork still reads 1.19.3's messages until its slice (T-32, Lead 4983): the stand-in sends those, to the new Agent's too.
-    std::fs::write(dir.join("data/opencode/v1Messages"), "1").unwrap();
     ws.reconnect("oc").await.unwrap();
     ws
 }
@@ -211,9 +228,30 @@ fn asked(data: &Path, agent: &str, method: &str, path: &str) -> Vec<Value> {
     calls(data, agent).into_iter().filter(|c| c["method"] == method && c["path"].as_str().is_some_and(|p| p.ends_with(path))).collect()
 }
 
+/// How many requests `agent`'s stand-ins were asked that may write.
+fn writes(data: &Path, agent: &str) -> usize {
+    calls(data, agent).iter().filter(|c| c["method"] != "GET").count()
+}
+
 /// How many times an OpenCode was started for `agent`.
 fn starts(data: &Path, agent: &str) -> usize {
     std::fs::read_to_string(data.join("opencode").join(agent).join("starts.jsonl")).unwrap_or_default().lines().count()
+}
+
+/// What `agent`'s stand-in keeps, as it saved it.
+fn held(data: &Path, agent: &str) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(data.join("opencode").join(agent).join("state.json")).unwrap_or_else(|_| "{}".into())).unwrap()
+}
+
+/// How many sessions `agent`'s stand-in keeps.
+fn sessions_held(data: &Path, agent: &str) -> usize {
+    held(data, agent)["sessions"].as_object().map(Map::len).unwrap_or(0)
+}
+
+/// Modes for the next OpenCode started on a new database: a fork's target,
+/// whose folder a test cannot know beforehand.
+fn plan_new(data: &Path, modes: Value) {
+    std::fs::write(data.join("opencode/fixture-new.json"), modes.to_string()).unwrap();
 }
 
 /// A Turn sent to `agent` and answered (with `answer`'s extra fields): its ID, once Core has it completed.
@@ -251,66 +289,69 @@ async fn three(root: &Path) -> (Arc<Workspace>, std::path::PathBuf, std::path::P
     (ws, data, cwd, [first, second, third])
 }
 
+/// The source's session and messages as its OpenCode holds them now.
+async fn source_session(ws: &Arc<Workspace>) -> (String, Vec<Value>) {
+    let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
+    (c.session.clone(), c.server.messages(&c.session).await.unwrap().as_array().unwrap().clone())
+}
+
+/// I1: a fork through a Turn is a new Agent in the same folder, holding the
+/// Turns through it under their own IDs, its OpenCode started once on its
+/// own database with the copy written there once; the source is only read.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn a_fork_through_a_turn_is_a_new_agent_in_the_same_folder_and_the_source_is_unchanged() {
+async fn a_completed_turn_is_forked_into_a_new_agent_without_writing_the_source() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let (ws, data, cwd, [first, second, third]) = three(&root).await;
-    let source = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap().session;
+    let (source, messages) = source_session(&ws).await;
+    let cut = messages.iter().position(|m| m["id"] == third.as_str()).unwrap();
     let preview = ws.opencode_fork_preview("oc", &second).await.unwrap();
-    assert_eq!((&preview["keptTurns"], &preview["laterTurns"], &preview["messages"]), (&json!(2), &json!(1), &json!(4)), "{preview}");
+    assert_eq!((&preview["keptTurns"], &preview["laterTurns"], &preview["messages"]), (&json!(2), &json!(1), &json!(cut)), "{preview}");
+    let (kept, written) = (std::fs::read(data.join("opencode/oc/state.json")).unwrap(), writes(&data, "oc"));
     let key = uuid::Uuid::new_v4().to_string();
     let outcome = ws.opencode_fork("oc", request(&key, &second, "Forked")).await.unwrap();
     assert_eq!(outcome["state"], "completed", "{outcome}");
     let target = outcome["agent"]["id"].as_str().unwrap().to_owned();
-    // Asked once, up to the third Turn's own start; its own events read once.
-    let forks = asked(&data, "oc", "POST", "/fork");
-    assert_eq!(forks.len(), 1);
-    assert_eq!(forks[0]["body"], json!({"messageID": third}));
-    assert_eq!(asked(&data, "oc", "POST", "/sync/history").len(), 1);
-    // The new Agent: the same folder, a session of its own, the two Turns under the copies' IDs.
+    // The source: only read, its OpenCode's state as it was.
+    assert_eq!((writes(&data, "oc"), std::fs::read(data.join("opencode/oc/state.json")).unwrap()), (written, kept), "nothing written to the source");
+    // The copy: written once into the new Agent's own OpenCode, every message through the cut as the source lists them.
+    let imports = asked(&data, &target, "POST", "/api/experimental/session/import");
+    assert_eq!(imports.len(), 1);
+    let sent = &imports[0]["body"];
+    let session = sent["info"]["id"].as_str().unwrap().to_owned();
+    assert!(session.starts_with("ses_") && session != source, "{session}");
+    assert_eq!(sent["messages"], json!(messages[..cut]), "the source's messages through the cut, as they are");
+    assert_eq!((&sent["info"]["metadata"], &sent["location"]), (&json!({"yuzuno": {"fork": key}}), &json!({"directory": cwd.to_str().unwrap()})));
+    assert_eq!(held(&data, &target)["imported"][&session], json!(messages[..cut]), "the new Agent's OpenCode holds that copy");
+    // The new Agent: the same folder, the copy's session, the Turns under their own IDs, each marked as copied.
     let d = ws.store.detail(&target).unwrap();
     assert_eq!((d.agent.cwd.as_str(), d.agent.name.as_str(), d.agent.harness.as_str()), (cwd.to_str().unwrap(), "Forked", "opencode"));
-    let session = d.agent.opencode_session_id.clone().unwrap();
-    assert_ne!(session, source);
-    let ids: Vec<String> = d.turns.iter().map(|t| t["id"].as_str().unwrap().to_owned()).collect();
-    assert_eq!(ids.len(), 2);
-    assert!(!ids.contains(&first) && !ids.contains(&second), "{ids:?}");
-    let texts: Vec<&str> = d.turns.iter().flat_map(|t| t["items"].as_array().unwrap()).filter_map(|i| i["text"].as_str()).collect();
-    assert_eq!(texts, ["done", "done"]);
-    for turn in &d.turns {
-        for item in turn["items"].as_array().unwrap() {
-            if let Some(native) = item["nativeMessageId"].as_str() {
-                assert!(native == turn["id"] || turn["_opencodeAnswers"].get(native).is_some(), "{item} of {turn}");
-            }
-        }
+    assert_eq!(d.agent.opencode_session_id.as_deref(), Some(session.as_str()));
+    assert_eq!(ws.store.turn_ids(&target).unwrap(), vec![first.clone(), second.clone()]);
+    for turn in ws.store.stored_turns(&target).unwrap() {
+        assert_eq!(turn["_yuzunoCopiedFrom"], json!({"agentId": "oc", "sessionId": source, "requestId": key}), "{turn}");
     }
-    // OpenCode holds the copy in the new Agent's own database, under those IDs.
-    let held: Value = serde_json::from_str(&std::fs::read_to_string(data.join("opencode").join(&target).join("state.json")).unwrap()).unwrap();
-    assert!(held["sessions"].get(&session).is_some());
-    assert!(ids.iter().all(|id| held["messages"][&session].get(id).is_some()), "{}", held["messages"]);
-    // Started once, replayed once, attached to that same process; no empty session made there first.
+    // Started once, and attached to that same process; no empty session made there first.
     assert_eq!(starts(&data, &target), 1);
-    assert_eq!(asked(&data, &target, "POST", "/sync/replay").len(), 1);
-    assert_eq!(asked(&data, &target, "POST", "/api/session").iter().filter(|c| c["path"] == "/api/session").count(), 0);
+    assert!(asked(&data, &target, "POST", "/api/session").iter().all(|c| c["path"] != "/api/session"), "no session made");
     assert_eq!(asked(&data, &target, "GET", "/api/event").len(), 1);
     assert_eq!(ws.listed(&target).await.unwrap().connection_state, "connected");
     // The source as it was; the new Agent goes on by itself.
     assert_eq!(ws.store.turn_ids("oc").unwrap(), vec![first, second.clone(), third]);
-    turn_on(&ws, &data, &target, "next", json!({})).await;
+    let next = turn_on(&ws, &data, &target, "next", json!({})).await;
+    assert_eq!(ws.store.turn_ids(&target).unwrap().last(), Some(&next));
     assert_eq!(ws.store.turn_ids(&target).unwrap().len(), 3);
     // Read without a write: that fork, done, by its Turn; another request for the Turn is that one.
     let seen = ws.opencode_fork_seen("oc", Which { request_id: None, turn_id: Some(second.clone()) }).await.unwrap();
     assert_eq!((&seen["state"], &seen["agent"]["id"]), (&json!("completed"), &json!(target)), "{seen}");
     let other = uuid::Uuid::new_v4().to_string();
     assert_eq!(ws.opencode_fork("oc", request(&other, &second, "Forked")).await.unwrap()["agent"]["id"], json!(target));
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1);
+    assert_eq!(asked(&data, &target, "POST", "/api/experimental/session/import").len(), 1, "written once");
     // Its Agent deleted, the Turn can be forked anew.
     ws.delete_agent(&target).await.unwrap();
     let anew = ws.opencode_fork("oc", request(&other, &second, "Forked")).await.unwrap();
     assert_eq!(anew["state"], "completed", "{anew}");
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 2);
     assert_eq!(ws.store.opencode_fork_row(&key).unwrap().unwrap().state, "released");
     ws.close_agent(anew["agent"]["id"].as_str().unwrap()).await.unwrap();
     ws.close_agent("oc").await.unwrap();
@@ -344,347 +385,255 @@ async fn a_fork_of_an_executor_leads_the_sources_project() {
     ws.close_agent("oc").await.unwrap();
 }
 
+/// I2 (D-33): an import whose answer was lost leaves the fork uncertain and
+/// registers nothing; the same request goes on, finds the copy the new
+/// Agent's OpenCode holds, and writes nothing twice. One whose import failed
+/// (a 500) goes on the same way, and writes it then.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn a_fork_whose_answer_never_came_is_uncertain_never_asked_again_and_holds_the_source_back_not_at_all() {
+async fn a_lost_import_answer_is_continued_to_one_session() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let (ws, data, _, [first, ..]) = three(&root).await;
-    control(&data, "oc", "mode", json!({"fork": "lost"})).await;
+    let (ws, data, _, [_, second, third]) = three(&root).await;
+    plan_new(&data, json!({"import": "lost"}));
     let key = uuid::Uuid::new_v4().to_string();
-    let outcome = ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap();
+    let outcome = ws.opencode_fork("oc", request(&key, &second, "Forked")).await.unwrap();
     assert_eq!(outcome["state"], "uncertain", "{outcome}");
-    // Read again without a write, by its request or by its Turn: the same attempt, nothing asked.
-    let by = |request: Option<&str>, turn: Option<&str>| Which { request_id: request.map(Into::into), turn_id: turn.map(Into::into) };
-    let seen = ws.opencode_fork_seen("oc", by(Some(&key), None)).await.unwrap();
-    assert_eq!((&seen["state"], &seen["requestId"]), (&json!("uncertain"), &json!(key)), "{seen}");
-    let seen = ws.opencode_fork_seen("oc", by(None, Some(&first))).await.unwrap();
-    assert_eq!((&seen["state"], &seen["requestId"]), (&json!("uncertain"), &json!(key)), "{seen}");
-    assert_eq!(ws.opencode_fork_seen("oc", by(None, Some("msg_other"))).await.unwrap()["state"], "none");
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1);
-    // The source goes on.
-    turn_on(&ws, &data, "oc", "after", json!({})).await;
-    // The same request, and another for the same Turn: that attempt as it stands, never asked again.
-    control(&data, "oc", "mode", json!({"fork": "ok"})).await;
-    assert_eq!(ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap()["state"], "uncertain");
-    let other = uuid::Uuid::new_v4().to_string();
-    assert_eq!(ws.opencode_fork("oc", request(&other, &first, "F")).await.unwrap()["state"], "uncertain");
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1, "never asked again");
-    // Nothing gives it up (Lead 4195): a request that asks to is refused as it is read.
-    let refused = serde_json::from_value::<Request>(json!({"requestId": other, "turnId": first, "name": "F", "abandonUnconfirmed": true}));
-    assert!(refused.err().map(|e| e.to_string()).unwrap_or_default().contains("abandonUnconfirmed"), "refused as it is read");
-    assert_eq!(ws.store.opencode_fork_row(&key).unwrap().unwrap().state, "uncertain");
+    assert!(outcome["message"].as_str().unwrap().contains("不会写第二次"), "{outcome}");
+    let row = ws.store.opencode_fork_row(&key).unwrap().unwrap();
+    assert!(ws.listed(&row.target_agent_id).await.is_err(), "nothing registered");
+    // The source goes on meanwhile.
+    turn_on(&ws, &data, "oc", "fourth", json!({})).await;
+    let seen = ws.opencode_fork_seen("oc", Which { request_id: Some(key.clone()), turn_id: None }).await.unwrap();
+    assert_eq!(seen["state"], "uncertain", "{seen}");
+    // Going on: the copy is there already, so it is read back, not written again.
+    let continued = ws.opencode_fork("oc", request(&key, &second, "Forked")).await.unwrap();
+    assert_eq!(continued["state"], "completed", "{continued}");
+    assert_eq!(continued["agent"]["id"], json!(row.target_agent_id));
+    assert_eq!(asked(&data, &row.target_agent_id, "POST", "/api/experimental/session/import").len(), 1, "written once");
+    assert_eq!(sessions_held(&data, &row.target_agent_id), 1, "one session");
+    assert_eq!(starts(&data, &row.target_agent_id), 2, "started again to go on");
+    ws.close_agent(&row.target_agent_id).await.unwrap();
+
+    // A 500: nothing written, so going on writes it.
+    plan_new(&data, json!({"import": "fail"}));
+    let key = uuid::Uuid::new_v4().to_string();
+    assert_eq!(ws.opencode_fork("oc", request(&key, &third, "Again")).await.unwrap()["state"], "uncertain");
+    let row = ws.store.opencode_fork_row(&key).unwrap().unwrap();
+    // It holds nothing yet, so it starts as on a new database again: as it answers then.
+    plan_new(&data, json!({}));
+    let continued = ws.opencode_fork("oc", request(&key, &third, "Again")).await.unwrap();
+    assert_eq!(continued["state"], "completed", "{continued}");
+    assert_eq!(asked(&data, &row.target_agent_id, "POST", "/api/experimental/session/import").len(), 2, "written when it went on");
+    assert_eq!(sessions_held(&data, &row.target_agent_id), 1, "one session");
+    ws.close_agent(&row.target_agent_id).await.unwrap();
     ws.close_agent("oc").await.unwrap();
 }
 
+/// I3: an import still held when the watch ends leaves the fork uncertain;
+/// the new Agent's OpenCode ends with that run, so its late answer opens
+/// nothing, and the same request goes on from what the new OpenCode holds.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn a_fork_that_is_not_opencodes_exact_copy_registers_nothing_and_starts_nothing() {
+async fn an_import_held_past_the_watch_opens_nothing_and_the_same_request_goes_on() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let (ws, data, _, [_, second, _]) = three(&root).await;
-    // OpenCode keeps an old parent it did not map (`session.ts` fork): a reference out of the fork.
-    control(&data, "oc", "mode", json!({"fork": "unmapped"})).await;
+    plan_new(&data, json!({"import": "hold"}));
     let key = uuid::Uuid::new_v4().to_string();
-    let outcome = ws.opencode_fork("oc", request(&key, &second, "F")).await.unwrap();
-    assert_eq!(outcome["state"], "failed", "{outcome}");
-    assert!(outcome["message"].as_str().unwrap().contains("不是原消息"), "{outcome}");
+    let outcome = ws.opencode_fork("oc", request(&key, &second, "Forked")).await.unwrap();
+    assert_eq!(outcome["state"], "uncertain", "{outcome}");
     let row = ws.store.opencode_fork_row(&key).unwrap().unwrap();
-    // Its folder reserved for it before anything was asked (Lead 3529), and no OpenCode started there.
-    assert!(data.join("opencode").join(&row.target_agent_id).join("fork.json").is_file());
-    assert_eq!(starts(&data, &row.target_agent_id), 0, "nothing started for it");
     assert!(ws.listed(&row.target_agent_id).await.is_err(), "nothing registered");
+    assert_eq!(sessions_held(&data, &row.target_agent_id), 0, "nothing written");
+    plan_new(&data, json!({}));
+    let continued = ws.opencode_fork("oc", request(&key, &second, "Forked")).await.unwrap();
+    assert_eq!(continued["state"], "completed", "{continued}");
+    assert_eq!(sessions_held(&data, &row.target_agent_id), 1, "one session");
+    ws.close_agent(&row.target_agent_id).await.unwrap();
     ws.close_agent("oc").await.unwrap();
 }
 
+/// I4 and I7 (rule R6): a copy the new Agent's OpenCode does not hold as it
+/// was sent, or a session it holds under that ID that is another, fails the
+/// fork: nothing registered, the folder kept (D-36), the source unchanged.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn an_event_history_past_its_limit_is_refused_and_read_again_on_the_same_attempt() {
+async fn a_target_that_changes_the_copy_or_holds_another_session_fails_the_fork() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let (ws, data, _, [first, ..]) = three(&root).await;
-    // Another session's event, larger than what is read at most.
-    control(&data, "oc", "mode", json!({"history": {"noise": crate::opencode::HISTORY_BYTES + 1}})).await;
-    let key = uuid::Uuid::new_v4().to_string();
-    let refused = ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap_err().to_string();
-    assert!(refused.contains("larger than"), "{refused}");
-    let row = ws.store.opencode_fork_row(&key).unwrap().unwrap();
-    assert_eq!(row.state, "verified");
-    // Its folder reserved for it before anything was asked (Lead 3529), and no OpenCode started there.
-    assert!(data.join("opencode").join(&row.target_agent_id).join("fork.json").is_file());
-    assert_eq!(starts(&data, &row.target_agent_id), 0, "nothing started for it");
-    control(&data, "oc", "mode", json!({"history": "ok"})).await;
-    let outcome = ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap();
-    assert_eq!(outcome["state"], "completed", "{outcome}");
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1, "never forked again");
+    let (ws, data, _, [first, second, _]) = three(&root).await;
+    for (mode, turn, said) in [("tamper", &second, "第 1 条消息"), ("conflict-other", &first, "title")] {
+        plan_new(&data, json!({"import": mode}));
+        let key = uuid::Uuid::new_v4().to_string();
+        let outcome = ws.opencode_fork("oc", request(&key, turn, "Forked")).await.unwrap();
+        assert_eq!(outcome["state"], "failed", "{mode}: {outcome}");
+        let message = outcome["message"].as_str().unwrap();
+        assert!(message.contains(said) && message.contains("没有登记"), "{mode}: {outcome}");
+        let row = ws.store.opencode_fork_row(&key).unwrap().unwrap();
+        assert!(ws.listed(&row.target_agent_id).await.is_err(), "{mode}: nothing registered");
+        assert!(data.join("opencode").join(&row.target_agent_id).join("fork.json").is_file(), "{mode}: its folder kept");
+        // Failed, the Turn can be forked anew.
+        plan_new(&data, json!({}));
+        let again = ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), turn, "Forked")).await.unwrap();
+        assert_eq!(again["state"], "completed", "{mode}: {again}");
+        ws.close_agent(again["agent"]["id"].as_str().unwrap()).await.unwrap();
+    }
+    assert_eq!(ws.store.turn_ids("oc").unwrap().len(), 3, "the source unchanged");
+    ws.close_agent("oc").await.unwrap();
+}
+
+/// I5: a fork is refused, before anything is fixed or any OpenCode is
+/// started, while the source's session holds a revert or the source runs;
+/// the source goes on.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn refusals_come_before_anything_is_fixed_or_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, data, _, [first, second, _]) = three(&root).await;
+    let session = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap().session;
+    let refused = |turn: String, said: &'static str| {
+        let ws = ws.clone();
+        async move {
+            let error = ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &turn, "Forked")).await.expect_err(said).to_string();
+            assert!(error.contains(said), "{said:?}: {error}");
+        }
+    };
+    control(&data, "oc", "revert", json!({"sessionID": session})).await;
+    refused(second.clone(), "尚未处理的回退").await;
+    {
+        // Committed as 2.x commits it: its boundary is no message of the session's, so nothing goes.
+        let c = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap();
+        c.server.commit(&c.session).await.unwrap();
+    }
+    control(&data, "oc", "busy", json!({"sessionID": session})).await;
+    refused(first.clone(), "空闲").await;
+    control(&data, "oc", "idle", json!({"sessionID": session})).await;
+    assert!(!data.join("opencode/forks").exists() || std::fs::read_dir(data.join("opencode/forks")).unwrap().next().is_none(), "nothing fixed");
+    let started: Vec<String> = std::fs::read_dir(data.join("opencode")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| uuid::Uuid::parse_str(n).is_ok()).collect();
+    assert!(started.is_empty(), "no OpenCode started for a fork: {started:?}");
+    ws.close_agent("oc").await.unwrap();
+}
+
+/// I6 (D-32): in the new Agent a Rewind to before a copied Turn is refused
+/// with its own words, asking nothing; one to a Turn of its own goes on.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn copied_turns_refuse_rewind_in_the_new_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, data, _, [first, second, _]) = three(&root).await;
+    let outcome = ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &second, "Forked")).await.unwrap();
     let target = outcome["agent"]["id"].as_str().unwrap().to_owned();
+    for copied in [&first, &second] {
+        let error = ws.opencode_revert_preview(&target, copied).await.expect_err("a copied Turn is not rewound").to_string();
+        assert!(error.contains("fork 时从原 Agent 复制来的"), "{error}");
+    }
+    let own = turn_on(&ws, &data, &target, "own", json!({})).await;
+    let preview = ws.opencode_revert_preview(&target, &own).await.expect("one of its own is");
+    assert_eq!(preview["removedTurns"], 1, "{preview}");
+    assert!(asked(&data, &target, "POST", "/revert/stage").is_empty(), "nothing asked");
     ws.close_agent(&target).await.unwrap();
     ws.close_agent("oc").await.unwrap();
 }
 
+/// A fork 1.19.3's fork began (its fixed record of 1.19.3's form) cannot go
+/// on: it fails, saying so, and the Turn can be forked anew.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn a_replay_that_stops_part_way_is_replayed_again_into_the_same_agent_and_one_that_differs_registers_nothing() {
+async fn a_fork_begun_on_1193_fails_and_the_turn_can_be_forked_anew() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let (ws, data, _, [first, second, _]) = three(&root).await;
-    let planned = data.join("opencode/fixture-new.json");
-    std::fs::write(&planned, json!({"replay": {"failAfter": 2}}).to_string()).unwrap();
+    let (ws, _data, _, [_, second, _]) = three(&root).await;
     let key = uuid::Uuid::new_v4().to_string();
-    let refused = ws.opencode_fork("oc", request(&key, &second, "F")).await.unwrap_err().to_string();
-    assert!(refused.contains("还没有完整的 fork"), "{refused}");
-    let row = ws.store.opencode_fork_row(&key).unwrap().unwrap();
-    assert_eq!(row.state, "chained");
-    assert!(ws.listed(&row.target_agent_id).await.is_err(), "nothing registered");
-    std::fs::remove_file(&planned).unwrap();
-    let outcome = ws.opencode_fork("oc", request(&key, &second, "F")).await.unwrap();
-    assert_eq!(outcome["state"], "completed", "{outcome}");
-    assert_eq!(outcome["agent"]["id"], row.target_agent_id.as_str(), "the same Agent");
-    // Started once per attempt, the same events replayed again, each stored once.
-    assert_eq!(starts(&data, &row.target_agent_id), 2);
-    let replays = asked(&data, &row.target_agent_id, "POST", "/sync/replay");
-    assert_eq!(replays.len(), 2);
-    assert_eq!(replays[0]["body"], replays[1]["body"]);
-    let held: Value = serde_json::from_str(&std::fs::read_to_string(data.join("opencode").join(&row.target_agent_id).join("state.json")).unwrap()).unwrap();
-    assert_eq!(held["durable"].as_array().unwrap().len(), replays[0]["body"]["events"].as_array().unwrap().len());
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1, "never forked again");
-    ws.close_agent(&row.target_agent_id).await.unwrap();
-
-    // A replay that makes something else than the fork: refused, nothing registered.
-    std::fs::write(&planned, json!({"replay": "tamper"}).to_string()).unwrap();
-    let other = uuid::Uuid::new_v4().to_string();
-    let refused = ws.opencode_fork("oc", request(&other, &first, "G")).await.unwrap_err().to_string();
-    assert!(refused.contains("与 fork 不同"), "{refused}");
-    let row = ws.store.opencode_fork_row(&other).unwrap().unwrap();
-    assert_eq!(row.state, "chained");
-    assert!(ws.listed(&row.target_agent_id).await.is_err(), "nothing registered");
+    let old = Row { request_id: key.clone(), source_agent_id: "oc".into(), through_turn_id: second.clone(), target_agent_id: uuid::Uuid::new_v4().to_string(),
+        name: "Old".into(), state: "sending".into(), fork_session: None, error: None, prefix_sha: "0".repeat(64) };
+    ws.store.opencode_begin_fork(&old).unwrap();
+    ws.store.opencode_set_fork(&key, "chained", Some("ses_old"), None).unwrap();
+    write_private(&ws.opencode_fork_folder(&key).unwrap().join("frozen.json"), &serde_json::to_vec(&json!({"session": "ses_x", "messages": []})).unwrap()).unwrap();
+    let outcome = ws.opencode_fork("oc", request(&key, &second, "Old")).await.unwrap();
+    assert_eq!(outcome["state"], "failed", "{outcome}");
+    assert!(outcome["message"].as_str().unwrap().contains("1.19.3"), "{outcome}");
+    let anew = ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &second, "Forked")).await.unwrap();
+    assert_eq!(anew["state"], "completed", "{anew}");
+    ws.close_agent(anew["agent"]["id"].as_str().unwrap()).await.unwrap();
     ws.close_agent("oc").await.unwrap();
 }
 
+/// A fork whose client goes away still ends, and is kept: in a task of its
+/// own (contract 3).
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_fork_whose_client_goes_away_still_ends_and_is_kept() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let (ws, data, _, [first, ..]) = three(&root).await;
-    let session = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap().session;
-    control(&data, "oc", "mode", json!({"fork": "hold"})).await;
+    let (ws, data, _, [_, second, _]) = three(&root).await;
+    plan_new(&data, json!({"import": "hold"}));
     let key = uuid::Uuid::new_v4().to_string();
-    let call = {
-        let (ws, key, first) = (ws.clone(), key.clone(), first.clone());
-        tokio::spawn(async move { ws.opencode_fork("oc", request(&key, &first, "F")).await })
+    let asking = {
+        let (ws, key, second) = (ws.clone(), key.clone(), second.clone());
+        tokio::spawn(async move { ws.opencode_fork("oc", request(&key, &second, "Forked")).await })
     };
+    let mut row = None;
     for _ in 0..400 {
-        if !asked(&data, "oc", "POST", "/fork").is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1, "asked");
-    // Its client goes away, which drops the request's handler; then OpenCode answers.
-    call.abort();
-    let _ = call.await;
-    control(&data, "oc", "goOn", json!({"sessionID": session})).await;
-    let mut state = String::new();
-    for _ in 0..800 {
-        state = ws.store.opencode_fork_row(&key).unwrap().unwrap().state;
-        if state == "completed" || state == "failed" {
+        row = ws.store.opencode_fork_row(&key).unwrap();
+        if row.is_some() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(state, "completed", "settled and registered though its client went away");
-    let target = ws.store.opencode_fork_row(&key).unwrap().unwrap().target_agent_id;
-    ws.close_agent(&target).await.unwrap();
+    let row = row.expect("the attempt is kept before it is asked");
+    asking.abort();
+    let _ = asking.await;
+    let mut state = String::new();
+    for _ in 0..400 {
+        state = ws.store.opencode_fork_row(&key).unwrap().unwrap().state;
+        if state != "sending" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(state, "uncertain", "the attempt ended though its client went away");
+    plan_new(&data, json!({}));
+    assert_eq!(ws.opencode_fork("oc", request(&key, &second, "Forked")).await.unwrap()["state"], "completed");
+    ws.close_agent(&row.target_agent_id).await.unwrap();
     ws.close_agent("oc").await.unwrap();
 }
 
+/// On 2.x every one of these goes by 2.x's own routes, none of 1.19.3's: a
+/// fork, by import into the new Agent's own OpenCode (slice 7); a rewind,
+/// staged then committed (slices 5 and 6); a compaction (slice 4).
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn a_forks_old_sub_agents_are_history_only_and_never_the_new_agents() {
+async fn on_2x_fork_rewind_and_compaction_go_by_2xs_own_routes() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let cwd = root.join("work");
     std::fs::create_dir_all(&cwd).unwrap();
     let ws = lab(&root, &cwd).await;
     let data = root.join("data");
-    let source = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap().session;
-    let child = control(&data, "oc", "child", json!({"parentID": source, "title": "helper"})).await["id"].as_str().unwrap().to_owned();
-    // An answer whose `task` part names that sub-agent, as OpenCode's task tool's does.
-    let task = json!({"type":"tool","tool":"task","callID":"call_task","state":{"status":"completed","input":{},"output":"ok",
-        "metadata":{"sessionId":child,"parentSessionId":source},"title":"helper","time":{"start":1,"end":2}}});
-    let first = turn_on(&ws, &data, "oc", "first", json!({"parts":[task]})).await;
-    assert!(ws.opencodes.lock().unwrap().get("oc").unwrap().known_children().contains(&child));
-    let key = uuid::Uuid::new_v4().to_string();
-    let outcome = ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap();
-    assert_eq!(outcome["state"], "completed", "{outcome}");
-    let target = outcome["agent"]["id"].as_str().unwrap().to_owned();
-    // The history request left the source's own sessions out.
-    let history = &asked(&data, "oc", "POST", "/sync/history")[0]["body"];
-    assert!(history.get(&source).is_some() && history.get(&child).is_some(), "{history}");
-    // The new Agent follows no sub-agent: the old one is only named in its history.
-    assert!(ws.opencodes.lock().unwrap().get(&target).unwrap().known_children().is_empty());
-    control(&data, "oc", "ask", json!({"sessionID": child})).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(ws.store.detail(&target).unwrap().pending.is_empty(), "the old sub-agent's request is not the new Agent's");
-    ws.close_agent(&target).await.unwrap();
-    ws.close_agent("oc").await.unwrap();
-}
-
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn a_target_database_holding_anything_but_this_forks_own_events_is_never_claimed() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    let (ws, data, _, [first, ..]) = three(&root).await;
-    let planned = data.join("opencode/fixture-new.json");
-    std::fs::write(&planned, json!({"replay": {"failAfter": 2}}).to_string()).unwrap();
-    let key = uuid::Uuid::new_v4().to_string();
-    assert!(ws.opencode_fork("oc", request(&key, &first, "F")).await.is_err());
-    std::fs::remove_file(&planned).unwrap();
-    let row = ws.store.opencode_fork_row(&key).unwrap().unwrap();
-    assert_eq!(row.state, "chained");
-    // Something else is in its database now: another session's event.
-    let state = data.join("opencode").join(&row.target_agent_id).join("state.json");
-    let mut held: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
-    held["durable"].as_array_mut().unwrap().push(json!({"id":"evt_foreign","aggregate_id":"ses_foreign","seq":0,
-        "type":"session.created.1","data":{"sessionID":"ses_foreign","info":{"id":"ses_foreign"}}}));
-    std::fs::write(&state, held.to_string()).unwrap();
-    let outcome = ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap();
-    assert_eq!(outcome["state"], "failed", "{outcome}");
-    assert!(outcome["message"].as_str().unwrap().contains("不是这次 fork 的记录"), "{outcome}");
-    assert_eq!(asked(&data, &row.target_agent_id, "POST", "/sync/replay").len(), 1, "nothing replayed over it");
-    assert!(ws.listed(&row.target_agent_id).await.is_err(), "nothing registered");
-    ws.close_agent("oc").await.unwrap();
-}
-
-#[test]
-fn a_turn_is_carried_only_as_far_as_every_field_of_it_is_known() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    let images = || Images { root: root.clone(), from: "src".into(), to: "dst".into(), files: Vec::new() };
-    let ids: check::Ids = [("msg_1", "msg_7"), ("msg_2", "msg_8"), ("prt_msg_2", "prt_msg_8")]
-        .into_iter().map(|(a, b)| (a.to_owned(), b.to_owned())).collect();
-    let mut kept = turn("msg_1", &["msg_2"]);
-    kept["items"] = json!([
-        {"id":"msg_1:input","type":"userMessage","nativeMessageId":"msg_1","clientId":"c-1","content":[{"type":"text","text":"Start"}],
-         "_yuzunoTime":{"at":1,"source":"core"}},
-        {"id":"prt_msg_2","type":"agentMessage","nativeMessageId":"msg_2","text":"done"},
-    ]);
-    kept["interruptRequested"] = json!(true);
-    let copy = remap(&[kept.clone()], &ids, "ses_b", &mut images()).unwrap();
-    assert_eq!(copy[0]["id"], "msg_7");
-    assert_eq!(copy[0]["_opencodeAnswers"], json!({"msg_8":{"completed":3,"parent":"msg_7"}}));
-    assert_eq!(copy[0]["items"][0]["id"], "msg_7:input");
-    assert!(copy[0]["items"][0].get("clientId").is_none(), "the source's sender is not the new Agent's");
-    assert_eq!((&copy[0]["items"][1]["id"], &copy[0]["items"][1]["nativeMessageId"]), (&json!("prt_msg_8"), &json!("msg_8")));
-    assert!(copy[0].get("interruptRequested").is_none(), "the source's own run is left behind");
-    // What a read adds for clients, or anything else not known, refuses the fork.
-    for (at, name) in [("turn", "_yuzunoResults"), ("item", "_yuzunoMailbox"), ("item", "_yuzunoTruncated")] {
-        let mut odd = kept.clone();
-        match at {
-            "turn" => odd[name] = json!([]),
-            _ => odd["items"][0][name] = json!({}),
-        }
-        let refused = remap(&[odd], &ids, "ses_b", &mut images()).unwrap_err().to_string();
-        assert!(refused.contains(name) && refused.contains("还不能带过去"), "{refused}");
-    }
-    // A pasted image: the new Agent's own copy, beside its thumbnail and fitted copy.
-    let hash = "a".repeat(64);
-    let source = root.join("input-images/src");
-    std::fs::create_dir_all(&source).unwrap();
-    for name in [format!("{hash}.png"), format!("{hash}.thumb.png"), format!("{hash}.claude.png"), "other.png".into()] {
-        std::fs::write(source.join(name), b"png").unwrap();
-    }
-    let mut pasted = kept.clone();
-    pasted["items"][0]["content"] = json!([{"type":"text","text":"See"},{"type":"localImage","path":source.join(format!("{hash}.png"))}]);
-    let mut moved = images();
-    let copy = remap(&[pasted.clone()], &ids, "ses_b", &mut moved).unwrap();
-    assert_eq!(copy[0]["items"][0]["content"][1]["path"], json!(root.join(format!("input-images/dst/{hash}.png"))));
-    moved.copy().unwrap();
-    let mut copied: Vec<String> = std::fs::read_dir(root.join("input-images/dst")).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
-    copied.sort();
-    assert_eq!(copied, [format!("{hash}.claude.png"), format!("{hash}.png"), format!("{hash}.thumb.png")]);
-    // One that is not the source's own is never carried.
-    pasted["items"][0]["content"][1]["path"] = json!(root.join(format!("input-images/else/{hash}.png")));
-    assert!(remap(&[pasted], &ids, "ses_b", &mut images()).unwrap_err().to_string().contains("不是原 Agent 保存的"));
-}
-
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn a_fork_answered_after_its_watch_settles_that_attempt_and_the_same_request_goes_on_from_what_was_fixed() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    let (ws, data, _, [first, ..]) = three(&root).await;
-    let session = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap().session;
-    control(&data, "oc", "mode", json!({"fork": "hold"})).await;
-    let key = uuid::Uuid::new_v4().to_string();
-    // No answer within the watch: uncertain, and the source goes on meanwhile.
-    let outcome = ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap();
-    assert_eq!(outcome["state"], "uncertain", "{outcome}");
-    turn_on(&ws, &data, "oc", "meanwhile", json!({})).await;
-    // Its answer comes now: it settles that very attempt.
-    control(&data, "oc", "goOn", json!({"sessionID": session})).await;
-    let mut state = String::new();
-    for _ in 0..400 {
-        state = ws.store.opencode_fork_row(&key).unwrap().unwrap().state;
-        if state != "uncertain" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert_eq!(state, "forked", "settled by its late answer");
-    // The same request goes on from there, against what was fixed before the source went on.
-    let done = ws.opencode_fork("oc", request(&key, &first, "F")).await.unwrap();
-    assert_eq!(done["state"], "completed", "{done}");
-    assert_eq!(asked(&data, "oc", "POST", "/fork").len(), 1, "asked once");
-    let target = done["agent"]["id"].as_str().unwrap().to_owned();
-    assert_eq!(ws.store.turn_ids(&target).unwrap().len(), 1, "only the Turn it was asked through");
-    ws.close_agent(&target).await.unwrap();
-    ws.close_agent("oc").await.unwrap();
-}
-
-/// On a session whose messages are 2.x's, fork still reads 1.19.3's: it
-/// refuses, before doing anything, until its own slice moves it (T-32 slice
-/// 3b, Lead 4983 decision A). A rewind goes by 2.x's own revert, staged then
-/// committed (T-61 slices 5 and 6), and compaction by 2.x's own route (T-61
-/// slice 4), never 1.19.3's. The stand-in sends 2.x's messages here, as it
-/// does by default.
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn on_2x_a_rewind_and_compaction_go_by_2xs_routes_and_fork_refuses() {
-    program();
-    let dir = tempfile::tempdir().unwrap();
-    let (root, cwd) = (dir.path().canonicalize().unwrap(), dir.path().canonicalize().unwrap().join("work"));
-    std::fs::create_dir_all(&cwd).unwrap();
-    let ws = Workspace::new(root.join("data"), root.to_string_lossy().into(), "unused".into()).unwrap();
-    let detail: AgentDetail = serde_json::from_value(json!({"agent": {
-        "id":"oc", "name":"OpenCode", "cwd":cwd.to_string_lossy(), "model":"", "color":"sage", "harness":"opencode",
-        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
-        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
-    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
-    ws.store.insert(&detail).unwrap();
-    std::fs::create_dir_all(root.join("data/opencode/oc")).unwrap();
-    ws.reconnect("oc").await.unwrap();
-    let data = root.join("data");
-    let turn = turn_on(&ws, &data, "oc", "hello", json!({})).await;
-    let not_yet = crate::opencode_v2::NOT_YET;
-    // What each says, or nothing when it went ahead.
-    let said = |result: anyhow::Result<()>| result.err().map(|e| e.to_string()).unwrap_or_default();
-    let fork = said(ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &turn, "F")).await.map(drop));
-    assert!(fork.contains(not_yet) && fork.contains("没有 fork"), "fork refuses: {fork}");
-    let preview = ws.opencode_revert_preview("oc", &turn).await.expect("a 2.x rewind is previewed");
+    let first = turn_on(&ws, &data, "oc", "hello", json!({})).await;
+    let second = turn_on(&ws, &data, "oc", "again", json!({})).await;
+    let forked = ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &first, "F")).await.expect("a 2.x fork");
+    assert_eq!(forked["state"], "completed", "{forked}");
+    let target = forked["agent"]["id"].as_str().unwrap().to_owned();
+    let preview = ws.opencode_revert_preview("oc", &second).await.expect("a 2.x rewind is previewed");
     let reverted = ws.opencode_revert_confirm("oc", preview["previewId"].as_str().unwrap()).await.expect("and confirmed");
     assert_eq!(reverted["status"], "completed", "staged, then committed: {reverted}");
-    assert!(asked(&data, "oc", "POST", "/revert").is_empty() && asked(&data, "oc", "POST", "/fork").is_empty(),
-        "nothing of 1.19.3's was asked of OpenCode");
     assert_eq!((asked(&data, "oc", "POST", "/revert/stage").len(), asked(&data, "oc", "POST", "/revert/commit").len()), (1, 1),
         "2.x's stage, then its commit");
     // Its model is the Agent's chosen one, made the session's first (D-19 (a)).
     ws.opencode_set_model("oc", "deepseek/deepseek-flash".into()).await.unwrap();
-    let compact = said(ws.opencode_compact("oc").await.map(drop));
-    assert_eq!(compact, "", "compaction goes on 2.x");
-    assert_eq!((asked(&data, "oc", "POST", "/compact").len(), asked(&data, "oc", "POST", "/summarize").len()), (1, 0),
-        "by 2.x's own route, never 1.19.3's");
+    ws.opencode_compact("oc").await.expect("compaction goes on 2.x");
+    assert_eq!(asked(&data, "oc", "POST", "/compact").len(), 1, "by 2.x's own route");
+    for (agent, path) in [("oc", "/revert"), ("oc", "/fork"), ("oc", "/summarize"), ("oc", "/sync/history"), (target.as_str(), "/sync/replay")] {
+        assert!(asked(&data, agent, "POST", path).is_empty(), "nothing of 1.19.3's: {path}");
+    }
+    for agent in ["oc", target.as_str()] {
+        assert!(asked(&data, agent, "GET", "/path").is_empty() && asked(&data, agent, "GET", "/project/current").is_empty(), "{agent}");
+    }
+    ws.close_agent(&target).await.unwrap();
     ws.close_agent("oc").await.unwrap();
 }

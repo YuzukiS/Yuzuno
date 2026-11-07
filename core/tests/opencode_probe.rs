@@ -158,10 +158,11 @@ async fn a_real_opencode_2x_serves_every_route_and_envelope_core_connects_with()
     println!("probe: credentials in the Agent's database: {stored:?}");
     assert_eq!(stored, Some(0), "no credential in the Agent's database");
 
-    // A 1.19.3 route answers the web UI's page, which Core refuses as no API answer.
-    let old = server.path().await.unwrap_err().to_string();
-    println!("probe: GET /path: {old}");
-    assert!(old.contains("not JSON: not an answer of the OpenCode 2.x API"), "{old}");
+    // A 1.19.3 route (`GET /path`, which Core no longer asks) answers the web UI's page: no answer of the API.
+    let old = http.get(format!("{}/path", server.base())).basic_auth("opencode", Some(&password)).send().await.unwrap();
+    let kind = old.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+    println!("probe: GET /path: {} {kind}", old.status());
+    assert!(!kind.starts_with("application/json"), "not an answer of the 2.x API: {kind}");
 
     // 35 s with nothing else said: its comment heartbeat keeps the stream past Core's 30 s limit.
     let until = Instant::now() + Duration::from_secs(35);
