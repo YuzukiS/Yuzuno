@@ -483,11 +483,6 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
     let rows: BTreeMap<&str, &Row> = live.iter().map(|row| (row.key.as_str(), row)).collect();
     let mut owners = Owners::default();
     let mut problems = vec![];
-    let open_asks = |planned: &BTreeMap<String, Planned>| {
-        planned.values().filter(|p| p.owner == ctx.agent && p.open_ask).count()
-    };
-    let ask_limit = |at: &str| problem("ask_limit", at,
-        format!("You already have {MAX_OPEN_ASKS} unresolved asks; resolve one before asking more."), "ask");
     for (index, change) in request.changes.iter().enumerate() {
         let at = format!("changes[{index}]");
         let key = change.key.as_str();
@@ -564,11 +559,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                         }
                     }
                 }
-                let was_open = existing.as_ref().is_some_and(|p| p.open_ask);
                 planned.insert(key.into(), Planned { owner: ctx.agent.clone(), open_ask: change.kind == "ask" });
-                if change.kind == "ask" && !was_open && open_asks(&planned) > MAX_OPEN_ASKS {
-                    problems.push(ask_limit(&format!("{at}.kind")));
-                }
             }
             // Changes no owner, kind or ask state; the blocks are `edited`'s.
             Op::Edit => match &existing {
@@ -604,11 +595,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 Some(_) if orphaned.is_none() => problems.push(problem("not_orphan", format!("{at}.key"),
                     format!("{key} has an active owner; only a section whose owner was closed, deleted or left the Project can be claimed."), "sections")),
                 Some(p) => {
-                    let open = p.open_ask;
                     planned.insert(key.into(), Planned { owner: ctx.agent.clone(), ..p.clone() });
-                    if open && open_asks(&planned) > MAX_OPEN_ASKS {
-                        problems.push(ask_limit(&format!("{at}.key")));
-                    }
                 }
             },
         }
