@@ -120,7 +120,11 @@ fn result_revision_notifies_once_per_submission_and_survives_restart() {
     let message = &first["message"];
     assert_eq!(first["task"]["status"], "review");
     assert_eq!(message["sender"]["kind"], "system");
-    assert_eq!(message["notice"]["kind"], "system");
+    // A result's notice is its own kind, told by its task's status (T-43 S3a).
+    assert_eq!(
+        (message["notice"]["kind"].as_str(), message["notice"]["status"].as_str()),
+        (Some("task_result"), Some("review"))
+    );
     assert_eq!(message["recipient"]["id"], "lead");
     assert_eq!(message["reportedBy"]["id"], "dev");
     assert_eq!(message["source"]["turnId"], "original-turn");
