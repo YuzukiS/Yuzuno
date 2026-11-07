@@ -34,8 +34,11 @@ Start with the checks for the part you changed:
 | --- | --- |
 | A Core module | `cargo test --locked --lib jobs::`, with that module's path in place of `jobs::`; or `cargo test --locked --test <name>` for one file in `core/tests/` |
 | The UI | `npm --prefix web run typecheck`, then `bash .github/scripts/web-tests.sh tools/<name>.test.mjs`, with paths relative to `web/`. Some tests load the built UI, so run `npm --prefix web run build` first. Tests that load jsdom refuse to start unless their memory is bounded: run them on Linux under a cgroup limit of at most 4096 MiB with no swap (inside Yuzuno, a managed Job), or let GitHub CI run them. |
+| The result or Brief contract (`web/src/intelligent-ui/`) | `npm --prefix web run build:result-validator`, then commit `runtimes/result-validator/contract.json` (and its notices if they changed); `bash .github/scripts/web-tests.sh tools/result-validator.test.mjs tools/brief-contract.test.mjs` |
 | The Claude bridge | `npm --prefix runtimes/claude test` |
 | `scripts/` | `python3 -m unittest discover --start-directory scripts --pattern 'test_*.py'` |
+
+Core runs the result validator, `runtimes/result-validator/validator.mjs`, which is generated rather than committed. Core's `results::` and `project_brief::` tests, other tests that publish results or Brief sections, and a Core started from source all need it: run `npm --prefix web ci` once per checkout, then `npm --prefix web run build:result-validator`, and again after the contract changes, yours or one you pulled. A missing or stale bundle fails with that command in its message.
 
 The full set in [Development](README.md#development) is what CI runs, and it is heavy. It builds all of Core and runs each test process one test at a time; CI gives it up to 6 GiB of memory for Rust and 3 GiB for the UI, and Core's build output takes several GiB of disk. Run one heavy check at a time, and limit parallel builds if memory is tight (for example `cargo test --locked -j2 -- --test-threads=1`). An Agent working inside Yuzuno should submit heavy checks as managed Jobs; see [Jobs](.agents/skills/yuzuno/references/jobs.md).
 

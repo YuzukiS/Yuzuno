@@ -1,5 +1,6 @@
 """Release integrity and continuation checks; no network, keys, build or Core."""
 import argparse
+import hashlib
 import importlib.util
 import io
 import json
@@ -192,9 +193,14 @@ class ReleaseTests(unittest.TestCase):
             (source / 'claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json').write_bytes(
                 CLAUDE_SDK_PLACEHOLDER if sdk == 'placeholder' else b'{}')
         (source / 'result-validator').mkdir()
-        (source / 'result-validator/validator.mjs').write_text('// unit fixture')
         (source / 'result-validator/THIRD_PARTY_NOTICES.txt').write_text('fixture validator notices')
-        write(source / 'result-validator/contract.json', {'validator': {'sha256': digest(source / 'result-validator/validator.mjs')}})
+        write(source / 'result-validator/contract.json', {'name': 'fixture'})
+        body = b'// unit fixture\n'
+        header = (f"// yuzuno-result-validator contract={digest(source / 'result-validator/contract.json')} "
+                  f"body={hashlib.sha256(body).hexdigest()}")
+        (source / 'result-validator/validator.mjs').write_bytes(b'// Generated fixture\n' + header.encode() + b'\n' + body)
+        # The release Core carries its validator's SHA-256 (YN-22).
+        (source / 'bin/yuzuno-workspace').write_text(f"fixture executable, never started {digest(source / 'result-validator/validator.mjs')}")
         (source / 'windows-jobs').mkdir()
         helper = source / 'windows-jobs/yuzuno-jobs-helper.exe'
         helper.write_bytes(b'MZ fixture Windows helper, never started')

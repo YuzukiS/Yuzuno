@@ -39,7 +39,7 @@ use crate::{model::now, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 /// A section's attachment as Core keeps it, for an interactive preview
 /// (previews.rs): its snapshot file, that file's SHA-256 (its name) and the
@@ -136,11 +136,7 @@ const TOOLS: [&str; 3] = ["brief_get", "brief_update", "brief_guide"];
 const GUIDE_PARTS: [&str; 9] = ["sections", "ask", "content", "charts", "research", "attachments", "limits", "errors", "examples"];
 
 fn contract() -> &'static Value {
-    static CONTRACT: OnceLock<Value> = OnceLock::new();
-    CONTRACT.get_or_init(|| {
-        serde_json::from_str(include_str!("../../../runtimes/result-validator/contract.json"))
-            .expect("generated result contract")
-    })
+    crate::results::contract_value()
 }
 
 /// The contract's `brief` part. None while the generated contract predates

@@ -41,6 +41,29 @@ def copy_tree(source, target):
 WINDOWS_HELPER = ("yuzuno-jobs-helper.exe", "windows-helper.json")
 
 
+VALIDATOR_HEADER = re.compile(rb"// yuzuno-result-validator contract=([0-9a-f]{64}) body=([0-9a-f]{64})")
+
+
+def check_result_validator(folder, core, pinned=True):
+    """The result validator as Core checks it (YN-22): generated with this
+    contract.json and unchanged since (its second line, validatorHeader in
+    web/tools/result-validator.mjs), and, for a release, the very bytes the
+    Core was built for: a release Core carries their SHA-256, compiled in by
+    tools/build-core-artifact.py. pinned=False is only for lab bundles of
+    development builds, which carry none; the command line has no such
+    option, so a release is never packaged unpinned."""
+    path = folder / "validator.mjs"
+    if not path.is_file():
+        raise ValueError(f"{path} is missing; generate it with npm --prefix web run build:result-validator")
+    _, header, body = (path.read_bytes().split(b"\n", 2) + [b"", b""])[:3]
+    match = VALIDATOR_HEADER.fullmatch(header)
+    if (not match or match[1].decode() != digest(folder / "contract.json")
+            or match[2].decode() != hashlib.sha256(body).hexdigest()):
+        raise ValueError("Result validator does not match its contract; regenerate it")
+    if pinned and digest(path).encode() not in Path(core).read_bytes():
+        raise ValueError("Core was not built for this result validator; build both with tools/build-core-artifact.py")
+
+
 def check_windows_helper(folder, source=None):
     """The committed Windows Jobs helper (tools/build-windows-helper.py) is
     exactly the file its record names; with the tree's windows_job.cs, also
@@ -111,13 +134,12 @@ def assemble(args):
         required = staging / "runtimes/claude/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
         if not required.is_file():
             raise ValueError("Claude runtime dependencies are missing; package the prepared runtime")
-        # Generated and committed (runtimes/result-validator); Core runs only
-        # the bundle whose hash it was built with. Core treats it as optional,
-        # so older releases without it stay valid previous/rollback targets.
+        # Generated with the contract (runtimes/result-validator; validator.mjs
+        # is not committed): a release Core runs only the bundle it was built
+        # for. Core treats it as optional, so older releases without it stay
+        # valid previous/rollback targets.
         validator = args.result_validator
-        contract = json.loads((validator / "contract.json").read_text())
-        if digest(validator / "validator.mjs") != contract["validator"]["sha256"]:
-            raise ValueError("Result validator does not match its contract; regenerate it")
+        check_result_validator(validator, args.core, pinned=not getattr(args, "unpinned_validator", False))
         (staging / "runtimes/result-validator").mkdir()
         for name in ["validator.mjs", "contract.json", "THIRD_PARTY_NOTICES.txt"]:
             if (validator / name).is_symlink():

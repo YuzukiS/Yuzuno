@@ -183,7 +183,10 @@ def main():
             packager.assemble(types.SimpleNamespace(
                 core=args.target / "yuzuno-workspace", helper=args.target / "yuzuno-update-helper",
                 licenses=inputs / "licenses", web=inputs / "web", claude=inputs / "claude",
-                result_validator=ROOT / "runtimes/result-validator", windows_helper=ROOT / "runtimes/windows-jobs",
+                # A development build carries no pinned validator (YN-22): run
+                # npm --prefix web run build:result-validator first.
+                result_validator=ROOT / "runtimes/result-validator", unpinned_validator=True,
+                windows_helper=ROOT / "runtimes/windows-jobs",
                 out=lab / "bundle", notes_file=inputs / "notes.txt", release_id=f"t170s-{args.run}",
                 version="T-170 lab fixture", git_sha=git_sha))
         bundle = json.loads(printed.getvalue())

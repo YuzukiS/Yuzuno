@@ -41,8 +41,16 @@ The historical private `CI` kept its PR tests. Only a push to its `main`, after 
 passed, built `core-inputs-<40-character SHA>-<run attempt>` with
 `tools/build-core-artifact.py`. The artifact has `build.json` and `inputs.tar.gz`:
 release-mode Core/helper, raw Vite UI, locked production Claude SDK/runtime and
-the committed result validator. No release version or signing key is needed.
+the result validator. No release version or signing key is needed.
 The release version marker is added once by the existing packager.
+
+**The result validator is pinned.** `validator.mjs` is generated, not
+committed (YN-22). `tools/build-core-artifact.py` checks that the committed
+`contract.json` matches the contract, generates `validator.mjs`, and builds
+Core with its SHA-256 (`YUZUNO_RESULT_VALIDATOR_SHA256`); that Core runs only
+those bytes. A `bundled-release` build without the value does not compile, and
+`tools/package-release.py` refuses a bundle whose SHA-256 the Core binary does
+not carry, so no release ships an unpinned validator.
 
 **Public inputs on request.** `.github/workflows/release-inputs.yml` runs only when someone starts it (`workflow_dispatch`), on GitHub-hosted ubuntu-24.04, with a token that reads contents and actions and no secret:
 - It builds `github.sha`, the head of `main` when it was started, and only after the `CI` workflow has passed on that commit's push to `main`. It cannot build an older commit: start it right after choosing a candidate, before anything else is merged.
@@ -85,7 +93,7 @@ build actually contains, so a dependency change updates it without a manual step
   `THIRD_PARTY_NOTICES.txt`, which the Vite build writes from the modules and
   assets it bundled.
 - `runtimes/result-validator/THIRD_PARTY_NOTICES.txt` is committed with the
-  validator and checked with it.
+  validator's `contract.json` and checked with it.
 - `licenses/THIRD_PARTY_NOTICES-claude-runtime.txt` lists the packages under
   `runtimes/claude/node_modules/`: the production set of
   `runtimes/claude/package-lock.json`, as the build installs it with

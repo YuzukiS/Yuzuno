@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -35,8 +36,13 @@ class PackageTests(unittest.TestCase):
         (self.root / "notes").write_text("Tested release")
         validator = self.root / "result-validator"
         validator.mkdir()
-        (validator / "validator.mjs").write_text("// fixture validator")
-        (validator / "contract.json").write_text(json.dumps({"validator": {"file": "validator.mjs", "sha256": packager.digest(validator / "validator.mjs")}}))
+        (validator / "contract.json").write_text(json.dumps({"name": "fixture"}) + "\n")
+        body = b"// fixture validator\n"
+        header = (f"// yuzuno-result-validator contract={packager.digest(validator / 'contract.json')} "
+                  f"body={hashlib.sha256(body).hexdigest()}")
+        (validator / "validator.mjs").write_bytes(b"// Generated fixture\n" + header.encode() + b"\n" + body)
+        # A release Core carries its validator's SHA-256 (YN-22).
+        (self.root / "core").write_text(f"fixture binary {packager.digest(validator / 'validator.mjs')}")
         (validator / "THIRD_PARTY_NOTICES.txt").write_text("fixture validator notices")
         (validator / "README.md").write_text("not packaged")
         windows = self.root / "windows-jobs"
@@ -103,10 +109,27 @@ class PackageTests(unittest.TestCase):
             packager.assemble(self.args)
         self.assertFalse(self.args.out.exists())
 
-    def test_the_committed_validator_matches_its_contract(self):
-        committed = Path(__file__).resolve().parent.parent / "runtimes/result-validator"
-        contract = json.loads((committed / "contract.json").read_text())
-        self.assertEqual(packager.digest(committed / "validator.mjs"), contract["validator"]["sha256"])
+    def test_a_core_not_built_for_this_validator_is_packaged_only_as_a_lab_bundle(self):
+        (self.root / "core").write_text("fixture binary built without a pinned validator")
+        with self.assertRaisesRegex(ValueError, "not built for this result validator"):
+            packager.assemble(self.args)
+        self.assertFalse(self.args.out.exists())
+        # Only a caller of assemble() may opt out; the command line cannot.
+        self.args.unpinned_validator = True
+        with contextlib.redirect_stdout(io.StringIO()):
+            packager.assemble(self.args)
+        self.assertTrue((self.args.out / "runtimes/result-validator/validator.mjs").is_file())
+
+    def test_a_missing_validator_names_the_command_that_makes_it(self):
+        (self.args.result_validator / "validator.mjs").unlink()
+        with self.assertRaisesRegex(ValueError, "missing; generate it with npm --prefix web run build:result-validator"):
+            packager.assemble(self.args)
+        self.assertFalse(self.args.out.exists())
+
+    @unittest.skipUnless((Path(__file__).resolve().parent.parent / "runtimes/result-validator/validator.mjs").is_file(),
+                         "validator.mjs is not generated in this checkout")
+    def test_the_generated_validator_matches_the_committed_contract(self):
+        packager.check_result_validator(Path(__file__).resolve().parent.parent / "runtimes/result-validator", None, pinned=False)
 
     def test_missing_runtime_never_publishes_partial_release(self):
         (self.args.claude / "node_modules/@anthropic-ai/claude-agent-sdk/package.json").unlink()

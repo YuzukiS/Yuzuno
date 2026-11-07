@@ -11,6 +11,10 @@
 //! (runtimes/result-validator/contract.json), and the generated bundle beside
 //! it, run in one lazily started Node process.
 //!
+//! The bundle is generated, not committed (YN-22): a release carries the one
+//! it was built with, and a checkout makes its own with
+//! `npm --prefix web run build:result-validator`.
+//!
 //! Who published a result, and in which session and Turn, is what Core
 //! records for the authenticated Agent when the call arrives. The Agent's
 //! `expectedTurnId` only says which Turn it means: a mismatch is refused,
@@ -53,6 +57,26 @@ const MAX_REQUEST: usize = 192 * 1024;
 /// One answer line: the submission with display defaults filled in.
 const MAX_ANSWER: u64 = 512 * 1024;
 const MAX_BUNDLE: u64 = 4 * 1024 * 1024;
+/// The bundle a release build runs, and no other: tools/build-core-artifact.py
+/// generates validator.mjs first and compiles in its SHA-256. A release build
+/// (feature bundled-release) without it does not compile, so no release runs
+/// an unpinned bundle. Other builds have none unless given one, and run a
+/// bundle generated with their own contract.json (check_bundle).
+#[cfg(feature = "bundled-release")]
+const PINNED: Option<&str> = Some(env!(
+    "YUZUNO_RESULT_VALIDATOR_SHA256",
+    "a release build pins its result validator's SHA-256; build it with tools/build-core-artifact.py"
+));
+#[cfg(not(feature = "bundled-release"))]
+const PINNED: Option<&str> = option_env!("YUZUNO_RESULT_VALIDATOR_SHA256");
+const _: () = assert!(
+    match PINNED {
+        Some(pinned) => is_sha256(pinned),
+        None => true,
+    },
+    "YUZUNO_RESULT_VALIDATOR_SHA256 must be the bundle's SHA-256 in lowercase hex"
+);
+const REGENERATE: &str = "npm --prefix web run build:result-validator";
 /// A validator unused this long is stopped; the next call starts another.
 const IDLE: Duration = Duration::from_secs(300);
 const HEAP: &str = "--max-old-space-size=64";
@@ -67,7 +91,6 @@ struct Contract {
     /// yuzuno_guide topic results' component list.
     fence_guide: String,
     max_description_length: usize,
-    validator: BundleFile,
 }
 
 #[derive(Deserialize)]
@@ -78,18 +101,71 @@ struct Limits {
     rejected_per_turn: i64,
 }
 
-#[derive(Deserialize)]
-struct BundleFile {
-    file: String,
-    sha256: String,
+const CONTRACT_JSON: &str = include_str!("../../runtimes/result-validator/contract.json");
+
+/// contract.json as contract.ts and brief-contract.ts describe it. Its file
+/// writes a text of several lines as {"$lines": [...]}, one line per element,
+/// so that changes to different lines merge as text (YN-22,
+/// web/tools/contract-json.mjs); this joins them back.
+pub(crate) fn contract_value() -> &'static Value {
+    static VALUE: OnceLock<Value> = OnceLock::new();
+    VALUE.get_or_init(|| joined(serde_json::from_str(CONTRACT_JSON).expect("generated result contract")))
+}
+
+fn joined(value: Value) -> Value {
+    match value {
+        Value::Object(map) => match map.get("$lines").and_then(Value::as_array) {
+            Some(lines) if map.len() == 1 && lines.iter().all(Value::is_string) => {
+                Value::String(lines.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n"))
+            }
+            _ => Value::Object(map.into_iter().map(|(key, value)| (key, joined(value))).collect()),
+        },
+        Value::Array(items) => Value::Array(items.into_iter().map(joined).collect()),
+        other => other,
+    }
 }
 
 fn contract() -> &'static Contract {
     static CONTRACT: OnceLock<Contract> = OnceLock::new();
-    CONTRACT.get_or_init(|| {
-        serde_json::from_str(include_str!("../../runtimes/result-validator/contract.json"))
-            .expect("generated result contract")
-    })
+    CONTRACT.get_or_init(|| Contract::deserialize(contract_value()).expect("generated result contract"))
+}
+
+const fn is_sha256(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if !matches!(bytes[at], b'0'..=b'9' | b'a'..=b'f') {
+            return false;
+        }
+        at += 1;
+    }
+    bytes.len() == 64
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Whether `bundle` is the validator this Core runs. With a pin (a release),
+/// exactly those bytes. Without one, a bundle generated with this Core's own
+/// contract.json and unchanged since: its second line names that file's
+/// SHA-256 and the rest's (validatorHeader in web/tools/result-validator.mjs;
+/// tools/package-release.py reads it too). A bundle stale only in its checks,
+/// generated from other sources with the same contract.json, still passes.
+fn check_bundle(bundle: &[u8], pinned: Option<&str>) -> Result<()> {
+    if let Some(pinned) = pinned {
+        ensure!(sha256_hex(bundle) == pinned, "it is not the bundle this Core release was built with");
+        return Ok(());
+    }
+    let mut lines = bundle.splitn(3, |byte| *byte == b'\n');
+    let (header, body) = (lines.nth(1).unwrap_or_default(), lines.next().unwrap_or_default());
+    let contract = format!("// yuzuno-result-validator contract={} ", sha256_hex(CONTRACT_JSON.as_bytes()));
+    ensure!(header.starts_with(contract.as_bytes()), "it was generated for another contract.json; run {REGENERATE}");
+    ensure!(
+        header[contract.len()..] == *format!("body={}", sha256_hex(body)).as_bytes(),
+        "it was changed after it was generated; run {REGENERATE}"
+    );
+    Ok(())
 }
 
 /// yuzuno_guide topic results' component list: each display component of
@@ -151,7 +227,7 @@ fn bundle_path() -> Option<PathBuf> {
 }
 
 fn resolve(configured: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    crate::runtime_paths::resolve(configured, &format!("result-validator/{}", contract().validator.file))
+    crate::runtime_paths::resolve(configured, "result-validator/validator.mjs")
 }
 
 const RELEASE_FILE: &str = "runtimes/result-validator/validator.mjs";
@@ -268,15 +344,14 @@ impl Validator {
         let path = self.bundle.as_ref().context("this Core release has no result validator")?;
         let size = tokio::fs::metadata(path)
             .await
-            .with_context(|| format!("cannot read {}", path.display()))?
+            .with_context(|| match PINNED {
+                Some(_) => format!("cannot read {}", path.display()),
+                None => format!("cannot read {}; generate it with {REGENERATE}", path.display()),
+            })?
             .len();
         ensure!(size <= MAX_BUNDLE, "the result validator is too large");
         let bundle = tokio::fs::read(path).await?;
-        ensure!(
-            format!("{:x}", Sha256::digest(&bundle)) == contract().validator.sha256,
-            "{} is not the validator this Core was built with",
-            path.display()
-        );
+        check_bundle(&bundle, PINNED).with_context(|| format!("{} is not this Core's result validator", path.display()))?;
         let mut child = Command::new(&self.node)
             .arg(HEAP)
             .arg(path)
@@ -1119,6 +1194,51 @@ mod tests {
         // A new Turn starts afresh.
         running(&ws, "a", "t2");
         assert!(publish_as(&ws, "a", input("good", "t2", spec(None))).await.unwrap().is_ok());
+    }
+
+    #[test]
+    fn the_generated_validator_is_present() {
+        let path = bundle_path().unwrap();
+        assert!(path.is_file(), "{} is missing: run npm --prefix web ci, then {REGENERATE}", path.display());
+    }
+
+    #[test]
+    fn a_bundle_runs_only_with_its_own_contract_or_its_release_pin() {
+        let bundle = std::fs::read(bundle_path().unwrap()).unwrap();
+        check_bundle(&bundle, None).unwrap();
+        let pinned = sha256_hex(&bundle);
+        check_bundle(&bundle, Some(&pinned)).unwrap();
+        // A release runs no other bytes, a valid header or not.
+        let reason = |result: Result<()>| result.unwrap_err().to_string();
+        assert!(reason(check_bundle(&bundle, Some(&"0".repeat(64)))).contains("release was built with"));
+        let edited = [&bundle[..], b"\n// edited"].concat();
+        assert!(reason(check_bundle(&edited, Some(&pinned))).contains("release was built with"));
+        // Elsewhere: edited since, or generated with another contract.json.
+        assert!(reason(check_bundle(&edited, None)).contains("changed after it was generated"));
+        let text = String::from_utf8(bundle).unwrap();
+        let other = text.replacen(&format!("contract={}", sha256_hex(CONTRACT_JSON.as_bytes())), &format!("contract={}", "0".repeat(64)), 1);
+        assert_ne!(other, text);
+        assert!(reason(check_bundle(other.as_bytes(), None)).contains("another contract.json"));
+        assert!(reason(check_bundle(b"// no header", None)).contains("another contract.json"));
+        assert!(is_sha256(&pinned) && !is_sha256(&pinned.to_uppercase()) && !is_sha256(&pinned[1..]));
+        assert_eq!(PINNED, None, "development builds and their tests run unpinned");
+    }
+
+    #[test]
+    fn contract_texts_of_several_lines_are_joined_back() {
+        assert_eq!(joined(json!({"a":{"$lines":["x","","y"]},"b":[{"$lines":["z"]}]})), json!({"a":"x\n\ny","b":["z"]}));
+        // Anything else stays as it is.
+        let kept = json!({"c":{"$lines":["x"],"other":1},"d":{"$lines":[1]},"e":["x","y"]});
+        assert_eq!(joined(kept.clone()), kept);
+        fn has_lines(value: &Value) -> bool {
+            match value {
+                Value::Object(map) => map.contains_key("$lines") || map.values().any(has_lines),
+                Value::Array(items) => items.iter().any(has_lines),
+                _ => false,
+            }
+        }
+        assert!(CONTRACT_JSON.contains("\"$lines\"") && !has_lines(contract_value()));
+        assert!(contract().fence_guide.lines().count() > 5);
     }
 
     #[tokio::test]
