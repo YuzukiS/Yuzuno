@@ -335,7 +335,7 @@ export function DeviceTransferSection() {
           <p>{t.intro}</p>
         </div>
       </header>
-      <div className="settings-group appearance-file" aria-label={t.fileGroup}>
+      <div className="settings-group appearance-group appearance-file" aria-label={t.fileGroup}>
         <div className="settings-row">
           <span className="settings-row-main">
             <span className="settings-row-title">{t.fileGroup}</span>

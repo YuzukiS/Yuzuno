@@ -86,7 +86,7 @@ try {
   // Its page of Settings; on a phone the list of pages comes first (YN-8).
   await dialog.locator("#settings-tab-notifications").click();
   const editor = dialog.locator("#settings-notifications");
-  const push = editor.getByRole("checkbox", { name: "Push notifications on this device" });
+  const push = editor.getByRole("switch", { name: "Push notifications on this device" });
   await push.waitFor();
   assert.equal(await push.isChecked(), false);
   await page.screenshot({ path: resolve(output, "1-off.png") });
@@ -108,7 +108,7 @@ try {
   await page.screenshot({ path: resolve(output, "2-on.png") });
   check("turning it on registers Core's /sw.js at /, makes the key once and subscribes for the chosen kinds", { registration, state: state.body });
 
-  await editor.getByRole("checkbox", { name: /A Turn finished/ }).click();
+  await editor.getByRole("switch", { name: /A Turn finished/ }).click();
   await page.waitForFunction(async (endpoint) => {
     const response = await fetch("/api/push/subscriptions/state", { method: "POST", headers: { "Content-Type": "application/json", "X-Yuzuno-Client": "desktop" }, body: JSON.stringify({ endpoint }) });
     const body = await response.json();
