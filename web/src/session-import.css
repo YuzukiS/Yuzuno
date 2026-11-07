@@ -140,3 +140,18 @@
 .session-preview-body[data-stale] {
   opacity: 0.55;
 }
+/* The OpenCode export tab's file field (T-61 slice 8): the browser's own
+   chooser inside the form's field frame. */
+.opencode-import-file input[type="file"] {
+  cursor: pointer;
+}
+.opencode-import-file input[type="file"]::file-selector-button {
+  margin-right: 10px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-soft);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}

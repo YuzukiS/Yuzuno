@@ -1,12 +1,13 @@
 import { strings, type Language } from "./i18n";
 
 /**
- * New agent and its Existing Codex/Claude session tabs in the interface
- * language (T-189). Agent, project and machine names, folders, session IDs,
- * model names and descriptions, branch names, what a saved session holds
- * (titles, prompts, messages), and Codex's or Core's warnings and errors are
- * shown as they came. The default Agent names "Codex session" and "Claude
- * session" are data, not words of this dialog. Codex's permission choices
+ * New agent and its Existing Codex/Claude session and OpenCode export tabs
+ * in the interface language (T-189). Agent, project and machine names,
+ * folders, session IDs, model names and descriptions, branch names, what a
+ * saved session holds (titles, prompts, messages), and Codex's or Core's
+ * warnings and errors are shown as they came. The default Agent names "Codex
+ * session", "Claude session" and "OpenCode session" are data, not words of
+ * this dialog. Codex's permission choices
  * take the same language (CodexPermissions, #343).
  */
 export const newAgentText = strings({
@@ -15,12 +16,14 @@ export const newAgentText = strings({
   existingTitle: "Welcome back to your work",
   newDescription: "Choose a name and a place to work. Send the first task in the conversation.",
   claudeDescription: "Continue a Claude Code session saved on this machine in Yuzuno.",
+  openCodeDescription: "Continue an OpenCode 2.x session in Yuzuno from the file it was exported to.",
   codexDescription: "Continue an existing Codex session in Yuzuno.",
   close: "Close dialog",
   setup: "Agent setup",
   newAgent: "New agent",
   existingCodex: "Existing Codex session",
   existingClaude: "Existing Claude session",
+  existingOpenCode: "OpenCode export",
   // A new Agent.
   name: "Name",
   namePlaceholder: "Mikan, Mori, or something entirely you",
@@ -135,17 +138,52 @@ export const newAgentText = strings({
   compacted: "Claude compacted this session earlier. What came before its summary isn’t in the saved history, so it isn’t shown.",
   imagesShown: (images: string) => `${images} in your messages: Yuzuno shows where they were, not the images.`,
   mayBeOpen: (ago: string) => `Saved ${ago}: it may still be open in Claude Code.`,
+  // An OpenCode 2.x export (T-61 slice 8).
+  coreHostOpenCode: "Core host · OpenCode 2.x",
+  ocFile: "Exported session file",
+  ocFileHint:
+    "Export the session with OpenCode 2.x’s opencode session export, then choose that file (up to 64 MiB). Yuzuno reads only this file, never your OpenCode database.",
+  ocTooBig: "This file is larger than 64 MiB, so it can’t be imported.",
+  ocReading: "Reading the file…",
+  ocFound: "Exported session read",
+  ocMessages: (count: number) => `${count} ${count === 1 ? "message" : "messages"}`,
+  ocModel: (model: string) => `model ${model}`,
+  ocAgent: (agent: string) => `agent ${agent}`,
+  ocCost: (cost: number) => `cost ${cost < 0.01 ? "under $0.01" : `$${cost.toFixed(2)}`}`,
+  ocModelKept: (model: string) =>
+    `The new Agent keeps ${model} if OpenCode on your Core host lists it; otherwise it uses OpenCode’s default model and says so.`,
+  ocDropsPermissions: "The session’s own permission rules aren’t brought over: the new Agent follows OpenCode’s rules on your Core host.",
+  ocDropsMetadata: "The session’s metadata isn’t brought over.",
+  ocEarlier: (names: string) => `This session was imported before, as ${names}. This export differs, so it becomes a new copy.`,
+  ocPending: "An import of this file hasn’t finished. Continue it: the session is never written twice.",
+  ocUncertain: "Core couldn’t confirm the import yet. Try again: the session is never written twice.",
+  ocNoAnswer: "No answer from Core. The import may have gone through: check it first.",
+  ocExpired: "This upload is no longer kept. Choose the file again.",
+  ocFailed: "The import didn’t finish. Choose the file again to start over.",
+  ocNameTooLong: (bytes: number) => `This name is ${bytes} bytes; up to 100 bytes fit.`,
+  ocFolderNote: "A folder on your Core host. The session’s own folder is filled in; the new Agent works in the one you confirm.",
+  ocHandoff:
+    "Importing writes a copy of the session into the new Agent’s own OpenCode, under a new session ID, and asks nothing of a model. The session in your OpenCode stays as it is. Imported turns can’t be rewound.",
+  ocSameFile: "This same file was imported already. Open the Agent it made.",
+  ocImported: "Imported",
+  ocImporting: "Importing…",
+  ocImport: "Import as a new Agent",
+  ocAgain: "Try again",
+  ocContinue: "Continue import",
+  ocCheck: "Check the import",
 }, {
   newTitle: "一位新的小伙伴",
   existingTitle: "欢迎回到你的工作",
   newDescription: "选一个名字和工作的地方，然后在会话中发送第一个任务。",
   claudeDescription: "在 Yuzuno 中继续此机器上保存的 Claude Code 会话。",
+  openCodeDescription: "用 OpenCode 2.x 导出的文件，在 Yuzuno 中继续那个会话。",
   codexDescription: "在 Yuzuno 中继续已有的 Codex 会话。",
   close: "关闭对话框",
   setup: "Agent 设置",
   newAgent: "新建 Agent",
   existingCodex: "已有的 Codex 会话",
   existingClaude: "已有的 Claude 会话",
+  existingOpenCode: "OpenCode 导出文件",
   name: "名称",
   namePlaceholder: "Mikan、Mori，或完全属于你的名字",
   experimental: "实验性",
@@ -251,6 +289,35 @@ export const newAgentText = strings({
   compacted: "Claude 之前压缩过此会话。摘要之前的内容不在保存的历史中，因此不会显示。",
   imagesShown: (images) => `你的消息中有 ${images}：Yuzuno 只显示它们的位置，不显示图片。`,
   mayBeOpen: (ago) => `${ago}保存：它可能仍在 Claude Code 中打开。`,
+  coreHostOpenCode: "Core 主机 · OpenCode 2.x",
+  ocFile: "导出的会话文件",
+  ocFileHint: "先用 OpenCode 2.x 的 opencode session export 导出会话，再选择那个文件（最大 64 MiB）。Yuzuno 只读取这个文件，从不读取你的 OpenCode 数据库。",
+  ocTooBig: "这个文件超过 64 MiB，无法导入。",
+  ocReading: "正在读取文件…",
+  ocFound: "已读取导出的会话",
+  ocMessages: (count) => `${count} 条消息`,
+  ocModel: (model) => `模型 ${model}`,
+  ocAgent: (agent) => `agent ${agent}`,
+  ocCost: (cost) => `费用 ${cost < 0.01 ? "不到 $0.01" : `$${cost.toFixed(2)}`}`,
+  ocModelKept: (model) => `如果你的 Core 主机上的 OpenCode 列出了 ${model}，新 Agent 会沿用它；否则使用 OpenCode 的默认模型，并会说明。`,
+  ocDropsPermissions: "会话自己的权限规则不会带过来：新 Agent 遵循你的 Core 主机上 OpenCode 的规则。",
+  ocDropsMetadata: "会话的 metadata 不会带过来。",
+  ocEarlier: (names) => `此会话之前已导入为 ${names}。这次的导出不同，因此会成为一份新副本。`,
+  ocPending: "这个文件有一次导入还没有完成。继续它：会话不会被写第二次。",
+  ocUncertain: "Core 还无法确认这次导入。请重试：会话不会被写第二次。",
+  ocNoAnswer: "Core 没有回应。导入可能已经完成：请先检查它。",
+  ocExpired: "这次上传已不再保留。请重新选择文件。",
+  ocFailed: "导入没有完成。请重新选择文件以重新开始。",
+  ocNameTooLong: (bytes) => `这个名称有 ${bytes} 字节；最多 100 字节。`,
+  ocFolderNote: "你的 Core 主机上的一个文件夹。已填入会话自己的文件夹；新 Agent 在你确认的文件夹里工作。",
+  ocHandoff: "导入会把会话的一份副本以新的会话 ID 写进新 Agent 自己的 OpenCode，不会向模型请求任何内容。你 OpenCode 里的会话保持不变。导入的 Turn 不能回退。",
+  ocSameFile: "这个文件已经导入过。打开它导入出的 Agent。",
+  ocImported: "已导入",
+  ocImporting: "正在导入…",
+  ocImport: "导入为新 Agent",
+  ocAgain: "重试",
+  ocContinue: "继续导入",
+  ocCheck: "检查这次导入",
 });
 
 /** "5 min ago": when a Claude session was saved, coarse on purpose. */
