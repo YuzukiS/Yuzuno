@@ -99,6 +99,18 @@ pub fn parse(input: &str, object: bool) -> Result<Target> {
 pub(crate) const RAW_LOG_FLAG: &str = "--allow-escape-sequences";
 pub(crate) const RAW_LOG_MIN_GH: &str = "2.97.0";
 
+/// gh printed no HTTP status line, so no answer came. A refusal gh makes
+/// before sending (no login), or a connection that never opened (DNS,
+/// connect), means the request never reached GitHub: `not_sent:`. Anything
+/// else may have reached it.
+fn unanswered(stderr: &[u8], code: Option<i32>) -> anyhow::Error {
+    let text = String::from_utf8_lossy(stderr).to_lowercase();
+    let error = failure(stderr, code);
+    let before = error.to_string().starts_with("not_authenticated")
+        || ["no such host", "dial tcp", "connection refused", "network is unreachable"].iter().any(|p| text.contains(p));
+    if before { anyhow::anyhow!("not_sent: {error:#}") } else { error }
+}
+
 pub(super) fn failure(stderr: &[u8], code: Option<i32>) -> anyhow::Error {
     let text = String::from_utf8_lossy(stderr).to_lowercase();
     let message = if text.contains("rate limit") || text.contains("http 429") {
@@ -124,12 +136,17 @@ pub(super) fn failure(stderr: &[u8], code: Option<i32>) -> anyhow::Error {
 pub struct Client {
     pub(crate) program: String,
     pub(crate) deadline: Duration,
+    /// How long a merge request may take to answer. GitHub can take longer to
+    /// merge than to answer a read, and an answer lost to the read deadline
+    /// would stop the merge queue on an uncertain merge.
+    pub(crate) merge_deadline: Duration,
 }
 impl Default for Client {
     fn default() -> Self {
         Self {
             program: "gh".into(),
             deadline: Duration::from_secs(12),
+            merge_deadline: Duration::from_secs(60),
         }
     }
 }
@@ -531,6 +548,77 @@ impl Client {
         let body = serde_json::to_vec(body)?;
         ensure!(body.len() <= 128 * 1024, "GitHub request body is too large");
         self.json_request(method, endpoint, Some(body)).await
+    }
+
+    /// One write whose HTTP answer matters (the merge queue's writes): GitHub's
+    /// status and body for any 2xx or 4xx answer. A 5xx, a transport failure or
+    /// a timeout is an error: the write may or may not have happened, and the
+    /// caller reads GitHub before it writes again.
+    pub(crate) async fn answered_write(
+        &self,
+        method: &str,
+        endpoint: &str,
+        body: Option<&Value>,
+        deadline: Duration,
+    ) -> Result<(u16, Value)> {
+        // `not_sent:` marks a failure before the request could reach GitHub;
+        // every other failure may have reached it.
+        ensure!(
+            matches!(method, "POST" | "PATCH" | "PUT" | "DELETE"),
+            "not_sent: Unsupported GitHub write method"
+        );
+        let body = body.map(serde_json::to_vec).transpose().map_err(|e| anyhow::anyhow!("not_sent: {e}"))?;
+        ensure!(
+            body.as_ref().is_none_or(|b| b.len() <= 128 * 1024),
+            "not_sent: GitHub request body is too large"
+        );
+        let mut child = self
+            .spawn_with_headers(endpoint, "Accept: application/vnd.github+json", method, body.is_some(), &["--include".to_owned()])
+            .map_err(|e| anyhow::anyhow!("not_sent: gh could not start: {e:#}"))?;
+        let mut stdin = child.stdin.take();
+        let mut stdout = child.stdout.take().context("gh stdout unavailable")?.take(2 * 1024 * 1024 + 1);
+        let mut stderr = child.stderr.take().context("gh stderr unavailable")?.take(64 * 1024 + 1);
+        let operation = async {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            tokio::try_join!(
+                async { stdout.read_to_end(&mut out).await.context("Cannot read gh response") },
+                async { stderr.read_to_end(&mut err).await.context("Cannot read gh diagnostics") },
+                async {
+                    if let Some(body) = &body {
+                        let mut stdin = stdin.take().context("gh stdin unavailable")?;
+                        stdin.write_all(body).await?;
+                        stdin.shutdown().await?;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                }
+            )?;
+            ensure!(
+                out.len() <= 2 * 1024 * 1024 && err.len() <= 64 * 1024,
+                "response_too_large: GitHub response exceeded the read limit"
+            );
+            let status = child.wait().await?;
+            let text = String::from_utf8_lossy(&out);
+            let Some((head, rest)) = text.split_once("\r\n\r\n").or_else(|| text.split_once("\n\n")) else {
+                return Err(unanswered(&err, status.code()));
+            };
+            let code = head
+                .lines()
+                .next()
+                .and_then(|s| s.split_whitespace().nth(1))
+                .and_then(|s| s.parse::<u16>().ok())
+                .context("invalid_response: Missing GitHub response status")?;
+            ensure!(code < 500, "unavailable: GitHub answered HTTP {code}; the write may or may not have happened");
+            let value = if rest.trim().is_empty() { Value::Null } else { serde_json::from_str(rest.trim()).unwrap_or(Value::Null) };
+            Ok((code, value))
+        };
+        match tokio::time::timeout(deadline, operation).await {
+            Ok(answer) => answer,
+            Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                bail!("timeout: GitHub {method} timed out; the write may or may not have happened")
+            }
+        }
     }
 
     /// A fixed read-only GraphQL query from Core's own code, never a mutation.

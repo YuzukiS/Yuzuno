@@ -16,8 +16,8 @@ session of its own, as OpenCode's tools run, which only its teardown after
 SIGTERM ends), `teardown` (seconds its teardown takes before it ends that
 process and exits), `closeStreamsFirst` (its teardown first ends its event
 streams and cuts every request still being served, before that wait, as 2.x
-closes what it serves early) or `xdg-data` (a folder it takes as its XDG_DATA_HOME, as
-if started with it).
+closes what it serves early), `xdg-data` (a folder it takes as its XDG_DATA_HOME, as
+if started with it) or `slowSave` (seconds each save of its state waits with its file open, before it writes).
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
@@ -605,15 +605,22 @@ def page(items, query, kept):
 
 
 def save():
+    # Written whole or not at all (T-61 S0): into a file of its own beside state.json, then put in its place, so a process
+    # ended in the middle of a save never leaves a cut state.json that its next start can't read (CI 42314910718).
     with lock:
-        (ROOT / 'state.json').write_text(json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0],
-                                                     'durable': durable, 'aggregates': aggregates,
-                                                     # 2.x stores its idle messages with the session's others,
-                                                     # and its inbox.
-                                                     'idles': {s: v['idles'] for s, v in v2_state.items()},
-                                                     'inbox': {s: {'pending': v['pending'], 'steer': sorted(v['steer'])}
-                                                               for s, v in v2_state.items()},
-                                                     'shells': {s: v['shells'] for s, v in v2_state.items()}}))
+        data = json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0],
+                           'durable': durable, 'aggregates': aggregates,
+                           # 2.x stores its idle messages with the session's others,
+                           # and its inbox.
+                           'idles': {s: v['idles'] for s, v in v2_state.items()},
+                           'inbox': {s: {'pending': v['pending'], 'steer': sorted(v['steer'])}
+                                     for s, v in v2_state.items()},
+                           'shells': {s: v['shells'] for s, v in v2_state.items()}})
+        written = ROOT / f'state.json.{os.getpid()}.tmp'
+        with open(written, 'w') as out:
+            time.sleep(float(switch('slowSave') or 0))
+            out.write(data)
+        os.replace(written, ROOT / 'state.json')
 
 
 def load():
@@ -2008,6 +2015,9 @@ def teardown(signum, frame):
         except ProcessLookupError:
             pass
         tool.wait()
+    # No save is cut short: one under way holds `lock`, and ends before this exits (T-61 S0). Bounded, should the
+    # handler run in the thread that holds it.
+    lock.acquire(timeout=10)
     os._exit(0)
 
 

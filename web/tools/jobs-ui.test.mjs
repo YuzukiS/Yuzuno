@@ -293,7 +293,12 @@ test('exclusive queue shows mode and wait reason; rerun preserves mode but requi
   const p=mount(url=>url==='/api/jobs/job-one'?current:page([current]));
   try {
     await until(()=>p.doc.querySelector('.conversation-job'));
-    assert.match(p.doc.querySelector('.conversation-job').textContent,/Exclusive/);
+    // In the name the dock item is read by. Its tip, which shows the mode to
+    // a pointer, is drawn into the page rather than inside the item, so the
+    // item's own text is the label beside its node (T-15, #459: the dock
+    // scrolls within itself and `.main-panel`'s container-type pins even
+    // `position: fixed` to it, so the tip cannot live inside and be seen).
+    assert.match(p.doc.querySelector('.conversation-job').getAttribute('aria-label'),/Exclusive/);
     p.doc.querySelector('.conversation-job').click(); await until(()=>p.doc.querySelector('.job-log'));
     assert.match(p.doc.querySelector('.job-row').textContent,/Exclusive/);
     assert.match(p.doc.querySelector('.job-row').textContent,/Waiting for running jobs/);
@@ -1358,18 +1363,21 @@ test('the conversation dock lists its PR reviews after its runs, follows Core to
   }
 });
 
-test('the dock keeps to Settings for its PR reviews (0 removes the group and its read), and its More opens this Agent\'s own reviews (T-25 R1)', async () => {
+test('the dock keeps to Settings for its PR reviews (0 removes the group, not the read Work activity counts from), and its More opens this Agent\'s own reviews (T-25 R1, #459 R7)', async () => {
   const many = [1, 2, 3, 4].map(n => review(`r${n}`, 10 + n, { round: n, finishedAt: `2026-10-15T0${n}:00:00Z` }));
   const handler = url => url === '/api/reviews?involving=a' ? reviewPage(many) : url.startsWith('/api/reviews?') ? reviewPage([]) : page([]);
   const group = p => p.doc.querySelector('.work-dock [role="group"][aria-label="PR reviews"]');
   const limits = dock => ({ 'yuzuno.appearance': JSON.stringify({ dock }) });
-  // 0: no group, and nothing is read for it.
+  // 0: no group on the dock. The reviews are still read: Work activity
+  // counts them whatever the dock draws, as it counts Jobs and runs, and on
+  // a touched screen it is the one way in (#459 R7; this used to skip the
+  // read, which left reviews out of Work activity altogether).
   let p = mount(handler, limits({ jobs: 5, actions: 2, reviews: 0, subAgents: 5 }));
   try {
-    await until(() => p.calls.some(c => c.url.startsWith('/api/ci?')));
+    await until(() => p.calls.some(c => c.url === '/api/reviews?involving=a'));
     for (let n = 0; n < 4; n++) await wait();
     assert.ok(!group(p), 'no reviews group at 0');
-    assert.equal(p.calls.some(c => c.url.includes('involving=')), false, 'and no read for it');
+    assert.equal(p.doc.querySelectorAll('.conversation-review').length, 0, 'and no review drawn anywhere on the dock');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
   // 1: the latest ended one, the rest behind More.

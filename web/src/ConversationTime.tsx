@@ -23,7 +23,7 @@ export function TurnFooter({ parts }: { parts: FooterPart[] }) {
           {part.kind === "time" ? (
             <span>
               {part.prefix}
-              <time dateTime={part.moment.dateTime} title={part.title}>{part.moment.label}</time>
+              <time dateTime={part.moment.dateTime} title={part.title}>{part.label}</time>
             </span>
           ) : (
             <span title={part.title}>{part.text}</span>

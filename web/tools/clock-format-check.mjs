@@ -57,9 +57,14 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US", timezoneId: "Asia/Shanghai", reducedMotion: "reduce" });
 const page = await context.newPage();
-await page.addInitScript(() => {
+// The page's now is the same evening as the fixture's Turn (21:07 in
+// Shanghai, 09:07 in New York, both on 24 October): its footer stays a clock,
+// not a date (T-70 dates an end that is not today).
+const NOW = Date.parse("2026-10-24T14:00:00Z");
+await page.addInitScript((now) => {
   window.EventSource = class { close() {} };
-});
+  Date.now = () => now;
+}, NOW);
 page.on("pageerror", (error) => report.errors.push(error.message));
 await page.route("**/*", async (route) => {
   const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
