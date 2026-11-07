@@ -4,11 +4,11 @@
 // 390 px:
 //  - the Jobs panel's machine card only shows: active against Jobs at once,
 //    the meters, the GPU pause; no editor. Its Edit in Settings closes Jobs
-//    and opens Settings → Machines at the Core host budget;
+//    and opens Settings → Machines at the Core host's page, its budget;
 //  - there, a new Jobs at once is saved with the budget in one POST, and the
 //    number Core reads back is shown; every field fits its width at 390 px;
-//  - Remote budgets lists the SSH machines only; a machine is chosen and its
-//    editor fits; once, a change is saved through the machine's PUT.
+//  - an SSH machine's page (YN-8 S3) has its Jobs in its editor, which fits;
+//    once, a change is saved through the machine's PUT.
 // Screenshots and report.json go to YUZUNO_BROWSER_OUTPUT.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/jobs-settings-check.mjs
 import assert from "node:assert/strict";
@@ -165,7 +165,7 @@ const focused = (page) => page.evaluate(() => {
  * when it opens there; says where focus is if it never gets there. */
 async function focusInHostEditor(page) {
   const reached = await page
-    .waitForFunction(() => !!document.activeElement?.closest("#settings-editor-jobs-budget"), null, { timeout: 5000 })
+    .waitForFunction(() => !!document.activeElement?.closest("#settings-block-jobs"), null, { timeout: 5000 })
     .then(() => true, () => false);
   assert.ok(reached, `focus is in the Core host editor (it is on ${await focused(page)})`);
 }
@@ -202,12 +202,13 @@ try {
       await card.screenshot({ path: resolve(output, `jobs-card-${tag}.png`), animations: "disabled" });
       await card.getByRole("button", { name: "Edit in Settings", exact: true }).click();
       const settings = page.locator(".modal.settings-modal");
-      const host = settings.locator("#settings-editor-jobs-budget:not([hidden])");
+      // The Core host's page of Machines, at its Job budget (YN-8 S3).
+      const host = settings.locator("#settings-editor-machines:not([hidden]) #settings-block-jobs");
       await host.waitFor({ timeout: 10_000 });
       await focusInHostEditor(page);
       assert.equal(await page.getByRole("dialog", { name: "Jobs", exact: true }).count(), 0, "Jobs closed as Settings opened");
-      // The budgets follow the machines on the Machines page (YN-8).
       assert.equal(await settings.locator("#settings-tab-machines").getAttribute("aria-selected"), "true");
+      assert.equal(await settings.locator("#settings-machines-title").innerText(), "Core host", "the Core host's page");
       check(`${tag}: the Jobs card only shows, and its Edit in Settings opens the Core host budget, focused`);
 
       // ---- The Core host budget: a new Jobs at once, saved with the budget.
@@ -232,28 +233,27 @@ try {
       await page.screenshot({ path: resolve(output, `settings-jobs-gpu-${tag}.png`), animations: "disabled" });
       check(`${tag}: Jobs at once ${slots} is saved with the budget and read back; every field fits`, { layout });
 
-      // ---- Remote budgets: SSH machines only; one chosen, its editor fits.
-      // On the same page, after the Core host budget (YN-8).
-      const remote = settings.locator("#settings-editor-jobs-remote:not([hidden])");
-      const picker = remote.getByLabel("Machine", { exact: true });
-      await picker.waitFor({ timeout: 10_000 });
-      assert.deepEqual(await picker.locator("option").evaluateAll((options) => options.map((o) => o.value)), ["", "mini", "lab"], "only SSH machines, none chosen");
-      await picker.selectOption(width > 720 ? "mini" : "lab");
+      // ---- An SSH machine's Jobs: on its own page, in its editor (YN-8 S3).
+      const name = width > 720 ? "Mac mini" : "Lab box with a long synthetic machine name";
+      await settings.locator(".settings-machines .settings-crumb").click();
+      await settings.locator(`[data-machine-row="${width > 720 ? "mini" : "lab"}"]`).click();
+      const remote = settings.locator(".settings-machines");
+      await remote.getByRole("button", { name: `Edit ${name}`, exact: true }).click();
       const editor = remote.locator(".remote-machine-editor");
       await editor.waitFor();
-      const remoteLayout = await fits(remote);
+      const remoteLayout = await fits(remote.locator(`article[data-machine-id="${width > 720 ? "mini" : "lab"}"]`));
       assert.deepEqual(remoteLayout, { scrolls: false, wider: [] }, `the machine editor fits at ${width} px`);
       assert.ok(await dialogFits(page), "Settings fits the window with the machine editor");
+      await editor.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: resolve(output, `settings-jobs-remote-${tag}.png`), animations: "disabled" });
       if (theme === "light" && width > 720) {
         await editor.getByLabel("Jobs at once", { exact: true }).fill("4");
         await editor.getByRole("button", { name: "Save changes", exact: true }).click();
-        await remote.locator(".jobs-settings-saved", { hasText: "Saved Mac mini." }).waitFor({ timeout: 10_000 });
+        await editor.waitFor({ state: "detached", timeout: 10_000 });
         const put = report.writes.find((w) => w.method === "PUT");
         assert.deepEqual(put?.body, { name: "Mac mini", target: "mac-mini", codex: "codex", defaultCwd: "/Users/fixture/projects", maxJobs: 4 }, "only the changed Jobs setting goes in the machine PUT");
       }
-      await editor.scrollIntoViewIfNeeded();
-      await page.screenshot({ path: resolve(output, `settings-jobs-remote-${tag}.png`), animations: "disabled" });
-      check(`${tag}: Remote budgets lists SSH machines only, and the chosen machine editor fits`, { remoteLayout });
+      check(`${tag}: an SSH machine's page has its Jobs in its editor, which fits`, { remoteLayout });
       await page.keyboard.press("Escape");
       await settings.waitFor({ state: "detached" });
     } catch (error) {

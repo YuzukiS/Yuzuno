@@ -126,6 +126,7 @@ fn the_contract_states_cores_problem_and_advice_limits() {
     assert_eq!(limits["callProblems"].as_u64(), Some(update::MAX_PROBLEMS as u64));
     assert!(limits["problems"].as_u64().is_some_and(|section| section < update::MAX_PROBLEMS as u64));
     assert_eq!(limits["advice"]["items"].as_u64(), Some(update::MAX_ADVICE as u64));
+    assert_eq!(limits["repairsPerSection"].as_u64(), Some(update::MAX_REPAIRS as u64));
 }
 
 #[tokio::test]
@@ -218,14 +219,16 @@ async fn the_generated_validator_gives_a_preview_the_same_problems() {
     std::fs::write(&file, b"fixture image bytes").unwrap();
     let mut change = put("development");
     change["kind"] = json!("status");
-    change["status"] = json!({"asOf":now(),"validFor":3600});
+    // Too short a validFor: the envelope is never repaired (an unused
+    // registration alone would be, YN-14).
+    change["status"] = json!({"asOf":now(),"validFor":30});
     change["attachments"] = json!([{"name":"preview.png","path":file}]);
     let sent = input("unused", 0, vec![change]);
     let before = footprint(&ws, &project);
     let previewed = update::update(&ws, &checker, "a", only(sent.clone())).await.unwrap().unwrap();
     assert_eq!(footprint(&ws, &project), before);
     let rejected = update::update(&ws, &checker, "a", sent).await.unwrap().unwrap_err();
-    assert_eq!(codes(&rejected), ["unused_attachment"]);
+    assert_eq!(codes(&rejected), ["invalid_field"]);
     assert_eq!((previewed["valid"].clone(), previewed["problems"].clone()), (json!(false), rejected["problems"].clone()));
 }
 

@@ -111,6 +111,11 @@ export const homeText = strings({
   notMaintainedTitle: (owner: string, gone: string, kind: string) => `${owner} ${gone}: nobody updates this ${kind} any more`,
   notMaintainedNote: (owner: string, gone: string, kind: string) =>
     `${owner} ${gone}, so this ${kind} is no longer updated and may be out of date. A lead can claim it to bring it up to date or remove it; nothing is removed by itself.`,
+  // Core accepted this version after repairing slips in it (YN-14).
+  repaired: "Repaired",
+  repairedTitle: (owner: string) => `Core repaired small slips in what ${owner} sent before keeping it; it may differ a little from what was meant`,
+  repairedNote: (owner: string) => `Core repaired small slips in what ${owner} sent before keeping it, so a part may differ a little from what was meant:`,
+  moreRepairs: (count: number) => `and ${count} more`,
   // The kind as it reads inside a sentence.
   kindInSentence: { ask: "ask", report: "report", status: "status" } as Record<Kind, string>,
   replyLabel: (title: string) => `Reply to “${title}”`,
@@ -383,6 +388,10 @@ export const homeText = strings({
   notMaintainedTitle: (owner, gone, kind) => `${owner} ${gone}：没有人再更新这条${kind}`,
   notMaintainedNote: (owner, gone, kind) =>
     `${owner} ${gone}，因此这条${kind}不再更新，可能已经过时。负责人可以认领它来更新或移除；不会自动移除任何内容。`,
+  repaired: "已修补",
+  repairedTitle: (owner) => `Core 修补了 ${owner} 写的几处小错再保存，可能和本意略有出入`,
+  repairedNote: (owner) => `Core 修补了 ${owner} 写的几处小错再保存，所以有的部分可能和本意略有出入：`,
+  moreRepairs: (count) => `还有 ${count} 处`,
   kindInSentence: { ask: "Ask", report: "报告", status: "状态" },
   replyLabel: (title) => `回复“${title}”`,
   replyTitle: (owner) => `回复 ${owner}`,

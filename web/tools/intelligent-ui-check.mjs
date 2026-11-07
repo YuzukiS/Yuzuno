@@ -454,7 +454,7 @@ try {
     ),
     // What the request adds since it became one editable line of intent (examples.ts, interactiveRequest);
     // the long template is kept only for replies written to it.
-    /If it helps, show the data as an interactive result: key metrics and a chart\./,
+    /If it helps, say it in a sentence, then show the data as an interactive result: key metrics and a chart\./,
   );
   assert.equal(report.mutations.length, 0);
   check(

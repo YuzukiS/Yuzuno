@@ -1806,3 +1806,23 @@ ul.home-widget {
   outline-offset: 1px;
 }
 
+/* Core accepted this version after repairing slips in it (YN-14): a quiet mark, not an error. */
+.home-repaired {
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--home-soft);
+  color: var(--home-ink-2);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-repaired-note {
+  display: block;
+  color: var(--home-ink-2);
+}
+.home-repaired-note p,
+.home-repaired-note ul {
+  margin: 0;
+}
+.home-repaired-note ul {
+  padding-left: 1.2em;
+}

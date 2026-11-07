@@ -1,5 +1,6 @@
-/* Executor templates (T-34), in Settings and on a project's page: one group
-   per template, its fields as settings rows, with classes of its own. */
+/* Executor templates (T-34), in Settings; a project's page has only its
+   Executors at once (YN-2 S2). One group per template, its fields as
+   settings rows, with classes of its own. */
 .executor-templates-settings .executor-template {
   margin: 0 0 12px;
   padding: 0;
@@ -29,3 +30,11 @@
 .executor-templates-settings .executor-slots-actions { padding: 0 16px 12px; }
 .executor-templates-settings .executor-slots > .inline-error,
 .executor-templates-settings .executor-slots > .quiet-button { margin: 0 16px 12px; }
+/* YN-2 S2: a template's label and harness up front, the rest folded. */
+.executor-templates-settings .executor-template-more { margin: 0 16px 8px; }
+.executor-templates-settings .executor-template-more > summary {
+  cursor: pointer;
+  padding: 6px 0;
+  color: var(--muted, var(--ink));
+}
+.executor-templates-settings .executor-template-more > .settings-row { margin-inline: -16px; }

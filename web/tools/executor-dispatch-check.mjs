@@ -1,4 +1,4 @@
-// T-34 S2, YN-2 S1: giving a task to a new executor, in Chromium, with
+// T-34 S2, YN-2 S1/S2: giving a task to a new executor, in Chromium, with
 // every API answered here (no Core, no CLI, no daily configuration). Through
 // the real Tasks & messages window: the task's dispatch form offers a
 // general executor, then its Project's templates, then the Workspace's; one is chosen and sent as
@@ -35,9 +35,9 @@ let current = { id: "T-7", title: "Review the preview fix", description: "Read t
   progress: "", blocker: "", result: null, github: [], projectId: "p1", version: 1, assigneeAgentId: null, assignee: null,
   createdAt: "", createdBy: you, updatedAt: "", updatedBy: you };
 // What Core answers for the task's Project (executor_templates::view).
-const view = { workspace: { version: 2, templates: [] }, project: { id: "p1", version: 1, templates: [] },
+const view = { workspace: { version: 2, templates: [] }, presets: [],
   available: [
-    { template: { id: "reviewer", label: "Reviewer", harness: "claude", instructions: "Read the acceptance first." }, source: "project" },
+    { template: { id: "reviewer", label: "Reviewer", harness: "claude", instructions: "Read the acceptance first." }, source: "workspace" },
     { template: { id: "builder", label: "Builder", harness: "codex" }, source: "workspace" },
   ],
   defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false,
@@ -164,7 +164,7 @@ try {
   const picker = form.locator("select").last();
   await page.waitForFunction((el) => el.options.length === 3, await picker.elementHandle(), { timeout: 10_000 });
   assert.deepEqual(await picker.locator("option").allTextContents(),
-    ["General executor · Claude Code (this project’s default)", "Reviewer · this project’s", "Builder"]);
+    ["General executor · Claude Code (this project’s default)", "Reviewer", "Builder"]);
   assert.equal(await form.getByRole("button", { name: "Create and send" }).isDisabled(), false, "a general executor needs no template");
   await picker.selectOption("reviewer");
   await form.getByText("Core creates an agent for this task, a general one or from the template you choose").waitFor({ timeout: 10_000 });
@@ -177,7 +177,7 @@ try {
   assert.equal(typeof requestId, "string");
   assert.deepEqual(body, { taskId: "T-7", expectedVersion: 1, executor: { templateId: "reviewer" }, priority: "normal" });
   await page.screenshot({ path: join(output, "2-sent.png") });
-  check("a general executor, then the task's Project's templates, then the Workspace's, offered; the chosen one sent as executor, with no Agent", { body });
+  check("a general executor, then the Workspace's templates, offered; the chosen one sent as executor, with no Agent", { body });
 
   // ---- The rail marks the executor Core made.
   await page.reload();

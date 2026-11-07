@@ -203,6 +203,7 @@ try {
   check("the start time limit: 29 not offered (said in Chinese too); 120 saved with the limit against version 1", { body: limitPut.body });
 
   // ---- A template's own limit (S4).
+  await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
   const limitField = box.locator('input[aria-label="At most at once"]');
   const saveTemplates = box.getByRole("button", { name: "Save templates" });
   for (const bad of ["2.5", "-1"]) {

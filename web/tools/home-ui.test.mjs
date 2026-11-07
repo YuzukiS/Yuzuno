@@ -1017,9 +1017,10 @@ test("Home is laid out as Needs you, My widgets, then the projects; widgets are 
     // The project panels keep their own inner .home-widgets; the column shares no class with them.
     assert.equal(column.matches(".home-widgets") || !!column.querySelector(".home-widget, .home-widgets"), false);
     assert.equal(column.querySelector(".home-widget-count").textContent, "0 pinned");
-    // Manage opens the Machines page.
+    // Manage opens that machine's page of Settings › Machines (YN-8 S3): here the Core host's.
     p.button("Manage", column).click();
-    await waitFor(() => /Where your agents run/.test(p.doc.querySelector('[role="dialog"]')?.textContent || ""), "the Machines page opens");
+    await waitFor(() => p.doc.querySelector('[role="dialog"] #settings-machines-title')?.textContent === "Core host"
+      && /The computer that runs your Workspace Core/.test(p.doc.querySelector('[role="dialog"]').textContent), "the Core host's page opens");
     p.doc.querySelector('[role="dialog"]').dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await waitFor(() => !p.doc.querySelector('[role="dialog"]'), "the Machines page closes");
     // Organize: a dialog; hidden, a widget is not drawn and reads nothing; the choice is kept.
@@ -1298,6 +1299,31 @@ test("a summary card says what it is, when its data is from and that nobody keep
     assert.equal(overview.querySelector(".home-report-open").textContent, "Open report");
     assert.ok(overview.querySelector(".home-summary-title button"), "the title is the link");
     assert.deepEqual(p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url), []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a section Core repaired is marked on its card, and its page says what Core changed (YN-14)", async () => {
+  const home = readingFixture();
+  const docs = home.projects.find((entry) => entry.project.id === "p-docs");
+  const reason = (n) => `Element "log${n}": the unknown component "Code" became Markdown of its text. (brief_guide content)`;
+  docs.brief.sections.find((one) => one.key === "evidence").repairs =
+    [1, 2, 3, 4].map((n) => ({ code: "component_to_markdown", path: `body.elements.log${n}`, reason: reason(n) }));
+  const p = await mount({ home });
+  try {
+    await waitFor(() => card(p, "p-docs", "evidence"), "the Docs cards are drawn");
+    const mark = card(p, "p-docs", "evidence").querySelector(".home-repaired");
+    assert.ok(mark, "the repaired card is marked");
+    assert.equal(mark.textContent, "Repaired");
+    assert.match(mark.title, /Core repaired small slips in what Hana sent/);
+    assert.ok(!card(p, "p-docs", "overview").querySelector(".home-repaired"), "a card kept as sent is not marked");
+    const page = await openReport(p, "p-docs", "evidence");
+    assert.equal(page.querySelector(".report-head .home-repaired").textContent, "Repaired");
+    const items = [...page.querySelectorAll(".home-repaired-note li")].map((li) => li.textContent);
+    assert.deepEqual(items, [1, 2, 3].map((n) => reason(n).replace(" (brief_guide content)", "")), "the first three, in Core's words");
+    assert.match(page.querySelector(".home-repaired-note").textContent, /and 1 more/);
+    await closeReport(p);
   } finally {
     p.close();
   }

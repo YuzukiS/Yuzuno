@@ -256,6 +256,7 @@ fn a_template_at_its_own_limit_lets_the_next_in_the_queue_start() {
         t
     };
     templates(&store, None, json!([reviewer(Some(1)), {"id":"writer","label":"Writer","harness":"claude"}]));
+    // YN-2 S2: a Project's own list from before limits nothing; its tasks get the Workspace's.
     templates(&store, Some("p2"), json!([{"id":"reviewer","label":"P2 reviewer","harness":"claude","maxConcurrent":2}]));
     queued_from(&store, "a", None, "reviewer");
     queued_from(&store, "b", None, "reviewer");
@@ -264,17 +265,18 @@ fn a_template_at_its_own_limit_lets_the_next_in_the_queue_start() {
     for id in ["e", "f", "g"] {
         queued_from(&store, id, Some("p2"), "reviewer");
     }
-    assert_eq!(started(&store), ["c", "e", "f", "d"],
-        "the Workspace's reviewer starts one (p1 has none of its own: c counts with a and b); p2's own reviewer two; writer has no limit");
-    for id in ["a", "b", "g"] {
-        assert_eq!(state(&store, id).0, "waiting", "{id} waits for its template");
+    // A general executor (YN-2 S1) has no template, and no limit of its own.
+    queued_from(&store, "h", None, "");
+    assert_eq!(started(&store), ["c", "d", "h"],
+        "the Workspace's reviewer starts one, for every Project alike (p2's own list from before limits nothing); writer and a general executor have no limit");
+    for id in ["a", "b", "e", "f", "g"] {
+        assert_eq!(state(&store, id).0, "waiting", "{id} waits for the Workspace's reviewer");
     }
     close(&store, "c");
-    assert_eq!(started(&store), ["a"], "the Workspace's reviewer has room again");
+    let next = started(&store);
+    assert!(next.len() == 1 && ["a", "b", "e", "f", "g"].contains(&next[0].as_str()), "the reviewer has room for one again: {next:?}");
     templates(&store, None, json!([reviewer(None)]));
-    assert_eq!(started(&store), ["b"], "its limit unset: it limits nothing");
-    templates(&store, Some("p2"), json!([]));
-    assert_eq!(started(&store), ["g"], "p2's own gone: its tasks get the Workspace's, now unlimited");
+    assert_eq!(started(&store).len(), 4, "its limit unset: it limits nothing");
 }
 
 /// Projects take turns, as in the Jobs queue; one waiting past the aging

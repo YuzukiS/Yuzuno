@@ -105,9 +105,10 @@ try {
   // T-55: the Core host budget is an editor of Settings' own; the Jobs card only shows it.
   await open(); await search('预算');
   await page.getByRole('button', { name: 'Open Core host Job budget', exact: true }).click();
-  const hostEditor = page.locator('#settings-editor-jobs-budget:not([hidden])');
+  // The Core host's page of Machines, at its Job budget (YN-8 S3).
+  const hostEditor = page.locator('#settings-editor-machines:not([hidden]) #settings-block-jobs');
   await hostEditor.waitFor();
-  await page.waitForFunction(() => document.activeElement?.id === 'settings-editor-jobs-budget');
+  await page.waitForFunction(() => document.activeElement?.id === 'settings-block-jobs');
   assert.equal(await hostEditor.getByLabel('Jobs at once', { exact: true }).inputValue(), '4', 'Jobs at once shows the number in effect');
   assert.equal(await hostEditor.getByLabel('CPU quota', { exact: true }).inputValue(), '2', 'the budget editor shows the saved budget');
   assert.equal(await page.locator('#settings-tab-machines').getAttribute('aria-selected'), 'true', 'the budgets follow the machines (YN-8)');
@@ -127,10 +128,10 @@ try {
   await card.waitFor();
   assert.equal(await page.locator('.settings-modal').count(), 0, 'an ordinary openJobs request opens no Settings');
   await card.getByRole('button', { name: 'Edit in Settings', exact: true }).click();
-  await page.locator('.settings-modal #settings-editor-jobs-budget:not([hidden])').waitFor();
+  await page.locator('.settings-modal #settings-editor-machines:not([hidden]) #settings-block-jobs').waitFor();
   // Settings opens with its dialog here: focus is put on the editor once the
   // dialog and the closing Jobs dialog have placed theirs (SettingsCenter).
-  const reached = await page.waitForFunction(() => !!document.activeElement?.closest('#settings-editor-jobs-budget'), null, { timeout: 5000 }).then(() => true, () => false);
+  const reached = await page.waitForFunction(() => !!document.activeElement?.closest('#settings-block-jobs'), null, { timeout: 5000 }).then(() => true, () => false);
   assert.ok(reached, `focus is in the Core host editor (it is on ${await page.evaluate(() => { const el = document.activeElement; return el ? el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') : 'nothing'; })})`);
   assert.equal(await jobsDialog.count(), 0, 'Jobs closes as Settings opens');
   check('the Jobs card has no editor and ordinary openings open no Settings; its Edit in Settings opens the Core host budget, focused');

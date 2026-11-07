@@ -833,7 +833,10 @@ test("Machines opens from the Workspace menu, reads nothing while open, and open
     // dwell is what the menu click must beat.
     await pause(DWELL_PLUS);
     assert.equal(page.reads().length, 0, "Mori's unread stays while the page covers it");
-    const sora = [...dialog.querySelectorAll(".machine-agent")].find((b) => b.textContent.includes("Sora"));
+    // Machines lists the machines first (YN-8 S3); Sora's is the Core host's page.
+    dialog.querySelector('[data-machine-row="local"]').click();
+    await waitFor(() => [...page.document.querySelectorAll(".machine-agent")].some((b) => b.textContent.includes("Sora")), "the Core host's page");
+    const sora = [...page.document.querySelectorAll(".machine-agent")].find((b) => b.textContent.includes("Sora"));
     sora.click();
     await waitFor(() => dialogOf(page) === null && /Sora/.test(page.document.querySelector(".conversation-heading h1")?.textContent || ""),
       "Sora opens in place of the page");

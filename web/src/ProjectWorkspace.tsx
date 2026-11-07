@@ -39,7 +39,7 @@ import "./projects.css";
 import { GitHubLinks } from "./GitHubLinks";
 import { ProjectServices } from "./ProjectServices";
 import { AgentDefaults } from "./AgentDefaults";
-import { ExecutorTemplates } from "./ExecutorTemplates";
+import { ProjectExecutors } from "./ExecutorTemplates";
 import { ProjectHandover } from "./ProjectHandover";
 import { ReviewSettings } from "./ReviewSettings";
 import { ProjectLeads } from "./ProjectLeads";
@@ -1062,7 +1062,7 @@ function ProjectDetail({
           <AgentDefaults key={`defaults:${project.id}`} active projectId={project.id} disabled={archived} />
         </div>
         <div className="appearance-field project-block">
-          <ExecutorTemplates key={`templates:${project.id}`} active projectId={project.id} disabled={archived} />
+          <ProjectExecutors key={`executors:${project.id}`} projectId={project.id} disabled={archived} />
         </div>
         <div className="appearance-field project-block">
           <ReviewSettings key={`review:${project.id}`} active projectId={project.id} disabled={archived} />

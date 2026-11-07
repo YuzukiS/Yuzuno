@@ -193,7 +193,6 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .route("/api/agents/{id}/models",get(agent_models))
         .route("/api/agents/{id}/interrupt",post(interrupt))
         .route("/api/agents/{id}/compact",post(compact))
-        .route("/api/agents/{id}/compact/abandon",post(compact_abandon))
         .route("/api/agents/{id}/codex/review",post(codex_review))
         .route("/api/agents/{id}/tasks/{task_id}/stop",post(stop_task))
         .route("/api/agents/{id}/reconnect",post(reconnect))
@@ -1269,13 +1268,6 @@ async fn settings(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json
         ws.update_settings(&id, input.model, settings).await?
     };
     Ok(Json(serde_json::to_value(agent)?))
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct AbandonCompaction { turn_id: String }
-/// Giving up a compaction an OpenCode Agent's OpenCode still holds unfinished (T-10).
-async fn compact_abandon(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<AbandonCompaction>) -> ApiResult<Json<Value>> {
-    Ok(Json(ws.opencode_compact_abandon(&id, &input.turn_id).await?))
 }
 /// The composer's `/compact`: a Codex Agent's own compaction, or an OpenCode
 /// Agent's (T-10).

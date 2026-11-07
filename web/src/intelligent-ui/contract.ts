@@ -366,6 +366,54 @@ export function checkSpec(json: unknown): { spec: ResultSpec; defaults: string[]
   return { spec, defaults: applied };
 }
 
+/** Made on first use: built at load, Core's validator bundle would keep it too. */
+let oneElement: z.ZodType<{ elements: Record<string, ResultSpec["elements"][string]> }> | undefined;
+
+/**
+ * One element of a result, checked on its own as checkSpec checks it: its
+ * id, its component and props (display defaults filled in), and the checks
+ * that read nothing else (unique row, bar and column ids, rows that match
+ * their columns, valid and unique sources). What needs the whole result (the
+ * tree, one Result, cited sources, one action, unique selection ids) is
+ * checkSpec's alone. A reply's block still being written draws only
+ * elements that pass this (stream.ts); the whole block is checked once it is
+ * closed. Throws ResultError, with checkSpec's paths.
+ */
+export function checkElement(key: string, json: unknown): ResultSpec["elements"][string] {
+  // Checked first: a key such as __proto__ is not one of the record's own.
+  if (!id.safeParse(key).success) throw new ResultError("invalid_field", "Invalid element id.", "elements");
+  oneElement ??= z.strictObject({ elements: z.record(id, element) });
+  const parsed = oneElement.safeParse(withDisplayDefaults({ elements: { [key]: json } }).value);
+  if (!parsed.success) throw schemaError(parsed.error);
+  if (!Object.hasOwn(parsed.data.elements, key)) throw new ResultError("invalid_field", "Invalid element id.", "elements");
+  const node = parsed.data.elements[key];
+  const at = `elements.${key}.props`;
+  if (node.type === "Sources") {
+    const seen = new Set<string>();
+    for (const item of componentProps.Sources.parse(node.props).items) {
+      if (seen.has(item.id) || !sourceTarget(item.href))
+        throw new ResultError("invalid_source", "Invalid or duplicate source.", `${at}.items`);
+      seen.add(item.id);
+    }
+  }
+  if (node.type === "Table" || node.type === "BarChart") {
+    const props =
+      node.type === "Table" ? componentProps.Table.parse(node.props) : componentProps.BarChart.parse(node.props);
+    const rows = "rows" in props ? props.rows : props.data;
+    if (new Set(rows.map((row) => row.id)).size !== rows.length)
+      throw new ResultError("duplicate_id", "Row IDs must be unique.", at);
+    if ("columns" in props) {
+      const keys = props.columns.map((column) => column.key);
+      if (new Set(keys).size !== keys.length)
+        throw new ResultError("duplicate_id", "Column keys must be unique.", `${at}.columns`);
+      for (const row of props.rows)
+        if (Object.keys(row.cells).length !== keys.length || keys.some((key) => !(key in row.cells)))
+          throw new ResultError("row_mismatch", "Every row must match its columns.", `${at}.rows`);
+    }
+  }
+  return node;
+}
+
 /** The optional tool an Agent uses to publish a result instead of a JSON
  * block in its reply. Core enforces these limits; Agents are told them. */
 export const RESULT_TOOL = "result_publish";
