@@ -36,14 +36,15 @@ const RECENT_SECONDS: i64 = 10;
 const REFRESH_WATCHES: usize = 5;
 
 /// The monitor's GitHub read for other Core checks (the merge queue): the
-/// same ETag cache and the same shared cooldown, revalidated on every call.
+/// same ETag cache and the same shared cooldown, revalidated on every call,
+/// GitHub's X-Poll-Interval included (the monitor's own polling keeps it).
 pub(crate) async fn shared_read(ws: &Arc<Workspace>, endpoint: String) -> Result<Value> {
-    Ok(client::read(ws, endpoint, 0).await?["value"].clone())
+    Ok(client::revalidate(ws, endpoint).await?["value"].clone())
 }
 /// Page `page` of a shared read, and the next page's endpoint when GitHub
 /// names one (same endpoint and filters only).
 pub(crate) async fn shared_page(ws: &Arc<Workspace>, endpoint: String, page: u64) -> Result<(Value, Option<String>)> {
-    let cached = client::read(ws, endpoint.clone(), 0).await?;
+    let cached = client::revalidate(ws, endpoint.clone()).await?;
     let next = client::next_page(cached["link"].as_str().unwrap_or(""), &endpoint, page)?;
     Ok((cached["value"].clone(), next))
 }

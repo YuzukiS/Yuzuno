@@ -736,3 +736,91 @@ async fn an_answer_that_arrives_as_the_watch_ends_is_taken_and_one_after_it_stay
     assert_eq!(watched(&mut rx, Duration::ZERO, || ()).await, None);
     assert_eq!(tx.send(3), Err(3), "one after it stays with its sender");
 }
+
+/// A Workspace with an OpenCode Agent in `root/work`, its stand-in sending
+/// 2.x's messages (T-61 slice 5) and taking each step's snapshot into a data
+/// folder of the test's own, as 2.x would with that `XDG_DATA_HOME`; a
+/// Started injected as if Core had started a native OpenCode. `a.txt` holds
+/// `a0`. The Workspace, its data folder and the work folder.
+async fn v2_files_lab(root: &Path) -> (Arc<Workspace>, std::path::PathBuf, std::path::PathBuf) {
+    program();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(cwd.join("a.txt"), "a0\n").unwrap();
+    let xdg = root.join("xdg-data");
+    std::fs::create_dir_all(&xdg).unwrap();
+    std::fs::write(xdg.join(".yuzuno-fixture"), "").unwrap();
+    let ws = Workspace::new(root.join("data"), root.to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&cwd.to_string_lossy())).unwrap();
+    let own = root.join("data/opencode/oc");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(own.join("xdg-data"), xdg.to_str().unwrap()).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let launcher = Launcher::resolve(Path::new("/usr/bin/python3"), None).unwrap();
+    let roots = Roots { home: "/nowhere".into(), state: "/nowhere".into(), config: "/nowhere".into(),
+        data: xdg.join("opencode").to_string_lossy().into_owned() };
+    ws.opencodes.lock().unwrap().get_mut("oc").unwrap().files = Arc::new(Ok(Started { launcher, roots }));
+    (ws, root.join("data"), cwd)
+}
+
+/// A 2.x preview (T-61 slice 5, D-23 (a)) reads each file 2.x would send
+/// back from the Agent's own snapshot store, found by 2.x's location for the
+/// Agent's folder, and from the folder, and writes nothing; its confirm is
+/// still refused, asking nothing. It is refused, reading no file, while a
+/// revert waits in the session, while 2.x is busy, when the session is not
+/// of the project 2.x holds the folder for now, or when 2.x holds another
+/// folder.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_2x_preview_reads_each_file_from_the_agents_store_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, data, cwd) = v2_files_lab(&root).await;
+    let first = turn(&ws, &data, "first", json!({"files": {"a.txt": "a1\n", "new.txt": "n\n"}})).await;
+    turn(&ws, &data, "second", json!({"files": {"a.txt": "a2\n"}})).await;
+    let state = |bytes: &[u8]| serde_json::to_value(State::File {
+        size: bytes.len() as u64, sha256: Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect(), executable: false,
+    }).unwrap();
+    let (a, new) = (cwd.join("a.txt").to_string_lossy().into_owned(), cwd.join("new.txt").to_string_lossy().into_owned());
+    let preview = ws.opencode_revert_preview("oc", &first).await.unwrap();
+    assert_eq!(preview["files"], json!([
+        {"path": a, "expected": state(b"a0\n"), "current": state(b"a2\n")},
+        {"path": new, "expected": serde_json::to_value(State::Absent).unwrap(), "current": state(b"n\n")},
+    ]), "each file as its first step after the Turn started, and as it is now: {preview}");
+    assert_eq!(preview["removedTurns"], 2, "{preview}");
+    let unchanged = || (std::fs::read_to_string(cwd.join("a.txt")).unwrap(), std::fs::read_to_string(cwd.join("new.txt")).unwrap());
+    assert_eq!(unchanged(), ("a2\n".to_owned(), "n\n".to_owned()), "nothing written");
+    let confirm = ws.opencode_revert_confirm("oc", preview["previewId"].as_str().unwrap()).await.unwrap_err().to_string();
+    assert!(confirm.contains(crate::opencode_v2::NOT_YET) && confirm.contains("没有回退"), "a 2.x revert is not confirmed yet: {confirm}");
+    assert_eq!(unchanged(), ("a2\n".to_owned(), "n\n".to_owned()), "nothing written by the confirm");
+    assert!(!asked(&data).iter().any(|(method, path)| method == "POST" && path.contains("/revert")), "no revert asked");
+
+    let session = ws.opencodes.lock().unwrap().get("oc").cloned().unwrap().session;
+    let refused = |said: &'static str| {
+        let (ws, first) = (ws.clone(), first.clone());
+        async move {
+            let error = ws.opencode_revert_preview("oc", &first).await.unwrap_err().to_string();
+            assert!(error.contains(said) && error.contains("没有预览回退"), "refused, saying {said:?}: {error}");
+        }
+    };
+    control(&data, "busy", json!({"sessionID": session})).await;
+    // Refused by 2.x's status, or by Core's own record of it once its event came: either says it is not idle.
+    refused("空闲").await;
+    control(&data, "idle", json!({"sessionID": session})).await;
+    for _ in 0..400 {
+        if ws.store.detail("oc").unwrap().agent.status == "idle" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    control(&data, "project", json!({"id": "otherproject"})).await;
+    refused("不属于它现在的项目").await;
+    control(&data, "project", json!({"id": "fixtureproject"})).await;
+    control(&data, "mode", json!({"directory": root.to_string_lossy()})).await;
+    refused("不是这个 Agent 的目录").await;
+    control(&data, "mode", json!({"directory": null})).await;
+    control(&data, "revert", json!({"sessionID": session})).await;
+    refused("已有一次尚未处理的回退").await;
+    assert_eq!(unchanged(), ("a2\n".to_owned(), "n\n".to_owned()), "nothing written by a refusal");
+    ws.close_agent("oc").await.unwrap();
+}

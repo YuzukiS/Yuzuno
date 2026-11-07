@@ -208,6 +208,23 @@ pub(super) fn mergeable(pr: &Value, pending: Option<&str>) -> Check<()> {
     }
 }
 
+/// GitHub already knows the PR conflicts with its base (YN-18 S2c, T-37 lab
+/// finding F2). GitHub starts no CI for such a PR, so the entry stops at once,
+/// on the first read of the PR, instead of waiting for runs that never come.
+/// While GitHub is still computing (`mergeable` null) nothing is decided here.
+pub(super) fn conflicting(pr: &Value) -> Check<()> {
+    if pr["mergeable"] == false || pr["mergeable_state"] == "dirty" {
+        return stop(
+            "conflict",
+            format!(
+                "GitHub reports that the PR cannot merge into its base {}: it has merge conflicts, and GitHub runs no CI for it",
+                pr["base"]["ref"].as_str().unwrap_or("branch")
+            ),
+        );
+    }
+    Ok(())
+}
+
 /// The first check run or commit status on the head that has not finished, by
 /// name, from `commits/{head}/check-runs` and `commits/{head}/status`.
 pub(super) fn pending(check_runs: &Value, status: &Value) -> Option<String> {
@@ -219,20 +236,70 @@ pub(super) fn pending(check_runs: &Value, status: &Value) -> Option<String> {
         .next()
 }
 
-/// The PR's merge ref is the merge of the current main and the head; its tree
-/// is the tree a merge would land.
-pub(super) fn slot(merge: Option<&Value>, main: &str, head: &str) -> Check<String> {
+/// What the PR's merge ref says about CI on the current main (design §4.1;
+/// YN-18 S2c for the last two).
+#[derive(Debug, PartialEq)]
+pub(super) enum Slot {
+    /// The merge of the current main and the head, with its tree: the tree a
+    /// merge would land, and the slot gate if CI checked out exactly it.
+    Fresh(String),
+    /// The merge of another main (named) and the head. CI checks out the merge
+    /// ref, and GitHub only moves it forward, so CI on the PR cannot have
+    /// tested the current main. GitHub may never move it (T-37 lab finding F1:
+    /// over 19 minutes), so this waits for nothing once that main is known to
+    /// be an older one.
+    Stale(String),
+    /// No merge ref GitHub has computed for the current main and the head yet.
+    Missing(String),
+}
+pub(super) fn slot(merge: Option<&Value>, main: &str, head: &str) -> Slot {
     let Some(merge) = merge else {
-        return wait("GitHub has not computed the PR's merge ref yet");
+        return Slot::Missing("GitHub has not computed the PR's merge ref yet".into());
     };
-    if parents(merge) != [main, head] {
-        return wait(format!(
-            "The PR's merge ref {} is not yet the merge of the current main {} and the head",
-            short(&merge["sha"]),
-            &main[..12]
-        ));
+    let p = parents(merge);
+    match p[..] {
+        [m, h] if m == main && h == head => match tree_of(merge) {
+            Some(tree) => Slot::Fresh(tree.to_owned()),
+            None => Slot::Missing("The PR's merge ref has no readable tree".into()),
+        },
+        [older, h] if h == head => Slot::Stale(older.to_owned()),
+        _ => Slot::Missing(format!("The PR's merge ref {} is not a merge of a main and the head", short(&merge["sha"]))),
     }
-    tree_of(merge).map(str::to_owned).ok_or(Hold::Wait("The PR's merge ref has no readable tree".into()))
+}
+
+/// How long an entry waits for GitHub to compute a merge ref it does not
+/// have, or to move one whose main is not known to be older, before Core
+/// builds the batch with its own merge (seconds).
+pub(super) const SLOT_GRACE: i64 = 120;
+
+/// Whether an entry whose merge ref is not the slot goes to the batch now.
+/// `older` says the ref's main is an ancestor of the current main: CI cannot
+/// have tested the current main, so it goes at once. Otherwise it goes once
+/// the ref has looked like this for `SLOT_GRACE` (`waited`, in seconds). The
+/// batch is Core's own merge of the head into the current main, so it needs
+/// nothing from GitHub's merge ref. `Ok` says why the batch is built.
+pub(super) fn batch_now(slot: &Slot, older: bool, waited: i64, main: &str) -> Check<String> {
+    let current = &main[..12.min(main.len())];
+    match slot {
+        Slot::Fresh(_) => wait("The PR's merge ref is the merge of the current main and the head"),
+        Slot::Stale(ref_main) if older => Ok(format!(
+            "The PR's merge ref is the merge of the older main {} and the head, which GitHub has not moved to the current main {current}, so CI on the PR cannot have tested the current main",
+            &ref_main[..12.min(ref_main.len())]
+        )),
+        _ if waited >= SLOT_GRACE => Ok(format!(
+            "GitHub has had no merge ref of the current main {current} and the head for {} minutes, so CI on the PR cannot be shown to have tested it",
+            SLOT_GRACE / 60
+        )),
+        Slot::Stale(ref_main) => wait(format!(
+            "The PR's merge ref is the merge of main {}, which is not known to be older than the current main {current}; Core builds a batch with its own merge if GitHub has not moved it within {} minutes",
+            &ref_main[..12.min(ref_main.len())],
+            SLOT_GRACE / 60
+        )),
+        Slot::Missing(detail) => wait(format!(
+            "{detail}; Core builds a batch with its own merge if GitHub has none within {} minutes",
+            SLOT_GRACE / 60
+        )),
+    }
 }
 
 pub(super) fn parents(commit: &Value) -> Vec<&str> {

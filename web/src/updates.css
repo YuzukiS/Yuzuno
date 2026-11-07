@@ -1040,6 +1040,30 @@
   outline-offset: 2px;
   border-radius: 4px;
 }
+/* Choice cards (SettingsChoices.tsx): as many columns as choices, up to
+   three; one column on a phone (appearance.css). */
+.settings-choice-cards {
+  grid-template-columns: repeat(var(--settings-choice-cols, 3), minmax(0, 1fr));
+}
+/* A card's line is a sentence here, not a word as a theme's. */
+.theme-choice.settings-choice small {
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.45;
+}
+@media (max-width: 520px) {
+  .theme-options.settings-choice-cards {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Appearance hides a choice's leading icon on a phone; here the only icon
+     is the chosen mark. */
+  .settings-choice .theme-choice-name > svg.theme-selected {
+    display: inline;
+  }
+  .theme-choice.settings-choice small {
+    font-size: calc(9px + var(--font-adjust, 3px));
+  }
+}
 /* A labelled field at the settings row's size. */
 .settings-field {
   display: grid;

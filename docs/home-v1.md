@@ -52,6 +52,7 @@ Home 的内容分两类：
   - 被接受的更新和有效的预览，可以带至多 3 条不阻断的 `advice`。advice 只针对本次发送的正文，edit 只针对它替换的块，只看 report 和 status 节。
   - advice 是按长度和数量给出的启发式，可以调整，阈值只在 contract 的 `limits.advice`。它不是可读性评分，也不是验收的硬限制：不截断、不拒收、不改写。
   - 拒收的问题每节至多 5 条（Node 校验器），整次调用至多 10 条（Core）。`moreProblems` 只给 Core 确知省略的条数；Node 每节超出的部分不计数，也不估计。
+  - **按条修改**（YN-14 A2）：`{op:"patch", key, patch:[…], status?}` 用 RFC 6902 操作（add、remove、replace、move、copy、test）改一节正文里的单个值，路径是正文里的 JSON Pointer，例如 `/elements/refs/props/items/3/note`。和 edit 一样保留标题、附件、时间和 Ask 的状态，Core 对整节重新检查（含修复式接受）；也可以加一个块并挂到根下。按顺序执行，某个操作的路径不存在、move 或 copy 的 from 是 `""`（整个正文），或 test 不相等就整条拒收（`patch_path`、`patch_test`）；一次 patch 要把正文做得远超上限（例如反复把一部分复制进它自己）也整条拒收（`too_large`）。拒收时什么都不改。改一条备注、一个步骤的状态时用它，不必重发整块。
   - **修复式接受**（YN-14）：一节没通过严格检查时，Node 校验器先修补 Core 不用猜就能修的小错，再用同一份 contract 严格检查一遍；通过就接受，并在回答的 `repairs` 里逐条说明改了什么（整次调用至多 10 条，`moreRepairs` 计其余；每节超过 8 处就按原样拒收）。能修的：未知组件改成 Markdown（文本做 HTML 转义）或 Group、按固定别名改名或删掉组件没有的字段、补或去重 id、枚举的大小写和少数同义词、Findings 缺 severity 记为 info、Table 缺的格子留空、文字写的 Ask 选项改成 {id, label}、修树和版式、put 里注册了却没显示的附件加到根下的 Attachments 块。不修的：key、kind、title、Ask 的问题和其他回复方式、status、time、附件的注册（正文之外只修 Ask 的选项；put 里没显示的附件只是在正文里显示出来，注册不变）、没有可用回复方式的 Ask、超限（不截断）、文件 / 来源 / 研究记录的引用、ResearchDesk 和 Sources、组件要求而 Agent 没给的内容（如 Finding 的 source）。修不好时，拒收给出的是原样发送时的问题。合法的节一字不改。
   - 修补过的节在 Core 里带着 `repairs` 保存，`brief_get` 和 Home 都能读到；Home 在卡片和报告页上标「已修补 / Repaired」，报告页列出前几条。put 换掉整节时重新计算；edit 只去掉它替换的块上的条目，其余保留，所以整节层面的修补（树、根的版式、Ask 的选项）要到下一次 put 才去掉。
 - `brief_guide`：详细指南和示例，内容从组件 catalog 自动生成。

@@ -95,6 +95,7 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     }
     let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
     hold!(checks::pull(entry, &pr));
+    hold!(checks::conflicting(&pr));
     let (latest, running) = ws.stored(move |s| s.merge_review(&link)).await?;
     evidence["review"] = hold!(checks::review(entry, latest.as_ref(), running));
 
@@ -162,22 +163,49 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
         Err(e) if e.to_string().starts_with("not_found") => None,
         Err(e) => return Err(e),
     };
-    let tree = hold!(checks::slot(merge.as_ref(), &main, &head));
+    let tree = match checks::slot(merge.as_ref(), &main, &head) {
+        checks::Slot::Fresh(tree) => tree,
+        slot => {
+            // Not the slot (YN-18 S2c, T-37 lab finding F1). The batch is Core's
+            // own merge and needs nothing from GitHub's merge ref, so the entry
+            // never waits for GitHub to move a ref on an older main, and waits
+            // only briefly for one GitHub has not computed.
+            let older = match &slot {
+                checks::Slot::Stale(ref_main) => match older_main(ws, &repo, ref_main, &main).await {
+                    Err(e) if e.to_string().starts_with("rate_limited") => return Err(e),
+                    compared => compared,
+                },
+                _ => Ok(false),
+            };
+            // The grace runs from the first check that saw no slot for this
+            // main, head and attempt.
+            let now = chrono::Utc::now().timestamp();
+            let seen = &entry["lastEvidence"]["mergeRef"];
+            let since = if seen["main"] == main.as_str() && seen["head"] == head.as_str() && seen["attempt"] == t.attempt {
+                seen["since"].as_i64().unwrap_or(now)
+            } else {
+                now
+            };
+            evidence["mergeRef"] = json!({"state":if matches!(slot, checks::Slot::Stale(_)) { "stale" } else { "missing" },
+                "sha":merge.as_ref().map(|m| m["sha"].clone()),"parents":merge.as_ref().map(checks::parents),
+                "main":main,"head":head,"attempt":t.attempt,"since":since,
+                "olderMain":older.as_ref().ok(),"compareError":older.as_ref().err().map(|e| format!("{e:#}"))});
+            match checks::batch_now(&slot, *older.as_ref().unwrap_or(&false), now - since, &main) {
+                Ok(why) => return open_batch(ws, &t, entry, &main, evidence, why).await,
+                Err(hold) => {
+                    // Checked again when the grace ends, not after the backoff.
+                    evidence["mergeRef"]["checkAgainAt"] = json!(since + checks::SLOT_GRACE);
+                    return Ok((evidence, Err(hold)));
+                }
+            }
+        }
+    };
     let merge = merge.context("The PR's merge ref vanished")?;
     let ci = newest.iter().find(|r| r["name"] == checks::CI).context("The CI run vanished")?;
     let proofs = hold!(job_proofs(ws, &repo, ci).await?);
     let proved = match checks::checkouts(&proofs, &main, &head, &tree) {
         Ok(proved) => proved,
-        Err(Hold::Stop("needs_batch", detail)) => {
-            let made = build_batch(ws, &t, entry, &main).await?;
-            evidence["batch"] = made.0.clone();
-            hold!(made.1);
-            let b = &made.0;
-            return Ok((evidence.clone(), Err(Hold::Wait(format!(
-                "{detail}. Core opened batch #{} on {} (main {} + the head, tree {}); it waits for CI on it",
-                b["pr"], b["branch"].as_str().unwrap_or("?"), short(&main), short(b["tree"].as_str().unwrap_or("?"))
-            )))));
-        }
+        Err(Hold::Stop("needs_batch", detail)) => return open_batch(ws, &t, entry, &main, evidence, detail).await,
         Err(other) => return Ok((evidence, Err(other))),
     };
     evidence["gate"] = json!({"kind":"slot","tree":tree,
@@ -186,6 +214,34 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
             "jobs":if r["id"] == ci["id"] { json!(proved) } else { json!([]) }})).collect::<Vec<_>>()});
     evidence["wouldMerge"] = json!({"method":"merge","sha":head,"endpoint":format!("repos/{repo}/pulls/{number}/merge")});
     Ok((evidence, Ok(())))
+}
+
+/// Build the entry's batch on `main` and wait for CI on it (design §3,
+/// batching). `why` says why CI on the PR itself does not count.
+async fn open_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str, mut evidence: Value, why: String) -> Result<(Value, Check<()>)> {
+    let (batch, made) = build_batch(ws, t, entry, main).await?;
+    evidence["batch"] = batch.clone();
+    if let Err(hold) = made {
+        return Ok((evidence, Err(hold)));
+    }
+    let detail = format!(
+        "{why}. Core opened batch #{} on {} (main {} + the head, tree {}); it waits for CI on it",
+        batch["pr"],
+        batch["branch"].as_str().unwrap_or("?"),
+        short(main),
+        short(batch["tree"].as_str().unwrap_or("?"))
+    );
+    Ok((evidence, Err(Hold::Wait(detail))))
+}
+
+/// Whether `older` is an ancestor of `main`, from GitHub's compare of the two
+/// (their merge base is `older`). One read, holding a GitHub slot.
+async fn older_main(ws: &Arc<Workspace>, repo: &str, older: &str, main: &str) -> Result<bool> {
+    let cooldown = ws.stored(crate::ci_monitor::read_cooldown).await?;
+    ensure!(cooldown <= chrono::Utc::now().timestamp(), "rate_limited: GitHub reads are cooling down until {cooldown}");
+    let _slot = ws.github.slots.acquire().await?;
+    let compared = ws.github.client.comparison_identity(repo, older, main).await?;
+    Ok(compared["mergeBase"] == older)
 }
 
 /// Every job of a CI run attempt, each with its log's checkout line resolved

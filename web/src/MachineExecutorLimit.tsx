@@ -1,4 +1,4 @@
-// A machine's own limit on executors at once (T-35 S3): this Core host's
+// A machine's limit on executors at once (T-35 S3; YN-2 S5: the only one): this Core host's
 // (`local`) or a registered machine's, saved through its own route against
 // the version GET /api/executor-slots lists it at. The Machines editor holds
 // a registered machine's; the Core host's card has this control of its own.
@@ -10,9 +10,9 @@ import { strings, type Language } from "./i18n";
 
 export const machineLimitText = strings({
   title: "Executors at once",
-  placeholder: "No limit of its own",
-  help: "At most this many executors run on this machine at once, within the Workspace’s limit. Empty: only the Workspace’s applies. Lowering it stops no running executor; none more starts here until fewer run.",
-  range: (min: number, max: number) => `Executors at once is a whole number from ${min} to ${max}, or empty.`,
+  placeholder: (preset: number) => `Default: ${preset}`,
+  help: (preset: number) => `At most this many executors run on this machine at once; empty for the default, ${preset}. The Workspace runs at most its machines’ numbers added up. Lowering it stops no running executor; none more starts here until fewer run.`,
+  range: (min: number, max: number) => `Executors at once is a whole number from ${min} to ${max}, or empty for the default.`,
   conflict: "This machine’s executor limit changed meanwhile and was read again. Save again to apply yours.",
   notSaved: (why: string) => `The machine is saved; its executor limit is not. ${why}`,
   save: "Save executors at once",
@@ -20,9 +20,9 @@ export const machineLimitText = strings({
   here: (n: number) => `${n} on this machine now.`,
 }, {
   title: "同时运行的执行者",
-  placeholder: "没有自己的上限",
-  help: "此机器上同时最多运行这么多个执行者，且不超过 Workspace 的上限。留空：只按 Workspace 的上限。调低不会停止正在运行的执行者；运行的执行者少于上限之前，这里不再启动新的。",
-  range: (min, max) => `同时运行的执行者是 ${min} 到 ${max} 之间的整数，或留空。`,
+  placeholder: (preset) => `默认：${preset}`,
+  help: (preset) => `此机器上同时最多运行这么多个执行者；留空为默认的 ${preset} 个。整个 Workspace 最多运行各机器数量之和。调低不会停止正在运行的执行者；运行的执行者少于上限之前，这里不再启动新的。`,
+  range: (min, max) => `同时运行的执行者是 ${min} 到 ${max} 之间的整数，或留空使用默认值。`,
   conflict: "此机器的执行者上限已被更改，已重新读取。再次保存以应用你的值。",
   notSaved: (why) => `机器已保存，但执行者上限未保存。${why}`,
   save: "保存同时运行的执行者",
@@ -50,6 +50,7 @@ export const versionConflict = (error: unknown) => errorText(error).startsWith("
 export function useMachineLimit(machineId: string | undefined, active: boolean) {
   const [limit, setLimit] = useState<MachineSlots | null>(null);
   const [max, setMax] = useState(64);
+  const [preset, setPreset] = useState(3);
   const [readError, setReadError] = useState("");
   const [reads, setReads] = useState(0);
   useEffect(() => {
@@ -59,19 +60,21 @@ export function useMachineLimit(machineId: string | undefined, active: boolean) 
     readExecutorSlots(controller.signal).then((view) => {
       if (controller.signal.aborted) return;
       setMax(view.limits.max);
-      setLimit(view.machines.find((m) => m.id === machineId) ?? { id: machineId, name: machineId, version: 0, slots: null, executors: 0 });
+      setPreset(view.limits.default);
+      setLimit(view.machines.find((m) => m.id === machineId)
+        ?? { id: machineId, name: machineId, version: 0, slots: null, limit: view.limits.default, executors: 0 });
     }).catch((e) => {
       if (!controller.signal.aborted) setReadError(errorText(e));
     });
     return () => controller.abort();
   }, [active, machineId, reads]);
-  return { limit, max, readError, adopt: setLimit, reload: () => setReads((n) => n + 1) };
+  return { limit, max, preset, readError, adopt: setLimit, reload: () => setReads((n) => n + 1) };
 }
 
 /** The Core host card's own control: the field and its Save. */
 export function MachineExecutorLimit({ machineId, language, disabled = false }: { machineId: string; language: Language; disabled?: boolean }) {
   const t = machineLimitText(language);
-  const { limit, max, readError, adopt, reload } = useMachineLimit(machineId, true);
+  const { limit, max, preset, readError, adopt, reload } = useMachineLimit(machineId, true);
   // What a save said (a refusal or a conflict), apart from the read's own
   // failure: a conflict's reload keeps it in view.
   const [error, setError] = useState("");
@@ -105,10 +108,10 @@ export function MachineExecutorLimit({ machineId, language, disabled = false }: 
       <label>
         {t.title}
         <input type="number" inputMode="numeric" min={1} max={max} step={1} aria-label={t.title}
-          value={shown} placeholder={t.placeholder} disabled={disabled || busy}
+          value={shown} placeholder={t.placeholder(preset)} disabled={disabled || busy}
           aria-invalid={parsed === undefined || undefined}
           onChange={(e) => { setDone(false); setDraft(e.target.value); }} />
-        <span className="field-hint">{parsed === undefined ? t.range(1, max) : t.help}</span>
+        <span className="field-hint">{parsed === undefined ? t.range(1, max) : t.help(preset)}</span>
       </label>
       <p className="machine-note">{t.here(limit.executors)}</p>
       <div className="machine-executor-limit-actions">

@@ -307,6 +307,48 @@ try {
     }
   }
 
+  // ---- This device's pages (S4a): Typing & time and Language as Appearance's cards.
+  for (const [width, height, phone] of [[1440, 900, false], [951, 669, false], [390, 844, true]]) {
+    for (const [language, theme] of [["en", "light"], ["zh-Hans", "dark"]]) {
+      const label = `device ${width}x${height} ${language} ${theme}`;
+      const { page, context } = await open({ width, height, language, theme, phone });
+      await openSettings(page);
+      const dialog = settings(page);
+      for (const [tab, editor, cards] of [["typing", "input", 5], ["language", "language", 3]]) {
+        await dialog.locator(`#settings-tab-${tab}`).click();
+        const shown = dialog.locator(`#settings-editor-${editor}:not([hidden])`);
+        await shown.waitFor();
+        await page.waitForTimeout(150);
+        assert.equal(await shown.locator(".settings-choice").count(), cards, `${label} ${tab}: ${cards} choice cards`);
+        assert.equal(await shown.locator(".settings-choice input:checked").count(), tab === "typing" ? 2 : 1, `${label} ${tab}: one chosen per block`);
+        await noOverflow(page, `${label} ${tab}`);
+        const pane = dialog.locator("#settings-page");
+        const wide = await pane.evaluate((el) => {
+          const right = el.getBoundingClientRect().right + 1;
+          return [...el.querySelectorAll(".settings-editor:not([hidden]) :is(label, select, button, .theme-choice)")]
+            .filter((c) => c.getBoundingClientRect().width && c.getBoundingClientRect().right > right).map((c) => c.textContent.trim().slice(0, 40));
+        });
+        assert.deepEqual(wide, [], `${label} ${tab}: nothing wider than the page`);
+        await page.screenshot({ path: resolve(output, `device-${tab}-${width}x${height}-${language}-${theme}.png`) });
+        if (tab === "typing") {
+          await dialog.locator("#settings-editor-time").evaluate((el) => el.scrollIntoView({ block: "start" }));
+          await page.waitForTimeout(100);
+          await page.screenshot({ path: resolve(output, `device-time-${width}x${height}-${language}-${theme}.png`) });
+        }
+        if (phone) {
+          await dialog.locator(".settings-back").click();
+          await dialog.locator(".settings-center.is-root").waitFor();
+        }
+      }
+      // A card chosen by click: the clock's 24-hour applies at once.
+      await dialog.locator("#settings-tab-typing").click();
+      await dialog.locator('input[name="time-clock-format"][value="h24"]').locator("xpath=..").click();
+      assert.equal(await dialog.locator('input[name="time-clock-format"][value="h24"]').isChecked(), true, `${label}: a card's click chooses it`);
+      await context.close();
+      check(`${label}: Typing & time (5 cards, two chosen) and Language (3 cards) fit; a card's click chooses it`);
+    }
+  }
+
   // ---- Deep links: the Workspace menu and the status bar open their pages.
   {
     const { page, context } = await open({ width: 1440, height: 900, scope: JSON.stringify("project:garden") });
