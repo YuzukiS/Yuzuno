@@ -217,14 +217,15 @@
   font-size: 0.7rem;
   line-height: 1.55;
 }
-.merge-queue-switch > label {
+/* Classed so they outrank the project form's own label and input rules
+   (.project-form label is a grid; .project-form input a full-width field). */
+.merge-queue-switch > .merge-queue-toggle {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   cursor: pointer;
 }
-/* A checkbox, not the project form's full-width text field (.project-form input). */
-.merge-queue-switch > label input {
+.merge-queue-switch > .merge-queue-toggle input {
   flex: 0 0 16px;
   width: 16px;
   height: 16px;
@@ -232,7 +233,7 @@
   padding: 0;
   accent-color: var(--green);
 }
-.merge-queue-switch > label span {
+.merge-queue-switch > .merge-queue-toggle span {
   display: flex;
   flex-direction: column;
   min-width: 0;

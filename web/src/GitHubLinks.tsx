@@ -351,7 +351,7 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
     <div className="merge-queue-switch" role="group" aria-label={t.label(name)}>
       {!state && !error && <small>{t.loading}</small>}
       {state && (
-        <label>
+        <label className="merge-queue-toggle">
           <input
             type="checkbox"
             role="switch"
