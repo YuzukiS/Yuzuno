@@ -282,6 +282,21 @@ test("the help lists Return as the send key makes it, and the desktop app's shor
   }
 });
 
+// YN-3, the user's item: a reply from Home is sent by Return as a message is.
+test("YN-3 the help lists a Home reply's Return as the send key makes it, as for a message", () => {
+  const rows = (groups, title) => Array.from(groups.find((g) => g.title === title).shortcuts, (s) => `${s.keys.join("+")}: ${s.action}`);
+  const w = page();
+  try {
+    const at = (sendKey, touch, language) => w.shortcutGroups({ modifier: "Ctrl", sendKey, touch, desktopApp: false, language });
+    assert.deepEqual(rows(at("auto", false), "Home"), ["Return: Send a reply to a card or an Ask", "Ctrl+Return: Send a reply to a card or an Ask", "Esc: Close a card's reply"]);
+    assert.deepEqual(rows(at("auto", true), "Home").slice(0, 2), ["Return: New line", "Ctrl+Return: Send a reply to a card or an Ask"], "a touch screen's keyboard");
+    assert.equal(rows(at("modEnter", false), "Home")[0], "Return: New line");
+    assert.equal(rows(at("enter", true, "zh-Hans"), "Home")[0], "Return: 向卡片或 Ask 发送回复");
+  } finally {
+    w.close();
+  }
+});
+
 test("Settings finds both sections, Clock & time zone and Language by their words", () => {
   const w = page();
   try {

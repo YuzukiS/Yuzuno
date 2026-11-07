@@ -74,7 +74,7 @@
 /* My widgets as the deck lays out its cards (T-18, Dev 7's v19): four
    columns, two or one by the column's width; a pinned card at the size the
    user gave it, else its Agent's, in the same spans and minimum heights, in
-   the user's order, never packed. Machines, built in, and a pin with no
+   the user's order, with no holes (deck-pack.ts). Machines, built in, and a pin with no
    summary take the whole row at their content's height. */
 .home-widget-grid {
   display: grid;
@@ -113,6 +113,16 @@
   }
   .home-widget-slot.size-large > .home-summary-card {
     min-height: 536px;
+  }
+}
+/* With no holes, in the user's order, as the deck (deck-pack.ts, YN-3). */
+.home-widget-grid .home-widget-slot[data-deck-cols] {
+  grid-column: span var(--deck-cols);
+  grid-row: span var(--deck-rows);
+}
+@container deck (min-width: 1248px) {
+  .home-widget-grid .home-widget-slot.size-large[data-deck-rows="1"] > .home-summary-card {
+    min-height: 260px;
   }
 }
 .home-widget-column-head {
@@ -975,9 +985,9 @@ ul.home-widget {
    card: a card that needs more grows its row, and an Ask's own row takes
    only the height it needs (Dev 7, 2396). A card whose author named no
    summary shows how its body opens and takes the same minimum (YN-3).
-   Placement is the grid's own row flow, never dense: a card that does not
-   fit where a row ends starts the next, leaving the gap empty, so the
-   keyboard's order, the author's, is the order on screen. */
+   Placement is the grid's own row flow, never dense, so the keyboard's
+   order is the order on screen; where it would leave a cell empty, the card
+   before it takes it (deck-pack.ts, below). */
 .home-brief {
   display: grid;
   padding-top: 14px;
@@ -1022,6 +1032,63 @@ ul.home-widget {
    sent or put away. The deck does not animate. */
 .home-brief .home-section:is(.kind-ask, :has(.home-card-reply, .home-ask textarea)) {
   grid-column: 1 / -1;
+}
+/* The deck's order (YN-3, deck-order.ts): a heading over the Asks the user
+   answered, and status past its validity at the end, closed, as a deck of
+   its own with the same columns. */
+.home-brief .home-deck-heading {
+  grid-column: 1 / -1;
+  margin: 4px 0 -8px;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.home-brief .home-out-of-date {
+  grid-column: 1 / -1;
+}
+.home-out-of-date > summary {
+  width: fit-content;
+  padding: 6px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+  cursor: pointer;
+}
+.home-out-of-date > summary:focus-visible {
+  outline: 2px solid var(--home-focus);
+  outline-offset: 2px;
+}
+.home-brief-sub {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 16px;
+  padding-top: 12px;
+}
+@container deck (min-width: 560px) {
+  .home-brief-sub {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container deck (min-width: 1248px) {
+  .home-brief-sub {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+/* With no holes, in order (deck-pack.ts): each card's span from its size and
+   the cells it takes, where its grid's columns are known; else the spans
+   above. A large card with nothing beside its second row takes one. */
+.home-brief .home-summary-card[data-deck-cols] {
+  grid-column: span var(--deck-cols);
+  grid-row: span var(--deck-rows);
+}
+/* Only where a large card's two rows give it 536 px (four columns). */
+@container deck (min-width: 1248px) {
+  .home-brief .home-summary-card.size-large[data-deck-rows="1"] {
+    min-height: 260px;
+  }
 }
 
 /* Below the top ranks, about 600 px of body; "Show more" lifts it. */

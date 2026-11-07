@@ -39,7 +39,7 @@ export const homeText = strings({
   needsYou: "Needs you",
   waitingSince: (title: string, at: string) => `${title} · waiting since ${at}`,
   nothingNeedsYou: "Nothing needs you right now.",
-  // Turn ends this device hasn't shown (T-42).
+  // What an executor the user dispatched waits for, in Needs you (T-36 S3).
   executorNeeds: {
     delivering: "Awaiting your release",
     failed: "Its start failed",
@@ -69,6 +69,11 @@ export const homeText = strings({
   noContent: "No current Home content. Content editors can add reports and status; everyone can add an Ask.",
   showLess: "Show less",
   showMore: "Show more",
+  /** The deck's heading over the Asks the user answered (YN-3). */
+  repliedGroup: (count: number) => `Replied, waiting · ${count}`,
+  /** The deck's closed group of status past its validity (YN-3). */
+  outOfDate: (count: number, newest: string) =>
+    `Out of date · ${count === 1 ? "1 status" : `${count} statuses`}${newest ? ` · newest data as of ${newest}` : ""}`,
   seenAll: "Seen all",
   teamDetails: "Team details & history",
   agentErrors: "Agent errors",
@@ -171,6 +176,7 @@ export const homeText = strings({
   replyField: (title: string) => `Reply to ${title}`,
   replyFor: (agent: string) => `A reply for ${agent}…`,
   sendTitle: (modifier: string) => `Send (${modifier} Enter)`,
+  sendTitleReturn: "Send (Enter; Shift+Enter for a new line)",
   send: "Send",
   sending: "Sending…",
   queuedFor: (agent: string, version: number) => `Queued for ${agent}, referring to version ${version}; not confirmed as read yet.`,
@@ -348,6 +354,8 @@ export const homeText = strings({
   noContent: "目前没有 Home 内容。内容编辑者可以添加报告和状态；所有人都可以添加 Ask。",
   showLess: "收起",
   showMore: "显示更多",
+  repliedGroup: (count) => `已回复，等处理 · ${count}`,
+  outOfDate: (count, newest) => `已过期 · ${count} 个状态${newest ? ` · 最新数据 ${newest}` : ""}`,
   seenAll: "全部标为已看",
   teamDetails: "团队详情与历史",
   agentErrors: "Agent 错误",
@@ -442,6 +450,7 @@ export const homeText = strings({
   replyField: (title) => `回复 ${title}`,
   replyFor: (agent) => `给 ${agent} 的回复…`,
   sendTitle: (modifier) => `发送（${modifier} Enter）`,
+  sendTitleReturn: "发送（Enter；Shift+Enter 换行）",
   send: "发送",
   sending: "正在发送…",
   queuedFor: (agent, version) => `已排队发给 ${agent}，指向版本 ${version}；尚未确认已读。`,

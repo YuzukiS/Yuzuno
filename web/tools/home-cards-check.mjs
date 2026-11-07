@@ -10,6 +10,12 @@
 //  - a card whose author named no summary shows its first paragraph;
 //  - a replied Ask is one line with its reply in short, never New; unfolded,
 //    its reply and Reply again;
+//  - the deck in its order (open Asks, current status, reports, Asks put off;
+//    the answered Asks under their heading; status out of date last, closed),
+//    and with no hole: every cell of its grid, and of Out of date's once
+//    opened, is a card's (PR B; 1920 px too, where the deck has four columns);
+//  - in Chinese, Enter sends a reply from Home as from the composer: Shift+Enter
+//    makes a new line, Enter while an input method composes sends nothing (PR B);
 //  - nothing is wider than the window, and nothing is sent but reads.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/home-cards-check.mjs
 import assert from "node:assert/strict";
@@ -25,8 +31,10 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "YN-3", runs: [], posts: [], unexpected: [], errors: [] };
-const HOST = "yuzuno-cards.test";
+const report = { task: "YN-3", runs: [], posts: [], replies: [], unexpected: [], errors: [] };
+// A secure origin, as Core's own (localhost, or https on a tailnet): a reply needs crypto.randomUUID, which a
+// browser gives only there. Every request is answered here; none leaves the browser.
+const HOST = "localhost:47391";
 const at = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 
 // A synthetic plot (a falling line on a light ground), as a kept snapshot.
@@ -93,6 +101,12 @@ const sections = [
     updatedAt: at(80),
     ask: { question: "Keep the old tokenizer until the rebuild?", state: "replied", repliedAt: at(60), replyText: "Keep it until the shard rebuild, then switch.", reply: { freeText: true } },
   }),
+  section("progress", "status", "Current progress", spec({}, ["a"], { a: md("Week 44: the old plan.") }), {
+    status: { asOf: at(3 * 24 * 60), validFor: 86400, stale: true },
+  }),
+  section("plan", "ask", "Which tokenizer plan?", spec({}, ["q"], { q: md("Plan A or B.") }), {
+    ask: { question: "Plan A or B?", state: "open", deferredUntil: new Date(Date.now() + 86_400_000).toISOString(), reply: { freeText: true } },
+  }),
   section("draft", "ask", "Publish the 0.4 draft?", spec({}, ["q"], { q: md("Draft notes are written; CI pending.") }), {
     updatedAt: at(5),
     ask: { question: "Publish the 0.4 draft once CI is green?", state: "replied", repliedAt: at(40), replyText: "Yes, once main CI is green.", reply: { freeText: true } },
@@ -114,14 +128,16 @@ const home = () => ({
 });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { viewImage: "View image", replied: "Replied · waiting for lead-1", updated: "Updated", replyAgain: "Reply again", openImage: "Open image loss.png" },
-  "zh-Hans": { viewImage: "查看图片", replied: "已回复 · 等 lead-1 处理", updated: "已更新", replyAgain: "再次回复", openImage: "打开图片 loss.png" },
+  en: { viewImage: "View image", replied: "Replied · waiting for lead-1", updated: "Updated", replyAgain: "Reply again", openImage: "Open image loss.png",
+    repliedGroup: "Replied, waiting · 2", outOfDate: /^Out of date · 1 status · newest data as of / },
+  "zh-Hans": { viewImage: "查看图片", replied: "已回复 · 等 lead-1 处理", updated: "已更新", replyAgain: "再次回复", openImage: "打开图片 loss.png",
+    repliedGroup: "已回复，等处理 · 2", outOfDate: /^已过期 · 1 个状态 · 最新数据 / },
 };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 const runs = [];
 for (const language of ["en", "zh-Hans"])
-  for (const [name, viewport, phone] of [["1440", { width: 1440, height: 1000 }, false], ["820", { width: 820, height: 1100 }, false], ["phone-390", { width: 390, height: 844 }, true]])
+  for (const [name, viewport, phone] of [["1920", { width: 1920, height: 1100 }, false], ["1440", { width: 1440, height: 1000 }, false], ["820", { width: 820, height: 1100 }, false], ["phone-390", { width: 390, height: 844 }, true]])
     runs.push({ name: `${language}-${name}`, language, phone, viewport });
 try {
   for (const run of runs) await check(run);
@@ -131,7 +147,8 @@ try {
 }
 assert.deepEqual(report.unexpected, [], "nothing was asked of another host");
 assert.deepEqual(report.errors, [], "no page errors");
-assert.deepEqual(report.posts, [], "nothing but reads");
+assert.deepEqual(report.posts, [], "nothing but reads, and the replies sent by Enter");
+assert.deepEqual(report.replies.map((r) => r.run), runs.filter((r) => r.language === "zh-Hans").map((r) => r.name), "one reply by Enter in each Chinese run");
 console.log(`home-cards-check: ${report.runs.length} runs, ${report.runs.reduce((n, r) => n + r.checks.length, 0)} checks`);
 
 async function check(run) {
@@ -154,7 +171,7 @@ async function check(run) {
   }, run.language);
   await context.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
-    if (url.hostname !== HOST) {
+    if (url.host !== HOST) {
       report.unexpected.push(request.url());
       return route.abort();
     }
@@ -162,6 +179,12 @@ async function check(run) {
     // The Project's linked repositories: a list read sent as a POST, which starts no sync (home-api.ts),
     // as home-ui.test.mjs counts it too.
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
+    // A reply sent from Home, which the check sends by Enter: answered as Core receives one.
+    if (method === "POST" && path === "/api/projects/p-orch/brief/reply") {
+      const body = JSON.parse(request.postData() || "{}");
+      report.replies.push({ run: run.name, body });
+      return route.fulfill({ json: { input: { ...body, expectedTurnId: null, question: null }, status: "accepted", turnId: "t-enter", error: null } });
+    }
     if (method !== "GET") {
       // Marking a conversation read is a read receipt, not a change to Home.
       if (/^\/api\/agents\/\w\/review$/.test(path)) return route.fulfill({ json: { ok: true } });
@@ -279,6 +302,53 @@ async function check(run) {
     assert.doesNotMatch(await card("notes").innerText(), /No summary named|未指定摘要|Details follow|second paragraph/);
     pass("the card with no summary shows its first paragraph only");
 
+    // ---- The deck: its order, the heading, Out of date closed at the end, and no hole (PR B).
+    const deck = page.locator('[data-home-project="p-orch"] .home-brief').first();
+    assert.deepEqual(await deck.locator("[data-section-key]").evaluateAll((els) => els.map((el) => el.dataset.sectionKey)),
+      ["overnight", "release", "loss", "eval", "notes", "plan", "tokenizer", "draft", "progress"]);
+    assert.equal(await deck.locator(":scope > .home-deck-heading").innerText(), w.repliedGroup);
+    const closed = deck.locator(":scope > details.home-out-of-date");
+    assert.equal(await closed.evaluate((el) => el.open), false, "out of date, closed");
+    assert.match(await closed.locator("summary").innerText(), w.outOfDate);
+    // Every cell of the grid, as laid out, is a card's, a heading's or Out of date's.
+    const holes = (grid) => grid.evaluate((el) => {
+      const style = getComputedStyle(el);
+      const columns = style.gridTemplateColumns.split(" ").map(parseFloat), rows = style.gridTemplateRows.split(" ").map(parseFloat);
+      const gapX = parseFloat(style.columnGap) || 0, gapY = parseFloat(style.rowGap) || 0;
+      const box = el.getBoundingClientRect();
+      const items = [];
+      const walk = (parent) => {
+        for (const child of parent.children)
+          if (child.classList.contains("home-topic") || child.classList.contains("home-subs")) walk(child);
+          else items.push(child.getBoundingClientRect());
+      };
+      walk(el);
+      const missing = [];
+      let y = box.top + (parseFloat(style.paddingTop) || 0);
+      rows.forEach((height, row) => {
+        let x = box.left + (parseFloat(style.paddingLeft) || 0);
+        columns.forEach((width, column) => {
+          const cx = x + width / 2, cy = y + height / 2;
+          if (!items.some((r) => cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom)) missing.push([row + 1, column + 1]);
+          x += width + gapX;
+        });
+        y += height + gapY;
+      });
+      return { columns: columns.length, rows: rows.length, missing };
+    });
+    const main = await holes(deck);
+    assert.deepEqual(main.missing, [], `no hole in the deck: ${JSON.stringify(main)}`);
+    await closed.locator("summary").click();
+    await deck.locator(".home-brief-sub [data-section-key=\"progress\"]").waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(150);
+    const sub = await holes(deck.locator(".home-brief-sub"));
+    assert.deepEqual(sub.missing, [], `no hole in Out of date: ${JSON.stringify(sub)}`);
+    await deck.scrollIntoViewIfNeeded();
+    await deck.screenshot({ path: join(output, `${run.name}-deck.png`) });
+    result.shots.push(`${run.name}-deck.png`);
+    await closed.locator("summary").click();
+    pass("the deck in its order, the answered Asks under their heading, Out of date closed at the end; no hole in either", { columns: main.columns, rows: main.rows });
+
     // ---- Replied Asks in short: one line where the pane is wide, the reply in short, never New; unfolded, the reply and Reply again.
     const rows = {};
     for (const key of ["tokenizer", "draft"]) {
@@ -330,6 +400,25 @@ async function check(run) {
     await tokenizer.locator(".home-fold").click();
     await tokenizer.locator(".home-card-body").waitFor({ state: "hidden", timeout: 10_000 });
     pass("replied Asks in short (one line where the pane is wide), the reply in short, Updated only after the owner's change; unfolded, Reply again", rows);
+
+    // ---- Enter sends a reply from Home, in Chinese (the user's item): Shift+Enter a new line, nothing while composing.
+    if (run.language === "zh-Hans") {
+      const field = card("overnight").locator("textarea").first();
+      await field.scrollIntoViewIfNeeded();
+      await field.fill("好的，今晚跑");
+      await field.press("Shift+Enter");
+      assert.match(await field.inputValue(), /\n$/, "Shift+Enter makes a new line");
+      await field.evaluate((el) => el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true })));
+      await page.waitForTimeout(250);
+      const mine = () => report.replies.filter((r) => r.run === run.name);
+      assert.equal(mine().length, 0, "neither Shift+Enter nor Enter while composing sends");
+      await field.press("Enter");
+      for (let tries = 0; tries < 40 && mine().length === 0; tries++) await page.waitForTimeout(125);
+      assert.equal(mine().length, 1, "Enter sends");
+      assert.equal(mine()[0].body.text, "好的，今晚跑");
+      await cardShot("overnight", "enter-sent");
+      pass("Enter sends a reply from Home; Shift+Enter makes a new line; Enter while composing sends nothing");
+    }
   } finally {
     await context.close();
   }
