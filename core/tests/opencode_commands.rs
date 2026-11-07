@@ -528,6 +528,29 @@ async fn a_sub_agents_result_is_never_taken_as_a_commands_input() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// A delivery whose admission this connection never saw is not taken as a
+/// command's input: what 2.x queued there is not known from it (T-61 slice
+/// 3). The message 2.x then admits for the command, seen, is.
+#[tokio::test]
+async fn a_delivery_whose_admission_was_not_seen_is_not_taken_as_a_commands_input() {
+    let lab = lab(false).await;
+    let session = lab.session();
+    lab.control("mode", json!({"command":"drop"})).await;
+    let waiting = lab.send("c1", "/explain x", &[]).await.unwrap();
+    assert_eq!(waiting.status, "uncertain", "{waiting:?}");
+    let ran = waiting.turn_id.unwrap();
+    let unseen = yuzuno_workspace::opencode::MessageId::new();
+    lab.control("event", json!({"type":"session.inbox.delivered","created":chrono::Utc::now().timestamp_millis(),
+        "properties":{"sessionID":session,"inboxID":unseen.as_str()}})).await;
+    let own = yuzuno_workspace::opencode::MessageId::new();
+    lab.control("store", json!({"sessionID":session,"messageID":own.as_str(),"text":"Explain x briefly."})).await;
+    lab.until("the command's message", |d| d.message_receipts.iter().any(|r| r.input.client_message_id == "c1" && r.status == "accepted")).await;
+    assert_eq!(turn(&lab.detail(), &ran)["_opencodeCommand"]["native"], own.as_str(), "the message seen admitted, not the unseen delivery");
+    lab.control("mode", json!({"command":"run"})).await;
+    lab.complete(&ran).await;
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 fn png() -> Vec<u8> {
     let mut out = std::io::Cursor::new(Vec::new());
     image::RgbImage::from_pixel(4, 4, image::Rgb([10, 0, 0])).write_to(&mut out, image::ImageFormat::Png).unwrap();
