@@ -41,14 +41,15 @@ const text = {
     body: ["The queue is free after 22:00 and the shard rebuild finished this afternoon.",
       "A full run takes about six hours on four GPUs; the eval set is the one from last week, so the numbers compare.",
       "If it waits, the next free slot is Thursday night."],
-    yes: "Yes", no: "Not tonight", again: "Run it, but stop at 40k steps.",
+    // Long enough to wrap where the card is one column wide, not where it spans its row.
+    yes: "Yes", no: "Not tonight", again: "Run it, but stop at 40k steps and keep the checkpoint; I will look at the curve in the morning.",
     plan: "Which tokenizer plan?", planQuestion: "Plan A or plan B for the rebuild?",
     replied: "Replied · waiting for lead-1", next: "Next: lead-1 acts on your reply", replyAgain: "Reply again", send: "Send",
   },
   "zh-Hans": {
     title: "今晚跑 7B 基线吗？", question: "今晚 22:00 之后队列空闲时跑 7B 基线吗？",
     body: ["22:00 之后队列空闲，分片重建今天下午已经完成。", "完整跑一次在四张 GPU 上大约六小时；评测集用上周那套，结果可以对比。", "如果不跑，下一个空档是周四晚上。"],
-    yes: "跑", no: "今晚不跑", again: "跑，但到 40k 步就停。",
+    yes: "跑", no: "今晚不跑", again: "跑，但到 40k 步就停，保留检查点；我明早看完曲线再决定要不要接着把它跑完。",
     plan: "分词器用哪个方案？", planQuestion: "重建用方案 A 还是方案 B？",
     replied: "已回复 · 等 lead-1 处理", next: "下一步：lead-1 按你的回复处理", replyAgain: "再次回复", send: "发送",
   },
@@ -249,7 +250,7 @@ async function check(run) {
 
     // ---- The user answers by an option: the answer card as soon as Core has the reply.
     await page.evaluate(() => (window.__animations.length = 0));
-    await press(card("overnight").locator(".home-ask-options button", { hasText: w.yes }));
+    await press(card("overnight").locator(".home-ask-options").getByRole("button", { name: w.yes, exact: true }));
     await page.waitForFunction(() => document.getElementById("home-section-p-orch-overnight")?.classList.contains("is-answer"), null, { timeout: 5000 });
     const landed = await measure("overnight");
     await page.waitForTimeout(450);
@@ -314,6 +315,8 @@ async function check(run) {
     assert.ok(again.blank <= 12, `no blank area: ${again.blank} px`);
     assert.ok(again.focused, "focus on the card");
     assert.equal(replayed.length, run.reduced ? 0 : 1, JSON.stringify(replayed));
+    // To where the deck puts it: closed by the card's own state, it is packed before it is measured.
+    if (!run.reduced) assert.ok(Math.abs(parseFloat(JSON.parse(replayed[0].frames)[1].height) - again.height) < 1, `to its own height: ${replayed[0].frames} vs ${again.height}`);
     pass("Reply again, sent: closed back to the answer card with the new reply, no blank", { height: again.height, blank: again.blank });
     assert.deepEqual(report.replies.filter((r) => r.run === run.name).map((r) => [r.body.key, r.body.choice ?? null, r.body.askVersion]),
       [["overnight", "yes", 2], ["overnight", null, 2]]);

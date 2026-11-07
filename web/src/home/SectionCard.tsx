@@ -12,6 +12,7 @@ import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, repliedThenUpdated, sectionDomId } from "./brief-layout";
 import { DeckSizes } from "./card-sizes";
+import { packDeckOf } from "./deck-packing";
 import { FoldButton, useCardFold } from "./card-fold";
 import { sectionConditions, sectionSummary, unmaintained } from "./card-summary";
 import { absolute, deferChoices, duration, relative } from "./format";
@@ -85,9 +86,10 @@ function useReservedHeight(content: string, collapsed: boolean) {
  * A card the user's own reply turned into its answer card (YN-21) collapses
  * to it from the height it had just before (surface.ts collapseFrom). Drawn
  * inside the card, it reads that height before React changes the card, as
- * each new `collapse` comes; it plays once the deck has packed the card
- * (HomePanel's layout effect runs after the card's) and before the frame is
- * painted. Anything held for the card it was is let go first.
+ * each new `collapse` comes; it plays before the frame is painted, once the
+ * deck has packed the card: HomePanel's layout effect, after the card's, when
+ * Core's read changed it, else here (Reply again closes it by its own state).
+ * Anything held for the card it was is let go first.
  */
 type CollapseProps = { target: RefObject<HTMLElement | null>; collapse: string | null };
 class CollapseFrom extends Component<CollapseProps, object, number | null> {
@@ -101,7 +103,9 @@ class CollapseFrom extends Component<CollapseProps, object, number | null> {
     if (from == null || !element) return;
     element.style.minHeight = "";
     queueMicrotask(() => {
-      if (element.isConnected) collapseFrom(element, from);
+      if (!element.isConnected) return;
+      packDeckOf(element);
+      collapseFrom(element, from);
     });
   }
   render() {

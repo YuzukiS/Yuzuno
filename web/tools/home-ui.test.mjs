@@ -775,11 +775,14 @@ test("YN-3 a replied ask is an answer card: whom it waits for, its title, the re
 // YN-21, the user's choice: an Ask the user answers from this Home turns into its answer card as soon as Core has
 // the reply, whichever way it was answered, Reply again too, keeping its place on the deck; one answered elsewhere
 // (another device or tab) keeps its card until the next visit, as before (YN-3).
-test("YN-21 an Ask answered here is its answer card as soon as Core has the reply: free text, a choice, Reply again; its owner's update keeps it small; one answered elsewhere keeps its card until the next visit", async () => {
+test("YN-21 an Ask answered here is its answer card as soon as Core has the reply: free text, a choice, a form, Reply again; its owner's update keeps it small; one answered elsewhere keeps its card until the next visit", async () => {
   const home = homeFixture();
   const app = home.projects.find((entry) => entry.project.id === "p-app");
   app.brief.sections.push(section("seed", "ask", "Which seed?", 2, owner("b", "Hana"), {
     ask: { question: "Seed 7 or 11?", state: "open", reply: { freeText: true } },
+  }), section("scope", "ask", "Which part first?", 1, owner("a", "Mori"), {
+    ask: { question: "Which part ships first?", state: "open", reply: { form: { id: "scope", title: "Which part ships first?",
+      fields: [{ id: "part", type: "single", label: "First part", required: false, options: [{ id: "ui", label: "The UI" }, { id: "core", label: "Core" }] }] } } },
   }));
   const live = (key) => app.brief.sections.find((s) => s.key === key);
   const replied = (s, replyText) => {
@@ -801,6 +804,7 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     const release = () => card(p, "p-app", "release");
     const budget = () => card(p, "p-app", "budget");
     const seed = () => card(p, "p-app", "seed");
+    const scope = () => card(p, "p-app", "scope");
     const deck = () => [...p.panel("p-app").querySelectorAll(".home-brief [data-section-key]")].map((el) => el.dataset.sectionKey);
     const order = deck();
     await type(p, release().querySelector("textarea"), "Ship it after the docs fix");
@@ -821,6 +825,11 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     p.button("Choose B", budget()).click();
     await waitFor(() => budget().classList.contains("is-answer"), "a choice: the answer card as soon as Core has it");
     assert.match(budget().querySelector(".home-answer-reply").textContent, /^You\s*Plan B$/);
+    // A form, sent at its defaults (it copies its answers as it sends them).
+    p.w.structuredClone = structuredClone;
+    scope().querySelector(".clarification footer .primary-button").click();
+    await waitFor(() => scope().classList.contains("is-answer"), "a form: the answer card as soon as Core has it");
+    assert.equal(p.posts(/\/brief\/reply$/).at(-1).body.form?.formId, "scope", "sent as the form's answers");
     // Its owner updates it after the reply, in this visit: still the answer card, with what the owner says now.
     Object.assign(live("release"), { version: 4, updatedAt: new Date().toISOString(), body: body("Shipping once the docs fix lands.") });
     p.doc.querySelector('[aria-label="Refresh Home"]').click();
@@ -850,7 +859,7 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
     await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Hana", "away from Home");
     p.button("Home").click();
     await waitFor(() => seed()?.classList.contains("is-answer"), "an answer card at the next visit");
-    assert.ok(["release", "budget"].every((key) => card(p, "p-app", key).classList.contains("is-answer")));
+    assert.ok(["release", "budget", "scope"].every((key) => card(p, "p-app", key).classList.contains("is-answer")));
     assert.match(seed().querySelector(".home-answer-reply").textContent, /^You\s*Seed 7$/);
     assert.deepEqual(p.errors, []);
   } finally {
