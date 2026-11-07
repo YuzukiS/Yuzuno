@@ -120,11 +120,12 @@ export function shortcutGroups({ modifier, sendKey, touch, desktopApp, keys = de
       title: t.writing,
       note: touch && sendKey === "auto" ? t.touchNote : undefined,
       shortcuts: [
+        // The composer's Return keys, decided in device-preferences.ts (returnKey), as Home's replies are (YN-3).
         send
-          ? { keys: ["Return"], action: t.send, source: "PastedTextComposer.tsx" }
-          : { keys: ["Return"], action: t.newLine, source: "PastedTextComposer.tsx" },
-        { keys: [modifier, "Return"], action: t.send, source: "PastedTextComposer.tsx" },
-        { keys: ["Shift", "Return"], action: t.newLine, source: "PastedTextComposer.tsx" },
+          ? { keys: ["Return"], action: t.send, source: "PastedTextComposer.tsx, device-preferences.ts" }
+          : { keys: ["Return"], action: t.newLine, source: "PastedTextComposer.tsx, device-preferences.ts" },
+        { keys: [modifier, "Return"], action: t.send, source: "PastedTextComposer.tsx, device-preferences.ts" },
+        { keys: ["Shift", "Return"], action: t.newLine, source: "PastedTextComposer.tsx, device-preferences.ts" },
         { keys: ["/"], action: t.commands, source: "slash-commands.ts" },
         { keys: ["$"], action: t.skills, source: "slash-commands.ts" },
         { keys: ["↑", "↓"], either: true, action: t.commandsMove, source: "slash-commands.ts" },
