@@ -1,6 +1,6 @@
 // The concurrency settings T-108 adds, against fixture HTTP only; no Core:
-// Windows' ceiling in the Jobs panel and an SSH machine's Jobs settings in
-// its editor.
+// Windows' ceiling, shown in the Jobs panel and set in Settings (T-55), and
+// an SSH machine's Jobs settings in its editor.
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -22,10 +22,11 @@ try {
     entry,
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {WindowsJobs} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
+import {WindowsJobs, WindowsJobsSettings} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
 import {MachineEditor} from ${JSON.stringify(path.join(root, "src/MachineEditor.tsx"))};
 const root = createRoot(document.getElementById('root'));
 window.renderWindows = props => root.render(<WindowsJobs {...props}/>);
+window.renderWindowsSettings = props => root.render(<WindowsJobsSettings {...props}/>);
 window.renderEditor = props => root.render(<MachineEditor onCancel={() => {}} {...props}/>);`,
   );
   const result = await build({
@@ -75,13 +76,17 @@ function mount() {
   };
   window.eval(bundle);
   const label = (text) => [...window.document.querySelectorAll("label")].find((l) => l.textContent.trim().startsWith(text));
+  // A label wraps its input, or names it by id (Settings' fields, T-55).
+  const control = (l) => (l?.htmlFor ? window.document.getElementById(l.htmlFor) : l?.querySelector("input"));
   return {
     window, document: window.document, calls, errors, answers,
+    // What was sent: an SSH machine's editor also reads its executor limit (T-35 S3).
+    writes: () => calls.filter((c) => c.method !== "GET"),
     button: (text) => [...window.document.querySelectorAll("button")].find((b) => b.textContent.trim() === text),
-    input: (text) => label(text)?.querySelector("input"),
+    input: (text) => control(label(text)),
     select: (text) => label(text)?.querySelector("select"),
     type(text, value) {
-      const input = label(text).querySelector("input");
+      const input = control(label(text));
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, value);
       input.dispatchEvent(new window.Event("input", { bubbles: true }));
     },
@@ -97,7 +102,7 @@ function mount() {
 test("Windows shows its jobs against the ceiling it keeps inside this host's budget", async () => {
   const page = mount();
   try {
-    page.window.renderWindows({ windows: windows(), onSaved: () => {} });
+    page.window.renderWindows({ windows: windows() });
     await until(() => page.document.querySelector(".jobs-windows"));
     const cell = page.document.querySelector(".jobs-windows");
     assert.equal(cell.querySelector(".jobs-meter-name").textContent, "Windows");
@@ -105,13 +110,21 @@ test("Windows shows its jobs against the ceiling it keeps inside this host's bud
     assert.equal(cell.querySelector(".jobs-meter-bar").getAttribute("aria-label"), "Windows: 1 in use of 2 at once (default)");
     assert.equal(cell.querySelector(".jobs-meter-used").style.width, "50%");
     assert.equal(cell.querySelector(".jobs-reserved-text").textContent, "Shares this host's budget");
+    // The ceiling is set in Settings (T-55): the cell only shows it.
+    assert.equal(!!cell.querySelector("input, details, form, button"), false, "the Windows cell has no editor");
+    // Settings' editor of the same ceiling.
+    page.window.renderWindowsSettings({ windows: windows(), onSaved: () => {} });
+    await until(() => page.input("At most at once"));
+    const group = page.document.querySelector('[aria-label="Windows jobs"]');
     const input = page.input("At most at once");
     assert.equal(input.value, "", "the default is an empty field");
-    assert.equal(input.placeholder, "Default (2)");
-    assert.equal(input.min, "1");
-    assert.equal(input.max, "64");
-    assert.match(cell.textContent, /only a ceiling: Windows jobs still share this host's CPU and RAM budget/);
-    assert.equal(page.button("Use default"), undefined, "nothing to return to while the default applies");
+    assert.equal(input.placeholder, "Default (2)", "the placeholder names the default");
+    assert.equal(input.min, "1", "at least one at once");
+    assert.equal(input.max, "64", "at most 64 at once");
+    assert.equal(group.querySelector(".jobs-settings-now").textContent, "In effect: 2 at once (default).", "the default is said to be in effect");
+    assert.match(group.textContent, /only a ceiling: Windows jobs still share this host's CPU and RAM budget/, "the ceiling is said to be no extra budget");
+    assert.equal(!!page.button("Use default"), false, "nothing to return to while the default applies");
+    assert.deepEqual(page.calls, [], "showing the editor sends nothing");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
@@ -120,26 +133,34 @@ test("the Windows ceiling is saved as a number, returns to the default as null, 
   const page = mount();
   let saved = 0;
   try {
-    page.window.renderWindows({ windows: windows({ maxJobs: 3, set: true, activeCount: 4 }), onSaved: () => saved++ });
-    await until(() => page.button("Save"));
-    const cell = page.document.querySelector(".jobs-windows");
     // Lowered below the slots held: the bar is full and the words say so.
+    page.window.renderWindows({ windows: windows({ maxJobs: 3, set: true, activeCount: 4 }) });
+    await until(() => page.document.querySelector(".jobs-windows"));
+    const cell = page.document.querySelector(".jobs-windows");
     assert.equal(cell.querySelector(".jobs-meter-value").textContent, "4 of 3 in use");
     assert.equal(cell.querySelector(".jobs-meter-used").style.width, "100%");
+    // Settings: what Core says is saved, and each save posted alone.
+    const render = (extra) => page.window.renderWindowsSettings({ windows: windows({ activeCount: 4, ...extra }), onSaved: () => saved++ });
+    render({ maxJobs: 3, set: true });
+    await until(() => page.button("Save"));
+    const group = () => page.document.querySelector('[aria-label="Windows jobs"]');
     assert.equal(page.input("At most at once").value, "3");
     page.type("At most at once", "5");
     page.answers.push([200, { maxJobs: 5, set: true, defaultMaxJobs: 2 }]);
     page.button("Save").click();
     await until(() => saved === 1);
     assert.deepEqual(page.calls[0], { url: "/api/jobs/windows", method: "POST", body: { maxJobs: 5 } });
+    // Read again, the editor shows what Core saved.
+    render({ maxJobs: 5, set: true });
+    await until(() => group().querySelector(".jobs-settings-now").textContent === "In effect: 5 at once.");
+    assert.equal(page.input("At most at once").value, "5", "the field follows the saved ceiling");
     page.answers.push([200, { maxJobs: 2, set: false, defaultMaxJobs: 2 }]);
     page.button("Use default").click();
     await until(() => saved === 2);
     assert.deepEqual(page.calls[1].body, { maxJobs: null });
-    // Opened again, it starts from what is saved (still 3 in these props).
-    cell.querySelector("summary").click();
-    await until(() => cell.querySelector("details").open);
-    assert.equal(page.input("At most at once").value, "3");
+    render({ maxJobs: 2, set: false });
+    await until(() => !page.button("Use default"));
+    assert.equal(page.input("At most at once").value, "", "back at the default, the field is empty");
     // Out of 1–64 the field itself stops the save; nothing is sent.
     page.type("At most at once", "65");
     page.button("Save").click();
@@ -150,11 +171,10 @@ test("the Windows ceiling is saved as a number, returns to the default as null, 
     page.type("At most at once", "6");
     page.answers.push([409, { error: refusal }]);
     page.button("Save").click();
-    await until(() => cell.querySelector("[role=alert]"));
-    assert.equal(cell.querySelector("[role=alert]").textContent, refusal);
+    await until(() => group().querySelector("[role=alert]"));
+    assert.equal(group().querySelector("[role=alert]").textContent, refusal);
     assert.deepEqual(page.calls[2].body, { maxJobs: 6 });
     assert.equal(page.input("At most at once").value, "6", "the typed value stays to try again");
-    assert.equal(cell.querySelector("details").open, true);
     assert.equal(saved, 2);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
@@ -177,7 +197,9 @@ test("an SSH machine's Jobs settings start from what is saved and only a changed
     page.answers.push([200, { ...mini, defaultCwd: "/Users/me/work" }]);
     page.button("Save changes").click();
     await until(() => saved.length === 1);
-    assert.deepEqual(page.calls[0], {
+    assert.deepEqual(page.calls.filter((c) => c.method === "GET").map((c) => c.url), ["/api/executor-slots"],
+      "opening the editor reads its executor limit and nothing else");
+    assert.deepEqual(page.writes()[0], {
       url: "/api/machines/mini", method: "PUT",
       body: { name: "Mac mini", target: "mac-mini", codex: "codex", defaultCwd: "/Users/me/work" },
     });
@@ -189,7 +211,7 @@ test("an SSH machine's Jobs settings start from what is saved and only a changed
     await pause();
     page.button("Save changes").click();
     await until(() => saved.length === 2);
-    assert.deepEqual(page.calls[1].body, {
+    assert.deepEqual(page.writes()[1].body, {
       name: "Mac mini", target: "mac-mini", codex: "codex", defaultCwd: "/Users/me/work",
       maxJobs: null, budget: null, limitMode: "strict",
     });
@@ -199,7 +221,7 @@ test("an SSH machine's Jobs settings start from what is saved and only a changed
     assert.match(page.document.body.textContent, /Jobs there run as they did before limits: their CPU and RAM are recorded, not held/);
     page.button("Save changes").click();
     await until(() => saved.length === 3);
-    assert.deepEqual(page.calls[2].body.limitMode, null);
+    assert.deepEqual(page.writes()[2].body.limitMode, null);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
@@ -218,7 +240,7 @@ test("a machine saved before limits shows the record-only mode it keeps until it
     await pause();
     page.button("Save changes").click();
     await until(() => saved.length === 1);
-    assert.equal("limitMode" in page.calls[0].body, false, JSON.stringify(page.calls[0].body));
+    assert.equal("limitMode" in page.writes()[0].body, false, JSON.stringify(page.writes()[0].body));
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

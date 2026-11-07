@@ -67,6 +67,7 @@ its settings.
 | **Label** and **Id** | How the template is shown, and how a dispatch names it: lowercase letters, digits and hyphens. A new template's id follows its label, or is `template-1`, `template-2` and so on for a label without Latin letters or digits. |
 | **Harness** | Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. |
 | **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. OpenCode uses its own configuration's model and permissions. |
+| **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
 | **At most at once** | At most this many of the template's executors run at once, a whole number from 1 to 64; empty, it has no limit of its own. See [Executors at once](#executors-at-once). |
@@ -76,9 +77,10 @@ its settings.
   Project uses the Workspace's.
 - **Where executors run.** On the machine the dispatch names, else the one
   its template names, else this Core host. A machine is one from the
-  Machines list. Choosing one automatically comes later. OpenCode executors
-  run on this Core host only, and a Codex executor can't run on a machine
-  that keeps its Agents contained.
+  Machines list, or `auto`, for Core to choose one at each dispatch (see
+  [Which machine](#dispatching-from-a-template)). OpenCode executors run on
+  this Core host only, and a Codex executor can't run on a machine that
+  keeps its Agents contained.
 - **Who changes them.** Only you. Saving replaces the whole list, and a save
   against a list changed meanwhile is refused, so the page reloads first.
   Removing a template, or a Project, changes no executor already made.
@@ -134,17 +136,39 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
   was written for it before. A retry of one already made is refused during
   the update too, and gets its recorded answer after it.
 - **Which machine.** A dispatch's `machineId` names a machine from the
-  Machines list, or `local` for this Core host. Left out, the template's
-  machine holds, else this Core host. A machine that isn't registered, or
-  can't run the template's harness, is refused before anything is written.
+  Machines list, `local` for this Core host, or `auto`. Left out, the
+  template's machine holds, else this Core host. A machine that isn't
+  registered, or can't run the template's harness, is refused before
+  anything is written.
+- **`auto`.** Core chooses the machine when it dispatches, from this Core
+  host and every registered machine that can run the template's harness and
+  where the task has a folder: its Project's there, or on this Core host a
+  worktree. A dispatch that carries a worktree, a path on this Core host,
+  runs on this Core host. Of those, in order:
+  1. one with a free executor slot (its own limit not reached);
+  2. the most spare memory of its Jobs budget (the budget less what Jobs
+     reserve now); one with no budget comes after every one with one;
+  3. the most spare CPU;
+  4. this Core host;
+  5. the name.
+
+  The dispatch keeps the choice: which machine, and every candidate's
+  numbers or why it was left out. The task's card has it, as `task_get`'s
+  `executorSlot.choice`, so the order can be read again from those numbers
+  alone. The template, and the dispatch's own request, keep `auto`. With no
+  machine to choose, the dispatch is refused, naming each machine and why.
 
 ## Executors at once
 
 At most this many executors run at the same time in the Workspace: 3 unless
 you change it, a whole number from 1 to 64, in Settings under **Executor
 templates**. A Project can have a limit of its own, on its page, and so can
-a template (its **At most at once**); left empty, only the Workspace's
-applies. Only you change them.
+a template (its **At most at once**) and a machine: in **Machines**, a
+registered machine's in its editor and this Core host's on its card
+(`PUT /api/machines/{id}/executor-slots`, `local` for this Core host); left
+empty, only the Workspace's applies. Only you change them. Lowering a limit
+under the executors running there stops none of them: no more start there
+until fewer hold a slot.
 
 - **The queue.** An executor dispatched while every slot is taken waits.
   Core starts the next one as soon as a slot is free, in the Jobs queue's
@@ -156,7 +180,11 @@ applies. Only you change them.
   template, and counts with it.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
   whether its executor is queued, with its place (`position`, 1 first),
-  starting (with `reason` when its start did not finish), or running.
+  starting (with `reason` when its start did not finish), or running. On a
+  machine `auto` chose, the card's executor chip names it, with every
+  candidate's numbers, or why it was left out, in its title: the lifecycle
+  chip (see [An executor's lifecycle](#an-executors-lifecycle)), which the
+  task's view shows too, or the slot chip for a task without one.
 - **Holding a slot.** An executor holds its slot from when it starts until
   it is closed, by anyone and in any way. A disconnect keeps it, so
   reconnecting never passes the limit. Closing one frees its slot for the
@@ -173,14 +201,26 @@ applies. Only you change them.
   too, or Core can't make the rebuild, Core blocks the task with every
   reason, and a dispatching Agent gets one mail. A start cut off by the time
   limit counts as failed only when closing the executor confirmed its
-  runtime stopped. On another machine, cutting the start off stops nothing
-  there, so Core stops its runtime first and counts the start as failed only
-  when that stop is confirmed. For Codex, the stop must confirm the runtime
-  instance the start recorded; a start cut off before its runtime was
-  recorded has no instance to confirm. For Claude Code, the host must confirm
-  through the start's connection that it stopped the bridge. Anything less
-  holds the executor, as when Core can't tell. A rebuild is made on the first
-  executor's machine. A rebuild that meets an update draining waits for it,
+  runtime stopped.
+- **On another machine.** Neither a cut-off nor the runtime's refusal
+  stops anything there, so a failed start counts as failed only when nothing
+  was launched there, or a stop confirmed it ended. Before Core asks the
+  machine to launch the runtime, it records that it is asking. A start that
+  failed before that (the tunnel or the queue refused it) launched nothing.
+  Once it asked, for Codex the stop must confirm the runtime instance the
+  start recorded, and a start with none recorded has nothing to confirm. For
+  Claude Code, the host instance the start recorded must confirm, through
+  this start's own connection to it, that it stopped the bridge; one with no
+  instance recorded, or no such connection, has nothing to confirm. Anything
+  less holds the executor, as when Core can't tell. A rebuild is made on the
+  first executor's machine, also one `auto` chose; that machine gone, the
+  rebuild is refused, and the task is blocked.
+- **Its record goes with its close.** Closing a failed executor records, in
+  the same write, why it failed and that it is being settled. The close and
+  the record are saved together or not at all: if the record can't be saved,
+  the executor stays open and keeps its slot, as when Core can't tell, with
+  one mail. Once saved, a pass, or the next start after a restart, makes the
+  rebuild or blocks the task. A rebuild that meets an update draining waits for it,
   with no block and no mail: the first pass after the update makes it. So
   does one whose task changed while Core dispatched it: the next pass makes
   it. A change Core meets later, once the rebuilt executor exists, fails that
@@ -199,9 +239,9 @@ applies. Only you change them.
 - **After a restart.** An executor that was starting waits again, at its
   place; one that may have started keeps its slot, and so do running ones.
   Executors open from before this version each hold a slot, as running. A
-  failed start Core was settling when it stopped is finished. If Core had
-  not yet closed the executor, its start waits again. If it had, the first
-  pass makes the rebuild. A rebuild whose dispatch was under way blocks its
+  failed start Core was settling when it stopped is finished: its close
+  carried its record, so the first pass makes the rebuild. A record left
+  without a close by an earlier Core goes, and that start waits again. A rebuild whose dispatch was under way blocks its
   task, "Core restarted while it rebuilt" it, unless that dispatch was made.
 - **Executors only.** Standing Agents don't count, and Jobs keep their own
   machine slots.
@@ -210,13 +250,34 @@ applies. Only you change them.
 
 Once an executor's work is accepted, it is released: Core closes it for good.
 
-- **Who.** The Agent that dispatched it from a template, with
-  `executor_release`, or you, with **Release executor** in its actions
-  (**Manage…**). Anyone else is refused with `not_dispatcher`, and a
-  standing Agent or a lead with `not_executor`. If its dispatcher no longer
-  exists, only you can release it.
+- **Who.** The Agent that dispatched it from a template, or any lead of its
+  task's Project, with `executor_release`, or you, with **Release executor**
+  in its actions (**Manage…**). A lead of another Project is refused with
+  `not_project_lead`, naming both Projects; anyone else with
+  `not_dispatcher`, and a standing Agent or a lead with `not_executor`.
+- **Setting its task done releases it too,** when its dispatcher, a lead of
+  its Project or you set it. An executor can't set its own task done.
+- **While its work is still going, it is archiving.** A Job of its still
+  running, its delivery flow under way, or a pull request operation of its
+  in flight: the release waits for it, and its answer's `archiving.reason`
+  says what it waits for. Meanwhile Core stops the executor's CI watches
+  (what they saw stays), holds its queued Jobs (they are refused once it
+  closes, saying it was released), and it starts nothing new: `job_submit`,
+  `job_run_submit`, `ci_subscribe`, `github_pr_submit`, `review_start` and
+  `delivery_enable` are refused with `executor_archiving`. It can still
+  report with `peer_send`, `task_comment` and `task_submit_result`. Core
+  closes it within seconds of the last of that ending, and after Core
+  restarts too. A close that can't be confirmed (a remote one) is tried
+  again, after a wait that doubles up to five minutes, with the error as the
+  reason.
 - **What it does.** Its runtime stops as on Close, and its slot goes to the
-  next executor waiting. Its history's close says it was a release, and who
+  next executor waiting. Its live Home sections and Asks become its
+  dispatcher's, as a claim would make them, so your replies and their
+  resolve go to the dispatcher. One you dispatched keeps them, and so does
+  one whose dispatcher is closed: they stay orphaned, for an editor to
+  claim, and a reply to one is refused, sending nothing, until someone
+  does. Each task status proposal it left undecided is mailed to its
+  dispatcher if that dispatcher is open; otherwise you decide it. Its history's close says it was a release, and who
   made it. The close, the release and the slot are one change: all of it
   happens, or none of it. An executor that was already closed is only marked
   released. Who released is on the executor (`releasedBy`); an executor
@@ -329,7 +390,54 @@ A released executor takes no more mail or work:
 - **Its proposals are its dispatcher's.** A task status change it proposed
   with `result_publish` is decided by the Agent that dispatched it: the
   proposal shows who, and can't be decided there. You decide it if you
-  dispatched the executor, or if its dispatcher no longer exists.
+  dispatched the executor, or if its dispatcher is closed or no longer
+  exists.
+
+## An executor's lifecycle
+
+Each executor has one state, shown on its row in the sidebar, on its task's
+card and, when it needs you, on Home. Core works it out from what it already
+records (`executor_lifecycle.rs`); the Agent listing has it as `executor`, and
+a task's views as `task.executor`. The rules are tried in this order, and the
+first that holds names the state:
+
+| # | State | Shown as | When |
+| --- | --- | --- | --- |
+| 1 | `archived` | 已归档 · Archived | It was released and closed for good. |
+| 2 | `archiving` | 归档中 · Archiving | It was released and waits for its work to end, or for its close to be confirmed. `reason` says what it waits for. |
+| 3 | `failed` | 失败 · Failed | Its start stopped short: it is held open with its slot and a reason (an uncertain start, or a reopened executor's start that failed), or it is closed while its task is blocked and the task's newest dispatch is still its own. |
+| 4 | `closed` | 已关闭 · Closed | It is closed for another reason: closed by hand, or a failed start that Core rebuilt as a new executor. |
+| 5 | `queued` | 排队中 · Queued | It waits for an executor slot; `position` is its place, 1 first. |
+| 6 | `starting` | 启动中 · Starting | It holds a slot and its runtime is starting. |
+| 7 | `delivering` | 交付待放行 · Awaiting release | Its result is in, on its own dispatch, and its task is in review. |
+| 8 | `running` | 运行中 · Running | Anything else: it is at work. |
+
+Each also names its task (`task.id`, `task.title`), who dispatched it
+(`dispatcher`: `user`, or an Agent with its ID and name), and since when
+(`since`). An executor at work whose task is blocked also has the blocker
+(`blocked`); its state stays what it is.
+
+- **The sidebar.** In each Project's list, leads come first, then the
+  other Agents, then a 任务执行者 · Executors group and, folded by default,
+  已归档 · Archived. With attention order, executors are ordered by: waiting
+  on you, or failed; delivered, awaiting release; running; archiving;
+  queued or starting. A failed executor shows there only while its task is
+  blocked on it; a released one, under Archived and in Closed.
+- **The task's card** shows its executor and its state, with its place
+  while it is queued.
+- **Home's Needs you** lists, for an executor you dispatched, a result
+  waiting for your release, a failed start, and a task blocked while it
+  runs. A lead's executors are that lead's to follow and never show there.
+  Its row opens the executor, where its result and Release are.
+- **Release** says, while the executor is archiving, what it waits for.
+  Asking again tries at once.
+
+Clients read a state again when it changes: an executor's Agent is
+announced as changed (`agent.changed`), and the task board is told with
+`workspace.changed` scope `executors`. An archiving executor's reason is
+announced only when it changes, not on every check. A write to its task
+announces it only when it can change the state: a result, a dispatch, a
+claim, or a new status or blocker. A progress-only update doesn't.
 
 ## Phases
 

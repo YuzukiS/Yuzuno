@@ -78,6 +78,10 @@ fn core_mail_to_an_archived_executor_goes_to_its_dispatcher_naming_it() {
     assert!(inbox(&store, "exec").is_empty(), "nothing waits on the archived executor");
     assert_eq!(inbox(&store, "open")[0]["jobId"], "job-b", "an executor not archived gets its own mail");
     assert_eq!(inbox(&store, "mine")[0]["jobId"], "job-c", "one the user dispatched keeps its mail");
+    let mut wait = job_result("exec", "update");
+    wait["metadata"] = json!({"kind":"update_wait","operationId":"op"});
+    insert_message(&store.db.write().unwrap(), wait).unwrap();
+    assert_eq!(inbox(&store, "lead").len(), 1, "an update's request to end a Turn is not passed on");
 }
 
 /// T-36: an Agent's or the user's mail to an archived executor, and a

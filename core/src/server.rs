@@ -56,6 +56,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_collaboration(port);
     ws.start_jobs();
     ws.start_executor_slots();
+    ws.start_archive_passes();
     ws.start_ci_monitor();
     ws.start_delivery();
     ws.start_merge_queue();
@@ -71,6 +72,8 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .merge(crate::workspace_backup::retention::changes())
         // Only on Core's own port: a phone cannot change its own access.
         .merge(crate::remote_access::changes())
+        // Only on Core's own port: an OpenCode Agent's login passes a key (T-32 slice 4b).
+        .merge(crate::opencode_login::router())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);
@@ -804,6 +807,9 @@ struct ProjectPatch {
     default_dirs: std::collections::BTreeMap<String, Option<String>>,
     #[serde(default)]
     archived: Option<bool>,
+    /// A new task key prefix (T-56).
+    #[serde(default)]
+    key: Option<String>,
 }
 async fn update_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(p): Json<ProjectPatch>) -> ApiResult<Json<Value>> {
     let project = id.clone();
@@ -816,7 +822,7 @@ async fn update_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>
         };
         dirs.insert(machine, folder);
     }
-    let change = crate::projects::ProjectChange { name: p.name, default_dirs: dirs, archived: p.archived };
+    let change = crate::projects::ProjectChange { name: p.name, key: p.key, default_dirs: dirs, archived: p.archived };
     let project = ws.stored(move |store| store.update_project(&id, change)).await?;
     ws.projects_changed();
     Ok(Json(serde_json::to_value(project)?))

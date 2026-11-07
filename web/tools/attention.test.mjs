@@ -141,3 +141,11 @@ test("a lead whose handover proposal waits ranks as needing you, and next needs 
   ], "next needs you goes to the proposal's card on Home, not to the lead's conversation");
   assert.deepEqual(nextTarget(targets, { kind: "handover", projectId: "p1", proposalId: "h1" }), { target: targets[0], index: 0 });
 });
+
+test("an executor the user dispatched goes in next needs you as its Agent, a failed and closed one too (T-36 S3)", () => {
+  const agents = [agent("done"), agent("broke", { closedAt: "2026-11-05T00:00:00Z" }), agent("other")];
+  const executor = (agentId, state) => ({ kind: "executor", projectId: null, agentId, agentName: agentId, state, taskId: "T-1", title: "Work", since: "2026-11-05T00:00:00Z" });
+  const items = [executor("done", "delivering"), executor("broke", "failed"), executor("gone", "failed")];
+  assert.deepEqual(needsYouTargets(items, agents, {}), [{ kind: "agent", agentId: "done" }, { kind: "agent", agentId: "broke" }],
+    "each listed executor once, in Home's order; one no longer listed is left out");
+});

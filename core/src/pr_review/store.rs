@@ -348,7 +348,7 @@ impl Store {
             if let Some(message_id) = notification_id {
                 let task = data["taskId"].as_str().context("Missing review task")?;
                 let public_task =
-                    format!("T-{}", crate::collaboration_store::task_key(&tx, task)?.1);
+                    crate::collaboration_store::task_number(&tx, &crate::collaboration_store::task_key(&tx, task)?.0)?;
                 let mut body = format!("Code review {} has ended: {status}. Model conclusion: {}. Task {public_task}; PR {}. Fixed base {}, head {}, merge base {}. Read the retained report with review_get(taskId={public_task}, reviewId={id}). Findings, CI, task acceptance and merging are separate; this notification does not authorize another review or automatic rework.{}", data["round"], data["conclusion"].as_str().unwrap_or("unknown"), data["url"].as_str().unwrap_or("unknown"), data["baseSha"].as_str().unwrap_or("not resolved"), data["headSha"].as_str().unwrap_or("not resolved"), data["mergeBaseSha"].as_str().unwrap_or("not resolved"), data["error"].as_str().map(|e|format!(" Error: {e}")).unwrap_or_default());
                 if data["kind"] == "continuation" {
                     body.push_str(&format!(" It continued round {} within what that round left of its budget, as a new reviewer run; its coverage and conclusion are over both rounds.", data["continuation"]["parentRound"]));
@@ -455,7 +455,7 @@ impl Store {
             .map(|task| crate::collaboration_store::task_key(&db, task).map(|key| key.0))
             .transpose()?;
         let mut q = db.prepare(
-            "SELECT r.rowid, r.data, t.seq, json_extract(t.data,'$.title') FROM pr_reviews r
+            "SELECT r.rowid, r.data, json_extract(t.data,'$.title') FROM pr_reviews r
              JOIN collaboration_tasks t ON t.id=r.task_id
              WHERE r.rowid<?1 AND (?2 IS NULL OR r.task_id=?2)
                AND (?3 IS NULL OR (json_extract(r.data,'$.requestedBy.kind')='agent'
@@ -474,8 +474,7 @@ impl Store {
                     Ok((
                         r.get::<_, i64>(0)?,
                         r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<String>>(2)?,
                     ))
                 },
             )?
@@ -483,7 +482,7 @@ impl Store {
         let has_more = rows.len() > 20;
         let mut links = std::collections::HashMap::<String, Vec<Value>>::new();
         let mut reviews = Vec::new();
-        for (cursor, raw, seq, title) in rows.into_iter().take(20) {
+        for (cursor, raw, title) in rows.into_iter().take(20) {
             let data: Value = serde_json::from_str(&raw)?;
             let task_id = data["taskId"].as_str().unwrap_or_default().to_owned();
             if !links.contains_key(&task_id) {
@@ -495,7 +494,7 @@ impl Store {
                 .find(|l| l["id"] == data["linkId"])
                 .map_or(Value::Null, |link| outdated(&data, &link["snapshot"]));
             let mut row = super::mcp::index_row(&data);
-            row.insert("taskRef".into(), json!(format!("T-{seq}")));
+            row.insert("taskRef".into(), json!(crate::collaboration_store::task_number(&db, &task_id)?));
             row.insert("taskTitle".into(), json!(title));
             row.insert(
                 "findingsCount".into(),

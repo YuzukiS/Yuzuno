@@ -3,8 +3,10 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { DialogExitGhost } from "./DialogExitGhost";
 import {
   ArrowLeft,
+  ArrowRight,
   BriefcaseBusiness,
   Github,
+  GitMerge,
   GitPullRequest,
   Pause,
   Play,
@@ -18,22 +20,21 @@ import {
 } from "lucide-react";
 import { api, API_BASE, errorText, HttpError, post } from "./api";
 import {
-  BudgetSettings,
   DiskSpace,
   GpuDevices,
+  maxActiveOf,
   UsageMeter,
   useMachineLoad,
+  validBudget,
   WindowsJobs,
-  type BudgetBounds,
-  type BudgetHost,
-  type DiskView,
-  type GpuView,
-  type WindowsJobsView,
+  type JobsBudgetView,
 } from "./JobBudget";
+import type { SettingsEditor } from "./settings-catalog";
 import { ArtifactsCard, ReportedLines, RunCard, PendingAnalysisRuns, TaskSpendCard, type Artifact, type Cost, type Progress } from "./JobRun";
 import { ConversationReviews, openTaskReview, ReviewJobs, type ReviewOpen } from "./ReviewJobs";
+import { MergeQueue, type MergeQueueOpen } from "./MergeQueue";
 import { ProvenanceCard } from "./Provenance";
-import type { Agent } from "./types";
+import type { Agent, Project } from "./types";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import type { HandoffSource } from "./handoff";
 import "./jobs.css";
@@ -47,8 +48,10 @@ import {
 } from "./CiJobs";
 import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
 import { useAppearance } from "./appearance";
+import { useDocumentVisible } from "./document-visible";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { jobsText, type JobsText } from "./jobs-text";
+import { TASK_KEY } from "./intelligent-ui/task-key";
 import {
   JobCard,
   JobDetailHeading,
@@ -64,6 +67,8 @@ type Job = {
   id: string;
   name: string;
   status: string;
+  /** This attempt's id: a retry is a new one. */
+  attempt?: string;
   reason: string | null;
   agentId: string;
   agent: { name: string };
@@ -157,29 +162,8 @@ type Page = {
 const uniqueJobs = (jobs: Job[]) => [
   ...new Map(jobs.map((j) => [j.id, j])).values(),
 ];
-type Budget = {
-  machine: BudgetHost & { name: string; memoryAvailableMiB: number | null; scope: string; suggestedBudget?: Resources };
-  collectorOverhead?: Resources;
-  budget: Resources;
-  /** Absent from Cores before T-160. */
-  budgetBounds?: BudgetBounds;
-  reserved: Resources;
-  queuedCount: number;
-  activeCount: number;
-  /** Absent from Cores before T-95. */
-  disk?: DiskView;
-  /** Absent from Cores before T-106. */
-  gpus?: GpuView;
-  /** Absent from Cores before T-108's Windows ceiling. */
-  windows?: WindowsJobsView;
-};
+type Budget = JobsBudgetView;
 type GpuRequest = { count?: number; devices?: string[]; memoryMiB: number; mode?: "exclusive" | "shared" };
-const validBudget = (value: Budget) =>
-  !!value?.machine &&
-  !!value?.budget &&
-  !!value?.reserved &&
-  Number.isFinite(value.activeCount) &&
-  Number.isFinite(value.queuedCount);
 type Log = {
   text: string;
   offset: number;
@@ -188,6 +172,10 @@ type Log = {
   totalBytes: number;
   truncated: boolean;
 };
+/** Core's finished states (jobs/store.rs, runs.rs TERMINAL): a finished
+ * job's details and output no longer change (T-60). An unknown job is not
+ * one: Core holds its reservation and checks the attempt again. */
+const FINISHED = new Set(["succeeded", "failed", "cancelled", "interrupted", "rejected"]);
 /** Still to finish: holding capacity, queued, or a stage waiting for its upstream. */
 const active = (job: Job) =>
   job.reserved || job.status === "queued" || job.status === "waiting";
@@ -335,13 +323,13 @@ const when = (job: Job, t: JobsText) =>
     .filter(Boolean)
     .join(" · ") || undefined;
 type JobScope = { agentId?: string; taskId?: string };
-type JobSource = "local" | "github_actions" | "reviews";
+type JobSource = "local" | "github_actions" | "reviews" | "merge_queue";
 type JobOpen = JobScope &
   Omit<CiOpen, "source"> &
-  ReviewOpen & {
+  ReviewOpen &
+  MergeQueueOpen & {
     source?: JobSource;
     jobId?: string;
-    settings?: "budget";
     /** Reviews only: this Agent's own reviews, as its conversation's dock lists them (T-25). */
     involving?: string;
   };
@@ -457,14 +445,22 @@ export function Jobs({
   workspaceId,
   agent,
   agents,
+  projects,
   revision,
+  mergeQueueRevision = "",
   disabled,
+  onOpenSettings,
 }: {
   workspaceId: string;
   agent?: Agent | null;
   agents?: Agent[];
+  projects?: Project[];
   revision: string;
+  /** Core said the merge queue changed (T-65). */
+  mergeQueueRevision?: string;
   disabled: boolean;
+  /** Opens Settings at an editor: the machine card's Edit in Settings (T-55). */
+  onOpenSettings?: (editor: SettingsEditor) => void;
 }) {
   const entry = useStrings(entryText);
   const language = useLanguage();
@@ -491,6 +487,7 @@ export function Jobs({
   const [source, setSource] = useState<JobSource>("local");
   const [ciInitial, setCiInitial] = useState<CiOpen>({});
   const [reviewInitial, setReviewInitial] = useState<ReviewOpen>({});
+  const [mergeInitial, setMergeInitial] = useState<MergeQueueOpen>({});
   // Reviews read as the conversation's dock reads them (T-25): those the
   // scope's Agent requested, was sent, or has on its tasks. Other sources
   // keep that Agent's scope.
@@ -501,12 +498,6 @@ export function Jobs({
     nextBefore: null,
   });
   const [budget, setBudget] = useState<Budget | null>(null);
-  const [budgetRequest, setBudgetRequest] = useState(0);
-  const clearBudgetRequest = useCallback(() => setBudgetRequest(0), []);
-  useEffect(() => {
-    // Closing or leaving Local also cancels a request whose budget has not loaded yet.
-    if (!open || source !== "local") clearBudgetRequest();
-  }, [open, source, clearBudgetRequest]);
   // Why this Core gave no budget, e.g. its host cannot run local Jobs.
   const [budgetRefusal, setBudgetRefusal] = useState("");
   const [selected, setSelected] = useState("");
@@ -546,9 +537,15 @@ export function Jobs({
   );
   const pending = useRef<{ key: string; requestId: string } | null>(saved);
   const generation = useRef(0);
+  // The selected job as last read finished (T-60): its details and output are
+  // read no more until the list shows it changed, or it is looked at afresh.
+  const settled = useRef<{ id: string; status: string; attempt?: string } | null>(null);
+  const visible = useDocumentVisible();
   const load = useCallback(
     async (before?: number) => {
       const stamp = generation.current;
+      // The selected job's row in the list just read, if it is there (T-60).
+      let row: Job | undefined;
       try {
         const query = new URLSearchParams(scope);
         if (before) query.set("before", String(before));
@@ -564,6 +561,7 @@ export function Jobs({
         if (stamp !== generation.current) return;
         if (!Array.isArray(next.jobs))
           throw new Error(en.updatedCore);
+        row = [...next.jobs, ...(next.liveJobs || [])].find((j) => j.id === selected);
         setPage((old) => {
           const retained = old.jobs.filter((j) => !active(j));
           const jobs = uniqueJobs([
@@ -602,18 +600,25 @@ export function Jobs({
         return;
       }
       if (!selected) return;
+      // Finished as last read, and the list still says so: nothing to read
+      // again (T-60). A row turning finished gives one more read, then none.
+      const done = settled.current;
+      if (done?.id === selected && (!row || (row.status === done.status && row.attempt === done.attempt))) return;
       // A failure already shown for this job stays until its read succeeds.
       if (stamp === generation.current)
         setDetailRead((old) => (old?.id === selected && old.failure ? old : { id: selected, failure: null }));
       try {
-        const [job, output] = await Promise.all([
-          api<Job>(`/jobs/${selected}`),
-          api<Log>(`/jobs/${selected}/logs`),
-        ]);
+        // Its details first, then its output: output read after a finished
+        // job's details has all of it, so only that read settles the job.
+        // Read side by side, the output could be from before it finished
+        // (T-60, #642 R2 1e487ee9).
+        const job = await api<Job>(`/jobs/${selected}`);
+        const output = await api<Log>(`/jobs/${selected}/logs`);
         if (stamp === generation.current) {
           setDetail(job);
           setLog(output);
           setDetailRead({ id: selected, failure: null });
+          settled.current = FINISHED.has(job.status) ? { id: selected, status: job.status, attempt: job.attempt } : null;
         }
       } catch (e) {
         if (stamp === generation.current) setDetailRead({ id: selected, failure: errorText(e) });
@@ -645,8 +650,8 @@ export function Jobs({
           ? { reviewId: detail.reviewId, taskId: detail.taskId }
           : {},
       );
+      setMergeInitial(detail.source === "merge_queue" ? { entryId: detail.entryId } : {});
       setSelected(detail.jobId || "");
-      setBudgetRequest(detail.settings === "budget" ? (value) => value + 1 : 0);
       setCreating(false);
       setOpen(true);
     };
@@ -659,16 +664,21 @@ export function Jobs({
       window.removeEventListener("yuzuno:handoff-sent", sent);
     };
   }, []);
+  // A finished job is read again once looked at afresh (T-60).
+  useEffect(() => {
+    settled.current = null;
+  }, [open, revision, selected, scope]);
   useEffect(() => {
     generation.current++;
-    if (!open || disabled || source !== "local") return;
+    // Not while the page is hidden: shown again, it reads at once (T-60).
+    if (!open || disabled || source !== "local" || !visible) return;
     void load();
     const timer = setInterval(() => void load(), 3000);
     return () => {
       generation.current++;
       clearInterval(timer);
     };
-  }, [open, disabled, load, revision, source]);
+  }, [open, disabled, load, revision, source, visible]);
   useEffect(() => {
     setPage({ jobs: [], hasMore: false, nextBefore: null });
     setListed(false);
@@ -874,6 +884,13 @@ export function Jobs({
   const shownError = (text: string) =>
     text === en.updatedCore ? t.updatedCore : text === en.envObject ? t.envObject : text === en.unconfirmed ? t.unconfirmed : text;
   const rail = useRef<HTMLDivElement>(null);
+  // Closed by Edit in Settings (T-55): Settings opens at its editor and puts
+  // the focus there, so this dialog gives none back to its trigger. Any other
+  // close gives it back, as Radix does; a new opening forgets the handoff.
+  const handingOff = useRef(false);
+  useEffect(() => {
+    if (open) handingOff.current = false;
+  }, [open]);
   const overlay = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const waiting = budget ? budget.activeCount + budget.queuedCount : 0;
@@ -919,6 +936,11 @@ export function Jobs({
           ref={box}
           className="modal jobs-dialog"
           lang={langTag(language)}
+          onCloseAutoFocus={(event) => {
+            if (!handingOff.current) return;
+            handingOff.current = false;
+            event.preventDefault();
+          }}
           onEscapeKeyDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -1025,6 +1047,22 @@ export function Jobs({
                     openTaskReview({ taskId: review.taskRef, reviewId: review.id });
                   }}
                 />
+              ) : source === "merge_queue" ? (
+                <MergeQueue
+                  key={JSON.stringify([scope, mergeInitial])}
+                  scope={scope}
+                  agents={agents || []}
+                  projects={projects || []}
+                  // Only Core's merge queue changes and reconnects (App's
+                  // mergeQueueRevision), not every Jobs change (T-65 R1).
+                  revision={mergeQueueRevision}
+                  initial={mergeInitial}
+                  onOpenTask={(taskId) => {
+                    // One dialog at a time: Jobs closes, the task opens.
+                    setOpen(false);
+                    window.dispatchEvent(new CustomEvent("yuzuno:open-task-review", { detail: { taskId } }));
+                  }}
+                />
               ) : source === "github_actions" ? (
                 <CiJobs
                   key={JSON.stringify([scope, ciInitial])}
@@ -1047,6 +1085,7 @@ export function Jobs({
                             className="icon-button"
                             onClick={() => {
                               setError("");
+                              settled.current = null;
                               void load();
                             }}
                             aria-label={t.refresh}
@@ -1075,8 +1114,6 @@ export function Jobs({
                   </JobsSourceHeading>
                   {budget && (
                     <JobsBudget
-                      openRequest={budgetRequest}
-                      onOpenRequestHandled={clearBudgetRequest}
                       budget={budget}
                       // GPUs on which the user paused a running job (T-107).
                       pausedGpus={
@@ -1087,6 +1124,16 @@ export function Jobs({
                         )
                       }
                       onSaved={() => void load()}
+                      onEditSettings={
+                        onOpenSettings &&
+                        (() => {
+                          // One dialog at a time: Jobs closes, Settings opens
+                          // and takes the focus (onCloseAutoFocus above).
+                          handingOff.current = true;
+                          setOpen(false);
+                          onOpenSettings("jobs-budget");
+                        })
+                      }
                     />
                   )}
                   {!budget && budgetRefusal && (
@@ -1208,25 +1255,27 @@ const jobSources: { id: JobSource; Icon: typeof BriefcaseBusiness }[] = [
   { id: "local", Icon: BriefcaseBusiness },
   { id: "github_actions", Icon: Github },
   { id: "reviews", Icon: GitPullRequest },
+  { id: "merge_queue", Icon: GitMerge },
 ];
 
 /**
- * The machine at a glance: one bar per resource, the lighter band what jobs
- * have reserved and the solid part what they use now, each with its one
- * setting beneath. The fine print sits in tips.
+ * The machine at a glance, read only: one bar per resource, the lighter band
+ * what jobs have reserved and the solid part what they use now, and how many
+ * hold a slot of how many may. The fine print sits in tips; its settings are
+ * in Settings (T-55), and only the pause of GPU work, an action on running
+ * jobs, stays here.
  */
 function JobsBudget({
-  openRequest,
-  onOpenRequestHandled,
   budget,
   pausedGpus,
   onSaved,
+  onEditSettings,
 }: {
-  openRequest?: number;
-  onOpenRequestHandled?: () => void;
   budget: Budget;
   pausedGpus: Set<string>;
+  /** After a GPU pause or resume, to read it again. */
   onSaved: () => void;
+  onEditSettings?: () => void;
 }) {
   const t = useStrings(jobsText);
   const load = useMachineLoad();
@@ -1237,17 +1286,33 @@ function JobsBudget({
   const unknown = t.unknown;
   const hostAvailable =
     budget.machine.memoryAvailableMiB == null ? t.unknown : memory(budget.machine.memoryAvailableMiB);
+  // A Core before T-55 says nothing of how many may run at once.
+  const slots = maxActiveOf(budget);
   return (
     <div className="jobs-budget">
       <div className="jobs-budget-head">
         <div className="jobs-budget-machine">
           <strong>{budget.machine.name}</strong>
-          <span>{t.activeQueued(budget.activeCount, budget.queuedCount)}</span>
+          {slots ? (
+            <span className="jobs-budget-counts" title={t.slotsTitle(slots.value, slots.set)}>
+              {t.activeOf(budget.activeCount, slots.value, budget.queuedCount)}
+            </span>
+          ) : (
+            <span className="jobs-budget-counts">{t.activeQueued(budget.activeCount, budget.queuedCount)}</span>
+          )}
         </div>
-        <span className="jobs-budget-key" title={t.keyTitle}>
-          <span className="jobs-key is-used" aria-hidden="true" /> {t.inUse}
-          <span className="jobs-key is-reserved" aria-hidden="true" /> {t.reservedKey}
-        </span>
+        <div className="jobs-budget-side">
+          <span className="jobs-budget-key" title={t.keyTitle}>
+            <span className="jobs-key is-used" aria-hidden="true" /> {t.inUse}
+            <span className="jobs-key is-reserved" aria-hidden="true" /> {t.reservedKey}
+          </span>
+          {onEditSettings && (
+            <button type="button" className="quiet-button jobs-budget-edit" title={t.editInSettingsTitle} onClick={onEditSettings}>
+              {t.editInSettings}
+              <ArrowRight size={13} aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </div>
       <div className="jobs-budget-meters">
         <UsageMeter
@@ -1266,16 +1331,6 @@ function JobsBudget({
             <span className="jobs-reserved-text">
               {t.reservedOf(String(cpu(budget.reserved.cpuMillis)), String(cpu(budget.budget.cpuMillis)))}
             </span>
-            <BudgetSettings
-              openRequest={openRequest}
-              onOpenRequestHandled={onOpenRequestHandled}
-              budget={budget.budget}
-              bounds={budget.budgetBounds}
-              host={budget.machine}
-              suggested={budget.machine.suggestedBudget}
-              collector={budget.collectorOverhead}
-              onSaved={onSaved}
-            />
           </span>
         </UsageMeter>
         <UsageMeter
@@ -1297,8 +1352,8 @@ function JobsBudget({
             <span className="jobs-budget-host">{t.hostFree(hostAvailable)}</span>
           </span>
         </UsageMeter>
-        {budget.disk && <DiskSpace disk={budget.disk} onSaved={onSaved} />}
-        {budget.windows?.available && <WindowsJobs windows={budget.windows} onSaved={onSaved} />}
+        {budget.disk && <DiskSpace disk={budget.disk} />}
+        {budget.windows?.available && <WindowsJobs windows={budget.windows} />}
         {budget.gpus && (
           <GpuDevices gpus={budget.gpus} paused={pausedGpus} busyNow={load?.gpus} onSaved={onSaved} />
         )}
@@ -1720,7 +1775,7 @@ function useSuggestion(taskId: string, name: string, command: string) {
     // the next one is asked (review 7a85f843).
     setSuggestion(null);
     const task = taskId.trim();
-    if (!/^T-[1-9]\d*$/.test(task) || (!name.trim() && !command.trim())) return;
+    if (!TASK_KEY.test(task) || (!name.trim() && !command.trim())) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       const query = new URLSearchParams({ taskId: task, name: name.trim() });

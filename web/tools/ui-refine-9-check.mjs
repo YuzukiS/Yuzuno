@@ -603,17 +603,30 @@ try {
       return { height, meters };
     });
 
-    await step(`${theme}: the machine card's settings still open in place`, async () => {
+    // T-55: the card's settings moved to Settings; the card only shows, and
+    // keeps the pause of GPU work, an action on running jobs.
+    await step(`${theme}: the machine card's settings open in Settings, at the Core host budget`, async () => {
       const card = page.locator(".jobs-budget");
-      for (const summary of ["Machine budget", "Disk reserve", "Exclusive"]) {
-        await card.locator("summary", { hasText: summary }).click();
-        await card.locator("details[open] form").first().waitFor();
-        await card.locator("summary", { hasText: summary }).click();
-      }
-      assert.equal(await card.locator("details[open]").count(), 0);
+      assert.equal(await card.locator("details, form, input").count(), 0, "no editor on the card");
       assert.ok(await card.getByRole("button", { name: "Pause GPU work" }).isVisible());
-      await page.keyboard.press("Escape");
-      await page.getByRole("dialog").waitFor({ state: "detached" });
+      await card.getByRole("button", { name: "Edit in Settings", exact: true }).click();
+      const settings = page.locator(".modal.settings-modal");
+      await settings.waitFor();
+      try {
+        const editor = settings.locator("#settings-editor-jobs-budget:not([hidden])");
+        for (const group of ["This host's Job budget", "Disk reserve", "GPU 0 · NVIDIA GeForce RTX 5090"])
+          await editor.locator(`[aria-label="${group}"]`).waitFor();
+        // By role: a closing dialog's fading copy keeps its classes, not its role.
+        assert.equal(await page.getByRole("dialog", { name: "Jobs", exact: true }).count(), 0, "Jobs closed as Settings opened");
+        assert.equal(await editor.locator(".jobs-gpu-pause").count(), 0, "the GPU pause stays on the card");
+        assert.ok(await noSideways(".modal.settings-modal"));
+        await shot(settings, `settings-jobs-budget-${theme}.png`);
+      } finally {
+        if (await settings.count()) {
+          await page.keyboard.press("Escape");
+          await settings.waitFor({ state: "detached" });
+        }
+      }
     });
 
     await step(`${theme}: Settings has the desktop app under Updates, in the eight-category settings center`, async () => {

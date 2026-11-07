@@ -24,6 +24,7 @@ import { InputPreferencesSection } from "./InputPreferences";
 import { PortalPreferencesSection } from "./portal/PortalPreferences";
 import { LanguagePreferencesSection } from "./LanguagePreferences";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
+import { useDocumentVisible } from "./document-visible";
 import { TimePreferencesSection } from "./TimePreferences";
 import { ShortcutHelpSection } from "./ShortcutHelp";
 import { DeviceTransferSection } from "./DeviceTransfer";
@@ -37,6 +38,7 @@ import { ReviewSettings } from "./ReviewSettings";
 import { AutoContinueDefault } from "./QuotaResume";
 import { AgentDefaults } from "./AgentDefaults";
 import { ExecutorTemplates } from "./ExecutorTemplates";
+import { JobsBudgetEditor, RemoteJobsEditor } from "./JobsSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { WorkspaceBackup } from "./WorkspaceBackup";
@@ -108,8 +110,12 @@ export function useWorkspaceUpdates(enabled: boolean, open: boolean) {
     },
     [enabled],
   );
+  // Not read while the page is hidden, unless an update is under way (its
+  // reload must follow); shown again, it reads at once (T-60).
+  const visible = useDocumentVisible();
+  const paused = !visible && !updateInProgress(status?.operation?.phase);
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || paused) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
@@ -125,7 +131,7 @@ export function useWorkspaceUpdates(enabled: boolean, open: boolean) {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [enabled, open, status?.operation?.phase, refresh]);
+  }, [enabled, open, status?.operation?.phase, refresh, paused]);
   const pageRelease = loadedRelease();
   const needsReload =
     !!pageRelease &&
@@ -1044,6 +1050,14 @@ export function WorkspaceUpdates({
           {tab === "transfer" && <DeviceTransferSection />}
           {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "executor-templates" && <ExecutorTemplates active={open} />}
+          {/* Jobs & resources (T-55): this host's settings, the Jobs card's before. */}
+          {tab === "jobs-budget" && <JobsBudgetEditor active={open && visible} />}
+          {tab === "jobs-remote" && (
+            <RemoteJobsEditor
+              active={open && visible}
+              onOpenMachines={navigation && !navigation.disabled ? () => navigation.onNavigate({ kind: "machines" }) : undefined}
+            />
+          )}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "auto-continue" && <AutoContinueDefault active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}

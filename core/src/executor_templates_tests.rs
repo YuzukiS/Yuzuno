@@ -146,8 +146,7 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         (with(json!({"harness":"claude","permissionPreset":"auto"})), "A Codex permission mode does not apply to a Claude Code template"),
         (with(json!({"harness":"claude","reasoningEffort":"high","model":"m"})), "A Claude Code template takes no reasoning effort"),
         (with(json!({"harness":"opencode","model":"m"})), "An OpenCode template takes no model"),
-        // T-35 S3a: a machine is named; choosing one by itself comes later.
-        (with(json!({"machineId":"auto"})), "Choosing the machine by itself isn't available yet"),
+        // T-35 S3a: a machine is named by its id.
         (with(json!({"machineId":""})), "A machine is named by its id, at most 128 characters"),
         (with(json!({"harness":"opencode","machineId":"lab-mac"})), "OpenCode executors run on this Core host only, not on lab-mac"),
         (with(json!({"instructions":"x".repeat(MAX_INSTRUCTIONS + 1)})), "A template's instructions are at most 8 KiB"),
@@ -165,6 +164,11 @@ fn a_template_is_checked_strictly_and_read_leniently() {
     }
     let named = parse_save(&[with(json!({"machineId":"lab-mac"}))], true, &[]).unwrap();
     assert_eq!(named[0].machine_id.as_deref(), Some("lab-mac"), "a template may name a machine (T-35 S3a)");
+    // T-35 S3b: or say `auto`, for Core to choose at each dispatch; an OpenCode one's chooses this Core host.
+    for harness in ["codex", "opencode"] {
+        let auto = parse_save(&[with(json!({"harness":harness,"machineId":"auto"}))], true, &[]).unwrap();
+        assert_eq!(auto[0].machine_id.as_deref(), Some("auto"), "{harness}: a template may say auto");
+    }
     for (limit, kept) in [(json!(1), Some(1)), (json!(64), Some(64)), (Value::Null, None)] {
         let saved = parse_save(&[with(json!({"maxConcurrent":limit}))], true, &[]).unwrap();
         assert_eq!(saved[0].max_concurrent, kept, "{limit}");

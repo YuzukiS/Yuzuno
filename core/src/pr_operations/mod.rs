@@ -303,6 +303,8 @@ async fn launch(
         ws.changes
             .send(json!({"prOperations":true,"collaboration":true}));
         ws.collaboration_wakeup.notify_one();
+        // A release may wait for this operation (T-36).
+        ws.wake_archive_passes();
     });
     Ok(response)
 }

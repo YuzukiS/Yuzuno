@@ -101,7 +101,7 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
                     reference.get("taskId").is_some(),
                     "invalid_input: a reference needs url, or taskId with activitySeq"
                 );
-                let (id, number) = task_key(db, &required_text(reference, "taskId", 128)?)?;
+                let (id, _) = task_key(db, &required_text(reference, "taskId", 128)?)?;
                 let seq = reference["activitySeq"]
                     .as_i64()
                     .filter(|s| *s > 0)
@@ -110,9 +110,9 @@ pub(super) fn validate(db: &Connection, value: &Value) -> Result<Value> {
                 ensure!(
                     exists,
                     "invalid_input: {} has no activity with seq {seq}",
-                    task_number(number)
+                    task_shown(db, &id)
                 );
-                reference["taskId"] = json!(task_number(number));
+                reference["taskId"] = json!(task_number(db, &id)?);
             }
         }
     }
@@ -346,10 +346,10 @@ pub(super) fn snapshot(db: &Connection, task: &SharedTask, input: &Value, sha_ch
     }
     let supplement = optional_text(input, "body", 16_384)?.unwrap_or_default();
     let mut snapshot = json!({"schemaVersion":1,"dispatchId":dispatch.id,"capturedAt":dispatch.dispatched_at,
-        "task":{"id":task_number(task.seq),"version":task.version,"title":task.title,"description":task.description,"progress":task.progress,"blocker":task.blocker,"updatedAt":task.updated_at},
+        "task":{"id":task_number(db, &task.id)?,"version":task.version,"title":task.title,"description":task.description,"progress":task.progress,"blocker":task.blocker,"updatedAt":task.updated_at},
         "project":project,"repositories":repositories,"github":links,"registeredSource":registration,"overriddenFields":overridden_fields,"effective":effective,
         "supplement":supplement,"returnTo":dispatch.notification_recipient,"requestedBy":dispatch.requested_by,"executor":dispatch.executor,
-        "source":dispatch.source,"latestTask":{"taskId":task_number(task.seq)},
+        "source":dispatch.source,"latestTask":{"taskId":task_number(db, &task.id)?},
         "returnRequirementsDefault":"Report outcome and validation/evidence on this same task using task_submit_result with the original dispatchId. Default review is a submission, not independent approval, merge or release. No extra peer_send is needed for Agent dispatch."});
     if let Some(cold) = cold {
         snapshot["template"] = cold.template;

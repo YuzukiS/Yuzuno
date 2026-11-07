@@ -27,7 +27,10 @@ const ciPage = {runs:[ciRun],subscriptions:[ciSub],hasMore:false,nextBefore:null
 const resources = { cpuMillis: 500, memoryMiB: 128, swapMiB: 0 };
 const job = { usage:{MemoryCurrent:'18446744073709551615',MemoryPeak:'18446744073709551615'}, id: 'job-one', requestId: 'accepted', name: '中文 training', taskRef: 'T-47', agentId: 'a', agent: { name: 'Mori' }, machine: { name: 'Local WSL' }, status: 'unknown', reserved: true, reason: 'Reservation held until process groups are verified', resources, reservation: { cpuMillis: 600, memoryMiB: 192, swapMiB: 0 }, cursor: 1, createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), finishedAt: null, argv: ['/usr/bin/true'], cwd: '/workspace', env: {}, outputs: ['report.json'] };
 const page = jobs => ({ jobs, hasMore: false, nextBefore: null });
-function mount(handler = () => page([]), stored = {}) {
+// `pollMs`: the panel's 3 s poll runs every pollMs instead, its firings
+// counted (`ticks`); every other timer is as the product sets it (T-60).
+// `logs`: answers a job's output instead of the fixed one.
+function mount(handler = () => page([]), stored = {}, { pollMs, logs } = {}) {
   const vc = new VirtualConsole(), errors = [], calls = [];
   vc.on('jsdomError', e => errors.push(e.message));
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://isolated.test', runScripts: 'outside-only', pretendToBeVisual: true, virtualConsole: vc });
@@ -38,15 +41,33 @@ function mount(handler = () => page([]), stored = {}) {
     calls.push({ url, body });
     let value;
     if (url === '/api/jobs/budget' && !body) value = { budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 }, reserved: resources, activeCount: 1, queuedCount: 1, collectorOverhead: {cpuMillis:100,memoryMiB:64,swapMiB:0}, budgetBounds: {minimum:{cpuMillis:200,memoryMiB:128,swapMiB:0},maximum:{cpuMillis:4096000,memoryMiB:67108864,swapMiB:67108864}}, machine: { name: 'WSL', memoryAvailableMiB: 2000, logicalCpus: 32, memoryTotalMiB: 40107, swapTotalMiB: 16384, hostHeadroomMiB: 2048, suggestedBudget:{cpuMillis:4000,memoryMiB:8192,swapMiB:0} } };
-    else if (url.endsWith('/logs')) value = { text: 'bounded output', oldestOffset: 1000, totalBytes: 1200 };
+    else if (url.endsWith('/logs')) value = logs ? await logs(url) : { text: 'bounded output', oldestOffset: 1000, totalBytes: 1200 };
     else value = await handler(url, body);
     if (value instanceof Error) throw value;
     const status = value?.httpStatus || 200;
     return { ok: status < 400, status, json: async () => structuredClone(value), text: async () => JSON.stringify(value) };
   };
+  let ticks = 0;
+  if (pollMs) {
+    const every = w.setInterval.bind(w);
+    w.setInterval = (fn, ms, ...rest) => ms === 3000 ? every(() => { ticks++; fn(); }, pollMs, ...rest) : every(fn, ms, ...rest);
+  }
   w.eval(bundle); w.renderJobs(props);
-  return { window: w, doc: w.document, calls, errors, close: () => w.close() };
+  return { window: w, doc: w.document, calls, errors, ticks: () => ticks, close: () => w.close() };
 }
+// The page shown, or hidden as a hidden tab is, with its visibilitychange.
+function showPage(p, shown) {
+  Object.defineProperty(p.doc, 'visibilityState', { configurable: true, get: () => shown ? 'visible' : 'hidden' });
+  p.doc.dispatchEvent(new p.window.Event('visibilitychange'));
+}
+// Until `n` of the page's own 3 s intervals (mapped to pollMs) have really
+// fired, counted on a timer of the test's: an interval passed, not a sleep.
+async function intervals(p, n) {
+  let fired = 0;
+  const probe = p.window.setInterval(() => fired++, 3000);
+  try { await until(() => fired >= n); } finally { p.window.clearInterval(probe); }
+}
+const reads = (p, url) => p.calls.filter(c => c.url === url).length;
 const button = (p, text) => [...p.doc.querySelectorAll('button')].find(b => b.textContent.trim() === text);
 const field = (p, text) => [...p.doc.querySelectorAll('label')].find(l => l.textContent.startsWith(text))?.querySelector('input,textarea');
 async function fill(p, text, value) { const el = field(p, text); assert.equal(!!el, true, `Missing ${text} field`); Object.getOwnPropertyDescriptor(el.tagName === 'TEXTAREA' ? p.window.HTMLTextAreaElement.prototype : p.window.HTMLInputElement.prototype, 'value').set.call(el, value); el.dispatchEvent(new p.window.Event('input', { bubbles: true })); await wait(); }
@@ -69,6 +90,132 @@ test('unknown job stays protected, shows resources and bounded output, Escape on
     p.doc.querySelector('[role="dialog"]').dispatchEvent(new p.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     await until(() => !p.doc.querySelector('[role="dialog"]'));
     assert.equal(interrupts, 0); assert.equal(p.calls.some(c => c.url.endsWith('/cancel')), false);
+  } finally { p.close(); }
+});
+
+// T-60: the panel's 3 s poll asks Core for the list, the budget (a GPU
+// sample), and the selected job's details and output. None of it while the
+// page is hidden; shown again, it reads at once, then every 3 s.
+test('the Jobs panel reads nothing while the page is hidden, and reads at once when it is shown again', async () => {
+  const running = { ...job, status: 'running', reason: 'Running with verified cgroup limits' };
+  const p = mount(url => url === '/api/jobs/job-one' ? running : page([running]), {}, { pollMs: 1000 });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click();
+    await until(() => p.doc.querySelector('.job-log'));
+    await until(() => p.ticks() >= 1);
+    const jobsReads = () => p.calls.filter(c => c.url.startsWith('/api/jobs')).length;
+    showPage(p, false);
+    await wait();
+    const hidden = jobsReads();
+    await intervals(p, 2);
+    assert.equal(jobsReads(), hidden, 'no Jobs read while the page is hidden, over two intervals');
+    const shownAt = Date.now();
+    showPage(p, true);
+    await until(() => jobsReads() > hidden);
+    assert.ok(Date.now() - shownAt < 600, `the Jobs panel reads at once when it is shown again (after ${Date.now() - shownAt} ms)`);
+    for (const url of ['/api/jobs/budget', '/api/jobs/job-one', '/api/jobs/job-one/logs'])
+      assert.ok(reads(p, url) > 0, `${url} is read`);
+    const ticked = p.ticks(), budget = reads(p, '/api/jobs/budget');
+    await until(() => p.ticks() > ticked && reads(p, '/api/jobs/budget') > budget);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+// T-60: a finished job's details and output no longer change. Read once it
+// is seen finished; again only once the list shows it changed (a new
+// attempt), or on Refresh. The list goes on being read.
+test('a finished job: its details and output are read once, until it changes or Refresh', async () => {
+  const finished = { ...job, status: 'succeeded', reserved: false, attempt: 'attempt-one', finishedAt: new Date().toISOString() };
+  const p = mount(url => url === '/api/jobs/job-one' ? finished : page([finished]), {}, { pollMs: 300 });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click();
+    await until(() => p.doc.querySelector('.job-log'));
+    const list = () => p.calls.filter(c => c.url.startsWith('/api/jobs?')).length;
+    const listed = list(), ticked = p.ticks();
+    await until(() => p.ticks() >= ticked + 3);
+    await wait();
+    assert.equal(reads(p, '/api/jobs/job-one'), 1, 'a finished job: its details are read once over three ticks');
+    assert.equal(reads(p, '/api/jobs/job-one/logs'), 1, 'a finished job: its output is read once over three ticks');
+    assert.ok(list() >= listed + 3, 'the list goes on being read');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+  // Running, then finished: read each tick, once more when the list shows
+  // it finished, then no more. A new attempt in the list, or Refresh, reads
+  // it again.
+  let current = { ...job, status: 'running', reason: 'Running with verified cgroup limits', attempt: 'attempt-one' };
+  const q = mount(url => url === '/api/jobs/job-one' ? current : page([current]), {}, { pollMs: 300 });
+  try {
+    await until(() => q.doc.querySelector('.conversation-job'));
+    q.doc.querySelector('.conversation-job').click();
+    await until(() => q.doc.querySelector('.job-log'));
+    await until(() => reads(q, '/api/jobs/job-one') >= 2);
+    const ticks = async n => { const at = q.ticks(); await until(() => q.ticks() >= at + n); await wait(); };
+    current = { ...current, status: 'failed', reserved: false, finishedAt: new Date().toISOString() };
+    const before = reads(q, '/api/jobs/job-one');
+    await ticks(3);
+    assert.equal(reads(q, '/api/jobs/job-one'), before + 1, 'read once more when the list shows it finished, then no more');
+    current = { ...current, status: 'failed', attempt: 'attempt-two' };
+    const settled = reads(q, '/api/jobs/job-one');
+    await ticks(2);
+    assert.equal(reads(q, '/api/jobs/job-one'), settled + 1, 'a new attempt in the list reads it again');
+    const again = reads(q, '/api/jobs/job-one'), listed = q.calls.filter(c => c.url.startsWith('/api/jobs?')).length;
+    q.doc.querySelector('button[aria-label="Refresh jobs"]').click();
+    await until(() => q.calls.filter(c => c.url.startsWith('/api/jobs?')).length > listed);
+    await wait(); await wait();
+    assert.equal(reads(q, '/api/jobs/job-one'), again + 1, 'Refresh reads it again');
+    assert.deepEqual(q.errors, []);
+  } finally { q.close(); }
+});
+
+// T-60: unknown is not finished. Core holds the reservation and checks the
+// attempt again, so its details and output go on being read.
+test('an unknown job: its details and output keep being read', async () => {
+  const p = mount(url => url === '/api/jobs/job-one' ? job : page([job]), {}, { pollMs: 300 });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click();
+    await until(() => p.doc.querySelector('.job-log'));
+    const ticked = p.ticks(), details = reads(p, '/api/jobs/job-one'), output = reads(p, '/api/jobs/job-one/logs');
+    await until(() => p.ticks() >= ticked + 3);
+    await wait();
+    assert.ok(reads(p, '/api/jobs/job-one') >= details + 2, 'an unknown job: its details keep being read');
+    assert.ok(reads(p, '/api/jobs/job-one/logs') >= output + 2, 'an unknown job: its output keeps being read');
+  } finally { p.close(); }
+});
+
+// T-60, #642 R2 1e487ee9: the job finishes while its details are being read.
+// Its output answered before then lacks the last lines, so the job settles
+// only on output read after its finish was seen: one more read, then none.
+test('a job that finishes during a read settles on output read after its finish, not on output read beside it', async () => {
+  const running = { ...job, status: 'running', reserved: true, reason: 'Running with verified cgroup limits', attempt: 'attempt-one' };
+  let finishing = false, finished = false, readAfterFinish = 0;
+  const current = () => finished ? { ...running, status: 'succeeded', reserved: false, finishedAt: new Date().toISOString() } : running;
+  const p = mount(async url => {
+    if (url !== '/api/jobs/job-one') return page([current()]);
+    // The detail read the finish lands in: answered after the output.
+    if (finishing && !finished) { await new Promise(r => setTimeout(r, 60)); finished = true; }
+    return current();
+  }, {}, {
+    pollMs: 300,
+    logs: () => {
+      if (finished) readAfterFinish++;
+      return finished ? { text: 'first lines\nlast lines', oldestOffset: 0, totalBytes: 22 } : { text: 'first lines', oldestOffset: 0, totalBytes: 11 };
+    },
+  });
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click();
+    await until(() => p.doc.querySelector('.job-log')?.textContent.includes('first lines'));
+    finishing = true;
+    await until(() => finished);
+    const ticked = p.ticks();
+    await until(() => p.ticks() >= ticked + 3);
+    await wait();
+    assert.match(p.doc.querySelector('.job-log').textContent, /last lines/, 'the output read after its finish is shown');
+    assert.equal(readAfterFinish, 1, 'its output is read once after its finish, then no more');
+    assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
 
@@ -251,7 +398,7 @@ test('the submit form shows what earlier runs of the same name or command sugges
     return page([]);
   };
   const posted = p => p.calls.filter(c => c.url === '/api/jobs' && c.body).map(c => c.body.resources);
-  // The submit form's own fields: the machine budget above it has a CPU quota too.
+  // The submit form's own fields, wherever else a CPU quota is named.
   const limit = (p, text) => [...p.doc.querySelectorAll('.job-form label')].find(l => l.textContent.startsWith(text))?.querySelector('input');
   async function set(p, text, value) {
     const el = limit(p, text);
@@ -318,6 +465,32 @@ test('the suggestion for the last draft goes as soon as the name changes, and th
     assert.ok(!button(p, 'Use suggestion'), 'nothing from the last draft can be used');
     await until(() => p.doc.querySelector('.job-suggestion'));
     assert.match(p.doc.querySelector('.job-suggestion p').textContent, /Suggested: 8\.0 GiB RAM and 3\.0 CPU/);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
+test('T-56 the form asks what earlier runs suggest for a task named by a Project task key, and for no lowercase or malformed one', async () => {
+  const asked = [];
+  const p = mount(url => {
+    if (url.startsWith('/api/jobs/suggestion?')) {
+      asked.push(Object.fromEntries(new URL(url, 'http://isolated.test').searchParams).taskId);
+      return { suggestion: null };
+    }
+    return page([]);
+  });
+  try {
+    await open(p); button(p, 'New job').click(); await wait();
+    await fill(p, 'Name', 'K4 calibration'); await fill(p, 'Command', 'python3 calib.py');
+    // Each stays past the 300 ms the form waits before it asks.
+    for (const typed of ['yn-3', 'YN3', 'Y-3']) {
+      await fill(p, 'Existing task', typed);
+      await new Promise(r => setTimeout(r, 600));
+    }
+    await fill(p, 'Existing task', 'YN-3');
+    // Bounded: a form that never asks fails at the assertion below, in its words.
+    for (let n = 0; n < 100 && !asked.length; n++) await wait();
+    // Asked in order: one asked for any of those would be ahead of this one.
+    assert.deepEqual(asked, ['YN-3'], 'a Project task key is asked about, and nothing before it');
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -643,36 +816,9 @@ test('the machine card puts what jobs use on the bars of what they reserve, and 
   } finally { q.close(); }
 });
 
-test('machine budget takes the whole host, keeps the default apart, includes collectors and retains validation errors', async () => {
-  let saves=0;
-  const p=mount((url, body) => {
-    if(url==='/api/jobs/budget' && body) return ++saves===1 ? {httpStatus:400,error:'Budget must be 200–4096000 mCPU, 128–67108864 MiB RAM and 0–67108864 MiB swap (including collectors)'} : body;
-    return page([]);
-  });
-  try {
-    await open(p);
-    p.doc.querySelector('.job-budget-settings summary').click(); await wait();
-    const form=p.doc.querySelector('.job-budget-settings');
-    // T-160: this host's totals are for reference; no share of them is a ceiling.
-    assert.match(form.textContent,/this host has 32 CPU · 40107 MiB RAM · 16384 MiB swap; the budget may use all of it\. Conservative default: 4 CPU/);
-    assert.match(form.textContent,/has the RAM it needs free at that moment, keeping 2048 MiB for Core and the desktop\. CPU is a shared quota, not reserved cores/);
-    assert.doesNotMatch(form.textContent,/ceiling/i);
-    assert.match(form.textContent,/4.2 CPU and 8320 MiB/);
-    assert.match(form.textContent,/Running jobs keep their original limits/);
-    assert.deepEqual(['CPU quota','RAM (MiB)','Swap (MiB)'].map(name=>[field(p,name).min,field(p,name).max]),[['0.2','4096'],['128','67108864'],['0','67108864']]);
-    await fill(p,'CPU quota','32'); await fill(p,'RAM (MiB)','40107'); await fill(p,'Swap (MiB)','16384');
-    for (const name of ['CPU quota','RAM (MiB)','Swap (MiB)']) assert.equal(field(p,name).validity.valid,true,name);
-    button(p,'Save budget').click(); await until(()=>form.querySelector('[role="alert"]'));
-    assert.match(form.textContent,/Budget must be 200–4096000 mCPU/);
-    assert.equal(field(p,'CPU quota').value,'32');
-    assert.equal(form.open,true);
-    const payload=p.calls.find(c=>c.url==='/api/jobs/budget' && c.body).body;
-    assert.deepEqual(payload,{cpuMillis:32000,memoryMiB:40107,swapMiB:16384});
-    button(p,'Save budget').click(); await until(()=>!form.open);
-    assert.equal(saves,2);
-    assert.equal(p.calls.some(c=>c.url.endsWith('/cancel') || (c.url==='/api/jobs' && c.body)),false);
-  } finally {p.close();}
-});
+// The machine budget's editor, with its guarantees (the whole host, the default
+// apart, collectors, validation errors kept), is in Settings now (T-55):
+// jobs-settings-ui.test.mjs; the card itself is read only.
 
 const review = (id, cursor, patch = {}) => ({ id, taskId: 'task-one', taskRef: 'T-1', taskTitle: 'Deliver PR', linkId: '7:pull:1', repository: 'o/r', number: 7, url: 'https://github.com/o/r/pull/7', round: 1, status: 'completed', phase: 'completed', conclusion: 'no_findings', requestedHarness: 'codex', requestedModel: 'gpt-6.1-sol', actualHarness: 'codex', actualModel: 'gpt-6.1-sol', baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), mergeBaseSha: 'c'.repeat(40), createdAt: '2026-10-15T01:00:00Z', finishedAt: '2026-10-15T01:10:00Z', error: null, requestedBy: { kind: 'agent', id: 'a', name: 'Mori' }, findingsCount: 0, outdated: false, cursor, ...patch });
 const reviewPage = (reviews, more = null) => ({ reviews, hasMore: more != null, nextBefore: more });

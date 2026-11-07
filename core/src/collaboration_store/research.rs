@@ -486,12 +486,12 @@ fn fix_source(db: &Connection, task: &SharedTask, source: &Value) -> Result<Valu
         }
         Some("task") => {
             allowed(source, &["kind", "label", "taskId", "activitySeq"])?;
-            let (cited, number) = task_key(db, &required_text(source, "taskId", 128)?)?;
+            let (cited, _) = task_key(db, &required_text(source, "taskId", 128)?)?;
             let seq = positive(source, "activitySeq")?;
             let row = one_activity(db, &cited, seq)?
-                .with_context(|| format!("invalid_input: {} has no activity {seq}", task_number(number)))?;
+                .with_context(|| format!("invalid_input: {} has no activity {seq}", task_shown(db, &cited)))?;
             let record = cited_record(&row).with_context(|| {
-                format!("invalid_input: activity {seq} of {} is neither a research record nor a result", task_number(number))
+                format!("invalid_input: activity {seq} of {} is neither a research record nor a result", task_shown(db, &cited))
             })?;
             json!({"kind":"task","taskId":cited,"activitySeq":seq,"record":record,
                 "producer":row["actor"],"at":row["at"]})
@@ -571,8 +571,8 @@ pub(super) fn project(db: &Connection, activity: &mut Value) -> Result<()> {
         for source in sources_mut(activity) {
             if source["kind"] == "task" {
                 if let Some(reference) = source["taskId"].as_str() {
-                    if let Ok((_, number)) = task_key(db, reference) {
-                        source["taskId"] = json!(task_number(number));
+                    if let Ok((id, _)) = task_key(db, reference) {
+                        source["taskId"] = json!(task_number(db, &id)?);
                     }
                 }
             }
@@ -670,7 +670,7 @@ fn view(db: &Connection, task: &SharedTask, seq: i64, row: Value) -> Result<Valu
         }
     }
     project(db, &mut out)?;
-    out["taskId"] = json!(task_number(task.seq));
+    out["taskId"] = json!(task_number(db, &task.id)?);
     Ok(out)
 }
 
@@ -680,7 +680,7 @@ pub(super) fn get(db: &Connection, input: &Value) -> Result<Value> {
     let task = load_task(db, &required_text(input, "taskId", 128)?)?;
     let seq = positive(input, "activitySeq")?;
     let row = record_in(db, &task.id, seq)?.with_context(|| {
-        format!("not_found: activity {seq} is not a research record of {}", task_number(task.seq))
+        format!("not_found: activity {seq} is not a research record of {}", task_shown(db, &task.id))
     })?;
     let method = match row["research"]["method"]["activitySeq"].as_i64() {
         Some(cited) => match record_in(db, &task.id, cited)? {
@@ -699,16 +699,17 @@ pub(super) fn get(db: &Connection, input: &Value) -> Result<Value> {
 /// who produced it, and whether it can be read now. The desk reads it through
 /// this, as the task's own view does; nothing is copied into the Brief.
 pub(crate) fn desk_source(db: &Connection, reference: &str, seq: i64) -> Result<Value> {
-    let Ok((task, number)) = task_key(db, reference) else {
+    let Ok((task, _)) = task_key(db, reference) else {
         return Ok(json!({"available":false,"reason":"task_not_found"}));
     };
+    let number = task_number(db, &task)?;
     let Some(row) = one_activity(db, &task, seq)? else {
-        return Ok(json!({"taskId":task_number(number),"activitySeq":seq,"available":false,"reason":"activity_not_found"}));
+        return Ok(json!({"taskId":number,"activitySeq":seq,"available":false,"reason":"activity_not_found"}));
     };
     let Some(record) = cited_record(&row) else {
-        return Ok(json!({"taskId":task_number(number),"activitySeq":seq,"available":false,"reason":"not_research"}));
+        return Ok(json!({"taskId":number,"activitySeq":seq,"available":false,"reason":"not_research"}));
     };
-    let mut out = json!({"taskId":task_number(number),"activitySeq":seq,"available":true,
+    let mut out = json!({"taskId":number,"activitySeq":seq,"available":true,
         "record":record,"producer":row["actor"],"at":row["at"]});
     if row["research"].is_object() {
         let (_, latest) = newer(db, &task, seq)?;
@@ -728,7 +729,7 @@ pub(super) fn criterion_record(db: &Connection, task: &SharedTask, reference: &V
     allowed(reference, &["activitySeq"])?;
     let seq = positive(reference, "activitySeq")?;
     let row = record_in(db, &task.id, seq)?.with_context(|| {
-        format!("invalid_input: activity {seq} is not a research record of {}", task_number(task.seq))
+        format!("invalid_input: activity {seq} is not a research record of {}", task_shown(db, &task.id))
     })?;
     let record = cited_record(&row).context("invalid_input: not a research record")?;
     Ok(json!({"activitySeq":seq,"record":record,"version":version_of(db, &task.id, &row)?,
@@ -740,10 +741,10 @@ pub(super) fn criterion_record(db: &Connection, task: &SharedTask, reference: &V
 /// not its text. A later method version leaves the run as it was; only a
 /// changed command or input needs a new run.
 pub(crate) fn run_method(db: &Connection, task: &str, seq: i64) -> Result<Value> {
-    let number = task_seq(db, task)?;
+    let shown = task_number(db, task)?;
     let row = record_in(db, task, seq)?
         .filter(|row| row["research"]["type"] == "method")
-        .with_context(|| format!("invalid_input: method: activity {seq} is not a method record of {}", task_number(number)))?;
+        .with_context(|| format!("invalid_input: method: activity {seq} is not a method record of {shown}"))?;
     Ok(json!({"activitySeq":seq,"id":row["research"]["id"],"title":row["research"]["title"],
         "version":version_of(db, task, &row)?}))
 }
@@ -752,9 +753,9 @@ pub(crate) fn run_method(db: &Connection, task: &str, seq: i64) -> Result<Value>
 /// of the run's task, as a citation summary fixed when the decision is made,
 /// with its proposed next step; not its text, method or sources.
 pub(crate) fn decision_record(db: &Connection, task: &str, seq: i64) -> Result<Value> {
-    let number = task_seq(db, task)?;
+    let shown = task_number(db, task)?;
     let row = record_in(db, task, seq)?
-        .with_context(|| format!("invalid_input: record: activity {seq} is not a research record of {}", task_number(number)))?;
+        .with_context(|| format!("invalid_input: record: activity {seq} is not a research record of {shown}"))?;
     let mut out = json!({"activitySeq":seq,"record":cited_record(&row),"version":version_of(db, task, &row)?,
         "producer":row["actor"],"at":row["at"]});
     if let Some(next) = row["research"].get("next") {
@@ -770,10 +771,6 @@ pub(crate) fn line_now(db: &Connection, task: &str, seq: i64) -> Result<Value> {
     }
     let (next, latest) = newer(db, task, seq)?;
     Ok(json!({"state":"readable","revisedBy":next,"latestActivitySeq":latest}))
-}
-
-fn task_seq(db: &Connection, task: &str) -> Result<i64> {
-    Ok(db.query_row("SELECT seq FROM collaboration_tasks WHERE id=?1", params![task], |r| r.get(0))?)
 }
 
 /// Where a criterion's research record stands now: whether it can be read,

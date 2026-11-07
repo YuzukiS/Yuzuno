@@ -65,6 +65,8 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
             // Reconciling can move a task's status (T-9's live references).
             ws.changes.send(json!({"collaboration":true,"tasks":true}));
             ws.collaboration_wakeup.notify_one();
+            // ...and end a flow a release waits for (T-36).
+            ws.wake_archive_passes();
         }
     }
     Ok(())

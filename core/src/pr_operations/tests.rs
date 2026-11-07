@@ -97,7 +97,7 @@ fn request_identity_recovery_and_notifications_survive_restart_without_task_comp
         message["body"]
             .as_str()
             .unwrap()
-            .contains("github_pr_get(taskId=T-1")
+            .contains("github_pr_get(taskId=DEL-1")
     );
     assert!(s.agent("dev").unwrap().closed_at.is_some());
     let check = Check {

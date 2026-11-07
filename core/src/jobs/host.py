@@ -4,7 +4,6 @@
 The supervisor is a separate, bounded service, outside the job's OOM boundary.
 It records OS evidence before releasing transient units. Never retries a command.
 """
-import ctypes
 import fcntl
 import hashlib
 import json
@@ -13,7 +12,6 @@ import os
 from pathlib import Path
 import signal
 import selectors
-import shutil
 import stat
 import struct
 import subprocess
@@ -611,11 +609,29 @@ def progress(folder):
     except (ValueError, RecursionError):
         return {'problem': 'not complete JSON of finite numbers', 'updatedAtUnix': at}
 
+# A Job's CPU (T-64, cpu.rs): Core grants it within the range asked for, as
+# the worker's CPUQuota; its CPUWeight follows the minimum, so that 2000 mCPU
+# is systemd's default of 100. Core writes the grant now to CPU_FILE before the
+# launch and after each raise.
+CPU_FILE = 'cpu-millis'
+
+def cpu_granted(spec):
+    """The CPU this attempt starts with, in millicores: Core's grant, or
+    (a spec from before T-64) its request."""
+    return spec.get('cpuGrantedAtStart') or (spec.get('resources') or {}).get('cpuMillis')
+
+def cpu_weight(spec):
+    return max(1, min(10000, spec['resources']['cpuMillis'] // 20))
+
 def attempt_env(spec, folder):
     """Where this attempt reports, and who it is. Core's values win."""
     env = {'YUZUNO_JOB_ID': spec['id'], 'YUZUNO_JOB_ATTEMPT': spec['attempt'],
            'YUZUNO_JOB_USAGE_FILE': str(folder / 'usage.jsonl'),
            'YUZUNO_JOB_PROGRESS_FILE': str(folder / 'progress.json')}
+    # Its CPU grant at the start, and the file holding it now.
+    granted = cpu_granted(spec)
+    if granted:
+        env.update({'YUZUNO_JOB_CPU_MILLIS': str(granted), 'YUZUNO_JOB_CPU_FILE': str(folder / CPU_FILE)})
     run = spec.get('run')
     if run:
         env.update({'YUZUNO_RUN_ID': run['id'], 'YUZUNO_RUN_STAGE': run['stage'],
@@ -774,70 +790,6 @@ def checkpoint_source_problem(source):
     return None
 
 
-class _Memory(ctypes.Structure):
-    _fields_ = [('total', ctypes.c_ulonglong), ('free', ctypes.c_ulonglong), ('used', ctypes.c_ulonglong)]
-
-
-class _Utilization(ctypes.Structure):
-    _fields_ = [('gpu', ctypes.c_uint), ('memory', ctypes.c_uint)]
-
-
-def nvml_devices():
-    lib = ctypes.CDLL('libnvidia-ml.so.1')
-    if lib.nvmlInit_v2() != 0:
-        raise RuntimeError('nvmlInit failed')
-    try:
-        count = ctypes.c_uint()
-        if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0:
-            raise RuntimeError('nvmlDeviceGetCount failed')
-        devices = []
-        for index in range(count.value):
-            handle = ctypes.c_void_p()
-            if lib.nvmlDeviceGetHandleByIndex_v2(index, ctypes.byref(handle)) != 0:
-                raise RuntimeError(f'nvmlDeviceGetHandleByIndex {index} failed')
-            uuid, name = ctypes.create_string_buffer(96), ctypes.create_string_buffer(96)
-            memory, util = _Memory(), _Utilization()
-            if (lib.nvmlDeviceGetUUID(handle, uuid, 96) != 0 or lib.nvmlDeviceGetName(handle, name, 96) != 0
-                    or lib.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(memory)) != 0):
-                raise RuntimeError(f'NVML could not read device {index}')
-            devices.append({'index': index, 'uuid': uuid.value.decode(), 'name': name.value.decode(),
-                            'memoryTotalMiB': memory.total // 1048576, 'memoryFreeMiB': memory.free // 1048576,
-                            'memoryUsedMiB': memory.used // 1048576,
-                            'utilizationPercent': util.gpu if lib.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util)) == 0 else None})
-        return devices
-    finally:
-        lib.nvmlShutdown()
-
-
-def smi_devices():
-    # WSL keeps nvidia-smi in /usr/lib/wsl/lib, which is not on a service's PATH.
-    smi = shutil.which('nvidia-smi') or next(
-        (p for p in ('/usr/lib/wsl/lib/nvidia-smi', '/usr/bin/nvidia-smi') if Path(p).exists()), None)
-    if not smi:
-        raise RuntimeError('nvidia-smi not found')
-    out = command([smi, '--query-gpu=index,uuid,name,memory.total,memory.free,memory.used,utilization.gpu',
-                   '--format=csv,noheader,nounits'], timeout=10).stdout
-    devices = []
-    for line in out.strip().splitlines():
-        index, uuid, name, total, free, used, util = [v.strip() for v in line.split(',')]
-        devices.append({'index': int(index), 'uuid': uuid, 'name': name, 'memoryTotalMiB': int(total),
-                        'memoryFreeMiB': int(free), 'memoryUsedMiB': int(used),
-                        'utilizationPercent': int(util) if util.isdigit() else None})
-    return devices
-
-
-def gpus():
-    """The local NVIDIA devices now, by UUID: memory and utilization. NVML
-    first, nvidia-smi if NVML cannot be used. The compute process list is never
-    read: on WSL it can be empty while the card is in use."""
-    try:
-        return {'source': 'nvml', 'devices': nvml_devices()}
-    except Exception as nvml_error:
-        try:
-            return {'source': 'nvidia-smi', 'devices': smi_devices(), 'nvmlError': str(nvml_error)[:200]}
-        except Exception as smi_error:
-            return {'error': f'NVML: {nvml_error}; nvidia-smi: {smi_error}'[:500], 'devices': []}
-
 def capabilities():
     version = command(['systemctl', '--version']).stdout.splitlines()[0]
     manager = command(['systemctl', '--user', 'show', '--property=ControlGroup']).stdout.strip().split('=', 1)[1]
@@ -867,12 +819,13 @@ def launch(spec, folder, stage):
     relative = Path('/proc/self/cgroup').read_text().strip().split('::', 1)[1]
     group = Path('/sys/fs/cgroup') / relative.lstrip('/')
     limits = {n: (group / n).read_text().strip()
-              for n in ('memory.max', 'memory.swap.max', 'cpu.max', 'pids.max')}
+              for n in ('memory.max', 'memory.swap.max', 'cpu.max', 'cpu.weight', 'pids.max')}
     quota, period = map(int, limits['cpu.max'].split())
     if (int(limits['memory.max']) != resource['memoryMiB'] * 1024 * 1024
             or int(limits['memory.swap.max']) != resource['swapMiB'] * 1024 * 1024
             or int(limits['pids.max']) != TASKS_MAX
-            or abs(quota / period - resource['cpuMillis'] / 1000) > .0001):
+            or abs(quota / period - cpu_granted(spec) / 1000) > .0001
+            or int(limits['cpu.weight']) != cpu_weight(spec)):
         raise RuntimeError('Requested cgroup limits are not effective; command was not started')
     proof = {'jobId': spec['id'], 'attempt': spec['attempt'], 'bootId': boot_id(),
              'invocationId': os.environ.get('INVOCATION_ID'), 'controlGroup': relative,
@@ -1089,7 +1042,7 @@ def settled(spec, folder, outcome):
 PAUSE_WAIT = 10
 
 def controlled(operation):
-    """Serialize pause, resume, limit and cancel of one attempt. The lock is
+    """Serialize pause, resume, limit, CPU raises and cancel of one attempt. The lock is
     held only while the operation runs, so one process can run several in turn."""
     def run(spec, folder, *args):
         with (folder / 'control.lock').open('a') as lock:
@@ -1256,6 +1209,58 @@ def limit(spec, folder, request):
         return {'state': 'notLimited', 'reason': 'systemd did not lower the limit: ' + (asked.stderr.strip()[:300] or 'unknown error'), 'evidence': evidence}
     return {'state': 'unknown', 'reason': f'systemd accepted the change, but the worker cgroup reads {after} bytes', 'evidence': evidence}
 
+# Raising a running attempt's CPU quota (T-64): only this attempt's own
+# worker invocation, and only up. systemd applies the new CPUQuota to the
+# cgroup at once (--runtime: until the unit ends); the cgroup's own cpu.max,
+# read back, is the evidence. A target already in effect is a raise whose
+# answer never reached Core: it is confirmed as it is.
+def cgroup_cpu_millis(proof):
+    """The worker cgroup's cpu.max in millicores, or None ('max' too)."""
+    try:
+        quota, period = (Path('/sys/fs/cgroup') / proof['controlGroup'].lstrip('/') / 'cpu.max').read_text().split()
+        return None if quota == 'max' else round(int(quota) * 1000 / int(period))
+    except (OSError, ValueError, KeyError, AttributeError):
+        return None
+
+@controlled
+def raise_cpu(spec, folder, request):
+    try:
+        millis = int(request['cpuMillis'])
+    except (KeyError, TypeError, ValueError):
+        return {'state': 'notRaised', 'reason': 'No new CPU grant was given; nothing was changed'}
+    finished = read(folder / 'result.json')
+    if finished and finished['status'] != 'unknown':
+        return {'state': 'notRaised', 'reason': 'The job has already finished; nothing was changed'}
+    if read(folder / 'cancel.json'):
+        return {'state': 'notRaised', 'reason': 'Cancellation was requested; nothing was changed'}
+    state, proof = live_worker(spec, folder)
+    if state is None:
+        return {'state': 'notRaised', 'reason': proof}
+    if state.get('ActiveState') != 'active':
+        return {'state': 'notRaised', 'reason': f"The job is not running ({state.get('ActiveState')}/{state.get('SubState')}); nothing was changed"}
+    before = cgroup_cpu_millis(proof)
+    evidence = {'invocationId': proof['invocationId'], 'controlGroup': proof['controlGroup'],
+                'cpuMillisBefore': before, 'at': time.time()}
+    if before is None:
+        return {'state': 'notRaised', 'reason': "The worker cgroup's cpu.max could not be read; nothing was changed", 'evidence': evidence}
+    if millis == before:
+        return {'state': 'raised', 'confirmedByRetry': True, 'evidence': {**evidence, 'cpuMillisAfter': before},
+                'reason': f'The CPU quota is already {millis} mCPU: an earlier raise took effect; nothing was changed'}
+    if millis < before:
+        return {'state': 'notRaised', 'reason': f'{millis} mCPU is below the current {before} mCPU; a CPU grant is only raised', 'evidence': evidence}
+    asked = command(['systemctl', '--user', 'set-property', '--runtime', spec['unit'], f'CPUQuota={millis / 10}%'], timeout=15, check=False)
+    after = cgroup_cpu_millis(proof)
+    still, _ = live_worker(spec, folder)
+    evidence = {**evidence, 'cpuMillisAfter': after, 'setPropertyReturnCode': asked.returncode,
+                'setPropertyError': asked.stderr.strip()[:500]}
+    if after == millis:
+        return {'state': 'raised', 'reason': f'CPU quota raised to {millis} mCPU from {before} mCPU; the worker cgroup reads it back', 'evidence': evidence}
+    if still is None:
+        return {'state': 'unknown', 'reason': 'The worker changed or exited while its CPU quota was being raised', 'evidence': evidence}
+    if asked.returncode:
+        return {'state': 'notRaised', 'reason': 'systemd did not raise the CPU quota: ' + (asked.stderr.strip()[:300] or 'unknown error'), 'evidence': evidence}
+    return {'state': 'unknown', 'reason': f'systemd accepted the change, but the worker cgroup reads {after} mCPU', 'evidence': evidence}
+
 def thaw_for_stop(spec, folder, proof, state):
     """systemd refuses to stop a frozen unit. Thaw this attempt's own worker
     first; its processes may run briefly while they handle termination."""
@@ -1373,27 +1378,39 @@ def supervise(spec, folder):
             '-p', 'RuntimeMaxSec=' + str(runtime) + 's',
             '-p', 'MemoryMax=' + str(resource['memoryMiB']) + 'M',
             '-p', 'MemorySwapMax=' + str(resource['swapMiB']) + 'M',
-            '-p', 'CPUQuota=' + str(resource['cpuMillis'] / 10) + '%', '-p', 'TasksMax=' + str(TASKS_MAX),
+            '-p', 'CPUQuota=' + str(cpu_granted(spec) / 10) + '%', '-p', 'CPUWeight=' + str(cpu_weight(spec)),
+            '-p', 'TasksMax=' + str(TASKS_MAX),
             '-p', 'StandardOutput=null', '-p', 'StandardError=null',
             '--', sys.executable, str(Path(__file__).resolve()), 'worker', str(folder / 'spec.json')]
     launch = command(args, check=False)
     launch_evidence = {'returnCode': launch.returncode, 'stderr': launch.stderr[:1000]}
     deadline = time.monotonic() + runtime + 20
-    last = {}
+    # systemd is asked about the worker once now, for its identity and cgroup
+    # (and, if the launch failed, for the state an unknown outcome records),
+    # and again only once that cgroup is empty, until its ending is classified
+    # (T-59). Meanwhile each poll reads only the cgroup's own files: whether
+    # anything still runs in it, and its pids counters.
+    last = show(spec['unit'])
     pids = None
+    asked, wait = None, 0
     while time.monotonic() < deadline:
-        last = show(spec['unit'])
         pids = pids_evidence(spec, folder, last, pids)
-        status = classify(spec, folder, last)
-        if status:
-            outcome = result(spec, folder, status, {'launch': launch_evidence, 'systemd': last, 'pids': pids,
-                                                    'deadline': read(folder / 'deadline.json')},
-                             terminal_reason(spec, folder, status, last, pids))
-            command(['systemctl', '--user', 'stop', spec['unit']], check=False)
-            command(['systemctl', '--user', 'reset-failed', spec['unit']], check=False)
-            return outcome
-        if launch.returncode or (last.get('ActiveState') == 'failed' and not read(folder / 'started.json')):
-            return result(spec, folder, 'unknown', {'launch': launch_evidence, 'systemd': last, 'pids': pids}, 'No verified worker start receipt; reconcile before retry')
+        if (launch.returncode or group_empty(last.get('ControlGroup'))) and (asked is None or time.monotonic() - asked >= wait):
+            if asked is not None:
+                wait = min(2, wait * 2 or .5)
+            asked = time.monotonic()
+            last = show(spec['unit']) if not launch.returncode else last
+            pids = pids_evidence(spec, folder, last, pids)
+            status = classify(spec, folder, last)
+            if status:
+                outcome = result(spec, folder, status, {'launch': launch_evidence, 'systemd': last, 'pids': pids,
+                                                        'deadline': read(folder / 'deadline.json')},
+                                 terminal_reason(spec, folder, status, last, pids))
+                command(['systemctl', '--user', 'stop', spec['unit']], check=False)
+                command(['systemctl', '--user', 'reset-failed', spec['unit']], check=False)
+                return outcome
+            if launch.returncode or (last.get('ActiveState') == 'failed' and not read(folder / 'started.json')):
+                return result(spec, folder, 'unknown', {'launch': launch_evidence, 'systemd': last, 'pids': pids}, 'No verified worker start receipt; reconcile before retry')
         # The run's absolute end, checked every poll. It is recorded before the
         # signal, so the outcome reads as the end time whatever exit status
         # follows. The unit is signalled, not stopped: it stays loaded
@@ -1434,9 +1451,6 @@ def reconcile(spec, folder):
 
 def main():
     mode = sys.argv[1]
-    if mode == 'gpus':
-        print(json.dumps(gpus()))
-        return
     if mode == 'capabilities':
         print(json.dumps(capabilities()))
         return
@@ -1471,15 +1485,10 @@ def main():
         print(json.dumps(resume(spec, folder)))
     elif mode == 'limit':
         print(json.dumps(limit(spec, folder, json.load(sys.stdin))))
+    elif mode == 'cpu':
+        print(json.dumps(raise_cpu(spec, folder, json.load(sys.stdin))))
     elif mode == 'checkpoint':
         print(json.dumps(checkpoint_stop(spec, folder)))
-    elif mode == 'inspect':
-        state = show(spec['unit'])
-        proof = read(folder / 'started.json')
-        if proof and proof.get('bootId') == boot_id() and proof.get('invocationId') == state.get('InvocationID'):
-            print(json.dumps(state))
-        else:
-            print('null')
     else:
         raise RuntimeError('Unknown host operation')
 

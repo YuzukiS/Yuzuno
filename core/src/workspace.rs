@@ -85,6 +85,8 @@ pub struct Workspace {
     pub(crate) jobs: crate::jobs::State,
     /// How many executors run at once, and the queue (T-35); see `executor_slots`.
     pub(crate) executor_slots: crate::executor_slots::State,
+    /// Releases that wait for an executor's work to end (T-36); see `executor_archiving`.
+    pub(crate) executor_archiving: crate::executor_archiving::State,
     pub(crate) ci: crate::ci_monitor::State,
     pub(crate) codex_usage: crate::codex_usage::State,
     pub(crate) delivery: crate::delivery::State,
@@ -127,6 +129,8 @@ pub struct Workspace {
     pub(crate) brief_turns: crate::brief_turns::State,
     /// The previous Machine Load sample (see `machine_load`).
     pub(crate) machine_load: crate::machine_load::State,
+    /// The host's GPUs, read in one place for the whole process (T-58).
+    pub gpus: crate::gpu_sampler::GpuSampler,
     /// Project services opened in this Core (T-151); see `services`.
     pub(crate) services: crate::services::Runtime,
     pub(crate) previews: crate::previews::Previews,
@@ -165,6 +169,7 @@ impl Workspace {
             pr_operations: Default::default(),
             jobs: Default::default(),
             executor_slots: Default::default(),
+            executor_archiving: Default::default(),
             ci: Default::default(),
             codex_usage: Default::default(),
             codex_context: Default::default(),
@@ -207,6 +212,7 @@ impl Workspace {
             results: Arc::new(crate::results::Validator::from_env()),
             brief_turns: Default::default(),
             machine_load: Default::default(),
+            gpus: Default::default(),
             services: Default::default(),
             previews: Default::default(),
             remote_access: Default::default(),
@@ -531,6 +537,7 @@ impl Workspace {
             kind: None,
             released_at: None,
             released_by: None,
+            executor: None,
             cwd,
             model,
             settings,
@@ -618,6 +625,9 @@ impl Workspace {
             let result = async {
                 if let Some(remote_agent) = agent.remote {
                     self.ensure_collaboration_tunnel(&remote_agent.machine).await?;
+                    // Committed before the machine is asked to launch anything
+                    // (T-35 S3b): a failure before it launched nothing there.
+                    self.launch_requested(id, "runtime/ensuring").await?;
                     let runtime = remote::ensure_runtime(&remote_agent.machine,
                         &self.stored(|store| store.workspace_id()).await?, id).await?;
                     if let Some(previous) = &remote_agent.runtime {
@@ -1432,6 +1442,17 @@ impl Workspace {
         let _held = gate.lock().await;
         self.close_agent_locked(id, json!({})).await?;
         let closed = self.listed(id).await?;
+        if closed.harness == "opencode" {
+            // Its OpenCode database stays with the Agent's files, and no login stays in it (T-32 slice 4b, D6): its
+            // server stopped above, its credentials are scrubbed before anything of the Agent is deleted. What can't be
+            // read as a database is overwritten and removed instead, and noted, should the delete stop after.
+            let db = self.data_dir.join("opencode").join(id).join("opencode.db");
+            let destroyed = tokio::task::spawn_blocking(move || crate::opencode_login::scrub(&db)).await?
+                .map_err(|error| anyhow::anyhow!("OpenCode Agent 的登录凭据没有清除（{error:#}）；Agent 没有删除"))?;
+            for leftover in destroyed {
+                self.record_meta(id, "opencode/leftoverDestroyed", json!(leftover), |_| {}).await?;
+            }
+        }
         if closed.remote.is_some() {
             let workspace = self.stored(|store| store.workspace_id()).await?;
             // Older image-transfer builds had no dedicated cleanup marker.

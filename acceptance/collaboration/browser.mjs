@@ -198,7 +198,8 @@ try {
     for (const name of ['Reply as you', 'Follow up', 'Send message']) assert.equal(await page.getByRole('button', { name, exact: true }).count(), 0);
     const linkedIds = await page.locator('.collab-message-task span').allTextContents();
     assert.ok(linkedIds.length > 0, 'Native collaboration retains task links');
-    assert.ok(linkedIds.every(id => /^T-[1-9]\d*$/.test(id)), 'Task references use canonical short IDs');
+    // T-<n>, or a Project's key and number (T-56; web/src/intelligent-ui/task-key.ts).
+    assert.ok(linkedIds.every(id => /^(?:T|[A-Z][A-Z0-9]{1,9})-[1-9]\d*$/.test(id)), 'Task references use canonical short IDs');
     report.renderedMessages = renderedBodies;
     await geometry('desktop-dark-messages'); await screenshot('messages-dark-20px-desktop');
     record('GUI-mailbox-is-observation', { messages: expected.length, firstReadReceipts: expected.filter(m => m.firstReadAt).length });

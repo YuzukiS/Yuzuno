@@ -32,11 +32,30 @@ pub(super) fn local_host(data: &Path) -> Result<()> {
 }
 pub(super) async fn helper(data: &Path) -> Result<PathBuf> {
     local_host(data)?;
+    #[cfg(test)]
+    if let Some((_, stub)) = HELPERS.lock().unwrap().iter().find(|(dir, _)| data.starts_with(dir)) {
+        return Ok(stub.clone());
+    }
     let root = data.join("jobs");
     tokio::fs::create_dir_all(&root).await?;
     let path = root.join(format!("host-{:x}.py", Sha256::digest(SCRIPT)));
     write_once(&path, SCRIPT).await?;
     Ok(path)
+}
+/// Tests: for the data folders named here, a cgroup root of the test's own
+/// (watch.rs, `usage`) and a stand-in for the host helper.
+#[cfg(test)]
+pub(super) static CGROUPS: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+#[cfg(test)]
+pub(super) static HELPERS: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+/// Where this host's cgroup v2 hierarchy is.
+pub(super) fn cgroup_root(data: &Path) -> PathBuf {
+    #[cfg(test)]
+    if let Some((_, root)) = CGROUPS.lock().unwrap().iter().find(|(dir, _)| data.starts_with(dir)) {
+        return root.clone();
+    }
+    let _ = data;
+    PathBuf::from("/sys/fs/cgroup")
 }
 /// Test fault injection: writes under these folders fail as a full disk
 /// would (ENOSPC), without filling any real disk.
@@ -248,6 +267,9 @@ pub(super) async fn launch(data: &Path, job: &Value) -> Result<(), LaunchError> 
     let (script, spec) = async {
         let script = helper(data).await?;
         let (_, spec) = prepare(data, job).await?;
+        // What the Job reads its grant from (T-64), there before it starts.
+        let granted = job["cpuGrantedAtStart"].as_u64().or(job["resources"]["cpuMillis"].as_u64()).context("Missing CPU grant")?;
+        write_cpu_file(data, job, granted).await?;
         write_once(
             &marker,
             &serde_json::to_vec(
@@ -391,6 +413,32 @@ pub(super) async fn limit(data: &Path, job: &Value, memory_mib: u64) -> Result<V
     invoke(&script, "limit", Some(&spec), Some(serde_json::json!({"memoryMiB": memory_mib}))).await
 }
 
+/// Raise this attempt's own worker's CPU quota to `millis` (host.py `cpu`, T-64).
+pub(super) async fn raise_cpu(data: &Path, job: &Value, millis: u64) -> Result<Value> {
+    let script = helper(data).await?;
+    let spec = folder(data, job)?.join("spec.json");
+    ensure!(
+        tokio::fs::try_exists(&spec).await?,
+        "The attempt has no launch record; nothing was changed"
+    );
+    invoke(&script, "cpu", Some(&spec), Some(serde_json::json!({"cpuMillis": millis}))).await
+}
+
+/// The file YUZUNO_JOB_CPU_FILE names: the Job's CPU grant now, in
+/// millicores, on one line (T-64). Written before its launch and after each
+/// raise, never before its cgroup allows it, and replaced whole.
+pub(super) const CPU_FILE: &str = "cpu-millis";
+pub(super) async fn write_cpu_file(data: &Path, job: &Value, millis: u64) -> Result<()> {
+    let dir = folder(data, job)?;
+    let staged = dir.join(format!("{CPU_FILE}.{}", uuid::Uuid::new_v4()));
+    tokio::fs::write(&staged, format!("{millis}\n")).await?;
+    if let Err(error) = tokio::fs::rename(&staged, dir.join(CPU_FILE)).await {
+        let _ = tokio::fs::remove_file(&staged).await;
+        return Err(error).context("The CPU grant file was not replaced");
+    }
+    Ok(())
+}
+
 /// Whether this attempt's wrapper recorded that its command has exited
 /// (host.py `CHECKPOINT_EXIT`). Unreadable means not known to have exited.
 pub(super) async fn command_exited(data: &Path, job: &Value) -> bool {
@@ -463,16 +511,41 @@ pub(super) async fn log_extent(data: &Path, job: &Value) -> Result<Value> {
     let total = segments.last().map_or(0, |s| s.0 + s.1);
     Ok(json!({"segments":segments.len(),"oldestOffset":oldest,"totalBytes":total,"truncated":oldest>0}))
 }
+/// A live attempt's usage, from its worker's own cgroup (T-59): under
+/// systemd's names and in its units, for what the cgroup counts, with no
+/// helper run. Null without this attempt's start receipt of this boot, or
+/// once its cgroup is gone (the outcome's systemd evidence then has them).
 pub(super) async fn usage(data: &Path, job: &Value) -> Result<Value> {
     if job["reserved"] != true {
         return Ok(Value::Null);
     }
-    let script = helper(data).await?;
-    let spec = folder(data, job)?.join("spec.json");
-    if !tokio::fs::try_exists(&spec).await? {
+    let Ok(bytes) = tokio::fs::read(folder(data, job)?.join("started.json")).await else {
+        return Ok(Value::Null);
+    };
+    let proof: Value = serde_json::from_slice(&bytes)?;
+    let boot = tokio::fs::read_to_string("/proc/sys/kernel/random/boot_id").await?;
+    let Some(path) = proof["controlGroup"].as_str().filter(|_| proof["attempt"] == job["attempt"] && proof["bootId"] == boot.trim()) else {
+        return Ok(Value::Null);
+    };
+    let group = cgroup_root(data).join(path.trim_start_matches('/'));
+    if !tokio::fs::try_exists(&group).await? {
         return Ok(Value::Null);
     }
-    invoke(&script, "inspect", Some(&spec), None).await
+    let mut usage = serde_json::Map::new();
+    for (name, file) in [("MemoryCurrent", "memory.current"), ("MemoryPeak", "memory.peak"), ("MemoryMax", "memory.max"),
+        ("MemorySwapMax", "memory.swap.max"), ("TasksMax", "pids.max"), ("CPUUsageNSec", "cpu.stat")]
+    {
+        let text = tokio::fs::read_to_string(group.join(file)).await.ok();
+        let value = match (file, text.as_deref().map(str::trim)) {
+            ("cpu.stat", Some(stat)) => stat.lines().find_map(|line| line.strip_prefix("usage_usec "))
+                .and_then(|usec| usec.trim().parse::<u64>().ok()).map(|usec| (usec * 1000).to_string()),
+            (_, Some("max")) => Some("infinity".to_owned()),
+            (_, Some(value)) => value.parse::<u64>().ok().map(|value| value.to_string()),
+            (_, None) => None,
+        };
+        usage.insert(name.to_owned(), json!(value.unwrap_or_else(|| "[not set]".to_owned())));
+    }
+    Ok(Value::Object(usage))
 }
 /// A live attempt's own reports so far: usage/cost and progress.
 pub(super) async fn reports(data: &Path, job: &Value) -> Result<Value> {

@@ -22,11 +22,13 @@
 //! own. They count executors only, apart from the Jobs' machine slots.
 //!
 //! A fresh executor's start the runtime refused closes it (kept, to see what
-//! happened) and frees its slot. One whose outcome is unknown (its runtime
+//! happened) and frees its slot; that close carries the record of its
+//! settling, written in the close's own transaction (`follow_agent`, T-35
+//! S3b), so the two commit or fail together. One whose outcome is unknown (its runtime
 //! may be running), or a reopened executor's that failed, keeps its slot as
 //! `starting` with why, open, and waits for the user.
 use crate::{
-    executor_start::{cut_off, Failure},
+    executor_start::{closed_when_cut, cut, cut_off, Failure},
     jobs::queue::{self, Queued},
     model::now,
     server::ApiError,
@@ -53,6 +55,11 @@ fn project_key(project: &str) -> String {
 pub(crate) fn machine_key(machine: &str) -> String {
     format!("executors.slots.machine:{machine}")
 }
+
+/// The `reason` of a close that a failed start makes, with its `why`: the
+/// close then writes the slot's reason and the record of the start's
+/// settling in its own transaction (`follow_agent`, T-35 S3b, R2 2eb2935b).
+pub(crate) const START_FAILED: &str = "executor_start_failed";
 
 /// Runs on every open, with the collaboration tables. No column references
 /// an Agent: a row stays when its Agent is deleted, and is then released.
@@ -290,6 +297,16 @@ struct Holding {
     templates: HashMap<TemplateKey, i64>,
 }
 
+/// The executors holding a slot on `machine`, as the scheduler counts them
+/// (`holding`), and that machine's own limit if one is saved: a dispatch
+/// choosing its machine reads them (collaboration_store/executor_choice.rs,
+/// T-35 S3b).
+pub(crate) fn machine_slots(db: &Connection, machine: &str) -> Result<(i64, Option<i64>)> {
+    let held: i64 = db.query_row(
+        "SELECT COUNT(*) FROM executor_slots WHERE machine_id=?1 AND state IN ('starting','running')", [machine], |r| r.get(0))?;
+    Ok((held, limit_at(db, &machine_key(machine))?.slots))
+}
+
 fn holding(db: &Connection, cache: &mut Templates) -> Result<Holding> {
     let mut q = db.prepare(
         "SELECT project_id, machine_id, template_id, COUNT(*) FROM executor_slots WHERE state IN ('starting','running')
@@ -328,16 +345,22 @@ fn view_row(db: &Connection, task: &str, positions: &HashMap<String, usize>) -> 
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    Ok(row.map(|(agent, state, machine, reason)| {
-        let mut view = json!({"agentId": agent, "state": state, "machine": machine});
-        if state == "waiting" {
-            view["position"] = json!(positions.get(&agent));
-        }
-        if let Some(reason) = reason {
-            view["reason"] = json!(reason);
-        }
-        view
-    }))
+    let Some((agent, state, machine, reason)) = row else { return Ok(None) };
+    let mut view = json!({"agentId": agent, "state": state, "machine": machine});
+    if state == "waiting" {
+        view["position"] = json!(positions.get(&agent));
+    }
+    if let Some(reason) = reason {
+        view["reason"] = json!(reason);
+    }
+    // Chosen by `auto` (T-35 S3b): the record of the choice, its numbers too.
+    let choice: Option<String> = db.query_row(
+        "SELECT choice_json FROM executor_dispatches WHERE agent_id=?1 AND choice_json IS NOT NULL", [&agent], |r| r.get(0))
+        .optional()?;
+    if let Some(choice) = choice {
+        view["choice"] = serde_json::from_str(&choice)?;
+    }
+    Ok(Some(view))
 }
 
 fn positions(db: &Connection) -> Result<HashMap<String, usize>> {
@@ -363,12 +386,22 @@ pub(crate) fn views(db: &Connection, tasks: &[&str]) -> Result<HashMap<String, V
 /// An executor's row follows its close and its reopen, in the transaction
 /// that writes either (store.rs `change_locked`), so the two commit or fail
 /// together: closed, its slot is released; reopened, it waits again, at the
-/// end of the queue. One from before slots existed gets its row then.
-pub(crate) fn follow_agent(db: &Connection, agent: &crate::model::Agent, kind: &str) -> Result<()> {
+/// end of the queue. One from before slots existed gets its row then. A
+/// failed start's close (`data` says START_FAILED) gives its slot why, and
+/// writes the record of its settling here too (T-35 S3b, R2 2eb2935b): a
+/// closed executor's record is then always there for a pass, or the next
+/// start, to finish.
+pub(crate) fn follow_agent(db: &Connection, agent: &crate::model::Agent, kind: &str, data: &Value) -> Result<()> {
     if agent.closed_at.is_some() {
+        let failed = (kind == "agent/closed" && data["reason"] == START_FAILED)
+            .then(|| data["why"].as_str().unwrap_or("its start failed"));
+        // Recorded before the slot is released, both in this transaction.
+        if let Some(why) = failed {
+            crate::collaboration_store::executor_start::settling_in(db, &agent.id, why)?;
+        }
         db.execute(
-            "UPDATE executor_slots SET state='released',since=?2,reason='closed' WHERE agent_id=?1 AND state!='released'",
-            params![agent.id, now()],
+            "UPDATE executor_slots SET state='released',since=?2,reason=?3 WHERE agent_id=?1 AND state!='released'",
+            params![agent.id, now(), failed.unwrap_or("closed")],
         )?;
     } else if kind == "agent/reopened" {
         let seq: i64 = db.query_row("SELECT COALESCE(MAX(seq),0)+1 FROM executor_slots", [], |r| r.get(0))?;
@@ -496,13 +529,10 @@ impl Store {
         Ok(self.db.read()?.query_row("SELECT attempt FROM executor_slots WHERE agent_id=?1", [agent], |r| r.get(0)).optional()?)
     }
 
-    /// A released slot says why: its start failed, rather than "closed".
-    pub(crate) fn executor_slot_released_because(&self, agent: &str, why: &str) -> Result<()> {
-        self.db.write()?.execute(
-            "UPDATE executor_slots SET reason=?2 WHERE agent_id=?1 AND state='released'",
-            params![agent, why],
-        )?;
-        Ok(())
+    /// The machine an executor's slot is on: `local` or a registered
+    /// machine's id; none for an Agent without a row.
+    pub(crate) fn executor_slot_machine(&self, agent: &str) -> Result<Option<String>> {
+        Ok(self.db.read()?.query_row("SELECT machine_id FROM executor_slots WHERE agent_id=?1", [agent], |r| r.get(0)).optional()?)
     }
 
     /// The executors starting without a reason: started, or being started,
@@ -588,7 +618,36 @@ impl Store {
             let own = limit_at(&db, &project_key(project))?;
             view["project"] = json!({"id": project, "version": own.version, "slots": own.slots});
         }
+        // Each machine's own limit, this Core host's first, and the executors
+        // holding a slot there (T-35 S3b).
+        let mut machines = vec![("local".to_owned(), "this Core host".to_owned())];
+        let mut q = db.prepare("SELECT data FROM machines ORDER BY id")?;
+        for raw in q.query_map([], |r| r.get::<_, String>(0))? {
+            let machine: crate::remote::RemoteMachine = serde_json::from_str(&raw?)?;
+            machines.push((machine.id, machine.name));
+        }
+        let mut listed = Vec::new();
+        for (id, name) in machines {
+            let own = limit_at(&db, &machine_key(&id))?;
+            let (held, _) = machine_slots(&db, &id)?;
+            listed.push(json!({"id": id, "name": name, "version": own.version, "slots": own.slots, "executors": held}));
+        }
+        view["machines"] = json!(listed);
         Ok(view)
+    }
+
+    /// A machine's own limit on executors at once, or none (T-35 S3b): this
+    /// Core host's (`local`) or a registered machine's. Lowering it under the
+    /// executors running there stops none: no more start there until fewer
+    /// hold a slot.
+    fn save_machine_slots(&self, machine: &str, expected: i64, slots: Option<i64>) -> Result<()> {
+        let mut writer = self.db.write()?;
+        let tx = writer.transaction()?;
+        let registered: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM machines WHERE id=?1)", [machine], |r| r.get(0))?;
+        ensure!(machine == "local" || registered, "machine_not_found: no registered machine is {machine}; the Machines list names them");
+        save_limit(&tx, &machine_key(machine), expected, slots, None)?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// `start_limit`: the Workspace's only (S2); none keeps the one saved.
@@ -643,12 +702,22 @@ pub(crate) struct State {
     #[cfg(test)]
     pub(crate) before_rebuild_dispatch: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// A test's store errors: the start's reads of its time limit and its
-    /// attempt fail (`fault_reads`), or a start's settling record can't be
-    /// written (`fault_settling`).
+    /// attempt fail (`fault_reads`).
     #[cfg(test)]
     pub(crate) fault_reads: std::sync::atomic::AtomicBool,
+    /// A test's remote start refused before it asks its machine to launch
+    /// anything (a tunnel or admission refusal, executor_start.rs
+    /// `launch_requested`).
     #[cfg(test)]
-    pub(crate) fault_settling: std::sync::atomic::AtomicBool,
+    pub(crate) fault_before_launch: std::sync::atomic::AtomicBool,
+    /// A test's reads of this Core host's default Jobs budget by a dispatch,
+    /// how many failed, and a read that fails (a Core host that isn't Linux).
+    #[cfg(test)]
+    pub(crate) budget_reads: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) budget_read_failures: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) fail_budget_read: std::sync::atomic::AtomicBool,
 }
 
 /// How often a pass runs with nothing waking it: connected executors become
@@ -786,25 +855,21 @@ impl Workspace {
                 self.settle_start(id, permit, failure, false).await
             }
             // Cut off: definite only when the close confirms its runtime
-            // ended; recorded as settling before that close, as a refused
-            // start is (R1 dde34160).
+            // ended. The close carries the record of its settling, in its own
+            // transaction (T-35 S3b, R2 2eb2935b).
             Err(_) => {
-                let cut = format!("its start did not finish within {} s, the Workspace's limit", limit.as_secs());
+                let cut = cut(limit);
                 // Reopened by the user: S1's rule, the limit does not close it.
                 // It stays open with its slot and why; the user closes it (R2 de2313b7).
                 if attempt > 1 {
                     self.failed(id, &anyhow::anyhow!(cut.clone())).await;
                     return self.settle_start(id, permit, Failure::Definite(cut), false).await;
                 }
-                // A record that can't be written doesn't stop the close, which
-                // frees its slot (R6 135c4a8c).
-                if let Err(error) = self.settling(id, &cut).await {
-                    eprintln!("Executor {id}: its settling could not be recorded before its close: {error:#}");
-                }
                 // On another machine, dropping the start ended nothing there: a
-                // stop that confirms its runtime ended comes first (Lead 2 Q5).
+                // stop that confirms its runtime ended comes first, unless it
+                // never asked to launch one (Lead 2 Q5, mail 5898).
                 let closed = match self.remote_start_stopped(id).await {
-                    Ok(()) => self.close_agent_admitted(id, permit).await.map(drop),
+                    Ok(()) => self.close_start_failed(id, permit, &closed_when_cut(limit)).await,
                     Err(error) => Err(error),
                 };
                 let failure = cut_off(&closed, limit);
@@ -974,11 +1039,32 @@ async fn put_project_slots(
     Ok(Json(view))
 }
 
+/// A machine's own limit: `slots` (1 to 64), or null to clear it. A start
+/// time limit is the Workspace's alone.
+async fn put_machine_slots(
+    AxumState(ws): AxumState<Arc<Workspace>>,
+    Path(id): Path<String>,
+    Json(input): Json<Save>,
+) -> Result<Json<Value>, ApiError> {
+    let (slots, start_limit) = (slots_of(&input)?, start_limit_of(&input)?);
+    if start_limit.is_some() {
+        return Err(anyhow::anyhow!("invalid_input: a start's time limit is the Workspace's, not a machine's").into());
+    }
+    let view = ws.stored(move |s| {
+        s.save_machine_slots(&id, input.expected_version, slots)?;
+        s.executor_slots_view(None)
+    }).await?;
+    ws.changes.send(json!({"executorSlots": true}));
+    ws.wake_executor_slots();
+    Ok(Json(view))
+}
+
 /// Only the user changes the limits: browser routes, never a collaboration operation.
 pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/executor-slots", get(get_slots).put(put_slots))
         .route("/api/projects/{id}/executor-slots", put(put_project_slots))
+        .route("/api/machines/{id}/executor-slots", put(put_machine_slots))
 }
 
 #[cfg(test)]

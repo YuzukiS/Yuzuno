@@ -98,7 +98,8 @@ try {
   const created = await submit('task_create', () => newTask.getByRole('button', { name: 'Create task', exact: true }).click());
   assert.equal(created.task.status, 'todo'); assert.equal(created.task.description, ''); assert.equal(created.task.assigneeAgentId, null);
   assert.equal(created.task.version, 1);
-  assert.match(created.task.id, /^T-[1-9]\d*$/);
+  // T-<n>, or a Project's key and number (T-56; web/src/intelligent-ui/task-key.ts).
+  assert.match(created.task.id, /^(?:T|[A-Z][A-Z0-9]{1,9})-[1-9]\d*$/);
   record('GUI-create-only-title-required', { taskId });
   const pane = page.getByRole('complementary', { name: 'Task details', exact: true });
   await pane.locator('.collab-task-id').waitFor();

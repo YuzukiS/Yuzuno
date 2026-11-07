@@ -208,3 +208,38 @@ test("a task notice keeps its mark through the event parser; other notices have 
   assert.deepEqual(parse({ type: "workspace.changed", scope: "collaboration", collaboration: true }),
     { type: "workspace.changed", scope: "collaboration" });
 });
+
+test("T-56 a task named by an old key or T-n shows the key it has now, in a row and a chip, and a new key marks the row", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const keyed = {
+    root: "body",
+    elements: {
+      body: { type: "BriefBody", props: {}, children: ["list", "chips"] },
+      list: { type: "LiveRefs", props: { layout: "list", items: [{ kind: "task", id: "COD-1" }, { kind: "task", id: "T-7" }, { kind: "task", id: "T-8" }] } },
+      chips: { type: "LiveRefs", props: { items: [{ kind: "task", id: "COD-1" }] } },
+    },
+  };
+  const accepted = page.window.checkBriefSection({ op: "put", key: "work", kind: "report", title: "Keys", body: keyed });
+  // Core keys each state by the id the Agent wrote and adds the key the task has now.
+  const state = (id, key, title) => ({ ...task(id, title, "doing", "active", null, "2026-11-06T00:00:00Z"), key });
+  const facts = (prefix) => ({
+    "task:COD-1": state("COD-1", `${prefix}-1`, "Renamed prefix"),
+    "task:T-7": state("T-7", `${prefix}-2`, "Moved in"),
+    "task:T-8": state("T-8", "T-8", "In no project"),
+  });
+  const keyedSection = (prefix) => ({ ...section(facts(prefix)), body: accepted.body });
+  page.window.renderSection(keyedSection("CODE"), "high", live);
+  await tick();
+  assert.deepEqual(page.rows().map((r) => [r.id, r.title]), [["CODE-1", "Renamed prefix"], ["CODE-2", "Moved in"], ["T-8", "In no project"]],
+    "a row shows the key its task has now");
+  const chip = page.window.document.querySelector("button.brief-ref");
+  assert.equal(chip?.querySelector("small")?.textContent, "CODE-1", "a chip shows the key its task has now");
+  assert.match(chip.title, /CODE-1/);
+  assert.doesNotMatch(chip.title, /COD-1\b/);
+  // A new prefix is a change in what Core says of the task.
+  page.window.renderSection(keyedSection("CORE"), "high", { ...live, at: "2026-11-06T00:01:00Z" });
+  await tick();
+  assert.deepEqual(page.rows().filter((r) => r.changed).map((r) => r.id), ["CORE-1", "CORE-2"], "a task's new key marks its row as changed");
+  assert.deepEqual(page.errors, []);
+});

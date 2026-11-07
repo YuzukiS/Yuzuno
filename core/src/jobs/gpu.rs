@@ -1,7 +1,7 @@
 //! Local NVIDIA GPUs as admission resources. A device is known by its UUID;
 //! a job declares the GPU memory it needs, and admission reserves devices in
 //! the same transaction as CPU and RAM, for the same candidate job. Samples
-//! come from NVML or nvidia-smi through the host helper. Only memory figures
+//! come from Core's GPU sampler (`gpu_sampler`, T-58). Only memory figures
 //! are used: on WSL the process list can be empty while the card is in use,
 //! so an empty list never means an idle card, and a missing or stale sample
 //! makes GPU jobs wait. Managed jobs share a device only after the user opens
@@ -447,12 +447,15 @@ pub(super) fn never_fits(db: &Connection, request: &GpuRequest) -> Result<Option
 }
 
 impl Store {
-    /// Keep the latest sample and every device seen, by UUID.
+    /// Keep the latest sample and every device seen, by UUID. A sample keeps
+    /// its own observedAt (the GPU sampler's, T-58); one with none is now's.
     pub(super) fn record_gpu_sample(&self, sample: Value) -> Result<()> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let mut stored = sample.clone();
-        stored["observedAt"] = json!(now());
+        if !stored["observedAt"].is_string() {
+            stored["observedAt"] = json!(now());
+        }
         for device in sample["devices"].as_array().into_iter().flatten() {
             let Some(uuid) = device["uuid"].as_str().filter(|u| u.starts_with("GPU-")) else {
                 continue;
@@ -583,7 +586,7 @@ pub(super) fn devices_value(db: &Connection) -> Result<Value> {
         .unwrap_or(Value::Null);
     Ok(
         json!({"devices":devices,"observedAt":view.observed_at,"problem":view.problem,
-        "source":sample["source"],"samples":sample["devices"],
+        "source":sample["source"],"read":sample["read"],"samples":sample["devices"],
         "scope":"Admission among this Core's managed jobs by declared GPU memory. Free memory is the whole card's, other programs included; on WSL the process list can be empty while the card is in use. No memory isolation, hard limit or compute share."}),
     )
 }

@@ -1,4 +1,4 @@
-use super::{Resources, Submit, MAX_ACTIVE};
+use super::{Resources, Submit, DEFAULT_MAX_ACTIVE, MAX_ACTIVE_RANGE};
 use crate::{collaboration_store as collaboration, model::now, store::Store};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -19,7 +19,11 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         -- The most Windows attempts at once on the PC this Core's WSL runs on;
         -- NULL (or no row) is the default. Kept apart from local_job_settings,
         -- whose document older Cores read strictly.
-        CREATE TABLE IF NOT EXISTS local_job_windows (id INTEGER PRIMARY KEY CHECK(id=1), max_jobs INTEGER);")?;
+        CREATE TABLE IF NOT EXISTS local_job_windows (id INTEGER PRIMARY KEY CHECK(id=1), max_jobs INTEGER);
+        -- How many of this host's own Jobs run at once (T-55); NULL (or no
+        -- row) is the default. Kept apart from local_job_settings for the same
+        -- reason. An older Core ignores it and runs its own four.
+        CREATE TABLE IF NOT EXISTS local_job_slots (id INTEGER PRIMARY KEY CHECK(id=1), max_active INTEGER);")?;
     super::runs::migrate(db)?;
     super::gpu::migrate(db)?;
     super::queue::migrate(db)
@@ -119,6 +123,17 @@ pub(super) fn windows_max_jobs(db: &Connection) -> Result<Option<u32>> {
         .optional()?
         .flatten())
 }
+/// The most of this host's own Jobs that hold a slot at once: the number the
+/// user saved, or DEFAULT_MAX_ACTIVE.
+pub(super) fn max_active(db: &Connection) -> Result<usize> {
+    Ok(saved_max_active(db)?.map_or(DEFAULT_MAX_ACTIVE, |n| n as usize))
+}
+fn saved_max_active(db: &Connection) -> Result<Option<u32>> {
+    Ok(db
+        .query_row("SELECT max_active FROM local_job_slots WHERE id=1", [], |r| r.get::<_, Option<u32>>(0))
+        .optional()?
+        .flatten())
+}
 /// What holds this host's budget, and how many of its own jobs hold it. The
 /// Windows of the PC this Core's WSL runs on is the same physical machine, so
 /// its jobs hold this budget too (never counted twice, never added to it);
@@ -196,6 +211,8 @@ fn budget_shortage(need: &Resources, free: &Resources) -> Option<(&'static str, 
 fn triple(r: &Resources) -> String {
     format!("{} mCPU / {} MiB RAM / {} MiB swap", r.cpu_millis, r.memory_mi_b, r.swap_mi_b)
 }
+/// What job_budget's CPU hints are, and are not (T-64).
+const CPU_HINT: &str = "cpuMillisFree (the budget less every running Job's current CPU grant and collector), queueLength (local Jobs waiting) and running (local Jobs running) are read now, to choose a CPU range with: they are not an entitlement. A Job's grant is decided when it starts.";
 pub(super) fn save(db: &Connection, value: &Value) -> Result<()> {
     db.execute(
         "UPDATE local_jobs SET status=?2,reserved=?3,data=?4 WHERE id=?1",
@@ -207,6 +224,12 @@ pub(super) fn save(db: &Connection, value: &Value) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+/// A Job as a summary shows it: with its task's key now (T-56), which needs
+/// the taskId the summary leaves out.
+pub(super) fn current_ref(db: &Connection, mut job: Value) -> Value {
+    crate::task_keys::refresh(db, &mut job);
+    job
 }
 pub(super) fn summary(job: Value) -> Value {
     let mut result = json!({});
@@ -309,7 +332,7 @@ fn notify(db: &Connection, job: &mut Value) -> Result<()> {
         context = super::runs::mail_context(db, job)?;
     }
     let task = job["taskId"].as_str().context("Missing task")?.to_owned();
-    let public_task = format!("T-{}", collaboration::task_key(db, &task)?.1);
+    let public_task = collaboration::task_number(db, &collaboration::task_key(db, &task)?.0)?;
     let place = match job["executor"]["machineName"].as_str() {
         Some(machine) => format!("Job on {machine}"),
         None => "Local job".to_owned(),
@@ -415,7 +438,7 @@ pub(super) fn new_job(
     ensure!(waiting < 200, "Local job queue is full (200)");
     let remote = input.machine_id.is_some();
     let windows = input.machine_id.as_deref() == Some(super::remote::WINDOWS);
-    let reservation = input.resources.reservation();
+    let reservation = input.resources.point().reservation();
     // Windows on this PC holds this host's budget (see reserved): it must be
     // able to fit it. job_submit sets the budget first if none is stored.
     if windows {
@@ -442,7 +465,7 @@ pub(super) fn new_job(
     value["id"] = json!(id);
     value["attempt"] = json!(attempt);
     value["taskId"] = json!(task);
-    value["taskRef"] = json!(format!("T-{}", collaboration::task_key(tx, &task)?.1));
+    value["taskRef"] = json!(collaboration::task_number(tx, &collaboration::task_key(tx, &task)?.0)?);
     value["agentId"] = json!(agent_id);
     value["agent"] = json!(recipient);
     // The machine the submitting Agent runs on (null: this Core's host).
@@ -625,7 +648,7 @@ impl Store {
         // it is refused now rather than waiting forever.
         if let Some(id) = input.machine_id.as_deref().filter(|id| *id != super::remote::WINDOWS) {
             if let Some(limit) = super::remote::machine_settings(&tx, id)?.and_then(|m| m.budget) {
-                let need = input.resources.reservation();
+                let need = input.resources.point().reservation();
                 ensure!(need.cpu_millis <= u64::from(limit.cpu_millis) && need.memory_mi_b <= u64::from(limit.memory_mib),
                     "Job can never fit this machine's Jobs budget ({} mCPU / {} MiB RAM, including 64 MiB / 100 millicore for its supervisor); reduce resources or change the machine's budget",
                     limit.cpu_millis, limit.memory_mib);
@@ -686,7 +709,7 @@ impl Store {
         let jobs = ids
             .iter()
             .take(50)
-            .map(|id| get(&db, id).map(|job| summary(queue.view(job))))
+            .map(|id| get(&db, id).map(|job| summary(queue.view(current_ref(&db, job)))))
             .collect::<Result<Vec<_>>>()?;
         // The bounded live queue must remain visible even when its sequence is
         // older than the newest history page (long jobs can span many completions).
@@ -696,7 +719,7 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let live_jobs = live_ids
             .iter()
-            .map(|id| get(&db, id).map(|job| summary(queue.view(job))))
+            .map(|id| get(&db, id).map(|job| summary(queue.view(current_ref(&db, job)))))
             .collect::<Result<Vec<_>>>()?;
         Ok(
             json!({"jobs":jobs,"liveJobs":live_jobs,"hasMore":more,"nextBefore":jobs.last().map(|j|j["cursor"].clone())}),
@@ -862,7 +885,7 @@ impl Store {
             Some(format!("Waiting for outstanding reservations to fit the lowered budget: reserved {} mCPU / {} MiB RAM / {} MiB swap; budget {} mCPU / {} MiB RAM / {} MiB swap",
                 used.cpu_millis, used.memory_mi_b, used.swap_mi_b,
                 limit.cpu_millis, limit.memory_mi_b, limit.swap_mi_b))
-        } else if count >= MAX_ACTIVE {
+        } else if count >= max_active(&tx)? {
             Some("Waiting for an execution/collector slot".to_owned())
         } else {
             None
@@ -893,6 +916,7 @@ impl Store {
                 let job = get(&tx, &candidate.id)?;
                 if host.as_ref().is_some_and(|h| h["id"] != job["machine"]["id"])
                     || self.brief_in(&tx, job["agentId"].as_str().unwrap_or(""))?.is_none_or(|v| v.agent.closed_at.is_some())
+                    || crate::executor_archiving::archiving(&tx, job["agentId"].as_str().unwrap_or(""))?.is_some()
                     || super::service_recovery::reservation(self, &mut job.clone()).is_some()
                 {
                     continue;
@@ -960,9 +984,20 @@ impl Store {
                 }
             }
             let agent = self.brief_in(&tx, job["agentId"].as_str().unwrap())?;
+            // An executor being released starts nothing: held, and refused at its close (T-36).
+            if agent.as_ref().is_some_and(|v| v.agent.closed_at.is_none())
+                && crate::executor_archiving::archiving(&tx, job["agentId"].as_str().unwrap())?.is_some()
+            {
+                wait(&mut job, "Held: its executor is being released; it is refused once the release closes it".into(), &mut changed)?;
+                continue;
+            }
             if agent.is_none_or(|v| v.agent.closed_at.is_some()) {
                 job["status"] = json!("rejected");
-                job["reason"] = json!("Agent closed before launch");
+                job["reason"] = json!(if crate::executor_release::release_of(&tx, job["agentId"].as_str().unwrap())?.is_some() {
+                    "Its executor was released before launch: it starts nothing more; dispatch the task again for new work"
+                } else {
+                    "Agent closed before launch"
+                });
                 job["finishedAt"] = json!(now());
                 notify(&tx, &mut job)?;
                 save(&tx, &job)?;
@@ -1073,6 +1108,9 @@ impl Store {
                     }
                 },
             };
+            // Its CPU within what it asked for (T-64), decided before it holds
+            // any of the budget: what is free, and whether anything else waits.
+            super::cpu::record_grant(&tx, &mut job, limit.cpu_millis, queued.len().saturating_sub(1), max_active(&tx)?)?;
             job["reserved"] = json!(true);
             // A queued job has not started: bind its attempt to the boot at reservation,
             // not the earlier submission boot. Started attempts never get rebound.
@@ -1225,6 +1263,13 @@ impl Store {
             |r| r.get(0),
         )?;
         let available = limit.available(&used);
+        // Hints for choosing a CPU range (T-64), as the grant rule reads them now.
+        let cpu_free = limit.cpu_millis.saturating_sub(super::cpu::held(&db)?);
+        let running: i64 = db.query_row(
+            "SELECT COUNT(*) FROM local_jobs WHERE status='running' AND json_extract(data,'$.executor') IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
         let mut capacity = super::resource_summary::capacity(&limit, &available, &machine);
         capacity["snapshot"]["observedAt"] = json!(now());
         let windows_cap = windows_max_jobs(&db)?;
@@ -1237,17 +1282,38 @@ impl Store {
         let windows = json!({"maxJobs": windows_cap.map_or(super::remote::SLOTS, i64::from), "set": windows_cap.is_some(),
             "defaultMaxJobs": super::remote::SLOTS, "activeCount": windows_active, "sharesThisBudget": true});
         Ok(
-            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"maxActive":MAX_ACTIVE,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
+            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"cpuMillisFree":cpu_free,"queueLength":queued,"running":running,"cpuHint":CPU_HINT,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
         )
     }
+    /// A budget save that leaves maxActive as it is (tests; the route takes both).
+    #[cfg(test)]
     pub(super) fn set_job_budget(&self, value: Resources) -> Result<Value> {
+        self.set_job_budget_with(value, None)
+    }
+    /// The budget, and with `slots` how many of this host's own Jobs run at
+    /// once (None leaves it, Some(None) returns it to the default), in one
+    /// transaction (T-55).
+    pub(super) fn set_job_budget_with(&self, value: Resources, slots: Option<Option<u32>>) -> Result<Value> {
+        ensure!(
+            slots.flatten().is_none_or(|n| MAX_ACTIVE_RANGE.contains(&n)),
+            "maxActive must be {}–{}, or null for the default ({DEFAULT_MAX_ACTIVE})",
+            MAX_ACTIVE_RANGE.start(), MAX_ACTIVE_RANGE.end()
+        );
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         // Budget edits affect admission only. Keep accepted jobs and their
         // snapshots intact, even when the new budget is below reservations.
         // The queue resumes once capacity is released or the budget is raised.
+        // So does a lower maxActive: an attempt holding a slot keeps it.
         tx.execute("INSERT INTO local_job_settings(id,data) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET data=excluded.data",[serde_json::to_string(&value)?])?;
+        if let Some(saved) = slots {
+            tx.execute(
+                "INSERT INTO local_job_slots(id,max_active) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET max_active=excluded.max_active",
+                [saved],
+            )?;
+        }
         tx.commit()?;
+        // The answer stays the budget, as before; the view names maxActive.
         Ok(json!(value))
     }
     /// Set (or, with None, clear) the most Windows attempts at once. Like a
@@ -1266,6 +1332,11 @@ impl Store {
         )?;
         Ok(max_jobs)
     }
+    /// Whether this host's Jobs budget is saved (`init_job_budget`, or the user's).
+    pub(super) fn job_budget_saved(&self) -> Result<bool> {
+        Ok(self.db.read()?.query_row("SELECT EXISTS(SELECT 1 FROM local_job_settings WHERE id=1)", [], |r| r.get(0))?)
+    }
+
     /// Store this host's suggested budget if none is stored yet, as its first
     /// local job does; a stored budget is never replaced here.
     pub(super) fn init_job_budget(&self, suggested: &Value) -> Result<()> {

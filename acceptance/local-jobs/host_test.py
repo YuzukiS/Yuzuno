@@ -173,7 +173,7 @@ class SharedEndTests(unittest.TestCase):
     @patch.object(host, 'upstream_problem', return_value=None)
     def test_worker_checks_the_end_again_just_before_exec(self, *_):
         spec = {**self.spec,'snapshot':{'same':True},'deadlineAtUnix':1000+59.5}
-        limits = {'memory.max':str(64*1024*1024),'memory.swap.max':'0','cpu.max':'10000 100000','pids.max':str(host.TASKS_MAX)}
+        limits = {'memory.max':str(64*1024*1024),'memory.swap.max':'0','cpu.max':'10000 100000','cpu.weight':'5','pids.max':str(host.TASKS_MAX)}
         class Fake(type(Path())):
             def read_text(self, *args, **kwargs):
                 if str(self) == '/proc/self/cgroup': return '0::/fake\n'
@@ -188,19 +188,96 @@ class SharedEndTests(unittest.TestCase):
         self.assertEqual(host.read(self.folder/'deadline.json')['kind'],'notStarted')
         self.assertIsNotNone(host.read(self.folder/'started.json'))
 
-    def supervise_until_end(self, spec, ends):
-        """Run supervise against a unit that stays active until `ends(calls)` says it has ended."""
-        calls = []
+    def supervise_until_end(self, spec, ends, shows=None):
+        """Run supervise against a unit whose cgroup stays populated until `ends(calls)` says it has
+        ended; every systemd question it asks is kept in `shows`."""
+        calls, shows = [], [] if shows is None else shows
         def command(args, timeout=8, check=True):
             calls.append((self.clock[0], list(args), host.read(self.folder/'deadline.json')))
             return MagicMock(returncode=0, stdout='', stderr='')
-        state = {'ActiveState':'active','SubState':'running','MainPID':'42','Result':'success'}
+        state = {'ActiveState':'active','SubState':'running','MainPID':'42','Result':'success','ControlGroup':'/fake-worker'}
+        def show(unit):
+            shows.append((self.clock[0], unit))
+            return state
         clock, sleep = self.fake_time()
-        with clock, sleep, patch.object(host,'command',side_effect=command), patch.object(host,'show',return_value=state), \
+        with clock, sleep, patch.object(host.time,'monotonic',side_effect=lambda: self.clock[0]), \
+                patch.object(host,'command',side_effect=command), patch.object(host,'show',side_effect=show), \
                 patch.object(host,'pids_evidence',return_value=None), \
+                patch.object(host,'group_empty',side_effect=lambda group: ends(calls) is not None), \
                 patch.object(host,'classify',side_effect=lambda *_: ends(calls)), patch.object(host,'terminal_reason',return_value='signal'):
             outcome = host.supervise(spec, self.folder)
         return outcome, calls
+
+    def test_supervise_starts_the_worker_at_its_grant_with_a_weight_from_its_minimum(self):
+        # T-64: Core granted 16000 mCPU of a 2000–16000 range.
+        spec = {**self.spec, 'resources': {**self.spec['resources'], 'cpuMillis': 2000, 'cpuMillisMax': 16000}, 'cpuGrantedAtStart': 16000}
+        outcome, calls = self.supervise_until_end(spec, lambda calls: 'succeeded')
+        run = next(args for _, args, _ in calls if args[0] == 'systemd-run')
+        self.assertIn('CPUQuota=1600.0%', run)
+        self.assertIn('CPUWeight=100', run)
+        self.clean('launch.json', 'result.json')
+        old = next(args for _, args, _ in self.supervise_until_end(self.spec, lambda calls: 'succeeded')[1] if args[0] == 'systemd-run')
+        self.assertIn('CPUQuota=10.0%', old, 'an attempt without a grant runs at its request')
+        self.assertIn('CPUWeight=5', old)
+
+    def test_supervise_reads_the_group_not_systemd_while_the_worker_runs(self):
+        # T-59: systemd is asked once for the worker's identity and again at its end, however long it runs.
+        counts = []
+        for seconds in (60, 180):
+            with self.subTest(seconds=seconds):
+                self.clean('launch.json', 'result.json')
+                self.clock[0] = 1000.0
+                shows = []
+                outcome, calls = self.supervise_until_end(self.spec, lambda calls: 'succeeded' if self.clock[0] >= 1000 + seconds else None, shows)
+                self.assertEqual(outcome['status'], 'succeeded')
+                counts.append((len(shows), [args[:3] for _, args, _ in calls]))
+        self.assertEqual(counts[0], counts[1], 'systemd is asked only at the start and the end, however long the worker runs')
+        self.assertEqual(counts[0][0], 2, f'one identity question, one at the end: {counts}')
+
+    def test_a_worker_that_dies_before_its_start_receipt_is_unknown_as_before(self):
+        clock, sleep = self.fake_time()
+        dead = {'ActiveState':'failed','SubState':'failed','MainPID':'0','Result':'exit-code','ControlGroup':''}
+        with clock, sleep, patch.object(host.time,'monotonic',side_effect=lambda: self.clock[0]), \
+                patch.object(host,'command',return_value=MagicMock(returncode=0, stdout='', stderr='')), \
+                patch.object(host,'show',return_value=dead) as show:
+            outcome = host.supervise(self.spec, self.folder)
+        self.assertEqual((outcome['status'], outcome['reason']), ('unknown', 'No verified worker start receipt; reconcile before retry'))
+        self.assertEqual(show.call_count, 2, 'its identity, then once its group is empty')
+
+    def test_a_failed_launch_keeps_the_units_systemd_state(self):
+        # R1 1604b96b: the unknown outcome of a failed systemd-run records the unit as systemd shows it, as before T-59.
+        clock, sleep = self.fake_time()
+        state = {'LoadState':'loaded','ActiveState':'active','SubState':'running','Description':'another job','MainPID':'7','ControlGroup':''}
+        with clock, sleep, patch.object(host.time,'monotonic',side_effect=lambda: self.clock[0]), \
+                patch.object(host,'command',return_value=MagicMock(returncode=1, stdout='', stderr='Unit worker.service already exists.')), \
+                patch.object(host,'show',return_value=state) as show:
+            outcome = host.supervise(self.spec, self.folder)
+        self.assertEqual((outcome['status'], outcome['reason']), ('unknown', 'No verified worker start receipt; reconcile before retry'))
+        self.assertEqual(outcome['evidence']['systemd'], state, "a failed launch's outcome carries the unit's systemd state")
+        self.assertEqual(outcome['evidence']['launch'], {'returnCode': 1, 'stderr': 'Unit worker.service already exists.'})
+        self.assertEqual(show.call_count, 1)
+
+    def test_the_collector_samples_the_group_files_while_the_worker_runs(self):
+        proof = {'jobId':'one','attempt':'attempt','bootId':host.boot_id(),'invocationId':'invocation','controlGroup':'/fake-worker',
+                 'pids':{'max':512,'events':{'max':0}}}
+        host.atomic(self.folder/'started.json', proof)
+        running = {'ActiveState':'active','SubState':'running','MainPID':'42','InvocationID':'invocation','ControlGroup':'/fake-worker'}
+        ended = {'ActiveState':'active','SubState':'exited','MainPID':'0','InvocationID':'invocation','ControlGroup':'',
+                 'Result':'exit-code','ExecMainCode':'1','ExecMainStatus':'1'}
+        samples = []
+        def sample(group):
+            samples.append(group)
+            return {'max':512,'events':{'max':len(samples)}}
+        clock, sleep = self.fake_time()
+        with clock, sleep, patch.object(host.time,'monotonic',side_effect=lambda: self.clock[0]), \
+                patch.object(host,'command',return_value=MagicMock(returncode=0, stdout='', stderr='')), \
+                patch.object(host,'show',side_effect=[running, ended]), patch.object(host,'pids_snapshot',side_effect=sample), \
+                patch.object(host,'group_empty',side_effect=lambda group: self.clock[0] >= 1030):
+            outcome = host.supervise(self.spec, self.folder)
+        self.assertEqual(outcome['status'], 'failed')
+        self.assertEqual(outcome['evidence']['pids']['source'], 'collector-sample')
+        self.assertGreaterEqual(len(samples), 59, 'sampled from its files on every poll while it ran')
+        self.assertEqual(set(samples), {Path('/sys/fs/cgroup/fake-worker')})
 
     def test_supervise_stops_the_unit_at_the_end_with_term_then_kill_and_records_it_first(self):
         spec = {**self.spec,'deadlineAtUnix':1000+61}
@@ -332,7 +409,8 @@ class WorkerLaunchTests(unittest.TestCase):
     def tearDown(self): self.tmp.cleanup()
 
     def run_worker(self):
-        limits = {'memory.max':str(64*1024*1024),'memory.swap.max':'0','cpu.max':'10000 100000','pids.max':str(host.TASKS_MAX)}
+        limits = {'memory.max':str(64*1024*1024),'memory.swap.max':'0','cpu.max':'10000 100000','cpu.weight':'5','pids.max':str(host.TASKS_MAX),
+                  **getattr(self, 'cgroup', {})}
         class Fake(type(Path())):
             def read_text(self, *args, **kwargs):
                 if str(self) == '/proc/self/cgroup': return '0::/fake\n'
@@ -356,6 +434,29 @@ class WorkerLaunchTests(unittest.TestCase):
         outcome = self.recorded()
         self.assertEqual(outcome['evidence']['notLaunched'], record)
         self.assertNotIn('command', outcome['evidence'])
+
+    def test_a_cpu_quota_other_than_its_grant_never_starts_the_command(self):
+        # T-64: Core granted 200 mCPU; the cgroup allows 100.
+        self.spec['cpuGrantedAtStart'] = 200
+        self.assert_never_launched('prepare', 'Requested cgroup limits are not effective')
+
+    def test_a_cpu_weight_other_than_its_minimums_never_starts_the_command(self):
+        # 100 mCPU is a weight of 5 (2000 mCPU is systemd's default of 100).
+        self.cgroup = {'cpu.weight': '100'}
+        self.assert_never_launched('prepare', 'Requested cgroup limits are not effective')
+
+    def test_the_command_starts_at_its_grant_and_is_told_it(self):
+        self.spec['cpuGrantedAtStart'] = 1600
+        self.spec['argv'] = ['/bin/sh','-c','echo "$YUZUNO_JOB_CPU_MILLIS $YUZUNO_JOB_CPU_FILE" > cpu.txt; exit 3']
+        self.cgroup = {'cpu.max': '160000 100000'}
+        self.assertEqual(self.run_worker(), 3)
+        self.assertEqual((self.work/'cpu.txt').read_text(), f"1600 {self.folder/'cpu-millis'}\n")
+        self.assertEqual(host.read(self.folder/'started.json')['limits']['cpu.weight'], '5')
+
+    def test_an_attempt_from_before_cpu_grants_starts_at_its_request(self):
+        self.spec['argv'] = ['/bin/sh','-c','echo "$YUZUNO_JOB_CPU_MILLIS" > cpu.txt; exit 3']
+        self.assertEqual(self.run_worker(), 3)
+        self.assertEqual((self.work/'cpu.txt').read_text(), '100\n')
 
     def test_an_input_that_became_a_directory_never_starts_the_command(self):
         (self.work/'config.txt').unlink()
@@ -451,5 +552,86 @@ class WorkerLaunchTests(unittest.TestCase):
         host.atomic(self.folder/'command.json', {'attempt':self.spec['attempt'],'pid':42,'exitCode':1})
         unknown = host.result(self.spec, self.folder, 'unknown', {'systemd':{}}, 'No conclusive terminal evidence')
         self.assertNotIn('command', unknown['evidence'])
+
+class CpuRaiseTests(unittest.TestCase):
+    """host.py `raise_cpu` (T-64): raising a running attempt's CPU quota, only up.
+    The unit, its cgroup and systemctl are stand-ins."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name)
+        self.spec = {'id':'one','attempt':'attempt','bootId':host.boot_id(),'unit':'worker','supervisorUnit':'collector'}
+        self.proof = {'invocationId':'invocation','controlGroup':'/fake'}
+        self.state = {'ActiveState':'active','SubState':'running'}
+        self.cpu = 2000
+        self.set_property = []
+
+    def tearDown(self): self.tmp.cleanup()
+
+    def raise_cpu(self, millis):
+        def command(args, timeout=8, check=True):
+            # systemctl --user set-property --runtime <unit> CPUQuota=<n>%, as systemd applies it.
+            self.set_property.append(args)
+            self.cpu = round(float(args[-1].split('=')[1].rstrip('%')) * 10)
+            return MagicMock(returncode=0, stdout='', stderr='')
+        with patch.object(host, 'live_worker', lambda spec, folder: (self.state, self.proof)), \
+                patch.object(host, 'cgroup_cpu_millis', lambda proof: self.cpu), patch.object(host, 'command', command):
+            return host.raise_cpu(self.spec, self.folder, {'cpuMillis': millis})
+
+    def test_a_raise_sets_the_quota_and_reads_it_back(self):
+        answer = self.raise_cpu(16000)
+        self.assertEqual(answer['state'], 'raised', answer)
+        self.assertEqual(self.set_property, [['systemctl','--user','set-property','--runtime','worker','CPUQuota=1600.0%']])
+        self.assertEqual((answer['evidence']['cpuMillisBefore'], answer['evidence']['cpuMillisAfter']), (2000, 16000))
+        self.assertNotIn('confirmedByRetry', answer)
+
+    def test_a_grant_already_in_effect_is_confirmed_as_it_is(self):
+        self.cpu = 16000
+        answer = self.raise_cpu(16000)
+        self.assertEqual((answer['state'], answer.get('confirmedByRetry')), ('raised', True), answer)
+        self.assertEqual(self.set_property, [], 'nothing is asked of systemd')
+
+    def test_a_lower_grant_is_refused(self):
+        self.cpu = 16000
+        answer = self.raise_cpu(4000)
+        self.assertEqual(answer['state'], 'notRaised', answer)
+        self.assertIn('a CPU grant is only raised', answer['reason'])
+        self.assertEqual(self.set_property, [])
+
+    def test_a_worker_not_running_or_an_unreadable_quota_changes_nothing(self):
+        self.state = {'ActiveState':'deactivating','SubState':'stop-sigterm'}
+        self.assertEqual(self.raise_cpu(16000)['state'], 'notRaised')
+        self.state = {'ActiveState':'active','SubState':'running'}
+        self.cpu = None
+        answer = self.raise_cpu(16000)
+        self.assertEqual(answer['state'], 'notRaised', answer)
+        self.assertIn("cpu.max could not be read", answer['reason'])
+        host.atomic(self.folder/'cancel.json', {'attempt':'attempt'})
+        self.assertIn('Cancellation was requested', self.raise_cpu(16000)['reason'])
+        self.assertEqual(self.set_property, [])
+
+    def test_systemd_refusing_the_raise_leaves_it_as_it_was(self):
+        def command(args, timeout=8, check=True):
+            self.set_property.append(args)
+            return MagicMock(returncode=1, stdout='', stderr='Failed to set unit properties: test')
+        with patch.object(host, 'live_worker', lambda spec, folder: (self.state, self.proof)), \
+                patch.object(host, 'cgroup_cpu_millis', lambda proof: self.cpu), patch.object(host, 'command', command):
+            answer = host.raise_cpu(self.spec, self.folder, {'cpuMillis': 16000})
+        self.assertEqual(answer['state'], 'notRaised', answer)
+        self.assertIn('systemd did not raise the CPU quota: Failed to set unit properties: test', answer['reason'])
+
+    def test_the_quota_reads_in_millicores(self):
+        folder = Path(self.tmp.name) / 'cg'
+        folder.mkdir()
+        (folder/'cpu.max').write_text('1600000 100000\n')
+        real = host.Path
+        class Fake(type(Path())):
+            def __truediv__(self, other):
+                if str(self) == '/sys/fs/cgroup': return folder
+                return super().__truediv__(other)
+        with patch.object(host, 'Path', Fake):
+            self.assertEqual(host.cgroup_cpu_millis({'controlGroup': '/x'}), 16000)
+            (folder/'cpu.max').write_text('max 100000\n')
+            self.assertIsNone(host.cgroup_cpu_millis({'controlGroup': '/x'}))
+        self.assertIs(host.Path, real)
 
 if __name__=='__main__':unittest.main()

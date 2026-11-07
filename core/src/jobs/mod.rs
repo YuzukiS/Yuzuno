@@ -7,7 +7,12 @@ mod backfill_tests;
 mod gpu_tests;
 #[cfg(test)]
 mod limit_tests;
+#[cfg(test)]
+mod release_tests;
 mod checkpoint;
+mod cpu;
+#[cfg(test)]
+mod cpu_tests;
 mod host;
 mod ids;
 #[cfg(test)]
@@ -52,6 +57,9 @@ mod run_tests;
 mod service_tests;
 #[cfg(test)]
 mod tests;
+mod watch;
+#[cfg(test)]
+mod watch_tests;
 
 use crate::{server::ApiError, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
@@ -71,19 +79,26 @@ use tokio::sync::{Mutex, Notify};
 
 pub(crate) const COLLECTOR_MEMORY: u64 = 64;
 pub(crate) const COLLECTOR_CPU: u64 = 100;
-pub(crate) const MAX_ACTIVE: usize = 4;
+/// How many of this host's own Jobs hold an execution/collector slot at once,
+/// unless the user saved another number (T-55, `local_job_slots`).
+pub(crate) const DEFAULT_MAX_ACTIVE: usize = 4;
+/// What the user may save for it.
+pub(crate) const MAX_ACTIVE_RANGE: std::ops::RangeInclusive<u32> = 1..=16;
 #[derive(Default)]
 pub(crate) struct State {
     started: OnceLock<()>,
     gate: Mutex<()>,
     wake: Arc<Notify>,
-    /// When the GPUs were last sampled; at most one sample per interval.
-    gpu_sampled: std::sync::Mutex<Option<std::time::Instant>>,
+    /// The GPU sampler's reading last recorded, by its observedAt (T-58).
+    gpu_sampled: std::sync::Mutex<Option<String>>,
     /// The remote executor's own loop (remote.rs): its gate, its wake-up and
     /// when each remote attempt was last checked.
     remote_gate: Mutex<()>,
     remote_wake: Arc<Notify>,
     remote_seen: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// What each local attempt's files said when the host helper was last
+    /// asked about it (T-59): the tick asks only when they call for it.
+    watch: watch::Watch,
     /// The SSH connections remote Job calls share (T-163).
     ssh_mux: ssh_mux::Mux,
 }
@@ -122,6 +137,66 @@ impl Resources {
     }
 }
 
+/// How a Job's CPU may grow past its minimum (T-64): `elastic`, the default,
+/// takes what the budget leaves free, at its start and while it runs;
+/// `fixed` runs at its minimum, for timing-sensitive tests and performance
+/// gates.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum CpuPolicy {
+    #[default]
+    Elastic,
+    Fixed,
+}
+
+/// A Job's resources as submitted. CPU is one value (`cpuMillis`) or a range
+/// (T-64): `cpuMillisMin`, the same field by another name and what admission
+/// reserves, up to `cpuMillisMax`, with `cpuPolicy`. Memory and swap are hard
+/// limits. Without a range it serializes exactly as before, so an older
+/// caller's submission, retry and identity are unchanged.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", try_from = "RequestedWire")]
+pub(crate) struct Requested {
+    pub cpu_millis: u64,
+    pub memory_mi_b: u64,
+    pub swap_mi_b: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_millis_max: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_policy: Option<CpuPolicy>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RequestedWire {
+    cpu_millis: Option<u64>,
+    cpu_millis_min: Option<u64>,
+    cpu_millis_max: Option<u64>,
+    cpu_policy: Option<CpuPolicy>,
+    memory_mi_b: u64,
+    swap_mi_b: u64,
+}
+impl TryFrom<RequestedWire> for Requested {
+    type Error = String;
+    fn try_from(wire: RequestedWire) -> Result<Self, String> {
+        let cpu_millis = match (wire.cpu_millis, wire.cpu_millis_min) {
+            (Some(n), None) | (None, Some(n)) => n,
+            (Some(_), Some(_)) => return Err("give cpuMillis or cpuMillisMin, not both: cpuMillisMin is cpuMillis by another name".into()),
+            (None, None) => return Err("resources needs cpuMillis, or cpuMillisMin with cpuMillisMax for a range".into()),
+        };
+        Ok(Self { cpu_millis, memory_mi_b: wire.memory_mi_b, swap_mi_b: wire.swap_mi_b, cpu_millis_max: wire.cpu_millis_max, cpu_policy: wire.cpu_policy })
+    }
+}
+impl Requested {
+    /// The request at its minimum: what admission reserves, and what every
+    /// path without a range (a remote machine, a lowering) works with.
+    pub(crate) fn point(&self) -> Resources {
+        Resources { cpu_millis: self.cpu_millis, memory_mi_b: self.memory_mi_b, swap_mi_b: self.swap_mi_b }
+    }
+    pub(crate) fn cpu(&self) -> cpu::Range {
+        cpu::Range { min: self.cpu_millis, max: self.cpu_millis_max.unwrap_or(self.cpu_millis), policy: self.cpu_policy.unwrap_or_default() }
+    }
+}
+
 /// The free-space verdict for the queued Job that starts next.
 pub(crate) struct DiskCheck {
     pub job_id: String,
@@ -133,6 +208,24 @@ pub(crate) struct DiskCheck {
 struct DiskReserve {
     /// GiB; null returns to the default.
     reserve_gi_b: Option<u64>,
+}
+
+/// A budget save (POST /api/jobs/budget): the budget, and how many of this
+/// host's own Jobs run at once (T-55). Without `maxActive` that number stays
+/// as it is; null returns it to the default.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BudgetSave {
+    cpu_millis: u64,
+    memory_mi_b: u64,
+    swap_mi_b: u64,
+    #[serde(default, deserialize_with = "present")]
+    max_active: Option<Option<u32>>,
+}
+
+/// A field that is there, null or not: missing stays None.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<u32>>, D::Error> {
+    Option::<u32>::deserialize(d).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -153,7 +246,7 @@ pub(crate) struct Submit {
     argv: Vec<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
-    resources: Resources,
+    resources: Requested,
     #[serde(default)]
     exclusive: bool,
     #[serde(default = "default_timeout")]
@@ -283,6 +376,41 @@ pub(super) const CORE_HOST: &str = "local";
 /// Core from that Agent's own record at submit, never from the request.
 pub(super) const AGENT_MACHINE: &str = "agent";
 
+/// A machine's Jobs budget and what Jobs reserve of it now, read in the
+/// caller's transaction, for an executor's dispatch choosing its machine
+/// (T-35 S3b, collaboration_store/executor_choice.rs): `local` or a
+/// registered machine's id. None when it has no budget: an SSH machine
+/// without one, or this Core host before one is saved and with no
+/// `default_local` (`local_budget_default`).
+pub(crate) fn machine_headroom(db: &rusqlite::Connection, machine: &str, default_local: Option<&Value>)
+    -> Result<Option<(Resources, Resources)>> {
+    if machine == CORE_HOST {
+        if !local_budget_saved(db)? && default_local.is_none() {
+            return Ok(None);
+        }
+        return Ok(Some((store::budget(db, default_local)?, store::reserved(db)?.0)));
+    }
+    let Some(budget) = remote::machine_settings(db, machine)?.and_then(|m| m.budget) else { return Ok(None) };
+    let budget = Resources { cpu_millis: budget.cpu_millis.into(), memory_mi_b: budget.memory_mib.into(), swap_mi_b: 0 };
+    Ok(Some((budget, remote::machine_reserved(db, machine)?)))
+}
+
+/// Whether this Core host's Jobs budget is saved, read in the caller's
+/// transaction: until then its default comes from the host itself.
+pub(crate) fn local_budget_saved(db: &rusqlite::Connection) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM local_job_settings WHERE id=1)", [], |r| r.get(0))?)
+}
+
+/// This Core host's suggested Jobs budget while none is saved, as its first
+/// local Job would save it; none once one is. Read before a transaction
+/// that needs it (`machine_headroom`).
+pub(crate) async fn local_budget_default(ws: &Workspace) -> Result<Option<Value>> {
+    if ws.stored(|store| store.job_budget_saved()).await? {
+        return Ok(None);
+    }
+    Ok(Some(host::machine_info().await?["suggestedBudget"].clone()))
+}
+
 /// The start record of a local Job's attempt (started.json), if it has one.
 pub(crate) fn started_record(data: &std::path::Path, job: &Value) -> Option<Value> {
     let folder = host::folder(data, job).ok()?;
@@ -344,6 +472,10 @@ impl Submit {
             // What Core can enforce or see on this host does not exist there.
             ensure!(!machine.trim().is_empty() && machine.len() <= 128, "machineId must contain 1–128 bytes");
             ensure!(self.gpu.is_none(), "GPU admission is not available on a remote machine in this version; omit gpu");
+            ensure!(
+                self.resources.cpu().max == self.resources.cpu_millis,
+                "A CPU range up to cpuMillisMax is for this Core's host only: a remote machine runs at cpuMillis. Omit cpuMillisMax for machineId"
+            );
             ensure!(!self.exclusive, "exclusive applies to this host's jobs only; omit it for a remote machine");
             ensure!(!self.guard_git, "guardGit reads the working tree on this host; set guardGit to false for a remote machine (its files are not visible to Core)");
             ensure!(self.guard_paths.is_empty(), "guardPaths narrows guardGit, which reads this host's working tree; omit it for a remote machine");
@@ -427,6 +559,12 @@ impl Submit {
                 && (64..=1_048_576).contains(&self.resources.memory_mi_b)
                 && self.resources.swap_mi_b <= 1_048_576,
             "CPU must be 100–256000 millicores, memory 64–1048576 MiB, swap 0–1048576 MiB"
+        );
+        let cpu = self.resources.cpu();
+        ensure!(
+            (cpu.min..=256000).contains(&cpu.max),
+            "cpuMillisMax must be at least cpuMillisMin ({}) and at most 256000 millicores",
+            cpu.min
         );
         ensure!(
             (1..=604800).contains(&self.timeout_seconds),
@@ -871,12 +1009,13 @@ async fn attachment(path: std::path::PathBuf, request: axum::extract::Request) -
 }
 async fn set_budget(
     AppState(ws): AppState<Arc<Workspace>>,
-    Json(input): Json<Resources>,
+    Json(input): Json<BudgetSave>,
 ) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
-    validate_budget(&input)?;
+    let budget = Resources { cpu_millis: input.cpu_millis, memory_mi_b: input.memory_mi_b, swap_mi_b: input.swap_mi_b };
+    validate_budget(&budget)?;
     host::local_host(&ws.data_dir)?;
-    let value = ws.stored(move |s| s.set_job_budget(input)).await?;
+    let value = ws.stored(move |s| s.set_job_budget_with(budget, input.max_active)).await?;
     ws.start_jobs();
     ws.jobs.wake.notify_one();
     changed(&ws);
@@ -1116,7 +1255,14 @@ pub async fn call(
         }
         "job_provenance" => {
             let scope = serde_json::from_value::<provenance::Request>(input)?.scope()?;
-            let (run, jobs) = ws.stored(move |s| s.provenance_records(&scope)).await?;
+            // The records as they read now: each with its task's key now (T-56).
+            let (run, jobs) = ws.stored(move |s| {
+                let (mut run, mut jobs) = s.provenance_records(&scope)?;
+                let db = s.db.read()?;
+                run.iter_mut().for_each(|run| crate::task_keys::refresh(&db, run));
+                jobs.iter_mut().for_each(|job| crate::task_keys::refresh(&db, job));
+                Ok((run, jobs))
+            }).await?;
             let mut extents = Vec::with_capacity(jobs.len());
             for job in &jobs {
                 extents.push(if job["executor"].is_null() {
@@ -1298,6 +1444,8 @@ fn changed(ws: &Workspace) {
     ws.changes
         .publish(&json!({"type":"workspace.changed","scope":"jobs"}));
     ws.collaboration_wakeup.notify_one();
+    // A release may wait for a Job that just ended (T-36).
+    ws.wake_archive_passes();
 }
 
 /// A request that would queue a stage on a host that cannot run local Jobs
@@ -1364,8 +1512,9 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
         changed(ws);
     }
     let active = ws.stored(|s| s.active_jobs()).await?;
+    ws.jobs.watch.retain(&active.iter().filter_map(|job| job["attempt"].as_str().map(str::to_owned)).collect());
     for job in active {
-        let evidence = host::observe(&ws.data_dir, &job).await;
+        let evidence = ws.jobs.watch.observe(&ws.data_dir, &job).await;
         match evidence {
             Ok(Some(value)) => {
                 let id = job["id"]
@@ -1410,10 +1559,12 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
     }
     let candidates = ws.stored(|s| s.queued_candidates()).await?;
     if candidates.is_empty() {
-        return Ok(());
+        // Nothing waits: running elastic Jobs may take what is free (T-64).
+        return cpu::raise(ws).await;
     }
     if ws.stored(|s| s.gpu_jobs_live()).await? {
-        sample_gpus(ws, false).await;
+        // Before a GPU Job may start: a reading taken now (D2, T-58).
+        sample_gpus(ws, true).await;
     }
     // Free space where each candidate writes, each path on its own
     // filesystem, read together: the scan binds each verdict to its job.
@@ -1470,24 +1621,27 @@ async fn tick(ws: &Arc<Workspace>) -> Result<()> {
     Ok(())
 }
 
-/// Sample the GPUs through the helper, at most once per ten seconds unless
-/// forced, and keep the result (or its error) for admission and views.
+/// Keep the GPU sampler's reading (T-58: the one place Core reads its GPUs)
+/// for admission and views, with its own observedAt: the latest, or, forced,
+/// one taken now on a running NVML session (D2), and which it was (`read`).
+/// A reading already kept is not written again; one is marked kept only once
+/// written, so a read alongside never finds it marked but not yet there.
 async fn sample_gpus(ws: &Arc<Workspace>, force: bool) {
-    {
-        let mut last = ws.jobs.gpu_sampled.lock().unwrap();
-        if !force && last.is_some_and(|at| at.elapsed() < Duration::from_secs(10)) {
-            return;
-        }
-        *last = Some(std::time::Instant::now());
-    }
-    let sample = match host::helper(&ws.data_dir).await {
-        Ok(script) => host::invoke(&script, "gpus", None, None)
-            .await
-            .unwrap_or_else(|error| json!({"error":format!("{error:#}"),"devices":[]})),
-        Err(error) => json!({"error":format!("{error:#}"),"devices":[]}),
+    let (sample, read) = if force {
+        ws.gpus.now(crate::machine_load::GPU_WAIT).await
+    } else {
+        (ws.gpus.latest(crate::machine_load::GPU_WAIT).await, "latest")
     };
-    if let Err(error) = ws.stored(move |s| s.record_gpu_sample(sample)).await {
-        eprintln!("GPU sample not recorded: {error:#}");
+    let Some(sample) = sample else { return };
+    if ws.jobs.gpu_sampled.lock().unwrap().as_deref() == Some(sample.observed_at.as_str()) {
+        return;
+    }
+    let observed = sample.observed_at.clone();
+    let mut sample = sample.to_json();
+    sample["read"] = json!(read);
+    match ws.stored(move |s| s.record_gpu_sample(sample)).await {
+        Ok(()) => *ws.jobs.gpu_sampled.lock().unwrap() = Some(observed),
+        Err(error) => eprintln!("GPU sample not recorded: {error:#}"),
     }
 }
 
@@ -1503,6 +1657,17 @@ fn not_started_reason(error: &anyhow::Error) -> String {
     )
 }
 
+/// A Job's resources in short (T-64): the CPU range, its grant and what the
+/// command reads of it.
+const RESOURCES: &str = "CPU in millicores, 100–256000. cpuMillis alone runs at exactly that, as before. For a range give \
+    cpuMillisMin (what admission reserves; cpuMillis by another name) and cpuMillisMax: when the Job starts Core grants \
+    clamp(free budget − its 100 mCPU collector, min, max), where free is the budget less every running Job's current grant; \
+    only min while other Jobs are queued, or with cpuPolicy fixed (for timing-sensitive tests and performance gates). While \
+    nothing is queued, an elastic Job is raised as the budget frees, up to max; it is never lowered. The command reads its grant \
+    in YUZUNO_JOB_CPU_MILLIS (at its start) and, as it is now, in the file YUZUNO_JOB_CPU_FILE names. Rust, Cargo, libtest and \
+    Ninja size themselves from the CPU quota when a process starts: a raise helps the next process, not one already running. \
+    job_get shows cpuRequested, cpuGrantedAtStart with the rule's inputs (cpuGrant), cpuCurrent and cpuChanges. A range is for \
+    this host only. memoryMiB and swapMiB are hard limits.";
 /// What a Job's inputs are, wherever it runs. Remote specifics are in
 /// REMOTE_INPUTS and, at length, in the guide's jobs topic.
 const INPUTS: &str = "Small files the command reads (at most 2 MiB each, 16 MiB together), relative to cwd: their SHA-256 is \
@@ -1573,7 +1738,10 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     let properties = json!({"requestId":string,"taskId":task_reference,"name":string,"cwd":string,
         "argv":{"type":"array","items":string,"minItems":1,"maxItems":128},
         "env":{"type":"object","additionalProperties":{"type":"string"}},
-        "resources":{"type":"object","properties":{"cpuMillis":{"type":"integer","minimum":100},"memoryMiB":{"type":"integer","minimum":64},"swapMiB":{"type":"integer","minimum":0}},"required":["cpuMillis","memoryMiB","swapMiB"],"additionalProperties":false},
+        "resources":{"type":"object","description":RESOURCES,"properties":{"cpuMillis":{"type":"integer","minimum":100,"maximum":256000},
+            "cpuMillisMin":{"type":"integer","minimum":100,"maximum":256000},"cpuMillisMax":{"type":"integer","minimum":100,"maximum":256000},
+            "cpuPolicy":{"type":"string","enum":["elastic","fixed"],"default":"elastic"},
+            "memoryMiB":{"type":"integer","minimum":64},"swapMiB":{"type":"integer","minimum":0}},"required":["memoryMiB","swapMiB"],"additionalProperties":false},
         "exclusive":{"type":"boolean","default":false,"description":"Run alone among this Core's managed local jobs. FIFO waits for existing jobs and their process-group cleanup; later jobs remain queued until this reservation releases. Does not stop other applications or reserve the whole host. Request actual CPU/RAM/swap limits as usual."},
         "timeoutSeconds":{"type":"integer","minimum":1,"maximum":604800,"default":86400},
         "guardGit":{"type":"boolean","default":true,"description":GUARD_GIT},"guardPaths":{"type":"array","items":string,"maxItems":128,"description":GUARD_PATHS},"inputs":{"type":"array","items":string,"maxItems":128,"description":INPUTS},"outputs":{"type":"array","items":string,"maxItems":20,"description":"Declared output file paths relative to cwd, available for download from the job panel. Not with machineId: declare artifacts there."}});
@@ -1616,9 +1784,9 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     let make = |name: &str, description: &str, p: Value, required: Vec<&str>| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":p,"required":required,"additionalProperties":false}});
     let run_id = json!({"runId":string});
     vec![
-        make("job_submit", "Submit an authorized long-running command on this Core's Linux/WSL host, tied to an existing task and your Agent. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work. When the task ran the same name or argv before, suggestion gives what its measured peaks suggest requesting; it is never applied.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
+        make("job_submit", "Submit an authorized long-running command on this Core's Linux/WSL host, tied to an existing task and your Agent. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work. When the task ran the same name or argv before, suggestion gives what its measured peaks suggest requesting; it is never applied. resources may give CPU as a range (cpuMillisMin–cpuMillisMax): Core decides the grant when it starts and may raise it while it runs; see resources.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
         make("job_list", list::DESCRIPTION, list::schema(), vec![]),
-        make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero; valid failures can be measured. mail: each completion mail by status, its delivery and, when its wake-up of your Agent did not go through, \"delivery failed: <reason>\" (the mail stays in your mailbox; a refused wake-up is tried again a few times). Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),
+        make("job_get", "Read a job's command snapshot, retained evidence and outcome, plus resourceSummary: actual peak memory and average CPU cores versus declared resources. Average cores = worker CPU time / monotonic start-to-exit wall time, including pauses and the wrapper, excluding the collector; under 2 s of wall time it is null with averageCpuCoresReason too_short. Missing/invalid/remote measurements are null, never zero; valid failures can be measured. A local Job's CPU: cpuRequested {min,max,policy}, cpuGrantedAtStart with the inputs it was decided from (cpuGrant: budget, held, free, headroom, queueLength, maxActive, at), cpuCurrent, and cpuChanges, each raise while it ran (never a lowering). mail: each completion mail by status, its delivery and, when its wake-up of your Agent did not go through, \"delivery failed: <reason>\" (the mail stays in your mailbox; a refused wake-up is tried again a few times). Unknown is not success; task status is independent.", json!({"jobId":job_ref}), vec!["jobId"]),
         make("job_logs", "Read a bounded log page (32 KiB) from the job's two-MiB disk ring. Omit offset for tail; older overwritten bytes are marked truncated.", json!({"jobId":job_ref,"offset":{"type":"integer","minimum":0}}), vec!["jobId"]),
         make("job_cancel", "Persist cancellation intent for your job. Resources release only after launcher/worker process groups are confirmed stopped; this does not cancel its business task.", json!({"jobId":job_ref}), vec!["jobId"]),
         make("job_run_submit", "Submit a run: a few stages of one experiment on this Core's host, each stage attempt an ordinary local Job in the shared queue and budget. A stage starts only after every stage it needs has exited 0 with its declared artifacts verified, and its worker checks those artifacts are unchanged before the command starts; a failure or cancellation leaves the stages that need it waiting, never started, with the reason visible. Every stage freezes its inputs at submission. Each attempt keeps its own log, evidence and usage file: the command may append JSON lines {\"usd\": number or null, \"source\": \"...\"} to $YUZUNO_JOB_USAGE_FILE (failed attempts count too; null stays unknown) and replace $YUZUNO_JOB_PROGRESS_FILE with small JSON progress. costLimitUsd is a soft limit on recorded cost: no new stage attempt starts beyond it, but calls in flight or unrecorded can exceed it; it is no provider cap. requestId only prevents a duplicate submission; it does not make remote API calls or charges happen exactly once. A waitForAnalysis stage sends one durable gate notification with its Job, attempt and artifact evidence; call job_run_decide after analyzing it. One mail when the run succeeds or its cancellation completes; a stage that ends without success and without a declared retry mails on its own. suggestions: per stage, what the task's earlier measured runs of the same name or argv suggest requesting; never applied.",
@@ -1638,7 +1806,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         make("job_cost", task_cost::DESCRIPTION, json!({"taskId":task_reference}), vec!["taskId"]),
         make("job_run_retry", "Start a new attempt of a stage whose latest attempt failed, was cancelled, rejected or interrupted: the same command and frozen inputs (a changed input rejects it), its own job, log and usage file; earlier attempts and their cost are kept. Stages waiting on it start after it succeeds. An unknown outcome must be cancelled first. Use a stable requestId.", json!({"requestId":string,"runId":string,"stage":string}), vec!["requestId","runId","stage"]),
         make("job_run_cancel", "Cancel your run: stages that have not started never will; running stages are cancelled as any job, their reservation released only when their process groups are gone. Succeeded attempts and their artifacts are kept for an explicit reuse in a new run. Does not cancel the business task.", run_id, vec!["runId"]),
-        make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. budget is the user's setting (machine.suggestedBudget is only the default before one is saved); the host totals in machine are for reference, not a ceiling, and budgetBounds are the fixed input bounds. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These local request bounds do not guarantee immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. CPU quota is not reserved physical cores; the disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts at once (activeCount) and their ceiling (maxJobs, the user's setting or defaultMaxJobs), inside this same budget.", json!({}), vec![]),
+        make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. budget is the user's setting (machine.suggestedBudget is only the default before one is saved); the host totals in machine are for reference, not a ceiling, and budgetBounds are the fixed input bounds. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These local request bounds do not guarantee immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. maxActive is how many of this host's own jobs run at once, 1–16, default 4 (set by the user in Settings → Jobs & resources → Core host budget, which saves it with POST /api/jobs/budget, null for the default; maxActiveSet says whether one is saved); activeCount is how many hold a slot now, and a job past it waits with \"Waiting for an execution/collector slot\". CPU quota is not reserved physical cores. cpuMillisFree (the budget less every running Job's current CPU grant and collector), queueLength and running are hints read now for choosing a CPU range, not an entitlement: a Job's grant is decided when it starts (cpuHint). The disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts at once (activeCount) and their ceiling (maxJobs, the user's setting or defaultMaxJobs), inside this same budget.", json!({}), vec![]),
         make("job_lower_memory", "Lower your running local job's memory limit (MiB) so the budget it frees can start queued work at once. Only down, never below what the job uses now plus 256 MiB, and it is never raised again; swap stays as reserved. systemd applies it to the running job, its reservation is lowered with it, and the change is recorded on the job and its task. A job that then needs more than the new limit is killed for memory, and its reason names this change. If an earlier lowering's answer was lost, asking for the same value again confirms it without changing anything. Not on SSH machines or Windows.", json!({"jobId":job_ref,"memoryMiB":{"type":"integer","minimum":1}}), vec!["jobId","memoryMiB"]),
         make("job_gpu_admission", "Open or close one local GPU (by UUID, from job_budget) to new managed jobs. Closing only stops new admission there; jobs already running or paused on it keep their reservation. Queued jobs that need it wait with this reason. A device the user closed stays closed until the user opens it.", json!({"uuid":string,"open":{"type":"boolean"},"reason":string}), vec!["uuid","open"]),
     ]

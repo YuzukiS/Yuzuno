@@ -139,6 +139,8 @@ import { ClarificationHost } from "./intelligent-ui/ClarificationHost";
 import { AgentRailRow, summaryOrigin, workingFolder } from "./AgentRailRow";
 import { RailHeading } from "./RailHeading";
 import { GroupedAgents } from "./ProjectGroups";
+import { ExecutorRail } from "./ExecutorRail";
+import { inExecutors, isArchived } from "./executor-lifecycle";
 import { groupAgents } from "./project-groups";
 import { useAppearance } from "./appearance";
 import { StatusBar } from "./StatusBar";
@@ -178,7 +180,7 @@ import "./connection-status.css";
 import { OutgoingMessages } from "./OutgoingMessages";
 import { sendingInTurn } from "./delivery-note";
 import { CurrentTurnPrompt } from "./CurrentTurnPrompt";
-import { Jobs, ConversationJobs, openJobs } from "./Jobs";
+import { Jobs, ConversationJobs } from "./Jobs";
 import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
 import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
 import { refreshLiveJobs } from "./live-jobs";
@@ -349,6 +351,8 @@ export function App() {
   const [boardRevision, boardRefresh] = useRefreshTrigger();
   const [machinesRevision, machinesRefresh] = useRefreshTrigger();
   const [jobsRevision, jobsRefresh] = useRefreshTrigger();
+  // Core's merge queue (T-65): its tick and actions say `mergeQueue`.
+  const [mergeQueueRevision, mergeQueueRefresh] = useRefreshTrigger();
   // Only for the Home tab's count of open Asks while Home is closed.
   const [asksRevision, asksRefresh] = useRefreshTrigger();
   // The shared Appearance preset, for a device that follows it (T-194).
@@ -851,7 +855,7 @@ export function App() {
                   : listed.lastSeq > old.lastSeq;
               if (!newer) return w;
               const agents = w.agents.slice();
-              agents[index] = { ...listed, projectId: old.projectId, kind: old.kind };
+              agents[index] = { ...listed, projectId: old.projectId, kind: old.kind, executor: old.executor };
               return { ...w, agents };
             });
           }
@@ -860,6 +864,7 @@ export function App() {
           return;
         }
         case "workspace.changed":
+          if (event.mergeQueue) mergeQueueRefresh.atMostEvery(1_000);
           // A conversation that shows mail delivery gets its own notice.
           if (event.scope === "collaboration") {
             boardRefresh.now();
@@ -875,6 +880,12 @@ export function App() {
           }
           else if (event.scope === "projects" || event.scope === "runtime")
             workspaceRefresh.soon(250);
+          // An executor's lifecycle (T-36 S3): its row, Home, its task's card.
+          else if (event.scope === "executors") {
+            workspaceRefresh.soon(250);
+            homeRefresh.soon(500);
+            boardRefresh.now();
+          }
           else if (event.scope === "backup") setBackupRevision((n) => n + 1);
           else if (event.scope === "appearance-preset") presetRefresh.now();
           else refresh();
@@ -884,6 +895,10 @@ export function App() {
           liveChange.current = liveTurn.current = null;
           arrivalsSettle.current = { after: live.sync.reads };
           jobsRefresh.now();
+          // The merge queue: at once on a reconnect; while the stream is down,
+          // at most once a minute (T-65 R1).
+          if (event.reason === "poll") mergeQueueRefresh.atMostEvery(60_000);
+          else mergeQueueRefresh.now();
           presetRefresh.now();
           refresh();
           // Not each poll while the stream is down: a reconnect resets anew.
@@ -891,7 +906,7 @@ export function App() {
           return;
       }
     },
-    [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, presetRefresh, live.sync, refresh],
+    [workspaceRefresh, homeRefresh, asksRefresh, boardRefresh, machinesRefresh, jobsRefresh, mergeQueueRefresh, presetRefresh, live.sync, refresh],
   );
   const eventConnection = useWorkspaceEvents(!previewMode, onWorkspaceEvent, onReplay);
   // The stream broke (T-19 CV:Q-01, Lead 3299): nothing arrives live until it is open again and
@@ -2116,6 +2131,15 @@ export function App() {
     else selectAgent(id);
     if (phone) requestAnimationFrame(() => phoneBack.current?.focus());
   }
+  /** Settings at one editor, from another dialog that has just closed (the
+   * Jobs card's Edit in Settings, T-55): it lets go of focus first. */
+  function openSettingsAt(editor: SettingsEditor) {
+    if (previewMode) return;
+    requestAnimationFrame(() => {
+      setSettingsAt({ editor, nonce: Date.now() });
+      setUpdatesOpen(true);
+    });
+  }
   function openSettingsDestination(destination: SettingsDestination) {
     if (previewMode) return;
     setUpdatesOpen(false);
@@ -2145,7 +2169,6 @@ export function App() {
       setTaskFocus({ taskId: destination.taskId, section: "workspaces", at: Date.now() });
       setCollaborationOpen(true);
     } else if (destination.kind === "machines") setMachinesOpen(true);
-    else openJobs({ source: "local", settings: "budget" });
     });
   }
   // An Agent's action menu (T-184), in the list and the conversation header.
@@ -3024,17 +3047,22 @@ export function App() {
           : w,
       );
       live.sync.mutate((d) => (d.agent.id === id ? { ...d, agent: updated } : d));
+      // A release that waits for its work to end is archiving, still open (T-36 S3).
+      const archiving = action === "release" && !updated.releasedAt ? updated.executor?.reason || "" : null;
       if (currentSelected.current === id)
-        setAgentScope(action === "close" || action === "release" ? "closed" : "active");
+        setAgentScope(action === "close" || (action === "release" && archiving === null) ? "closed" : "active");
       setNotice(action === "close" ? shell.closedSaved(agent.name)
+        : archiving !== null ? shell.archiving(agent.name, archiving)
         : action === "release" ? shell.released(agent.name) : shell.reopened(agent.name));
     }
     live.clearError();
     setCatchupSource(null);
     refresh();
   }
+  // A failed executor still blocking its task, and the archived ones in
+  // their fold, are listed with the open Agents (T-36 S3).
   const searched =
-    (agentScope === "closed" ? scopedClosed : scopedActive).filter((a) =>
+    (agentScope === "closed" ? scopedClosed : [...scopedActive, ...scopedClosed.filter((a) => inExecutors(a) || isArchived(a))]).filter((a) =>
       `${a.name} ${a.workSummary?.text || ""} ${a.cwd} ${a.remote?.machine.name || ""}`
         .toLowerCase()
         .includes(search.toLowerCase()),
@@ -3134,7 +3162,7 @@ export function App() {
               <MessageSquare size={15} />
               <span className="toolbar-nav-label">{shell.tasks}</span>
             </button>
-            <Jobs key={`jobs-${workspaceId}`} workspaceId={workspaceId} agent={agent} agents={workspace?.agents || []} revision={String(jobsRevision)} disabled={previewMode || loading} />
+            <Jobs key={`jobs-${workspaceId}`} workspaceId={workspaceId} agent={agent} agents={workspace?.agents || []} projects={workspace?.projects || []} revision={String(jobsRevision)} mergeQueueRevision={String(mergeQueueRevision)} disabled={previewMode || loading} onOpenSettings={openSettingsAt} />
           </nav>
         </div>
         <div className="toolbar-actions">
@@ -3272,6 +3300,14 @@ export function App() {
               scope === ALL_PROJECTS && appearance.projectGroups !== "none"
                 ? groupAgents(filteredAgents, projects, { unknown: shell.unknownProject, none: shell.noProject })
                 : null;
+            // Each Project's list in its parts (T-36 S3): leads, the others,
+            // its task executors, its archived ones folded. Closed as it was.
+            const parts = (agents: Agent[], key: string) =>
+              agentScope === "closed" ? agents.map(row) : (
+                <ExecutorRail agents={agents} listKey={key} workspaceId={workspaceId} selectedId={homeOpen ? null : selected}
+                  searching={!!search.trim()} renderAgent={row}
+                  order={appearance.agentOrder === "attention" ? { seen: turnSeen, waiting: proposersWaiting(needsYouItems) } : undefined} />
+              );
             return groups ? (
               <GroupedAgents
                 groups={groups}
@@ -3280,13 +3316,14 @@ export function App() {
                 selectedId={homeOpen ? null : selected}
                 searching={!!search.trim()}
                 renderAgent={row}
+                renderList={parts}
                 onCreate={(projectId) => {
                   setCreateProject(projectId ?? "");
                   setCreateOpen(true);
                 }}
               />
             ) : (
-              filteredAgents.map(row)
+              parts(filteredAgents, scope)
             );
           })()}
           {!loading && filteredAgents.length === 0 && !searchLink && (
@@ -3938,9 +3975,12 @@ export function App() {
                       onOpen={(id) => selectAgent(id)}
                     />
                   )}
+                  {/* Each notice its own key, per Agent so it starts anew in another's
+                      conversation: siblings sharing one key are duplicated by React, a copy left in
+                      the page on every render (YN-1). */}
                   {currentDetail && recovery && (
                     <RecoveryNotice
-                      key={selected}
+                      key={`recovery:${selected}`}
                       detail={currentDetail}
                       disabled={closed || !!workspaceError}
                       hasDraft={hasDraft}
@@ -3949,7 +3989,7 @@ export function App() {
                     />
                   )}
                   {currentDetail?.agent.harness === "claude" && !currentDetail.agent.remote && (
-                    <QuotaResumeNotice key={selected} detail={currentDetail} disabled={closed || !!workspaceError} />
+                    <QuotaResumeNotice key={`quota:${selected}`} detail={currentDetail} disabled={closed || !!workspaceError} />
                   )}
                   {unconfirmedMessage && (
                     <div className="message-delivery-notice" role="status" lang={langTag(language)}>

@@ -465,6 +465,41 @@ fn a_full_slot_count_or_a_lowered_budget_is_told_to_every_waiting_job() {
     }
 }
 
+/// T-55: as many of this host's own Jobs start as the user saved, and the
+/// next waits at the same slot reason. Lowering the number holds back new
+/// Jobs only: the attempts that hold a slot keep it and go on.
+#[test]
+fn a_saved_max_active_admits_that_many_and_lowering_it_holds_new_jobs_while_held_slots_continue() {
+    let (_dir, s) = setup();
+    let budget = Resources { cpu_millis: 4000, memory_mi_b: 4096, swap_mi_b: 0 };
+    let held = |s: &Store| -> i64 {
+        s.db.read().unwrap().query_row("SELECT COUNT(*) FROM local_jobs WHERE reserved=1", [], |r| r.get(0)).unwrap()
+    };
+    let running: Vec<Value> = (0..4).map(|i| cpu(&s, &format!("r{i}"), "a", 200)).collect();
+    for _ in &running {
+        start(&s).unwrap();
+    }
+    let fifth = cpu(&s, "w1", "b", 200);
+    assert!(start(&s).is_none(), "the 5th Job waits at the default four");
+    assert_eq!(reason(&s, &fifth), "Waiting for an execution/collector slot", "the 5th Job waits at the slot reason");
+
+    s.set_job_budget_with(budget.clone(), Some(Some(6))).unwrap();
+    assert_eq!(start(&s).map(|j| j["id"].clone()), Some(fifth["id"].clone()), "raised to 6, the 5th starts");
+
+    s.set_job_budget_with(budget, Some(Some(2))).unwrap();
+    assert_eq!(held(&s), 5, "lowered to 2, the five that hold a slot keep it");
+    let sixth = cpu(&s, "w2", "b", 200);
+    assert!(start(&s).is_none(), "lowered to 2, a new Job waits");
+    assert_eq!(reason(&s, &sixth), "Waiting for an execution/collector slot");
+    for job in &running[..3] {
+        done(&s, job);
+    }
+    assert_eq!(held(&s), 2);
+    assert!(start(&s).is_none(), "two still hold a slot: the new Job waits");
+    done(&s, &running[3]);
+    assert_eq!(start(&s).map(|j| j["id"].clone()), Some(sixth["id"].clone()), "one holds a slot: the new Job starts");
+}
+
 #[test]
 fn a_request_no_device_can_hold_is_refused_and_requests_are_validated() {
     let (_dir, s) = setup();
@@ -553,7 +588,7 @@ fn the_budget_view_shows_devices_samples_and_what_managed_jobs_hold() {
 }
 
 #[test]
-fn host_gpu_sampling_and_device_injection() {
+fn host_gpu_device_injection() {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../acceptance/local-jobs/gpu_host_test.py");
     let output = std::process::Command::new("/usr/bin/python3")

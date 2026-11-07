@@ -213,8 +213,9 @@ async fn git_facts(root: &Path) -> Result<Value> {
 
 impl Store {
     fn workspace_task(&self, db: &Connection, reference: &str) -> Result<(String, String)> {
-        let (id, number) = collaboration::task_key(db, reference)?;
-        Ok((id, format!("T-{number}")))
+        let (id, _) = collaboration::task_key(db, reference)?;
+        let key = collaboration::task_number(db, &id)?;
+        Ok((id, key))
     }
 
     /// The repositories linked to the Task or its Project.
@@ -324,21 +325,26 @@ impl Store {
         let db = self.db.read()?;
         let mut q = db.prepare(
             "SELECT id, json_extract(data,'$.name'), status, json_extract(data,'$.cwd'), json_extract(data,'$.taskRef'),
-                    json_extract(data,'$.env.CARGO_TARGET_DIR')
+                    json_extract(data,'$.env.CARGO_TARGET_DIR'), json_extract(data,'$.taskId')
              FROM local_jobs WHERE (reserved=1 OR status IN ('queued','waiting')) AND json_extract(data,'$.executor') IS NULL
              ORDER BY seq LIMIT 1000",
         )?;
         let rows = q.query_map([], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?,
-                r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<String>>(5)?))
+                r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?))
         })?;
         let mut jobs = Vec::new();
         for row in rows {
-            let (id, name, status, cwd, task, target) = row?;
+            let (id, name, status, cwd, task, target, task_id) = row?;
             let target = target.map(|t| cwd.as_deref().map_or(PathBuf::from(&t), |c| Path::new(c).join(&t))).map(real);
             let cwd = cwd.map(|c| real(PathBuf::from(c)));
             if cwd.as_deref().is_some_and(|c| inside(c, root)) || target.as_deref().is_some_and(|t| inside(t, root)) {
-                jobs.push(json!({"id": id, "name": name, "status": status, "taskRef": task}));
+                let mut job = json!({"id": id, "name": name, "status": status, "taskId": task_id, "taskRef": task});
+                // The key its task has now (T-56); the internal ID stays out of the answer.
+                crate::task_keys::refresh(&db, &mut job);
+                job.as_object_mut().unwrap().remove("taskId");
+                jobs.push(job);
             }
         }
         Ok(jobs)

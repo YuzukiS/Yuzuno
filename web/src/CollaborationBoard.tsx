@@ -44,6 +44,8 @@ import { settleWhenLanded } from "./settle";
 import { useLanguage, useStrings } from "./i18n";
 import { boardText } from "./collaboration-text";
 import { readExecutorTemplates, type ExecutorTemplatesView } from "./executor-templates";
+import { executorChoiceText, type ExecutorChoice } from "./executor-choice";
+import { lifecycleText, stateDetail, stateLabel, type ExecutorLifecycle } from "./executor-lifecycle";
 
 type BoardText = ReturnType<typeof boardText>;
 
@@ -68,6 +70,8 @@ export type ExecutorSlot = {
   machine: string;
   position?: number | null;
   reason?: string | null;
+  /** How `auto` chose its machine, when it did (T-35 S3b). */
+  choice?: ExecutorChoice | null;
 };
 export interface SharedTask {
   github?: GitHubLink[];
@@ -88,6 +92,8 @@ export interface SharedTask {
   /** Its executor's slot (T-35), when one holds or waits for one: waiting
    * with its place in the queue (1 first), starting, or running. */
   executorSlot?: ExecutorSlot | null;
+  /** Its executor's lifecycle (T-36 S3), when its newest dispatch made one. */
+  executor?: ExecutorLifecycle | null;
   version: number;
   createdAt: string;
   createdBy: Person;
@@ -373,6 +379,22 @@ function useMutation() {
     }
   };
   return { execute, pending, error, clearError: () => setError("") };
+}
+
+/** A task's executor and its state (T-36 S3): on its card, and beside its
+ * owner in the task's view. Its title says why, and who dispatched it. On a
+ * machine `auto` chose, it names that machine, with how in its title, from
+ * the same helper as the slot chip (T-35 S3c, agreed with T-36). */
+function ExecutorChip({ lifecycle, choice }: { lifecycle: ExecutorLifecycle; choice?: ExecutorChoice | null }) {
+  const t = useStrings(lifecycleText);
+  const chosen = executorChoiceText(choice, useLanguage());
+  const title = [...stateDetail(lifecycle, t), ...(chosen ? [chosen.title] : [])].join("\n");
+  return (
+    <span className="collab-executor-state" data-executor-state={lifecycle.state} title={title}>
+      {t.executor} · {stateLabel(lifecycle, t)}
+      {chosen && ` · ${chosen.text}`}
+    </span>
+  );
 }
 
 function Status({ status }: { status: TaskStatus }) {
@@ -936,15 +958,23 @@ export function CollaborationBoard({
                 {projectName(task.projectId, projects)}
               </span>
             )}
-          {task.executorSlot && (
-            <span
-              className="collab-executor-slot"
-              data-slot-state={task.executorSlot.state}
-              title={t.executorSlotHelp(task.executorSlot.state, task.executorSlot.reason)}
-            >
-              {t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}
-            </span>
-          )}
+          {task.executor ? (
+            <ExecutorChip lifecycle={task.executor} choice={task.executorSlot?.choice} />
+          ) : task.executorSlot && (() => {
+            // The machine `auto` chose, and how, when it did (T-35 S3).
+            const choice = executorChoiceText(task.executorSlot.choice, language);
+            const help = t.executorSlotHelp(task.executorSlot.state, task.executorSlot.reason);
+            return (
+              <span
+                className="collab-executor-slot"
+                data-slot-state={task.executorSlot.state}
+                title={choice ? `${help}\n${choice.title}` : help}
+              >
+                {t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}
+                {choice && ` · ${choice.text}`}
+              </span>
+            );
+          })()}
           <GitHubSummary links={task.github} openOnly />
           {currentResult(task) && (
             <span className="collab-has-result">
@@ -1785,6 +1815,7 @@ function TaskPane({
                     {owner.name}
                     <ArrowUpRight size={13} />
                   </button>
+                  {task.executor && <ExecutorChip lifecycle={task.executor} choice={task.executorSlot?.choice} />}
                 </>
               ) : (
                 <span>{task.assignee?.name || t.notAssigned}</span>

@@ -10,6 +10,7 @@ import { useAgentJobs } from "./live-jobs";
 import { useAgentCI, waitingSummary } from "./live-ci";
 import { useHandoffDrop } from "./SendToAgent";
 import { strings, useLanguage, type Language } from "./i18n";
+import { lifecycleText, stateDetail, stateLabel } from "./executor-lifecycle";
 import "./reading.css";
 
 export function workingFolder(cwd: string): string {
@@ -166,10 +167,16 @@ export function AgentRailRow({
   const menu = useRef<AgentActionsMenuHandle>(null);
   const select = useRef<HTMLButtonElement>(null);
   const press = useLongPress((point) => menu.current?.openAt(point, select.current));
-  // A Project's lead says so (T-33), and an executor (T-34); the button's
-  // label is its name only.
+  // A Project's lead says so (T-33), and an executor (T-34) with its state
+  // (T-36 S3); the button's label is its name only.
+  const lifecycle = agent.kind === "executor" && agent.executor ? agent.executor : null;
+  const states = lifecycleText(language);
   const kind = agent.kind === "lead" ? { name: t.lead, title: t.leadTitle }
-    : agent.kind === "executor" ? { name: t.executor, title: t.executorTitle } : null;
+    : agent.kind === "executor"
+      ? lifecycle
+        ? { name: `${t.executor} · ${stateLabel(lifecycle, states)}`, title: [t.executorTitle, ...stateDetail(lifecycle, states)].join("\n") }
+        : { name: t.executor, title: t.executorTitle }
+      : null;
   const description = t.description(label, waiting?.detail ?? null, machine, agent.unreadCount);
   return (
     <article
@@ -214,7 +221,7 @@ export function AgentRailRow({
         <span className="agent-identity">
           <MachineBadge agent={agent} />
           <span className="agent-name">{agent.name}</span>
-          {kind && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
+          {kind && !lifecycle && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
         </span>
         <span
           className={`agent-runtime runtime-${agent.status}${unseen ? ` unseen-${unseen}` : ""}`}
@@ -229,6 +236,13 @@ export function AgentRailRow({
           <span className={`status-dot ${agent.status}`} aria-hidden="true" />
           {label}
         </span>
+        {/* An executor's kind and state take their own line under its name
+            and status (T-36 S3): beside them the rail is too narrow. */}
+        {kind && lifecycle && (
+          <span className="agent-kind-badge agent-state-badge" data-kind={agent.kind} data-state={lifecycle.state} title={kind.title}>
+            {kind.name}
+          </span>
+        )}
       </button>
       {/* After the card's own target in focus order; drawn at its top right. */}
       {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}

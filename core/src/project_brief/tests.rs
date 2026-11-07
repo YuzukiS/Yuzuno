@@ -955,7 +955,7 @@ async fn home_orders_projects_and_needs_you_by_priority_then_wait() {
     assert!(home::set_order(&ws.store, &["nope".into()]).is_err());
     assert!(home::set_order(&ws.store, &[first.clone(), first.clone()]).is_err());
     // An archived Project leaves Home and needs no Brief.
-    ws.store.update_project(&second, crate::projects::ProjectChange { name: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
+    ws.store.update_project(&second, crate::projects::ProjectChange { name: None, key: None, default_dirs: BTreeMap::new(), archived: Some(true) }).unwrap();
     assert_eq!(home::build(&ws.store).unwrap()["order"], json!([first]));
     assert_eq!(agent_edits_brief(&ws.store, "e").unwrap(), None);
 }
@@ -1005,13 +1005,34 @@ async fn live_references_show_core_state_or_not_found() {
     let refs = section(&brief(&ws, "a"), "refs")["refs"].clone();
     let updated = task["task"]["updatedAt"].clone();
     assert_eq!(refs[format!("task:{id}")], json!({"kind":"task","id":id,"found":true,"title":"Ship it","state":"doing","tone":"active",
-        "assignee":null,"updatedAt":updated}));
+        "key":"T-1","assignee":null,"updatedAt":updated}));
     assert_eq!(refs["agent:b"]["state"], "working");
     assert_eq!(refs["job:nope"], json!({"kind":"job","id":"nope","found":false}));
     assert_eq!(refs["machine:local"]["title"], "Core host");
     let home = home::build(&ws.store).unwrap();
     assert_eq!(home["projects"][0]["brief"]["sections"][0]["refs"]["agent:b"]["title"], "Agent b");
     let _ = project;
+}
+
+/// T-56: a section may name a task by any key it has or had; it shows with
+/// the key it has now, through a Project key change too.
+#[tokio::test]
+async fn live_task_references_take_every_key_and_show_the_one_it_has_now() {
+    let (_dir, ws, project) = lab();
+    let created = ws.store.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Keyed","projectId":project})).unwrap();
+    assert_eq!(created["task"]["id"], "COD-1");
+    let mut change = put("keys", "report");
+    change["body"] = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["refs"]},
+        "refs":{"type":"LiveRefs","props":{"items":[{"kind":"task","id":"COD-1"},{"kind":"task","id":"T-1"}]}}}});
+    accept(&ws, "a", input("k1", 0, vec![change])).await;
+    ws.store.update_project(&project, crate::projects::ProjectChange { name: None, key: Some("CODE".into()),
+        default_dirs: BTreeMap::new(), archived: None }).unwrap();
+    let refs = section(&brief(&ws, "a"), "keys")["refs"].clone();
+    for named in ["COD-1", "T-1"] {
+        let shown = &refs[format!("task:{named}")];
+        assert_eq!((shown["found"].clone(), shown["title"].clone(), shown["key"].clone()), (json!(true), json!("Keyed"), json!("CODE-1")),
+            "a task named by any of its keys shows the key it has now ({named}: {shown})");
+    }
 }
 
 /// T-9: a task the Agent names shows as its compact row is now: who has it
@@ -1704,6 +1725,10 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
 
 #[path = "editors_tests.rs"]
 mod editors_tests;
+#[path = "release_handover_tests.rs"]
+mod release_handover_tests;
+#[path = "executor_needs_tests.rs"]
+mod executor_needs_tests;
 #[path = "cas_tests.rs"]
 mod cas_tests;
 

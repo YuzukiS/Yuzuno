@@ -13,12 +13,11 @@ export const settingsCategories = [
   { id: "updates", label: "Updates & about", short: "Updates", description: "Versions and updates for the Workspace service and desktop client, with help, release notes and licenses." },
 ] as const;
 export type SettingsCategory = typeof settingsCategories[number]["id"];
-export type SettingsEditor = "appearance" | "updates" | "auto-continue" | "home" | "review" | "diagnostics" | "history" | "runtime" | "input" | "time" | "language" | "shortcuts" | "notifications" | "backup" | "remote" | "agent-defaults" | "executor-templates" | "about" | "storage" | "drafts" | "transfer";
+export type SettingsEditor = "appearance" | "updates" | "auto-continue" | "home" | "review" | "diagnostics" | "history" | "runtime" | "input" | "time" | "language" | "shortcuts" | "notifications" | "backup" | "remote" | "agent-defaults" | "executor-templates" | "about" | "storage" | "drafts" | "transfer" | "jobs-budget" | "jobs-remote";
 export type SettingsDestination =
   | { kind: "agent"; section: "model" | "context" | "auto-continue"; agentId: string }
   | { kind: "project"; projectId: string }
   | { kind: "machines" }
-  | { kind: "jobs" }
   /** That Task's own Workspace section (T-193), by its Task ID. */
   | { kind: "taskWorkspaces"; taskId: string };
 export type SettingTarget =
@@ -26,7 +25,6 @@ export type SettingTarget =
   | { kind: "agent"; section: "model" | "context" | "auto-continue" }
   | { kind: "project" }
   | { kind: "machines" }
-  | { kind: "jobs" }
   | { kind: "unavailable"; reason: string };
 export type SettingEntry = {
   id: string;
@@ -61,8 +59,8 @@ export const settingsCatalog: readonly SettingEntry[] = [
   { id: "projects", category: "projects", title: "Project directories, repositories & services", keywords: "项目 默认目录 工作目录 仓库 服务 default directory folder cwd repository service", scope: "Selected project · per execution machine", source: "Project settings saved by Core. Default directories are recorded per machine.", effect: "Default directories prefill new Agents only. Registering a service does not start it; archiving does not move files.", target: { kind: "project" } },
   { id: "merge-queue", category: "projects", title: "Merge queue", keywords: "合并队列 合并 放行 队列 写入 暂停 解除暂停 merge queue release batch pause unpause github write", scope: "Selected project · each linked repository", source: "The switch Core keeps per repository; off unless you turn it on. Only you can change it; Agents have no tool for it.", effect: "On: Core merges PRs released for merge there, and turning it on lists every write it may make. Off saves at once and Core writes nothing to GitHub there. A paused queue shows why, with Unpause.", target: { kind: "project" } },
   { id: "home", category: "projects", title: "Home presentation", keywords: "Home 首页 主页 展示 偏好 视觉 图表 协作", scope: "This Workspace", source: "The shared Home presentation preference saved by Core.", effect: "Used in later Home and result interactions. This does not change editor access or Agent permissions.", target: { kind: "editor", editor: "home" } },
-  { id: "budget", category: "jobs", title: "Core host Job budget", keywords: "预算 资源 CPU RAM 内存 swap GPU 磁盘 并发 本地 budget resource disk", scope: "Core execution machine", source: "Managed Job CPU, memory, swap, disk and GPU limits saved by Core.", effect: "New Job admission uses the budget. Running Jobs retain their reservations; native background tasks are outside it.", target: { kind: "jobs" } },
-  { id: "remote-budget", category: "jobs", title: "Remote machine Job budgets", keywords: "预算 远程 机器 SSH 并发 内存 budget remote", scope: "Selected execution machine", source: "The selected machine’s saved Job budget and reported enforcement capabilities.", effect: "Choose a machine before editing. Limits depend on that executor’s capabilities.", target: { kind: "machines" } },
+  { id: "budget", category: "jobs", title: "Core host Job budget", keywords: "预算 资源 CPU RAM 内存 swap GPU 磁盘 并发 同时 本地 Windows budget resource disk jobs at once concurrency slots", scope: "Core execution machine", source: "Managed Job CPU, memory and swap, how many run at once, the disk reserve, Windows’ ceiling and GPU settings, saved by Core; the defaults where none is saved.", effect: "New Job admission uses them. Running Jobs retain their reservations; native background tasks are outside them. The Jobs panel shows what Jobs use now.", target: { kind: "editor", editor: "jobs-budget" } },
+  { id: "remote-budget", category: "jobs", title: "Remote machine Job budgets", keywords: "预算 远程 机器 SSH 并发 同时 内存 budget remote jobs at once", scope: "Selected execution machine", source: "The selected machine’s saved Jobs at once, Job budget and limits mode, saved by Core with the machine.", effect: "Choose a machine before editing. Saving changes only Jobs that have not started; limits depend on that executor’s capabilities.", target: { kind: "editor", editor: "jobs-remote" } },
   { id: "storage", category: "data", title: "Data & storage overview", keywords: "存储 数据 占用 空间 位置 草稿 附件 缓存 会话 storage disk space usage size location drafts attachments cache sessions", scope: "This device · Workspace service · native CLIs", source: "This browser’s storage for this site, read here; Core’s data folder, read by Core. Native session histories are counted, not measured.", effect: "Opening it only reads. A folder’s size is not measured here, and nothing is deleted from here.", target: { kind: "editor", editor: "storage" } },
   { id: "diagnostics", category: "data", title: "Copy diagnostics", keywords: "隐私 诊断 脱敏 日志 清除错误 diagnostics privacy clear errors", scope: "This client · Workspace service", source: "A redacted diagnostic report collected on request.", effect: "Copying a report does not upload it automatically. Clearing removes only the errors recorded on this device.", target: { kind: "editor", editor: "diagnostics" } },
   { id: "history", category: "data", title: "History & memory information", keywords: "历史 内存 数据 占用 history storage memory", scope: "Workspace service", source: "Core’s reported history composition and memory information.", effect: "Read-only information; this does not erase conversations or native sessions.", target: { kind: "editor", editor: "history" } },
@@ -88,7 +86,7 @@ const entryShort: Record<string, string> = {
 
 /** The editors this version shows in the interface language (T-189); the
  * others, and the rest of Yuzuno, stay in English. */
-export const translatedEditors: readonly SettingsEditor[] = ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "review", "remote", "runtime", "agent-defaults", "executor-templates", "backup", "history", "drafts", "updates", "auto-continue"];
+export const translatedEditors: readonly SettingsEditor[] = ["language", "input", "time", "shortcuts", "appearance", "transfer", "storage", "diagnostics", "notifications", "about", "home", "review", "remote", "runtime", "agent-defaults", "executor-templates", "backup", "history", "drafts", "updates", "auto-continue", "jobs-budget", "jobs-remote"];
 
 /** Search finds an entry by its words in either language, whichever is
  * shown (T-189): its English and Chinese title, scope and category. */

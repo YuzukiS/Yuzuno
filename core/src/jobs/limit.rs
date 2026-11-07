@@ -19,7 +19,7 @@
 //! finds the cgroup at it already; host.py answers `limited` with
 //! `confirmedByRetry`, changing nothing, and the request, the reservation and
 //! the audit follow then, the audit marked as confirmed by that retry (T-57).
-use super::{changed, host, ids, store::{get, save}, Resources};
+use super::{changed, host, ids, store::{get, save}, Requested};
 use crate::{collaboration_store as collaboration, model::now, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
 use serde_json::{json, Value};
@@ -72,7 +72,7 @@ impl Store {
             bail!("Lowering a running job's memory limit is not supported on {machine}: its helper has no such action. Nothing was changed.");
         }
         ensure!(job["cancelRequestedAt"].is_null(), "Cancellation was requested; the job is being stopped");
-        let resources: Resources = serde_json::from_value(job["resources"].clone())?;
+        let resources: Requested = serde_json::from_value(job["resources"].clone())?;
         ensure!(
             memory_mib < resources.memory_mi_b,
             "{memory_mib} MiB is not below the job's {} MiB: a memory limit is only lowered, never raised",
@@ -100,10 +100,10 @@ impl Store {
         let state = answer["state"].as_str().unwrap_or("unknown");
         let reason = answer["reason"].as_str().unwrap_or("The host gave no reason");
         if state == "limited" && job["reserved"] == true {
-            let mut resources: Resources = serde_json::from_value(job["resources"].clone())?;
+            let mut resources: Requested = serde_json::from_value(job["resources"].clone())?;
             let from = resources.memory_mi_b;
             resources.memory_mi_b = memory_mib;
-            job["reservation"] = json!(resources.reservation());
+            job["reservation"] = json!(resources.point().reservation());
             job["resources"] = json!(resources);
             // A retry of the same value found an earlier lowering in effect (T-57).
             let retry = answer["confirmedByRetry"] == true;

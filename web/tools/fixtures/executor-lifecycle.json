@@ -1,0 +1,452 @@
+{
+  "agents": [
+    {
+      "closedAt": null,
+      "executor": null,
+      "id": "mori",
+      "kind": "lead",
+      "name": "Mori",
+      "releasedAt": null,
+      "releasedBy": null
+    },
+    {
+      "closedAt": null,
+      "executor": null,
+      "id": "hana",
+      "kind": null,
+      "name": "Hana",
+      "releasedAt": null,
+      "releasedBy": null
+    },
+    {
+      "closedAt": "2026-11-06T06:30:00Z",
+      "executor": {
+        "agentId": "e50",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "since": "2026-11-06T06:30:00Z",
+        "state": "archived",
+        "task": {
+          "id": "T-1",
+          "title": "Review the release notes"
+        }
+      },
+      "id": "e50",
+      "kind": "executor",
+      "name": "T-1 · Reviewer",
+      "releasedAt": "2026-11-06T06:30:00Z",
+      "releasedBy": "user"
+    },
+    {
+      "closedAt": null,
+      "executor": {
+        "agentId": "e51",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "reason": "The runtime may still be running there: held for you",
+        "since": "2026-11-06T01:00:00Z",
+        "state": "failed",
+        "task": {
+          "id": "T-2",
+          "title": "Review the parser change"
+        }
+      },
+      "id": "e51",
+      "kind": "executor",
+      "name": "T-2 · Reviewer",
+      "releasedAt": null,
+      "releasedBy": null
+    },
+    {
+      "closedAt": null,
+      "executor": {
+        "agentId": "e52",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "since": "2026-11-06T02:00:00Z",
+        "state": "delivering",
+        "task": {
+          "id": "T-3",
+          "title": "Review the import change"
+        }
+      },
+      "id": "e52",
+      "kind": "executor",
+      "name": "T-3 · Reviewer",
+      "releasedAt": null,
+      "releasedBy": null
+    },
+    {
+      "closedAt": null,
+      "executor": {
+        "agentId": "e53",
+        "dispatcher": {
+          "id": "mori",
+          "kind": "agent",
+          "name": "Mori"
+        },
+        "since": "2026-11-06T01:00:00Z",
+        "state": "running",
+        "task": {
+          "id": "T-4",
+          "title": "Build the export"
+        }
+      },
+      "id": "e53",
+      "kind": "executor",
+      "name": "T-4 · Builder",
+      "releasedAt": null,
+      "releasedBy": null
+    },
+    {
+      "closedAt": null,
+      "executor": {
+        "agentId": "e54",
+        "dispatcher": {
+          "id": "mori",
+          "kind": "agent",
+          "name": "Mori"
+        },
+        "reason": "Waiting to close: a Job is still running: cargo test (j1).",
+        "since": "2026-11-06T06:35:00Z",
+        "state": "archiving",
+        "task": {
+          "id": "T-5",
+          "title": "Review the docs change"
+        }
+      },
+      "id": "e54",
+      "kind": "executor",
+      "name": "T-5 · Reviewer",
+      "releasedAt": null,
+      "releasedBy": null
+    },
+    {
+      "closedAt": null,
+      "executor": {
+        "agentId": "e55",
+        "dispatcher": {
+          "id": "mori",
+          "kind": "agent",
+          "name": "Mori"
+        },
+        "position": 1,
+        "since": "2026-11-06T01:00:00Z",
+        "state": "queued",
+        "task": {
+          "id": "T-6",
+          "title": "Build the installer"
+        }
+      },
+      "id": "e55",
+      "kind": "executor",
+      "name": "T-6 · Builder",
+      "releasedAt": null,
+      "releasedBy": null
+    },
+    {
+      "closedAt": null,
+      "executor": {
+        "agentId": "e56",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "since": "2026-11-06T01:00:00Z",
+        "state": "starting",
+        "task": {
+          "id": "T-7",
+          "title": "Review the settings change"
+        }
+      },
+      "id": "e56",
+      "kind": "executor",
+      "name": "T-7 · Reviewer",
+      "releasedAt": null,
+      "releasedBy": null
+    },
+    {
+      "closedAt": null,
+      "executor": {
+        "agentId": "e57",
+        "blocked": "Waiting for the signing keys",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "since": "2026-11-06T01:00:00Z",
+        "state": "running",
+        "task": {
+          "id": "T-8",
+          "title": "Sign the release build"
+        }
+      },
+      "id": "e57",
+      "kind": "executor",
+      "name": "T-8 · Builder",
+      "releasedAt": null,
+      "releasedBy": null
+    },
+    {
+      "closedAt": null,
+      "executor": {
+        "agentId": "e58",
+        "dispatcher": {
+          "id": "mori",
+          "kind": "agent",
+          "name": "Mori"
+        },
+        "since": "2026-11-06T02:00:00Z",
+        "state": "delivering",
+        "task": {
+          "id": "T-9",
+          "title": "Review the API change"
+        }
+      },
+      "id": "e58",
+      "kind": "executor",
+      "name": "T-9 · Reviewer",
+      "releasedAt": null,
+      "releasedBy": null
+    },
+    {
+      "closedAt": "2026-11-06T06:30:00Z",
+      "executor": {
+        "agentId": "e59",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "state": "closed",
+        "task": {
+          "id": "T-10",
+          "title": "Draft the changelog"
+        }
+      },
+      "id": "e59",
+      "kind": "executor",
+      "name": "T-10 · Builder",
+      "releasedAt": null,
+      "releasedBy": null
+    }
+  ],
+  "emittedBy": "core/src/project_brief/executor_needs_tests.rs the_web_checks_fixture_is_cores_own_answer",
+  "needsYou": [
+    {
+      "agentId": "e51",
+      "agentName": "T-2 · Reviewer",
+      "kind": "executor",
+      "projectId": "p1",
+      "reason": "The runtime may still be running there: held for you",
+      "since": "2026-11-06T01:00:00Z",
+      "state": "failed",
+      "taskId": "T-2",
+      "title": "Review the parser change"
+    },
+    {
+      "agentId": "e57",
+      "agentName": "T-8 · Builder",
+      "kind": "executor",
+      "projectId": "p1",
+      "reason": "Waiting for the signing keys",
+      "since": "2026-11-06T01:00:00Z",
+      "state": "blocked",
+      "taskId": "T-8",
+      "title": "Sign the release build"
+    },
+    {
+      "agentId": "e52",
+      "agentName": "T-3 · Reviewer",
+      "kind": "executor",
+      "projectId": "p1",
+      "reason": null,
+      "since": "2026-11-06T02:00:00Z",
+      "state": "delivering",
+      "taskId": "T-3",
+      "title": "Review the import change"
+    }
+  ],
+  "tasks": [
+    {
+      "executor": {
+        "agentId": "e50",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "since": "2026-11-06T06:30:00Z",
+        "state": "archived",
+        "task": {
+          "id": "T-1",
+          "title": "Review the release notes"
+        }
+      },
+      "id": "T-1",
+      "status": "done",
+      "title": "Review the release notes"
+    },
+    {
+      "executor": {
+        "agentId": "e51",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "reason": "The runtime may still be running there: held for you",
+        "since": "2026-11-06T01:00:00Z",
+        "state": "failed",
+        "task": {
+          "id": "T-2",
+          "title": "Review the parser change"
+        }
+      },
+      "id": "T-2",
+      "status": "doing",
+      "title": "Review the parser change"
+    },
+    {
+      "executor": {
+        "agentId": "e52",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "since": "2026-11-06T02:00:00Z",
+        "state": "delivering",
+        "task": {
+          "id": "T-3",
+          "title": "Review the import change"
+        }
+      },
+      "id": "T-3",
+      "status": "review",
+      "title": "Review the import change"
+    },
+    {
+      "executor": {
+        "agentId": "e53",
+        "dispatcher": {
+          "id": "mori",
+          "kind": "agent",
+          "name": "Mori"
+        },
+        "since": "2026-11-06T01:00:00Z",
+        "state": "running",
+        "task": {
+          "id": "T-4",
+          "title": "Build the export"
+        }
+      },
+      "id": "T-4",
+      "status": "doing",
+      "title": "Build the export"
+    },
+    {
+      "executor": {
+        "agentId": "e54",
+        "dispatcher": {
+          "id": "mori",
+          "kind": "agent",
+          "name": "Mori"
+        },
+        "reason": "Waiting to close: a Job is still running: cargo test (j1).",
+        "since": "2026-11-06T06:35:00Z",
+        "state": "archiving",
+        "task": {
+          "id": "T-5",
+          "title": "Review the docs change"
+        }
+      },
+      "id": "T-5",
+      "status": "doing",
+      "title": "Review the docs change"
+    },
+    {
+      "executor": {
+        "agentId": "e55",
+        "dispatcher": {
+          "id": "mori",
+          "kind": "agent",
+          "name": "Mori"
+        },
+        "position": 1,
+        "since": "2026-11-06T01:00:00Z",
+        "state": "queued",
+        "task": {
+          "id": "T-6",
+          "title": "Build the installer"
+        }
+      },
+      "id": "T-6",
+      "status": "doing",
+      "title": "Build the installer"
+    },
+    {
+      "executor": {
+        "agentId": "e56",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "since": "2026-11-06T01:00:00Z",
+        "state": "starting",
+        "task": {
+          "id": "T-7",
+          "title": "Review the settings change"
+        }
+      },
+      "id": "T-7",
+      "status": "doing",
+      "title": "Review the settings change"
+    },
+    {
+      "executor": {
+        "agentId": "e57",
+        "blocked": "Waiting for the signing keys",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "since": "2026-11-06T01:00:00Z",
+        "state": "running",
+        "task": {
+          "id": "T-8",
+          "title": "Sign the release build"
+        }
+      },
+      "id": "T-8",
+      "status": "blocked",
+      "title": "Sign the release build"
+    },
+    {
+      "executor": {
+        "agentId": "e58",
+        "dispatcher": {
+          "id": "mori",
+          "kind": "agent",
+          "name": "Mori"
+        },
+        "since": "2026-11-06T02:00:00Z",
+        "state": "delivering",
+        "task": {
+          "id": "T-9",
+          "title": "Review the API change"
+        }
+      },
+      "id": "T-9",
+      "status": "review",
+      "title": "Review the API change"
+    },
+    {
+      "executor": {
+        "agentId": "e59",
+        "dispatcher": {
+          "kind": "user"
+        },
+        "state": "closed",
+        "task": {
+          "id": "T-10",
+          "title": "Draft the changelog"
+        }
+      },
+      "id": "T-10",
+      "status": "doing",
+      "title": "Draft the changelog"
+    }
+  ]
+}

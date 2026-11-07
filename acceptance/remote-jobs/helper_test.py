@@ -267,8 +267,10 @@ class HelperTests(unittest.TestCase):
         self.fail("no outcome: " + json.dumps(state))
 
     def wait_for(self, path, seconds=5):
+        # `echo $! > path`: the shell creates the file before echo writes the
+        # number, so wait for its whole line.
         deadline = time.monotonic() + seconds
-        while not path.exists() and time.monotonic() < deadline:
+        while not (path.exists() and path.read_text().endswith("\n")) and time.monotonic() < deadline:
             time.sleep(0.05)
         return int(path.read_text())
 

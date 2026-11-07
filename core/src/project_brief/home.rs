@@ -99,7 +99,9 @@ fn live_jobs(db: &Connection, agents: &HashMap<String, Agent>) -> Result<Vec<Liv
     let mut jobs = vec![];
     for row in rows {
         let (id, agent, status, data, task_project, agent_project) = row?;
-        let data: Value = serde_json::from_str(&data)?;
+        let mut data: Value = serde_json::from_str(&data)?;
+        // The key its task has now, not the one stored when it was submitted (T-56).
+        crate::task_keys::refresh(db, &mut data);
         let name = data["agent"]["name"].as_str().map(str::to_owned).or_else(|| agents.get(&agent).map(|a| a.name.clone()));
         jobs.push(LiveJob {
             project: task_project.or(agent_project),
@@ -134,6 +136,28 @@ fn missing(store: &Store, db: &Connection, project: &str, agents: &HashMap<Strin
         if missing.len() == 50 { break; }
     }
     Ok(missing)
+}
+
+/// The Needs you item of an executor the user dispatched, when its result
+/// waits for the user's release (`delivering`), its start failed (`failed`),
+/// or its task is blocked while it runs (`blocked`): the lifecycle the Agent
+/// listing carries (executor_lifecycle.rs).
+fn executor_need(agent: &Agent) -> Option<Value> {
+    let lifecycle = agent.executor.as_ref()?;
+    if lifecycle["dispatcher"]["kind"] != "user" {
+        return None;
+    }
+    let state = match lifecycle["state"].as_str()? {
+        "delivering" => "delivering",
+        "failed" => "failed",
+        "running" | "starting" | "queued" if lifecycle["blocked"].is_string() => "blocked",
+        _ => return None,
+    };
+    let title = lifecycle["task"]["title"].as_str().unwrap_or_default().chars().take(200).collect::<String>();
+    let since = lifecycle["since"].as_str().map(str::to_owned).unwrap_or_else(|| agent.updated_at.clone());
+    Some(json!({"kind":"executor","projectId":agent.project_id,"agentId":agent.id,"agentName":agent.name,
+        "state":state,"taskId":lifecycle["task"]["id"],"title":title,"reason":lifecycle["reason"].as_str().or(lifecycle["blocked"].as_str()),
+        "since":since}))
 }
 
 /// The HomeData of web/src/home/types.ts.
@@ -184,6 +208,16 @@ pub(super) fn build(store: &Store) -> Result<Value> {
             needs.push((priority, since, json!({"kind":"question","projectId":agent.project_id,"agentId":agent.id,
                 "agentName":agent.name,"turnId":question.turn_id,"itemId":question.item_id,"title":title,
                 "since":since.map(|at| at.to_rfc3339())})));
+        }
+    }
+    // An executor the user dispatched whose result waits for the user's
+    // release, or whose start failed or task is blocked (T-36 S3). A lead's
+    // executors are that lead's to follow, never listed here.
+    for agent in &agents {
+        if let Some(item) = executor_need(agent) {
+            let priority = agent.project_id.as_deref().and_then(|id| rank.get(id)).copied().unwrap_or(usize::MAX);
+            let since = item["since"].as_str().and_then(time);
+            needs.push((priority, since, item));
         }
     }
     let mut panels = vec![];
@@ -504,6 +538,7 @@ pub(super) fn delivered(receipt: &MessageReceipt) -> bool {
 /// sent as the composer sends it. Returns its receipt.
 pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInput) -> Result<MessageReceipt> {
     ensure!(input.text.len() <= MAX_REPLY, "A reply is at most {MAX_REPLY} bytes");
+    let input = reply_target(ws, &project, input).await?;
     if let Some(version) = input.version {
         ensure!(input.ask_version.is_none() && input.workspace_id.is_none(), "A reply answers a card or an ask, not both");
         return card_reply(ws, project, input, version).await;
@@ -558,6 +593,37 @@ pub(super) async fn reply(ws: &Arc<Workspace>, project: String, input: ReplyInpu
         },
     };
     ws.send_message_from(&input.agent_id, message, Vec::new(), Some(origin)).await
+}
+
+/// A reply meant for a released executor (from a Home that showed it as the
+/// section's owner before its release) goes to whoever owns the section now:
+/// its dispatcher, once its archive handed the section over (T-36). With no
+/// other owner it is refused, and nothing is sent.
+async fn reply_target(ws: &Arc<Workspace>, project: &str, mut input: ReplyInput) -> Result<ReplyInput> {
+    let (agent, key, project) = (input.agent_id.clone(), input.key.clone(), project.to_owned());
+    let owner = ws.stored(move |store| {
+        let db = store.db.read()?;
+        if crate::executor_release::release_of(&db, &agent)?.is_none() {
+            return Ok(None);
+        }
+        let owner = match &key {
+            Some(key) => sections::find(&db, &project, key, None)?.filter(|row| row.live).map(|row| row.owner_id),
+            None => None,
+        };
+        Ok(Some(owner.filter(|owner| *owner != agent)))
+    }).await?;
+    match owner {
+        None => Ok(input),
+        Some(Some(owner)) => {
+            input.agent_id = owner;
+            Ok(input)
+        }
+        Some(None) => Err(not_submitted(
+            "executor_archived: the executor this reply is for was released, and no other Agent owns this section. \
+             Nothing was sent, and your reply is kept."
+                .into(),
+        )),
+    }
 }
 
 /// Refused before anything was recorded: the client keeps its reply, and

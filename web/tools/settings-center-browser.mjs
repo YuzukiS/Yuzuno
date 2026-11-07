@@ -20,7 +20,8 @@ const projects = [
   { id: "garden", name: "Garden", defaultDirs: { local: "/fixture/garden" }, createdAt: "", updatedAt: "" },
   { id: "orchard", name: "Orchard", defaultDirs: { local: "/fixture/orchard" }, createdAt: "", updatedAt: "" },
 ];
-const budget = { machine: { name: "Fixture Core", logicalCpus: 8, memoryTotalMiB: 16384, memoryAvailableMiB: 12000, scope: "Managed Jobs only" }, budget: { cpuMillis: 2000, memoryMiB: 4096, swapMiB: 0 }, reserved: { cpuMillis: 0, memoryMiB: 0, swapMiB: 0 }, activeCount: 0, queuedCount: 0 };
+const budget = { machine: { name: "Fixture Core", logicalCpus: 8, memoryTotalMiB: 16384, memoryAvailableMiB: 12000, scope: "Managed Jobs only" }, budget: { cpuMillis: 2000, memoryMiB: 4096, swapMiB: 0 }, reserved: { cpuMillis: 0, memoryMiB: 0, swapMiB: 0 }, activeCount: 0, queuedCount: 0,
+  maxActive: 4, maxActiveSet: false, maxActiveDefault: 4, maxActiveBounds: { minimum: 1, maximum: 16 } };
 const calls = [], errors = [], checks = [];
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/bin/chromium" });
 const context = await browser.newContext({ viewport: { width: 1360, height: 960 } });
@@ -98,39 +99,45 @@ try {
   assert.equal(await page.getByLabel('Default folder on Fixture Core').inputValue(), '/fixture/orchard');
   check('default-directory search opens the chosen project and its actual per-machine value');
   await closeDialog();
+  // T-55: the Core host budget is an editor of Settings' own; the Jobs card only shows it.
   await open(); await search('预算');
   await page.getByRole('button', { name: 'Open Core host Job budget', exact: true }).click();
-  await page.locator('details.job-budget-settings[open]').waitFor();
-  await page.waitForFunction(() => document.activeElement?.tagName === 'SUMMARY');
-  check('budget search expands the existing Core machine budget editor');
-  await page.getByRole('tab', { name: 'GitHub Actions', exact: true }).click();
-  await page.getByRole('tab', { name: 'Local', exact: true }).click();
-  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  const budgetEditor = page.locator('details.job-budget-settings');
-  await budgetEditor.waitFor();
-  assert.equal(await budgetEditor.evaluate((el) => el.open), false, 'Budget request must be consumed before a source remount');
-  assert.equal(await budgetEditor.locator('summary').evaluate((el) => document.activeElement === el), false, 'Returning to Local must keep focus on the user-selected tab');
+  const hostEditor = page.locator('#settings-editor-jobs-budget:not([hidden])');
+  await hostEditor.waitFor();
+  await page.waitForFunction(() => document.activeElement?.id === 'settings-editor-jobs-budget');
+  assert.equal(await hostEditor.getByLabel('Jobs at once', { exact: true }).inputValue(), '4', 'Jobs at once shows the number in effect');
+  assert.equal(await hostEditor.getByLabel('CPU quota', { exact: true }).inputValue(), '2', 'the budget editor shows the saved budget');
+  assert.equal(await page.getByRole('tab', { name: 'Jobs & resources', exact: true }).getAttribute('aria-selected'), 'true');
+  check('budget search opens the Core host budget editor in Settings, focused, with Jobs at once');
   await closeDialog();
   await page.getByRole('button', { name: 'Jobs', exact: true }).click();
-  await budgetEditor.waitFor();
-  assert.equal(await budgetEditor.evaluate((el) => el.open), false, 'Ordinary Jobs reopening must not replay the budget request');
+  // The open Jobs dialog's card. Closing a dialog leaves a fading copy of it
+  // (DialogExitGhost) for a moment, with no role: reopened at once, the page
+  // has two cards, and only this one is the panel's.
+  const jobsDialog = page.getByRole('dialog', { name: 'Jobs', exact: true });
+  const card = jobsDialog.locator('.jobs-budget');
+  await card.waitFor();
+  assert.match(await card.locator('.jobs-budget-counts').innerText(), /^0 of 4 active · 0 queued$/, 'the card shows active against Jobs at once');
+  assert.equal(await card.locator('input, select, textarea, details, form').count(), 0, 'the Jobs card has no budget editor');
   await closeDialog();
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('yuzuno:open-job', { detail: { source: 'local' } })));
-  await budgetEditor.waitFor();
-  assert.equal(await budgetEditor.evaluate((el) => el.open), false, 'An ordinary openJobs request must not replay budget navigation');
-  await closeDialog();
-  await open(); await search('预算');
-  await page.getByRole('button', { name: 'Open Core host Job budget', exact: true }).click();
-  await page.locator('details.job-budget-settings[open]').waitFor();
-  await page.waitForFunction(() => document.activeElement?.tagName === 'SUMMARY');
-  check('budget navigation is consumed once: source remounts and ordinary openings keep it closed; a new explicit request still expands and focuses');
+  await card.waitFor();
+  assert.equal(await page.locator('.settings-modal').count(), 0, 'an ordinary openJobs request opens no Settings');
+  await card.getByRole('button', { name: 'Edit in Settings', exact: true }).click();
+  await page.locator('.settings-modal #settings-editor-jobs-budget:not([hidden])').waitFor();
+  // Settings opens with its dialog here: focus is put on the editor once the
+  // dialog and the closing Jobs dialog have placed theirs (SettingsCenter).
+  const reached = await page.waitForFunction(() => !!document.activeElement?.closest('#settings-editor-jobs-budget'), null, { timeout: 5000 }).then(() => true, () => false);
+  assert.ok(reached, `focus is in the Core host editor (it is on ${await page.evaluate(() => { const el = document.activeElement; return el ? el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') : 'nothing'; })})`);
+  assert.equal(await jobsDialog.count(), 0, 'Jobs closes as Settings opens');
+  check('the Jobs card has no editor and ordinary openings open no Settings; its Edit in Settings opens the Core host budget, focused');
   await closeDialog();
   await open(); await search('自动继续');
   await page.getByLabel('Continue after Claude’s usage limit resets agent').selectOption('maple');
   await page.getByRole('button', { name: 'Open Continue after Claude’s usage limit resets' }).click();
-  await page.getByLabel('After Claude’s usage limit resets').waitFor();
+  await page.getByLabel('After Claude’s usage limit resets', { exact: true }).waitFor();
   await page.waitForFunction(() => document.activeElement?.id === 'agent-auto-continue');
-  assert.equal(await page.getByLabel('After Claude’s usage limit resets').inputValue(), 'default');
+  assert.equal(await page.getByLabel('After Claude’s usage limit resets', { exact: true }).inputValue(), 'default');
   check('auto-continue search selects the eligible Claude Agent and focuses its unique inspector editor');
   for (const width of [1360, 320]) {
     await page.setViewportSize({ width, height: 900 });

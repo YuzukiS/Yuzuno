@@ -18,11 +18,9 @@ import {createRoot} from 'react-dom/client';
 import {SettingsCenter} from ${JSON.stringify(path.join(root, "src/SettingsCenter.tsx"))};
 import {HomePresentationSettings} from ${JSON.stringify(path.join(root, "src/HomePresentationSettings.tsx"))};
 import {AgentSettings} from ${JSON.stringify(path.join(root, "src/AgentSettings.tsx"))};
-import {BudgetSettings} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
 const root = createRoot(document.getElementById('root'));
 window.renderSettings = props => root.render(<SettingsCenter {...props} renderEditor={id => id === 'home' ? <HomePresentationSettings active/> : <div>Existing {id} editor</div>}/>);
-window.renderAgent = props => root.render(<AgentSettings {...props}/>);
-window.renderBudget = props => root.render(<BudgetSettings {...props}/>);`);
+window.renderAgent = props => root.render(<AgentSettings {...props}/>);`);
   const built = await build({ root, configFile: false, logLevel: "silent", plugins: [react()], define: { "process.env.NODE_ENV": JSON.stringify("production") }, build: { write: false, lib: { entry, name: "SettingsTest", formats: ["iife"] } } });
   bundle = (Array.isArray(built) ? built[0] : built).output.find((item) => item.type === "chunk").code;
 } finally { await rm(temporary, { recursive: true, force: true }); }
@@ -91,6 +89,15 @@ test("eight categories and bilingual search expose real scope, without fake cont
       const editor = await until(() => p.doc.querySelector("#settings-editor-remote:not([hidden])"));
       assert.equal(editor.textContent, "Existing remote editor");
       assert.equal(p.doc.querySelector("#settings-tab-connections").getAttribute("aria-selected"), "true");
+    }
+    if (term === "预算") {
+      // The Core host budget has its own editor in Settings (T-55), not the Jobs panel.
+      assert.doesNotMatch(card.textContent, /Unavailable here/, "the budget can be edited here");
+      card.querySelector("button").click();
+      const editor = await until(() => p.doc.querySelector("#settings-editor-jobs-budget:not([hidden])"));
+      assert.equal(editor.textContent, "Existing jobs-budget editor", "the budget card opens its editor in place");
+      assert.equal(p.doc.querySelector("#settings-tab-jobs").getAttribute("aria-selected"), "true", "the Jobs and resources category is shown");
+      assert.equal(p.destinations.length, 0, "opening the budget leaves Settings for nothing else");
     }
   }
   p.type(query, "CONTEXT compaction");
@@ -205,6 +212,14 @@ test("a category opens its first entry's editor directly, with its entries in on
   assert.equal(card.querySelector("h4").textContent, "Model, reasoning & permissions");
   assert.doesNotMatch(card.textContent, /Scope:/, "its scope is in the line above, once");
   assert.equal(p.button("Open Model, reasoning & permissions").disabled, true);
+  // Jobs & resources (T-55): both entries are editors of Settings' own.
+  tab("jobs").click();
+  await until(() => shown().join() === "settings-editor-jobs-budget");
+  assert.deepEqual(row(), [["Core host budget", "true"], ["Remote budgets", null]], "the Jobs category opens at the Core host budget");
+  assert.equal(p.doc.querySelectorAll(".settings-catalog-card").length, 0, "no card before the Jobs editors");
+  p.button("Remote budgets").click();
+  await until(() => shown().join() === "settings-editor-jobs-remote");
+  assert.equal(p.doc.querySelectorAll(".settings-catalog-card").length, 0, "the remote budgets have their editor too");
   // Notifications has one entry: no row, its editor.
   tab("notifications").click();
   await until(() => shown().join() === "settings-editor-notifications");
@@ -223,12 +238,25 @@ test("a targeted context request survives the selected Agent mounting, without a
   assert.ok(p.calls.every((call) => call.url.includes('/agents/codex-two/')));
 });
 
-test("a budget navigation request expands the unique budget editor without writing", async (t) => {
+// T-55: the Jobs card's Edit in Settings opens Settings at the Core host
+// budget; each request once, and nothing is written by opening it.
+test("a request to open the Core host budget shows its editor focused, once per request, without writing", async (t) => {
   const p = mount(); t.after(p.close);
-  let handled = 0;
-  p.w.renderBudget({ budget: { cpuMillis: 2000, memoryMiB: 4096, swapMiB: 0 }, openRequest: 1, onOpenRequestHandled() { handled++; }, onSaved() {} });
-  await until(() => p.doc.querySelector('details')?.open);
-  assert.equal(p.doc.activeElement.tagName, 'SUMMARY');
-  assert.equal(handled, 1, 'the parent consumes the request after it is used');
-  assert.equal(p.calls.length, 0);
+  const tab = (id) => p.doc.getElementById(`settings-tab-${id}`);
+  const shown = () => [...p.doc.querySelectorAll(".settings-editor")].filter((el) => !el.hidden).map((el) => el.id);
+  p.w.renderSettings({ ...p.props, openAt: { editor: "jobs-budget", nonce: 1 } });
+  await until(() => shown().join() === "settings-editor-jobs-budget");
+  assert.equal(tab("jobs").getAttribute("aria-selected"), "true", "the Jobs and resources category is shown");
+  await until(() => p.doc.activeElement?.id === "settings-editor-jobs-budget");
+  // Moved elsewhere, the same request is not replayed; a new one opens it again.
+  tab("updates").click();
+  await until(() => shown().join() === "settings-editor-updates");
+  p.w.renderSettings({ ...p.props, openAt: { editor: "jobs-budget", nonce: 1 } });
+  await tick();
+  assert.deepEqual(shown(), ["settings-editor-updates"], "a request already used is not replayed");
+  p.w.renderSettings({ ...p.props, openAt: { editor: "jobs-budget", nonce: 2 } });
+  await until(() => shown().join() === "settings-editor-jobs-budget");
+  assert.equal(p.calls.length, 0, "opening the editor reads or writes nothing by itself");
+  assert.equal(p.destinations.length, 0, "nothing outside Settings is opened");
+  assert.deepEqual(p.errors, [], "no page errors");
 });

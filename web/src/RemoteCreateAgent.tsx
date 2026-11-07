@@ -51,6 +51,8 @@ export interface WorkspaceMachine {
   maxJobs?: number;
   budget?: { cpuMillis: number; memoryMiB: number };
   limitMode?: "strict" | "limited";
+  /** Its Agents are kept contained there: no Codex Agent runs on it. */
+  contained?: boolean;
   /** The most recent manual check, shared with the Machines page. */
   lastCheck?: MachineCheck | null;
 }
@@ -379,11 +381,15 @@ export function RemoteCreateAgent({
     setError("");
   }
 
+  // The list with this machine as Core saved it: replaced, or added once.
+  function listMachine(saved: WorkspaceMachine) {
+    setMachines((current) => {
+      const list = current.length ? current : [localMachine];
+      return list.some((m) => m.id === saved.id) ? list.map((m) => (m.id === saved.id ? saved : m)) : [...list, saved];
+    });
+  }
   function machineAdded(saved: WorkspaceMachine) {
-    setMachines((current) => [
-      ...(current.length ? current : [localMachine]),
-      saved,
-    ]);
+    listMachine(saved);
     // An OpenCode Agent stays on the Core host; the machine is kept for later.
     if (!isOpenCode) selectMachine(saved);
     setAdding(false);
@@ -616,6 +622,8 @@ export function RemoteCreateAgent({
                 disabled={disabled}
                 onBusyChange={setSavingMachine}
                 onCancel={() => setAdding(false)}
+                // Saved, but not its executor limit: listed, the form stays open (T-35 S3c).
+                onMachineSaved={listMachine}
                 onSaved={machineAdded}
                 language={language}
               />
