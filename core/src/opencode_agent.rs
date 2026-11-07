@@ -2046,9 +2046,6 @@ async fn stop(server: Arc<Server>) -> Result<()> {
     }
 }
 
-/// The remote MCP server OpenCode is given for this Agent, and whether it
-/// reached it. A failed request is reported, not raised: readiness is
-/// separate from the connection, which still serves reading and stopping.
 /// The Agent's Workspace MCP handed to its OpenCode, and how OpenCode then
 /// lists it (T-61 slice 1). It is added each time with the same
 /// configuration: 2.x changes nothing for a server it holds, and adds back
@@ -2058,7 +2055,9 @@ async fn stop(server: Arc<Server>) -> Result<()> {
 /// server it lists as failed again, which the same configuration does not.
 /// One still connecting is waited for, at most MCP_SETTLE; one this call
 /// connected, MCP_TOOLS_SETTLE more, until 2.x offers its tools. Nothing
-/// OpenCode answers is kept with the bearer in it.
+/// OpenCode answers is kept with the bearer in it. A failed request is
+/// reported in what it returns, never raised: readiness is separate from the
+/// connection, which still serves reading and stopping.
 async fn workspace_mcp(server: &Server, config: &Value, retry: bool) -> Mcp {
     let url = config["url"].as_str().unwrap_or_default();
     let Some(bearer) = config["headers"]["Authorization"].as_str().and_then(|h| h.strip_prefix("Bearer ")) else {
