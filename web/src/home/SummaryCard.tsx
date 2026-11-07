@@ -116,7 +116,7 @@ export const SummaryCard = memo(function SummaryCard({
     }
   }
   // A card that is its whole report has no way to a page that would show only the same (YN-3); the page keeps its address.
-  const contained = useMemo(() => selfContained(section, content), [section, content]);
+  const contained = useMemo(() => selfContained(section, content, size), [section, content, size]);
   const report = contained ? null : openReport;
   const open = (from: HTMLElement) => report?.(projectId, section, from);
   const status = section.kind === "status";

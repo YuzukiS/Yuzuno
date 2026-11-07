@@ -235,18 +235,27 @@ export function cardContent(section: Section): CardContent {
  * 02:59Z): its body holds nothing beyond what the card shows. Every block of
  * the body is the card's own (the lead, one paragraph shown whole; the
  * picture, drawn whole; the conditions, all shown on asking) or an
- * Attachments block whose every file the card shows or names; no Sources, no
- * other block. Then the card has no way to a report page, which would show
- * only the same; the page itself stays at its address.
+ * Attachments block whose every file the card opens in place (a kept image
+ * or page); no Sources, no other block. Then the card has no way to a report
+ * page, which would show only the same; the page itself stays at its address.
+ *
+ * `size` is the size the card is shown at (`shownSize`): a small card draws
+ * no chart, only names it as on the report (PR C2's review), so its report
+ * page stays linked.
  */
-export function selfContained(section: Section, content: CardContent = cardContent(section)): boolean {
+export function selfContained(section: Section, content: CardContent = cardContent(section), size: CardSize | null = null): boolean {
   if (section.kind !== "report" || section.ask) return false;
   const body = tree(section);
   if (!body || content.files.length > CARD_FILES) return false;
+  // A file the card can only name (not kept, or neither an image nor a page) is opened on the report page.
+  if (!content.files.every((file) => file.kept && (file.kind === "image" || file.kind === "page"))) return false;
   const files = (id: string) => body.elements[id]?.type === "Attachments";
-  // Drawn whole on the card: an image, a page, a chart; a table or Metrics show only part of theirs.
+  // Drawn whole on the card as shown: a kept image, a page, a chart on a card not small; a table or Metrics show only part of theirs.
   const whole = (figure: CardFigure | null) =>
-    figure === null || figure.kind === "image" || figure.kind === "page" || (figure.kind === "block" && CHARTS.has(body.elements[figure.id]?.type ?? ""));
+    figure === null ||
+    (figure.kind === "image" && figure.kept) ||
+    figure.kind === "page" ||
+    (figure.kind === "block" && size !== "small" && CHARTS.has(body.elements[figure.id]?.type ?? ""));
   const oneParagraph = (id: string | null | undefined) => {
     const value = id ? text(body.elements[id]?.props?.text).trim() : "";
     return value !== "" && firstParagraph(value) === value;

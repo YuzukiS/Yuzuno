@@ -24,13 +24,15 @@ export const CARD_MINTS = 2;
 let asking = 0;
 const queued: (() => void)[] = [];
 async function oneOfFew<T>(ask: () => Promise<T>): Promise<T> {
+  // A finished ask hands its slot straight to the next waiting card, so no new ask starts in between (PR C2's review, P3).
   if (asking >= CARD_MINTS) await new Promise<void>((go) => queued.push(go));
-  asking++;
+  else asking++;
   try {
     return await ask();
   } finally {
-    asking--;
-    queued.shift()?.();
+    const next = queued.shift();
+    if (next) next();
+    else asking--;
   }
 }
 
@@ -62,7 +64,8 @@ export function CardPage({ projectId, section, figure, title }: { projectId: str
   const box = useRef<HTMLDivElement>(null);
   const large = useRef<HTMLButtonElement>(null);
   const [shown, setShown] = useState<State>({ state: "waiting" });
-  const [loads, setLoads] = useState(0);
+  // Loads of the page shown, counted for that page alone: a new version's page starts again at its first (PR C2's review).
+  const [loads, setLoads] = useState<{ of: string; n: number }>({ of: "", n: 0 });
   const [frame, setFrame] = useState(0);
   const version = section.version;
   const target = (): PortalTarget => ({
@@ -84,6 +87,8 @@ export function CardPage({ projectId, section, figure, title }: { projectId: str
       }
       setShown({ state: "preparing" });
       oneOfFew(async (): Promise<State> => {
+        // A card gone, or on another version, while it waited asks for nothing.
+        if (!current) return { state: "waiting" };
         const at = await post<CardMinted>("/previews", {
           kind: "briefAttachment", projectId, section: section.key, name: figure.name, version, place: "card",
         });
@@ -114,19 +119,21 @@ export function CardPage({ projectId, section, figure, title }: { projectId: str
       seen.disconnect();
     };
   }, [projectId, section.key, figure.name, version]);
+  const page = shown.state === "ready" ? `${shown.at.version} ${shown.at.url}` : "";
+  const moved = shown.state === "ready" && loads.of === page && loads.n > 1;
   return (
     <div ref={box} className="home-card-page" data-page-state={shown.state}>
-      {shown.state === "ready" && loads > 1 ? (
+      {moved ? (
         // Its first load is the page; any later one is a page it went to, which this card no longer shows (Portal.tsx).
         <div className="home-card-page-state" role="status">
           <p>{t.pageMoved}</p>
-          <button type="button" className="secondary-button" onClick={() => { setLoads(0); setFrame((n) => n + 1); }}>
+          <button type="button" className="secondary-button" onClick={() => { setLoads({ of: page, n: 0 }); setFrame((n) => n + 1); }}>
             {t.pageBack}
           </button>
         </div>
       ) : shown.state === "ready" ? (
         <iframe
-          key={frame}
+          key={`${frame} ${page}`}
           className="home-card-page-frame"
           title={figure.name}
           src={shown.at.url}
@@ -134,7 +141,7 @@ export function CardPage({ projectId, section, figure, title }: { projectId: str
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
           allow=""
-          onLoad={() => setLoads((n) => n + 1)}
+          onLoad={() => setLoads((seen) => (seen.of === page ? { of: page, n: seen.n + 1 } : { of: page, n: 1 }))}
         />
       ) : shown.state === "static" ? (
         <div className="home-card-page-state home-card-page-static">
