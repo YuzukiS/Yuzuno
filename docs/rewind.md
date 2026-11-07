@@ -107,7 +107,8 @@ stage the revert.
     the revert, which OpenCode keeps only once its files are sent back, or if
     its messages from the turn on are gone, committed already;
   - one whose session holds none and still has those messages is read again,
-    and is not reverted only if the messages and every file are as before.
+    and is not reverted only if the messages and every file are as before,
+    and never while its request is still waiting for OpenCode's answer.
     Otherwise it stays unconfirmed: OpenCode may have changed files before it
     stopped.
 
@@ -128,6 +129,15 @@ The response contains metadata, not the retained turns. Core verifies paginated
 history afterwards, drains queued native events, persists the new projection
 and preserves the archive before allowing more input. See the official
 [app-server documentation](https://learn.chatgpt.com/docs/app-server).
+
+For OpenCode, a probe of the real 2.2.5 binary, offline against a stub model,
+confirms what Core relies on. A stage sends back only the files of the Agent's
+folder, keeps the messages and keeps the revert in the session. A commit
+deletes the messages from the turn on and touches no file. A prompt or a
+compaction commits a held revert before it is admitted. A message the session
+does not hold (404) and a running session (409) are refused before anything
+changes. A restore it cannot finish (a folder it cannot remove from) answers
+500, with the files it checked out first already back.
 
 For Claude, the installed SDK's `Query` methods and `SDKControlRequestInner`
 provide `rewindFiles` / `rewind_files`, but no conversation-rewind control.
