@@ -399,7 +399,7 @@ try {
   const leadSaves = (c) => c.method === "PUT" && c.path === "/api/projects/orchard/leads";
   assert.equal(calls.filter(leadSaves).length, 6, "the projects part's one Save per run (S2b) is its only write");
   assert.deepEqual(calls.filter((c) => c.method !== "GET" && !reads.includes(c.path) && !leadSaves(c)), [], "opening and browsing write nothing");
-  assert.ok(!calls.some((c) => c.method !== "GET" && /^\/api\/(projects|machines|settings|jobs\/budget|remote-access)(\/|$)/.test(c.path)), "no project, machine or setting is written");
+  assert.ok(!calls.some((c) => c.method !== "GET" && !leadSaves(c) && /^\/api\/(projects|machines|settings|jobs\/budget|remote-access)(\/|$)/.test(c.path)), "no other project, machine or setting is written");
   assert.deepEqual(errors, []);
   check("no project, machine or setting writes (only the panels' POST reads) and no page errors");
 } finally {
