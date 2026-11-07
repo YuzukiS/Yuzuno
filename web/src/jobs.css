@@ -1040,6 +1040,15 @@
 .job-detail > p.job-limit-note {
   color: var(--error-ink);
 }
+/* The suggestion a Job kept at submission (YN-6 S3): what to do about a
+   request far above it, or the risk of one below its peak, on its own line. */
+.job-kept-suggestion small {
+  display: block;
+  color: var(--text-secondary);
+}
+.job-kept-suggestion small.job-below-peak {
+  color: var(--error-ink, var(--danger, #b55d53));
+}
 
 /* What earlier runs suggest requesting (T-38 C): a note under the limits,
    with a button that fills them only when pressed. */
