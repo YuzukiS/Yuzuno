@@ -2426,11 +2426,15 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
     // asked for, by its ID, as 2.x stores it, whatever its events could
     // tell, by this process or one before it.
     let idle = snapshot.status["type"] == "idle";
-    for turn in d.turns.iter_mut().filter(|t| t["_opencodeCompact"]["input"].is_string()) {
-        let input = turn["_opencodeCompact"]["input"].clone();
-        if let Some(stored) = compactions.iter().find(|m| m["id"] == input) {
+    for turn in d.turns.iter_mut().filter(|t| matches!(t["_opencodeCompact"]["state"].as_str(), Some("pending" | "unknown"))) {
+        let Some(input) = turn["_opencodeCompact"]["input"].as_str().map(str::to_owned) else {
+            // Asked of OpenCode 1.19.3 (T-10), whose answer this Core no longer reads: nothing more of it can come.
+            compaction_lost(turn);
+            continue;
+        };
+        if let Some(stored) = compactions.iter().find(|m| m["id"] == input.as_str()) {
             compaction_seen(turn, stored);
-        } else if !snapshot.inbox.as_array().into_iter().flatten().any(|item| item["id"] == input) {
+        } else if !snapshot.inbox.as_array().into_iter().flatten().any(|item| item["id"] == input.as_str()) {
             turn["_opencodeCompact"]["absent"] = true.into();
         }
         settle_compaction(turn, idle);
@@ -2637,8 +2641,9 @@ fn compaction_event(d: &mut AgentDetail, compaction: &Value) {
 /// off by its process ending (`compaction.interrupted`, which a later
 /// process settles it as); failed with 2.x's words for any other failure
 /// (nothing to compact, the summary failed, the provider's error), though its
-/// run ended well; unknown when its message is still running, or 2.x has no
-/// record of it. Admitted and not yet started, it waits.
+/// run ended well; failed too when 2.x, idle, has no record of it at all, as
+/// it then did not run (`compaction_absent`); unknown when its message is
+/// still running. Admitted and not yet started, it waits.
 fn settle_compaction(turn: &mut Value, idle: bool) {
     let attempt = turn["_opencodeCompact"].clone();
     if !idle || !matches!(attempt["state"].as_str(), Some("pending" | "unknown")) {
@@ -2661,7 +2666,7 @@ fn settle_compaction(turn: &mut Value, idle: bool) {
             compaction_settled(turn, if stopped { "stopped" } else { "failed" });
         }
         Some("running") => compaction_unknown(turn, "OpenCode 已空闲，但这次压缩没有结束；结果未确认，不会重发。"),
-        _ if attempt["absent"] == true => compaction_unknown(turn, "OpenCode 的记录里没有这次压缩，也无法确认它没有开始；结果未确认，不会重发。"),
+        _ if attempt["absent"] == true => compaction_absent(turn),
         _ => {}
     }
 }
@@ -2674,6 +2679,25 @@ fn compaction_unknown(turn: &mut Value, message: &str) {
     unknown(turn, message);
     turn["_opencodeCompact"]["state"] = "unknown".into();
     turn.as_object_mut().expect("turn").remove("_yuzunoCompactionId");
+}
+
+/// A compaction a whole read of the idle session finds no record of (#699
+/// R1 a136ddf1): neither waiting in 2.x's inbox nor among its messages, so
+/// 2.x did not run it and will not. Nothing was compacted, and nothing more
+/// is held back for it.
+fn compaction_absent(turn: &mut Value) {
+    turn["status"] = "failed".into();
+    turn["error"] = json!({"message":"OpenCode 的记录里没有这次压缩：它没有执行，什么也没有压缩；不会重发，可以再次 /compact。"});
+    compaction_settled(turn, "absent");
+}
+
+/// A compaction asked of OpenCode 1.19.3 (T-10), whose end this Core no
+/// longer reads (#699 R1 a136ddf1): unknown for good, holding nothing back.
+fn compaction_lost(turn: &mut Value) {
+    if turn["status"] == "inProgress" {
+        unknown(turn, "这次压缩是向早先的 OpenCode 1.19.3 发出的，现在读不到它的结果；不会重发。");
+    }
+    compaction_settled(turn, "lost");
 }
 
 fn compaction_settled(turn: &mut Value, state: &str) {

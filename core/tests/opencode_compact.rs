@@ -47,24 +47,34 @@ struct Lab {
 
 /// An OpenCode Agent whose context was last measured long ago, at 400 of 1000.
 fn agent(id: &str, cwd: &str) -> AgentDetail {
+    agent_with(id, cwd, json!([]))
+}
+
+/// The same Agent, with these Turns already recorded.
+fn agent_with(id: &str, cwd: &str, turns: Value) -> AgentDetail {
     serde_json::from_value(json!({"agent": {
         "id":id, "name":"OpenCode", "cwd":cwd, "model":"", "color":"sage", "harness":"opencode",
         "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
         "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
-    },"turns":[],"pending":[],"artifacts":[],
+    },"turns":turns,"pending":[],"artifacts":[],
     "contextUsage":{"usedTokens":400,"windowTokens":1000,"usedPercent":40.0,"turnId":"earlier","updatedAt":"2026-01-01T00:00:00Z","stale":false}})).unwrap()
 }
 
 /// A Workspace with one OpenCode Agent, connected; with `model`, chosen for
 /// its next messages.
 async fn lab(model: bool) -> Lab {
+    lab_with(model, json!([])).await
+}
+
+/// The same, its Agent recorded with these Turns before it connects.
+async fn lab_with(model: bool, turns: Value) -> Lab {
     program();
     let dir = tempfile::tempdir().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir(&work).unwrap();
     std::fs::create_dir_all(dir.path().join("data/opencode").join(ID)).unwrap();
     let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
-    ws.store.insert(&agent(ID, &work.to_string_lossy())).unwrap();
+    ws.store.insert(&agent_with(ID, &work.to_string_lossy(), turns)).unwrap();
     let d = ws.reconnect(ID).await.unwrap();
     assert_eq!(d.agent.connection_state, "connected");
     if model {
@@ -309,25 +319,50 @@ async fn a_lost_admission_is_found_by_its_id_and_never_sent_again() {
     assert_eq!(lab.compacts().await.len(), 3);
     refuses_new_writes(&lab, "上一次 /compact 的结果无法确认").await;
     assert_eq!(lab.compacts().await.len(), 3, "never sent again");
+    // A reconnect reads the session whole: 2.x, idle, has no record of it, so it did not run (#699 R1 a136ddf1).
+    lab.ws.reconnect(ID).await.unwrap();
+    let d = lab.until("the reconnect's read of the lost compaction", |d| compaction(d)["_opencodeCompact"]["state"] == "absent").await;
+    let lost = compaction(&d);
+    assert!(lost["status"] == "failed" && lost["error"]["message"].as_str().unwrap_or_default().contains("它没有执行"),
+        "ended, as it did not run: {lost:#}");
+    lab.compact_mode("run").await;
+    lab.send("c1", "And now?").await.expect("released by the reconnect's read: the next message goes");
+    assert_eq!(lab.compacts().await.len(), 3, "never sent again");
 }
 
 /// A compaction 2.x answered as admitted but keeps no record of, neither in
-/// its inbox nor among its messages while it is idle, is unknown once a
-/// whole read of the session finds it so: never left waiting, never sent
-/// again.
+/// its inbox nor among its messages while it is idle, did not run: once a
+/// whole read of the session finds it so, its Turn fails saying so and holds
+/// nothing back. Never left waiting, never sent again.
 #[tokio::test]
-async fn an_admitted_compaction_2x_keeps_no_record_of_is_unknown_once_read_whole() {
+async fn an_admitted_compaction_2x_keeps_no_record_of_ends_once_read_whole() {
     let lab = lab(true).await;
     lab.compact_mode("forget").await;
     lab.ws.opencode_compact(ID).await.expect(ADMITTED);
     // The event stream ends and comes back: Core reads the session whole again, the same process still there.
     lab.control("drop", json!({})).await;
-    let d = lab.until("the end of a compaction 2.x has no record of", |d| compaction(d)["_opencodeCompact"]["state"] == "unknown").await;
+    let d = lab.until("the end of a compaction 2.x has no record of", |d| compaction(d)["_opencodeCompact"]["state"] == "absent").await;
     let lost = compaction(&d);
-    assert!(lost["status"] == "outcomeUnknown" && lost["error"]["message"].as_str().unwrap_or_default().contains("OpenCode 的记录里没有这次压缩"),
-        "unknown, as 2.x has no record of it: {lost:#}");
+    assert!(lost["status"] == "failed" && lost["error"]["message"].as_str().unwrap_or_default().contains("OpenCode 的记录里没有这次压缩"),
+        "failed, as 2.x has no record of it: {lost:#}");
     assert_eq!(d.agent.connection_state, "connected", "the same connection");
+    lab.compact_mode("run").await;
+    lab.send("c1", "And now?").await.expect("it holds nothing back: the next message goes");
     assert_eq!(lab.compacts().await.len(), 1, "never sent again");
+}
+
+/// A compaction OpenCode 1.19.3 left unfinished (T-10: no input ID, its end
+/// unknown) ends unknown for good at the first whole read and holds nothing
+/// back: Core no longer reads 1.19.3's answer, and its give-up button is
+/// gone (#699 R1 a136ddf1).
+#[tokio::test]
+async fn a_compaction_left_unfinished_by_1193_holds_nothing_back_once_read_whole() {
+    let old = json!([{"id":"compact_old","status":"outcomeUnknown","items":[],"error":{"message":"earlier"},
+        "_opencodeCompact":{"state":"unknown","session":"ses_old","generation":0}}]);
+    let lab = lab_with(true, old).await;
+    let d = lab.until("the old compaction settled by the first read", |d| compaction(d)["_opencodeCompact"]["state"] == "lost").await;
+    assert_eq!(compaction(&d)["status"], "outcomeUnknown", "still unknown: {:#}", compaction(&d));
+    lab.send("c1", "And now?").await.expect("it holds nothing back: the next message goes");
 }
 
 /// A compaction cut off with its process (2.x settles the message its
