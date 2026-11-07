@@ -1943,3 +1943,143 @@ async fn a_merge_waiting_to_be_resent_is_not_sent_onto_a_paused_queue() {
         assert_eq!(puts(), sent + 1, "{answer}: with one more request");
     }
 }
+
+/// Each repository names how its entries land. `core-merge`, the only landing
+/// this Core has, is the default and is what a merge records; a landing this
+/// Core does not have keeps a checked entry ready and sends nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_entry_lands_with_core_merge_and_a_landing_this_core_lacks_sends_nothing() {
+    let lab = lab(green());
+    assert_eq!(lab.paused()["landing"], "core-merge", "a repository lands with core-merge unless set otherwise");
+    let set = |landing: &str| {
+        lab.ws.store.db.write().unwrap()
+            .execute("UPDATE merge_repositories SET data=json_set(data,'$.landing',?1) WHERE repository_id=7", [landing])
+            .unwrap();
+    };
+    set("github-auto-merge");
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "ready", "every check held, but this Core cannot land that way: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("cannot land with 'github-auto-merge'"), "the entry says why: {e}");
+    assert!(writes(lab.dir.path()).is_empty(), "nothing was sent to GitHub");
+    set("core-merge");
+    let e = lab.step().await;
+    assert_eq!(e["state"], "merged", "with core-merge the entry merges: {e}");
+    assert_eq!(e["merge"]["landing"], "core-merge", "the merge records how it lands: {e}");
+    assert_eq!(writes(lab.dir.path()), ["PUT repos/owner/repo/pulls/11/merge"]);
+}
+
+/// A merge that started with a landing this Core lacks (a later Core began
+/// it) is never sent from here: the entry goes back to waiting and says why.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_begun_with_a_landing_this_core_lacks_is_not_sent() {
+    let lab = lab(green());
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_repositories SET data=json_set(data,'$.landing','github-auto-merge') WHERE repository_id=7", [])
+        .unwrap();
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let merge = json!({"expectedMain":main_sha(),"tree":tree(),"gate":"slot","landing":"github-auto-merge","head":head(),
+        "attempts":0,"puts":[],"startedAt":"2026-11-06T00:00:00Z","sha":null,"post":null,"mainCi":null});
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_entries SET state='merging',next_check=0,data=json_set(data,'$.state','merging','$.merge',json(?1))", [merge.to_string()])
+        .unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "the merge is not sent and the entry is checked again: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("cannot land with 'github-auto-merge'; nothing was sent"), "it says why: {e}");
+    assert_eq!(e["retiredMerges"][0]["landing"], "github-auto-merge", "the unsent merge is kept: {e}");
+    assert!(writes(lab.dir.path()).is_empty(), "nothing was sent to GitHub");
+}
+
+/// The user sets a repository's landing on its route: `core-merge`, the only
+/// one this Core has. The two planned for core.25 are refused by name, and a
+/// refused request saves nothing, its switch change included.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_landing_is_core_merge_and_the_planned_ones_are_refused_by_name() {
+    use tower::ServiceExt;
+    let lab = lab(green());
+    let put = |body: Value| {
+        axum::http::Request::builder()
+            .method("PUT")
+            .uri("/api/merge-queue/repositories/7")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    };
+    let answer = |response: axum::response::Response| async move {
+        let status = response.status();
+        (status, serde_json::from_slice::<Value>(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap())
+    };
+    for name in ["github-auto-merge", "github-merge-queue"] {
+        let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"landing":name,"enabled":false}))).await.unwrap()).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "a planned landing is refused: {body}");
+        assert!(body["error"].as_str().unwrap().contains(&format!("the {name} landing comes in core.25")), "{name} is refused by name: {body}");
+    }
+    let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"landing":"bors"}))).await.unwrap()).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("unknown landing"), "{body}");
+    let r = lab.paused();
+    assert_eq!((r["landing"].clone(), r["enabled"].clone()), (json!("core-merge"), json!(true)), "a refused landing saves nothing, the switch included: {r}");
+    // A later Core's landing, set back to core-merge: the switch journal says so.
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_repositories SET data=json_set(data,'$.landing','github-auto-merge') WHERE repository_id=7", [])
+        .unwrap();
+    let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"landing":"core-merge"}))).await.unwrap()).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!((body["landing"].clone(), body["enabled"].clone()), (json!("core-merge"), json!(true)), "setting the landing leaves the switch as it was: {body}");
+    let last = body["switches"].as_array().and_then(|j| j.last()).cloned().unwrap_or_default();
+    assert_eq!((last["detail"].clone(), last["by"].clone()), (json!("Landing set to core-merge"), json!("user")), "the switch journal records the landing: {body}");
+}
+
+/// Turning the switch on, through the user's route, makes an entry that was
+/// ready and waiting for it due at once: the next pass merges it, with no
+/// wait for its next check.
+#[cfg(unix)]
+#[tokio::test]
+async fn turning_the_switch_on_makes_a_ready_entry_due_at_once() {
+    use tower::ServiceExt;
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    lab.ws.store.merge_set_enabled(7, false).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "ready", "every check held, with the switch off: {e}");
+    let on = axum::http::Request::builder()
+        .method("PUT")
+        .uri("/api/merge-queue/repositories/7")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(json!({"enabled":true}).to_string()))
+        .unwrap();
+    assert_eq!(router().with_state(lab.ws.clone()).oneshot(on).await.unwrap().status(), axum::http::StatusCode::OK);
+    // A plain pass, not one that makes every entry due.
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "turning the switch on makes a ready entry due at once: {e}");
+}
+
+/// An entry that passed every check while the switch is off waits for the
+/// switch: however long the switch stays off, it is not checked again, and
+/// Core reads nothing from GitHub for it (no job pages or logs every five
+/// minutes).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_ready_entry_is_not_checked_again_while_the_switch_stays_off() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    lab.ws.store.merge_set_enabled(7, false).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["checks"].clone()), (json!("ready"), json!(1)), "every check held, with the switch off: {e}");
+    let reads = calls(lab.dir.path()).len();
+    // A day goes by with the switch off.
+    lab.ws.store.db.write().unwrap().execute("UPDATE merge_entries SET next_check=next_check-86400", []).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["checks"].clone()), (json!("ready"), json!(1)), "while the switch stays off, a ready entry is not checked again: {e}");
+    assert_eq!(calls(lab.dir.path()).len(), reads, "nor read from GitHub");
+}

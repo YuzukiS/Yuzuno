@@ -51,6 +51,14 @@ That count doesn't depend on how long the attempt runs or how many Jobs run besi
 - **The collector's launch record is still missing** 30 s after Core first saw the attempt. Core asks systemd itself.
 - **A helper run fails** (for example, systemctl timed out). The attempt shows `unknown` with the reason, and Core asks again on the schedule above.
 
+## How many Jobs there are
+
+`job_budget` counts this host's own Jobs three ways, and the top bar's Jobs badge shows them as running / queued / waiting:
+- `activeCount`: those holding one of the `maxActive` slots;
+- `queuedCount`: those waiting in the queue;
+- `waitingCount`: those that exist but wait for an earlier stage of their run, or for its analysis (T-69). They are not in the queue until that stage succeeds, so neither of the other two counts them.
+  A stage that can't start until someone retries or cancels is not counted: one behind a stage that failed, was cancelled or has an unknown outcome (directly or through another waiting stage), or one held back by the run's cost limit. Its run shows it as failed, unknown or blocked.
+
 ## A Job's CPU: the grant and the raise
 
 A Job asks for CPU as one value (`cpuMillis`) or as a range (`cpuMillisMin` up to `cpuMillisMax`, with `cpuPolicy`) (T-64). Admission reserves the minimum and the collector, as it reserved `cpuMillis` before. What the Job runs with is Core's grant.

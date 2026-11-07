@@ -383,6 +383,34 @@ async fn a_prompt_is_found_waiting_in_the_inbox_and_only_its_own_admission_accep
     again.shutdown().await.unwrap();
 }
 
+/// The stand-in keeps the state it saved whole through a SIGTERM in the
+/// middle of a save (T-61 S0; CI 42314910718 of #659 met a cut one, and the
+/// stand-in then exited before it listened): started again on the same
+/// folder, it reads that state and listens. Its saves are made slow here
+/// (switch `slowSave`), and one is under way when it is stopped.
+#[tokio::test]
+async fn the_stand_in_stopped_in_the_middle_of_a_save_starts_again_on_what_it_saved() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    lab.switch("slowSave", "2");
+    let port = lab.seen()["port"].as_u64().unwrap();
+    let seeded = session.clone();
+    // A control that saves, answered only once its save is done: under way when the SIGTERM comes.
+    let saving = tokio::spawn(async move {
+        http().post(format!("http://127.0.0.1:{port}/__fixture/seed")).json(&json!({"sessionID": seeded, "count": 1}))
+            .timeout(Duration::from_secs(20)).send().await
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    server.shutdown().await.unwrap();
+    let _ = saving.await;
+    std::fs::remove_file(lab.root.join("slowSave")).unwrap();
+    let again = Server::start(&lab.launch).await
+        .expect("started again on what it saved, after a SIGTERM in the middle of a save");
+    again.session(&session).await.expect("the session it saved before is there");
+    again.shutdown().await.unwrap();
+}
+
 /// A message 2.x delivers between Core's two reads of it is found (T-32
 /// slice 4a, R5 728f7e52): the inbox is read before the delivered messages,
 /// and delivery only moves a message from the first to the second.

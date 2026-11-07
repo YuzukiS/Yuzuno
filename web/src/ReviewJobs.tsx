@@ -12,7 +12,8 @@ import {
   StateGroups,
   type Placement,
 } from "./JobParts";
-import { WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
+import { WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity } from "./WorkDock";
+import { reviewWork } from "./work-activity.ts";
 
 export type ReviewRow = {
   id: string;
@@ -659,16 +660,53 @@ export function dockMark(r: ReviewRow) {
 }
 const at = (value: string | null | undefined) => Date.parse(value || "") || 0;
 /** The conversation's reviews on its dock, after its runs: what runs first, then the latest ended, as many as
- * Settings allows (Appearance, Conversation dock); none, no group. */
+ * Settings allows (Appearance, Conversation dock); none, no group. Work activity counts every one of them whatever
+ * the dock draws, as it does the Jobs and the sub-agents. */
 export function ConversationReviews({ agentId, revision, disabled, limit }: { agentId: string; revision: string; disabled: boolean; limit: number }) {
   const t = reviewText(useLanguage());
   const page = useConversationReviews(agentId, revision, disabled);
-  if (!page.reviews.length) return null;
-  const shown = page.reviews
+  const ordered = page.reviews
     .map((r) => ({ r, running: active(r) }))
     .sort((a, b) => +b.running - +a.running || (a.running ? 0 : at(b.r.finishedAt || b.r.createdAt) - at(a.r.finishedAt || a.r.createdAt)))
-    .slice(0, limit)
     .map(({ r }) => r);
+  const shown = ordered.slice(0, Math.max(0, limit));
+  // What the conversation's head says about these, and how it opens them.
+  // Without this the dock drew them and nothing else knew: on a touched
+  // screen wider than a phone the dock takes no presses at all, by design,
+  // and the head's entry and column are the way in — so reviews were drawn
+  // and unreachable, absent from the column, and a conversation whose only
+  // work was reviews had no entry to press (#459 R5, P2). Registered on
+  // every render, including the one where there are none, because that is
+  // how the registry learns they have gone.
+  //
+  // A review the reader cancelled is counted by nobody, as the dock's Jobs
+  // drop a cancelled Job (deviation row 14).
+  //
+  // Every review read, not the ones the dock has room for. Registering what
+  // the dock drew left the rest uncounted: with the dock's two, an older
+  // review that asked for changes was behind a running one and a newer one,
+  // and the entry said nothing needed a look; with the dock's reviews at 0
+  // this was never mounted and reviews were gone from Work activity
+  // altogether — on a touched screen the one way in (#459 R7, P3). Jobs and
+  // sub-agents already count all of theirs.
+  useWorkActivity(
+    "review",
+    ordered
+      .filter((r) => r.status !== "cancelled")
+      .map((r) => ({
+        id: r.id,
+        kind: "review" as const,
+        state: reviewWork(r.status, reviewPassed(r), r.conclusion),
+        name: t.dockName(r.number, r.round),
+        says: reviewState(r, t),
+        onOpen: () => openReviews({ taskId: r.taskId, reviewId: r.id }),
+      })),
+    () => openReviews({ involving: agentId }),
+    // A cancelled one is not counted and is still on the dock: its list stays reachable.
+    page.reviews.length > 0,
+  );
+  // At 0 the dock has no group of them; they are still counted above.
+  if (!page.reviews.length || limit <= 0) return null;
   // Of the page read, as the dock's runs count theirs; the list has the rest.
   const more = page.reviews.length - shown.length;
   return (
