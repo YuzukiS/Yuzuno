@@ -207,7 +207,7 @@ async fn commands_are_listed_from_2xs_own_list_and_nothing_of_opencodes_configur
             command("pinned", "Uses its own model"),
             command("review", "Review a change"),
             command("status", ""),
-        ],"total":5,"truncated":false,"skillsKnown":true}));
+        ],"total":5,"truncated":false,"skillsKnown":true}), "2.x's commands, by name and description, and nothing more of one");
     let listed = view.to_string();
     for kept in ["fixture-secret", "fixture-template", "template", "Investigate", "deepseek", "openrouter", "reviewer"] {
         assert!(!listed.contains(kept), "{kept} in {listed}");
@@ -261,7 +261,7 @@ async fn a_listed_command_runs_through_2xs_route_and_its_turn_follows_the_messag
     lab.ws.opencode_set_choice(ID, "deepseek/deepseek-flash".into(), Some(Some("max".into()))).await.unwrap();
 
     let receipt = lab.send("c1", "/explain closures", &[]).await.unwrap();
-    assert_eq!(receipt.status, "accepted", "{receipt:?}");
+    assert_eq!(receipt.status, "accepted", "delivered once its Turn follows the message 2.x admitted: {receipt:?}");
     let first = receipt.turn_id.unwrap();
     let sent = lab.sent();
     assert_eq!(sent.len(), 1);
@@ -331,7 +331,7 @@ async fn a_command_2x_refuses_is_refused_before_anything_runs_and_never_sent_aga
     lab.control("mode", json!({"fail":{path.clone():404}})).await;
     let refused = lab.send("c1", "/explain x", &[]).await.unwrap();
     assert_eq!(refused.status, "rejected");
-    assert!(refused.error.as_deref().unwrap().contains("OpenCode 没有执行 /explain（HTTP 404）：fixture failure"), "{refused:?}");
+    assert!(refused.error.as_deref().unwrap().contains("OpenCode 没有执行 /explain（HTTP 404）：fixture failure"), "refused in 2.x's words: {refused:?}");
     let d = lab.detail();
     assert_eq!(turn(&d, refused.turn_id.as_deref().unwrap())["status"], "failed", "its Turn, recorded before the request, failed");
     assert_eq!(d.agent.status, "idle");
@@ -340,7 +340,7 @@ async fn a_command_2x_refuses_is_refused_before_anything_runs_and_never_sent_aga
     // What it does failed, with nothing admitted: refused, in 2.x's words.
     lab.control("mode", json!({"command":"fail"})).await;
     let failed = lab.send("c2", "/explain y", &[]).await.unwrap();
-    assert_eq!(failed.status, "rejected", "{failed:?}");
+    assert_eq!(failed.status, "rejected", "what it does failed, with nothing admitted: refused: {failed:?}");
     assert!(failed.error.as_deref().unwrap().contains("（HTTP 500）：fixture: the command failed"), "{failed:?}");
     assert_eq!(turn(&lab.detail(), failed.turn_id.as_deref().unwrap())["status"], "failed");
     assert_eq!(lab.journaled("opencode/promptRefused").len(), 2);
@@ -349,7 +349,7 @@ async fn a_command_2x_refuses_is_refused_before_anything_runs_and_never_sent_aga
     // OpenCode alone decides nothing for it.
     lab.control("mode", json!({"command":"drop"})).await;
     let unknown = lab.send("c3", "/explain z", &[]).await.unwrap();
-    assert_eq!(unknown.status, "uncertain", "{unknown:?}");
+    assert_eq!(unknown.status, "uncertain", "no answer: unknown: {unknown:?}");
     let dropped = unknown.turn_id.clone().unwrap();
     assert_eq!(lab.journaled("opencode/deliveryUnconfirmed").len(), 1);
     let again = lab.send("c3", "/explain z", &[]).await.unwrap();
@@ -401,7 +401,7 @@ async fn a_command_that_fails_after_2x_admitted_its_message_is_followed_not_refu
     let session = lab.session();
     lab.control("mode", json!({"command":"fail-after"})).await;
     let receipt = lab.send("c1", "/explain x", &[]).await.unwrap();
-    assert_eq!(receipt.status, "accepted", "{receipt:?}");
+    assert_eq!(receipt.status, "accepted", "followed once 2.x admitted its message, not refused: {receipt:?}");
     let ran = receipt.turn_id.unwrap();
     let d = lab.detail();
     assert!(turn(&d, &ran)["_opencodeCommand"]["native"].is_string(), "followed: {:#}", turn(&d, &ran));
@@ -422,7 +422,7 @@ async fn a_command_with_its_own_model_keeps_it_and_the_next_message_switches_bac
     let session = lab.session();
     lab.ws.opencode_set_choice(ID, "deepseek/deepseek-flash".into(), Some(None)).await.unwrap();
     let pinned = lab.send("c1", "/pinned", &[]).await.unwrap().turn_id.unwrap();
-    assert_eq!(lab.sent().pop().unwrap()["body"], json!({"name":"pinned","text":""}));
+    assert_eq!(lab.sent().pop().unwrap()["body"], json!({"name":"pinned","text":""}), "2.x's command takes its name and text only");
     lab.complete(&pinned).await;
     assert_eq!((&lab.sessions()[&session]["model"]["providerID"], &lab.sessions()[&session]["model"]["id"]),
         (&json!("openrouter"), &json!("anthropic/claude-x")), "the command's own model stays the session's");
@@ -451,7 +451,7 @@ async fn a_command_that_starts_nothing_ends_its_turn_saying_so() {
     let lab = lab(false).await;
     lab.control("mode", json!({"command":"nothing"})).await;
     let receipt = lab.send("c1", "/explain x", &[]).await.unwrap();
-    assert_eq!(receipt.status, "accepted", "{receipt:?}");
+    assert_eq!(receipt.status, "accepted", "a command that started no run is delivered: {receipt:?}");
     let ran = receipt.turn_id.unwrap();
     let d = lab.detail();
     assert_eq!(turn(&d, &ran)["status"], "completed");
@@ -476,7 +476,7 @@ async fn a_sub_agent_command_ends_its_turn_at_once_and_its_requests_still_come_t
     let lab = lab(false).await;
     let session = lab.session();
     let receipt = lab.send("c1", "/delegate the  failing test ", &[]).await.unwrap();
-    assert_eq!(receipt.status, "accepted", "{receipt:?}");
+    assert_eq!(receipt.status, "accepted", "a sub-agent's command is delivered: {receipt:?}");
     let ran = receipt.turn_id.unwrap();
     assert_eq!(lab.sent().pop().unwrap()["body"], json!({"name":"delegate","text":"the  failing test"}));
     let d = lab.detail();
@@ -510,7 +510,7 @@ async fn a_sub_agents_result_is_never_taken_as_a_commands_input() {
     let session = lab.session();
     lab.control("mode", json!({"command":"drop"})).await;
     let waiting = lab.send("c1", "/explain x", &[]).await.unwrap();
-    assert_eq!(waiting.status, "uncertain", "{waiting:?}");
+    assert_eq!(waiting.status, "uncertain", "with no answer and nothing admitted, unknown: {waiting:?}");
     let ran = waiting.turn_id.unwrap();
     // A sub-agent's result, admitted and delivered by 2.x as 2.2.5 sends it (probe p1 fecf3048), then the command's own message.
     let result = yuzuno_workspace::opencode::MessageId::new();
@@ -537,7 +537,7 @@ async fn a_delivery_whose_admission_was_not_seen_is_not_taken_as_a_commands_inpu
     let session = lab.session();
     lab.control("mode", json!({"command":"drop"})).await;
     let waiting = lab.send("c1", "/explain x", &[]).await.unwrap();
-    assert_eq!(waiting.status, "uncertain", "{waiting:?}");
+    assert_eq!(waiting.status, "uncertain", "with no answer and nothing admitted, unknown: {waiting:?}");
     let ran = waiting.turn_id.unwrap();
     let unseen = yuzuno_workspace::opencode::MessageId::new();
     lab.control("event", json!({"type":"session.inbox.delivered","created":chrono::Utc::now().timestamp_millis(),
@@ -604,7 +604,7 @@ async fn a_failed_command_whose_session_cannot_be_read_is_unknown_not_refused() 
     let session = lab.session();
     lab.control("mode", json!({"command":"fail","fail":{format!("/api/session/{session}/inbox"):500}})).await;
     let unknown = lab.send("c1", "/explain y", &[]).await.unwrap();
-    assert_eq!(unknown.status, "uncertain", "{unknown:?}");
+    assert_eq!(unknown.status, "uncertain", "a 500 with its session unread: unknown: {unknown:?}");
     let ran = unknown.turn_id.clone().unwrap();
     assert_eq!(turn(&lab.detail(), &ran)["status"], "inProgress", "not failed: it may have run");
     assert!(lab.journaled("opencode/promptRefused").is_empty(), "nothing was recorded as refused");
