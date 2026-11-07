@@ -293,31 +293,43 @@ fn notice(changes: &Changes, start_text: Option<&str>) -> Option<String> {
 /// Records what `agent`'s native session is attached with now and, when
 /// that session was attached before with something else, mails it the
 /// notice in the same transaction. The mail's ID, if one was sent.
+///
+/// `start_text` None means unknown (a part of it could not be read): this
+/// attach compares no start text and keeps the record's, so a failed read
+/// is never taken for a change, now or at the next attach (YN-5 R1). An
+/// empty recorded digest is such an unknown too. The tools are compared
+/// either way.
 pub(crate) fn attach(db: &Connection, agent: &Agent, start_text: Option<&str>) -> Result<Option<String>> {
     let native = match agent.harness.as_str() {
         "claude" => agent.claude_session_id.as_deref(),
         "opencode" => agent.opencode_session_id.as_deref(),
         _ => agent.thread_id.as_deref(),
     };
-    let start_digest = start_text.map(sha256).unwrap_or_default();
     let tools_now = serde_json::to_string(&baseline())?;
     let before: Option<(Option<String>, String, String)> = db.query_row(
         "SELECT native_id, tools, start_text FROM session_baselines WHERE agent_id=?1",
         [&agent.id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     ).optional()?;
-    // The same session: the one recorded, or the one it became (a new
-    // Claude session had no ID when it was recorded). Anything else is a
-    // session this record does not describe.
+    // The record of this session: the one recorded, or the one it became (a
+    // new Claude session had no ID when it was recorded). Anything else is a
+    // session the record does not describe.
+    let same = before.as_ref().filter(|(recorded, _, _)| match (recorded.as_deref(), native) {
+        (Some(recorded), Some(native)) => recorded == native,
+        (None, _) => true,
+        (Some(_), None) => false,
+    });
+    let start_digest = match start_text {
+        Some(text) => sha256(text),
+        None => same.map(|(_, _, start)| start.clone()).unwrap_or_default(),
+    };
     let mut mail = None;
-    if let (Some(native), Some((recorded, tools, start))) = (native, &before) {
-        if recorded.as_deref().is_none_or(|recorded| recorded == native) {
-            let loaded: BTreeMap<String, Digests> = serde_json::from_str(tools).unwrap_or_default();
-            let changed = changes(&loaded);
-            let start_changed = start_text.filter(|_| start != &start_digest);
-            if let Some(body) = notice(&changed, start_changed) {
-                mail = Some(send(db, agent, body, &changed, start_changed.is_some())?);
-            }
+    if let (Some(_), Some((_, tools, start))) = (native, same) {
+        let loaded: BTreeMap<String, Digests> = serde_json::from_str(tools).unwrap_or_default();
+        let changed = changes(&loaded);
+        let start_changed = start_text.filter(|_| !start.is_empty() && start != &start_digest);
+        if let Some(body) = notice(&changed, start_changed) {
+            mail = Some(send(db, agent, body, &changed, start_changed.is_some())?);
         }
     }
     let unchanged = mail.is_none() && before.as_ref().is_some_and(|(recorded, tools, start)| {
@@ -352,17 +364,23 @@ impl crate::workspace::Workspace {
     /// Codex the session notice and, for a Project's Agent, the Brief hard
     /// rules (claude.rs start, results::with_capability_notice and
     /// brief_turns::with_hard_rules); for every harness the MCP server
-    /// instructions.
-    async fn start_text(&self, agent: &Agent) -> String {
+    /// instructions. None when whether the rules apply can't be read: that
+    /// is unknown, not a text without them (YN-5 R1).
+    async fn start_text(&self, agent: &Agent) -> Option<String> {
         let mut parts = Vec::new();
         if matches!(agent.harness.as_str(), "claude" | "codex") {
             parts.push(crate::guide::session_notice().to_owned());
-            if let Some(rules) = crate::brief_turns::start_hard_rules(self, &agent.id).await {
-                parts.push(rules);
+            match crate::brief_turns::start_hard_rules(self, &agent.id).await {
+                Ok(Some(rules)) => parts.push(rules),
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("Agent {}'s Brief rules are unreadable; its start text is not compared: {error:#}", agent.id);
+                    return None;
+                }
             }
         }
         parts.push(crate::collaboration_mcp::server_instructions());
-        parts.join("\n\n")
+        Some(parts.join("\n\n"))
     }
 
     /// Called once a native session's Workspace MCP is confirmed ready on
@@ -380,7 +398,7 @@ impl crate::workspace::Workspace {
         let mailed = self.stored(move |store| {
             let mut writer = store.db.write()?;
             let tx = writer.transaction()?;
-            let mailed = attach(&tx, &agent, Some(&start))?;
+            let mailed = attach(&tx, &agent, start.as_deref())?;
             tx.commit()?;
             Ok(mailed)
         }).await;

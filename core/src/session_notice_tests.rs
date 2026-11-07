@@ -84,12 +84,20 @@ for line in sys.stdin:
 
 /// A Codex Agent with the Workspace MCP, thread `native-thread`, attached once.
 async fn codex() -> (tempfile::TempDir, Arc<Workspace>) {
+    codex_with(None).await
+}
+
+/// `codex`, with these Brief rules in place before the first attach.
+async fn codex_with(rules: Option<Arc<Rules>>) -> (tempfile::TempDir, Arc<Workspace>) {
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("codex.py");
     std::fs::write(&script, CODEX).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
     let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), script.to_string_lossy().into()).unwrap();
     ws.collaboration_url.set("http://127.0.0.1:4999".into()).unwrap();
+    if let Some(rules) = rules {
+        ws.brief_turns.set_seam(rules);
+    }
     let detail: crate::model::AgentDetail = serde_json::from_value(json!({"agent":{
         "id":"a","name":"A","cwd":dir.path(),"model":"","color":"sage","threadId":"native-thread","harness":"codex",
         "status":"offline","createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,
@@ -97,6 +105,35 @@ async fn codex() -> (tempfile::TempDir, Arc<Workspace>) {
     ws.store.insert(&detail).unwrap();
     ws.reconnect("a").await.unwrap();
     (dir, ws)
+}
+
+/// The Brief's rules as the turn-end check reads them: a Project's Agent's
+/// session starts with them; `unreadable` makes that read fail, as a
+/// one-off database error would.
+#[derive(Default)]
+struct Rules {
+    member: std::sync::atomic::AtomicBool,
+    unreadable: std::sync::atomic::AtomicBool,
+}
+
+impl crate::brief_turns::Seam for Rules {
+    fn hard_rules(&self) -> String {
+        "BRIEF HARD RULES: call brief_update every turn.".into()
+    }
+    fn requires(&self, _: &crate::store::Store, _: &str) -> anyhow::Result<Option<String>> {
+        use std::sync::atomic::Ordering::SeqCst;
+        anyhow::ensure!(!self.unreadable.load(SeqCst), "database is locked");
+        Ok(self.member.load(SeqCst).then(|| "p1".to_owned()))
+    }
+    fn receipt(&self, _: &crate::store::Store, _: &str, _: &str) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+    fn record(&self, _: &crate::store::Store, _: &str, _: &str, _: &str, _: &str) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+    fn outcome(&self, _: &crate::store::Store, _: &str, _: &str) -> anyhow::Result<Option<(String, u32)>> {
+        Ok(None)
+    }
 }
 
 /// Core lets the session go and attaches it again, as across an update:
@@ -131,6 +168,35 @@ async fn nothing_is_said_when_nothing_changed_or_the_record_is_of_another_sessio
     assert!(notices(&ws, "a").await.is_empty(), "what another session was given says nothing of this one");
     attach_again(&ws, "a").await;
     assert!(notices(&ws, "a").await.is_empty(), "and the record now describes this one, unchanged");
+}
+
+/// YN-5 R1: a failed read of the Brief rules says nothing about them. The
+/// attach that fails to read them says nothing and leaves the record as it
+/// was; the next one, unchanged, says nothing either; a real change still
+/// does.
+#[tokio::test]
+async fn an_unreadable_start_text_is_no_change_and_a_real_one_still_notices() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let rules = Arc::new(Rules::default());
+    rules.member.store(true, SeqCst);
+    let (_dir, ws) = codex_with(Some(rules.clone())).await;
+    let recorded = || ws.store.db.read().unwrap()
+        .query_row("SELECT start_text FROM session_baselines WHERE agent_id='a'", [], |r| r.get::<_, String>(0)).unwrap();
+    let first = recorded();
+    rules.unreadable.store(true, SeqCst);
+    attach_again(&ws, "a").await;
+    assert!(notices(&ws, "a").await.is_empty(), "an unreadable rule set is no change");
+    assert_eq!(recorded(), first, "the record keeps what the session was given");
+    rules.unreadable.store(false, SeqCst);
+    attach_again(&ws, "a").await;
+    assert!(notices(&ws, "a").await.is_empty(), "read again, the same as before");
+    // No longer a Project's Agent: its sessions start without the rules.
+    rules.member.store(false, SeqCst);
+    attach_again(&ws, "a").await;
+    let told = notices(&ws, "a").await;
+    assert_eq!(told.len(), 1, "a real change still notices: {told:?}");
+    let body = told[0]["body"].as_str().unwrap();
+    assert!(body.contains("The text Core gives a session as it starts") && !body.contains("BRIEF HARD RULES"), "{body}");
 }
 
 #[tokio::test]

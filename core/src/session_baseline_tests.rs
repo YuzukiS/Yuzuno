@@ -115,3 +115,33 @@ fn the_record_follows_one_session_and_tells_it_once() {
     let native: Option<String> = db.query_row("SELECT native_id FROM session_baselines", [], |r| r.get(0)).unwrap();
     assert_eq!(native.as_deref(), Some("s2"));
 }
+
+/// YN-5 R1: an unknown start text (its read failed) is compared with
+/// nothing and leaves the record's as it was; a record made while it was
+/// unknown says nothing of the next known one. The tools are still compared.
+#[test]
+fn an_unknown_start_text_is_never_taken_for_a_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::open(&dir.path().join("workspace.sqlite")).unwrap();
+    let detail: crate::model::AgentDetail = serde_json::from_value(json!({"agent":{
+        "id":"a","name":"A","cwd":"/tmp","model":"","color":"sage","harness":"codex","threadId":"t1",
+        "status":"idle","createdAt":"","updatedAt":"","unreadCount":0,"pendingCount":0,
+        "lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    store.insert(&detail).unwrap();
+    let mut agent = store.agent("a").unwrap();
+    let db = store.db.write().unwrap();
+    let start = || db.query_row("SELECT start_text FROM session_baselines", [], |r| r.get::<_, String>(0)).unwrap();
+    assert_eq!(attach(&db, &agent, Some("with rules")).unwrap(), None);
+    let known = start();
+    assert_eq!(attach(&db, &agent, None).unwrap(), None, "unknown: nothing said");
+    assert_eq!(start(), known, "and the record kept");
+    assert_eq!(attach(&db, &agent, Some("with rules")).unwrap(), None, "the same as before");
+    db.execute("UPDATE session_baselines SET tools=json_set(tools,'$.task_dispatch.required','earlier')", []).unwrap();
+    assert!(attach(&db, &agent, None).unwrap().is_some(), "the tools are compared all the same");
+    // Unknown for another session: recorded as unknown, then taken as it is.
+    agent.thread_id = Some("t2".into());
+    assert_eq!(attach(&db, &agent, None).unwrap(), None);
+    assert_eq!(start(), "");
+    assert_eq!(attach(&db, &agent, Some("without rules")).unwrap(), None, "unknown before: no change to tell");
+    assert_eq!(start(), sha256("without rules"));
+}
