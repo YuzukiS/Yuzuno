@@ -1759,8 +1759,10 @@ function pinnedNotes() {
   home.projects.forEach((panel, n) => panel.brief.sections.forEach((s, i) => (s.id = 100 * (n + 1) + i)));
   const notes = home.projects[0].brief.sections.find((s) => s.key === "notes");
   Object.assign(notes, { seen: null, body: { root: "body", elements: {
-    body: { type: "BriefBody", props: { summary: { lead: "text", size: "wide" } }, children: ["text"] },
+    body: { type: "BriefBody", props: { summary: { lead: "text", size: "wide" } }, children: ["text", "more"] },
     text: { type: "Markdown", props: { text: "Notes body" } },
+    // More than its card shows: its page is reached from the card (a whole report has none, PR C2).
+    more: { type: "Markdown", props: { text: "Notes the card leaves to the page." } },
   } } });
   return home;
 }
@@ -1871,8 +1873,10 @@ function homeImages() {
   const app = home.projects.find((entry) => entry.project.id === "p-app");
   const shot = { name: "screen.png", kind: "image", mime: "image/png", size: 9, snapshot: true, mayChange: false, takenAt: "2026-10-22T09:00:00Z" };
   const files = { root: "body", elements: {
-    body: { type: "BriefBody", props: {}, children: ["files"] },
+    body: { type: "BriefBody", props: {}, children: ["files", "more"] },
     files: { type: "Attachments", props: { items: [{ name: "screen.png", caption: "Login screen" }] } },
+    // More than its card shows: its page is reached from the card (a whole report has none, PR C2).
+    more: { type: "Markdown", props: { text: "Two screens.\n\nThe page says which is which." } },
   } };
   app.brief.sections.push(
     section("shots", "report", "Screens", 4, owner("b", "Hana"), { body: files, attachments: [shot], seen: { version: 4, at: at(9) } }),
@@ -3232,6 +3236,7 @@ function watchedViews(w) {
 // Core's card previews, as #679 answers them; `refuse` answers instead, when given.
 function cardPreviews(p, refuse = null) {
   const asked = [];
+  asked.proofs = [];
   const base = p.w.fetch;
   p.w.fetch = async (url, init = {}) => {
     const text = (status, body) => ({ ok: status === 200, status, text: async () => body, json: async () => JSON.parse(body) });
@@ -3246,7 +3251,10 @@ function cardPreviews(p, refuse = null) {
       }));
     }
     const proof = /\/\.well-known\/yuzuno-preview\/c-(\w+)$/.exec(url);
-    if (proof) return text(200, `a-${proof[1]}`);
+    if (proof) {
+      asked.proofs.push(url);
+      return text(200, `a-${proof[1]}`);
+    }
     return base(url, init);
   };
   return asked;
@@ -3268,7 +3276,7 @@ test("YN-3 a card's HTML page works on its card once in view: one card preview, 
     const frame = ring().querySelector("iframe.home-card-page-frame");
     assert.deepEqual([frame.getAttribute("src"), frame.getAttribute("sandbox"), frame.getAttribute("referrerpolicy"), frame.getAttribute("allow")],
       ["http://127.0.0.1:47390/v/tok-ring", "allow-scripts", "no-referrer", ""]);
-    assert.ok(p.calls.some((call) => call.url === "http://127.0.0.1:47390/.well-known/yuzuno-preview/c-ring"), "proven reachable from this browser first");
+    assert.ok(asked.proofs.includes("http://127.0.0.1:47390/.well-known/yuzuno-preview/c-ring"), "proven reachable from this browser first");
     assert.ok(ring().querySelector('button[aria-label="Open ring.html large"]'), "Open large");
     // A small card's page: one line that opens it, no frame, nothing asked for.
     const tiny = card(p, "p-app", "tiny");
