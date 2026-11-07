@@ -186,19 +186,26 @@ export const SectionCard = memo(function SectionCard({
   // Each step is the answer card's Reply again (AskReply).
   const [againRequest, setAgainRequest] = useState(0);
   // The user's reply from this card, as Core accepted it (YN-21, the user's choice): the user acted, so the
-  // card is its answer card once Core reads the ask replied, in this visit, and Reply again closes back to
-  // it. Its place on the deck stays (card-sizes.ts). A reply from elsewhere keeps the rules above.
+  // card is its answer card once Core reads the ask replied, in this visit. Its place on the deck stays
+  // (card-sizes.ts). A reply from elsewhere keeps the rules above.
   const [own, setOwn] = useState<{ version: number; n: number } | null>(null);
+  // Until Core's read has that reply (the reply's time is no longer the one Core showed as it was sent), the
+  // card stays as it is; Reply again's opened card then closes to its answer card with the new reply on it.
+  const [awaiting, setAwaiting] = useState<{ before: string | null } | null>(null);
+  if (awaiting && (section.ask?.repliedAt ?? null) !== awaiting.before) {
+    setAwaiting(null);
+    setRowOpen(false);
+  }
   const repliedHere = useCallback(
-    (version: number) => {
+    (version: number, before: string | null) => {
       sizes?.answered(projectId, section.key, version);
-      setRowOpen(false);
       setOwn((was) => ({ version, n: (was?.n ?? 0) + 1 }));
+      setAwaiting({ before });
     },
     [sizes, projectId, section.key],
   );
-  // Each own reply the card now shows in short collapses it once.
-  const collapse = short && own?.version === section.version ? String(own.n) : null;
+  // Each own reply the card now shows in short collapses it once, as Core's read has it.
+  const collapse = short && !awaiting && own?.version === section.version ? String(own.n) : null;
   const collapsed = short ? !rowOpen : chosenFold;
   const [ref, release] = useReservedHeight(`${section.version}:${section.ask?.state ?? ""}`, collapsed);
   // Focus that went with the reply's controls goes to the card, which says what was answered.
@@ -359,6 +366,7 @@ export const SectionCard = memo(function SectionCard({
                 type="button"
                 className="secondary-button home-answer-again"
                 onClick={() => {
+                  setAwaiting(null);
                   setRowOpen(true);
                   setAgainRequest((n) => n + 1);
                 }}
@@ -373,7 +381,10 @@ export const SectionCard = memo(function SectionCard({
               className="quiet-button home-fold home-answer-details"
               aria-expanded={rowOpen}
               aria-controls={bodyId}
-              onClick={() => setRowOpen((open) => !open)}
+              onClick={() => {
+                setAwaiting(null);
+                setRowOpen((open) => !open);
+              }}
             >
               {rowOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
               {t.questionAndDetails}

@@ -234,7 +234,8 @@ const formVersions = draftStore<FormBegun>("yuzuno.home-ask-form-versions.v1");
  * reply is sent from here the replied block is not drawn again; each step of
  * `againRequest` is the card's Reply again, as the button below is.
  * `onReplied`: Core accepted a reply sent from here, to that version of the
- * ask (YN-21: its card becomes the answer card). */
+ * ask, sent while Core showed the ask replied at `before` (YN-21: its card
+ * becomes the answer card once Core's read has the reply). */
 export function AskReply({
   section,
   inRow = false,
@@ -242,7 +243,7 @@ export function AskReply({
   againRequest = 0,
   onReplied,
   ...context
-}: ReplyContext & { section: Section; inRow?: boolean; face?: boolean; againRequest?: number; onReplied?: (version: number) => void }) {
+}: ReplyContext & { section: Section; inRow?: boolean; face?: boolean; againRequest?: number; onReplied?: (version: number, before: string | null) => void }) {
   const language = useLanguage();
   const t = homeText(language);
   const ask = section.ask!;
@@ -417,12 +418,14 @@ export function AskReply({
   const deliver = async (text: string, choice: string | undefined, shown: string, version: number, form?: HomeReplyInput["form"]) => {
     setSentBefore(null);
     setDiscarded(false);
+    // The reply's time Core showed as this was sent, before Core could have this one.
+    const before = ask.repliedAt ?? null;
     const value = await send(target, text, choice, version, shown, form);
     setSentVersion(version);
     setSentText(shown);
     setAgain(false);
     setDelivered((n) => n + 1);
-    onReplied?.(version);
+    onReplied?.(version, before);
     return value;
   };
   // What an unconfirmed reply said, as it went: what this window showed as
@@ -433,6 +436,7 @@ export function AskReply({
   const sendAgain = async () => {
     const was = pendingReply(slot);
     if (!was) return;
+    const before = ask.repliedAt ?? null;
     setSentBefore(null);
     setResending(was);
     try {
@@ -447,7 +451,7 @@ export function AskReply({
     setSentText(previewOf(was));
     setAgain(false);
     setDelivered((n) => n + 1);
-    if (version !== null) onReplied?.(version);
+    if (version !== null) onReplied?.(version, before);
     // Delivered to an earlier version of the ask: this one is still open.
     if (version !== null && version !== section.version) setSentBefore(version);
     // The draft that reply was sent from goes with it; one written since is
