@@ -287,6 +287,49 @@
   border-width: 0;
 }
 
+/* A narrow rail (the default desktop rail, the Agent list under 320 px):
+   names first (the user's choice of 2026-11-07). The island is one line,
+   its state's glyph and its time, and the unread notch: no word, no chips,
+   and needs you or failed don't open to two lines (the row says why on
+   line two, reading.css). A calm one is its ring. */
+@container agent-list (max-width: 319px) {
+  .agent-list .agent-row > .agent-island[data-state] .executor-row-facts,
+  .agent-list .agent-row > .agent-island[data-state] .island-word,
+  .agent-list .agent-row > .agent-island[data-state] .island-line,
+  .agent-list .agent-row > .agent-island[data-state] .island-ago,
+  .agent-list .agent-row > .agent-island[data-state] .island-clock::before {
+    display: none;
+  }
+  .agent-list .agent-row > .agent-island[data-state]:is([data-state="working"], [data-state="handed"], [data-state="waiting"], [data-state="queued"], [data-state="failed"]) .island-dot {
+    display: block;
+  }
+  .agent-list .agent-row > .agent-island[data-state][data-form="ring"]:is([data-state="idle"], [data-state="offline"], [data-state="done"], [data-state="archived"]) {
+    width: var(--h);
+    padding: 0;
+  }
+  .agent-list .agent-row > .agent-island[data-state][data-form="ring"]:is([data-state="idle"], [data-state="offline"]) .island-dot {
+    display: none;
+  }
+  .agent-list .agent-row > .agent-island[data-state][data-form="two"] {
+    width: auto;
+    max-width: 100%;
+    height: var(--h);
+    padding: 0 8px;
+    border-radius: 999px;
+    gap: 0;
+    align-items: center;
+    background: color-mix(in srgb, currentColor 11%, transparent);
+  }
+  .agent-list .agent-row > .agent-island[data-state][data-form="two"] .island-head {
+    width: auto;
+  }
+  .agent-list .agent-row > .agent-island[data-state][data-form="two"] .island-unread {
+    position: absolute;
+    margin-left: 0;
+    box-shadow: 0 0 0 2px var(--cream, var(--paper));
+  }
+}
+
 /* The card (the Dynamic Island's music player): in the row's place, under
    its two lines, pushing the rows below down. */
 .agent-island-card {

@@ -519,6 +519,11 @@ has the blocker (`blocked`); its state stays what it is.
     it, and its PR, as "◐ · #681 · 1h12m"; they give way before the state
     or its clock does, the template first. With the compact Agent list
     (Settings → Appearance), every row is its name and its island, one line.
+  - **On a narrow rail** (an Agent list under 320 px, as the desktop rail is
+    by default) names come first: the island is one line, its state's glyph
+    and its time with the unread count, without its word or chips, and needs
+    you or failed don't open to two lines. Such a row says why on line two,
+    under its name, in place of its work summary.
 - **Its PR** comes from `GET /api/executors/live`: for each open executor
   (not archived, its Agent not closed) whose task links a PR, the open or
   draft one with the highest number, else the highest-numbered; its state;

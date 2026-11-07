@@ -61,6 +61,10 @@ const SIX = ["working", "handed", "waiting", "queued", "done", "failed"];
 // The rows with a summary on line two: the lead's update. The rest are one
 // line; needs you and failed say theirs in the island's two lines.
 const LINE_TWO = ["lead"];
+// On a narrow rail (the default desktop rail; names first, the user's choice
+// of 2026-11-07) the island is one line, and a needs-you or failed row says
+// why on line two instead.
+const NARROW_WHY = { yn21: "Needs you: Approve the design note", yn33: "Failed: Both starts failed" };
 const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture/app" }, createdAt: "", updatedAt: "" }];
 const home = { generatedAt: ago(0), order: ["p1"],
   needsYou: [{ kind: "approval", projectId: "p1", agentId: "yn21", agentName: "YN-21 · Design first", requestId: "q1", title: "Approve the design note", since: ago(12.5) }],
@@ -117,7 +121,8 @@ async function shot(locator, name) {
 const rows = (page) => page.locator(".agent-list article[data-agent-id]").evaluateAll((list) => list.map((r) => {
   const island = r.querySelector(":scope > .agent-island");
   const box = island?.getBoundingClientRect();
-  const line = r.querySelector(".agent-row-state");
+  // Line two as drawn: a needs-you or failed row's why is there only on a narrow rail.
+  const line = [...r.querySelectorAll(":scope > .agent-row-state")].find((el) => getComputedStyle(el).display !== "none") ?? null;
   const name = r.querySelector(".agent-name").getBoundingClientRect();
   const lines = line ? line.getBoundingClientRect() : name;
   const outside = line?.textContent ?? "";
@@ -130,6 +135,8 @@ const rows = (page) => page.locator(".agent-list article[data-agent-id]").evalua
     centred: !!box && Math.abs((box.top + box.bottom) / 2 - (name.top + lines.bottom) / 2) <= 2.5,
     rightEnd: !!box && row.right - box.right <= 48 && box.left > name.left,
     lineTwo: !!line,
+    explain: line?.querySelector(".agent-row-explain")?.textContent ?? null,
+    nameCut: (() => { const n = r.querySelector(".agent-name"); return n.scrollWidth > n.clientWidth + 1; })(),
     chipsOutside: !!r.querySelector(".executor-row-facts:not(.agent-island .executor-row-facts)"),
     pr: island?.querySelector(".executor-pr-chip")?.textContent ?? null,
     // Which chips show, each whole: the island hides the ones with no room.
@@ -178,10 +185,17 @@ async function run({ width, height, theme, motion }) {
       assert.ok(r.centred && r.rightEnd, `${tag}: ${r.id}'s island is at the row's right end, centred on its lines`);
       assert.equal(r.chipsOutside, false, `${tag}: ${r.id}'s template and PR are in its island`);
       // Line two is only the summary: a row without one (Dev 5, Dev 9, the queued one) is one line.
-      assert.equal(r.lineTwo, LINE_TWO.includes(r.id), `${tag}: ${r.id} ${LINE_TWO.includes(r.id) ? "has" : "has no"} line two`);
+      const two = LINE_TWO.includes(r.id) || (!phone && r.id in NARROW_WHY);
+      assert.equal(r.lineTwo, two, `${tag}: ${r.id} ${two ? "has" : "has no"} line two`);
+      assert.equal(r.explain, !phone && r.id in NARROW_WHY ? NARROW_WHY[r.id] : null, `${tag}: ${r.id}'s why on line two`);
       assert.deepEqual([r.state, r.form], EXPECTED[r.id], `${tag}: ${r.id}'s state and form`);
       assert.equal(r.timeOutside, false, `${tag}: ${r.id} writes no time outside its island`);
-      if (r.form === "ring") {
+      if (!phone) {
+        // Narrow rail: one line, its glyph and time, small enough that the name comes first.
+        assert.ok(r.height <= 24 && r.width <= 96, `${tag}: ${r.id}'s island is one line, ${r.width}×${r.height}px`);
+        assert.deepEqual(r.lines, [true, false], `${tag}: ${r.id}'s island shows no second line`);
+        if (["idle", "done", "offline", "archived"].includes(r.state)) assert.ok(r.width <= 24, `${tag}: ${r.id}'s calm ring is ${r.width}px wide`);
+      } else if (r.form === "ring") {
         assert.ok(r.height <= 24, `${tag}: ${r.id}'s ring is ${r.height}px tall`);
         if (["idle", "done", "offline", "archived"].includes(r.state)) assert.ok(r.width <= 24, `${tag}: ${r.id}'s calm ring is ${r.width}px wide`);
       } else {
@@ -195,6 +209,8 @@ async function run({ width, height, theme, motion }) {
     assert.match(seen.find((r) => r.id === "yn24").label, /Working · for 1h12m · handed in #681; on the next slice/, `${tag}: handed in, on its next slice`);
     assert.deepEqual(["yn24", "yn26"].map((id) => seen.find((r) => r.id === id).pr), ["#681", "#688"], `${tag}: each PR is in its island`);
     assert.deepEqual(seen.filter((r) => r.chipCut).map((r) => r.id), [], `${tag}: no chip is shown cut`);
+    report.namesCut = { ...(report.namesCut ?? {}), [tag]: seen.filter((r) => r.nameCut).map((r) => r.id) };
+    if (!phone) assert.deepEqual(seen.filter((r) => r.chipsShown.length).map((r) => r.id), [], `${tag}: a narrow rail shows no chips`);
     // Chips show whole or not at all; a phone's full-width list has room for them.
     report.chips = { ...(report.chips ?? {}), [tag]: Object.fromEntries(seen.filter((r) => r.pr !== null || r.chipsShown.length).map((r) => [r.id, r.chipsShown])) };
     if (phone) assert.deepEqual(["yn24", "yn26"].map((id) => seen.find((r) => r.id === id).chipsShown), [["#681"], ["#688", "Design first"]], `${tag}: the chips show on a phone`);

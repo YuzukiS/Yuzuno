@@ -144,6 +144,43 @@
 :root[data-agent-list="compact"] .agent-list .agent-row > :is(.agent-island, .agent-row-menu) {
   grid-row: 1;
 }
+/* Needs you or failed: on a wide rail the island's two lines say why, so the
+   row is one line and its why stays hidden. On a narrow rail -- the default
+   desktop rail, where a name and the whole island don't both fit -- the
+   island is one line and the why is line two, under the name, which keeps
+   its width (the user's choice of 2026-11-07: names first). */
+.agent-list {
+  container: agent-list / inline-size;
+}
+.agent-list .agent-row > .agent-row-state.is-explain {
+  display: none;
+}
+.agent-list .agent-row:has(> .agent-row-state.is-explain) > :is(.agent-island, .agent-row-menu) {
+  grid-row: 1;
+}
+.agent-row-explain {
+  min-width: 0;
+  overflow: hidden;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-row-explain[data-state="waiting"] {
+  color: var(--island-attention);
+}
+.agent-row-explain[data-state="failed"] {
+  color: var(--island-error);
+}
+@container agent-list (max-width: 319px) {
+  :root:not([data-agent-list="compact"]) .agent-list .agent-row > .agent-row-state.is-explain {
+    display: flex;
+  }
+  :root:not([data-agent-list="compact"]) .agent-list .agent-row:has(> .agent-row-state.is-explain) > :is(.agent-island, .agent-row-menu) {
+    grid-row: 1 / span 2;
+  }
+}
 /* Where the reader is -- selected, under the pointer or holding focus -- the
    "…" opens beside the island; elsewhere it takes no width, and is still
    reached by keyboard (T-15). */

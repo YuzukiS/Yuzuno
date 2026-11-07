@@ -11,7 +11,7 @@ import { strings, useLanguage, type Language } from "./i18n";
 import { lifecycleText, stateDetail } from "./executor-lifecycle";
 import { executorView } from "./executor-display";
 import { ExecutorRowFacts, executorRowText, rowFactsLabel, stateText } from "./ExecutorRowState";
-import { AgentIsland, IslandCard, slide, type IslandForm } from "./AgentIsland";
+import { AgentIsland, IslandCard, islandSentence, slide, type IslandForm } from "./AgentIsland";
 import { islandView, type IslandAction } from "./agent-island";
 import { useExecutorPR } from "./live-executors";
 import "./reading.css";
@@ -291,6 +291,14 @@ export function AgentRailRow({
             )}
             <RequestSummary agentId={agent.id} summary={summary} />
           </div>
+        </div>
+      )}
+      {/* Needs you or failed: on a wide rail its two lines say why; on a
+          narrow one the island is one line and the why is line two, under the
+          name (reading.css, the user's choice of 2026-11-07: names first). */}
+      {form === "two" && (
+        <div className="agent-row-state is-explain" aria-hidden="true">
+          <div className="agent-row-explain" data-state={island.state}>{islandSentence(island, language)}</div>
         </div>
       )}
       <AgentIsland ref={islandButton} view={island} form={form} name={agent.name} onToggle={() => toggle()}

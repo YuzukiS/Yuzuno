@@ -66,6 +66,15 @@ export function islandLineText(view: IslandView, language: Language): string {
   }
 }
 
+/** The island's sentence, as its two lines say it and, on a narrow rail,
+ * the row's line two (the user's choice of 2026-11-07: names first):
+ * "Needs you: Approve the design note", or the state's name alone. */
+export function islandSentence(view: IslandView, language: Language): string {
+  const t = islandText(language);
+  const line = islandLineText(view, language);
+  return line ? `${t.word[view.state]}${t.colon}${line}` : t.state[view.state];
+}
+
 /** The clock as a caption: "已用 1时12分", "14分前", "共用 1时12分". */
 export function clockCaption(state: IslandState, clock: IslandClock, now: number, language: Language): string {
   const t = islandText(language);
@@ -120,7 +129,6 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
     const own = useRef<HTMLButtonElement | null>(null);
     const size = useRef<{ w: number; h: number } | null>(null);
     const label = islandLabel(view, now, language);
-    const line = islandLineText(view, language);
     const clock = view.clock ? islandTime(clockMs(view.clock, now), language) : null;
     useLayoutEffect(() => {
       const el = own.current;
@@ -185,7 +193,7 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
           )}
           {view.unread > 0 && <span className="island-unread" aria-hidden="true">{view.unread > 1 ? (view.unread > 99 ? "99+" : view.unread) : ""}</span>}
         </span>
-        <span className="island-line" aria-hidden="true">{line ? `${t.word[view.state]}${t.colon}${line}` : t.state[view.state]}</span>
+        <span className="island-line" aria-hidden="true">{islandSentence(view, language)}</span>
       </button>
     );
   },
