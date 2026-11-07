@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ChevronLeft,
+  ChevronRight,
   CircleAlert,
   CircleCheck,
   CircleDashed,
@@ -13,7 +15,7 @@ import {
   Wifi,
 } from "lucide-react";
 import { api, errorText, remove } from "./api";
-import { Avatar, Modal } from "./components";
+import { Avatar } from "./components";
 import {
   checkAge,
   harnessLabel,
@@ -24,6 +26,7 @@ import {
 } from "./machine-checks";
 import { MachineEditor } from "./MachineEditor";
 import { MachineExecutorLimit } from "./MachineExecutorLimit";
+import { JobsBudgetEditor } from "./JobsSettings";
 import { strings, useLanguage, type Language } from "./i18n";
 import { shellText } from "./shell-text";
 import { machineIdOf, projectName } from "./projects";
@@ -174,6 +177,17 @@ export function LastCheck({
 const text = strings({
   title: "Machines",
   description: "Where your agents run. A check shows what Core could reach at that moment; nothing checks in the background.",
+  // Settings › Machines (YN-8 S3): the list, then a page for each.
+  backTo: "Back to Machines",
+  count: (machines: number, down: number) => (down ? `${machines} · ${down} unreachable` : String(machines)),
+  agentCount: (count: number) => `${count} ${count === 1 ? "Agent" : "Agents"}`,
+  thisPc: "This PC",
+  coreHost: "Core host",
+  localIntro: "The computer that runs your Workspace Core. It can’t be removed; its Job budget is the Core host’s.",
+  sshIntro: (target: string) => `Connected over SSH: ${target}.`,
+  addIntro: "Yuzuno connects through OpenSSH; keys and host configuration stay in OpenSSH.",
+  jobsTitle: "Jobs",
+  gone: "This machine is no longer listed.",
   add: "Add SSH machine",
   loadFailed: (error: string) => `Couldn’t load machines: ${error}`,
   loading: "Loading machines…",
@@ -206,6 +220,16 @@ const text = strings({
 }, {
   title: "机器",
   description: "你的 Agent 运行的地方。一次检查只说明 Core 在那一刻能访问到什么；后台不会自动检查。",
+  backTo: "返回机器列表",
+  count: (machines, down) => (down ? `${machines} 台 · ${down} 台连不上` : `${machines} 台`),
+  agentCount: (count) => `${count} 个 Agent`,
+  thisPc: "本机",
+  coreHost: "Core 主机",
+  localIntro: "运行你的 Workspace Core 的这台电脑。它不能移除；它的 Job 预算就是 Core 主机的预算。",
+  sshIntro: (target) => `通过 SSH 连接：${target}。`,
+  addIntro: "Yuzuno 通过 OpenSSH 连上去；密钥和主机配置留在 OpenSSH 里。",
+  jobsTitle: "Job",
+  gone: "这台机器已不在列表中。",
   add: "添加 SSH 机器",
   loadFailed: (error) => `无法加载机器：${error}`,
   loading: "正在加载机器…",
@@ -241,25 +265,31 @@ const withMachine = (list: WorkspaceMachine[] | null, saved: WorkspaceMachine) =
     ? (list || []).map((m) => (m.id === saved.id ? saved : m))
     : [...(list || []), saved];
 
+type MachinesView = { kind: "list" } | { kind: "machine"; id: string } | { kind: "add" };
+
+/** Settings › Machines (YN-8 S3): the list of machines, then a page for
+ * each (its check, its Agents, its editor; the Core host's with its Job
+ * budget), and one to add an SSH machine. A request opens one of them
+ * (`initialMachineId`: a machine's id, or "new"); otherwise the list. `open`
+ * is whether Settings is open. */
 export function MachinesPage({
   open,
-  onOpenChange,
   agents,
   projects,
   revision,
   onOpenAgent,
-  inline = false,
+  initialMachineId = null,
+  initialBlock,
 }: {
   open: boolean;
-  onOpenChange: (open: boolean) => void;
   agents: Agent[];
   projects: Project[];
   /** Workspace change counter; another window's check refreshes this list. */
   revision: number;
   onOpenAgent: (id: string) => void;
-  /** Settings › Machines (YN-8): the same page inside Settings, not a
-   * dialog; `open` is then whether its page is shown. */
-  inline?: boolean;
+  initialMachineId?: string | null;
+  /** A block of the machine's page asked for: "jobs", the Core host's Job budget. */
+  initialBlock?: string;
 }) {
   const language = useLanguage();
   const t = text(language);
@@ -274,8 +304,27 @@ export function MachinesPage({
   >(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState("");
+  const [view, setView] = useState<MachinesView>(() =>
+    initialMachineId === "new" ? { kind: "add" } : initialMachineId ? { kind: "machine", id: initialMachineId } : { kind: "list" });
+  const heading = useRef<HTMLHeadingElement>(null);
+  const shown = useRef(false);
   const load = useRef(0);
   const now = useNow(open);
+  // Another view of the page starts at its top, its title focused; the first
+  // keeps the focus Settings gave the page.
+  useEffect(() => {
+    if (!shown.current) {
+      shown.current = true;
+      return;
+    }
+    heading.current?.closest(".settings-pane")?.scrollTo?.({ top: 0 });
+    heading.current?.focus();
+  }, [view]);
+  function go(next: MachinesView) {
+    setChange(null);
+    setRemoveError("");
+    setView(next);
+  }
   const reload = useCallback(() => {
     const generation = ++load.current;
     api<{ machines: WorkspaceMachine[] }>("/machines")
@@ -305,7 +354,7 @@ export function MachinesPage({
     try {
       await remove(`/machines/${encodeURIComponent(machine.id)}`);
       setMachines((list) => (list || []).filter((m) => m.id !== machine.id));
-      setChange(null);
+      go({ kind: "list" });
     } catch (e) {
       setRemoveError(errorText(e));
     } finally {
@@ -329,45 +378,9 @@ export function MachinesPage({
       setChecking((c) => ({ ...c, [machine.id]: false }));
     }
   }
-  const body = (
-      <div className="machines-page">
-        <div className="machines-toolbar">
-          <button
-            type="button"
-            className="secondary-button"
-            aria-expanded={change?.kind === "add"}
-            aria-controls="machines-new-ssh"
-            disabled={!machines || change?.kind === "add"}
-            onClick={() => startChange({ kind: "add" })}
-          >
-            <Plus size={14} /> {t.add}
-          </button>
-        </div>
-        {change?.kind === "add" && (
-          <MachineEditor
-            id="machines-new-ssh"
-            language={language}
-            onCancel={() => setChange(null)}
-            // Listed once Core has it, even while its executor limit is still
-            // to be saved from the open form (T-35 S3c).
-            onMachineSaved={(saved) => setMachines((list) => withMachine(list, saved))}
-            onSaved={(saved) => {
-              setMachines((list) => withMachine(list, saved));
-              setChange(null);
-            }}
-          />
-        )}
-        {loadError && (
-          <p role="alert" className="inline-error">
-            {t.loadFailed(loadError)}
-          </p>
-        )}
-        {!machines && !loadError && (
-          <p className="machines-loading" role="status">
-            <LoaderCircle size={15} className="spin" /> {t.loading}
-          </p>
-        )}
-        {machines?.map((machine) => {
+  /** A machine's own card: its check, its editor or removal, its facts
+   * and Agents, as the Machines page had them. */
+  const card = (machine: WorkspaceMachine) => {
           const here = agents.filter((a) => machineIdOf(a) === machine.id);
           const working = here.filter((a) => !a.closedAt);
           const busy = !!checking[machine.id];
@@ -583,31 +596,135 @@ export function MachinesPage({
               </section>
             </article>
           );
-        })}
-        <p className="machine-note machines-footnote">{t.footnote}</p>
-      </div>
-  );
-  if (inline)
-    return (
-      <section className="settings-section settings-manager" aria-labelledby="settings-machines-title">
-        <header className="settings-section-heading">
-          <div>
-            <h3 id="settings-machines-title">{t.title}</h3>
-            <p>{t.description}</p>
-          </div>
-        </header>
-        {body}
-      </section>
-    );
+        };
+  const list = machines ?? [];
+  const down = list.filter((m) => m.lastCheck?.reachable === false).length;
+  const shownMachine = view.kind === "machine" ? list.find((m) => m.id === view.id) : undefined;
+  const check0 = checkText(language);
+  const status = (m: WorkspaceMachine) =>
+    !m.lastCheck ? check0.notChecked : m.lastCheck.reachable ? check0.reached() : check0.unreachable;
+  // The Core host's page is there even before (or without) its row in the list.
+  const isLocal = view.kind === "machine" && view.id === "local";
+  const title =
+    view.kind === "list" ? t.title : view.kind === "add" ? t.add : shownMachine?.name ?? (isLocal ? t.coreHost : t.title);
+  const intro =
+    view.kind === "list"
+      ? t.description
+      : view.kind === "add"
+        ? t.addIntro
+        : shownMachine?.kind === "ssh"
+          ? t.sshIntro(shownMachine.target ?? "")
+          : shownMachine || isLocal ? t.localIntro : machines ? t.gone : t.loading;
+  const chip =
+    view.kind === "list" ? (machines ? t.count(list.length, down) : undefined)
+      : shownMachine ? (shownMachine.kind === "ssh" ? "SSH" : t.thisPc) : isLocal ? t.thisPc : undefined;
   return (
-    <Modal
-      open={open}
-      onOpenChange={onOpenChange}
-      wide
-      title={t.title}
-      description={t.description}
-    >
-      {body}
-    </Modal>
+    <section className="settings-section settings-manager settings-machines" aria-labelledby="settings-machines-title">
+      {view.kind !== "list" && (
+        <button type="button" className="settings-crumb" aria-label={t.backTo} onClick={() => go({ kind: "list" })}>
+          <ChevronLeft size={14} aria-hidden="true" />
+          {t.title}
+        </button>
+      )}
+      <header className="settings-section-heading">
+        <div>
+          <h3 id="settings-machines-title" ref={heading} tabIndex={-1}>{title}</h3>
+          <p>{intro}</p>
+        </div>
+        {chip && <span className="settings-current">{chip}</span>}
+      </header>
+      {loadError && (
+        <p role="alert" className="inline-error">
+          {t.loadFailed(loadError)}
+        </p>
+      )}
+      {!machines && !loadError && view.kind !== "add" && (
+        <p className="machines-loading" role="status">
+          <LoaderCircle size={15} className="spin" /> {t.loading}
+        </p>
+      )}
+      {view.kind === "list" ? (
+        machines && (
+          <div className="settings-group appearance-group">
+            <fieldset className="appearance-field">
+              <legend>{t.title}</legend>
+              <ul className="settings-list">
+                {list.map((m) => {
+                  const here = agents.filter((a) => machineIdOf(a) === m.id).length;
+                  return (
+                    <li key={m.id}>
+                      <button type="button" className="settings-list-row is-open" data-machine-row={m.id} onClick={() => go({ kind: "machine", id: m.id })}>
+                        {m.kind === "ssh" ? (
+                          <Server size={15} className="settings-list-icon" aria-hidden="true" />
+                        ) : (
+                          <Monitor size={15} className="settings-list-icon" aria-hidden="true" />
+                        )}
+                        <span className="settings-list-main">
+                          <span className="settings-list-title">{m.name}</span>
+                          <span className="settings-list-sub">{m.kind === "ssh" ? t.ssh(m.target ?? "") : t.local}</span>
+                        </span>
+                        <span className={`settings-tag machine-state ${!m.lastCheck ? "is-unknown" : m.lastCheck.reachable ? "is-ok" : "is-bad"}`}>
+                          {status(m)}
+                        </span>
+                        <span className="settings-list-meta">{t.agentCount(here)}</span>
+                        <ChevronRight size={15} className="settings-list-chev" aria-hidden="true" />
+                      </button>
+                    </li>
+                  );
+                })}
+                <li>
+                  <button type="button" className="settings-list-row is-open is-add" onClick={() => go({ kind: "add" })}>
+                    <Plus size={15} className="settings-list-icon" aria-hidden="true" />
+                    <span className="settings-list-main">
+                      <span className="settings-list-title">{t.add}</span>
+                    </span>
+                  </button>
+                </li>
+              </ul>
+            </fieldset>
+          </div>
+        )
+      ) : view.kind === "add" ? (
+        <div className="settings-group appearance-group">
+          <div className="appearance-field machine-block">
+            <MachineEditor
+              id="machines-new-ssh"
+              language={language}
+              onCancel={() => go({ kind: "list" })}
+              // Listed once Core has it, even while its executor limit is still
+              // to be saved from the open form (T-35 S3c).
+              onMachineSaved={(saved) => setMachines((list) => withMachine(list, saved))}
+              onSaved={(saved) => {
+                setMachines((list) => withMachine(list, saved));
+                go({ kind: "machine", id: saved.id });
+              }}
+            />
+          </div>
+        </div>
+      ) : (
+        <>
+          {shownMachine && (
+            <div className="settings-group appearance-group">
+              <div className="appearance-field machine-block">{card(shownMachine)}</div>
+            </div>
+          )}
+          {/* The Core host's Job budget (T-55) is its page's; shown while the
+              list is read too, since it reads itself. */}
+          {view.id === "local" && (
+            <>
+              <h4 className="settings-group-title">{t.jobsTitle}</h4>
+              {/* Settings focuses it when it was asked for (initialBlock "jobs"). */}
+              <div className="settings-group appearance-group" id="settings-block-jobs" tabIndex={-1} data-asked={initialBlock === "jobs" || undefined}>
+                <div className="appearance-field machine-block">
+                  <JobsBudgetEditor active={open} />
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      )}
+      {/* What a check is, beside the states the list and each page show. */}
+      {view.kind !== "add" && machines && <p className="machine-note machines-footnote">{t.footnote}</p>}
+    </section>
   );
 }

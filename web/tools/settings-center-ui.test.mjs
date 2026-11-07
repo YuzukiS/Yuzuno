@@ -99,8 +99,9 @@ test("eighteen pages in four groups and bilingual search expose real scope, with
       // The Core host budget has its own editor in Settings (T-55), not the Jobs panel.
       assert.doesNotMatch(card.textContent, /Unavailable here/, "the budget can be edited here");
       card.querySelector("button").click();
-      const editor = await until(() => p.doc.querySelector("#settings-editor-jobs-budget:not([hidden])"));
-      assert.equal(editor.textContent, "Existing jobs-budget editor", "the budget card opens its editor in place");
+      // The Core host's page of Machines has it (YN-8 S3).
+      const editor = await until(() => p.doc.querySelector("#settings-editor-machines:not([hidden])"));
+      assert.equal(editor.textContent, "Existing machines editor at local", "the budget card opens the Core host's page in place");
       assert.equal(p.tab("machines").getAttribute("aria-selected"), "true", "the budgets are on the Machines page");
       assert.equal(p.destinations.length, 0, "opening the budget leaves Settings for nothing else");
     }
@@ -229,7 +230,7 @@ test("a page shows its editors directly, and each group names whose settings it 
   for (const [id, editors] of [
     ["typing", ["input", "time"]],
     ["agents", ["agent-defaults", "auto-continue", "review"]],
-    ["machines", ["machines", "jobs-budget", "jobs-remote"]],
+    ["machines", ["machines"]],
     ["storage", ["storage", "drafts", "history"]],
     ["notifications", ["notifications"]],
   ]) {
@@ -293,7 +294,7 @@ test("a phone starts at the list of pages, a page has Back to it, and search run
   assert.match(center.className, /is-searching/);
   assert.equal(p.doc.querySelector(".settings-back"), null, "the results have no Back: clearing the search returns");
   p.button("Open Core host Job budget").click();
-  await until(() => shown().includes("settings-editor-jobs-budget"));
+  await until(() => shown().includes("settings-editor-machines"));
   assert.doesNotMatch(center.className, /is-root|is-searching/);
   assert.ok(p.doc.querySelector(".settings-back"));
   assert.equal(p.calls.length, 0);
@@ -331,9 +332,11 @@ test("a request to open the Core host budget shows its editor focused, once per 
   const tab = (id) => p.doc.getElementById(`settings-tab-${id}`);
   const shown = () => [...p.doc.querySelectorAll(".settings-editor")].filter((el) => !el.hidden).map((el) => el.id);
   p.w.renderSettings({ ...p.props, openAt: { editor: "jobs-budget", nonce: 1 } });
-  await until(() => shown().includes("settings-editor-jobs-budget"));
+  await until(() => shown().includes("settings-editor-machines"));
+  // An older caller's editor that is now part of a page: the Core host's page (YN-8 S3).
+  assert.equal(p.doc.getElementById("settings-editor-machines").textContent, "Existing machines editor at local");
   assert.equal(tab("machines").getAttribute("aria-selected"), "true", "the budgets are on the Machines page");
-  await until(() => p.doc.activeElement?.id === "settings-editor-jobs-budget");
+  await until(() => p.doc.activeElement?.id === "settings-editor-machines");
   // Moved elsewhere, the same request is not replayed; a new one opens it again.
   tab("updates").click();
   await until(() => shown().join() === "settings-editor-updates");
@@ -341,8 +344,8 @@ test("a request to open the Core host budget shows its editor focused, once per 
   await tick();
   assert.deepEqual(shown(), ["settings-editor-updates"], "a request already used is not replayed");
   p.w.renderSettings({ ...p.props, openAt: { editor: "jobs-budget", nonce: 2 } });
-  await until(() => shown().includes("settings-editor-jobs-budget"));
-  await until(() => p.doc.activeElement?.id === "settings-editor-jobs-budget");
+  await until(() => shown().includes("settings-editor-machines"));
+  await until(() => p.doc.activeElement?.id === "settings-editor-machines");
   assert.equal(p.calls.length, 0, "opening the editor reads or writes nothing by itself");
   assert.equal(p.destinations.length, 0, "nothing outside Settings is opened");
   assert.deepEqual(p.errors, [], "no page errors");
