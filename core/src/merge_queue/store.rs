@@ -100,6 +100,11 @@ fn save(db: &Connection, e: &Value) -> Result<()> {
         "UPDATE merge_entries SET state=?1,next_check=?2,data=?3,number=COALESCE(?5,number) WHERE id=?4",
         params![e["state"].as_str(), e["nextCheck"].as_i64().unwrap_or(0), e.to_string(), e["id"].as_str(), e["number"].as_i64()],
     )?;
+    // A chain step that stopped or was cancelled left the chain: the step
+    // after it rebuilds now, not after its backoff (YN-18 S2e).
+    if e["batch"]["chain"].is_object() && matches!(e["state"].as_str(), Some("stopped" | "cancelled")) {
+        next_chain_step(db, e["id"].as_str().unwrap_or(""))?;
+    }
     Ok(())
 }
 fn history(e: &mut Value, state: &str, reason: &Value, detail: &Value) {
@@ -405,6 +410,9 @@ fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
             short(&m["sha"]), m["mainCi"]["conclusion"].as_str().unwrap_or("?"),
             if e["reason"] == "main_red" { " The repository's queue is paused until a lead or the user unpauses it, or CI on a newer main is green." } else { "" },
             if e["reason"] == "main_red" { revert_hint(db, e)? } else { String::new() }),
+        (_, Some("batch_failed")) => format!(
+            "Merge queue: #{n} at {head} stopped (batch_failed): CI on its batch failed: {}. Core merged nothing and removes its batch; entries after it in the chain are rebuilt without it. Next: if the failure is the PR's own, the executor fixes it, one review round runs at the new head, and the lead releases that head; if a job failed for another reason, merge_retry checks the same head again on a new batch. Entry {id}.",
+            e["detail"].as_str().unwrap_or("")),
         (_, Some("conflict")) => format!(
             "Merge queue: #{n} at {head} stopped (conflict): {}. Core merged nothing{}. Next: the task's executor merges the current main into the PR branch, resolves the conflict and pushes; one review round at the new head; then the lead releases the new head (merge_enqueue with its headSha). merge_retry cannot help, since the head changes. Entry {id}.",
             e["detail"].as_str().unwrap_or(""),
@@ -545,6 +553,14 @@ fn clear(store: &Store, db: &Connection, repository_id: i64, by: Value, main: &s
     mail(db, &recipients, &text, &task, "urgent", json!({"kind":"merge","status":"unpaused","name":format!("repository {repository_id}")}))?;
     Ok((waiting, accepted))
 }
+/// A place in the repository's chain of batches (YN-18 S2e).
+pub(super) enum Join {
+    /// Build the batch on this step: its chain record (id, step, base, prev).
+    Step(Value),
+    /// The chain is full: the entry waits.
+    Full(String),
+}
+
 /// What journaling a merge request came to.
 pub(super) enum Journal {
     /// Journaled: the request may go.
@@ -970,6 +986,7 @@ impl Store {
                 e["detail"] = json!(format!("Merged as {sha}; Core checks the merge commit and follows main's push CI."));
                 e["merge"]["sha"] = json!(sha);
                 e["merge"]["mergedAt"] = json!(now());
+                next_chain_step(&tx, id)?;
                 e["readFailures"] = json!(0);
                 e["waits"] = json!(0);
                 e["waitingSince"] = Value::Null;
@@ -1081,6 +1098,7 @@ impl Store {
                     Some(Ok(())) => {
                         e["merge"]["post"] = json!({"ok":true,"commit":f.merge_commit,"at":now()});
                         announce_as = Some("normal");
+                        next_chain_step(&tx, id)?;
                     }
                     Some(Err(hold)) => {
                         let detail = match hold { Hold::Stop(_, d) | Hold::Wait(d) => d };
@@ -1463,6 +1481,67 @@ impl Store {
         tx.commit()?;
         Ok(data)
     }
+    /// Join entry `id` to the repository's chain of batches at its batch
+    /// decision (YN-18 S2e). With no step still to merge or in flight, a new
+    /// chain starts on `main`; otherwise the entry is the next step, built on
+    /// the last one's batch commit. Steps keep the order they joined in, which
+    /// is release order among the entries that reached the batch decision.
+    pub(super) fn merge_chain_join(&self, id: &str, attempt: i64, repository_id: i64, main: &str) -> Result<Join> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let e = entry(&tx, id)?;
+        ensure!(
+            e["attempt"].as_i64() == Some(attempt) && matches!(e["state"].as_str(), Some("queued" | "waiting" | "ready")),
+            "merge_moved_on: the entry was cancelled or retried meanwhile"
+        );
+        let mut r = repository(&tx, repository_id)?;
+        let chain = r["chain"].clone();
+        let live = chain_live(&tx, &chain, id)?;
+        let link = match live.last() {
+            None => {
+                let cid = uuid::Uuid::new_v4().to_string();
+                r["chain"] = json!({"id":cid,"version":chain["version"].as_i64().unwrap_or(0) + 1,"main":main,"steps":[id],"startedAt":now()});
+                json!({"id":cid,"step":1,"base":main,"prev":null,"prevPr":null,"prevTree":null})
+            }
+            Some(_) if live.len() >= checks::CHAIN_STEPS => {
+                return Ok(Join::Full(format!(
+                    "The chain of batches is full ({} steps); the entry joins once a step merges or leaves",
+                    checks::CHAIN_STEPS
+                )));
+            }
+            Some(tip) => {
+                let mut steps: Vec<Value> = chain["steps"].as_array().cloned().unwrap_or_default();
+                steps.retain(|s| s != id);
+                steps.push(json!(id));
+                r["chain"]["steps"] = json!(steps);
+                json!({"id":chain["id"],"step":tip["batch"]["chain"]["step"].as_u64().unwrap_or(1) + 1,"base":tip["batch"]["commit"],
+                    "prev":tip["id"],"prevPr":tip["number"],"prevTree":tip["batch"]["tree"]})
+            }
+        };
+        save_repository(&tx, repository_id, &r)?;
+        tx.commit()?;
+        Ok(Join::Step(link))
+    }
+
+    /// The entries released before `id` in its repository that are still to
+    /// be checked and hold no chain step: a head that contains one of theirs
+    /// waits for it to join first (stacks keep their order).
+    pub(super) fn merge_earlier_heads(&self, id: &str) -> Result<Vec<Value>> {
+        let db = self.db.read()?;
+        let e = entry(&db, id)?;
+        let rowid: i64 = db.query_row("SELECT rowid FROM merge_entries WHERE id=?1", [id], |r| r.get(0))?;
+        let mut q = db.prepare("SELECT data FROM merge_entries WHERE repository_id=?1 AND rowid<?2 AND state IN ('queued','waiting','ready') ORDER BY rowid")?;
+        let rows = q
+            .query_map(params![e["repositoryId"].as_i64(), rowid], |r| r.get::<_, String>(0))?
+            .map(|r| Ok(serde_json::from_str::<Value>(&r?)?))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|o| o["kind"] != "revert" && o["headSha"].is_string() && o["headSha"] != e["headSha"] && o["batch"]["chain"].is_null())
+            .map(|o| json!({"id":o["id"],"number":o["number"],"head":o["headSha"]}))
+            .collect())
+    }
+
     pub(super) fn merge_repository(&self, repository_id: i64) -> Result<Value> {
         let db = self.db.read()?;
         repository(&db, repository_id)
@@ -1549,6 +1628,51 @@ fn revert_entry(db: &Connection, original: &Value, by: &TaskActor, source: &Valu
         "body":format!("Merge queue: revert of #{} (merge commit {}) requested by {} (entry {id}). Core builds it on its own branch, opens a PR, and merges it once CI on it is green, or at once if it restores a main whose CI was green.",
             original["number"], short(&m["sha"]), by.name)}))?;
     Ok(e)
+}
+
+/// Make the next chain step after entry `id` due now: the step ahead of it
+/// merged, its post-check held, or it left the chain (YN-18 S2e).
+fn next_chain_step(db: &Connection, id: &str) -> Result<()> {
+    db.execute(
+        "UPDATE merge_entries SET next_check=0,data=json_set(data,'$.nextCheck',0) WHERE json_extract(data,'$.batch.chain.prev')=?1 AND state IN ('queued','waiting','ready')",
+        [id],
+    )?;
+    Ok(())
+}
+
+/// The chain's steps still to land, in order, ahead of entry `id` (YN-18 S2e).
+/// Each one is built on the one before it: its base is that step's batch
+/// commit, or, for the first, on a step that landed, or main. The walk ends
+/// at `id` and at the first step that no longer follows, since every later
+/// step stands on a base that left: those rebuild and join again.
+fn chain_live(db: &Connection, chain: &Value, id: &str) -> Result<Vec<Value>> {
+    let mut live: Vec<Value> = Vec::new();
+    for step in chain["steps"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if step == id {
+            break;
+        }
+        let Ok(s) = entry(db, step) else { break };
+        let b = &s["batch"];
+        let built = b["chain"]["id"] == chain["id"] && b["commit"].is_string() && b["cleanup"].is_null();
+        let going = matches!(s["state"].as_str(), Some("queued" | "waiting" | "ready" | "merging")) || (s["state"] == "merged" && s["merge"]["post"].is_null());
+        if !going {
+            continue;
+        }
+        let follows = match live.last() {
+            Some(p) => b["chain"]["prev"] == p["id"] && b["chain"]["base"] == p["batch"]["commit"],
+            None => match b["chain"]["prev"].as_str() {
+                None => true,
+                Some(prev) => entry(db, prev).is_ok_and(|p| {
+                    matches!(p["state"].as_str(), Some("merged" | "done")) && p["merge"]["post"]["ok"] == true && p["batch"]["commit"] == b["chain"]["base"]
+                }),
+            },
+        };
+        if !(built && follows) {
+            break;
+        }
+        live.push(s);
+    }
+    Ok(live)
 }
 
 /// A merge Core sent may have landed but was never verified: the entry stops

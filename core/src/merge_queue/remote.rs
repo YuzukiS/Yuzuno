@@ -158,10 +158,35 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
         return relaxed_gate(ws, &t, entry, &main, &newest, evidence).await;
     }
 
-    // A batch built on this main is the gate; one on an older main is retired.
+    // A later step of a chain of batches (YN-18 S2e): it waits for the step
+    // ahead, then its own batch CI is the gate, by tree, on the main that
+    // step landed; if the step ahead left, or rebuilt, it joins again.
     let batch = &entry["batch"];
-    if batch["main"] == main.as_str() && batch["pr"].is_u64() && batch["commit"].is_string() {
-        let (gate, decision) = batch_gate(ws, &t, &main, batch, &required).await?;
+    if batch["chain"]["step"].as_u64().is_some_and(|k| k >= 2) && batch["pr"].is_u64() && batch["commit"].is_string() {
+        let prev_id = batch["chain"]["prev"].as_str().unwrap_or("").to_owned();
+        let prev = ws.stored(move |s| s.merge_entry(&prev_id)).await?;
+        let same = prev["batch"]["commit"] == batch["chain"]["base"];
+        let going = matches!(prev["state"].as_str(), Some("queued" | "waiting" | "ready" | "merging")) || (prev["state"] == "merged" && prev["merge"]["post"].is_null());
+        let landed = matches!(prev["state"].as_str(), Some("merged" | "done")) && prev["merge"]["post"]["ok"] == true && prev["merge"]["sha"] == main.as_str();
+        if same && going {
+            evidence["batch"] = batch.clone();
+            return Ok((evidence, Err(Hold::Wait(format!(
+                "Step {} of a chain of batches: it merges after #{}, the step ahead of it",
+                batch["chain"]["step"], prev["number"]
+            )))));
+        }
+        if same && landed {
+            let (gate, decision) = batch_gate(ws, &t, &main, batch, &required, true).await?;
+            evidence["gate"] = gate;
+            hold!(decision);
+            evidence["wouldMerge"] = json!({"method":"merge","sha":head,"endpoint":format!("repos/{repo}/pulls/{number}/merge")});
+            return Ok((evidence, Ok(())));
+        }
+        // The step ahead left the chain, rebuilt, or main moved on otherwise:
+        // this step is rebuilt below, from the batch decision on.
+    } else if batch["main"] == main.as_str() && batch["pr"].is_u64() && batch["commit"].is_string() {
+        // A batch built on this main is the gate; one on an older main is retired.
+        let (gate, decision) = batch_gate(ws, &t, &main, batch, &required, false).await?;
         evidence["gate"] = gate;
         hold!(decision);
         evidence["wouldMerge"] = json!({"method":"merge","sha":head,"endpoint":format!("repos/{repo}/pulls/{number}/merge")});
@@ -236,7 +261,7 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
 /// tree the merge must land, which the post-check compares. A probe or batch
 /// already on this main is reused; one on an older main is retired first.
 async fn relaxed_gate(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str, newest: &[Value], mut evidence: Value) -> Result<(Value, Check<()>)> {
-    let (probe, made) = build_batch(ws, t, entry, main, false).await?;
+    let (probe, made) = build_batch(ws, t, entry, main, None, false).await?;
     evidence["batch"] = probe.clone();
     if let Err(hold) = made {
         return Ok((evidence, Err(hold)));
@@ -252,16 +277,38 @@ async fn relaxed_gate(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str
 /// Build the entry's batch on `main` and wait for CI on it (design §3,
 /// batching). `why` says why CI on the PR itself does not count.
 async fn open_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str, mut evidence: Value, why: String) -> Result<(Value, Check<()>)> {
-    let (batch, made) = build_batch(ws, t, entry, main, true).await?;
+    // Stacks keep their order (YN-18 S2e): a head that contains the head of
+    // an entry released before it, still to join, waits for that entry.
+    let me = t.id.clone();
+    for earlier in ws.stored(move |s| s.merge_earlier_heads(&me)).await? {
+        let older = earlier["head"].as_str().unwrap_or("");
+        match older_main(ws, &t.repo, older, &t.head).await {
+            Ok(true) => {
+                return Ok((evidence, Err(Hold::Wait(format!(
+                    "Its head contains the head of #{}, released before it: it joins the chain of batches after that entry",
+                    earlier["number"]
+                )))));
+            }
+            Err(e) if e.to_string().starts_with("rate_limited") => return Err(e),
+            _ => {}
+        }
+    }
+    let (id, attempt, repository, at) = (t.id.clone(), t.attempt, t.repository, main.to_owned());
+    let link = match ws.stored(move |s| s.merge_chain_join(&id, attempt, repository, &at)).await? {
+        super::store::Join::Step(link) => link,
+        super::store::Join::Full(detail) => return Ok((evidence, Err(Hold::Wait(detail)))),
+    };
+    let (batch, made) = build_batch(ws, t, entry, main, Some(&link), true).await?;
     evidence["batch"] = batch.clone();
     if let Err(hold) = made {
         return Ok((evidence, Err(hold)));
     }
     let detail = format!(
-        "{why}. Core opened batch #{} on {} (main {} + the head, tree {}); it waits for CI on it",
+        "{why}. Core opened batch #{} on {}, step {} of a chain of batches (base {} + the head, tree {}); it waits for CI on it",
         batch["pr"],
         batch["branch"].as_str().unwrap_or("?"),
-        short(main),
+        link["step"],
+        short(link["base"].as_str().unwrap_or(main)),
         short(batch["tree"].as_str().unwrap_or("?"))
     );
     Ok((evidence, Err(Hold::Wait(detail))))
@@ -316,7 +363,9 @@ async fn job_proofs(ws: &Arc<Workspace>, repo: &str, ci: &Value) -> Result<Check
 /// commit, every workflow run on that commit is green, and every CI job
 /// checked out the merge of main and the batch commit, whose tree is the
 /// batch tree, the tree a merge of the head would land.
-async fn batch_gate(ws: &Arc<Workspace>, t: &Target, main: &str, b: &Value, required: &[String]) -> Result<(Value, Check<()>)> {
+/// For a later chain step (`by_tree`), every CI job checked out a merge of
+/// the batch commit with the step's tree, whichever main it was merged into.
+async fn batch_gate(ws: &Arc<Workspace>, t: &Target, main: &str, b: &Value, required: &[String], by_tree: bool) -> Result<(Value, Check<()>)> {
     let (repo, branch) = (&t.repo, b["branch"].as_str().unwrap_or(""));
     let (commit, tree) = (b["commit"].as_str().unwrap_or(""), b["tree"].as_str().unwrap_or(""));
     let mut gate = json!({"kind":"batch","tree":tree,"batch":{"branch":branch,"commit":commit,"pr":b["pr"],"main":main}});
@@ -332,6 +381,8 @@ async fn batch_gate(ws: &Arc<Workspace>, t: &Target, main: &str, b: &Value, requ
     }
     let newest = match checks::head_runs(&runs, required) {
         Ok(newest) => newest,
+        // Red CI on a batch drops its entry from the chain (YN-18 S2e, decision 7).
+        Err(Hold::Stop("ci_red", detail)) => return Ok((gate, Err(Hold::Stop("batch_failed", detail)))),
         Err(hold) => return Ok((gate, Err(hold))),
     };
     let ci = newest.iter().find(|r| r["name"] == checks::CI).context("The batch's CI run vanished")?;
@@ -339,10 +390,13 @@ async fn batch_gate(ws: &Arc<Workspace>, t: &Target, main: &str, b: &Value, requ
         Ok(proofs) => proofs,
         Err(hold) => return Ok((gate, Err(hold))),
     };
-    let proved = match checks::checkouts(&proofs, main, commit, tree) {
+    let proved = match if by_tree { checks::chain_checkouts(&proofs, commit, tree) } else { checks::checkouts(&proofs, main, commit, tree) } {
         Ok(proved) => proved,
         Err(hold) => return Ok((gate, Err(hold))),
     };
+    if by_tree {
+        gate["chain"] = b["chain"].clone();
+    }
     gate["runs"] = json!(newest.iter().map(|r| json!({"workflow":r["name"],"run":r["id"],"attempt":r["run_attempt"],"conclusion":r["conclusion"],
         "jobs":if r["id"] == ci["id"] { json!(proved) } else { json!([]) }})).collect::<Vec<_>>());
     Ok((gate, Ok(())))
@@ -354,16 +408,21 @@ async fn batch_gate(ws: &Arc<Workspace>, t: &Target, main: &str, b: &Value, requ
 /// Without `pull` it stops before the draft PR: the relaxed policy's probe,
 /// Core's own merge of the head into main that runs no CI (YN-18 S2d). A probe
 /// becomes a batch if the policy turns strict on the same main.
-async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str, pull: bool) -> Result<(Value, Check<()>)> {
+/// With `chain`, the batch is that step of a chain of batches (YN-18 S2e):
+/// its branch starts at the step's base, the last step's batch commit or main.
+async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str, chain: Option<&Value>, pull: bool) -> Result<(Value, Check<()>)> {
     let old = &entry["batch"];
-    if old.is_object() && old["main"] != main {
+    let base = chain.and_then(|c| c["base"].as_str()).unwrap_or(main).to_owned();
+    let old_base = old["base"].as_str().or(old["main"].as_str()).unwrap_or("");
+    if old.is_object() && (old["main"] != main || old_base != base || old["chain"]["id"] != chain.map(|c| c["id"].clone()).unwrap_or(Value::Null)) {
         let retired = cleanup(ws, entry).await?;
         let (id, attempt) = (t.id.clone(), t.attempt);
         ws.stored(move |s| s.merge_batch_retired(&id, attempt, retired)).await?;
     }
     let branch = writes::branch(&t.id);
-    let mut b = if old["main"] == main { old.clone() } else {
-        json!({"kind":"probe","branch":branch,"main":main,"createdAt":crate::model::now(),"ref":false,"commit":null,"tree":null,"pr":null,"closed":false,"deleted":false})
+    let reuse = old.is_object() && old["main"] == main && old_base == base && old["chain"]["id"] == chain.map(|c| c["id"].clone()).unwrap_or(Value::Null);
+    let mut b = if reuse { old.clone() } else {
+        json!({"kind":"probe","branch":branch,"main":main,"base":base,"chain":chain,"createdAt":crate::model::now(),"ref":false,"commit":null,"tree":null,"pr":null,"closed":false,"deleted":false})
     };
     let save = |b: Value| {
         let (id, attempt) = (t.id.clone(), t.attempt);
@@ -379,7 +438,7 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str,
         // exist, and the cleanup removes it.
         b["ref"] = json!("pending");
         save(b.clone()).await?;
-        let (code, answer) = writes::write(ws, repository, repo, Write::CreateBranch { branch: &branch, main }).await?;
+        let (code, answer) = writes::write(ws, repository, repo, Write::CreateBranch { branch: &branch, main: &base }).await?;
         match code {
             201 => {}
             422 => {
@@ -393,12 +452,17 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str,
     }
     if !b["commit"].is_string() {
         let at = read(ws, format!("repos/{repo}/git/ref/heads/{branch}")).await?["object"]["sha"].as_str().unwrap_or("").to_owned();
-        let commit = if at != main {
+        // What the branch starts from: main, or the step ahead's batch commit.
+        let on = match chain {
+            Some(c) if c["step"].as_u64().is_some_and(|k| k >= 2) => format!("step {} after #{} ({})", c["step"], c["prevPr"], short(&base)),
+            _ => format!("main {}", short(main)),
+        };
+        let commit = if at != base {
             // An interrupted earlier check already merged the head here.
             read(ws, format!("repos/{repo}/git/commits/{at}")).await?
         } else {
             let message = if pull {
-                format!("{branch}: main {} + #{} at {} (CI only, do not merge)", short(main), t.number, short(&t.head))
+                format!("{branch}: {on} + #{} at {} (CI only, do not merge)", t.number, short(&t.head))
             } else {
                 format!("{branch}: main {} + #{} at {} (merge check only, no PR; do not merge)", short(main), t.number, short(&t.head))
             };
@@ -409,21 +473,21 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str,
                     b["cleanup"] = json!("pending");
                     save(b.clone()).await?;
                     return Ok((b, Err(Hold::Stop("conflict", format!(
-                        "GitHub could not merge the head into main {}: {}", short(main), answer["message"].as_str().unwrap_or("merge conflict"))))));
+                        "GitHub could not merge the head into {on}: {}", answer["message"].as_str().unwrap_or("merge conflict"))))));
                 }
                 204 => {
                     b["cleanup"] = json!("pending");
                     save(b.clone()).await?;
-                    return Ok((b, Err(Hold::Stop("nothing_to_merge", format!("Main {} already contains the head", short(main))))));
+                    return Ok((b, Err(Hold::Stop("nothing_to_merge", format!("{on} already contains the head")))));
                 }
                 _ => bail!("GitHub answered {code} merging the head into {branch}: {}", answer["message"]),
             }
         };
-        if checks::parents(&commit) != [main, t.head.as_str()] {
+        if checks::parents(&commit) != [base.as_str(), t.head.as_str()] {
             b["cleanup"] = json!("pending");
             save(b.clone()).await?;
             return Ok((b, Err(Hold::Stop("batch_changed", format!(
-                "{branch} holds {}, which is not the merge of main {} and the head", commit["sha"], short(main))))));
+                "{branch} holds {}, which is not the merge of {on} and the head", commit["sha"])))));
         }
         b["commit"] = commit["sha"].clone();
         b["tree"] = json!(checks::tree_of(&commit));
@@ -433,11 +497,22 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str,
         return Ok((b, Ok(())));
     }
     if !b["pr"].is_u64() {
-        let title = format!("queue: #{} at {} on main {} (CI only, do not merge)", t.number, short(&t.head), short(main));
-        let body = format!(
-            "**CI only. Do not merge or review this PR.** Yuzuno Core's merge queue opened it to run CI on main {main} with #{} at {} merged in. Core closes it and deletes `{branch}` once #{} is merged or the entry ends.",
-            t.number, t.head, t.number
-        );
+        let (title, body) = match chain {
+            Some(c) if c["step"].as_u64().is_some_and(|k| k >= 2) => (
+                format!("queue: #{} at {} after #{} (CI only, do not merge)", t.number, short(&t.head), c["prevPr"]),
+                format!(
+                    "**CI only. Do not merge or review this PR.** Yuzuno Core's merge queue opened it as step {} of a chain of batches: it runs CI on {base}, the batch of #{}, with #{} at {} merged in. Core closes it and deletes `{branch}` once #{} is merged or the entry ends.",
+                    c["step"], c["prevPr"], t.number, t.head, t.number
+                ),
+            ),
+            _ => (
+                format!("queue: #{} at {} on main {} (CI only, do not merge)", t.number, short(&t.head), short(main)),
+                format!(
+                    "**CI only. Do not merge or review this PR.** Yuzuno Core's merge queue opened it to run CI on main {main} with #{} at {} merged in. Core closes it and deletes `{branch}` once #{} is merged or the entry ends.",
+                    t.number, t.head, t.number
+                ),
+            ),
+        };
         let (code, answer) = writes::write(ws, repository, repo, Write::OpenBatchPull { branch: &branch, base: &t.base, title, body }).await?;
         let number = match code {
             201 => answer["number"].as_u64(),

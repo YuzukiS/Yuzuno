@@ -177,7 +177,9 @@ if method=='POST' and path=='merges':
     if s.pop('slowMerge',None):
         save(); p.with_name('merge-started').write_text('1'); time.sleep(2)
     if s.get('batchConflict'): out(409,{'message':'Merge conflict'})
-    k={'sha':s['batchCommit'],'tree':s['batchTree'],'parents':[s['refs'][body['base']],body['head']]}
+    q=s.get('mergeCommits',{}).get(body['head'])
+    made=q.pop(0) if q else [s['batchCommit'],s['batchTree']]
+    k={'sha':made[0],'tree':made[1],'parents':[s['refs'][body['base']],body['head']]}
     c[k['sha']]=k; s['refs'][body['base']]=k['sha']; save()
     out(201,{'sha':k['sha'],'commit':{'tree':{'sha':k['tree']}},'parents':[{'sha':x} for x in k['parents']]})
 if method=='POST' and path=='git/commits':
@@ -202,6 +204,11 @@ if method=='DELETE' and path.startswith('git/refs/heads/'):
     if answer=='429':
         save(); out(429,{'message':'API rate limit exceeded'})
     s['refs'].pop(path[len('git/refs/heads/'):],None); save(); out(204,None)
+if method=='PUT' and path=='pulls/12/merge':
+    m={'sha':s['mergeSha12'],'tree':s['mergeTree12'],'parents':[s['main'],body['sha']]}
+    c[m['sha']]=m; s['main']=m['sha']
+    s['pull12'].update({'merged':True,'state':'closed','merged_at':'now','merge_commit_sha':m['sha']}); save()
+    out(200,{'sha':m['sha'],'merged':True,'message':'Pull Request successfully merged'})
 if method=='PUT' and path=='pulls/11/merge':
     answer=s['mergeAnswers'].pop(0) if s['mergeAnswers'] else 'ok'; save()
     if answer in ('405','409'): out(int(answer),{'message':'Pull Request is not mergeable'})
@@ -241,6 +248,8 @@ if path.startswith('git/ref/heads/') and path[len('git/ref/heads/'):] in s.get('
 if path=='branches/main': out(200,{'commit':{'sha':s.get('branchMain',s['main'])}})
 if path=='git/ref/pull/11/merge':
     out(200,{'object':{'sha':s['merge']}}) if s['merge'] else out(404,{})
+if path=='git/ref/pull/12/merge':
+    out(200,{'object':{'sha':s['merge12']}}) if s.get('merge12') else out(404,{})
 if path.startswith('compare/'):
     key=path[len('compare/'):].split('?')[0]
     out(200,s['compare'][key]) if key in s.get('compare',{}) else out(404,{'message':'Not Found'})
@@ -1810,7 +1819,7 @@ async fn red_ci_on_a_batch_stops_and_core_removes_the_batch() {
         s["batchRuns"][0]["conclusion"] = json!("failure");
     });
     let e = lab.step().await;
-    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("ci_red")), "red CI on the batch stops the entry: {e}");
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("batch_failed")), "red CI on the batch stops the entry: {e}");
     lab.step().await;
     let w = writes(lab.dir.path());
     assert_eq!(
@@ -1819,6 +1828,205 @@ async fn red_ci_on_a_batch_stops_and_core_removes_the_batch() {
         "Core closes its batch PR and deletes its branch: {w:?}"
     );
     assert!(!w.iter().any(|w| w.starts_with("PUT")), "nothing merged");
+}
+
+/// The second PR of the chain tests, #12: its head, GitHub's merge ref for
+/// it on the current main, the merge of an older main its CI tested, its batch
+/// commit on top of #11's, that batch PR's merge ref, a batch of it rebuilt
+/// on main, the batch tree, and its merge commit on main.
+fn h2() -> String {
+    "a1".repeat(20)
+}
+fn ref2() -> String {
+    "b1".repeat(20)
+}
+fn old2() -> String {
+    "b2".repeat(20)
+}
+fn batch2() -> String {
+    "c1".repeat(20)
+}
+fn batch2_ref() -> String {
+    "c2".repeat(20)
+}
+fn solo2() -> String {
+    "c3".repeat(20)
+}
+fn tree2() -> String {
+    "d1".repeat(20)
+}
+fn merge2() -> String {
+    "e1".repeat(20)
+}
+fn run(id: u64, head: &str, conclusion: Option<&str>) -> Value {
+    json!({"id":id,"name":"CI","run_attempt":1,"status":if conclusion.is_some() { "completed" } else { "in_progress" },"conclusion":conclusion,"head_sha":head})
+}
+/// A completed review round of `head` on the PR link `link`.
+fn review_on(s: &Store, task: &str, link: &str, head: &str) {
+    let task = internal(s, task);
+    let id = uuid::Uuid::new_v4().to_string();
+    let data = json!({"id":id,"status":"completed","conclusion":"no_findings","headSha":head,"round":1,
+        "findings":[],"coverage":{"coveredFileCount":3,"fileCount":3}});
+    s.db.write()
+        .unwrap()
+        .execute(
+            "INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,?3,'completed',?4)",
+            rusqlite::params![id, task, link, data.to_string()],
+        )
+        .unwrap();
+}
+
+/// #11, the lab's entry, and #12, released after it on the same main with
+/// another head. CI on each PR tested an older main, so each needs a batch.
+/// #12 is due only once the test makes it so.
+#[cfg(unix)]
+async fn chain_lab() -> (Lab, String, String) {
+    let lab = lab_with(|s| {
+        s["logs"]["501"] = json!(log(&sha('7')));
+        s["logs"]["502"] = json!(log(&sha('7')));
+        let mut pull12 = s["pull"].clone();
+        pull12["number"] = json!(12);
+        pull12["head"]["sha"] = json!(h2());
+        s["pull12"] = pull12;
+        s["merge12"] = json!(ref2());
+        s["commits"][ref2()] = json!({"sha":ref2(),"tree":sha('8'),"parents":[main_sha(), h2()]});
+        s["commits"][old2()] = json!({"sha":old2(),"tree":sha('8'),"parents":[old_main(), h2()]});
+        s["commits"][batch2_ref()] = json!({"sha":batch2_ref(),"tree":tree2(),"parents":[main_sha(), batch2()]});
+        s["headRuns"] = json!({h2(): [run(43, &h2(), Some("success"))], batch2(): [run(61, &batch2(), None)]});
+        s["jobs"]["43"] = json!([{"id":431,"name":"Core (build and test)","conclusion":"success"},{"id":432,"name":"Web UI","conclusion":"success"}]);
+        s["jobs"]["61"] = json!([{"id":611,"name":"Core (build and test)","conclusion":"success"},{"id":612,"name":"Web UI","conclusion":"success"}]);
+        for job in ["431", "432"] {
+            s["logs"][job] = json!(log(&old2()));
+        }
+        for job in ["611", "612"] {
+            s["logs"][job] = json!(log(&batch2_ref()));
+        }
+        s["mergeCommits"] = json!({h2(): [[batch2(), tree2()], [solo2(), tree2()]]});
+        s["mergeSha12"] = json!(merge2());
+        s["mergeTree12"] = json!(tree2());
+    });
+    let first = lab.release(Some("lead"), "r1").await.unwrap()["id"].as_str().unwrap().to_owned();
+    let second = {
+        let db = lab.ws.store.db.read().unwrap();
+        let mut w: Value = serde_json::from_str(&db.query_row("SELECT data FROM merge_entries", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+        w["id"] = json!(uuid::Uuid::new_v4().to_string());
+        w["entryId"] = w["id"].clone();
+        w["number"] = json!(12);
+        w["url"] = json!("https://github.com/owner/repo/pull/12");
+        w["headSha"] = json!(h2());
+        w["linkId"] = json!("7:pull:12");
+        w
+    };
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO merge_entries(id,task_id,repository_id,number,state,next_check,data) VALUES(?1,?2,7,12,'queued',99999999999,?3)",
+        rusqlite::params![second["id"].as_str(), second["taskId"].as_str(), second.to_string()],
+    ).unwrap();
+    review_on(&lab.ws.store, &lab.task, "7:pull:12", &h2());
+    (lab, first, second["id"].as_str().unwrap().to_owned())
+}
+async fn by_id(lab: &Lab, id: &str) -> Value {
+    lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":id})).await.unwrap()
+}
+fn posts(lab: &Lab) -> Vec<Value> {
+    calls(lab.dir.path()).into_iter().filter(|c| c["method"] == "POST").map(|c| c["body"].clone()).collect()
+}
+
+/// YN-18 S2e: #12 does not wait for #11 to merge before its CI starts. Its
+/// batch stacks on #11's batch, CI runs on both at once, and #12 merges right
+/// after #11 on its own batch CI, proved by tree.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_second_batch_stacks_on_the_first_and_merges_right_after_it_on_its_own_ci() {
+    let (lab, first, second) = chain_lab().await;
+    tick(&lab.ws).await.unwrap();
+    let a = by_id(&lab, &first).await;
+    assert_eq!((a["state"].clone(), a["batch"]["chain"]["step"].clone(), a["batch"]["base"].clone()), (json!("waiting"), json!(1), json!(main_sha())), "{a}");
+    lab.step().await;
+    let b = by_id(&lab, &second).await;
+    assert_eq!(b["state"], "waiting", "{b}");
+    assert_eq!(b["batch"]["chain"]["id"], a["batch"]["chain"]["id"], "one chain: {b}");
+    assert_eq!((b["batch"]["chain"]["step"].clone(), b["batch"]["chain"]["prev"].clone()), (json!(2), json!(first)));
+    assert_eq!((b["batch"]["base"].clone(), b["batch"]["commit"].clone(), b["batch"]["pr"].clone()), (json!(batch_commit()), json!(batch2()), json!(901)));
+    assert!(b["detail"].as_str().unwrap().contains("step 2 of a chain of batches"), "{}", b["detail"]);
+    let branch2 = format!("queue/merge-{second}");
+    let p = posts(&lab);
+    assert_eq!(p[3], json!({"ref":format!("refs/heads/{branch2}"),"sha":batch_commit()}), "#12's batch branch starts at #11's batch commit");
+    assert_eq!((p[4]["base"].clone(), p[4]["head"].clone()), (json!(branch2), json!(h2())));
+    assert!(p[5]["title"].as_str().unwrap().contains("after #11"), "{}", p[5]["title"]);
+    assert_eq!(lab.step().await["state"], "waiting", "no CI on #11's batch yet");
+    assert_eq!(by_id(&lab, &second).await["detail"], "Step 2 of a chain of batches: it merges after #11, the step ahead of it");
+    change(lab.dir.path(), |s| {
+        batch_green(s);
+        s["headRuns"][batch2()] = json!([run(61, &batch2(), Some("success"))]);
+    });
+    lab.step().await;
+    let (a, b) = (by_id(&lab, &first).await, by_id(&lab, &second).await);
+    assert_eq!((a["state"].clone(), a["merge"]["post"]["ok"].clone()), (json!("merged"), json!(true)), "{a}");
+    assert_eq!((b["state"].clone(), b["merge"]["post"]["ok"].clone()), (json!("merged"), json!(true)), "#12 merged in the same pass: {b}");
+    let gate = &b["lastEvidence"]["gate"];
+    assert_eq!((gate["kind"].clone(), gate["chain"]["step"].clone(), gate["tree"].clone()), (json!("batch"), json!(2), json!(tree2())), "{gate}");
+    assert_eq!(gate["runs"][0]["jobs"][0]["checkout"], batch2_ref(), "a checkout of #12's batch merged into the main before #11 still proves its tree");
+    let puts: Vec<String> = writes(lab.dir.path()).into_iter().filter(|w| w.starts_with("PUT")).collect();
+    assert_eq!(puts, ["PUT repos/owner/repo/pulls/11/merge", "PUT repos/owner/repo/pulls/12/merge"], "in release order");
+    assert_eq!(b["merge"]["expectedMain"], merge_commit(), "#12 landed on #11's merge commit");
+}
+
+/// YN-18 S2e decision 7: red CI on a step drops that entry (batch_failed), and
+/// the step after it rebuilds without it, on main.
+#[cfg(unix)]
+#[tokio::test]
+async fn red_ci_on_a_chain_step_drops_it_and_the_next_step_rebuilds_on_main() {
+    let (lab, first, second) = chain_lab().await;
+    tick(&lab.ws).await.unwrap();
+    lab.step().await;
+    let chain = by_id(&lab, &second).await["batch"]["chain"]["id"].clone();
+    change(lab.dir.path(), |s| {
+        batch_green(s);
+        s["batchRuns"][0]["conclusion"] = json!("failure");
+    });
+    lab.step().await;
+    let a = by_id(&lab, &first).await;
+    assert_eq!((a["state"].clone(), a["reason"].clone()), (json!("stopped"), json!("batch_failed")), "{a}");
+    let b = by_id(&lab, &second).await;
+    assert_eq!(b["state"], "waiting", "{b}");
+    assert_eq!(
+        (b["batch"]["chain"]["step"].clone(), b["batch"]["base"].clone(), b["batch"]["commit"].clone(), b["batch"]["pr"].clone()),
+        (json!(1), json!(main_sha()), json!(solo2()), json!(902)),
+        "{b}"
+    );
+    assert_ne!(b["batch"]["chain"]["id"], chain, "a new chain");
+    assert_eq!(b["retiredBatches"][0]["pr"], 901, "its batch on #11's was removed: {b}");
+    let w = writes(lab.dir.path());
+    let branch2 = format!("queue/merge-{second}");
+    let at = w.iter().position(|w| w == "PATCH repos/owner/repo/pulls/901").expect("Core closed batch PR #901");
+    assert_eq!(w[at + 1], format!("DELETE repos/owner/repo/git/refs/heads/{branch2}"));
+    assert_eq!(w[at + 2..at + 5], ["POST repos/owner/repo/git/refs", "POST repos/owner/repo/merges", "POST repos/owner/repo/pulls"]);
+    assert_eq!(posts(&lab)[6], json!({"ref":format!("refs/heads/{branch2}"),"sha":main_sha()}), "rebuilt on main");
+    let mail = lab.mail("lead");
+    assert!(mail.iter().any(|m| m["body"].as_str().unwrap_or("").contains("batch_failed")), "the release is told: {mail:?}");
+    assert!(!w.iter().any(|w| w.starts_with("PUT")), "nothing merged");
+}
+
+/// A head that contains the head of an entry released before it waits for
+/// that entry to join the chain, so a stack lands in its order.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_head_stacked_on_an_earlier_release_joins_the_chain_after_it() {
+    let (lab, first, second) = chain_lab().await;
+    change(lab.dir.path(), |s| {
+        s["merge"] = Value::Null;
+        s["compare"] = json!({format!("{}...{}", head(), h2()): {"base":head(),"mergeBase":head(),"commits":2}});
+    });
+    lab.step().await;
+    let b = by_id(&lab, &second).await;
+    assert_eq!(b["state"], "waiting", "{b}");
+    assert!(b["detail"].as_str().unwrap().contains("contains the head of #11"), "{}", b["detail"]);
+    assert!(b["batch"].is_null() && writes(lab.dir.path()).is_empty(), "nothing built while #11 has not joined: {b}");
+    change(lab.dir.path(), |s| s["merge"] = json!(merge_sha()));
+    lab.step().await;
+    let (a, b) = (by_id(&lab, &first).await, by_id(&lab, &second).await);
+    assert_eq!(a["batch"]["chain"]["step"], 1, "{a}");
+    assert_eq!((b["batch"]["chain"]["step"].clone(), b["batch"]["chain"]["prev"].clone()), (json!(2), json!(first)), "{b}");
 }
 
 #[cfg(unix)]
