@@ -14,6 +14,7 @@ import { reportMarkdown } from "./brief/brief-copy";
 import { keptSnapshot, useKeptImage } from "./brief/kept-image";
 import { useKeptImagePreview } from "./brief/image-preview";
 import { BriefMarkdown } from "./brief/Markdown";
+import { BriefStateScope } from "./brief/brief-state";
 import { DeskCardClaim } from "./brief/ResearchDesk";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { PinOff } from "lucide-react";
@@ -43,7 +44,9 @@ import "./summary-card.css";
  * card's own controls stay theirs. A kept image it shows opens whole in
  * place, as on its report page (YN-3), not the report. What it shows is
  * what the author named (the conclusion, what it holds under, one figure);
- * when they named none, how its body opens (cardContent, YN-3).
+ * when they named none, how its body opens (cardContent, YN-3). A figure of
+ * inputs (YN-16) works on the card: its parts share the card's variables,
+ * which are the card's own, never its report page's.
  */
 export const SummaryCard = memo(function SummaryCard({
   section,
@@ -125,7 +128,8 @@ export const SummaryCard = memo(function SummaryCard({
   // a kept image, a button that opens it whole in place (YN-3); any other,
   // one line naming it and where it is read, "Open report" below.
   const shown = content.figure;
-  const figure = !shown ? null : size !== "small" ? (
+  // A figure of inputs is drawn at every size: the reader sets it on the card (YN-16).
+  const figure = !shown ? null : size !== "small" || shown.kind === "interactive" ? (
     <FigureFrame section={section} projectId={projectId} figure={shown} large={size === "large"} />
   ) : metricsOf(section, shown) ? (
     <BigNumbers items={metricsOf(section, shown)!} />
@@ -136,7 +140,7 @@ export const SummaryCard = memo(function SummaryCard({
   ) : (
     <p className="home-card-figure-note">{t.figureOnPage(figureKindOf(section, shown, t.figureKind), status)}</p>
   );
-  return (
+  const card = (
     <article
       id={domId}
       data-section-key={widget ? undefined : section.key}
@@ -262,6 +266,8 @@ export const SummaryCard = memo(function SummaryCard({
       )}
     </article>
   );
+  // The card's variables, which its figure and conditions share (YN-16).
+  return <BriefStateScope section={section}>{card}</BriefStateScope>;
 });
 
 /**
@@ -584,6 +590,18 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
   const desk = figure.kind === "desk" && figure.lead
     ? ((section.body as { elements?: Record<string, { props?: unknown }> }).elements?.[figure.id]?.props as ResearchDeskProps | undefined)
     : undefined;
+  // Inputs and the blocks they show or hide, drawn by their own renderer, live:
+  // the frame is not inert, and grows to hold them whole.
+  if (figure.kind === "interactive")
+    return (
+      <figure className="home-card-frame kind-interactive">
+        <div className="home-card-frame-body">
+          <BriefDensity.Provider value="low">
+            <SectionBody section={section} projectId={projectId} only={[figure.id]} />
+          </BriefDensity.Provider>
+        </div>
+      </figure>
+    );
   if (figure.kind === "page")
     return (
       <figure className="home-card-frame kind-page">

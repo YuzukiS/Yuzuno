@@ -662,3 +662,34 @@ test("a wide card's research desk shows its lead claim with the author's status 
   assert.deepEqual(page.errors, []);
 });
 
+
+test("YN-16 a report page's blocks share its variables, which are not its card's", async (t) => {
+  // The summary's Group of inputs and a later part of the page are drawn apart; a switch in one shows a block in the other.
+  const body = { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "try", size: "wide" } }, children: ["lead", "try", "method"] },
+    lead: { type: "Markdown", props: { text: "Scones scale with the guests." } },
+    try: { type: "Group", props: {}, children: ["vegan"] },
+    vegan: { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } },
+    method: { type: "Group", props: { title: "Method" }, children: ["butter", "oil"] },
+    butter: { type: "Markdown", visible: { $state: "/vegan", not: true }, props: { text: "Rub in the butter." } },
+    oil: { type: "Markdown", visible: { $state: "/vegan" }, props: { text: "Stir in the olive oil." } },
+  } };
+  const scones = section("eval", 7, 3, { title: "Scones", body });
+  assert.ok(checkBriefSection({ key: scones.key, kind: scones.kind, title: scones.title, body }), "the contract accepts it");
+  const page = await openHome(() => homeData([scones]));
+  t.after(page.close);
+  // The card's switch is the card's own: set on the card, the page still starts from the section's value.
+  const card = page.card("eval");
+  card.querySelector('[role="switch"]').click();
+  await until(() => card.querySelector('[role="switch"]').getAttribute("aria-checked") === "true", "the card's switch");
+  card.querySelector(".home-report-open").click();
+  const report = await until(page.report, "the report");
+  const toggle = report.querySelector('.report-hero [role="switch"]');
+  assert.equal(toggle.getAttribute("aria-checked"), "false", "the page's own value");
+  assert.match(report.querySelector("#report-block-method").textContent, /Rub in the butter/);
+  toggle.click();
+  await until(() => /Stir in the olive oil/.test(report.querySelector("#report-block-method").textContent), "a block of another part follows");
+  assert.doesNotMatch(report.querySelector("#report-block-method").textContent, /butter/);
+  assert.ok(page.requests.every((request) => request.method === "GET"), "nothing is written");
+  assert.deepEqual(page.errors, []);
+});
