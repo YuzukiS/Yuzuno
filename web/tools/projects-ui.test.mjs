@@ -816,6 +816,20 @@ test("Home content editor settings save stable IDs, explicit none and compatibil
   } finally { page.close(); }
 });
 
+test("a project's settings have no executors block: how many run at once is each machine's (YN-2 S5)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    await waitFor(() => page.document.querySelector(".project-leads"), "the project's settings load");
+    await pause();
+    // A boolean, never the element: a failing assert would inspect a whole jsdom node.
+    assert.equal(Boolean(page.document.querySelector('[role="group"][aria-label="How many executors run at once"]')), false,
+      "a project's settings have no executors block");
+    assert.doesNotMatch(page.document.querySelector('[role="dialog"]').textContent, /how many of this project’s executors run at once/);
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally { page.close(); }
+});
+
 test("a Project's leads are the user's to set, from its open members that are not executors, and the rail marks them (T-33)", async () => {
   const page = await mount({
     storage: { "yuzuno.selected.ws-1": "a" },

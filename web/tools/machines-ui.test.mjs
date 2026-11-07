@@ -794,7 +794,8 @@ test("the executor limit reads in Chinese on the Machines page (T-189)", async (
     await until(() => localLimit(page), "the Core host card control");
     assert.match(localLimit(page).textContent, /同时运行的执行者/);
     assert.match(localLimit(page).textContent, /调低不会停止正在运行的执行者/);
-    assert.equal(localLimit(page).querySelector("input").placeholder, "没有自己的上限");
+    assert.equal(localLimit(page).querySelector("input").placeholder, "默认：3", "empty is the default (YN-2 S5)");
+    assert.match(localLimit(page).textContent, /留空为默认的 3 个。整个 Workspace 最多运行各机器数量之和。/);
     assert.ok(button(localLimit(page), "保存同时运行的执行者"), "its save reads in Chinese");
   } finally {
     page.close();
