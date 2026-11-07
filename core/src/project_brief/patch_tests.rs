@@ -101,6 +101,20 @@ async fn a_patch_that_cannot_apply_is_refused_by_its_operation_and_changes_nothi
     assert_eq!(version(&ws, &project), 1);
 }
 
+/// #718 R1: a patch that would build a body far over the limit is refused by
+/// its operation before the validator, and nothing is written.
+#[tokio::test]
+async fn a_patch_that_keeps_copying_a_part_into_itself_is_refused_and_writes_nothing() {
+    let (_dir, ws, project) = lab();
+    send(&ws, "a", input("w1", 0, vec![work()])).await.unwrap();
+    let before = section(&brief(&ws, "a"), "work").clone();
+    let ops: Vec<Value> = (0..patch::MAX_OPS).map(|n| json!({"op":"copy","from":"/elements","path":format!("/elements/c{n}")})).collect();
+    let rejected = send(&ws, "a", input("grow", 1, vec![patch("work", json!(ops))])).await.unwrap_err();
+    assert_eq!(codes(&rejected), ["too_large"], "{rejected}");
+    assert!(rejected["problems"][0]["path"].as_str().unwrap().starts_with("changes[0].patch["));
+    assert_eq!((section(&brief(&ws, "a"), "work"), version(&ws, &project)), (&before, 1));
+}
+
 #[tokio::test]
 async fn a_patched_body_is_checked_whole_repaired_where_it_can_be_and_refused_where_not() {
     let (_dir, ws, _project) = lab();

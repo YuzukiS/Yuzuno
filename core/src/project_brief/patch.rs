@@ -7,6 +7,11 @@ use serde_json::{Map, Value};
 
 /// At most this many operations in one patch change.
 pub(super) const MAX_OPS: usize = 64;
+/// The most compact-JSON bytes a body may reach while a patch applies
+/// (#718 R1): four times the contract's 64000-byte body, which the
+/// validator checks exactly afterwards. It only stops a patch from building
+/// a large body first, e.g. by copying a part into itself again and again.
+pub(super) const MAX_BUILT_BYTES: usize = 4 * 64_000;
 /// The operations RFC 6902 has.
 pub(super) const OPS: [&str; 6] = ["add", "remove", "replace", "move", "copy", "test"];
 
@@ -30,7 +35,10 @@ pub(super) fn apply(body: &mut Value, ops: &[Value]) -> Result<(), Failed> {
         if path.is_empty() {
             return Err(fail("path", "patch_path", "path \"\" is the whole body: patch its parts, or put the section to replace it.".into()));
         }
-        let from = || pointer(op["from"].as_str().unwrap_or_default()).map_err(|reason| fail("from", "patch_path", reason));
+        let from = || match pointer(op["from"].as_str().unwrap_or_default()) {
+            Ok(tokens) if tokens.is_empty() => Err(fail("from", "patch_path", "from \"\" is the whole body: name the part to move or copy.".into())),
+            found => found.map_err(|reason| fail("from", "patch_path", reason)),
+        };
         match name {
             "add" => add(body, &path, op["value"].clone()).map_err(|reason| fail("path", "patch_path", reason))?,
             "remove" => {
@@ -60,6 +68,14 @@ pub(super) fn apply(body: &mut Value, ops: &[Value]) -> Result<(), Failed> {
                 }
             }
             _ => return Err(fail("path", "patch_path", format!("op is one of {}.", OPS.join(", ")))),
+        }
+        // What may grow the body is measured at once, before the next operation.
+        if matches!(name, "add" | "copy" | "replace") {
+            let bytes = serde_json::to_vec(&*body).map(|bytes| bytes.len()).unwrap_or(usize::MAX);
+            if bytes > MAX_BUILT_BYTES {
+                return Err(fail("path", "too_large", format!(
+                    "After this operation the body is {bytes} bytes of compact JSON, far over the 64000 a section may have; nothing was changed.")));
+            }
         }
     }
     Ok(())
@@ -265,6 +281,24 @@ mod tests {
         assert_eq!((from.field, from.code), ("from", "patch_path"));
         let leading = patched(body, json!([{"op":"remove","path":"/elements/refs/props/items/01"}])).unwrap_err();
         assert_eq!(leading.code, "patch_path", "no leading zeros");
+    }
+
+    /// #718 R1: copying a part into itself again and again would double the
+    /// body each time; it is refused once the body passes MAX_BUILT_BYTES.
+    #[test]
+    fn a_patch_cannot_build_a_body_far_over_the_limit() {
+        let body = json!({"elements":{"text":{"type":"Markdown","props":{"text":"x".repeat(2_000)}}}});
+        let ops: Vec<Value> = (0..MAX_OPS).map(|n| json!({"op":"copy","from":"/elements","path":format!("/elements/c{n}")})).collect();
+        let failed = patched(body.clone(), json!(ops)).unwrap_err();
+        assert_eq!((failed.field, failed.code), ("path", "too_large"));
+        assert!(failed.index < 10, "stopped as soon as it passed the bound, at {}", failed.index);
+        let whole = patched(body.clone(), json!([{"op":"copy","from":"","path":"/elements/all"}])).unwrap_err();
+        assert_eq!((whole.field, whole.code), ("from", "patch_path"));
+        let moved = patched(body.clone(), json!([{"op":"move","from":"","path":"/elements/all"}])).unwrap_err();
+        assert_eq!((moved.field, moved.code), ("from", "patch_path"));
+        let large = json!([{"op":"add","path":"/elements/big","value":"y".repeat(MAX_BUILT_BYTES)}]);
+        assert_eq!(patched(body.clone(), large).unwrap_err().code, "too_large", "a large value is measured too");
+        assert!(patched(body, json!([{"op":"copy","from":"/elements/text","path":"/elements/again"}])).is_ok(), "a copy within the bound applies");
     }
 
     #[test]
