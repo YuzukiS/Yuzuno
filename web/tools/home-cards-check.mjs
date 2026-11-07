@@ -280,13 +280,22 @@ async function check(run) {
     const rows = {};
     for (const key of ["tokenizer", "draft"]) {
       const row = card(key);
-      rows[key] = await row.evaluate((el) => ({ short: el.classList.contains("is-short"), height: Math.round(el.getBoundingClientRect().height),
-        kind: el.querySelector(".home-kind")?.textContent.trim(), changed: el.querySelector(".home-changed")?.textContent.trim() ?? null,
-        reply: el.querySelector(".home-replied-short")?.textContent ?? null,
-        cut: (() => { const r = el.querySelector(".home-replied-short"); return r ? r.scrollWidth > r.clientWidth : null; })() }));
-      assert.ok(rows[key].short, `${key}: one line`);
+      rows[key] = await row.evaluate((el) => {
+        const top = (selector) => Math.round(el.querySelector(selector)?.getBoundingClientRect().top ?? NaN);
+        return { short: el.classList.contains("is-short"), height: Math.round(el.getBoundingClientRect().height),
+          kind: el.querySelector(".home-kind")?.textContent.trim(), changed: el.querySelector(".home-changed")?.textContent.trim() ?? null,
+          reply: el.querySelector(".home-replied-short")?.textContent ?? null,
+          // The reply in short beside the title, or on a line of its own where the pane is narrow (home.css).
+          replyBelow: top(".home-replied-short") > top("h3") + 4,
+          pane: Math.round(document.querySelector(".home-view")?.getBoundingClientRect().width ?? 0),
+          cut: (() => { const r = el.querySelector(".home-replied-short"); return r ? r.scrollWidth > r.clientWidth : null; })() };
+      });
+      assert.ok(rows[key].short, `${key}: in short`);
       assert.equal(rows[key].kind, w.replied);
-      assert.ok(rows[key].height <= (run.phone ? 96 : 56), `${key}: ${rows[key].height} px`);
+      // One line where the pane is wide; where it is narrow (640 px or less), the reply takes a second.
+      const narrow = rows[key].pane <= 640 + 80;
+      assert.equal(rows[key].replyBelow, narrow, `${key}: the reply ${narrow ? "below" : "beside"} the title: ${JSON.stringify(rows[key])}`);
+      assert.ok(rows[key].height <= (narrow ? 96 : 56), `${key}: ${rows[key].height} px`);
     }
     assert.equal(rows.tokenizer.changed, null, "answered, not New");
     assert.equal(rows.draft.changed, w.updated, "changed by its owner after the reply: Updated");
