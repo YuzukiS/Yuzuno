@@ -1165,6 +1165,32 @@ fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
     }
 }
 
+/// A run as a Brief's Live Reference shows it (YN-7): its name, its status as
+/// run_view says it, how many of its stages are done (a reused stage counts as
+/// done; one held for an analysis does not), its task's key as the task has it
+/// now, and the Job of its newest attempt, where the Jobs panel shows the run
+/// with every stage. None for an id no run has.
+pub(super) fn live_ref(db: &Connection, id: &str) -> Result<Option<Value>> {
+    let raw: Option<String> = db.query_row("SELECT data FROM local_job_runs WHERE id=?1", [id], |r| r.get(0)).optional()?;
+    let Some(raw) = raw else { return Ok(None) };
+    let mut run: Value = serde_json::from_str(&raw)?;
+    crate::task_keys::refresh(db, &mut run);
+    let all = attempts(db, id)?;
+    let latest = latest(&all);
+    let stages = run["stages"].as_array().cloned().unwrap_or_default();
+    let done = stages
+        .iter()
+        .filter(|stage| {
+            stage["reusedFrom"].is_object()
+                || (!analysis::pending(stage)
+                    && latest.get(stage["key"].as_str().unwrap_or("")).is_some_and(|job| job["status"] == "succeeded"))
+        })
+        .count();
+    let newest = all.values().flatten().max_by_key(|job| job["cursor"].as_i64().unwrap_or(0)).map(|job| job["id"].clone());
+    Ok(Some(json!({"name":run["name"],"status":run_status(&run, &all),"stagesDone":done,"stages":stages.len(),
+        "taskRef":run["taskRef"],"jobId":newest})))
+}
+
 pub(super) fn run_view(db: &Connection, id: &str) -> Result<Value> {
     let mut run = get_run(db, id)?;
     let queue = QueueState::read(db)?;

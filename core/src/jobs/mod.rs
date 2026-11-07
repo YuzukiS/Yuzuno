@@ -41,6 +41,10 @@ mod suggestion_tests;
 #[cfg(test)]
 mod remote_tests;
 mod runs;
+/// A run of stages as a Brief's Live Reference shows it (YN-7); None for an unknown id.
+pub(crate) fn run_live_ref(db: &rusqlite::Connection, id: &str) -> anyhow::Result<Option<serde_json::Value>> {
+    runs::live_ref(db, id)
+}
 pub(crate) mod store;
 mod task_cost;
 pub(crate) mod service_control;

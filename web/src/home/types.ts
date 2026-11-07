@@ -45,7 +45,7 @@ export type SectionAttachment = {
  * the current state; the Agent only names the item.
  */
 export type LiveRefState = {
-  kind: "task" | "pr" | "ci" | "job" | "review" | "agent" | "machine";
+  kind: "task" | "pr" | "ci" | "job" | "run" | "review" | "agent" | "machine";
   id: string;
   /** Unknown when Core can't find it: shown as such, never guessed. */
   found: boolean;
@@ -69,6 +69,10 @@ export type LiveRefState = {
   archived?: boolean;
   /** Core could not read the item: not the same as not found. */
   unavailable?: boolean;
+  /** For a run of stages (YN-7): how many of its stages are done, of how many. */
+  stages?: { done: number; total: number };
+  /** For a run: the Job of its newest attempt, where Jobs shows the run with every stage. */
+  jobId?: string;
 };
 
 export type Section = {
