@@ -1352,7 +1352,7 @@ def control(name, body):
 COMPACTION_SUMMARY = '## Objective\nfixture summary'
 # The modes of `compact` (`compact_v2`).
 COMPACT_MODES = ('run', 'hold', 'fail', 'unavailable', 'late', 'drop', 'drop-unadmitted', 'refuse-404', 'invalid-400',
-                 'conflict-409', '500', '500-admitted', 'other-pending')
+                 'conflict-409', '500', '500-admitted', 'other-pending', 'forget')
 # What the modes of `compact` that fail fail with (core/src/session/compaction.ts): its error's type and message.
 COMPACT_FAILURES = {'fail': ('compaction.failed', 'fixture: the summary failed'),
                     'unavailable': ('compaction.unavailable', 'fixture: nothing to compact')}
@@ -1983,7 +1983,8 @@ class Handler(BaseHTTPRequestHandler):
         failed, the run succeeded); `late` (run `compactDelay` seconds later, 2 by default); `drop`, `500-admitted`
         (admitted and run, then no answer, or a 500); `drop-unadmitted`, `refuse-404`, `invalid-400`, `conflict-409`,
         `500` (no answer, or that status, nothing admitted); `other-pending` (another compaction, made up and never
-        run, waits in the inbox and answers in place of it)."""
+        run, waits in the inbox and answers in place of it); `forget` (answered as admitted, then no record of it is
+        kept: nothing in the inbox, no message, nothing run)."""
         given = body if isinstance(body, dict) else {}
         with lock:
             compacts_seen.append({'sessionID': session, 'id': given.get('id'), 'delivery': given.get('delivery'), 'keys': sorted(given)})
@@ -2025,6 +2026,10 @@ class Handler(BaseHTTPRequestHandler):
             return conflict()
         if other:
             return self.reply(200, {'data': v2_compact_item(session, other)})
+        if mode == 'forget':
+            mid = mid or v2_message_id()
+            return self.reply(200, {'data': {'id': mid, 'sessionID': session, 'time': {'created': int(time.time() * 1000)},
+                                             'type': 'compaction', 'payload': {}, 'delivery': delivery or 'queue'}})
         cleanup(session)
         mid, running = mid or v2_message_id(), session in statuses
         delivery = delivery or ('steer' if running else 'queue')

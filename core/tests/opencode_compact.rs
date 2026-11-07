@@ -23,6 +23,10 @@ const MODEL: &str = "deepseek/deepseek-flash";
 /// The summary the stand-in's compaction writes (2.x's start with `## Objective`).
 const SUMMARY: &str = "## Objective\nfixture summary";
 
+/// What a test expects of a `/compact` that is to go: 2.x's route admits it
+/// under Core's ID (T-61 slice 4).
+const ADMITTED: &str = "/compact goes by 2.x's route and is admitted under Core's ID";
+
 fn program() -> &'static PathBuf {
     static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
     PROGRAM.get_or_init(|| {
@@ -173,7 +177,7 @@ async fn refuses_new_writes(lab: &Lab, why: &str) {
 async fn a_compaction_is_admitted_under_cores_own_id_and_ends_with_its_summary() {
     let lab = lab(true).await;
     let session = lab.session();
-    let answer = lab.ws.opencode_compact(ID).await.unwrap();
+    let answer = lab.ws.opencode_compact(ID).await.expect(ADMITTED);
     let d = lab.until("its end", |d| compaction(d)["status"] == "completed").await;
     let turn = compaction(&d).clone();
     assert_eq!(answer, json!({"accepted":true,"turnId":turn["id"]}));
@@ -220,11 +224,11 @@ async fn a_failed_compaction_fails_its_turn_though_its_run_ended_well() {
     let lab = lab(true).await;
     for (mode, words) in [("fail", "fixture: the summary failed"), ("unavailable", "fixture: nothing to compact")] {
         lab.compact_mode(mode).await;
-        let turn = lab.ws.opencode_compact(ID).await.unwrap()["turnId"].as_str().unwrap().to_owned();
+        let turn = lab.ws.opencode_compact(ID).await.expect(ADMITTED)["turnId"].as_str().unwrap().to_owned();
         let d = lab.until("its end", |d| d.turns.iter().any(|t| t["id"] == turn.as_str() && t["status"] != "inProgress")).await;
         let ended = d.turns.iter().find(|t| t["id"] == turn.as_str()).unwrap();
         assert_eq!((&ended["status"], &ended["error"]["message"], &ended["_opencodeCompact"]["state"]),
-            (&json!("failed"), &json!(words), &json!("failed")), "{mode}: {ended:#}");
+            (&json!("failed"), &json!(words), &json!("failed")), "{mode}: the compaction failed, so its Turn did, in 2.x's words: {ended:#}");
         assert_eq!(d.agent.status, "idle");
     }
     lab.compact_mode("run").await;
@@ -238,14 +242,14 @@ async fn a_failed_compaction_fails_its_turn_though_its_run_ended_well() {
 async fn an_interrupted_compaction_is_stopped_and_holds_nothing_back() {
     let lab = lab(true).await;
     lab.compact_mode("hold").await;
-    lab.ws.opencode_compact(ID).await.unwrap();
+    lab.ws.opencode_compact(ID).await.expect(ADMITTED);
     lab.until("its start", |d| compaction(d)["_opencodeCompact"]["native"]["status"] == "running").await;
     refuses_new_writes(&lab, "OpenCode 正在压缩").await;
     lab.ws.interrupt(ID).await.unwrap();
     let d = lab.until("its stop", |d| compaction(d)["status"] != "inProgress").await;
     let stopped = compaction(&d);
     assert_eq!((&stopped["status"], &stopped["_opencodeCompact"]["state"], &stopped["error"]["native"]["type"]),
-        (&json!("interrupted"), &json!("stopped"), &json!("aborted")), "{stopped:#}");
+        (&json!("interrupted"), &json!("stopped"), &json!("aborted")), "interrupted, it is stopped, as 2.x aborted it: {stopped:#}");
     lab.compact_mode("run").await;
     lab.send("c1", "And now?").await.unwrap();
     assert_eq!(lab.sent().len(), 1, "the next message went");
@@ -266,7 +270,7 @@ async fn an_auto_or_another_clients_compaction_never_ends_this_turn() {
 
     // Ours admitted and waiting, while an automatic one and another client's run and end.
     lab.control("mode", json!({"compact":"late","compactDelay":3})).await;
-    lab.ws.opencode_compact(ID).await.unwrap();
+    lab.ws.opencode_compact(ID).await.expect(ADMITTED);
     lab.control("autoCompact", json!({"sessionID":session})).await;
     let other = yuzuno_workspace::opencode::MessageId::new();
     let now = chrono::Utc::now().timestamp_millis();
@@ -307,6 +311,25 @@ async fn a_lost_admission_is_found_by_its_id_and_never_sent_again() {
     assert_eq!(lab.compacts().await.len(), 3, "never sent again");
 }
 
+/// A compaction 2.x answered as admitted but keeps no record of, neither in
+/// its inbox nor among its messages while it is idle, is unknown once a
+/// whole read of the session finds it so: never left waiting, never sent
+/// again.
+#[tokio::test]
+async fn an_admitted_compaction_2x_keeps_no_record_of_is_unknown_once_read_whole() {
+    let lab = lab(true).await;
+    lab.compact_mode("forget").await;
+    lab.ws.opencode_compact(ID).await.expect(ADMITTED);
+    // The event stream ends and comes back: Core reads the session whole again, the same process still there.
+    lab.control("drop", json!({})).await;
+    let d = lab.until("the end of a compaction 2.x has no record of", |d| compaction(d)["_opencodeCompact"]["state"] == "unknown").await;
+    let lost = compaction(&d);
+    assert!(lost["status"] == "outcomeUnknown" && lost["error"]["message"].as_str().unwrap_or_default().contains("OpenCode 的记录里没有这次压缩"),
+        "unknown, as 2.x has no record of it: {lost:#}");
+    assert_eq!(d.agent.connection_state, "connected", "the same connection");
+    assert_eq!(lab.compacts().await.len(), 1, "never sent again");
+}
+
 /// A compaction cut off with its process (2.x settles the message its
 /// earlier process left running as `compaction.interrupted`) is stopped
 /// once the session is read again, as an interrupted one is.
@@ -314,7 +337,7 @@ async fn a_lost_admission_is_found_by_its_id_and_never_sent_again() {
 async fn a_compaction_cut_off_with_its_process_is_stopped_once_read_again() {
     let lab = lab(true).await;
     lab.compact_mode("hold").await;
-    lab.ws.opencode_compact(ID).await.unwrap();
+    lab.ws.opencode_compact(ID).await.expect(ADMITTED);
     lab.until("its start", |d| compaction(d)["_opencodeCompact"]["native"]["status"] == "running").await;
     let seen: Value = serde_json::from_str(&std::fs::read_to_string(lab.root().join("start.json")).unwrap()).unwrap();
     let pid = seen["pid"].as_u64().unwrap().to_string();
@@ -337,7 +360,7 @@ async fn only_a_refusal_before_admission_counts_as_refused() {
     for (mode, words) in [("refuse-404", "（HTTP 404）"), ("invalid-400", "（HTTP 400）")] {
         lab.compact_mode(mode).await;
         let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
-        assert!(error.contains("OpenCode 拒绝了 /compact") && error.contains(words), "{mode}: {error}");
+        assert!(error.contains("OpenCode 拒绝了 /compact") && error.contains(words), "{mode}: refused before admission, saying so: {error}");
         let d = lab.detail();
         assert_eq!((&compaction(&d)["status"], &compaction(&d)["_opencodeCompact"]["state"]), (&json!("failed"), &json!("refused")), "{mode}");
         assert_eq!(d.agent.status, "idle");
@@ -361,22 +384,22 @@ async fn only_a_refusal_before_admission_counts_as_refused() {
 async fn nothing_is_asked_while_busy_with_a_revert_held_or_no_model_known() {
     let lab = lab(false).await;
     let session = lab.session();
-    let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
-    assert!(error.contains("无法确定压缩用哪个模型"), "{error}");
+    let error = lab.ws.opencode_compact(ID).await.expect_err("refused with no model known").to_string();
+    assert!(error.contains("无法确定压缩用哪个模型"), "refused with no model known, saying so: {error}");
     lab.ws.opencode_set_model(ID, MODEL.into()).await.unwrap();
     lab.control("revert", json!({"sessionID":session})).await;
-    let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
-    assert!(error.contains("请先发一条消息"), "{error}");
+    let error = lab.ws.opencode_compact(ID).await.expect_err("refused while the session holds a revert").to_string();
+    assert!(error.contains("请先发一条消息"), "refused while the session holds a revert, saying so: {error}");
 
     let lab = self::lab(true).await;
     let session = lab.session();
     lab.control("busy", json!({"sessionID":session})).await;
-    let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
-    assert!(error.contains("不是空闲状态"), "{error}");
+    let error = lab.ws.opencode_compact(ID).await.expect_err("refused while 2.x is busy").to_string();
+    assert!(error.contains("不是空闲状态"), "refused while 2.x is busy, saying so: {error}");
     lab.control("idle", json!({"sessionID":session})).await;
     lab.control("mode", json!({"fail":{format!("/api/session/{session}"):500}})).await;
-    let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
-    assert!(error.contains("没有读到 OpenCode 会话现在的状态"), "{error}");
+    let error = lab.ws.opencode_compact(ID).await.expect_err("refused when the session can't be read").to_string();
+    assert!(error.contains("没有读到 OpenCode 会话现在的状态"), "refused when the session can't be read, saying so: {error}");
     assert!(lab.compacted().is_empty() && lab.compacts().await.is_empty(), "{:#?}", lab.calls());
     assert!(compactions(&lab.detail()).is_empty());
 }
@@ -387,13 +410,13 @@ async fn nothing_is_asked_while_busy_with_a_revert_held_or_no_model_known() {
 async fn with_no_model_chosen_the_sessions_own_model_is_used() {
     let lab = lab(true).await;
     let session = lab.session();
-    lab.ws.opencode_compact(ID).await.unwrap();
+    lab.ws.opencode_compact(ID).await.expect(ADMITTED);
     lab.until("its end", |d| compaction(d)["status"] == "completed").await;
     // The session now has the chosen model; no model is chosen for the next.
     lab.ws.opencode_set_model(ID, String::new()).await.unwrap();
     let switches = || lab.calls().into_iter().filter(|c| c["method"] == "POST" && c["path"] == format!("/api/session/{session}/model")).count();
     let before = switches();
-    lab.ws.opencode_compact(ID).await.unwrap();
+    lab.ws.opencode_compact(ID).await.expect(ADMITTED);
     lab.until("its end", |d| compactions(d).len() == 2 && compaction(d)["status"] == "completed").await;
     assert_eq!(switches(), before, "nothing switched");
     assert_eq!(compaction(&lab.detail())["_opencodeCompact"]["model"], "deepseek/deepseek-flash", "the session's own");
@@ -408,7 +431,7 @@ async fn the_compact_route_runs_an_opencode_agents_own_compaction() {
     let request = Request::builder().method("POST").uri(format!("/api/agents/{ID}/compact"))
         .header("host", "localhost:4999").header("x-yuzuno-client", "desktop").body(Body::empty()).unwrap();
     let response = router.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), 200);
+    assert_eq!(response.status(), 200, "the route runs an OpenCode Agent's compaction");
     lab.until("its end", |d| compaction(d)["status"] == "completed").await;
     assert_eq!(lab.compacts().await.len(), 1);
 }

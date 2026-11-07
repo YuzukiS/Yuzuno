@@ -315,6 +315,22 @@ fn a_delivered_compaction_whose_admission_was_unseen_is_no_users_message() {
     assert!(c.sessions.get("ses_1").is_some_and(|open| open.held.is_none() && open.user.is_none()), "nothing held, no turn open");
 }
 
+/// A delivery whose admission went unseen is held only until the session's
+/// next event tells what it was (T-61 slice 4, D-21): another compaction's
+/// start (an automatic one, as an overflow starts at a run's beginning) does
+/// not make it that compaction's input, so it is a user's message.
+#[test]
+fn an_unseen_delivery_is_no_other_compactions_input() {
+    let mut c = Cursor::default();
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    let mut out = c.read(&ev("session.inbox.delivered", 1, d(json!({"inboxID": "msg_u0"}))));
+    out.extend(c.read(&ev("session.execution.started", 2, d(json!({})))));
+    out.extend(c.read(&ev("session.compaction.started", 3, d(json!({"reason": "auto"})))));
+    let users: Vec<&Value> = out.iter().filter(|e| e["data"]["info"]["role"] == "user").map(|e| &e["data"]["info"]).collect();
+    assert_eq!(users, [&json!({"id": "msg_u0", "role": "user", "time": {"created": 1}, "_opencodeUnseen": true})],
+        "the unseen delivery, a user's message, not the automatic compaction's input: {out:?}");
+}
+
 /// A compaction is read as Core's own `opencode.compaction` (T-61 slice 4),
 /// live and whole alike: its message's ID (the input's, for one asked for),
 /// how it stands, why it ran, and its summary and model, or its error. One

@@ -2441,10 +2441,6 @@ fn message(d: &mut AgentDetail, info: &Value) {
     let Some(id) = info["id"].as_str() else { return };
     match info["role"].as_str() {
         Some("user") => {
-            // The input of a compaction Core asked for is no user's message (D-21): what becomes of it is its own.
-            if d.turns.iter().any(|t| t["_opencodeCompact"]["input"] == id) {
-                return;
-            }
             command_input(d, info);
             confirm(d, id);
             confirm_input(d, id);
