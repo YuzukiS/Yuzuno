@@ -58,7 +58,7 @@ export const jobsText = strings({
   task: (id: string) => `Task ${id}`,
   close: "Close jobs",
   source: "Job source",
-  sources: { local: "Local", github_actions: "GitHub Actions", reviews: "Reviews" } as Record<"local" | "github_actions" | "reviews", string>,
+  sources: { local: "Local", github_actions: "GitHub Actions", reviews: "Reviews", merge_queue: "Merge queue" } as Record<"local" | "github_actions" | "reviews" | "merge_queue", string>,
   onMachine: (active: number, queued: number) => `${active} active · ${queued} queued on this machine`,
   // Local jobs.
   local: "Local jobs",
@@ -240,7 +240,7 @@ export const jobsText = strings({
   task: (id) => `任务 ${id}`,
   close: "关闭 Job",
   source: "Job 来源",
-  sources: { local: "本地", github_actions: "GitHub Actions", reviews: "审查" },
+  sources: { local: "本地", github_actions: "GitHub Actions", reviews: "审查", merge_queue: "合并队列" },
   onMachine: (active, queued) => `此机器上 ${active} 个活跃 · ${queued} 个排队`,
   local: "本地 Job",
   refresh: "刷新 Job",
