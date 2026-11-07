@@ -200,14 +200,26 @@ pub(super) fn next_page(link: &str, endpoint: &str, page: u64) -> Result<Option<
 }
 
 pub(super) async fn read(ws: &Arc<Workspace>, endpoint: String, ttl: i64) -> Result<Value> {
+    fetch(ws, endpoint, ttl, true).await
+}
+/// The same read that always asks GitHub (with the cached ETag, so an unchanged
+/// body costs a 304): GitHub's X-Poll-Interval does not keep a cached body. For
+/// the merge queue, whose checks compare reads taken in one pass: GitHub sends
+/// X-Poll-Interval: 300 with git/ref reads, and a ref kept that long read an
+/// older main than branches/main (YN-18 S2c).
+pub(super) async fn revalidate(ws: &Arc<Workspace>, endpoint: String) -> Result<Value> {
+    fetch(ws, endpoint, 0, false).await
+}
+async fn fetch(ws: &Arc<Workspace>, endpoint: String, ttl: i64, poll: bool) -> Result<Value> {
     let key = endpoint.clone();
     let (cached, cooldown) = ws.stored(move |s| s.ci_cache(&key)).await?;
     let epoch = chrono::Utc::now().timestamp();
     if cached.as_ref().is_some_and(|c| {
+        let interval = if poll { c["pollSeconds"].as_i64().unwrap_or(0) } else { 0 };
         c["fetchedAt"]
             .as_i64()
             .unwrap_or(0)
-            .saturating_add(ttl.max(c["pollSeconds"].as_i64().unwrap_or(0)))
+            .saturating_add(ttl.max(interval))
             > epoch
     }) {
         return Ok(cached.unwrap());

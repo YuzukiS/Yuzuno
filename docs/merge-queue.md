@@ -174,7 +174,12 @@ repository's queue is paused does not count: a paused entry waits for the
 unpause however long it takes. While GitHub reads are
 cooling down, the entry waits until the cooldown ends. Each GitHub read holds
 one of Core's shared GitHub slots only while it runs; job-log downloads hold
-none.
+none. Every read asks GitHub again, with the cached ETag, so an unchanged
+answer is a 304, which GitHub does not count against the primary rate limit.
+That holds even where GitHub asks clients to wait longer before reading again
+(`X-Poll-Interval`, 300 seconds with ref reads): a ref kept that long would
+name an older main than the branch read beside it. The CI monitor's own
+polling keeps the interval.
 
 ## Landing
 
