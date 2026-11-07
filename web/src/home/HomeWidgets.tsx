@@ -4,7 +4,7 @@
 // each workspace (widget-layout.ts) and changed only in Organize; an Agent's
 // update changes a widget's content, never its place. Machines is a widget;
 // Brief sections the user pins join it. Nothing is pinned for the user.
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, Eye, EyeOff, LayoutGrid, PinOff, SlidersHorizontal } from "lucide-react";
 import { Modal } from "../components";
 import { useStrings } from "../i18n";
@@ -13,6 +13,8 @@ import type { CardSize } from "./card-preview";
 import { SizeChoice } from "./SizeChoice";
 import { cardText } from "./card-text";
 import type { WidgetLayout } from "./widget-layout";
+import type { DeckItem } from "./deck-pack.ts";
+import { useDeckPacking } from "./deck-packing";
 
 /** A pinned card's size on the widget column: the user's, else its Agent's (`own`). */
 export type WidgetSize = { shown: CardSize; own: CardSize; chosen: CardSize | null; onChange: (size: CardSize | null) => void };
@@ -62,6 +64,9 @@ export function HomeWidgets({
   const c = useStrings(cardText);
   const [organizing, setOrganizing] = useState(false);
   const { shown, hidden } = arrangeWidgets(widgets, layout ?? { order: [], hidden: [], pins: [] });
+  // With no holes, in the user's order, as the deck is (deck-pack.ts, YN-3).
+  const grid = useRef<HTMLDivElement>(null);
+  useDeckPacking(grid, (el) => Array.from(el.children) as HTMLElement[], widgetSlot);
   function change(order: HomeWidget[], hiddenIds: string[]) {
     onChange?.((current) => ({ ...current, order: order.map((widget) => widget.id), hidden: hiddenIds }));
   }
@@ -113,7 +118,7 @@ export function HomeWidgets({
       </header>
       {!layout && <p className="home-note">{t.readingLayout}</p>}
       {layout && shown.length > 0 && (
-        <div className="home-widget-grid">
+        <div ref={grid} className="home-widget-grid">
           {shown.map((widget) => (
             <div
               key={widget.id}
@@ -249,4 +254,19 @@ export function HomeWidgets({
       )}
     </section>
   );
+}
+
+/** A widget as a deck item: a pinned card at its size; null for one that takes its row (Machines, a pin shown in full). */
+function widgetSlot(slot: HTMLElement): DeckItem | null {
+  if (slot.classList.contains("is-full")) return null;
+  switch (slot.dataset.widgetSize) {
+    case "small":
+      return { span: 1 };
+    case "wide":
+      return { span: 2 };
+    case "large":
+      return { span: 2, tall: true };
+    default:
+      return null;
+  }
 }

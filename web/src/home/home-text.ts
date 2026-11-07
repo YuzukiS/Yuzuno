@@ -69,6 +69,11 @@ export const homeText = strings({
   noContent: "No current Home content. Content editors can add reports and status; everyone can add an Ask.",
   showLess: "Show less",
   showMore: "Show more",
+  /** The deck's heading over the Asks the user answered (YN-3). */
+  repliedGroup: (count: number) => `Replied, waiting · ${count}`,
+  /** The deck's closed group of status past its validity (YN-3). */
+  outOfDate: (count: number, newest: string) =>
+    `Out of date · ${count === 1 ? "1 status" : `${count} statuses`}${newest ? ` · newest data as of ${newest}` : ""}`,
   seenAll: "Seen all",
   teamDetails: "Team details & history",
   agentErrors: "Agent errors",
@@ -348,6 +353,8 @@ export const homeText = strings({
   noContent: "目前没有 Home 内容。内容编辑者可以添加报告和状态；所有人都可以添加 Ask。",
   showLess: "收起",
   showMore: "显示更多",
+  repliedGroup: (count) => `已回复，等处理 · ${count}`,
+  outOfDate: (count, newest) => `已过期 · ${count} 个状态${newest ? ` · 最新数据 ${newest}` : ""}`,
   seenAll: "全部标为已看",
   teamDetails: "团队详情与历史",
   agentErrors: "Agent 错误",
