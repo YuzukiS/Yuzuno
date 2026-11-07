@@ -588,7 +588,7 @@ try {
   });
 
   for (const [width, height, name] of [[1720, 1100, "home-1720"], [1200, 900, "home-1200"], [647, 900, "home-647"], [390, 844, "home-phone-390"]])
-    await step(`Home deck at ${width}: columns by the pane; small, wide and large cards in the author's order, none cut; conditions in two lines, legacy cards plain; nothing sideways`, async () => {
+    await step(`Home deck at ${width}: columns by the pane; small, wide and large cards in the author's order, none cut; conditions in two lines, cards with no summary show how they open; nothing sideways`, async () => {
       await open(width, height);
       await toHome();
       // The repositories' line reads its activity only once on screen, as the lists did.
@@ -637,9 +637,9 @@ try {
           more: one("audit").querySelector(".home-card-conditions-toggle")?.textContent ?? null,
           table: one("batches").querySelector("figcaption")?.textContent ?? null,
           tableCells: one("batches").querySelectorAll(".home-card-table tbody td").length,
-          legacy: one("setup").querySelector(".home-summary-unnamed")?.textContent ?? null,
+          legacy: one("setup").querySelector(".home-summary-lead")?.textContent ?? null,
           legacyBody: !!one("setup").querySelector(".brief-body"),
-          // A card with no summary keeps its own height beside taller cards.
+          // A card with no summary: its height, at the deck's minimum as the others have (YN-3).
           legacyHeights: ["setup", "dose-study"].map((key) => Math.round(one(key).getBoundingClientRect().height)),
           leadMin: getComputedStyle(one("audit").querySelector(".home-summary-lead .brief-markdown")).minHeight,
           machines: (() => {
@@ -672,9 +672,8 @@ try {
         if (place.size === "wide" && place.beside !== null) assert.equal(place.beside, deckShape.columns > 1, `${place.key}'s figure beside its text: ${JSON.stringify(place)}`);
         if (place.size === "small") assert.equal(place.frame, false, `a small card has no frame: ${place.key}`);
         if (place.size === "large" && place.leadGap !== null) assert.ok(place.leadGap <= 12, `${place.key}: ${place.leadGap} px between its text and its figure`);
-        // A minimum on each card, not each row (Dev 7, 2396): none on one column, nor on a card with no summary.
-        const unnamed = ["setup", "data", "baseline", "dose-study"].includes(place.key);
-        const least = deckShape.columns === 1 || unnamed ? "auto" : place.size === "large" && deckShape.columns === 4 ? "536px" : "260px";
+        // A minimum on each card, not each row (Dev 7, 2396): none on one column; a card with no summary has it too (YN-3).
+        const least = deckShape.columns === 1 ? "auto" : place.size === "large" && deckShape.columns === 4 ? "536px" : "260px";
         assert.equal(place.minHeight, least, `${place.key}'s minimum height: ${JSON.stringify(place)}`);
         if (place.open) assert.ok(place.open.wrap === "nowrap" && place.open.height <= 34, `${place.key}'s Open on one line: ${JSON.stringify(place.open)}`);
         // No stripe on any card's side, nor on its conditions: one border all round.
@@ -710,12 +709,12 @@ try {
       if (deckShape.hidden > 0) assert.equal(deckShape.more, `+${deckShape.hidden} more conditions`);
       assert.equal(deckShape.table, "3 of 9 rows · 3 of 6 columns");
       assert.equal(deckShape.tableCells, 9);
-      assert.equal(deckShape.legacy, "No summary named");
+      assert.equal(deckShape.legacy, "Paragraph 1 about the setup.");
       assert.equal(deckShape.legacyBody, false);
       assert.equal(deckShape.sideways, false, JSON.stringify(deckShape));
       // Dev 7 (2308): the lead keeps three lines only where a row lines up.
       assert.equal(deckShape.leadMin === "0px", deckShape.columns === 1, `the lead's minimum height: ${deckShape.leadMin}`);
-      if (deckShape.columns > 1) assert.ok(deckShape.legacyHeights.every((h) => h <= 170), `legacy cards at their own height: ${deckShape.legacyHeights}`);
+      if (deckShape.columns > 1) assert.ok(deckShape.legacyHeights.every((h) => h >= 260), `cards with no summary at the deck's minimum: ${deckShape.legacyHeights}`);
       // Machines fills its row, as one row of four cells where it is wide.
       assert.equal(deckShape.machines.width, deckShape.machines.column, JSON.stringify(deckShape.machines));
       assert.equal(deckShape.machines.cells, 4);
@@ -731,7 +730,7 @@ try {
       // Every palette and theme (Dev 7, 2351), the controls that show only after a click included:
       // the conditions' toggle both ways, a card's More actions, Repository details opened.
       const CARD_TEXT = [
-        ".home-summary-card :is(.home-summary-title-link, .home-summary-lead, .home-summary-unnamed, .home-summary-foot span, .home-report-open, .home-card-condition-chips li, figcaption, .home-card-conditions-label, .home-card-conditions-toggle)",
+        ".home-summary-card :is(.home-summary-title-link, .home-summary-lead, .home-summary-foot span, .home-report-open, .home-card-condition-chips li, figcaption, .home-card-conditions-label, .home-card-conditions-toggle)",
         ".home-summary-card .home-card-conditions .brief-markdown :is(p, li)",
         ".home-summary-card .home-card-numbers :is(dt, dd)",
         ".home-summary-card :is(.home-sub-of, .home-card-numbers-count)",
@@ -1062,7 +1061,7 @@ try {
       full: await slot.evaluate((el) => el.classList.contains("is-full")),
       draft: await field.inputValue(),
       focused: await field.evaluate((el) => el === document.activeElement),
-      unnamed: await widget.locator(".home-summary-unnamed").count(),
+      unnamed: await widget.locator(".home-summary-card.is-unnamed").count(),
     });
     try {
       // Its Agent drops the summary: the same widget, the user's size, the draft and the focus; it says it has none.

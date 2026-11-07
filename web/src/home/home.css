@@ -972,8 +972,9 @@ ul.home-widget {
    Cards come in three sizes, as iOS widgets do (Lead 2377): small (one
    column), wide (two columns) and large (two columns, two rows). Each card
    has a minimum height, never a cap, and a row is as tall as its tallest
-   card: a card that needs more grows its row, and an Ask's own row, or a
-   card with no summary, takes only the height it needs (Dev 7, 2396).
+   card: a card that needs more grows its row, and an Ask's own row takes
+   only the height it needs (Dev 7, 2396). A card whose author named no
+   summary shows how its body opens and takes the same minimum (YN-3).
    Placement is the grid's own row flow, never dense: a card that does not
    fit where a row ends starts the next, leaving the gap empty, so the
    keyboard's order, the author's, is the order on screen. */
@@ -990,7 +991,8 @@ ul.home-widget {
   .home-brief {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .home-brief .home-summary-card:not(.is-unnamed) {
+  /* A card whose author named no summary too: it shows how its body opens (YN-3). */
+  .home-brief .home-summary-card {
     min-height: 260px;
   }
   .home-brief .home-summary-card:is(.size-wide, .size-large) {

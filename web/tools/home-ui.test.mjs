@@ -1220,22 +1220,26 @@ function readingFixture() {
   return home;
 }
 
-test("a summary card says what it is, when its data is from and that nobody keeps it; a body naming no summary gives no excerpt (T-173, T-18)", async () => {
+test("a summary card says what it is, when its data is from and that nobody keeps it; a body naming no summary shows its opening paragraph and no more (T-173, T-18, YN-3)", async () => {
   const p = await mount({ home: readingFixture() });
   try {
     await waitFor(() => card(p, "p-docs", "layout"), "the Docs cards are drawn");
     const overview = card(p, "p-docs", "overview");
     const evidence = card(p, "p-docs", "evidence");
     const layout = card(p, "p-docs", "layout");
-    // These bodies name no summary: the card says so, lightly, and takes nothing
-    // from the body, neither its opening paragraph nor its chart (Lead 2292).
+    // These bodies name no summary: each card shows how its body opens, as a folded
+    // card does (YN-3): the first paragraph of an accent Group or a Markdown, and
+    // nothing after it; a body opening with a plain Group gives none.
+    const lead = (root) => root.querySelector(".home-summary-lead")?.textContent ?? null;
+    assert.equal(lead(overview), "Release core.15 is out; two lines wait for main.");
+    assert.equal(lead(layout), "Daily runs core.12.");
+    assert.equal(lead(evidence), null, "a body opening with a plain Group gives no paragraph");
     for (const root of [overview, evidence, layout]) {
-      assert.equal(root.querySelector(".home-summary-unnamed").textContent, "No summary named");
-      assert.equal(root.querySelector(".home-summary-lead"), null);
-      assert.equal(root.querySelector(".home-card-frame"), null);
-      assert.equal(root.querySelector(".brief-body"), null, "no block of the body on Home");
+      assert.ok(!/No summary named/.test(root.textContent), "never “No summary named”");
+      assert.ok(!root.querySelector(".home-card-frame"), "no frame: a card with no summary is small");
+      assert.ok(!root.querySelector(".brief-body"), "no block of the body on Home");
     }
-    assert.doesNotMatch(overview.textContent, /core\.15/);
+    assert.doesNotMatch(overview.textContent, /Details below/);
     // When its data is from, in the foot of a status; a report says when it was updated.
     assert.match(layout.querySelector(".home-summary-foot").textContent, /Data as of/);
     assert.doesNotMatch(overview.querySelector(".home-summary-foot").textContent, /Data as of/);

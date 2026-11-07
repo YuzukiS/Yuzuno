@@ -39,8 +39,8 @@ import "./summary-card.css";
  * report" are the two ways there; nothing else on the card opens it, so the
  * card's own controls stay theirs. A kept image it shows opens whole in
  * place, as on its report page (YN-3), not the report. What it shows is
- * what the author named (the conclusion, what it holds under, one figure); when they named none,
- * only that, under its title: nothing is taken from the body for them.
+ * what the author named (the conclusion, what it holds under, one figure);
+ * when they named none, how its body opens (cardContent, YN-3).
  */
 export const SummaryCard = memo(function SummaryCard({
   section,
@@ -118,7 +118,7 @@ export const SummaryCard = memo(function SummaryCard({
   // A small card draws no figure (Dev 7's v12, v15): Metrics as big numbers;
   // a kept image, a button that opens it whole in place (YN-3); any other,
   // one line naming it and where it is read, "Open report" below.
-  const shown = content.kind === "named" ? content.figure : null;
+  const shown = content.figure;
   const figure = !shown ? null : size !== "small" ? (
     <FigureFrame section={section} projectId={projectId} figure={shown} large={size === "large"} />
   ) : metricsOf(section, shown) ? (
@@ -201,19 +201,13 @@ export const SummaryCard = memo(function SummaryCard({
               section.title
             )}
           </h3>
-          {content.kind === "named" ? (
-            <>
-              {content.lead && (
-                <div className="home-summary-lead">
-                  <BriefMarkdown text={content.lead} />
-                </div>
-              )}
-              {content.conditions && (
-                <CardConditions section={section} projectId={projectId} id={content.conditions} lines={size === "large" ? 3 : 2} />
-              )}
-            </>
-          ) : (
-            <p className="home-summary-unnamed">{t.noSummary}</p>
+          {content.lead && (
+            <div className="home-summary-lead">
+              <BriefMarkdown text={content.lead} />
+            </div>
+          )}
+          {content.kind === "named" && content.conditions && (
+            <CardConditions section={section} projectId={projectId} id={content.conditions} lines={size === "large" ? 3 : 2} />
           )}
         </div>
         {figure}

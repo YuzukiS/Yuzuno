@@ -614,6 +614,39 @@ test("YN-3 a small card's kept image is a View image button that opens the same 
   assert.deepEqual(page.errors, []);
 });
 
+test("YN-3 a card whose author named no summary opens as its body does: a first paragraph, or a first block shown as a small card shows figures; never more", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const unnamed = (top, elements) => readSection(page, {
+    op: "put", key: "plain", kind: "report", title: "Plain",
+    attachments: [{ name: "shot.png", path: "/runs/shot.png" }],
+    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: top }, ...elements } },
+  }, { attachments: [attachment("shot.png", "image", "image/png")] });
+  const md = (text) => ({ type: "Markdown", props: { text } });
+  const metrics = { type: "Metrics", props: { items: [{ label: "Shards", value: 2 }, { label: "Lines", value: 40, unit: "k" }] } };
+  const lead = () => document.querySelector(".home-summary-lead")?.textContent ?? null;
+  const card = () => document.querySelector("article.home-summary-card");
+  // Text first: its first paragraph, the rest left to its page.
+  window.renderCard(unnamed(["text", "m"], { text: md("Two shards rebuilt.\n\nThe rest below."), m: metrics }), PROJECT, { deck: true });
+  assert.equal(lead(), "Two shards rebuilt.");
+  assert.equal(card().dataset.cardSize, "small");
+  assert.ok(!document.querySelector(".home-card-numbers"), "only the opening: not the Metrics after it");
+  // Metrics first: as a small card shows them, in big numbers.
+  window.renderCard(unnamed(["m"], { m: metrics }), PROJECT, { deck: true });
+  assert.equal(lead(), null);
+  assert.deepEqual([...document.querySelectorAll(".home-card-numbers dd")].map((dd) => dd.textContent), ["2", "40 k"]);
+  // An image first: View image, as a small card offers its image.
+  window.renderCard(unnamed(["files"], { files: { type: "Attachments", props: { items: [{ name: "shot.png" }] } } }), PROJECT, { deck: true });
+  assert.equal(document.querySelectorAll("button.home-card-image-view").length, 1);
+  // Nothing a card can show first: its title alone, never “No summary named”.
+  window.renderCard(unnamed(["g", "text"], { g: { type: "Group", props: { title: "Runs" }, children: ["log"] }, log: md("Run 101"), text: md("Merged.") }), PROJECT, { deck: true });
+  assert.equal(lead(), null);
+  assert.ok(!document.querySelector(".home-card-figure-note, .home-card-numbers, .home-card-frame"), "no figure");
+  assert.doesNotMatch(card().textContent, /No summary named|Run 101|Merged/);
+  assert.deepEqual(page.errors, []);
+});
+
 test("live references open the app's existing panels, GitHub pages or nothing", async (t) => {
   const page = mount(respond);
   t.after(page.close);

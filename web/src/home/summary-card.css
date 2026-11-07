@@ -106,18 +106,6 @@
 .home-summary-body {
   flex: 1 1 auto;
 }
-/* A card whose author named no summary says so, lightly, and no more. It
-   keeps its own height at the top of its row: stretched beside a tall
-   summary, its empty middle would look broken (Dev 7). */
-.home-section.home-summary-card.is-unnamed {
-  align-self: start;
-}
-.home-summary-unnamed {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: calc(9.5px + var(--font-adjust, 3px));
-}
-
 /* The conditions on a card: chips in two lines, or two lines of text. */
 .home-card-condition-chips {
   display: flex;
