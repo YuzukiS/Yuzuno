@@ -1262,6 +1262,10 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
+        // Jobs that exist but wait for an earlier stage of their run or for
+        // its analysis (T-69): in neither the queue nor the running count. Not
+        // those stuck behind a failed or unknown stage or the cost limit.
+        let waiting = super::runs::waiting_count(&db)?;
         let available = limit.available(&used);
         // Hints for choosing a CPU range (T-64), as the grant rule reads them now.
         let cpu_free = limit.cpu_millis.saturating_sub(super::cpu::held(&db)?);
@@ -1282,7 +1286,7 @@ impl Store {
         let windows = json!({"maxJobs": windows_cap.map_or(super::remote::SLOTS, i64::from), "set": windows_cap.is_some(),
             "defaultMaxJobs": super::remote::SLOTS, "activeCount": windows_active, "sharesThisBudget": true});
         Ok(
-            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"cpuMillisFree":cpu_free,"queueLength":queued,"running":running,"cpuHint":CPU_HINT,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
+            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"waitingCount":waiting,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"cpuMillisFree":cpu_free,"queueLength":queued,"running":running,"cpuHint":CPU_HINT,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
         )
     }
     /// A budget save that leaves maxActive as it is (tests; the route takes both).

@@ -13,7 +13,8 @@ import {
 } from "./subagents";
 import type { NativeItem } from "./types";
 import { useConversationReveal, useConversationWindowed } from "./ConversationWindow";
-import { StatusMark, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
+import { StatusMark, WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity, type WorkEntry } from "./WorkDock";
+import { subAgentWork, type WorkKind } from "./work-activity.ts";
 import { useLanguage, useStrings, type Language } from "./i18n";
 import { cardWords } from "./subagent-text";
 import { useSurfaceIn } from "./surface";
@@ -129,6 +130,7 @@ export function SubAgentDock({
   onNavigate,
   group: given,
   limit = SHOWN,
+  kind = "subAgent",
 }: {
   agentId: string;
   turns: readonly { id: string; status?: string; items?: readonly NativeItem[] }[];
@@ -138,13 +140,53 @@ export function SubAgentDock({
   group?: DockGroup;
   /** At most this many on the dock; 0 leaves the group off it. */
   limit?: number;
+  /**
+   * Which kind of work this dock reports. Claude's background tasks pass
+   * their own: two docks sharing a kind overwrote each other's work in the
+   * registry, and either one unmounting cleared both (#459 round 1, P1).
+   */
+  kind?: WorkKind;
 }) {
   const language = useLanguage();
   const group = given ?? subAgentsGroup(language);
   const codex = useMemo(() => conversationSubAgents(turns), [turns]);
   const all = useMemo(() => [...codexEntries(agentId, codex, language), ...entries], [agentId, codex, entries, language]);
+  // Every sub-agent the conversation knows about, for the dock's one entry,
+  // whatever the limit draws here.
   const [card, setCard] = useState<{ key: string | null; from: HTMLElement } | null>(null);
-  if (!all.length || limit <= 0) return null;
+  const work = useMemo<WorkEntry[]>(
+    () => all
+      .map((child) => ({ id: child.key, kind, state: subAgentWork(child.status),
+        name: child.label, says: child.state,
+        // Its own card, opened from wherever the reader pressed.
+        onOpen: (from: HTMLElement) => setCard({ key: child.key, from }) }))
+      .filter((item) => item.state !== "uncounted") as WorkEntry[],
+    [all, kind],
+  );
+  // Its group's own card, which is what the dock's heading opens; by touch
+  // the dock takes no presses, so the column carries this too (P2a).
+  // Offered while there are any, counted or not (#459 R8, P3).
+  useWorkActivity(kind, work, (from) => setCard({ key: null, from }), all.length > 0);
+  // The card is what the column's rows open, so it is built whatever the dock
+  // itself draws. With the limit at 0 the group is left off the dock and this
+  // component used to return before the card existed, so a row in the column
+  // called setCard and nothing appeared (#459 round 1, P3a).
+  const detail = card ? (
+    <SubAgentCard
+      group={group}
+      all={all}
+      chosen={card.key}
+      from={card.from}
+      onChoose={(key) => setCard({ ...card, key })}
+      onNavigate={(turnId) => {
+        setCard(null);
+        onNavigate(turnId);
+      }}
+      onClose={() => setCard(null)}
+    />
+  ) : null;
+  if (!all.length) return null;
+  if (limit <= 0) return detail;
   const shown = all
     .map((child, order) => ({ child, order }))
     .sort((a, b) => +b.child.waiting - +a.child.waiting || b.order - a.order)
@@ -173,20 +215,7 @@ export function SubAgentDock({
           />
         )}
       </WorkDockGroup>
-      {card && (
-        <SubAgentCard
-          group={group}
-          all={all}
-          chosen={card.key}
-          from={card.from}
-          onChoose={(key) => setCard({ ...card, key })}
-          onNavigate={(turnId) => {
-            setCard(null);
-            onNavigate(turnId);
-          }}
-          onClose={() => setCard(null)}
-        />
-      )}
+      {detail}
     </>
   );
 }
