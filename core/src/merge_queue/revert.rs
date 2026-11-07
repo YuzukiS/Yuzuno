@@ -82,6 +82,13 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     let head = b["commit"].as_str().context("The revert has no head")?.to_owned();
     let tree = b["tree"].as_str().context("The revert has no tree")?.to_owned();
     let number = b["pr"].as_u64().context("The revert has no PR")?;
+    // The entry takes its revert PR's number and head. Done on every check
+    // where they differ, so a stop between saving the PR on the batch and
+    // here (a restart, a failed write) is made good next time (S2d-2 R1, P2).
+    if entry["headSha"] != head.as_str() || entry["number"] != number {
+        let (id, head) = (id.clone(), head.clone());
+        ensure!(ws.stored(move |s| s.merge_revert_opened(&id, attempt, number, &head)).await?, "merge_moved_on: the entry was cancelled or retried meanwhile");
+    }
     let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
     if pr["merged"] == true || pr["state"] != "open" || pr["head"]["sha"] != head.as_str() || pr["head"]["ref"] != b["branch"] {
         return Ok((evidence, Err(Hold::Stop("batch_changed", format!("Core's revert PR #{number} is no longer open at its revert head {}", short(&head))))));
@@ -120,7 +127,8 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
 /// - Core's branch `queue/revert-{entry}`: at that commit when main is still
 ///   the merge; otherwise at main, with the revert commit merged in (a
 ///   conflict stops with `revert_conflict`).
-/// - Its PR, not a draft, whose number the entry then takes.
+/// - Its PR, not a draft, whose number and head the entry then takes (in
+///   `check`, which repeats that step until it holds).
 #[allow(clippy::too_many_arguments)]
 async fn build(
     ws: &Arc<Workspace>,
@@ -246,8 +254,6 @@ async fn build(
         let number = number.with_context(|| format!("GitHub answered {code} opening the revert PR: {}", answer["message"]))?;
         b["pr"] = json!(number);
         save(b.clone()).await?;
-        let (id, head) = (id.to_owned(), b["commit"].as_str().unwrap_or("").to_owned());
-        ws.stored(move |s| s.merge_revert_opened(&id, attempt, number, &head)).await?;
     }
     Ok((b, Ok(())))
 }

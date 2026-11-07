@@ -1618,6 +1618,34 @@ async fn a_lead_reverts_a_merge_that_turned_main_red_in_one_step() {
     assert!(lab.mail("lead2").iter().any(|m| m["body"].as_str().unwrap().contains("unpaused")), "and the leads are told");
 }
 
+/// A revert whose PR was saved on its batch, but Core stopped before the
+/// entry took that PR's number and head (S2d-2 R1, P2): the next check makes
+/// it good, and the revert lands, instead of failing forever with no head.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_revert_that_stopped_before_taking_its_pr_takes_it_on_the_next_check() {
+    let lab = lab(green());
+    lab.ws.store.merge_set_reverts(7, Some(true), None).unwrap();
+    let bad = merged_then_red(&lab).await;
+    let asked = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"]})).await.unwrap();
+    let id = asked["id"].as_str().unwrap().to_owned();
+    let branch = format!("queue/revert-{id}");
+    // GitHub holds the branch and the PR; the entry's batch names the PR, the entry itself does not.
+    change(lab.dir.path(), |s| {
+        s["refs"][&branch] = json!(sha('d'));
+        s["commits"][&sha('d')] = json!({"sha":sha('d'),"tree":sha('6'),"parents":[merge_commit()]});
+        s["pulls"]["900"] = json!({"number":900,"state":"open","head":{"ref":branch,"sha":sha('d')},"base":{"ref":"main"},"draft":false});
+    });
+    let batch = json!({"kind":"revert","branch":branch,"main":merge_commit(),"ref":true,"revertCommit":sha('d'),"commit":sha('d'),"tree":sha('6'),"pr":900,"closed":false,"deleted":false});
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_entries SET data=json_set(data,'$.batch',json(?1)) WHERE id=?2", rusqlite::params![batch.to_string(), id])
+        .unwrap();
+    let e = revert_step(&lab, &id).await;
+    assert_eq!((e["number"].clone(), e["headSha"].clone()), (json!(900), json!(sha('d'))), "the entry took its PR on this check: {e}");
+    assert_eq!(e["state"], "merged", "and the revert landed: {}", e["detail"]);
+    assert!(!writes(lab.dir.path()).iter().any(|w| w.ends_with("/pulls") || w.ends_with("/git/commits")), "nothing was built a second time");
+}
+
 /// Only a merge that turned main red can be reverted, one revert at a time,
 /// and the user turning reverts off stops one under way.
 #[cfg(unix)]

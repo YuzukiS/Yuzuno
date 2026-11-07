@@ -1383,44 +1383,10 @@ impl Store {
         tx.commit()?;
         Ok(data)
     }
-    /// Whether `actor` may revert entry `id` (YN-18 S2d-2): the user, or a lead
-    /// of a Project the repository is linked to; the entry merged and its main
-    /// push CI went red; the user allows reverts here; none is under way.
+    /// Whether `actor` may revert entry `id` (see `revert_allowed`).
     pub(super) fn merge_revert_allowed(&self, actor: Option<&str>, id: &str) -> Result<Value> {
         let db = self.db.read()?;
-        let e = entry(&db, id)?;
-        let repository_id = e["repositoryId"].as_i64().unwrap_or(0);
-        if let Some(agent) = actor {
-            let lead: bool = db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM agent_roles r JOIN project_agents p ON p.agent_id=r.agent_id AND p.project_id=r.project_id
-                 JOIN github_project_repos g ON g.project_id=r.project_id WHERE r.kind='lead' AND r.agent_id=?1 AND g.repo_id=?2)",
-                params![agent, repository_id],
-                |r| r.get(0),
-            )?;
-            ensure!(lead, "merge_revert_not_allowed: only a lead of a Project this repository is linked to, or the user, can revert a merge");
-        }
-        ensure!(
-            e["kind"] != "revert" && e["state"] == "done" && e["reason"] == "main_red" && e["merge"]["sha"].is_string(),
-            "merge_revert_not_allowed: only a merge whose main push CI went red can be reverted; entry {id} is {} ({})",
-            e["state"].as_str().unwrap_or("?"),
-            e["reason"].as_str().unwrap_or("no reason")
-        );
-        ensure!(
-            repository(&db, repository_id)?["revert"] == true,
-            "merge_revert_not_allowed: reverts are off for {}; the user turns them on in Projects → repositories",
-            e["repository"].as_str().unwrap_or("?")
-        );
-        let busy: Option<String> = db
-            .query_row(
-                &format!("SELECT id FROM merge_entries WHERE json_extract(data,'$.revert.of')=?1 AND state IN {ACTIVE}"),
-                [id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(other) = busy {
-            bail!("merge_revert_running: revert entry {other} of entry {id} is under way");
-        }
-        Ok(e)
+        revert_allowed(&db, actor, id)
     }
 
     /// Ask for the revert of entry `id`; a retry with the same requestId gets
@@ -1433,12 +1399,14 @@ impl Store {
                 return Ok(old);
             }
         }
-        let original = self.merge_revert_allowed(actor, id)?;
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         if let Some(old) = previous(&tx, actor, "merge_revert", request_id, &input)? {
             return Ok(old);
         }
+        // Checked inside the write, so two requests at once cannot both pass
+        // the one-revert-at-a-time rule (S2d-2 R1, P3).
+        let original = revert_allowed(&tx, actor, id)?;
         let (author, source) = collab::actor_context(self, &tx, actor)?;
         let e = revert_entry(&tx, &original, &author, &source, reason)?;
         receipt(&tx, actor, "merge_revert", request_id, &input, e["id"].as_str().unwrap_or(""))?;
@@ -1516,6 +1484,45 @@ fn released_for_merge(e: &Value) -> Result<()> {
         "merge_dry_run_ended: this entry was released before Core merged for real, and that release does not let Core merge; release the PR again"
     );
     Ok(())
+}
+
+/// Whether `actor` may revert entry `id` (YN-18 S2d-2): the user, or a lead
+/// of a Project the repository is linked to; the entry merged and its main
+/// push CI went red; the user allows reverts here; none is under way.
+fn revert_allowed(db: &Connection, actor: Option<&str>, id: &str) -> Result<Value> {
+    let e = entry(db, id)?;
+    let repository_id = e["repositoryId"].as_i64().unwrap_or(0);
+    if let Some(agent) = actor {
+        let lead: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_roles r JOIN project_agents p ON p.agent_id=r.agent_id AND p.project_id=r.project_id
+             JOIN github_project_repos g ON g.project_id=r.project_id WHERE r.kind='lead' AND r.agent_id=?1 AND g.repo_id=?2)",
+            params![agent, repository_id],
+            |r| r.get(0),
+        )?;
+        ensure!(lead, "merge_revert_not_allowed: only a lead of a Project this repository is linked to, or the user, can revert a merge");
+    }
+    ensure!(
+        e["kind"] != "revert" && e["state"] == "done" && e["reason"] == "main_red" && e["merge"]["sha"].is_string(),
+        "merge_revert_not_allowed: only a merge whose main push CI went red can be reverted; entry {id} is {} ({})",
+        e["state"].as_str().unwrap_or("?"),
+        e["reason"].as_str().unwrap_or("no reason")
+    );
+    ensure!(
+        repository(db, repository_id)?["revert"] == true,
+        "merge_revert_not_allowed: reverts are off for {}; the user turns them on in Projects → repositories",
+        e["repository"].as_str().unwrap_or("?")
+    );
+    let busy: Option<String> = db
+        .query_row(
+            &format!("SELECT id FROM merge_entries WHERE json_extract(data,'$.revert.of')=?1 AND state IN {ACTIVE}"),
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(other) = busy {
+        bail!("merge_revert_running: revert entry {other} of entry {id} is under way");
+    }
+    Ok(e)
 }
 
 /// A new revert entry for `original`, a merge whose main push CI went red
