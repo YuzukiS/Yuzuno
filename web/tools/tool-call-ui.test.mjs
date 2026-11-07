@@ -63,6 +63,19 @@ const answers = {
   peer_read: { messages: [{ seq: 7, sender: { name: "Dev Lead" } }, { seq: 8, sender: { name: "Dev Lead" } }], nextAfterSeq: 8, hasMore: true },
   peer_send: { message: { id: "m", seq: 9, recipient: { id: "x", name: "Dev 7" }, delivery: { state: "pending", detail: {} }, firstReadAt: null, taskId: "T-9" } },
   peer_sent: { message: { id: "m", seq: 10, recipient: { id: "x", name: "Dev 7" }, delivery: { state: "delivered" }, firstReadAt: null } },
+  // The executor flow (T-43 S3): task_get's current view, a page of its
+  // history and a dispatch's materials; a result's and a dispatch's
+  // receipts; a release that archived and one that waits.
+  task_get_current: { current: { taskId: "T-9", title: "Tool call capsules", status: "review", version: 51 }, keys: { global: "T-9", history: [] } },
+  task_get_history: { task: { title: "Tool call capsules" }, activities: [{ seq: 1 }, { seq: 2 }, { seq: 3 }], executions: [], nextAfterSeq: 3, hasMore: true, keys: { global: "T-9" } },
+  task_get_materials: { dispatchMaterials: { schemaVersion: 1 }, latestTask: { taskId: "T-9" } },
+  task_submit_result: { activity: { seq: 650, kind: "result" }, task: { id: "T-9", title: "Tool call capsules", status: "review", version: 52,
+    result: { id: "a5fe340b-0000-4000-8000-000000000001", dispatchId: "d", notification: { state: "pending" } } } },
+  task_dispatch: { activity: { seq: 651, kind: "dispatched" }, task: { id: "T-9", title: "Tool call capsules", status: "doing", version: 53,
+    assignee: { id: "x", kind: "agent", name: "Dev 7" }, dispatch: { id: "d4bdf4a5-0000-4000-8000-000000000002", active: true } } },
+  executor_released: { agentId: "e", closedAt: "2026-11-07T00:00:00Z", releasedAt: "2026-11-07T00:00:00Z", releasedBy: "user" },
+  executor_archiving: { agentId: "e", closedAt: null, releasedAt: null, releasedBy: null,
+    archiving: { since: "2026-11-07T00:00:00Z", releasedBy: "user", reason: "a Job is still running: build (j1)." } },
 };
 // Codex keeps Core's structured answer; Claude and OpenCode its JSON text.
 const codex = (id, tool, answer, extra = {}) => ({ id, type: "mcpToolCall", server: "yuzuno", tool, status: "completed",
@@ -134,9 +147,16 @@ test("each Yuzuno call says its own short result in its capsule, on one line, fr
     codex("c6", "peer_read", answers.peer_read),
     codex("c7", "peer_send", answers.peer_send),
     codex("c8", "peer_send", answers.peer_sent),
+    codex("c9", "task_get", answers.task_get_current),
+    codex("c10", "task_get", answers.task_get_history),
+    codex("c11", "task_get", answers.task_get_materials),
+    codex("c12", "task_submit_result", answers.task_submit_result),
+    codex("c13", "task_dispatch", answers.task_dispatch),
+    codex("c14", "executor_release", answers.executor_released),
+    codex("c15", "executor_release", answers.executor_archiving),
   ]);
   await page.openTools();
-  assert.deepEqual(["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"].map(page.capsule), [
+  assert.deepEqual(["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "c10", "c11", "c12", "c13", "c14", "c15"].map(page.capsule), [
     { name: "yuzuno/task_comment", note: "comment saved on T-9", end: null, tone: "returned" },
     // The task's status as the receipt has it: the task record, not a release.
     { name: "yuzuno/task_update", note: "T-9 updated · Done", end: null, tone: "returned" },
@@ -148,6 +168,15 @@ test("each Yuzuno call says its own short result in its capsule, on one line, fr
     // Delivery as it stood when sent: queued is not read, delivered is not handled.
     { name: "yuzuno/peer_send", note: "to Dev 7", end: "queued", tone: "queued" },
     { name: "yuzuno/peer_send", note: "to Dev 7", end: "delivered", tone: "returned" },
+    // The executor flow: what was read, a result and a dispatch as receipts
+    // (not accepted, not started), and a release.
+    { name: "yuzuno/task_get", note: "read T-9 · To review", end: null, tone: "returned" },
+    { name: "yuzuno/task_get", note: "T-9 · 3 activities · more to read", end: null, tone: "returned" },
+    { name: "yuzuno/task_get", note: "dispatch materials of T-9", end: null, tone: "returned" },
+    { name: "yuzuno/task_submit_result", note: "result submitted on T-9 · To review", end: null, tone: "returned" },
+    { name: "yuzuno/task_dispatch", note: "T-9 dispatched to Dev 7", end: null, tone: "returned" },
+    { name: "yuzuno/executor_release", note: "executor released · archived", end: null, tone: "returned" },
+    { name: "yuzuno/executor_release", note: "executor released · archiving once its work ends", end: null, tone: "returned" },
   ]);
   // One line: every part of the capsule is in its single summary, nothing under it.
   for (const id of ["c1", "c7"]) {
@@ -161,12 +190,12 @@ test("each Yuzuno call says its own short result in its capsule, on one line, fr
 
   // Claude's and OpenCode's records of the same calls read the same, named as Codex names them.
   page.render([claude("k1", "task_update", answers.task_update), claude("k2", "peer_send", answers.peer_send),
-    claude("k3", "task_get", { task: { id: "T-9" } })], { harness: "claude" });
+    claude("k3", "job_get", { id: "j" })], { harness: "claude" });
   await page.openTools();
   assert.deepEqual(["k1", "k2"].map(page.capsule).map((c) => [c.name, c.note, c.end]),
     [["yuzuno/task_update", "T-9 updated · Done", null], ["yuzuno/peer_send", "to Dev 7", "queued"]]);
   // Another Yuzuno tool is named the same way and says only that it returned.
-  assert.deepEqual(page.capsule("k3"), { name: "yuzuno/task_get", note: null, end: "returned", tone: "returned" });
+  assert.deepEqual(page.capsule("k3"), { name: "yuzuno/job_get", note: null, end: "returned", tone: "returned" });
   page.render([opencode("o1", "brief_get", answers.brief_get_full), opencode("o2", "peer_read", { messages: [], hasMore: false, nextAfterSeq: 0 })],
     { harness: "opencode" });
   await page.openTools();

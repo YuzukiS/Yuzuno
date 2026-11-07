@@ -15,7 +15,7 @@ import { openJobs } from "./Jobs";
 import { langTag, strings, useLanguage } from "./i18n";
 
 export interface MailboxGroup {
-  kind: "peer" | "job" | "ci" | "review" | "pr" | "system" | "workspace";
+  kind: "peer" | "job" | "ci" | "review" | "pr" | "task_result" | "executor" | "executor_proposal" | "merge" | "system" | "workspace";
   status: string;
   name?: string | null;
   count: number;
@@ -71,6 +71,17 @@ const prResults: Record<string, string> = {
   needs_selection: "needs a choice",
   unknown: "result unknown",
 };
+// The executor flow (T-43 S3): a result in, told by its task's status; an
+// executor that may still run, or that blocks its task; its proposal to
+// close; a merge entry's end, or the repository's queue paused or unpaused.
+const taskResults: Record<string, string> = {
+  review: "task in review", done: "task done", doing: "task in progress", blocked: "task blocked", todo: "task to do", cancelled: "task cancelled",
+};
+const executorResults: Record<string, string> = { uncertain: "may still be running", blocked: "blocks its task" };
+const mergeResults: Record<string, string> = {
+  merged: "Merged", done: "Main CI after the merge ended", stopped: "Merge stopped", waiting: "Waiting to merge", merging: "Merging",
+  paused: "Merge queue paused", unpaused: "Merge queue unpaused",
+};
 /** A group's line in English, as Core's doorbell words it. */
 function labelEn(group: MailboxGroup) {
   const count = group.count > 1 ? `${group.count} ` : "";
@@ -87,6 +98,13 @@ function labelEn(group: MailboxGroup) {
     if (group.count > 1) return `${count}PR operations ${result}`;
     return ["created", "updated"].includes(group.status) ? `PR ${result}` : `PR operation ${result}`;
   }
+  if (group.kind === "task_result")
+    return `${count}Result${group.count > 1 ? "s" : ""} in: ${taskResults[group.status] ?? "task status unknown"}`;
+  if (group.kind === "executor")
+    return `${count}Executor${group.count > 1 ? "s" : ""} ${executorResults[group.status] ?? "needs a look"}`;
+  if (group.kind === "executor_proposal")
+    return `${count}Executor proposal${group.count > 1 ? "s" : ""} to close`;
+  if (group.kind === "merge") return `${count}${mergeResults[group.status] ?? "Merge queue mail"}`;
   return `${count}${group.kind === "system" ? "System" : "Workspace mail"}`;
 }
 // In Chinese (T-189); a status Core sends that isn't listed is "结果未知".
@@ -104,6 +122,14 @@ const reviewResultsZh: Record<string, string> = {
 const prResultsZh: Record<string, string> = {
   created: "已创建", updated: "已更新", completed: "已完成", failed: "失败", needs_selection: "需要选择", unknown: "结果未知",
 };
+const taskResultsZh: Record<string, string> = {
+  review: "任务待审查", done: "任务完成", doing: "任务进行中", blocked: "任务受阻", todo: "任务待办", cancelled: "任务已取消",
+};
+const executorResultsZh: Record<string, string> = { uncertain: "可能仍在运行", blocked: "卡住了任务" };
+const mergeResultsZh: Record<string, string> = {
+  merged: "已合入", done: "合入后的 main CI 已结束", stopped: "合并已停止", waiting: "等待合并", merging: "正在合并",
+  paused: "合并队列已暂停", unpaused: "合并队列已恢复",
+};
 function labelZh(group: MailboxGroup) {
   const many = group.count > 1;
   if (group.kind === "peer") return `${many ? `${group.count} 条` : ""}协作消息`;
@@ -115,6 +141,10 @@ function labelZh(group: MailboxGroup) {
     if (many) return `${group.count} 个 PR 操作${result}`;
     return ["created", "updated"].includes(group.status) ? `PR ${result}` : `PR 操作${result}`;
   }
+  if (group.kind === "task_result") return `${many ? `${group.count} 个` : ""}结果已交：${taskResultsZh[group.status] ?? "任务状态未知"}`;
+  if (group.kind === "executor") return `${many ? `${group.count} 个` : ""}执行者${executorResultsZh[group.status] ?? "需要查看"}`;
+  if (group.kind === "executor_proposal") return `${many ? `${group.count} 个` : ""}执行者提议收尾`;
+  if (group.kind === "merge") return `${many ? `${group.count} 封` : ""}${mergeResultsZh[group.status] ?? "合并队列邮件"}`;
   return `${many ? `${group.count} 封` : ""}${group.kind === "system" ? "系统邮件" : "工作区邮件"}`;
 }
 
@@ -178,17 +208,16 @@ type Mail =
   | { state: "error"; error: string }
   | { state: "loaded"; messages: MailMessage[]; more: boolean };
 
-/** A Job, CI, review or PR result Core sent, read as the doorbell reads it
- * (mailbox_notice.rs). */
+/** The kinds of mail Core words itself (mailbox_notice.rs). */
+const RESULT_KINDS = ["job", "ci", "review", "pr", "task_result", "executor", "executor_proposal", "merge"] as const;
+/** A Job, CI, review, PR, result, executor or merge mail Core sent, read as
+ * the doorbell reads it (mailbox_notice.rs). */
 function messageResult(message: MailMessage): MailboxGroup | null {
   const meta = message.metadata;
-  const kind = meta?.kind;
-  if (
-    message.sender?.kind !== "system" ||
-    !meta ||
-    (kind !== "job" && kind !== "ci" && kind !== "review" && kind !== "pr")
-  )
-    return null;
+  const kind = RESULT_KINDS.find((k) => k === meta?.kind);
+  if (message.sender?.kind !== "system" || !meta || !kind) return null;
+  // A proposal says nothing else: it is one.
+  if (kind === "executor_proposal") return { kind, status: "proposed", name: meta.name, count: 1 };
   let status = meta.status || "unknown";
   if (kind === "job" && status === "failed" && meta.systemdResult === "oom-kill") status = "oom";
   else if (kind === "job" && status === "failed" && meta.systemdResult === "timeout") status = "timed_out";
@@ -220,6 +249,17 @@ function sentAt(createdAt?: string) {
 }
 
 function resultStyle(group: MailboxGroup) {
+  // A result in, an executor, a proposal, a merge (T-43 S3).
+  if (group.kind === "task_result" || group.kind === "executor" || group.kind === "executor_proposal" || group.kind === "merge") {
+    // A merge entry's "done" is main's CI after it, which may be red.
+    if ((group.status === "done" && group.kind !== "merge") || group.status === "merged" || group.status === "unpaused")
+      return { tone: "success", Icon: CheckCircle2 };
+    if (["blocked", "stopped", "paused"].includes(group.status)) return { tone: "failure", Icon: XCircle };
+    if (group.status === "cancelled") return { tone: "neutral", Icon: CircleMinus };
+    if (["waiting", "merging"].includes(group.status)) return { tone: "neutral", Icon: Clock3 };
+    if (group.status === "uncertain" || (group.kind === "merge" && group.status === "done")) return { tone: "unknown", Icon: CircleHelp };
+    return { tone: "neutral", Icon: Inbox };
+  }
   if (group.kind === "review" || group.kind === "pr") {
     if (["no_findings", "approved_with_notes", "created", "updated", "completed"].includes(group.status))
       return { tone: "success", Icon: CheckCircle2 };

@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { BookOpen, ChevronRight, Inbox, MessageSquarePlus, PanelsTopLeft, Plug, Send, SquarePen } from "lucide-react";
+import { Archive, BookOpen, ChevronRight, ClipboardCheck, FileSearch, Inbox, MessageSquarePlus, PanelsTopLeft, Plug, Send, SquarePen, UserPlus } from "lucide-react";
 import { langTag, useLanguage } from "./i18n";
 import { callWords, yuzunoTool, type CallFacts } from "./tool-call";
 import type { NativeItem } from "./types";
@@ -103,9 +103,13 @@ const yuzunoIcons = {
   brief_update: PanelsTopLeft,
   peer_read: Inbox,
   peer_send: Send,
+  task_get: FileSearch,
+  task_submit_result: ClipboardCheck,
+  task_dispatch: UserPlus,
+  executor_release: Archive,
 };
 
-/** The icon of a call to one of Yuzuno's six tools or another MCP tool;
+/** The icon of a call to one of Yuzuno's tools above or another MCP tool;
  * `fallback` for the rest. */
 export function callIcon(item: NativeItem, fallback: ReactNode): ReactNode {
   const tool = yuzunoTool(item);

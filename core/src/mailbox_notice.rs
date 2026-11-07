@@ -67,6 +67,15 @@ pub(crate) fn message_notice(message: &Value) -> Value {
             {
                 identity(&metadata["operationId"])
             }
+            // The executor flow (T-43 S3): a result in, with its task's
+            // status; an executor that may still run, or that blocks its
+            // task; an executor's proposal to close; a merge entry's end, or
+            // a repository's queue paused and unpaused (one event each mail).
+            "task_result" if crate::collaboration_store::STATUSES.contains(&status) => identity(&metadata["resultId"]),
+            "executor" if matches!(status, "uncertain" | "blocked") => identity(&message["id"]),
+            "executor_proposal" if status.is_empty() => identity(&metadata["resultId"]),
+            "merge" if matches!(status, "merged" | "done" | "stopped" | "waiting" | "merging") => identity(&metadata["entryId"]),
+            "merge" if matches!(status, "paused" | "unpaused") => identity(&message["id"]),
             _ => None,
         };
         if let Some(identity) = identity {
@@ -88,6 +97,8 @@ pub(crate) fn message_notice(message: &Value) -> Value {
                     Some("update") => "updated",
                     _ => "completed",
                 },
+                // A proposal says nothing else: it is one.
+                ("executor_proposal", _, _) => "proposed",
                 _ => status,
             };
             return json!({"kind":kind,"name":name(&metadata["name"]),"status":status,
@@ -382,6 +393,47 @@ mod tests {
             mail(&store, system(), Value::Null, "normal")["notice"]["kind"],
             "system"
         );
+    }
+
+    #[test]
+    fn executor_flow_notices_have_kinds_of_their_own() {
+        let (_dir, store) = fixture();
+        // A result in, told by its task's status.
+        for status in ["review", "done"] {
+            let value = mail(&store, system(), json!({"kind":"task_result","status":status,"resultId":"res-1"}), "normal");
+            assert_eq!((value["notice"]["kind"].as_str(), value["notice"]["status"].as_str()), (Some("task_result"), Some(status)));
+        }
+        // An executor that may still run, or that blocks its task: named by its task.
+        for status in ["uncertain", "blocked"] {
+            let value = mail(&store, system(), json!({"kind":"executor","status":status,"agentId":"e1","name":"YN-24"}), "normal");
+            assert_eq!(value["notice"]["kind"], "executor");
+            assert_eq!(value["notice"]["status"], status);
+            assert_eq!(value["notice"]["name"], "YN-24");
+        }
+        let proposal = mail(&store, system(), json!({"kind":"executor_proposal","resultId":"res-2","executorId":"e1"}), "normal");
+        assert_eq!((proposal["notice"]["kind"].as_str(), proposal["notice"]["status"].as_str()), (Some("executor_proposal"), Some("proposed")));
+        // A merge entry's end, and a repository's queue paused and unpaused.
+        for status in ["merged", "done", "stopped"] {
+            let value = mail(&store, system(), json!({"kind":"merge","entryId":"m1","status":status,"name":"PR #659"}), "normal");
+            assert_eq!((value["notice"]["kind"].as_str(), value["notice"]["status"].as_str()), (Some("merge"), Some(status)));
+            assert_eq!(value["notice"]["name"], "PR #659");
+        }
+        for status in ["paused", "unpaused"] {
+            let value = mail(&store, system(), json!({"kind":"merge","status":status,"name":"YuzukiS/Yuzuno"}), "urgent");
+            assert_eq!((value["notice"]["kind"].as_str(), value["notice"]["status"].as_str()), (Some("merge"), Some(status)));
+        }
+        // Each mail about an executor, and each pause, is its own event.
+        let first = mail(&store, system(), json!({"kind":"executor","status":"blocked","agentId":"e2","name":"YN-25"}), "normal");
+        let second = mail(&store, system(), json!({"kind":"executor","status":"blocked","agentId":"e2","name":"YN-25"}), "normal");
+        assert_ne!(first["notice"]["key"], second["notice"]["key"]);
+        // Not from Core, an unknown status, or without its record: generic.
+        let result = json!({"kind":"task_result","status":"review","resultId":"res-3"});
+        assert_eq!(mail(&store, json!({"kind":"system","id":"imposter"}), result, "normal")["notice"]["kind"], "system");
+        for metadata in [json!({"kind":"task_result","status":"invented","resultId":"r"}), json!({"kind":"task_result","status":"review"}),
+            json!({"kind":"executor","status":"running","agentId":"e"}), json!({"kind":"executor_proposal","status":"done","resultId":"r"}),
+            json!({"kind":"merge","status":"merged"}), json!({"kind":"merge","entryId":"m","status":"invented"})] {
+            assert_eq!(mail(&store, system(), metadata.clone(), "normal")["notice"]["kind"], "system", "{metadata}");
+        }
     }
 
     #[test]

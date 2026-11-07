@@ -741,6 +741,12 @@ test("compact doorbells use frozen results, priorities and bounded groups withou
       ["review", "failed", "Code review: failed"], ["review", "unknown", "Code review: no conclusion"],
       ["pr", "updated", "PR updated"], ["pr", "created", "PR created"], ["pr", "failed", "PR operation failed"],
       ["pr", "needs_selection", "PR operation needs a choice"], ["system", "", "System"],
+      // The executor flow (T-43 S3): a result in, an executor, its proposal, a merge.
+      ["task_result", "review", "Result in: task in review"], ["task_result", "done", "Result in: task done"],
+      ["executor", "uncertain", "Executor may still be running"], ["executor", "blocked", "Executor blocks its task"],
+      ["executor_proposal", "proposed", "Executor proposal to close"],
+      ["merge", "merged", "Merged"], ["merge", "stopped", "Merge stopped"], ["merge", "done", "Main CI after the merge ended"],
+      ["merge", "paused", "Merge queue paused"], ["merge", "unpaused", "Merge queue unpaused"],
     ];
     for (const [kind, status, expected] of cases) {
       for (const priority of ["normal", "urgent"]) {
