@@ -258,14 +258,19 @@
   margin-bottom: 4px;
   font-weight: 600;
 }
-.merge-queue-policy > .merge-queue-policy-option {
+.merge-queue-switch > .merge-queue-reverts {
+  margin-top: 8px;
+}
+.merge-queue-policy > .merge-queue-policy-option,
+.merge-queue-reverts > .merge-queue-policy-option {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   margin-top: 4px;
   cursor: pointer;
 }
-.merge-queue-policy > .merge-queue-policy-option input {
+.merge-queue-policy > .merge-queue-policy-option input,
+.merge-queue-reverts > .merge-queue-policy-option input {
   flex: 0 0 14px;
   width: 14px;
   height: 14px;
@@ -273,7 +278,8 @@
   padding: 0;
   accent-color: var(--green);
 }
-.merge-queue-policy > .merge-queue-policy-option span {
+.merge-queue-policy > .merge-queue-policy-option span,
+.merge-queue-reverts > .merge-queue-policy-option span {
   display: flex;
   flex-direction: column;
   min-width: 0;

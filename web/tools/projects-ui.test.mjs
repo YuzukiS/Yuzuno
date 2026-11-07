@@ -1278,6 +1278,8 @@ function queueCore(page, queue, { unpauseFails = 0 } = {}) {
       if (init.method === "PUT") {
         if ("enabled" in body) queue.enabled = body.enabled;
         if ("policy" in body) queue.policy = body.policy;
+        if ("revert" in body) { queue.revert = body.revert; if (!body.revert) queue.autoRevert = false; }
+        if ("autoRevert" in body) queue.autoRevert = body.autoRevert;
       }
       return respond(queue);
     }
@@ -1364,6 +1366,36 @@ test("the landing policy is strict until chosen; relaxed names its write first a
     assert.deepEqual(queueWrites(page).map((call) => call.body), [{ policy: "relaxed" }, { policy: "strict" }], "strict saves at once");
     assert.ok(!row.querySelector(".merge-queue-policy-confirm"), "with no confirmation");
     assert.equal(queue.enabled, true, "the switch stays on throughout");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
+test("reverts are off until allowed: allowing names their writes first, automatic reverts follow, and off saves at once (YN-18 S2d-2)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+  try {
+    const queue = { repositoryId: 7, enabled: true, paused: null, landing: "core-merge" };
+    queueCore(page, queue);
+    const row = await openQueue(page, "Manage projects");
+    const box = () => row.querySelector(".merge-queue-reverts");
+    const checks = () => [...box().querySelectorAll("input[type='checkbox']")];
+    assert.ok(box().textContent.includes("Off: a merge whose main CI went red is reverted by hand."), "reverts are off by default");
+    assert.equal(checks().length, 1, "automatic reverts show only once reverts are allowed");
+    checks()[0].click(); await pause();
+    const confirm = row.querySelector(".merge-queue-reverts-confirm");
+    assert.ok(confirm, "allowing reverts asks first");
+    for (const words of ["Allow one-step reverts for owner/repo?", "A revert commit", "queue/revert-", "not a draft", "It needs no review round"])
+      assert.ok(confirm.textContent.includes(words), words);
+    assert.equal(queueWrites(page).length, 0, "nothing is saved before the confirmation");
+    within(row, "Allow reverts").click();
+    await waitFor(() => checks().length === 2, "automatic reverts can now be chosen");
+    assert.equal(checks()[1].checked, false, "automatic reverts stay off");
+    checks()[1].click();
+    await waitFor(() => checks()[1].checked, "automatic reverts on");
+    checks()[0].click();
+    await waitFor(() => checks().length === 1, "reverts off, and automatic reverts with them");
+    assert.deepEqual(queueWrites(page).map((call) => call.body), [{ revert: true }, { autoRevert: true }, { revert: false }], "off saves at once");
     assert.equal(page.errors.length, 0, page.errors.join("\n"));
   } finally {
     page.close();

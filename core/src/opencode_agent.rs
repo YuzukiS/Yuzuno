@@ -2212,6 +2212,7 @@ fn journaled(event: &Value) -> Cow<'_, Value> {
 /// Event types this module applies to the record.
 fn projected(kind: &str) -> bool {
     matches!(kind, "message.updated" | "message.part.updated" | "session.status" | "session.error" | crate::opencode_v2::COMPACTION
+        | crate::opencode_v2::REVERTED
         | "permission.asked" | "permission.replied" | "question.asked" | "question.replied" | "question.rejected")
 }
 
@@ -2231,6 +2232,7 @@ fn project(d: &mut AgentDetail, generation: u64, session: &str, event: &Value) {
         }
         "session.status" => status(d, &p["status"]),
         crate::opencode_v2::COMPACTION => compaction_event(d, p),
+        crate::opencode_v2::REVERTED => reverted(d, p),
         "session.error" => {
             // It names no message, so it decides no Turn: the idle that
             // follows does, from what the Turn's own messages say, or from
@@ -2663,6 +2665,20 @@ fn compaction_seen(turn: &mut Value, compaction: &Value) {
             item["text"] = summary.into();
         }
     }
+}
+
+/// A revert 2.x committed (T-61 slice 6, R2-7), Core's own or another
+/// client's: 2.x deleted the message it went back to and every later one,
+/// so the Turn of that message and every later Turn leave this record,
+/// with their requests. A Core revert has archived them already, and
+/// removed them; another client's is seen here only.
+fn reverted(d: &mut AgentDetail, revert: &Value) {
+    let Some(to) = revert["to"].as_str() else { return };
+    let Some(at) = d.turns.iter().position(|t| t["id"] == to || t["_opencodeCommand"]["native"] == to) else { return };
+    let gone: Vec<String> = d.turns[at..].iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+    d.turns.truncate(at);
+    d.pending.retain(|p| !p.params["turnId"].as_str().is_some_and(|turn| gone.iter().any(|g| g == turn)));
+    refresh_status(d);
 }
 
 /// What 2.x says of one of the session's compactions, live (T-61 slice 4):

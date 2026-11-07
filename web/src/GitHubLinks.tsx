@@ -245,6 +245,9 @@ type QueueRepository = {
   landing?: string;
   /** YN-18 S2d: how much CI a merge needs, "strict" (the default) or "relaxed". */
   policy?: string;
+  /** YN-18 S2d-2: one-step reverts allowed, and Core reverting on its own. */
+  revert?: boolean;
+  autoRevert?: boolean;
 };
 type QueuePolicy = "strict" | "relaxed";
 // T-37: the repository's merge queue switch, the user's only (Agents have no
@@ -272,6 +275,18 @@ const queueText = strings({
   confirmRelaxed: (name: string) => `Use the relaxed policy for ${name}? Merges no longer wait for CI on the current main. For each merge Core also writes:`,
   relaxedWrite: "A branch queue/merge-… at the current main with the head merged in, to check that it merges cleanly. It opens no PR, so no CI runs on it, and Core deletes it after the merge.",
   useRelaxed: "Use relaxed",
+  revertsTitle: "Reverts",
+  revertsOn: "Allowed: a merge whose main CI went red can be reverted in one step, by a lead or you.",
+  revertsOff: "Off: a merge whose main CI went red is reverted by hand.",
+  confirmReverts: (name: string) => `Allow one-step reverts for ${name}? To revert a merge whose main CI went red, Core then also writes:`,
+  revertWrites: [
+    "A revert commit: the tree of the main before that merge, on top of it.",
+    "A branch queue/revert-… at it (or at the current main with it merged in), and a PR from that branch, not a draft.",
+    "The merge of that PR, pinned to its head, once CI on it is green, or at once if main is still the bad merge and the main before it had green CI. It needs no review round.",
+  ],
+  allowReverts: "Allow reverts",
+  autoRevertTitle: "Revert automatically",
+  autoRevertHint: "Core reverts on its own when main CI goes red after a merge, instead of waiting for a lead or you.",
   turnOn: "Turn on",
   cancel: "Cancel",
   paused: (reason: string) => `Paused: ${reason}`,
@@ -303,6 +318,18 @@ const queueText = strings({
   confirmRelaxed: (name) => `为 ${name} 使用放宽策略？合并不再等 CI 测过当前 main。每次合并前，Core 还会写入：`,
   relaxedWrite: "一个分支 queue/merge-…：在当前 main 上合入这个 head，用来确认能干净合并。不开 PR，所以不跑 CI；合并后 Core 删除它。",
   useRelaxed: "使用放宽策略",
+  revertsTitle: "回退",
+  revertsOn: "已允许：合并后主分支 CI 变红的合并，可由负责人或你一步回退。",
+  revertsOff: "已关闭：合并后主分支 CI 变红时，需手动回退。",
+  confirmReverts: (name) => `为 ${name} 允许一步回退？回退一个合并后主分支 CI 变红的合并时，Core 还会写入：`,
+  revertWrites: [
+    "一个回退提交：在那个合并之上，恢复合并前主分支的文件树。",
+    "一个指向它的分支 queue/revert-…（或在当前 main 上合入它），以及从该分支开的一个 PR（不是草稿）。",
+    "这个 PR 的合并，固定在它的 head 上：PR 上的 CI 通过后合并；如果主分支仍是那个坏合并、且合并前主分支的 CI 是绿的，则立即合并。不需要审查轮。",
+  ],
+  allowReverts: "允许回退",
+  autoRevertTitle: "自动回退",
+  autoRevertHint: "合并后主分支 CI 变红时，Core 自己回退，不等负责人或你。",
   turnOn: "开启",
   cancel: "取消",
   paused: (reason) => `已暂停：${reason}`,
@@ -324,6 +351,7 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
   const [state, setState] = useState<QueueRepository | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmingPolicy, setConfirmingPolicy] = useState(false);
+  const [confirmingReverts, setConfirmingReverts] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const mounted = useRef(true);
@@ -350,6 +378,7 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
         setState(value);
         setConfirming(false);
         setConfirmingPolicy(false);
+        setConfirmingReverts(false);
       }
       return true;
     } catch (e) {
@@ -365,6 +394,9 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
   // Strict asks for more CI, so it saves at once; relaxed names its write first.
   const savePolicy = (next: QueuePolicy) =>
     send(() => api<QueueRepository>(path, { method: "PUT", body: JSON.stringify({ policy: next }) }));
+  // Allowing reverts names their writes first; turning them off saves at once.
+  const saveReverts = (body: { revert?: boolean; autoRevert?: boolean }) =>
+    send(() => api<QueueRepository>(path, { method: "PUT", body: JSON.stringify(body) }));
   const choosePolicy = (next: QueuePolicy) => {
     if (next === policy) return;
     if (next === "relaxed") setConfirmingPolicy(true);
@@ -421,6 +453,55 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
             </label>
           ))}
         </fieldset>
+      )}
+      {state && (
+        <div className="merge-queue-reverts">
+          <label className="merge-queue-policy-option">
+            <input
+              type="checkbox"
+              checked={state.revert === true}
+              disabled={disabled || busy}
+              onChange={() => {
+                if (state.revert) void saveReverts({ revert: false });
+                else setConfirmingReverts(true);
+              }}
+            />
+            <span>
+              <strong>{t.revertsTitle}</strong>
+              <small>{state.revert ? t.revertsOn : t.revertsOff}</small>
+            </span>
+          </label>
+          {state.revert && (
+            <label className="merge-queue-policy-option">
+              <input
+                type="checkbox"
+                checked={state.autoRevert === true}
+                disabled={disabled || busy}
+                onChange={() => void saveReverts({ autoRevert: !state.autoRevert })}
+              />
+              <span>
+                <strong>{t.autoRevertTitle}</strong>
+                <small>{t.autoRevertHint}</small>
+              </span>
+            </label>
+          )}
+        </div>
+      )}
+      {confirmingReverts && state && !state.revert && (
+        <div className="merge-queue-confirm merge-queue-reverts-confirm">
+          <p>{t.confirmReverts(name)}</p>
+          <ul>
+            {t.revertWrites.map((write) => <li key={write}>{write}</li>)}
+          </ul>
+          <div className="merge-queue-actions">
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void saveReverts({ revert: true })}>
+              {t.allowReverts}
+            </button>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmingReverts(false)}>
+              {t.cancel}
+            </button>
+          </div>
+        </div>
       )}
       {confirmingPolicy && state && policy !== "relaxed" && (
         <div className="merge-queue-confirm merge-queue-policy-confirm">

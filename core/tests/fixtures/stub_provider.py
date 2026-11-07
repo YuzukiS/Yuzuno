@@ -20,6 +20,9 @@ message's keyword:
   `a.txt` as `two`, `write` `new.txt`, and `shell` writing `../sibling.txt`
   (outside the folder); once their results are back, a last text.
 - `probe-61 three`: one `write` of `a.txt` as `three`, then a last text.
+- `probe-61 nested` (T-61 slice 6): two `write` calls in one step, `a.txt`
+  as `four` and `sub/b.txt` as `b`; once their results are back, a last
+  text.
 - 2.x's summary prompt (T-61 slice 4: "You MUST summarize the conversation
   above", 2.2.5 core/src/session/compaction.ts), with or without tools: a
   summary in 2.x's template, which 2.x checks by its headings.
@@ -95,12 +98,13 @@ class Handler(BaseHTTPRequestHandler):
                         'function': {'name': 'yuzuno_peers_list', 'arguments': '{}'}}
                 return self.stream([chunk({'role': 'assistant', 'tool_calls': [call]}), chunk({}, 'tool_calls')])
             return self.stream([chunk({'role': 'assistant', 'content': 'Peers seen.'}), chunk({}, 'stop')])
-        if 'probe-61 write' in asked or 'probe-61 three' in asked:
+        if 'probe-61 write' in asked or 'probe-61 three' in asked or 'probe-61 nested' in asked:
             if last == 'tool':
                 return self.stream([chunk({'role': 'assistant', 'content': 'Written.'}), chunk({}, 'stop')])
             calls = [('write', {'path': 'a.txt', 'content': 'two\n'}), ('write', {'path': 'new.txt', 'content': 'new\n'}),
                      ('shell', {'command': 'printf changed > ../sibling.txt'})] if 'probe-61 write' in asked \
-                else [('write', {'path': 'a.txt', 'content': 'three\n'})]
+                else [('write', {'path': 'a.txt', 'content': 'four\n'}), ('write', {'path': 'sub/b.txt', 'content': 'b\n'})] \
+                if 'probe-61 nested' in asked else [('write', {'path': 'a.txt', 'content': 'three\n'})]
             delta = [{'index': n, 'id': f'call_stub_5{n}', 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(arguments)}}
                      for n, (name, arguments) in enumerate(calls)]
             return self.stream([chunk({'role': 'assistant', 'tool_calls': delta}), chunk({}, 'tool_calls')])

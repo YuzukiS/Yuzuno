@@ -95,9 +95,10 @@ fn entry(db: &Connection, id: &str) -> Result<Value> {
     Ok(serde_json::from_str(&raw.context("merge_entry_not_found: No such merge entry")?)?)
 }
 fn save(db: &Connection, e: &Value) -> Result<()> {
+    // A revert entry's number becomes its revert PR's once Core opened it.
     db.execute(
-        "UPDATE merge_entries SET state=?1,next_check=?2,data=?3 WHERE id=?4",
-        params![e["state"].as_str(), e["nextCheck"].as_i64().unwrap_or(0), e.to_string(), e["id"].as_str()],
+        "UPDATE merge_entries SET state=?1,next_check=?2,data=?3,number=COALESCE(?5,number) WHERE id=?4",
+        params![e["state"].as_str(), e["nextCheck"].as_i64().unwrap_or(0), e.to_string(), e["id"].as_str(), e["number"].as_i64()],
     )?;
     Ok(())
 }
@@ -129,7 +130,33 @@ fn repository(db: &Connection, id: i64) -> Result<Value> {
     if !v["policy"].is_string() {
         v["policy"] = json!(checks::STRICT);
     }
+    // YN-18 S2d-2: the user's consent to one-step reverts, and to Core
+    // reverting on its own; both off until the user turns them on.
+    for key in ["revert", "autoRevert"] {
+        if !v[key].is_boolean() {
+            v[key] = json!(false);
+        }
+    }
     Ok(v)
+}
+/// A revert entry passes the main_red pause of the merge it reverts, and no
+/// other pause (YN-18 S2d-2): it is what ends that pause.
+pub(super) fn revert_passes(e: &Value, paused: &Value) -> bool {
+    e["kind"] == "revert" && paused["reason"] == "main_red" && paused["entryId"] == e["revert"]["of"] && e["revert"]["of"].is_string()
+}
+/// What the mails about a red main after a merge say about reverting it.
+fn revert_hint(db: &Connection, e: &Value) -> Result<String> {
+    if e["kind"] == "revert" {
+        return Ok(String::new());
+    }
+    let r = repository(db, e["repositoryId"].as_i64().unwrap_or(0))?;
+    Ok(if e["revertedBy"].is_string() {
+        format!(" Core started its revert (entry {}), as the user's automatic revert setting asks.", e["revertedBy"].as_str().unwrap_or("?"))
+    } else if r["revert"] == true {
+        format!(" One step reverts it: merge_revert with entry {} (a lead of the repository's Projects), or Revert in Jobs → Merge queue (the user).", e["id"].as_str().unwrap_or("?"))
+    } else {
+        " Reverts are off for this repository; the user can turn them on in Projects → repositories for a one-step revert.".to_owned()
+    })
 }
 fn save_repository(db: &Connection, id: i64, data: &Value) -> Result<()> {
     let mut data = data.clone();
@@ -360,6 +387,13 @@ fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
     let m = &e["merge"];
     let gate = &e["lastEvidence"]["gate"];
     let body = match (e["state"].as_str(), e["reason"].as_str()) {
+        (Some("merged"), _) if e["kind"] == "revert" => format!(
+            "Merge queue: merged Core's revert PR #{n} as {}, reverting #{} (merge commit {}). Post-check: parents main {} and the revert head, tree as built. Core now follows main's push CI on it; green ends the repository's pause. Entry {id}.",
+            short(&m["sha"]), e["revert"]["pr"], short(&e["revert"]["bad"]), short(&m["expectedMain"])),
+        (Some("done"), _) if e["kind"] == "revert" => format!(
+            "Merge queue: main's push CI on the revert of #{} ({}) concluded {}.{} Entry {id}.",
+            e["revert"]["pr"], short(&m["sha"]), m["mainCi"]["conclusion"].as_str().unwrap_or("?"),
+            if e["reason"] == "main_red" { " Main is still red; the repository's queue stays paused until a lead or the user unpauses it." } else { " The repository's queue is unpaused." }),
         (Some("merged"), _) if gate["kind"] == "relaxed" => format!(
             "Merge queue: merged #{n} at {head} as {}, a merge commit pinned to that head, under the relaxed policy. Gate: the PR's own CI green at the head, and Core's own merge of the head into main {} clean (tree {}); CI did not test that merge. Post-check: parents main {} and the head, tree as Core's merge. Core now follows main's push CI on it; red pauses the queue. Entry {id}: merge_get(entryId) has the evidence record.",
             short(&m["sha"]), short(&m["expectedMain"]), short(&gate["tree"]), short(&m["expectedMain"])),
@@ -367,9 +401,10 @@ fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
             "Merge queue: merged #{n} at {head} as {}, a merge commit pinned to that head. Gate: {} (tree {}), with every CI job on exactly that merge. Post-check: parents main {} and the head, tree as tested. Core now follows main's push CI on it. Entry {id}: merge_get(entryId) has the evidence record.",
             short(&m["sha"]), gate["kind"].as_str().unwrap_or("?"), short(&gate["tree"]), short(&m["expectedMain"])),
         (Some("done"), _) => format!(
-            "Merge queue: main's push CI on {} (#{n}) concluded {}.{} Entry {id}.",
+            "Merge queue: main's push CI on {} (#{n}) concluded {}.{}{} Entry {id}.",
             short(&m["sha"]), m["mainCi"]["conclusion"].as_str().unwrap_or("?"),
-            if e["reason"] == "main_red" { " The repository's queue is paused until a lead or the user unpauses it, or CI on a newer main is green." } else { "" }),
+            if e["reason"] == "main_red" { " The repository's queue is paused until a lead or the user unpauses it, or CI on a newer main is green." } else { "" },
+            if e["reason"] == "main_red" { revert_hint(db, e)? } else { String::new() }),
         (_, Some("conflict")) => format!(
             "Merge queue: #{n} at {head} stopped (conflict): {}. Core merged nothing{}. Next: the task's executor merges the current main into the PR branch, resolves the conflict and pushes; one review round at the new head; then the lead releases the new head (merge_enqueue with its headSha). merge_retry cannot help, since the head changes. Entry {id}.",
             e["detail"].as_str().unwrap_or(""),
@@ -437,9 +472,10 @@ fn pause(store: &Store, db: &Connection, e: &Value, reason: &str, main: &str, ru
     r["paused"] = json!({"reason":reason,"at":now(),"entryId":e["id"],"number":e["number"],"main":main,"run":run,"base":e["baseBranch"],"detail":detail});
     save_repository(db, repository_id, &r)?;
     let body = format!(
-        "Merge queue: {} is paused ({reason}) by entry {} for #{}: {detail}. No entry merges until a lead or the user unpauses it (merge_unpause){}.",
+        "Merge queue: {} is paused ({reason}) by entry {} for #{}: {detail}. No entry merges until a lead or the user unpauses it (merge_unpause){}.{}",
         e["repository"].as_str().unwrap_or("?"), e["id"].as_str().unwrap_or("?"), e["number"],
-        if reason == "main_red" { ", or CI on a newer main is green" } else { "" }
+        if reason == "main_red" { ", or CI on a newer main is green" } else { "" },
+        if reason == "main_red" && e["state"] == "done" { revert_hint(db, e)? } else { String::new() }
     );
     collab::activity(db, e["taskId"].as_str().unwrap_or(""), "comment", &system(), &json!({"mergeEntryId":e["id"]}),
         json!({"mergeEntryId":e["id"],"mergePause":r["paused"],"body":body}))?;
@@ -813,7 +849,7 @@ impl Store {
                             ("waiting", format!("The landing policy changed to {policy} while this check ran under {checked}; it is checked again under {policy}."), now_epoch)
                         } else if r["enabled"] != true {
                             ("ready", format!("Every check held, but the merge queue is off for {}; Core writes nothing to GitHub, and checks it again once the user turns it on.", e["repository"].as_str().unwrap_or("?")), UNTIL_SWITCHED_ON)
-                        } else if !r["paused"].is_null() {
+                        } else if !r["paused"].is_null() && !revert_passes(&e, &r["paused"]) {
                             ("waiting", format!("Every check held, but the repository's queue is paused ({}).", r["paused"]["reason"].as_str().unwrap_or("?")), now_epoch + 60)
                         } else if super::landing::Landing::named(&r["landing"]).is_none() {
                             ("ready", format!("Every check held, but this Core cannot land with '{}', the landing set for {}; it sends nothing.", r["landing"].as_str().unwrap_or("?"), e["repository"].as_str().unwrap_or("?")), now_epoch + 300)
@@ -892,7 +928,7 @@ impl Store {
         }
         let r = repository(&tx, e["repositoryId"].as_i64().unwrap_or(0))?;
         let paused = r["paused"].clone();
-        if !paused.is_null() {
+        if !paused.is_null() && !revert_passes(&e, &paused) {
             return Ok(Journal::Paused(format!(
                 "The repository's merge queue is paused ({}) since {}, so the merge request was not sent; the entry waits for the unpause.",
                 paused["reason"].as_str().unwrap_or("paused"),
@@ -1063,9 +1099,21 @@ impl Store {
                             e["state"] = json!("done");
                             e["detail"] = json!(format!("Main's push CI on the merge commit concluded {conclusion}."));
                             let red = matches!(conclusion.as_str(), "failure" | "timed_out" | "startup_failure");
+                            let repository_id = e["repositoryId"].as_i64().unwrap_or(0);
+                            let r = repository(&tx, repository_id)?;
                             if red {
                                 e["reason"] = json!("main_red");
+                                // Core reverts on its own only when the user turned
+                                // both reverts and automatic reverts on (S2d-2).
+                                if e["kind"] != "revert" && r["revert"] == true && r["autoRevert"] == true {
+                                    let made = revert_entry(&tx, &e, &system(), &json!({"mergeQueue":true}), None)?;
+                                    e["revertedBy"] = made["id"].clone();
+                                }
                                 pause(self, &tx, &e, "main_red", &sha, &run["id"], &format!("Main CI run {} on {} concluded {conclusion} after #{} merged", run["id"], &sha[..12.min(sha.len())], e["number"]))?;
+                            } else if e["kind"] == "revert" && revert_passes(&e, &r["paused"]) {
+                                // The revert landed and main is green: its pause ends.
+                                let by = json!({"by":format!("the revert of #{}", e["revert"]["pr"]),"entryId":e["id"]});
+                                clear(self, &tx, repository_id, by, &sha, None)?;
                             }
                             announce_as = Some(if red { "urgent" } else { "normal" });
                         }
@@ -1335,6 +1383,86 @@ impl Store {
         tx.commit()?;
         Ok(data)
     }
+    /// Whether `actor` may revert entry `id` (see `revert_allowed`).
+    pub(super) fn merge_revert_allowed(&self, actor: Option<&str>, id: &str) -> Result<Value> {
+        let db = self.db.read()?;
+        revert_allowed(&db, actor, id)
+    }
+
+    /// Ask for the revert of entry `id`; a retry with the same requestId gets
+    /// the revert entry it made back.
+    pub(super) fn merge_revert(&self, actor: Option<&str>, request_id: &str, id: &str, reason: Option<&str>) -> Result<Value> {
+        let input = json!({"requestId":request_id,"entryId":id,"reason":reason});
+        {
+            let db = self.db.read()?;
+            if let Some(old) = previous(&db, actor, "merge_revert", request_id, &input)? {
+                return Ok(old);
+            }
+        }
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        if let Some(old) = previous(&tx, actor, "merge_revert", request_id, &input)? {
+            return Ok(old);
+        }
+        // Checked inside the write, so two requests at once cannot both pass
+        // the one-revert-at-a-time rule (S2d-2 R1, P3).
+        let original = revert_allowed(&tx, actor, id)?;
+        let (author, source) = collab::actor_context(self, &tx, actor)?;
+        let e = revert_entry(&tx, &original, &author, &source, reason)?;
+        receipt(&tx, actor, "merge_revert", request_id, &input, e["id"].as_str().unwrap_or(""))?;
+        tx.commit()?;
+        Ok(e)
+    }
+
+    /// The revert PR Core opened for revert entry `id`: the entry now holds it.
+    pub(super) fn merge_revert_opened(&self, id: &str, attempt: i64, number: u64, head: &str) -> Result<bool> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut e = entry(&tx, id)?;
+        if e["attempt"].as_i64() != Some(attempt) || !matches!(e["state"].as_str(), Some("queued" | "waiting" | "ready")) {
+            return Ok(false);
+        }
+        e["number"] = json!(number);
+        e["headSha"] = json!(head);
+        e["url"] = json!(format!("https://github.com/{}/pull/{number}", e["repository"].as_str().unwrap_or("")));
+        let text = format!("Merge queue: Core opened revert PR #{number} at {} for the revert of #{} (entry {id}).", short(&json!(head)), e["revert"]["pr"]);
+        let state = e["state"].as_str().unwrap_or("queued").to_owned();
+        history(&mut e, &state, &Value::Null, &json!(text));
+        save(&tx, &e)?;
+        collab::activity(&tx, e["taskId"].as_str().unwrap_or(""), "comment", &system(), &json!({"mergeEntryId":id}),
+            json!({"mergeEntryId":id,"body":text}))?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The user's consent to reverts for a repository, and to Core reverting
+    /// on its own (YN-18 S2d-2); automatic reverts need reverts on.
+    pub(super) fn merge_set_reverts(&self, repository_id: i64, revert: Option<bool>, auto: Option<bool>) -> Result<Value> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let known: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM github_repositories WHERE id=?1)", [repository_id], |r| r.get(0))?;
+        ensure!(known, "not_found: link the repository to a Project first");
+        let mut data = repository(&tx, repository_id)?;
+        let on = data["enabled"] == true;
+        if let Some(revert) = revert.filter(|v| data["revert"] != *v) {
+            switched(&mut data, on, "user", if revert { "Reverts allowed" } else { "Reverts turned off" });
+            data["revert"] = json!(revert);
+            if !revert && data["autoRevert"] == true {
+                data["autoRevert"] = json!(false);
+                switched(&mut data, on, "user", "Automatic reverts turned off with reverts");
+            }
+        }
+        if let Some(auto) = auto.filter(|v| data["autoRevert"] != *v) {
+            ensure!(!auto || data["revert"] == true, "invalid_input: turn reverts on before automatic reverts");
+            switched(&mut data, on, "user", if auto { "Automatic reverts turned on" } else { "Automatic reverts turned off" });
+            data["autoRevert"] = json!(auto);
+        }
+        data["updatedAt"] = json!(now());
+        save_repository(&tx, repository_id, &data)?;
+        let data = repository(&tx, repository_id)?;
+        tx.commit()?;
+        Ok(data)
+    }
     pub(super) fn merge_repository(&self, repository_id: i64) -> Result<Value> {
         let db = self.db.read()?;
         repository(&db, repository_id)
@@ -1356,6 +1484,71 @@ fn released_for_merge(e: &Value) -> Result<()> {
         "merge_dry_run_ended: this entry was released before Core merged for real, and that release does not let Core merge; release the PR again"
     );
     Ok(())
+}
+
+/// Whether `actor` may revert entry `id` (YN-18 S2d-2): the user, or a lead
+/// of a Project the repository is linked to; the entry merged and its main
+/// push CI went red; the user allows reverts here; none is under way.
+fn revert_allowed(db: &Connection, actor: Option<&str>, id: &str) -> Result<Value> {
+    let e = entry(db, id)?;
+    let repository_id = e["repositoryId"].as_i64().unwrap_or(0);
+    if let Some(agent) = actor {
+        let lead: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_roles r JOIN project_agents p ON p.agent_id=r.agent_id AND p.project_id=r.project_id
+             JOIN github_project_repos g ON g.project_id=r.project_id WHERE r.kind='lead' AND r.agent_id=?1 AND g.repo_id=?2)",
+            params![agent, repository_id],
+            |r| r.get(0),
+        )?;
+        ensure!(lead, "merge_revert_not_allowed: only a lead of a Project this repository is linked to, or the user, can revert a merge");
+    }
+    ensure!(
+        e["kind"] != "revert" && e["state"] == "done" && e["reason"] == "main_red" && e["merge"]["sha"].is_string(),
+        "merge_revert_not_allowed: only a merge whose main push CI went red can be reverted; entry {id} is {} ({})",
+        e["state"].as_str().unwrap_or("?"),
+        e["reason"].as_str().unwrap_or("no reason")
+    );
+    ensure!(
+        repository(db, repository_id)?["revert"] == true,
+        "merge_revert_not_allowed: reverts are off for {}; the user turns them on in Projects → repositories",
+        e["repository"].as_str().unwrap_or("?")
+    );
+    let busy: Option<String> = db
+        .query_row(
+            &format!("SELECT id FROM merge_entries WHERE json_extract(data,'$.revert.of')=?1 AND state IN {ACTIVE}"),
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(other) = busy {
+        bail!("merge_revert_running: revert entry {other} of entry {id} is under way");
+    }
+    Ok(e)
+}
+
+/// A new revert entry for `original`, a merge whose main push CI went red
+/// (YN-18 S2d-2). It holds no PR yet: its first check builds the revert on
+/// `queue/revert-{entry}` and opens the PR, whose number it then takes.
+fn revert_entry(db: &Connection, original: &Value, by: &TaskActor, source: &Value, reason: Option<&str>) -> Result<Value> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let at = now();
+    let m = &original["merge"];
+    let e = json!({"id":id,"entryId":id,"kind":"revert","taskId":original["taskId"],"taskReference":original["taskReference"],
+        "repositoryId":original["repositoryId"],"repository":original["repository"],"number":original["number"],"url":null,
+        "linkId":null,"headSha":null,"baseBranch":original["baseBranch"],"mainAtRelease":m["sha"],"mainAnchoredAt":at,
+        "requireWorkflows":[],"note":reason,
+        "revert":{"of":original["id"],"pr":original["number"],"bad":m["sha"],"run":m["mainCi"]["run"]},
+        "release":{"by":by,"requestId":null,"at":at,"source":source,"reviewId":null},
+        "state":"queued","reason":null,"detail":"Core builds the revert first.","attempt":0,"checks":0,
+        "waits":0,"readFailures":0,"waitingSince":null,"nextCheck":0,"evidence":null,"lastEvidence":null,"batch":null,"merge":null,
+        "history":[{"at":at,"state":"queued","reason":null,"detail":"revert requested"}],"queueVersion":QUEUE_VERSION,"createdAt":at,"updatedAt":at});
+    db.execute(
+        "INSERT INTO merge_entries(id,task_id,repository_id,number,state,next_check,data) VALUES(?1,?2,?3,?4,'queued',0,?5)",
+        params![id, original["taskId"].as_str(), original["repositoryId"].as_i64(), original["number"].as_i64(), e.to_string()],
+    )?;
+    collab::activity(db, original["taskId"].as_str().unwrap_or(""), "comment", by, source, json!({"mergeEntryId":id,
+        "body":format!("Merge queue: revert of #{} (merge commit {}) requested by {} (entry {id}). Core builds it on its own branch, opens a PR, and merges it once CI on it is green, or at once if it restores a main whose CI was green.",
+            original["number"], short(&m["sha"]), by.name)}))?;
+    Ok(e)
 }
 
 /// A merge Core sent may have landed but was never verified: the entry stops
