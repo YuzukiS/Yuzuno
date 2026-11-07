@@ -1208,7 +1208,8 @@ const CONDITION_KEYS = new Set<string>(["$state", "not", ...COMPARISONS]);
  */
 function checkVariables(spec: BriefBodySpec, add: (found: BriefProblem) => void) {
   const bad = (code: ProblemCode, path: string, reason: string) => add(problem(code, path, reason, "interactive"));
-  const variables = new Map<string, { kind: VariableKind; options?: unknown[]; range?: [number, number] }>();
+  // selectedBy: the Diagram or Figure that declared it with its select (S4).
+  const variables = new Map<string, { kind: VariableKind; options?: unknown[]; range?: [number, number]; selectedBy?: string }>();
   const parents = new Map<string, string>();
   for (const [key, node] of Object.entries(spec.elements)) {
     for (const child of node.children ?? []) parents.set(child, node.type);
@@ -1231,14 +1232,17 @@ function checkVariables(spec: BriefBodySpec, add: (found: BriefProblem) => void)
     const path = `body.elements.${key}.props.select`;
     const declared = variables.get(found.name);
     if (!declared) {
-      variables.set(found.name, { kind: "text", options: ["", ...found.ids] });
+      variables.set(found.name, { kind: "text", options: ["", ...found.ids], selectedBy: key });
       continue;
     }
     const missing = found.ids.filter((one) => !declared.options?.includes(one));
     if (declared.kind !== "text" || !declared.options)
       bad("invalid_field", path, `${node.type} "${key}" selects into "/${found.name}", a ${declared.kind} variable; select names a variable of its own, or a Segmented's of texts with an option for every node.`);
+    // Two selects with other ids are two variables, never one of both sets (S3 R1 P3, Lead 2 8383).
+    else if (missing.length && declared.selectedBy)
+      bad("invalid_field", path, `${node.type} "${key}" selects into "/${found.name}", but another Diagram or Figure ("${declared.selectedBy}") already selects into /${found.name}; use a different variable.`);
     else if (missing.length)
-      bad("invalid_field", path, `${node.type} "${key}" selects into "/${found.name}", whose options do not name ${missing.map((one) => JSON.stringify(one)).join(", ")}; give its Segmented an option for every node, or select into a variable of the Diagram's own.`);
+      bad("invalid_field", path, `${node.type} "${key}" selects into "/${found.name}", whose options do not name ${missing.map((one) => JSON.stringify(one)).join(", ")}; give its Segmented an option for every node or hotspot, or select into a variable of its own.`);
   }
   if (variables.size > L.variables)
     bad("too_many", "body.elements", `The section's inputs and selects declare ${variables.size} variables; the limit is ${L.variables}.`);

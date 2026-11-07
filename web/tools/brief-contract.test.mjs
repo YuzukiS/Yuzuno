@@ -1291,3 +1291,20 @@ test("YN-16 S4 the guide says how a Figure, Steps and a Timeline are written and
   assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.timeline)));
   assert.match(briefGuide("attachments"), /as LineChart\/BarChart\/ScatterChart data\.attachment, or as a Figure's image/);
 });
+
+test("YN-16 S3 R1 P3: a second Diagram or Figure selecting into the same variable with other ids is told to use a different one", () => {
+  const flow = (ids) => ({ type: "Diagram", props: { select: "part", nodes: ids.map((id) => ({ id, label: id })), edges: [] } });
+  // Two Diagrams, other ids: the second is told; one set of both is never made.
+  const two = problems(inGroup({ one: flow(["frame", "chain"]), two: flow(["frame", "wheel"]) }));
+  assert.deepEqual([two[0].code, two[0].path, two[0].guide], ["invalid_field", "body.elements.two.props.select", "brief_guide interactive"]);
+  assert.match(two[0].reason, /^Diagram "two" selects into "\/part", but another Diagram or Figure \("one"\) already selects into \/part; use a different variable\./);
+  assert.doesNotMatch(two[0].reason, /Segmented/);
+  // A Diagram, then a Figure with other ids: the same.
+  const mixed = problems({ ...inGroup({ one: flow(["frame", "wheel"]), photo: figure({ select: "part" }) }), attachments: [shot.attachments[0]] });
+  assert.match(mixed[0].reason, /^Figure "photo" selects into "\/part", but another Diagram or Figure \("one"\) already selects into \/part; use a different variable\./);
+  // The same ids: two views of one choice, accepted.
+  assert.ok(checkBriefSection(inGroup({ one: flow(["frame", "chain"]), two: flow(["chain", "frame"]) })));
+  // A Segmented's variable missing an id still says so, naming the Segmented.
+  const parts = { type: "Segmented", props: { name: "part", value: "frame", options: [{ value: "frame", label: "Frame" }, { value: "chain", label: "Chain" }] } };
+  assert.match(first(inGroup({ parts, two: flow(["frame", "wheel"]) })).reason, /whose options do not name "wheel"; give its Segmented an option for every node or hotspot/);
+});
