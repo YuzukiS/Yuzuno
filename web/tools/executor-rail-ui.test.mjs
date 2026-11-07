@@ -82,7 +82,7 @@ const home = () => ({
 // The archived fold open, so the archived executor is listed.
 const opened = { "yuzuno.archivedExecutorsOpen.ws-rail": JSON.stringify(["all"]) };
 
-async function mount({ storage = {} } = {}) {
+async function mount({ storage = {}, needsYou = (items) => items } = {}) {
   const errors = [];
   const calls = [];
   const vc = new VirtualConsole();
@@ -106,7 +106,7 @@ async function mount({ storage = {} } = {}) {
   w.fetch = async (url, init = {}) => {
     calls.push({ url, method: init.method || "GET" });
     if (url.endsWith("/api/workspace")) return respond({ workspace: { id: "ws-rail" }, projects: [project], agents: listed, runtime: { connected: true }, defaultCwd: "/w" });
-    if (url.endsWith("/api/home")) return respond(home());
+    if (url.endsWith("/api/home")) { const h = home(); return respond({ ...h, needsYou: needsYou(h.needsYou) }); }
     if (url.endsWith("/api/executors/live")) return respond(live);
     if (url.endsWith("/task_list")) return respond({ tasks: [], counts: {}, hasMore: false });
     const detail = url.match(/\/api\/agents\/(\w)$/);
@@ -153,6 +153,20 @@ test("needs you opens to two lines by itself, with how long; the bell under the 
     assert.equal(p.bell("s"), false);
     assert.equal(p.island("s").dataset.status, "Waiting", "the row's status words, kept on the island");
     assert.equal(p.row("s").querySelector(".agent-rail-avatar"), null, "no avatar on any Agent row");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("an executor's question not yet in Home's Needs you shows no clock, not its time since dispatch", async () => {
+  const p = await mount({ needsYou: (items) => items.filter((item) => item.agentId !== "w") });
+  try {
+    await waitFor(() => p.clock("s") === "3m", "Home's Needs you is read");
+    assert.deepEqual(p.state("w"), ["waiting", "Needs you: Approve the design note"]);
+    assert.equal(p.clock("w"), null, "no clock until Home lists its wait");
+    assert.equal(p.island("w").dataset.clock, undefined);
+    assert.doesNotMatch(p.island("w").title, /1h/, "not its 65 minutes since dispatch");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

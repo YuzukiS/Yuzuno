@@ -87,8 +87,9 @@ function executor(facts: IslandFacts, view: ExecutorView): Pick<IslandView, "sta
     case "queued":
       return { state: "queued", clock: live(view.started), line: detail(view.detail) };
     case "needsYou":
-      // What it asks is its work summary.
-      return { state: "waiting", clock: live(view.waitingSince ?? view.started), line: summary ? { kind: "text", text: summary } : { kind: "none" } };
+      // What it asks is its work summary. Its wait is Home's Needs you's;
+      // until Home lists it, no clock rather than its time since dispatch.
+      return { state: "waiting", clock: live(view.waitingSince ?? null), line: summary ? { kind: "text", text: summary } : { kind: "none" } };
     case "review":
       // Handed in (T-43 7224): a Turn running means it already works on its next slice.
       return agent.status === "working"

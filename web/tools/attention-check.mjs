@@ -150,7 +150,8 @@ async function check(run) {
   const phone = !!run.isMobile;
   const rail = () => page.locator(".agent-list .agent-row");
   const ids = () => rail().evaluateAll((rows) => rows.map((row) => row.dataset.agentId));
-  const label = (id) => page.locator(`.agent-row[data-agent-id="${id}"] .agent-runtime`).textContent();
+  // The row's status words, kept on its island (T-43 v4-2).
+  const label = (id) => page.locator(`.agent-row[data-agent-id="${id}"] .agent-island`).getAttribute("data-status");
   const title = () => page.locator(".conversation-title h1").textContent();
   const settled = () => page.waitForTimeout(300);
   // Home by its toolbar button; on a phone, from the list's way back first.

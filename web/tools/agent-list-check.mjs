@@ -1,10 +1,10 @@
-// The Agent list in the left rail (T-82).
-// - Unread updates ring the avatar: no dot and no count, so nothing reads
-//   as one of the status dots, which are unchanged.
+// The Agent list in the left rail (T-82; the island since T-43 v4-2).
+// - No avatar: unread updates are a notch on the row's island, a count past
+//   one, inside the list, with the count in the row's tip.
 // - The compact list (Settings → Appearance): each row shows its Agent's
-//   name and status only, without the "Reported · / Update ·" line; the
-//   unread ring and "needs you" still show. The choice stays after a reload and
-//   can be undone from the keyboard.
+//   name and its island only, without the "Reported · / Update ·" line; the
+//   unread notch and "needs you" (the island's two lines) still show. The
+//   choice stays after a reload and can be undone from the keyboard.
 // - The selected row is marked by its background and border, with no accent
 //   tab on its left edge.
 // - The rail's title line holds YOUR AGENTS, a small Active / Closed pill and
@@ -158,15 +158,20 @@ try {
       [...document.querySelectorAll(".agent-list .agent-row")].map((row) => {
         const visible = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
         const name = row.querySelector(".agent-name");
+        const island = row.querySelector(".agent-island");
         return {
           id: row.dataset.agentId,
           height: Math.round(row.getBoundingClientRect().height),
           name: visible(name) ? name.textContent : null,
           nameClipped: !!name && name.scrollWidth > name.clientWidth + 1,
-          status: visible(row.querySelector(".agent-runtime")) ? row.querySelector(".agent-runtime").textContent.trim() : null,
+          status: visible(island) ? island.dataset.status : null,
+          island: island ? [island.dataset.state, island.dataset.form] : null,
+          line: island?.querySelector(".island-line")?.textContent ?? null,
           summary: visible(row.querySelector(".agent-work-summary")) ? row.querySelector(".agent-work-summary").textContent : null,
           needsYou: visible(row.querySelector(".needs-you")) ? row.querySelector(".needs-you").textContent : null,
-          unread: !!row.querySelector(".agent-rail-avatar.has-unread"),
+          unread: island?.dataset.unread ?? null,
+          unreadText: island?.querySelector(".island-unread")?.textContent ?? null,
+          avatar: !!row.querySelector(".agent-rail-avatar, .avatar"),
           title: row.querySelector(".agent-select").title,
           overflows: row.scrollWidth > row.clientWidth + 1,
         };
@@ -218,57 +223,41 @@ try {
   let at = byId(detailed);
   assert.match(at.a.summary || "", /^Reported · /, JSON.stringify(at.a));
   assert.match(at.b.summary || "", /^Update · /, JSON.stringify(at.b));
-  assert.match(at.c.summary || "", /npm ci/, JSON.stringify(at.c));
+  // Needs you: the island's two lines say it, once; the summary gives way.
+  assert.deepEqual(at.c.island, ["waiting", "two"], JSON.stringify(at.c));
+  assert.match(at.c.line || "", /npm ci/, JSON.stringify(at.c));
+  assert.equal(at.c.summary, null);
   assert.equal(at.d.summary, null);
-  assert.match(at.c.needsYou || "", /1 needs you/);
+  assert.equal(at.c.needsYou, null, "no bell under it: the island says it");
   assert.equal(await page.evaluate(() => document.documentElement.dataset.agentList), "detailed");
   await shot("rail-detailed-light.png");
   report.selection = [await noTab("detailed")];
   check("detailed by default: each Agent's report or update under its name; the selected row has no edge tab", { heights: detailed.map((r) => r.height) });
 
-  // Unread updates ring the avatar: not a dot, no count.
-  assert.deepEqual(detailed.map((r) => [r.id, r.unread]), [["a", false], ["b", true], ["c", false], ["d", true]]);
+  // Unread updates: a notch on the island, a count past one (99+ past 99).
+  assert.deepEqual(detailed.map((r) => [r.id, r.unread, r.unreadText]), [["a", null, null], ["b", "count", "2"], ["c", null, null], ["d", "count", "99+"]]);
+  assert.ok(detailed.every((r) => !r.avatar), "no avatar on any row");
   assert.match(at.b.title, / · 2 unread updates$/, "the count is in the row's tip");
   assert.doesNotMatch(at.a.title, /unread/);
   const marks = () =>
     page.evaluate(() => {
       const list = document.querySelector(".agent-list").getBoundingClientRect();
-      const wrap = document.querySelector('[data-agent-id="b"] .agent-rail-avatar');
-      const avatar = wrap.querySelector(".avatar").getBoundingClientRect();
-      const ring = getComputedStyle(wrap, "::before");
-      const box = wrap.getBoundingClientRect();
-      const outset = parseFloat(ring.top);
-      const dots = [...document.querySelectorAll(".agent-list .status-dot")].map((dot) => ({
-        size: Math.round(dot.getBoundingClientRect().width),
-        color: getComputedStyle(dot).backgroundColor,
-      }));
+      const notch = document.querySelector('[data-agent-id="b"] .agent-island .island-unread');
+      const box = notch.getBoundingClientRect();
       return {
-        ring: {
-          content: ring.content,
-          width: Math.round(avatar.width - 2 * outset),
-          border: ring.borderTopWidth,
-          color: ring.borderTopColor,
-        },
-        // The ring around the avatar, plus its outset, stays in the list.
-        inside: box.left + outset >= list.left && box.right - outset <= list.right && box.top + outset >= list.top,
-        // Nothing but the avatar's initial inside it: no count, no dot.
-        text: wrap.textContent,
-        extra: wrap.querySelectorAll(":scope > :not(.avatar)").length,
-        dots,
+        notch: { width: Math.round(box.width), height: Math.round(box.height), color: getComputedStyle(notch).backgroundColor },
+        // The notch, drawn over the island's edge, stays in the list.
+        inside: box.left >= list.left && box.right <= list.right && box.top >= list.top,
       };
     });
   let seen = await marks();
-  assert.ok(seen.ring.content !== "none" && seen.ring.width >= 32 && parseFloat(seen.ring.border) >= 1, `a ring around the avatar: ${JSON.stringify(seen.ring)}`);
-  assert.equal(seen.text, "H");
-  assert.equal(seen.extra, 0);
+  assert.ok(seen.notch.width >= 9 && seen.notch.height >= 9, `a notch with its count: ${JSON.stringify(seen.notch)}`);
   assert.equal(await page.locator(".agent-list .unread-dot, .agent-list .unread-count").count(), 0);
-  assert.ok(seen.dots.length === 4 && seen.dots.every((d) => d.size === 5), `the status dots are unchanged: ${JSON.stringify(seen.dots)}`);
-  assert.ok(seen.dots.every((d) => d.color !== seen.ring.color), `no status dot shares the ring's colour: ${JSON.stringify(seen)}`);
-  assert.ok(seen.inside, "the ring stays inside the list");
+  assert.ok(seen.inside, "the notch stays inside the list");
   await page.locator(".agent-list").screenshot({ path: resolve(output, "rail-unread-light.png"), animations: "disabled" });
   report.screenshots.push("rail-unread-light.png");
   report.marks = [seen];
-  check("unread updates ring the avatar, with the count in its tip; the status dots are unchanged", seen.ring);
+  check("unread updates are a notch on the island, a count past one, with the count in the row's tip; no avatar", seen.notch);
 
   // The title line at the default rail width, a wide one and the narrowest.
   const heading = () =>
@@ -356,8 +345,8 @@ try {
   assert.deepEqual({ dock: saved.dock, turnDock: saved.turnDock }, { dock: seededAppearance.dock, turnDock: seededAppearance.turnDock });
   check("Settings → Appearance → Agent list → Compact is saved on this device; the other saved settings, the docks' limits among them, are kept", { before: stored, saved });
 
-  // Compact: names and status, no line under them; "needs you" and the
-  // unread mark still show; every row is shorter, none wider than the rail.
+  // Compact: names and the island, no line under them; "needs you" and the
+  // unread notch still show; no row is taller, none wider than the rail.
   const compact = await rows();
   report.compact = compact;
   at = byId(compact);
@@ -366,16 +355,17 @@ try {
     assert.equal(row.summary, null, `no line under the name: ${JSON.stringify(row)}`);
     assert.ok(row.name && row.status, `name and status show: ${JSON.stringify(row)}`);
     assert.ok(!row.nameClipped && !row.overflows, `nothing clipped: ${JSON.stringify(row)}`);
-    assert.ok(row.height < before[row.id].height || (!before[row.id].summary && row.height <= before[row.id].height),
-      `the row is no taller: ${before[row.id].height} → ${row.height}`);
+    // Line two keeps the island (T-43 v4-2), so a row need not get shorter.
+    assert.ok(row.height <= before[row.id].height, `the row is no taller: ${before[row.id].height} → ${row.height}`);
   }
-  assert.match(at.c.needsYou || "", /1 needs you/, "needs you still shows");
-  assert.equal(at.b.unread, true, "the unread ring still shows");
+  assert.deepEqual(at.c.island, ["waiting", "two"], "needs you still shows");
+  assert.equal(at.b.unread, "count", "the unread notch still shows");
   const railHeight = (list) => list.reduce((sum, r) => sum + r.height, 0);
-  assert.ok(railHeight(compact) < railHeight(detailed) * 0.8, `the list is shorter: ${railHeight(detailed)} → ${railHeight(compact)}`);
+  assert.ok(railHeight(compact) <= railHeight(detailed), `the list is no taller: ${railHeight(detailed)} → ${railHeight(compact)}`);
+  report.heights = { detailed: railHeight(detailed), compact: railHeight(compact) };
   await shot("rail-compact-light.png");
   report.selection.push(await noTab("compact"));
-  check("compact: name and status only; needs you and the unread ring still show", { heights: compact.map((r) => r.height) });
+  check("compact: name and island only; needs you and the unread notch still show", { heights: compact.map((r) => r.height) });
 
   // The same in dark and in a shorter, narrower window.
   await page.evaluate(() => {
@@ -387,15 +377,15 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.dataset.agentList), "compact");
   await shot("rail-compact-dark.png");
   seen = await marks();
-  assert.ok(seen.dots.every((d) => d.color !== seen.ring.color), `dark: ${JSON.stringify(seen)}`);
+  assert.ok(seen.inside, `dark: ${JSON.stringify(seen)}`);
   report.marks.push(seen);
   await page.setViewportSize({ width: 940, height: 650 });
   for (const row of await rows()) assert.ok(row.summary === null && !row.overflows, JSON.stringify(row));
   await shot("rail-compact-dark-940.png");
-  // A phone's list, the whole width (T-170), keeps the ring.
+  // A phone's list, the whole width (T-170), keeps the notch.
   await page.setViewportSize({ width: 390, height: 844 });
   seen = await marks();
-  assert.ok(seen.inside && seen.ring.content !== "none", `390 px: ${JSON.stringify(seen)}`);
+  assert.ok(seen.inside && seen.notch.width >= 9, `390 px: ${JSON.stringify(seen)}`);
   report.marks.push(seen);
   await shot("rail-compact-dark-390.png");
   report.selection.push(await noTab("dark, 390 px"));

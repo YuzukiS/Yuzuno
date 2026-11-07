@@ -43,6 +43,8 @@ test("an executor's island follows its one state; delivering splits into working
     [life("queued", { position: 2 }), agent({ status: "offline" }), {}, "queued", { kind: "live", from: started, to: null }],
     [life("running"), agent({ status: "working" }), {}, "working", { kind: "live", from: started, to: null }],
     [life("running"), agent({ pendingCount: 1, status: "waiting" }), { waitingSince: at("2026-11-07T03:19:00Z") }, "waiting", { kind: "live", from: at("2026-11-07T03:19:00Z"), to: null }],
+    // Not in Home's Needs you yet (R3 P3): no clock, not its time since dispatch.
+    [life("running"), agent({ pendingCount: 1, status: "waiting" }), {}, "waiting", null],
     // Handed in (Lead 7224): a Turn running means it is on its next slice.
     [life("delivering"), agent({ status: "working" }), { pr: { number: 681, state: "open" } }, "working", { kind: "live", from: started, to: null }],
     [life("delivering"), agent(), { pr: { number: 688, state: "open" } }, "handed", { kind: "live", from: at("2026-11-07T03:10:00Z"), to: null }],
