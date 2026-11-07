@@ -15,13 +15,13 @@ const PAGES: u64 = 10;
 
 /// One read through the CI monitor's shared read (its ETag cache and
 /// cooldown), holding a GitHub slot only while it runs.
-async fn read(ws: &Arc<Workspace>, endpoint: String) -> Result<Value> {
+pub(super) async fn read(ws: &Arc<Workspace>, endpoint: String) -> Result<Value> {
     let _slot = ws.github.slots.acquire().await?;
     crate::ci_monitor::shared_read(ws, endpoint).await
 }
 /// Every page of a list, up to `PAGES`: its items, GitHub's `total_count`,
 /// and whether GitHub named a page past the last one read.
-async fn pages(ws: &Arc<Workspace>, endpoint: String, key: &str) -> Result<(Vec<Value>, Option<u64>, bool)> {
+pub(super) async fn pages(ws: &Arc<Workspace>, endpoint: String, key: &str) -> Result<(Vec<Value>, Option<u64>, bool)> {
     let (mut items, mut total, mut next, mut page) = (Vec::new(), None, Some(endpoint), 1);
     while let Some(at) = next.take() {
         let (value, more) = {
@@ -38,7 +38,7 @@ async fn pages(ws: &Arc<Workspace>, endpoint: String, key: &str) -> Result<(Vec<
     Ok((items, total, false))
 }
 /// A branch name as one URL path segment.
-fn segment(s: &str) -> String {
+pub(super) fn segment(s: &str) -> String {
     s.bytes()
         .map(|b| {
             if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
@@ -49,7 +49,7 @@ fn segment(s: &str) -> String {
         })
         .collect()
 }
-fn array(value: &Value, key: &str) -> Vec<Value> {
+pub(super) fn array(value: &Value, key: &str) -> Vec<Value> {
     value[key].as_array().cloned().unwrap_or_default()
 }
 fn short(sha: &str) -> &str {
@@ -578,10 +578,23 @@ pub(super) async fn follow(ws: &Arc<Workspace>, entry: &Value) -> Result<Followe
 /// them it made and has not yet removed. The PR is closed only if its head is
 /// still the entry's own branch.
 pub(super) async fn cleanup(ws: &Arc<Workspace>, entry: &Value) -> Result<Value> {
-    let t = target(entry)?;
+    // Only who owns the batch: a revert stopped before its PR has no head yet.
+    struct Owner {
+        id: String,
+        repository: i64,
+        repo: String,
+    }
+    let t = Owner {
+        id: entry["id"].as_str().context("The entry has no id")?.to_owned(),
+        repository: entry["repositoryId"].as_i64().context("The entry has no repository id")?,
+        repo: entry["repository"].as_str().context("The entry has no repository")?.to_owned(),
+    };
     let b = &entry["batch"];
     let branch = b["branch"].as_str().context("The batch has no branch")?;
-    ensure!(branch == writes::branch(&t.id), "merge_write_refused: the batch branch is not this entry's own");
+    ensure!(
+        branch == writes::branch(&t.id) || branch == writes::revert_branch(&t.id),
+        "merge_write_refused: the batch branch is not this entry's own"
+    );
     // A branch whose creation may have happened ("pending") is deleted too;
     // GitHub's 404 or 422 then says it never existed.
     let made = b["ref"] == true || b["ref"] == "pending";
