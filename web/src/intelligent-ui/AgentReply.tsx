@@ -316,8 +316,12 @@ function Segment({
         : null,
     [segment],
   );
-  const drawn = useRef(false);
-  if (live) drawn.current = true;
+  // The text a live card closed into: that result is the card that arrived
+  // and stays mounted. Any other text is a new result, drawn anew with its
+  // own views (ResultContext). Undefined: not drawn live.
+  const closedInto = useRef<string | null | undefined>(undefined);
+  if (live) closedInto.current = null;
+  else if (segment.kind === "result" && closedInto.current === null) closedInto.current = segment.raw;
   useEffect(() => {
     if (segment.kind === "pending") preloadResult();
   }, [segment.kind]);
@@ -335,7 +339,13 @@ function Segment({
       return <ResultUnavailable kind={stateOf(segment.problem)} raw={segment.raw} problem={segment.problem} />;
     case "result":
       return (
-        <ShownResult {...props} spec={segment.spec} raw={segment.raw} streamed={drawn.current} arrived={arrived || pending.current} />
+        <ShownResult
+          {...props}
+          spec={segment.spec}
+          raw={segment.raw}
+          streamed={closedInto.current === segment.raw}
+          arrived={arrived || pending.current}
+        />
       );
   }
 }

@@ -140,6 +140,19 @@ test("a block being written draws its checked parts in order, keeps room for the
   assert.ok([...card.querySelectorAll("button")].some((b) => /Continue with selection/.test(b.textContent)));
   assert.ok(card.querySelector(".result-original"), "its JSON can be read now");
   assert.match(page.text(), /Pick one\./);
+  // A row chosen, then the same text again: the same card, the choice kept.
+  card.querySelector('input[type="checkbox"]').click();
+  await until(() => /1 selected/.test(card.textContent), "a row selected");
+  page.window.renderReply({ text: closed(), complete: false });
+  await tick();
+  assert.equal(page.card(), card);
+  assert.match(card.textContent, /1 selected/);
+  // A later, different text is a new result: drawn anew, the choice not carried over (R1 P3).
+  const changed = structuredClone(spec);
+  changed.elements.result.props.title = "Two plans";
+  page.window.renderReply({ text: closed(JSON.stringify(changed)), complete: false });
+  const next = await until(() => page.card() !== card && /Two plans/.test(page.text()) && page.card(), "a new card for new text");
+  assert.match(next.textContent, /0 selected/);
   assert.equal(page.requests.length, 0, "nothing is asked of Core");
   assert.deepEqual(page.errors, []);
 });
