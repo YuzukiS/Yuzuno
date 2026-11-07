@@ -799,15 +799,20 @@ keeps the tab you chose last. A standing Agent or a lead has no tabs.
     version, the context summary), read-only;
   - its template's steps (its delivery's default when it sets none, `pr`
     for an executor made from no template), five shown and the rest on
-    request, each with a state read from its record: `materials` is done
-    once the dispatch mail was read (or a later step has begun); `work` once a result or a PR is in, and
-    under way while it runs and doesn't wait for you; `result` once its
-    result on this dispatch is in; `gate` waits for you while it does, and is
-    done once a later step has begun; `job` is its newest Job's; `pr` is
-    done once its task links a PR; `review` is the newest round on the PR's
-    head (`changes_requested` fails it; a round of an earlier head doesn't
-    count); `ci` is the head's checks; `merge` its merge entry's, or done
-    once the PR is merged;
+    request, each with a state read from its record: `result` is done once
+    that result is in (the n-th result step is the n-th result handed in on
+    this dispatch); `job` is the newest of its Jobs; `pr` is done once its
+    task links a PR; `review` is the newest round on the PR's head
+    (`changes_requested` fails it; a round of an earlier head doesn't count);
+    `ci` is the head's checks; `merge` its merge entry's, or done once the PR
+    is merged. Materials, work and a gate have no record of their own: each
+    is done once a step after it has begun (materials also once the dispatch
+    mail was read). A gate ends a stage: the stage after it begins only once
+    each result asked for before the gate is in, and only its own Jobs, made
+    after the newest of those results, count for it, so one stage's records
+    never pass a gate. The first step not begun is where the executor is:
+    under way while it runs (materials, work or a result), waiting for you
+    while it waits (those, or a gate);
   - what it is doing now (its work summary);
   - while it needs you, its requests' own cards, answered there (and not
     also in its Conversation while the Overview shows);

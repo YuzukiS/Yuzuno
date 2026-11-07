@@ -85,16 +85,45 @@ fn a_failing_record_fails_its_step_and_an_earlier_heads_review_is_not_this_ones(
     assert_eq!(states(&steps, &facts(pull("open", "unknown", None), None))[0], "materials:done");
 }
 
+/// #749 R1: a template that repeats work and a result around a gate (design
+/// first). The first stage's result passes neither the gate nor the steps
+/// after it: the gate waits, for you while you're asked, until a record of
+/// the stage after it is in.
 #[test]
-fn a_gate_blocks_while_it_waits_and_passes_once_a_later_step_begins() {
+fn a_stage_after_a_gate_begins_only_with_its_own_records() {
     let steps: Vec<Value> = ["materials", "work", "result", "gate", "work", "result"].iter().map(|k| json!({"kind":k})).collect();
-    let mut facts = Facts { lifecycle: "running".into(), read_at: Some("t".into()), waiting: true,
-        result: Some(json!({"id":"res","reportedAt":"t"})), ..Facts::default() };
-    let read = states(&steps, &facts);
-    assert_eq!(read[2..4], ["result:done", "gate:blocked"]);
+    let first = json!({"id":"res-1","reportedAt":"2026-11-07T10:00:00Z"});
+    let mut facts = Facts { lifecycle: "running".into(), read_at: Some("2026-11-07T09:00:00Z".into()), waiting: true,
+        results: vec![first.clone()], ..Facts::default() };
+    assert_eq!(states(&steps, &facts), ["materials:done", "work:done", "result:done", "gate:blocked", "work:todo", "result:todo"]);
+    assert_eq!(step_states(&steps, &facts)[2]["ref"]["id"], "res-1", "the first result is the first result step's");
+    // Answered, or not yet asked: nothing after the gate is in, so it hasn't passed.
     facts.waiting = false;
-    // Answered: the gate isn't waiting; it passed once work after it begins.
-    assert_eq!(states(&steps, &facts)[3], "gate:done", "the result after it is in: {:?}", states(&steps, &facts));
+    assert_eq!(states(&steps, &facts)[3..], ["gate:todo", "work:todo", "result:todo"]);
+    // The second result: the stage after the gate began and ended.
+    facts.results.push(json!({"id":"res-2","reportedAt":"2026-11-07T12:00:00Z"}));
+    let read = step_states(&steps, &facts);
+    assert!(read.iter().all(|s| s["state"] == "done"), "{read:?}");
+    assert_eq!(read[5]["ref"]["id"], "res-2");
+    // Before its first result: at work, and nothing after the gate counts.
+    facts.results.clear();
+    facts.pull = Some(pull("open", "success", None));
+    assert_eq!(states(&steps, &facts), ["materials:done", "work:doing", "result:todo", "gate:todo", "work:todo", "result:todo"]);
+}
+
+/// A Job counts for the stage it was made in: one from before the gate's
+/// result is not the stage after it.
+#[test]
+fn a_job_from_before_the_gate_is_not_the_job_after_it() {
+    let steps: Vec<Value> = ["materials", "result", "gate", "job", "pr"].iter().map(|k| json!({"kind":k})).collect();
+    let mut facts = Facts { lifecycle: "running".into(), read_at: Some("2026-11-07T09:00:00Z".into()),
+        results: vec![json!({"id":"note","reportedAt":"2026-11-07T10:00:00Z"})],
+        jobs: vec![json!({"id":"j0","name":"preview","status":"succeeded","createdAt":"2026-11-07T09:30:00.5+00:00"})], ..Facts::default() };
+    assert_eq!(states(&steps, &facts)[2..], ["gate:todo", "job:todo", "pr:todo"]);
+    facts.jobs.insert(0, json!({"id":"j1","name":"tests","status":"running","createdAt":"2026-11-07T11:00:00+00:00"}));
+    let read = step_states(&steps, &facts);
+    assert_eq!(states(&steps, &facts)[2..], ["gate:done", "job:doing", "pr:todo"]);
+    assert_eq!(read[3]["ref"]["id"], "j1");
 }
 
 /// The route's read: none for another Agent; an executor's lifecycle, task,

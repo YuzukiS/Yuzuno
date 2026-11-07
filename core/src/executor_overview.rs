@@ -56,7 +56,7 @@ mod tests {
     }
 
     /// T-43 S3: the route answers for an executor only, and whether one
-    /// waits for an answer is its listing's (its work isn't going on then).
+    /// waits for an answer is its listing's.
     #[tokio::test]
     async fn only_an_executor_has_an_overview_and_its_listing_says_whether_it_waits() {
         let dir = tempfile::tempdir().unwrap();
@@ -72,12 +72,13 @@ mod tests {
             agent(&ws, id, status);
             role(&ws.store, id, &internal, "user", &format!("d-{id}"), "running", None);
         }
-        let work = |body: &Value| body["steps"].as_array().unwrap().iter().find(|s| s["kind"] == "work").unwrap()["state"].clone();
+        // Nothing of theirs recorded yet: each is at its first step.
+        let first = |body: &Value| (body["steps"][0]["kind"].clone(), body["steps"][0]["state"].clone());
         let (status, working) = get(&ws, "e1").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!((working["agentId"].clone(), working["task"]["title"].clone()), (json!("e1"), json!("Overview of e1")));
-        assert_eq!(work(&working), "doing");
+        assert_eq!(first(&working), (json!("materials"), json!("doing")));
         let (_, waiting) = get(&ws, "e2").await;
-        assert_eq!(work(&waiting), "todo", "it waits for you");
+        assert_eq!(first(&waiting), (json!("materials"), json!("blocked")), "it waits for you");
     }
 }

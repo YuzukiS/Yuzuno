@@ -8,6 +8,7 @@
 use super::{current, dispatch_materials, load_task, task_number};
 use crate::{executor_lifecycle, executor_templates};
 use anyhow::Result;
+use chrono::{DateTime, FixedOffset};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
@@ -19,8 +20,8 @@ const JOBS: i64 = 12;
 pub(super) struct Facts {
     /// When it first read its dispatch mail.
     pub read_at: Option<String>,
-    /// Its newest result on this dispatch.
-    pub result: Option<Value>,
+    /// Each result it handed in on this dispatch, oldest first.
+    pub results: Vec<Value>,
     /// Its own Jobs on its task, newest first.
     pub jobs: Vec<Value>,
     /// Its task's PR, as the task's delivery shows it.
@@ -36,33 +37,53 @@ pub(super) struct Facts {
 const RUNNING_JOB: [&str; 5] = ["queued", "waiting", "running", "paused", "waiting_analysis"];
 const FAILED_JOB: [&str; 6] = ["failed", "cancelled", "interrupted", "rejected", "unknown", "timed_out"];
 
+fn at(value: &Value) -> Option<DateTime<FixedOffset>> {
+    value.as_str().and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+}
+
 /// Each step with its state (done, doing, blocked, failed or todo) and the
-/// record it was read from, as `ref`. A gate is done once a step after it has
-/// begun; work is done once its result or a PR is in.
+/// record it was read from, as `ref`.
+///
+/// A gate ends a stage. The stage after it has begun only once each result
+/// asked for before the gate is in (the n-th result step is the n-th result
+/// handed in on this dispatch), and its Jobs are those made after the newest
+/// of those results: a stage's records never pass a later stage. Materials,
+/// work and a gate have no record of their own: each is done once a step
+/// after it has begun. The first step not begun is where the executor is:
+/// materials, work or a result under way while it runs, a gate or one of
+/// those waiting for you while it waits.
 pub(super) fn step_states(steps: &[Value], facts: &Facts) -> Vec<Value> {
     let running = matches!(facts.lifecycle.as_str(), "running" | "delivering");
     let pull = facts.pull.as_ref();
-    let mut out: Vec<Value> = steps
-        .iter()
-        .map(|step| {
-            let kind = step["kind"].as_str().unwrap_or("");
-            let (state, reference): (&str, Value) = match kind {
-                "materials" => match &facts.read_at {
-                    Some(at) => ("done", json!({"kind":"mail","readAt":at})),
-                    None if running || facts.result.is_some() => ("doing", Value::Null),
-                    None => ("todo", Value::Null),
-                },
-                "work" if facts.result.is_some() || pull.is_some() => ("done", Value::Null),
-                "work" if running && !facts.waiting => ("doing", Value::Null),
-                "work" => ("todo", Value::Null),
-                "result" => match &facts.result {
-                    Some(r) => ("done", json!({"kind":"result","id":r["id"],"reportedAt":r["reportedAt"]})),
-                    None => ("todo", Value::Null),
-                },
-                // Settled below, once the steps after it are read.
-                "gate" if facts.waiting => ("blocked", Value::Null),
-                "gate" => ("todo", Value::Null),
-                "job" => match facts.jobs.first() {
+    let mut asked = 0usize;
+    let mut open = true;
+    let mut since: Option<DateTime<FixedOffset>> = None;
+    let mut out: Vec<Value> = Vec::with_capacity(steps.len());
+    for step in steps {
+        let kind = step["kind"].as_str().unwrap_or("");
+        if kind == "gate" {
+            open = open && facts.results.len() >= asked;
+            if let Some(result) = asked.checked_sub(1).and_then(|n| facts.results.get(n)) {
+                since = at(&result["reportedAt"]).or(since);
+            }
+        }
+        let nth = (kind == "result").then(|| {
+            asked += 1;
+            asked - 1
+        });
+        let (state, reference): (&str, Value) = match kind {
+            _ if !open => ("todo", Value::Null),
+            "materials" => match &facts.read_at {
+                Some(at) => ("done", json!({"kind":"mail","readAt":at})),
+                None => ("todo", Value::Null),
+            },
+            "result" => match nth.and_then(|n| facts.results.get(n)) {
+                Some(r) => ("done", json!({"kind":"result","id":r["id"],"reportedAt":r["reportedAt"]})),
+                None => ("todo", Value::Null),
+            },
+            "job" => {
+                let newer = |job: &&Value| since.is_none_or(|since| at(&job["createdAt"]).is_some_and(|made| made > since));
+                match facts.jobs.iter().find(newer) {
                     None => ("todo", Value::Null),
                     Some(job) => {
                         let status = job["status"].as_str().unwrap_or("");
@@ -77,79 +98,86 @@ pub(super) fn step_states(steps: &[Value], facts: &Facts) -> Vec<Value> {
                         };
                         (state, json!({"kind":"job","id":job["id"],"name":job["name"],"status":status}))
                     }
-                },
-                "pr" => match pull {
-                    Some(p) => ("done", json!({"kind":"pr","number":p["number"],"url":p["url"],"state":p["state"]})),
-                    None => ("todo", Value::Null),
-                },
-                "review" => match pull.map(|p| &p["latestReview"]).filter(|r| r.is_object()) {
-                    None => ("todo", Value::Null),
-                    Some(review) => {
-                        let reference = json!({"kind":"review","id":review["reviewId"],"round":review["round"],
-                            "conclusion":review["conclusion"],"forCurrentHead":review["forCurrentHead"]});
-                        let current = review["forCurrentHead"] == true;
-                        let state = match (review["status"].as_str(), review["conclusion"].as_str()) {
-                            (Some("preparing" | "running" | "queued"), _) => "doing",
-                            (Some("completed"), Some("no_findings" | "approved_with_notes")) if current => "done",
-                            (Some("completed"), Some("changes_requested")) if current => "failed",
-                            (Some("failed" | "cancelled"), _) if current => "failed",
-                            // A review of an earlier head: this head has none yet.
-                            _ => "todo",
-                        };
-                        (state, reference)
-                    }
-                },
-                "ci" => match pull.map(|p| &p["ci"]) {
-                    None => ("todo", Value::Null),
-                    Some(ci) => {
-                        let state = match ci["state"].as_str() {
-                            Some("success") => "done",
-                            Some("failure" | "cancelled" | "error") => "failed",
-                            Some("pending" | "running" | "queued") => "doing",
-                            _ => "todo",
-                        };
-                        (state, json!({"kind":"ci","state":ci["state"],"headSha":ci["headSha"]}))
-                    }
-                },
-                "merge" => {
-                    let entry = facts.merge.as_ref();
-                    let state = match entry.and_then(|e| e["state"].as_str()) {
-                        Some("merged" | "done") => "done",
-                        Some("stopped") => "failed",
-                        Some("queued" | "waiting" | "ready" | "merging") => "doing",
-                        _ if pull.is_some_and(|p| p["state"] == "merged") => "done",
+                }
+            }
+            "pr" => match pull {
+                Some(p) => ("done", json!({"kind":"pr","number":p["number"],"url":p["url"],"state":p["state"]})),
+                None => ("todo", Value::Null),
+            },
+            "review" => match pull.map(|p| &p["latestReview"]).filter(|r| r.is_object()) {
+                None => ("todo", Value::Null),
+                Some(review) => {
+                    let reference = json!({"kind":"review","id":review["reviewId"],"round":review["round"],
+                        "conclusion":review["conclusion"],"forCurrentHead":review["forCurrentHead"]});
+                    let current = review["forCurrentHead"] == true;
+                    let state = match (review["status"].as_str(), review["conclusion"].as_str()) {
+                        (Some("preparing" | "running" | "queued"), _) => "doing",
+                        (Some("completed"), Some("no_findings" | "approved_with_notes")) if current => "done",
+                        (Some("completed"), Some("changes_requested")) if current => "failed",
+                        (Some("failed" | "cancelled"), _) if current => "failed",
+                        // A review of an earlier head: this head has none yet.
                         _ => "todo",
-                    };
-                    let reference = match entry {
-                        Some(e) => json!({"kind":"merge","id":e["id"],"state":e["state"],"reason":e["reason"]}),
-                        None if state == "done" => json!({"kind":"pr","number":pull.map(|p| p["number"].clone()),"state":"merged"}),
-                        None => Value::Null,
                     };
                     (state, reference)
                 }
-                _ => ("todo", Value::Null),
-            };
-            let mut out = step.clone();
-            out["state"] = json!(state);
-            if !reference.is_null() {
-                out["ref"] = reference;
+            },
+            "ci" => match pull.map(|p| &p["ci"]) {
+                None => ("todo", Value::Null),
+                Some(ci) => {
+                    let state = match ci["state"].as_str() {
+                        Some("success") => "done",
+                        Some("failure" | "cancelled" | "error") => "failed",
+                        Some("pending" | "running" | "queued") => "doing",
+                        _ => "todo",
+                    };
+                    (state, json!({"kind":"ci","state":ci["state"],"headSha":ci["headSha"]}))
+                }
+            },
+            "merge" => {
+                let entry = facts.merge.as_ref();
+                let state = match entry.and_then(|e| e["state"].as_str()) {
+                    Some("merged" | "done") => "done",
+                    Some("stopped") => "failed",
+                    Some("queued" | "waiting" | "ready" | "merging") => "doing",
+                    _ if pull.is_some_and(|p| p["state"] == "merged") => "done",
+                    _ => "todo",
+                };
+                let reference = match entry {
+                    Some(e) => json!({"kind":"merge","id":e["id"],"state":e["state"],"reason":e["reason"]}),
+                    None if state == "done" => json!({"kind":"pr","number":pull.map(|p| p["number"].clone()),"state":"merged"}),
+                    None => Value::Null,
+                };
+                (state, reference)
             }
-            out
-        })
-        .collect();
-    // A gate passed once a step after it has begun; until then it waits. Its
-    // materials were read once anything after them has begun, whether or
-    // not its mail's read was recorded (a dispatch before reads were kept).
-    for n in 0..out.len() {
-        let begun_after = out[n + 1..].iter().any(|s| s["state"] != "todo");
-        let passed = match out[n]["kind"].as_str() {
-            Some("gate") => out[n]["state"] == "todo",
-            Some("materials") => out[n]["state"] != "done",
-            _ => false,
+            // Work and a gate: settled below, from the steps after them.
+            _ => ("todo", Value::Null),
         };
-        if passed && begun_after {
+        let mut out_step = step.clone();
+        out_step["state"] = json!(state);
+        if !reference.is_null() {
+            out_step["ref"] = reference;
+        }
+        out.push(out_step);
+    }
+    // Materials, work and a gate are done once a step after them has begun
+    // (materials whether or not the mail's read was recorded: a dispatch
+    // from before reads were kept).
+    let begun: Vec<bool> = out.iter().map(|s| s["state"] != "todo").collect();
+    for n in 0..out.len() {
+        let settles = matches!(out[n]["kind"].as_str(), Some("materials" | "work" | "gate"));
+        if settles && out[n]["state"] == "todo" && begun[n + 1..].iter().any(|b| *b) {
             out[n]["state"] = json!("done");
         }
+    }
+    // Where it is: the first step not begun.
+    if let Some(step) = out.iter_mut().find(|s| s["state"] == "todo") {
+        let state = match step["kind"].as_str() {
+            Some("gate") if facts.waiting => "blocked",
+            Some("materials" | "work" | "result") if facts.waiting => "blocked",
+            Some("materials" | "work" | "result") if running => "doing",
+            _ => "todo",
+        };
+        step["state"] = json!(state);
     }
     out
 }
@@ -193,6 +221,16 @@ fn read_at(db: &Connection, task: &str, dispatch: &str, agent: &str) -> Result<O
         )
         .optional()?
         .flatten())
+}
+
+/// Each result handed in on `dispatch`, oldest first: its ID and when.
+fn results(db: &Connection, task: &str, dispatch: &str) -> Result<Vec<Value>> {
+    let mut query = db.prepare(
+        "SELECT json_extract(data,'$.result.id'), json_extract(data,'$.result.reportedAt') FROM collaboration_task_activity
+         WHERE task_id=?1 AND json_extract(data,'$.kind')='result' AND json_extract(data,'$.result.dispatchId')=?2 ORDER BY seq",
+    )?;
+    let rows = query.query_map(params![task, dispatch], |r| Ok(json!({"id":r.get::<_, Option<String>>(0)?,"reportedAt":r.get::<_, Option<String>>(1)?})))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// Its own Jobs on its task, newest first, as a summary shows them.
@@ -266,7 +304,7 @@ pub(crate) fn overview(db: &Connection, agent: &str, waiting: bool) -> Result<Op
     let result = shared.result.clone().filter(|r| r["dispatchId"] == dispatch.as_str());
     let facts = Facts {
         read_at: read_at(db, &task, &dispatch, agent)?,
-        result: result.clone(),
+        results: results(db, &task, &dispatch)?,
         jobs: jobs(db, &task, agent)?,
         pull: pull.clone(),
         merge: merge.clone(),
