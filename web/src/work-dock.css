@@ -325,6 +325,11 @@
     align-items: stretch;
     padding-left: 4px;
   }
+  /* The groups are the scrolling box's children, not the dock's, since the
+     box went in (#459). Centred there, each group was only as wide as its own
+     names, so one with shorter names stood a few pixels right of the others
+     (YN-17). */
+  .work-dock-scroll,
   .work-dock-group {
     align-items: stretch;
   }
