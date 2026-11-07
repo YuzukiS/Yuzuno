@@ -112,3 +112,50 @@
 .backup-retention-confirm p {
   margin: 0 0 6px;
 }
+/* In the page's cards (YN-8 S6b): a note under a row is in the cards' help
+   type and inside the card's padding, not against its edge; Automatic
+   removal is a block of the daily backup's card, not a card inside it. */
+.workspace-backup .settings-group > :is(p, .workspace-backup-refusal, .workspace-backup-precheck),
+.workspace-backup-auto-removal > p {
+  margin: 0;
+  padding: 0 16px 12px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.workspace-backup-refusal p,
+.workspace-backup-precheck p {
+  margin: 0;
+}
+.workspace-backup-auto-removal {
+  border-top: 1px solid var(--line);
+}
+/* Outside the cards: the same help type for what the page says, and the
+   operations' lines at the rows' size. */
+.workspace-backup > :is(.workspace-backup-note, .workspace-backup-error, .workspace-backup-refusal, .workspace-backup-limit),
+.workspace-backup-coverage {
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.workspace-backup-coverage summary {
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 550;
+  cursor: pointer;
+}
+.workspace-backup-operation,
+.workspace-backup-recent {
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.workspace-backup-recent h4 {
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
+.backup-retention-result {
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.backup-retention-result > p {
+  margin: 0 0 6px;
+}

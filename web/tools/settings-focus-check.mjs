@@ -9,8 +9,9 @@
 //   whose confirming read is still on its way while the reader moves on keeps focus where they went;
 // - New Agent defaults' Save, gone once nothing is left to save: focus goes to the line that says it
 //   was saved;
-// - the daily backup's Save says Saving… while Core has not answered, then a line says it was saved,
-//   and focus goes there (Save has nothing left to save and is off);
+// - the daily backup's change, saved by the Backup page's bar (YN-8 S6b): its Save says Saving…
+//   while Core has not answered, then the bar's line says it was saved, and focus goes there (the
+//   Save pressed is gone with the change);
 // - Try again in a refused Appearance save, answered: focus goes to the line that says it was saved;
 //   Restore defaults in the refusal, answered: focus goes to Restore defaults again.
 // On the desktop (1280×860) and a phone (390×844), each with normal and reduced motion. Writes: the
@@ -323,24 +324,23 @@ for (const run of runs) {
       ok(`${tag}: the Agent defaults page's Save, ${said}: once saved it is gone, and focus goes to the bar's line that says it was saved (focus: ${JSON.stringify(at)})`, on, at);
     }
 
-    // ---- ST:B8: the daily backup's Save.
+    // ---- ST:B8: the daily backup's change, saved by the Backup page's bar (YN-8 S6b).
     await openEditor("backup", "Workspace backup & restore", "backup");
     const daily = page.locator("#settings-backup .workspace-backup-daily");
     let hour = 4;
     for (const [how, said] of HOWS) {
       await daily.locator('input[aria-label="Time of day (UTC)"]').fill(`0${hour++}:00`);
       hold("POST", "/api/workspace/backup/schedule");
-      const save = daily.locator(".workspace-backup-row button").last();
-      await press(save, how);
+      await press(bar.getByRole("button", { name: "Save", exact: true }), how);
       await waiting("POST", "/api/workspace/backup/schedule");
-      const label = (await save.textContent()).trim();
-      ok(`${tag}: the daily backup's Save, ${said}: while Core has not answered it says Saving… (it says "${label}")`, label === "Saving…", label);
+      const label = (await bar.locator("button.primary-button").textContent()).trim();
+      ok(`${tag}: the daily backup's change, the bar's Save, ${said}: while Core has not answered it says Saving… (it says "${label}")`, label === "Saving…", label);
       await release("POST", "/api/workspace/backup/schedule");
-      const line = daily.locator("p[role=status]", { hasText: "Saved. Core keeps the daily backup as said above." });
+      const line = bar.locator("span[role=status]", { hasText: "All changes saved." });
       await line.waitFor({ timeout: 10_000 }).catch(() => {});
-      ok(`${tag}: the daily backup's Save, ${said}: once Core answers, a line says it was saved`, (await line.count()) === 1);
+      ok(`${tag}: the daily backup's change, the bar's Save, ${said}: once Core answers, the bar's line says it was saved`, (await line.count()) === 1);
       const { on, at } = await focusOn(`schedule Save (${how})`, line);
-      ok(`${tag}: the daily backup's Save, ${said}: Save has nothing left to save, and focus goes to the line that says it was saved (focus: ${JSON.stringify(at)})`, on, at);
+      ok(`${tag}: the daily backup's change, the bar's Save, ${said}: the Save pressed is gone with the change, and focus goes to the bar's line that says it was saved (focus: ${JSON.stringify(at)})`, on, at);
     }
     await page.screenshot({ path: join(output, `${tag}.png`) });
   } catch (error) {

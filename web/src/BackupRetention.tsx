@@ -236,7 +236,7 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
           value={budget}
           onChange={(e) => setBudget(e.target.value)}
         />
-        <button type="button" disabled={!valid || reading} onClick={() => void run()}>
+        <button type="button" className="secondary-button" disabled={!valid || reading} onClick={() => void run()}>
           {t.preview}
         </button>
       </div>
@@ -289,12 +289,13 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
                       <span className="settings-row-help">{e.reason}</span>
                       {(verdict === "keep" || verdict === "remove") && (
                         <span className="backup-retention-actions">
-                          <button type="button" disabled={busy} onClick={() => onCheck(e.path)}>
+                          <button type="button" className="secondary-button" disabled={busy} onClick={() => onCheck(e.path)}>
                             {t.check}
                           </button>
                           {verdict === "remove" && e.manifestSha256 && preview.unreadableNames === 0 && (
                             <button
                               type="button"
+                              className="secondary-button"
                               disabled={busy}
                               onClick={(event) => {
                                 opener.current = event.currentTarget;
@@ -317,6 +318,7 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
                             <span className="backup-retention-actions">
                               <button
                                 type="button"
+                                className="secondary-button"
                                 disabled={busy}
                                 onClick={() => {
                                   // Judged again by Core under the same count and budget.
@@ -333,6 +335,7 @@ export function BackupRetention({ defaultFolder, busy, onCheck, onRemove }: {
                               </button>
                               <button
                                 type="button"
+                                className="secondary-button"
                                 onClick={() => {
                                   opener.current?.focus();
                                   setConfirming(null);

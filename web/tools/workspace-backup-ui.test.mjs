@@ -27,8 +27,10 @@ try {
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {WorkspaceBackup} from ${JSON.stringify(path.join(root, "src/WorkspaceBackup.tsx"))};
+import {SaveBarScope} from ${JSON.stringify(path.join(root, "src/SettingsSaveBar.tsx"))};
 const root = createRoot(document.getElementById('root'));
-window.renderBackup = props => root.render(<WorkspaceBackup {...props}/>);`,
+window.renderBackup = props => root.render(<WorkspaceBackup {...props}/>);
+window.renderBackupInBar = props => root.render(<SaveBarScope><WorkspaceBackup {...props}/></SaveBarScope>);`,
   );
   const result = await build({
     root,
@@ -76,7 +78,7 @@ const summary = {
 let shown = null;
 /** `handler(url, method, body)` answers `{status, body}`, or throws a
  * TypeError for an answer that never arrives. */
-function mount(handler) {
+function mount(handler, { inBar = false } = {}) {
   const calls = [];
   const vc = new VirtualConsole();
   const dom = new JSDOM('<div id="root"></div>', { url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole: vc });
@@ -95,7 +97,8 @@ function mount(handler) {
     return { ok: status < 400, status, json: async () => structuredClone(answer), text: async () => text };
   };
   dom.window.eval(bundle);
-  dom.window.renderBackup({ active: true });
+  // In Settings the page has a save bar (YN-8 S6b); alone, the block's own Save.
+  (inBar ? dom.window.renderBackupInBar : dom.window.renderBackup)({ active: true });
   const doc = dom.window.document;
   shown = { doc, calls };
   return {
@@ -819,6 +822,54 @@ test("the Backup page in Chinese (T-189): a run and its cleanup said apart, Core
     assert.equal(p.doc.querySelector('input[aria-label="Backup folder"]').value, "/backups/by-hand");
     assert.equal(p.calls.length, sent, "nor does changing back");
     assert.equal(p.posts().filter((c) => !c.url.endsWith("/retention/preview")).length, 0, "nothing started or saved");
+  } finally {
+    p.close();
+  }
+});
+
+test("in Settings the daily backup joins the page's save bar: a refusal keeps the change, a saved folder leaves none, Discard is back to Core's", async () => {
+  const sent = [];
+  let refuse = true;
+  const p = mount((url, method, body) => {
+    if (url.endsWith("/api/workspace/backup")) return { body: view({ schedule: OFF }) };
+    if (url.endsWith("/api/workspace/backup/schedule")) {
+      sent.push(body);
+      if (refuse) return { status: 400, body: { error: "/backups/missing is not a folder on the computer that runs Core" } };
+      // Core keeps the folder trimmed, as the block sent it.
+      return { body: { schedule: { enabled: true, timeUtc: body.timeUtc, folder: body.folder, nextRunAt: "2026-10-26T03:00:00Z", lastRun: null } } };
+    }
+    assert.fail(`unexpected ${method} ${url}`);
+  }, { inBar: true });
+  try {
+    const daily = () => p.doc.querySelector('[aria-label="Daily backup"]');
+    const bar = () => p.doc.querySelector(".settings-savebar");
+    const barText = () => (bar() && !bar().hidden ? bar().textContent : "");
+    const inBar = (text) => [...(bar()?.querySelectorAll("button") ?? [])].find((b) => b.textContent.trim() === text);
+    await waitFor(() => daily(), "the daily backup");
+    assert.equal(barText(), "", "no bar before a change");
+    daily().querySelector('input[type="checkbox"]').click();
+    type(p, "Folder for daily backups", "/backups/missing");
+    await waitFor(() => barText().includes("1 change not saved"), "the change in the page's bar");
+    assert.equal([...daily().querySelectorAll("button")].some((b) => b.textContent.trim() === "Save"), false, "no Save of its own");
+    inBar("Save").click();
+    await waitFor(() => daily().querySelector('[role="alert"]'), "the refusal in its block");
+    assert.match(daily().querySelector('[role="alert"]').textContent, /is not a folder/);
+    await waitFor(() => /1 change wasn.t saved/.test(barText()), "the bar says it wasn't saved");
+    assert.equal(daily().querySelector('input[aria-label="Folder for daily backups"]').value, "/backups/missing", "the change is kept");
+    refuse = false;
+    type(p, "Folder for daily backups", "/backups/daily ");
+    await waitFor(() => inBar("Save") && !inBar("Save").disabled, "Save offered again");
+    inBar("Save").click();
+    await waitFor(() => daily().textContent.includes("Next run: 2026-10-26 03:00 UTC."), "the schedule on");
+    assert.deepEqual(sent.at(-1), { enabled: true, timeUtc: "03:00", folder: "/backups/daily" });
+    await waitFor(() => barText().includes("All changes saved."), "saved, no change left");
+    assert.equal(daily().querySelector('input[aria-label="Folder for daily backups"]').value, "/backups/daily", "the folder as Core keeps it");
+    // A change, then Discard: back to what Core saved, nothing sent.
+    type(p, "Folder for daily backups", "/backups/other");
+    await waitFor(() => barText().includes("1 change not saved"), "a new change");
+    inBar("Discard").click();
+    await waitFor(() => daily().querySelector('input[aria-label="Folder for daily backups"]').value === "/backups/daily", "back to Core's");
+    assert.equal(sent.length, 2, "Discard sends nothing");
   } finally {
     p.close();
   }
