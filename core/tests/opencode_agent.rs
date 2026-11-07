@@ -2739,9 +2739,22 @@ async fn only_a_questions_answer_is_kept_in_the_journal() {
     let q = lab.until("the question", |d| !d.pending.is_empty()).await.pending[0].clone();
     lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.unwrap();
     lab.until("its end", |d| d.pending.is_empty()).await;
-    let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
-    let kept: Vec<Value> = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/form.replied' ORDER BY seq").unwrap()
-        .query_map([ID], |r| r.get::<_, String>(0)).unwrap().map(|data| serde_json::from_str(&data.unwrap()).unwrap()).collect();
+    // Answered is not yet journaled: OpenCode's `form.replied` comes on its stream after the answer.
+    let journaled = || -> Vec<Value> {
+        let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/form.replied' ORDER BY seq").unwrap();
+        let rows: Vec<Value> = query.query_map([ID], |r| r.get::<_, String>(0)).unwrap()
+            .map(|data| serde_json::from_str(&data.unwrap()).unwrap()).collect();
+        rows
+    };
+    let mut kept = journaled();
+    for _ in 0..400 {
+        if kept.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        kept = journaled();
+    }
     assert_eq!(kept.len(), 2, "both replies journaled: {kept:?}");
     let answer_of = |row: &Value| row.pointer("/data/answer").cloned().or_else(|| row.pointer("/properties/answer").cloned());
     assert_eq!(answer_of(&kept[0]), None, "the provider form's answer is not kept: {}", kept[0]);
