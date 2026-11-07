@@ -49,13 +49,21 @@ pub fn is_v2(messages: &Value) -> bool {
 /// hidden and required with no default, or named as a secret, and, as
 /// Yuzuno's card shows choices and text only, each a text or multiselect
 /// field. Of any other, why: it can only be declined here.
+/// Whether `text` (lowercased) names a secret as 2.x's own ACP client reads
+/// one (2.2.5 cli/src/acp/elicitation.ts `Credential`, S3 R1 e0c0291f):
+/// `password|passphrase|secret|token|api[_ -]?key|credential|private[_ -]?key`,
+/// anywhere in it. "private" alone is no secret's name.
+fn named_as_secret(text: &str) -> bool {
+    // `first`, then at most one of `_`, ` ` or `-`, then `key`.
+    let keyed = |first: &str| text.match_indices(first).any(|(at, _)| {
+        let rest = &text[at + first.len()..];
+        rest.starts_with("key") || rest.strip_prefix(['_', ' ', '-']).is_some_and(|r| r.starts_with("key"))
+    });
+    ["password", "passphrase", "secret", "token", "credential"].iter().any(|word| text.contains(word)) || keyed("api") || keyed("private")
+}
+
 fn unfillable(form: &Value) -> Option<&'static str> {
-    const SECRET: [&str; 6] = ["password", "passphrase", "secret", "token", "credential", "private"];
-    let secret = |text: &str| {
-        let text = text.to_lowercase();
-        let squeezed: String = text.chars().filter(|c| !matches!(c, '_' | '-' | ' ')).collect();
-        SECRET.iter().any(|word| text.contains(word)) || squeezed.contains("apikey") || squeezed.contains("privatekey")
-    };
+    let secret = |text: &str| named_as_secret(&text.to_lowercase());
     if !matches!(form["metadata"]["kind"].as_str(), Some("question" | "websearch.provider")) {
         return Some("not a question Yuzuno asks for OpenCode");
     }
@@ -230,6 +238,9 @@ fn answer(id: &str, parent: Option<&str>, created: &Value, completed: &Value, fi
         "finish": finish, "error": error, "tokens": tokens, "providerID": model["providerID"], "modelID": model["id"]})
 }
 
+/// Core's own event of a compaction 2.x ran (T-61 slice 4).
+pub const COMPACTION: &str = "opencode.compaction";
+
 /// A compaction, as Core's record took one from 1.19.3: an answer marked as
 /// the summary, answering nothing of a turn.
 fn compacted(id: &str, at: &Value) -> Value {
@@ -310,6 +321,10 @@ pub struct Read {
     /// Their tools not yet ended: their later events name neither the tool
     /// nor its input.
     pub tools: Vec<OpenTool>,
+    /// The session's compactions as 2.x stores them, oldest first, each as
+    /// `opencode.compaction` says one (T-61 slice 4): `{id, status, reason,
+    /// summary, model, error}`.
+    pub compactions: Vec<Value>,
     /// A compaction still running: its message's ID, which its end, after
     /// this read, is under (R3 4051b7d4).
     pub compaction: Option<String>,
@@ -321,6 +336,7 @@ pub struct Read {
 pub fn read_messages(messages: &Value) -> Read {
     let (mut read, mut ended, mut steps, mut tools) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut user, mut compaction): (Option<String>, Option<String>) = (None, None);
+    let mut compactions = Vec::new();
     let mut shells = Vec::new();
     for message in messages.as_array().into_iter().flatten() {
         let Some(id) = message["id"].as_str() else { continue };
@@ -363,6 +379,8 @@ pub fn read_messages(messages: &Value) -> Read {
             // A compaction, running or completed: what was measured before it no longer holds (`measure`).
             Some("compaction") => {
                 compaction = (message["status"] == "running").then(|| id.to_owned());
+                compactions.push(json!({"id": id, "status": message["status"], "reason": message["reason"], "summary": message["summary"],
+                    "model": message["model"], "error": message["error"]}));
                 if message["status"] != "failed" {
                     read.push(json!({"info": compacted(id, &message["time"]["created"]), "parts": []}));
                 }
@@ -382,7 +400,7 @@ pub fn read_messages(messages: &Value) -> Read {
             _ => {}
         }
     }
-    Read { messages: read, ended, open: user, steps, tools, compaction, shells }
+    Read { messages: read, ended, open: user, steps, tools, compactions, compaction, shells }
 }
 
 /// What 2.x admitted into a session and has not delivered into its turn
@@ -509,6 +527,10 @@ struct Open {
     /// The forms open now that are questions (their answer is the
     /// conversation's, kept in Core's journal; another form's is not, D-11).
     questions: HashSet<String>,
+    /// A delivery whose admission this connection did not see, held until the
+    /// session's next event that tells (T-61 slice 4, D-21): a compaction 2.x
+    /// starts under its ID was no user's message.
+    held: Option<(String, Value)>,
     /// Synthetic inputs admitted and not yet delivered that are a sub-agent's
     /// result (`metadata.source` `subagent`, 2.2.5 core/src/session/subagent-completion.ts):
     /// what 2.x runs of them is its own, never a command's (T-61 slice 3, D-15).
@@ -519,7 +541,7 @@ impl Open {
     fn is_empty(&self) -> bool {
         self.user.is_none() && self.inputs.is_empty() && self.steps.is_empty() && self.tools.is_empty() && self.gathered.is_empty()
             && self.shells.is_empty() && self.compaction.is_none() && self.requests.is_empty() && self.questions.is_empty()
-            && self.results.is_empty()
+            && self.results.is_empty() && self.held.is_none()
             // Kept until the run Core declined a request of ends (D-7), after the request's own reply.
             && !self.declined
     }
@@ -541,6 +563,37 @@ impl Open {
     /// entries (T-32 slice 4a; R2 and R5 notes): a later entry's, a tool's,
     /// its step's end.
     fn read(&mut self, event: &Value) -> Vec<Value> {
+        let mut out = self.unheld(event);
+        out.extend(self.read_gathered(event));
+        out
+    }
+
+    /// What a held delivery (`held`) is, once `event` tells: none for the
+    /// input of the compaction 2.x starts now; a user's message, delivered,
+    /// before an event that would answer it or end its run; still held for
+    /// any other.
+    fn unheld(&mut self, event: &Value) -> Vec<Value> {
+        let kind = event["type"].as_str().unwrap_or_default();
+        let Some((id, _)) = &self.held else { return vec![] };
+        if kind == "session.compaction.started" && event["data"]["inputID"] == id.as_str() {
+            self.held = None;
+            return vec![];
+        }
+        let tells = kind.starts_with("session.step.") || kind.starts_with("session.inbox.") || kind.starts_with("session.compaction.")
+            || matches!(kind, "session.execution.succeeded" | "session.execution.failed" | "session.execution.interrupted");
+        if !tells {
+            return vec![];
+        }
+        let (id, at) = self.held.take().expect("held");
+        self.user = Some(id.clone());
+        let mut info = user(&id, &at);
+        // Admitted while this connection did not see it: what it was is not known here, so it is no
+        // command's input (T-61 slice 3).
+        info["_opencodeUnseen"] = true.into();
+        vec![json!({"id": event["id"], "type": "message.updated", "data": {"sessionID": event["data"]["sessionID"], "info": info}})]
+    }
+
+    fn read_gathered(&mut self, event: &Value) -> Vec<Value> {
         let d = &event["data"];
         let Some(answer) = d["assistantMessageID"].as_str() else { return self.read_one(event) };
         let this = d["ordinal"].as_u64().map(|ordinal| entry_id(answer, ordinal));
@@ -606,13 +659,15 @@ impl Open {
                 if !matches!(seen.as_deref(), None | Some("user" | "synthetic")) {
                     return vec![];
                 }
+                // Admitted while this connection did not see it: held until the session's next event tells what it
+                // was (`unheld`, D-21).
+                if seen.is_none() {
+                    self.held = Some((id.to_owned(), at.clone()));
+                    return vec![];
+                }
                 self.user = Some(id.to_owned());
                 let mut info = user(id, at);
-                // Admitted while this connection did not see it: what it was is not known here, so it is no
-                // command's input (T-61 slice 3); nor is a sub-agent's result.
-                if seen.is_none() {
-                    info["_opencodeUnseen"] = true.into();
-                }
+                // Nor is a sub-agent's result a command's input (T-61 slice 3).
                 if self.results.remove(id) {
                     info[SUB_AGENTS_RESULT] = true.into();
                 }
@@ -681,14 +736,24 @@ impl Open {
             }
             // One compaction, started and ended, is the one message 2.x stores for it (T-32 slice 4a, R3
             // notes): its input's ID, else its start event's (core/src/session/message-updater.ts).
+            // Each also as Core's own `opencode.compaction` (T-61 slice 4): its message's ID, which for one Core asked
+            // for is the ID Core asked under, how it stands, why it ran, and its summary, model or error.
             "session.compaction.started" => {
                 let id = d["inputID"].as_str().map(str::to_owned).unwrap_or_else(|| from_event(event["id"].as_str().unwrap_or_default()));
                 self.compaction = Some(id.clone());
-                vec![message(compacted(&id, at))]
+                vec![message(compacted(&id, at)), made(COMPACTION, json!({"sessionID": session, "id": id, "status": "running",
+                    "reason": d["reason"]}))]
             }
             "session.compaction.ended" => {
                 let id = self.compaction.take().unwrap_or_else(|| from_event(event["id"].as_str().unwrap_or_default()));
-                vec![message(compacted(&id, at))]
+                vec![message(compacted(&id, at)), made(COMPACTION, json!({"sessionID": session, "id": id, "status": "completed",
+                    "reason": d["reason"], "summary": d["text"], "model": d["model"]}))]
+            }
+            // Failed: nothing was compacted, so nothing measured before it is stale.
+            "session.compaction.failed" => {
+                let started = self.compaction.take();
+                let Some(id) = d["inputID"].as_str().map(str::to_owned).or(started) else { return vec![] };
+                vec![made(COMPACTION, json!({"sessionID": session, "id": id, "status": "failed", "reason": d["reason"], "error": d["error"]}))]
             }
             // A shell command (T-32 slice 4a, D2): a command item of the newest message before it in its
             // turn, under the message 2.x stores for it (its start event's ID).
