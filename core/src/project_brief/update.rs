@@ -493,17 +493,20 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
         let key = change.key.as_str();
         let existing = planned.get(key).cloned();
         if !can_edit {
-            let own_ask = rows.get(key).is_some_and(|row| row.owner_id == ctx.agent && row.kind == "ask");
+            let own = rows.get(key).is_some_and(|row| row.owner_id == ctx.agent);
+            let own_ask = own && rows.get(key).is_some_and(|row| row.kind == "ask");
             let permitted = match change.op {
                 Op::Put => change.kind == "ask" && (existing.is_none() || own_ask),
                 // An edit keeps the stored kind: an Ask-only member edits
                 // only its own ask, never a report or status it wrote before.
-                Op::Resolve | Op::Remove | Op::Edit => own_ask,
+                Op::Resolve | Op::Edit => own_ask,
+                // It may take down what it wrote as an editor (YN-2 S4, Q-L5).
+                Op::Remove => own,
                 Op::Claim => false,
             };
             if !permitted {
                 problems.push(problem("ask_only", format!("{at}.op"),
-                    "You are Ask-only in this Project. You may submit and update your own valid asks, resolve them, or send noChange:true. Only the user can select Home content editors. Keep internal progress in tasks and mail; no per-turn Brief update is required.", "sections"));
+                    "You are Ask-only in this Project. You may submit and update your own valid asks, resolve them, remove your own older sections, or send noChange:true. A Project's leads edit Home; the user chooses them. Keep internal progress in tasks and mail; no per-turn Brief update is required.", "sections"));
                 continue;
             }
         }
@@ -702,7 +705,7 @@ fn revoked_during_validation_cannot_commit_or_leave_a_receipt() {
     // This is the lock-free validator/attachment-staging interval. Policy
     // versions are separate from Brief versions, so only the commit rules
     // (not the ordinary optimistic Brief check) can reject this write.
-    editors::save(&ws.store, &project, 0, Some(vec![])).unwrap();
+    super::tests::set_leads(&ws, &project, &[]);
     let (answer, changed) = commit(&ws.store, "a", "race", &input, &turn, &request, &[request.changes[0].section.clone()], &[vec![]]).unwrap();
     assert_eq!(answer.unwrap_err()["problems"][0]["code"], "ask_only");
     assert!(changed.is_none());
@@ -725,7 +728,7 @@ fn an_edit_revoked_during_validation_cannot_commit() {
         "elements":{"note":{"type":"Markdown","props":{"text":"Second."}}}}]});
     let Start::Check(request, _, turn) = start(&ws.store, "a", "edit", &edit).unwrap() else { panic!("initially permitted") };
     // Revoked while the edited section is checked: the write's own rules refuse it.
-    editors::save(&ws.store, &project, 0, Some(vec![])).unwrap();
+    super::tests::set_leads(&ws, &project, &[]);
     let (answer, changed) = commit(&ws.store, "a", "edit", &edit, &turn, &request, &[request.changes[0].section.clone()], &[vec![]]).unwrap();
     assert_eq!(answer.unwrap_err()["problems"][0]["code"], "ask_only");
     assert!(changed.is_none());

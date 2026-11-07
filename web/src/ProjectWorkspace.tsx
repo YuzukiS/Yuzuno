@@ -40,7 +40,6 @@ import { AgentDefaults } from "./AgentDefaults";
 import { ExecutorTemplates } from "./ExecutorTemplates";
 import { ProjectHandover } from "./ProjectHandover";
 import { ReviewSettings } from "./ReviewSettings";
-import { HomeContentEditors } from "./home/HomeContentEditors";
 import { ProjectLeads } from "./ProjectLeads";
 
 function useOutsideClose(
@@ -793,7 +792,6 @@ function ProjectDetail({
       <GitHubLinks key={project.id} projectId={project.id} disabled={archived} language={language} />
       <ProjectServices key={`services:${project.id}`} projectId={project.id} machines={machines} disabled={archived} onOpened={onLeave} />
       <ProjectLeads key={`leads:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
-      <HomeContentEditors key={`editors:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
       <AgentDefaults key={`defaults:${project.id}`} active projectId={project.id} disabled={archived} />
       <ExecutorTemplates key={`templates:${project.id}`} active projectId={project.id} disabled={archived} />
       <ProjectHandover key={`handover:${project.id}`} projectId={project.id} disabled={archived} />

@@ -2,9 +2,11 @@
 //! lead, a task's executor, or, with no row, a standing Agent the user made.
 //! The kind lives in its own table, never in the Agent's JSON: older builds
 //! rewrite that JSON and drop fields they do not know (model.rs, `project_id`
-//! is kept apart the same way). Leads are set by the user per Project;
-//! executors are created by a dispatch from a template (phase 1, T-34),
-//! which only a lead of the task's Project, or the user, may make.
+//! is kept apart the same way). An Agent the user creates, imports, forks
+//! or moves into a Project leads it (YN-2 S4, the user's rule); the user may
+//! remove a lead in the Project's settings. Executors are created by a
+//! dispatch (phase 1, T-34), which only a lead of the task's Project, or the
+//! user, may make, and never lead.
 use crate::{collaboration_store::TaskActor, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Result};
 use axum::{
@@ -54,7 +56,78 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     if !released_by {
         db.execute("ALTER TABLE agent_roles ADD COLUMN released_by TEXT", [])?;
     }
+    first_leads(db)
+}
+
+/// YN-2 S4, at upgrade: a Project whose leads were never saved (version 0)
+/// gets every open member that is not an executor as its lead, written once:
+/// its version moves on, so the list is the user's from then on. Before S4
+/// such a Project's Home was written by those members, so they keep it. A
+/// Project with a saved list keeps it as it is.
+fn first_leads(db: &Connection) -> Result<()> {
+    let mut query = db.prepare(
+        "SELECT p.project_id, p.agent_id FROM project_agents p JOIN agents a ON a.id=p.agent_id
+         WHERE json_extract(a.data,'$.agent.closedAt') IS NULL
+           AND COALESCE((SELECT v.version FROM project_lead_versions v WHERE v.project_id=p.project_id), 0)=0
+           AND NOT EXISTS(SELECT 1 FROM agent_roles r WHERE r.agent_id=p.agent_id AND r.kind='executor')
+         ORDER BY p.rowid",
+    )?;
+    let members = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let at = crate::model::now();
+    let mut written = BTreeSet::new();
+    for (project, agent) in &members {
+        if lead_row(db, agent, project, &at)? {
+            written.insert(project);
+        }
+    }
+    for project in written {
+        bump(db, project)?;
+    }
     Ok(())
+}
+
+/// A lead row for `agent` in `project`, as the user's save writes it: a lead
+/// row an older Core's move left for another Project now names this one; an
+/// executor row is never touched. Whether a row changed.
+fn lead_row(db: &Connection, agent: &str, project: &str, at: &str) -> Result<bool> {
+    Ok(db.execute(
+        "INSERT INTO agent_roles(agent_id,kind,project_id,created_by,created_at,updated_at) VALUES(?1,'lead',?2,'user',?3,?3)
+         ON CONFLICT(agent_id) DO UPDATE SET project_id=excluded.project_id, updated_at=excluded.updated_at
+         WHERE agent_roles.kind='lead' AND agent_roles.project_id IS NOT excluded.project_id",
+        params![agent, project, at],
+    )? > 0)
+}
+
+/// A Project's leads changed outside a save: its version moves on, so a
+/// settings page that read the old list reloads before saving.
+fn bump(db: &Connection, project: &str) -> Result<()> {
+    db.execute(
+        "INSERT INTO project_lead_versions(project_id,version) VALUES(?1,1)
+         ON CONFLICT(project_id) DO UPDATE SET version=version+1",
+        [project],
+    )?;
+    Ok(())
+}
+
+/// The user made `agent` a member of `project`: created it there, imported
+/// or forked it into it, or moved it there (YN-2 S4, the user's rule). It
+/// leads the Project, unless it is an executor or closed; a saved list gains
+/// it. Called at those entry points only, in their transaction after the
+/// membership is written, never for an executor's creation or an Agent's
+/// own call. Whether the leads changed, for the caller to announce.
+pub(crate) fn user_added(db: &Connection, agent: &str, project: &str) -> Result<bool> {
+    let open: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE id=?1 AND json_extract(data,'$.agent.closedAt') IS NULL)",
+        [agent], |r| r.get(0))?;
+    if !open || crate::projects::agent_project(db, agent)?.as_deref() != Some(project) {
+        return Ok(false);
+    }
+    let changed = lead_row(db, agent, project, &crate::model::now())?;
+    if changed {
+        bump(db, project)?;
+    }
+    Ok(changed)
 }
 
 /// The rows that hold now: every executor row, and a lead row only while its
@@ -112,11 +185,7 @@ pub(crate) fn membership_changed(db: &Connection, agent: &str, now_in: Option<&s
         .optional()?;
     if let Some(led) = led.filter(|led| Some(led.as_str()) != now_in) {
         db.execute("DELETE FROM agent_roles WHERE agent_id=?1 AND kind='lead'", [agent])?;
-        db.execute(
-            "INSERT INTO project_lead_versions(project_id,version) VALUES(?1,1)
-             ON CONFLICT(project_id) DO UPDATE SET version=version+1",
-            [&led],
-        )?;
+        bump(db, &led)?;
     }
     Ok(())
 }
@@ -129,7 +198,7 @@ pub struct Leads {
     pub lead_agent_ids: Vec<String>,
 }
 
-fn leads_in(db: &Connection, project: &str) -> Result<Leads> {
+pub(crate) fn leads_in(db: &Connection, project: &str) -> Result<Leads> {
     let version: i64 = db
         .query_row("SELECT version FROM project_lead_versions WHERE project_id=?1", [project], |r| r.get(0))
         .optional()?
@@ -176,14 +245,8 @@ pub(crate) fn save(store: &Store, project: &str, expected: i64, ids: Vec<String>
             tx.execute("DELETE FROM agent_roles WHERE agent_id=?1 AND kind='lead' AND project_id=?2", params![agent, project])?;
         }
     }
-    // A lead row an older Core's move left for another Project now names this one.
     for agent in &ids {
-        tx.execute(
-            "INSERT INTO agent_roles(agent_id,kind,project_id,created_by,created_at,updated_at) VALUES(?1,'lead',?2,'user',?3,?3)
-             ON CONFLICT(agent_id) DO UPDATE SET project_id=excluded.project_id, updated_at=excluded.updated_at
-             WHERE agent_roles.kind='lead' AND agent_roles.project_id IS NOT excluded.project_id",
-            params![agent, project, at],
-        )?;
+        lead_row(&tx, agent, project, &at)?;
     }
     let version = current.version + 1;
     tx.execute(

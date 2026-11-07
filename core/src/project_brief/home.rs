@@ -239,10 +239,8 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         let policy = editors::policy(&db, id)?;
         // A source filter, never a Seen mark or deletion. All Asks remain
         // reachable, including a subtopic whose regular parent is hidden.
-        // With no list, every owner's but a task executor's (T-36).
-        let visible: Vec<_> = live.iter().filter(|row| row.kind == "ask"
-            || (policy.includes(&row.owner_id)
-                && (policy.editor_agent_ids.is_none() || members.iter().any(|a| a.id == row.owner_id))))
+        // A lead's (YN-2 S4): the others' are in the team sections.
+        let visible: Vec<_> = live.iter().filter(|row| row.kind == "ask" || policy.includes(&row.owner_id))
             .cloned().collect();
         let team: Vec<_> = live.iter().filter(|row| !visible.iter().any(|shown| shown.key == row.key)).cloned().collect();
         let history = sections::history(&db, id)?;
@@ -266,8 +264,7 @@ pub(super) fn build(store: &Store) -> Result<Value> {
         // a new one, so a widget pinned to the old one never shows it. A
         // history entry says why it is history and whether its source is
         // one Home shows now (the same test as `visible`).
-        let current = |row: &sections::Row| row.kind == "ask" || (policy.includes(&row.owner_id)
-            && (policy.editor_agent_ids.is_none() || members.iter().any(|a| a.id == row.owner_id)));
+        let current = |row: &sections::Row| row.kind == "ask" || policy.includes(&row.owner_id);
         let mut shown = |rows: &[sections::Row]| -> Vec<Value> {
             rows.iter().map(|row| {
                 let mut section = sections::section_json(row, &owner(row), seen.get(&row.key), refs.of(&row.data["body"]), at);
