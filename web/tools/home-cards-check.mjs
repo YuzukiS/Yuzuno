@@ -288,6 +288,18 @@ async function check(run) {
           // The reply in short beside the title, or on a line of its own where the pane is narrow (home.css).
           replyBelow: top(".home-replied-short") > top("h3") + 4,
           pane: Math.round(document.querySelector(".home-view")?.getBoundingClientRect().width ?? 0),
+          // Lines the row's head takes: its shown parts grouped by their middles.
+          lines: (() => {
+            const middles = [...el.querySelector(".home-section-head").children]
+              .map((child) => child.getBoundingClientRect()).filter((r) => r.height > 0)
+              .map((r) => (r.top + r.bottom) / 2).sort((a, b) => a - b);
+            let lines = 0, last = -Infinity;
+            for (const y of middles) {
+              if (y - last > 10) lines++;
+              last = y;
+            }
+            return lines;
+          })(),
           cut: (() => { const r = el.querySelector(".home-replied-short"); return r ? r.scrollWidth > r.clientWidth : null; })() };
       });
     }
@@ -297,11 +309,12 @@ async function check(run) {
     for (const key of ["tokenizer", "draft"]) {
       assert.ok(rows[key].short, `${key}: in short`);
       assert.equal(rows[key].kind, w.replied);
-      // One line where the pane is wide. Where it is narrow (640 px or less) the reply takes a line of its own,
-      // and on a phone the title may take one too: never more than three short lines.
+      // One line where the pane is wide. Where it is narrow (640 px or less): whom it waits for and when,
+      // the title and its marks, the reply in short: three short lines, never more.
       const narrow = rows[key].pane <= 640 + 80;
       assert.equal(rows[key].replyBelow, narrow, `${key}: the reply ${narrow ? "below" : "beside"} the title: ${JSON.stringify(rows[key])}`);
-      assert.ok(rows[key].height <= (run.phone ? 112 : narrow ? 96 : 56), `${key}: ${rows[key].height} px: ${JSON.stringify(rows[key])}`);
+      if (narrow) assert.ok(rows[key].lines <= 3 && rows[key].height <= 120, `${key}: ${JSON.stringify(rows[key])}`);
+      else assert.ok(rows[key].lines === 1 && rows[key].height <= 56, `${key}: ${JSON.stringify(rows[key])}`);
     }
     assert.equal(rows.tokenizer.changed, null, "answered, not New");
     assert.equal(rows.draft.changed, w.updated, "changed by its owner after the reply: Updated");

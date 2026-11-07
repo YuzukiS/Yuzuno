@@ -205,6 +205,23 @@ export const SectionCard = memo(function SectionCard({
       setBusy(false);
     }
   }
+  // The title, and whether it changed for the user or nobody keeps it up to date.
+  const heading = (
+    <>
+      <h3 id={`${sectionDomId(projectId, section.key)}-title`}>{section.title}</h3>
+      {/* Answered, it is never new to the user: only its owner's change since (YN-3). */}
+      {changed && (
+        <span className="home-changed" title={t.changedTitle}>
+          {section.seen || replied ? t.updated : t.new}
+        </span>
+      )}
+      {orphaned && (
+        <span className="home-unmaintained" title={t.notMaintainedTitle(section.owner.name, gone, t.kindInSentence[section.kind])}>
+          {t.notMaintained}
+        </span>
+      )}
+    </>
+  );
   return (
     <article
       ref={ref}
@@ -228,17 +245,12 @@ export const SectionCard = memo(function SectionCard({
         <span className={`home-kind kind-${section.kind}${replied ? " is-replied" : ""}`}>
           {short ? t.repliedWaiting(section.owner.name) : replied ? t.replied : t.kind[section.kind]}
         </span>
-        <h3 id={`${sectionDomId(projectId, section.key)}-title`}>{section.title}</h3>
-        {/* Answered, it is never new to the user: only its owner's change since (YN-3). */}
-        {changed && (
-          <span className="home-changed" title={t.changedTitle}>
-            {section.seen || replied ? t.updated : t.new}
-          </span>
-        )}
-        {orphaned && (
-          <span className="home-unmaintained" title={t.notMaintainedTitle(section.owner.name, gone, t.kindInSentence[section.kind])}>
-            {t.notMaintained}
-          </span>
+        {short ? (
+          // In short, the title and its marks keep together: one line of a replied row where the pane is
+          // narrow, between whom it waits for and the reply (home.css).
+          <span className="home-replied-title">{heading}</span>
+        ) : (
+          heading
         )}
         {short && section.ask?.replyText && (
           <span className="home-replied-short" title={section.ask.replyText}>

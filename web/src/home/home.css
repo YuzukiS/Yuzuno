@@ -1383,7 +1383,7 @@ ul.home-widget {
 /* A replied Ask waiting for its owner, as it was when first shown in this
    visit (YN-3): one line, whom it waits for, its title and the reply in
    short; the reply in full, Reply again and its question when unfolded.
-   Where the pane is narrow, the reply takes a line of its own. */
+   Where the pane is narrow, three short lines (below). */
 .home-section.is-short {
   padding-block: 8px;
 }
@@ -1398,12 +1398,21 @@ ul.home-widget {
   letter-spacing: 0;
   white-space: nowrap;
 }
-.home-section.is-short > .home-section-head h3 {
+.home-replied-title {
+  display: inline-flex;
   flex: 0 1 auto;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.home-replied-title h3 {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.home-replied-title > :not(h3) {
+  flex: none;
 }
 .home-replied-short {
   flex: 1 1 8em;
@@ -1423,14 +1432,25 @@ ul.home-widget {
 .home-section.is-short .home-section-meta {
   flex: none;
 }
+/* Narrow, three lines: whom it waits for and when; the title and its marks;
+   the reply in short, and Seen when there is something to mark. */
 @container home (max-width: 640px) {
   .home-section.is-short > .home-section-head {
     flex-wrap: wrap;
   }
-  .home-replied-short {
-    flex-basis: 100%;
+  .home-section.is-short .home-section-meta {
     order: 1;
-    padding-left: 22px;
+  }
+  .home-replied-title {
+    flex-basis: 100%;
+    order: 2;
+  }
+  .home-replied-short {
+    flex: 1 1 0;
+    order: 3;
+  }
+  .home-section.is-short .home-seen {
+    order: 4;
   }
 }
 .home-history-reply {
