@@ -336,6 +336,35 @@ async fn topic_sub_topic_ask_and_attachment_limits_are_rejected_with_their_codes
 }
 
 #[tokio::test]
+async fn an_agent_with_three_unresolved_asks_still_puts_a_fourth_and_a_fifth() {
+    // YN-11: the user wants no per-Agent cap on unresolved asks.
+    let (_dir, ws, project) = lab();
+    let asks: Vec<Value> = (1..=3).map(|n| put(&format!("q{n}"), "ask")).collect();
+    accept(&ws, "a", input("a1", 0, asks)).await;
+    // A replied ask is still unresolved.
+    assert!(sections::mark_replied_live(&ws.store, &project, "q1", "Left").unwrap());
+    assert_eq!(brief(&ws, "a")["you"]["openAsks"], 3);
+    let fourth = call(&ws, "a", input("a2", 1, vec![put("q4", "ask")])).await.unwrap();
+    assert!(fourth.is_ok(), "a fourth unresolved ask is accepted: {fourth:?}");
+    let fifth = call(&ws, "a", input("a3", 2, vec![put("q5", "ask")])).await.unwrap();
+    assert!(fifth.is_ok(), "a fifth unresolved ask is accepted: {fifth:?}");
+    // An ask claimed from a closed Agent is added the same way.
+    accept(&ws, "b", input("b1", 3, vec![put("theirs", "ask")])).await;
+    close(&ws, "b", true);
+    let claimed = call(&ws, "a", input("a4", 4, vec![op("claim", "theirs")])).await.unwrap();
+    assert!(claimed.is_ok(), "a claimed sixth unresolved ask is accepted: {claimed:?}");
+    // openAsks still counts them, as information; limits name no cap.
+    let read = brief(&ws, "a");
+    assert_eq!(read["you"]["openAsks"], 6);
+    assert!(read["limits"].get("openAsksPerAgent").is_none(), "{}", read["limits"]);
+    // Needs you lists every open one; the replied q1 waits for its owner.
+    let mut needs: Vec<Value> = home::build(&ws.store).unwrap()["needsYou"].as_array().unwrap().iter()
+        .filter(|n| n["kind"] == "ask").map(|n| n["sectionKey"].clone()).collect();
+    needs.sort_by_key(|key| key.to_string());
+    assert_eq!(needs, ["q2", "q3", "q4", "q5", "theirs"].map(|key| json!(key)));
+}
+
+#[tokio::test]
 async fn a_replied_ask_waits_for_its_owner_and_a_new_version_asks_again() {
     let (_dir, ws, project) = lab();
     accept(&ws, "a", input("a1", 0, vec![put("decide", "ask")])).await;
