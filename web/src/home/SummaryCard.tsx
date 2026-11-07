@@ -21,6 +21,7 @@ import { PinOff } from "lucide-react";
 import { CardFoldWorkspace } from "./card-fold";
 import { CARD_FILES, cardContent, LARGE_METRICS, LARGE_TABLE_PREVIEW, selfContained, shownSize, TABLE_PREVIEW, type CardFigure, type CardFile, type CardSize } from "./card-preview";
 import { CardPage, CardPageLine } from "./CardPage";
+import { pageReplyTo } from "./PageSend";
 import { openInPortal } from "../portal";
 import { DeckSizes, sizable } from "./card-sizes";
 import { SizeChoice } from "./SizeChoice";
@@ -130,13 +131,13 @@ export const SummaryCard = memo(function SummaryCard({
   const shown = content.figure;
   // A figure of inputs is drawn at every size: the reader sets it on the card (YN-16).
   const figure = !shown ? null : size !== "small" || shown.kind === "interactive" ? (
-    <FigureFrame section={section} projectId={projectId} figure={shown} large={size === "large"} />
+    <FigureFrame section={section} projectId={projectId} figure={shown} large={size === "large"} agents={agents} />
   ) : metricsOf(section, shown) ? (
     <BigNumbers items={metricsOf(section, shown)!} />
   ) : shown.kind === "image" && shown.kept ? (
     <ImageView section={section} projectId={projectId} figure={shown} />
   ) : shown.kind === "page" ? (
-    <CardPageLine section={section} projectId={projectId} figure={shown} title={section.title} />
+    <CardPageLine section={section} projectId={projectId} figure={shown} title={section.title} workspaceId={workspaceId} agents={agents} />
   ) : (
     <p className="home-card-figure-note">{t.figureOnPage(figureKindOf(section, shown, t.figureKind), status)}</p>
   );
@@ -229,7 +230,7 @@ export const SummaryCard = memo(function SummaryCard({
         </div>
         {figure}
       </div>
-      {content.files.length > 0 && <CardFiles section={section} projectId={projectId} files={content.files} onReport={report ? open : null} />}
+      {content.files.length > 0 && <CardFiles section={section} projectId={projectId} files={content.files} onReport={report ? open : null} agents={agents} />}
       <footer className="home-summary-foot">
         <span className="home-summary-byline">
           {/* A sub-topic is labelled with its own author, as before (T-197). */}
@@ -486,13 +487,13 @@ function BigNumbers({ items }: { items: Metric[] }) {
 /** A small card's kept image (YN-3): not drawn in a frame, but one click
  * or key away, whole, in the image viewer, as from its report page. */
 /** The body's other files, named under the picture, each opened in place; past three, "+n more" (YN-3). */
-function CardFiles({ section, projectId, files, onReport }: { section: Section; projectId: string; files: CardFile[]; onReport: ((from: HTMLElement) => void) | null }) {
+function CardFiles({ section, projectId, files, onReport, agents }: { section: Section; projectId: string; files: CardFile[]; onReport: ((from: HTMLElement) => void) | null; agents: Agent[] }) {
   const t = useStrings(cardText);
   return (
     <ul className="home-card-files" aria-label={t.filesLabel}>
       {files.slice(0, CARD_FILES).map((file) => (
         <li key={file.name}>
-          <CardFileChip section={section} projectId={projectId} file={file} onReport={onReport} />
+          <CardFileChip section={section} projectId={projectId} file={file} onReport={onReport} agents={agents} />
         </li>
       ))}
       {files.length > CARD_FILES && (
@@ -511,7 +512,8 @@ function CardFiles({ section, projectId, files, onReport }: { section: Section; 
 }
 
 /** One file: a kept image opens in the viewer, a kept page in the Portal, any other on the report page. */
-function CardFileChip({ section, projectId, file, onReport }: { section: Section; projectId: string; file: CardFile; onReport: ((from: HTMLElement) => void) | null }) {
+function CardFileChip({ section, projectId, file, onReport, agents }: { section: Section; projectId: string; file: CardFile; onReport: ((from: HTMLElement) => void) | null; agents: Agent[] }) {
+  const workspaceId = useContext(CardFoldWorkspace);
   const attachment = section.attachments.find((item) => item.name === file.name);
   const viewer = useKeptImagePreview(projectId, section, file.kind === "image" && file.kept ? attachment : undefined, attachment?.caption);
   const inPlace = file.kept && (file.kind === "image" || file.kind === "page");
@@ -531,6 +533,7 @@ function CardFileChip({ section, projectId, file, onReport }: { section: Section
               source: { kind: "briefAttachment", projectId, section: section.key, name: file.name, version: section.version },
               name: file.name,
               from: `Home · ${section.title}`,
+              replyTo: pageReplyTo(section, projectId, workspaceId, file.name, agents),
             }, event.currentTarget);
           else onReport?.(event.currentTarget);
         }}
@@ -568,7 +571,7 @@ function ImageView({ section, projectId, figure }: { section: Section; projectId
  * to fit the frame, its axes and legend with it (CardChart, Lead 2655); the
  * report page has the whole chart.
  */
-function FigureFrame({ section, projectId, figure, large }: { section: Section; projectId: string; figure: CardFigure; large: boolean }) {
+function FigureFrame({ section, projectId, figure, large, agents }: { section: Section; projectId: string; figure: CardFigure; large: boolean; agents: Agent[] }) {
   const t = useStrings(cardText);
   const words = useStrings(briefText);
   // A kept image arrives as on its report page (T-19 HM:B14, kept-image.ts): the same snapshot (this Workspace, the
@@ -610,7 +613,7 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
   if (figure.kind === "page")
     return (
       <figure className="home-card-frame kind-page">
-        <CardPage projectId={projectId} section={section} figure={figure} title={section.title} />
+        <CardPage projectId={projectId} section={section} figure={figure} title={section.title} workspaceId={workspaceId} agents={agents} />
         {figure.caption && <figcaption>{figure.caption}</figcaption>}
       </figure>
     );
