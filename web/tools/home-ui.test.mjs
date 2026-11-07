@@ -3361,21 +3361,26 @@ test("YN-16 S6 a card's page talks to Home only through the bridge: the theme on
     assert.equal(theme.type, "yuzuno:theme");
     assert.deepEqual(Object.keys(theme.vars), ["--paper", "--ink", "--line", "--accent-ink", "--green", "--font"]);
     assert.equal(theme.scheme, "light");
-    p.doc.documentElement.dataset.theme = "dark";
-    await waitFor(() => given.length === 2, "the theme given again when it changes");
-    assert.equal(given[1][0].scheme, "dark");
-    p.doc.documentElement.dataset.agentList = "compact";
-    await pause(30);
-    assert.equal(given.length, 2, "nothing else is given");
-    // Its height: kept within 120-1600 px, the newest once per frame.
-    fromPage(p, { type: "yuzuno:height", px: 5000 }, page);
-    await waitFor(() => frame.style.height === "1600px", "at most 1600 px");
+    // Its height: kept within 120-1600 px, the newest once per frame. The bridge
+    // starts listening in an effect after the frame is drawn: the first height is
+    // sent until it is taken, and from then on the bridge is known to listen.
+    await waitFor(() => {
+      fromPage(p, { type: "yuzuno:height", px: 5000 }, page);
+      return frame.style.height === "1600px";
+    }, "at most 1600 px");
     fromPage(p, { type: "yuzuno:height", px: 40 }, page);
     fromPage(p, { type: "yuzuno:height", px: 300.4 }, page);
     await waitFor(() => frame.style.height === "300px", "the newest");
     assert.ok(ring().querySelector(".home-card-page").classList.contains("is-sized"));
     fromPage(p, { type: "yuzuno:height", px: 40 }, page);
     await waitFor(() => frame.style.height === "120px", "at least 120 px");
+    // The bridge listens now (a height was taken, by the effect that also watches the theme): the theme changes.
+    p.doc.documentElement.dataset.theme = "dark";
+    await waitFor(() => given.length === 2, "the theme given again when it changes");
+    assert.equal(given[1][0].scheme, "dark");
+    p.doc.documentElement.dataset.agentList = "compact";
+    await pause(30);
+    assert.equal(given.length, 2, "nothing else is given");
     // Not this page's, or not a message the bridge takes: nothing.
     fromPage(p, { type: "yuzuno:send", text: "from Home's own window" }, p.w);
     fromPage(p, { type: "yuzuno:send", text: "from a page with an origin" }, page, "http://127.0.0.1:47390");
@@ -3437,9 +3442,9 @@ test("YN-16 S6 a card's page whose author is not open in the Project: its messag
     const frame = ring().querySelector("iframe.home-card-page-frame");
     givenTo(frame);
     frame.dispatchEvent(new p.w.Event("load"));
-    fromPage(p, { type: "yuzuno:send", text: "Ring size 7" }, frame.contentWindow);
     const bar = () => ring().querySelector(".home-page-send");
-    await waitFor(() => bar(), "offered");
+    // Sent until the bridge, listening from an effect after the frame is drawn, takes it.
+    await waitFor(() => bar() || (fromPage(p, { type: "yuzuno:send", text: "Ring size 7" }, frame.contentWindow), false), "offered");
     assert.match(bar().textContent, /ring\.html asks to send this to Mori, who isn't open in this Project, so it can't be sent from here:/);
     assert.deepEqual([...bar().querySelectorAll("button")].map((b) => b.textContent.trim()), ["Don't send"]);
     p.button("Don't send", bar()).click();

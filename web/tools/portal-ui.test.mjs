@@ -170,14 +170,15 @@ test("YN-16 S6 a Brief section's page in the Portal gets the theme on its first 
   assert.deepEqual(given.map(([message, origin]) => [message.type, origin]), [["yuzuno:theme", "*"]], "the theme, on its first load");
   const from = (data, source = frame.contentWindow, origin = "null") =>
     page.window.dispatchEvent(new page.window.MessageEvent("message", { data, source, origin }));
-  from({ type: "yuzuno:height", px: 300 });
-  from({ type: "yuzuno:send", text: "Done: 4 rounds" }, page.window);
-  await new Promise((done) => setTimeout(done, 50));
-  assert.equal(page.panel().querySelector(".home-page-send"), null, "another window's message is not offered");
-  assert.equal(frame.style.height, "", "the Portal keeps its own height");
-  from({ type: "yuzuno:send", text: "Done: 4 rounds" });
-  const bar = await until(() => page.panel().querySelector(".home-page-send"), "offered under the page");
+  // Sent until the bridge, listening from an effect after the frame is drawn, takes it.
+  const bar = await until(() => page.panel().querySelector(".home-page-send") || (from({ type: "yuzuno:send", text: "Done: 4 rounds" }), null), "offered under the page");
   assert.equal(bar.querySelector(".home-page-send-head").textContent, "pomodoro.html asks to send this to Mori, as your reply:");
+  // The bridge listens now: another window's message replaces nothing, and a height is not the Portal's.
+  from({ type: "yuzuno:send", text: "From another window" }, page.window);
+  from({ type: "yuzuno:height", px: 300 });
+  await new Promise((done) => setTimeout(done, 50));
+  assert.equal(bar.querySelector(".home-page-send-text").textContent, "Done: 4 rounds", "another window's message is not offered");
+  assert.equal(frame.style.height, "", "the Portal keeps its own height");
   assert.deepEqual(page.requests.filter((r) => /\/brief\/reply$/.test(r.url)), [], "nothing sent before Send");
   page.click(page.button("Send", bar));
   await until(() => /Sent to Mori\./.test(page.panel().querySelector(".home-page-send")?.textContent ?? ""), "sent");
