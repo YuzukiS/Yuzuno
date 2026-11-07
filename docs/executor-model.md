@@ -77,7 +77,6 @@ below. A Project's page has no templates of its own, only its own
 | **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
-| **At most at once** | At most this many of the template's executors run at once, a whole number from 1 to 64; empty, it has no limit of its own. See [Executors at once](#executors-at-once). |
 
 - **Which template a dispatch gets.** The Workspace's template of the named
   id, whatever the task's Project. A dispatch naming an id the Workspace
@@ -223,14 +222,17 @@ makes a general executor: an executor with no template.
 At most this many executors run at the same time in the Workspace: 3 unless
 you change it, a whole number from 1 to 64, in Settings under **Executor
 templates**. A Project can have a limit of its own, on its page, and so can
-a template (its **At most at once**; a general executor has none of its
-own) and a machine: in **Machines**, a
+a machine: in **Machines**, a
 registered machine's in its editor and this Core host's on its card
 (`PUT /api/machines/{id}/executor-slots`, `local` for this Core host); left
 empty, only the Workspace's applies. Only you change them. Lowering a limit
 under the executors running there stops none of them: no more start there
 until fewer hold a slot.
 
+- **A template has no limit of its own** (T-43: the user's decision of
+  2026-11-07 leaves one limit per machine). The editor shows none, and the
+  next save of the templates drops an **At most at once** saved before.
+  Until then Core still holds that template's executors to it.
 - **The queue.** An executor dispatched while every slot is taken waits.
   Core starts the next one as soon as a slot is free, in the Jobs queue's
   order: any waiting more than 30 minutes first, then Projects in turn, each

@@ -383,32 +383,23 @@ test("Start time limit (T-35 S2): a project's limit editor has no start time lim
   assert.deepEqual(page.errors, []);
 });
 
-test("At most at once (T-35 S4): a template's own limit is a whole number from 1 to 64, or empty; anything else holds the save, said at its field", async () => {
-  let workspace = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude" }] };
+test("a template has no limit of its own (T-43: one limit per machine); one saved before is dropped at the next save", async () => {
+  let workspace = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude", maxConcurrent: 3 }] };
   const page = mount((url, method, body) => {
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
     return [200, view(workspace)];
   });
   page.window.renderTemplates();
-  await until(() => field(page, "At most at once"), "the template");
+  await until(() => field(page, "Name"), "the template");
   const section = () => page.document.querySelector("#settings-executor-templates");
-  assert.match(section().textContent, /At most this many of this template’s executors run at once, within Executors at once\. Empty: no limit of its own\./);
-  for (const bad of ["-1", "2.5", "0", "65"]) {
-    await type(page, "At most at once", bad);
-    assert.match(section().textContent, /At most at once is a whole number from 1 to 64\./, `${bad} says the range`);
-    assert.equal(field(page, "At most at once").getAttribute("aria-invalid"), "true", `${bad} is marked`);
-    assert.equal(button(page, "Save templates").disabled, true, `${bad} is not saved`);
-  }
-  await type(page, "At most at once", "3");
-  assert.doesNotMatch(section().textContent, /is a whole number from 1 to 64/);
+  assert.equal(field(page, "At most at once"), null, "no At most at once field");
+  assert.doesNotMatch(section().textContent, /At most at once|no limit of its own/);
+  assert.match(section().querySelector(".executor-template summary").textContent, /^More settings$/, "an old limit isn't counted on the fold");
+  assert.equal(button(page, "Save templates").disabled, true, "an old limit alone is nothing to save");
+  await type(page, "Name", "{task} · review");
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
-  assert.deepEqual(puts(page)[0].body.templates, [{ id: "reviewer", label: "Reviewer", harness: "claude", maxConcurrent: 3 }]);
-  await until(() => /Saved\./.test(section().textContent), "saved");
-  await type(page, "At most at once", "");
-  button(page, "Save templates").click();
-  await until(() => puts(page).length === 2, "the second save");
-  assert.deepEqual(puts(page)[1].body.templates, [{ id: "reviewer", label: "Reviewer", harness: "claude" }], "empty: no limit of its own");
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "reviewer", label: "Reviewer", harness: "claude", namePattern: "{task} · review" }], "saved without its old limit");
   assert.deepEqual(page.errors, []);
 });
 

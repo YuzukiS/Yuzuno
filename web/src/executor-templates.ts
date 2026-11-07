@@ -18,8 +18,6 @@ export type ExecutorTemplate = {
    * registered machine's id, or "auto" for Core to choose at each dispatch (T-35 S3). */
   machineId?: string;
   instructions?: string;
-  /** At most this many of its executors run at once (T-35); unset, no limit of its own. */
-  maxConcurrent?: number;
   /** Copied from a project's own list when templates became the Workspace's (YN-2 S2): which project, and its id there. */
   origin?: { projectId: string; projectName: string; id: string };
 };
@@ -35,7 +33,8 @@ export type ExecutorTemplatesView = {
   /** Presets the user can adopt; empty until a Core ships some. */
   presets: ExecutorPreset[];
   defaultNamePattern: string;
-  limits: { templates: number; instructionsBytes: number; maxConcurrent: number };
+  /** Core also answers `maxConcurrent` for a release (YN-2): a template has no limit of its own any more (T-43). */
+  limits: { templates: number; instructionsBytes: number };
   opencodeEnabled: boolean;
   /** What a general executor (`executor: {}`, YN-2) of the read Project would be made with now; absent from an older Core. */
   general?: GeneralExecutor;
@@ -63,7 +62,7 @@ export const templatesView = (value: Partial<ExecutorTemplatesView>): ExecutorTe
     available: Array.isArray(value.available) ? value.available : [],
     presets: Array.isArray(value.presets) ? value.presets.filter((p) => p && typeof p.id === "string" && typeof p.label === "string") : [],
     defaultNamePattern: value.defaultNamePattern || "{task} · {label}",
-    limits: value.limits ?? { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 },
+    limits: value.limits ?? { templates: 50, instructionsBytes: 8192 },
     opencodeEnabled: value.opencodeEnabled === true,
     ...(generalOf(value.general) ? { general: generalOf(value.general) } : {}),
   };
