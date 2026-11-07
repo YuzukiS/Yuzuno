@@ -8,13 +8,16 @@
 //! session's messages, inbox and events read through Core's mapping, there
 //! too. Slice 4a (Lead 5358): prompts run against a stub provider, also
 //! there. Slice 4b (Lead 5656): a login through Core's own calls, and the
-//! scrub after, against the stub provider.
+//! scrub after, against the stub provider. T-61 slice 1 (Lead 6884): the
+//! Workspace MCP through the Workspace's own send path, against Yuzuno's own
+//! Workspace MCP endpoint on loopback and the stub provider.
 #![cfg(target_os = "linux")]
 
 use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
-use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
-use yuzuno_workspace::opencode_v2::{admitted, is_v2, is_v2_request, read_messages, Cursor};
+use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Reply, RequestRefused, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
+use yuzuno_workspace::opencode_v2::{admitted, is_v2, read_messages, Cursor};
+use yuzuno_workspace::store::whole::WholeRecord;
 
 fn ended(pid: u64) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
@@ -275,16 +278,41 @@ async fn a_real_opencode_2x_session_reads_through_cores_mapping() {
     assert!(ended(pid), "OpenCode ended and was reaped");
 }
 
+/// The stub provider's process, ended when dropped: a probe that fails before
+/// its last line leaves no process behind, which would keep its Job's cgroup
+/// from emptying and its reservation held (T-61, diag Job 4523e39b).
+struct Stub(std::process::Child);
+
+impl std::ops::Deref for Stub {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Stub {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for Stub {
+    fn drop(&mut self) {
+        self.0.kill().ok();
+        self.0.wait().ok();
+    }
+}
+
 /// The stub provider (tests/fixtures/stub_provider.py), on loopback: its
-/// port, and the file it logs each request to.
-fn stub_provider(dir: &Path) -> (std::process::Child, u16, PathBuf) {
+/// process (ended when dropped), its port, and the file it logs each request to.
+fn stub_provider(dir: &Path) -> (Stub, u16, PathBuf) {
     let log = dir.join("stub-requests.jsonl");
     let mut child = std::process::Command::new("python3")
         .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stub_provider.py")).arg(&log)
         .stdout(std::process::Stdio::piped()).spawn().expect("python3 runs the stub provider");
     let mut line = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.take().unwrap()), &mut line).unwrap();
-    (child, line.trim().parse().expect("the stub provider's port"), log)
+    (Stub(child), line.trim().parse().expect("the stub provider's port"), log)
 }
 
 /// The events of `session` until its execution ends, within 60 s.
@@ -454,8 +482,8 @@ async fn a_real_opencode_2x_runs_prompts_against_a_stub_provider_read_through_co
     assert!(pictured_turn.iter().any(|c| c.contains("image")), "the image reached the provider");
     second.iter().for_each(|e| { cursor.read(e); });
 
-    // 2.x's own permission request and form (until slice 5): told from 1.19.3's, as Core marks them not yet
-    // answerable, and read as Core's; each run waits on it until it is interrupted.
+    // 2.x's own permission request and form, read as Core's; each run waits on it until it is interrupted
+    // (answering them is T-61 slice 2's probe).
     for (prompt, kind, as_core) in [("probe-4a ask", "permission.asked", "permission.asked"), ("probe-4a form", "form.created", "question.asked")] {
         let asking = MessageId::new();
         assert_eq!(server.submit(&session, &asking, prompt).await.unwrap(), Submission::Accepted);
@@ -473,7 +501,7 @@ async fn a_real_opencode_2x_runs_prompts_against_a_stub_provider_read_through_co
         }).await.unwrap_or_else(|_| panic!("no {kind} within 30 s"));
         println!("probe: {kind} {}", asked["data"]);
         let request = if kind == "form.created" { &asked["data"]["form"] } else { &asked["data"] };
-        assert!(is_v2_request(request), "{kind}: told from 1.19.3's shape");
+        assert!(request["action"].is_string() || request["fields"].is_array(), "{kind}: 2.x's shape");
         assert_eq!(read.iter().map(|e| e["type"].clone()).collect::<Vec<_>>(), [json!(as_core)], "{kind}: read as Core's {as_core}");
         assert_eq!(server.session_status(&session).await.unwrap(), json!({"type": "busy"}), "{kind}: its run waits on it");
         server.abort(&session).await.unwrap();
@@ -628,4 +656,424 @@ async fn a_real_opencode_2x_is_logged_in_through_core_and_its_database_scrubbed_
     let left: i64 = rusqlite::Connection::open(&launch.database).unwrap()
         .query_row("SELECT count(*) FROM credential", [], |r| r.get(0)).unwrap();
     assert_eq!(left, 0, "no credential left");
+}
+
+/// Counts the MCP sessions OpenCode opens at the Workspace MCP endpoint: each
+/// `initialize` it sends.
+async fn count_initialize(axum::extract::State(count): axum::extract::State<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let (parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap_or_default();
+    if serde_json::from_slice::<Value>(&bytes).is_ok_and(|v| v["method"] == "initialize") {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    next.run(axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))).await
+}
+
+/// Every file below `dir` that holds `needle`.
+fn holding(dir: &Path, needle: &[u8]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => found.extend(holding(&path, needle)),
+            Ok(kind) if kind.is_file() && std::fs::read(&path).is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle)) => {
+                found.push(path);
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// A real OpenCode 2.x reaches the Workspace MCP through Core (T-61 slice 1,
+/// Lead 6884), by the Workspace's own path: reconnect and send, as the UI
+/// does, against Yuzuno's own Workspace MCP endpoint on loopback and the stub
+/// provider, with no network, no real provider and no login of the user's.
+/// Ready once OpenCode lists the server connected; a message goes, and the
+/// model is offered `yuzuno_peers_list` as a tool of its own, whose call
+/// reaches the endpoint as this Agent; the add before each message opens no
+/// session anew; once OpenCode has unloaded the idle folder, the next
+/// message adds it back and goes; and the bearer is in no file OpenCode
+/// keeps, nor in its configuration or the work folder.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_reaches_the_workspace_mcp_through_cores_send_path() {
+    use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61agent";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let work = work.canonicalize().unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    // The work folder's own config: the stub, and a folder unloaded after 2 s
+    // without session events (2.x's default is an hour), so that the probe sees it go.
+    std::fs::write(work.join("opencode.json"), json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"},
+        "models": {"fake": {"name": "Fake", "capabilities": {"tools": true}}}}},
+        "experimental": {"location_idle_timeout": "2 seconds"}}).to_string()).unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), work.to_string_lossy().into(), "unused".into()).unwrap();
+    // Yuzuno's own Workspace MCP endpoint, as Core serves it.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let opened = Arc::new(AtomicUsize::new(0));
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port)
+        .layer(axum::middleware::from_fn_with_state(opened.clone(), count_initialize));
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":work, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let config = yuzuno_workspace::collaboration_mcp::agent_http_config(&ws, ID, &format!("http://127.0.0.1:{mcp_port}")).unwrap();
+    let bearer = config["headers"]["Authorization"].as_str().unwrap().strip_prefix("Bearer ").unwrap().to_owned();
+    let requests = || -> Vec<Value> { std::fs::read_to_string(&log).unwrap_or_default().lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap()).collect() };
+    // Each time the Workspace tool's result, holding this Agent's ID, reached the model: a request whose newest
+    // message is that result (the stub calls the tool once per turn; 2.x does not replay old tool output whole).
+    let reached = |requests: &[Value]| requests.iter().filter(|r| r["messages"].as_array().and_then(|m| m.last())
+        .is_some_and(|m| m["role"] == "tool" && m.to_string().contains(ID))).count();
+    let finished = |turn: &str| {
+        let (ws, turn) = (ws.clone(), turn.to_owned());
+        async move {
+            for _ in 0..600 {
+                let d = ws.store.detail(ID).unwrap();
+                if let Some(t) = d.turns.iter().find(|t| t["id"] == turn.as_str()).filter(|t| t["status"] != "inProgress") {
+                    return t["status"].clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 60 s");
+        }
+    };
+    let send = |client: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":"probe-61 mcp"})).unwrap());
+        async move { ws.send_message(ID, input).await }
+    };
+
+    // 1. Connected through the Workspace: ready once OpenCode lists the server connected.
+    let d = ws.reconnect(ID).await.unwrap();
+    let shown = ws.collaboration_status(ID).await.unwrap();
+    println!("probe: connected {}, Workspace MCP ready {} ({:?}); MCP sessions opened {}", d.agent.connection_state, shown.ready,
+        shown.error, opened.load(Ordering::SeqCst));
+    assert!(shown.ready, "ready once OpenCode lists it connected: {:?}", shown.error);
+    assert_eq!(opened.load(Ordering::SeqCst), 1, "one MCP session as it connected");
+
+    // 2. A message goes, and the model calls the Workspace tool as a tool of its own, as this Agent.
+    let receipt = send("p1").await.unwrap_or_else(|refused| panic!("the message was refused: {refused}"));
+    let first = receipt.turn_id.unwrap();
+    assert_eq!(finished(&first).await, "completed");
+    let seen = requests();
+    let offered: Vec<String> = seen.iter().filter(|r| r["tools"] == true).flat_map(|r| r["toolNames"].as_array().unwrap().clone())
+        .filter_map(|n| n.as_str().map(str::to_owned)).filter(|n| n.starts_with("yuzuno_") || n == "execute").collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    println!("probe: Workspace tools offered to the model {offered:?}");
+    assert!(offered.iter().any(|n| n == "yuzuno_peers_list"), "a tool of its own, not behind `execute`");
+    assert_eq!(reached(&seen), 1, "the call reached the Workspace MCP as this Agent, and its result the model");
+    assert_eq!(opened.load(Ordering::SeqCst), 1, "the add before the message opened no session anew");
+
+    // 3. OpenCode unloads the idle folder (its own log says so), and the server goes with it.
+    let agent_dir = data.join("opencode").join(ID);
+    let mut unloaded = false;
+    for _ in 0..100 {
+        if !holding(&agent_dir, b"location services evicted").is_empty() {
+            unloaded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    println!("probe: OpenCode unloaded the idle folder: {unloaded}");
+    assert!(unloaded, "OpenCode logs that it unloaded the folder within 100 s");
+
+    // 4. The next message adds it back, and goes; its first step is offered the Workspace tools already (2.x
+    // registers a server's tools a moment after it connects: Core waits for that, MCP_TOOLS_SETTLE).
+    let before = requests().len();
+    let second = send("p2").await.unwrap_or_else(|refused| panic!("refused after OpenCode unloaded the folder: {refused}"));
+    assert_eq!(finished(&second.turn_id.unwrap()).await, "completed");
+    let first_step = requests()[before..].iter().find(|r| r["tools"] == true).cloned().expect("a step of the next message");
+    assert!(first_step["toolNames"].as_array().unwrap().iter().any(|n| n == "yuzuno_peers_list"),
+        "the next message's first step is offered the Workspace tools");
+    println!("probe: after the folder came back, MCP sessions opened {}; tool results seen {}", opened.load(Ordering::SeqCst), reached(&requests()));
+    assert_eq!(opened.load(Ordering::SeqCst), 2, "added back: a new MCP session");
+    assert_eq!(reached(&requests()), 2, "and the Workspace tool reached again");
+    assert!(ws.collaboration_status(ID).await.unwrap().ready);
+
+    // 5. Its OpenCode stopped: the bearer is in nothing it keeps, nor its configuration or the work folder.
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
+    let config_home = PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").expect("the probe's private XDG_CONFIG_HOME"));
+    for place in [agent_dir.clone(), data.join("opencode").join("cache"), work.clone(), config_home] {
+        let found = holding(&place, bearer.as_bytes());
+        println!("probe: files holding the bearer below {}: {}", place.display(), found.len());
+        assert!(found.is_empty(), "the bearer is kept in {found:?}");
+    }
+}
+
+/// The events of `session` until one of `kind`, or until its run ends, or
+/// `secs` go by: what was seen, and whether `kind` came.
+async fn until_kind(events: &mut Events, session: &str, kinds: &[&str], secs: u64) -> (Vec<Value>, bool) {
+    let mut seen = Vec::new();
+    let found = tokio::time::timeout(Duration::from_secs(secs), async {
+        loop {
+            let event = events.next().await.unwrap().expect("the stream ended");
+            if session_of(&event) != Some(session) {
+                continue;
+            }
+            let hit = event["type"].as_str().is_some_and(|t| kinds.contains(&t));
+            seen.push(event);
+            if hit {
+                return;
+            }
+        }
+    }).await;
+    (seen, found.is_ok())
+}
+
+const ENDS: [&str; 3] = ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"];
+
+fn types(seen: &[Value]) -> Vec<String> {
+    seen.iter().map(|e| e["type"].as_str().unwrap_or_default().to_owned()).collect()
+}
+
+/// T-61 slice 2, D-7 first (Lead 6921): a real OpenCode 2.x takes Core's
+/// answers to its own permission requests and forms, by 2.x's routes, and
+/// says how a run ends once one of them was refused (a reject, a declined
+/// form): its end's type and reason are printed for D-7, with what a whole
+/// read and the active list then show. A request named through another
+/// session is refused and stays pending; an answer a form can't take is
+/// refused and the form stays pending.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_takes_answers_to_its_requests_and_says_how_a_refused_ones_run_ends() {
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    std::fs::write(directory.join("opencode.json"), json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"}, "models": {"fake": {"name": "Fake", "capabilities": {"tools": true}}}}},
+        "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}).to_string()).unwrap();
+    let launch = Launch::new(program, directory.canonicalize().unwrap(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let models = server.models().await.unwrap();
+    let model = models.iter().find(|m| m.id() == "stub/fake").cloned().expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    let other = server.create_session("other").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let ask = |prompt: &'static str| { let (server, session) = (&server, session.clone()); async move {
+        assert_eq!(server.submit(&session, &MessageId::new(), prompt).await.unwrap(), Submission::Accepted);
+    } };
+    let tool_results = || -> Vec<String> { std::fs::read_to_string(&log).unwrap_or_default().lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .flat_map(|r| r["messages"].as_array().cloned().unwrap_or_default())
+        .filter(|m| m["role"] == "tool").map(|m| m["content"].to_string()).collect() };
+
+    // A and G: a permission request; named through another session it is refused and stays pending; allowed once, its tool runs.
+    ask("probe-4a ask").await;
+    let (seen, asked) = until_kind(&mut events, &session, &["permission.asked"], 30).await;
+    assert!(asked, "no permission.asked within 30 s: {:?}", types(&seen));
+    let request = seen.last().unwrap()["data"].clone();
+    println!("probe: A asked {request}");
+    let id = request["id"].as_str().unwrap().to_owned();
+    let wrong = server.reply_permission(&other, &id, Reply::Once).await.unwrap_err();
+    println!("probe: G an answer through another session: {wrong}");
+    assert!(matches!(wrong.downcast_ref::<RequestRefused>(), Some(RequestRefused::Gone { code: 404, .. })), "refused as gone: {wrong}");
+    assert_eq!(server.snapshot(&session, &[]).await.unwrap().permissions.len(), 1, "still pending in its own session");
+    server.reply_permission(&session, &id, Reply::Once).await.expect("allowed once: 204");
+    let (run, done) = until_kind(&mut events, &session, &ENDS, 60).await;
+    println!("probe: A after once {:?}", types(&run));
+    assert!(done && run.last().unwrap()["type"] == "session.execution.succeeded", "the run goes on and succeeds");
+    assert!(run.iter().any(|e| e["type"] == "permission.replied" && e["data"]["requestID"] == id.as_str()), "permission.replied names it");
+    assert!(tool_results().iter().any(|t| t.contains("probe-4a")), "the shell ran and its output reached the model");
+
+    // B: a permission request rejected: how its run ends (D-7).
+    ask("probe-4a ask").await;
+    let (seen, asked) = until_kind(&mut events, &session, &["permission.asked"], 30).await;
+    assert!(asked, "no second permission.asked: {:?}", types(&seen));
+    let id = seen.last().unwrap()["data"]["id"].as_str().unwrap().to_owned();
+    server.reply_permission(&session, &id, Reply::Reject).await.expect("rejected: 204");
+    let (run, done) = until_kind(&mut events, &session, &ENDS, 60).await;
+    println!("probe: B after a reject {:?}", types(&run));
+    println!("probe: B the run's end {}", if done { run.last().unwrap().to_string() } else { "none within 60 s".into() });
+    println!("probe: B status {}, active {}", server.session_status(&session).await.unwrap(), server.snapshot(&session, &[]).await.unwrap().status);
+    let read = server.snapshot(&session, &[]).await.unwrap();
+    let last = read.messages.as_array().and_then(|m| m.last()).cloned().unwrap_or_default();
+    println!("probe: B the whole read's last message: type {} {}", last["type"], last["error"]);
+
+    // D: a form answered by its field's key.
+    ask("probe-4a form").await;
+    let (seen, asked) = until_kind(&mut events, &session, &["form.created"], 30).await;
+    assert!(asked, "no form.created: {:?}", types(&seen));
+    let form = seen.last().unwrap()["data"]["form"].clone();
+    println!("probe: D form {form}");
+    let (form_id, key) = (form["id"].as_str().unwrap().to_owned(), form["fields"][0]["key"].as_str().unwrap().to_owned());
+    server.reply_form(&session, &form_id, &json!({key.clone(): "A"})).await.expect("answered: 204");
+    let (run, done) = until_kind(&mut events, &session, &ENDS, 60).await;
+    println!("probe: D after the answer {:?}", types(&run));
+    assert!(done && run.last().unwrap()["type"] == "session.execution.succeeded", "the run goes on and succeeds");
+    assert!(run.iter().any(|e| e["type"] == "form.replied" && e["data"]["id"] == form_id.as_str()), "form.replied names it");
+    println!("probe: D the question tool's result {:?}", tool_results().last());
+
+    // F: an answer the form can't take is refused and the form stays pending; then it is declined: how its run ends (D-7).
+    ask("probe-4a form").await;
+    let (seen, asked) = until_kind(&mut events, &session, &["form.created"], 30).await;
+    assert!(asked, "no second form.created: {:?}", types(&seen));
+    let form_id = seen.last().unwrap()["data"]["form"]["id"].as_str().unwrap().to_owned();
+    let invalid = server.reply_form(&session, &form_id, &json!({"q9": "x"})).await.unwrap_err();
+    println!("probe: F an answer it can't take: {invalid}");
+    assert!(matches!(invalid.downcast_ref::<RequestRefused>(), Some(RequestRefused::Invalid { .. })), "refused as invalid: {invalid}");
+    assert_eq!(server.snapshot(&session, &[]).await.unwrap().questions.len(), 1, "the form stays pending");
+    server.cancel_form(&session, &form_id).await.expect("declined: 204");
+    let (run, done) = until_kind(&mut events, &session, &ENDS, 60).await;
+    println!("probe: F after a decline {:?}", types(&run));
+    println!("probe: F the run's end {}", if done { run.last().unwrap().to_string() } else { "none within 60 s".into() });
+    let read = server.snapshot(&session, &[]).await.unwrap();
+    let last = read.messages.as_array().and_then(|m| m.last()).cloned().unwrap_or_default();
+    println!("probe: F status {}; the whole read's last message: type {} {}", read.status, last["type"], last["error"]);
+
+    // H: OpenCode started again on the same database after a declined run: whether it takes that run up again (a fact).
+    let pid = u64::from(server.pid().unwrap());
+    server.shutdown().await.unwrap();
+    assert!(ended(pid), "OpenCode ended and was reaped");
+    let server = Server::start(&launch).await.unwrap();
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let (seen, resumed) = until_kind(&mut events, &session, &["session.execution.started"], 15).await;
+    println!("probe: H after a restart, the declined run {} ({:?})", if resumed { "was taken up again" } else { "was not taken up again within 15 s" }, types(&seen));
+    if resumed {
+        let (run, _) = until_kind(&mut events, &session, &["permission.asked", "form.created", ENDS[0], ENDS[1], ENDS[2]], 60).await;
+        println!("probe: H the run taken up again {:?}", types(&run));
+        server.abort(&session).await.ok();
+    }
+    let pid = u64::from(server.pid().unwrap());
+    server.shutdown().await.unwrap();
+    assert!(ended(pid), "OpenCode ended and was reaped");
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// T-61 slice 2 through the Workspace (D-2 (a)): a real OpenCode 2.x Agent,
+/// connected and sent messages as the UI does, with the Workspace MCP on
+/// against Yuzuno's own endpoint, asks for a permission and a question
+/// (stub provider), and Yuzuno answers each by 2.x's routes: allowed once,
+/// the tool runs and the turn completes; rejected, the turn ends declined
+/// and the next message goes; a question answered, the model has the
+/// answer; declined, the turn ends declined.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_asks_and_yuzuno_answers_through_the_workspace() {
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61requests";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let work = work.canonicalize().unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    std::fs::write(work.join("opencode.json"), json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"},
+        "models": {"fake": {"name": "Fake", "capabilities": {"tools": true}}}}},
+        "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}).to_string()).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port);
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":work, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let tool_results = || -> Vec<String> { std::fs::read_to_string(&log).unwrap_or_default().lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|r| r["messages"].as_array().and_then(|m| m.last()).cloned())
+        .filter(|m| m["role"] == "tool").map(|m| m["content"].to_string()).collect() };
+    let send = |client: &str, text: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":text})).unwrap());
+        async move { ws.send_message(ID, input).await.unwrap_or_else(|refused| panic!("the message was refused: {refused}")).turn_id.unwrap() }
+    };
+    let asked = |method: &'static str| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..300 {
+                if let Some(p) = ws.store.detail(ID).unwrap().pending.into_iter().find(|p| p.method == method && !p.stale) {
+                    return p;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("no {method} within 30 s");
+        }
+    };
+    let ended = |turn: String| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..600 {
+                let d = ws.store.detail(ID).unwrap();
+                if let Some(t) = d.turns.iter().find(|t| t["id"] == turn.as_str()).filter(|t| t["status"] != "inProgress") {
+                    return t.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 60 s");
+        }
+    };
+    let d = ws.reconnect(ID).await.unwrap();
+    assert!(ws.collaboration_status(ID).await.unwrap().ready, "connected and ready: {}", d.agent.connection_state);
+
+    // A. A permission request allowed once: the tool runs, the turn completes.
+    let first = send("p1", "probe-4a ask").await;
+    let p = asked("opencode/permission").await;
+    println!("probe: A the request as Core keeps it {}", p.params);
+    assert_eq!((&p.params["action"], &p.params["resources"]), (&json!("shell"), &json!(["echo probe-4a"])), "2.x's request, as it sent it");
+    ws.respond(&p.id, json!({"decision":"once"})).await.expect("allowed once");
+    assert_eq!(ended(first).await["status"], "completed", "the tool ran and the turn completed");
+    assert!(tool_results().iter().any(|t| t.contains("probe-4a")), "the shell's output reached the model");
+
+    // B. Rejected: the turn ends declined, and the next message goes.
+    let second = send("p2", "probe-4a ask").await;
+    let p = asked("opencode/permission").await;
+    ws.respond(&p.id, json!({"decision":"reject"})).await.expect("rejected");
+    let t = ended(second).await;
+    println!("probe: B the turn after a reject: {} {}", t["status"], t["error"]);
+    assert!(t["status"] == "interrupted" && t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"), "ended declined");
+    let d = ws.store.detail(ID).unwrap();
+    assert!(d.pending.is_empty() && d.agent.status != "working", "nothing left waiting: {}", d.agent.status);
+    let third = send("p3", "hello").await;
+    assert_eq!(ended(third).await["status"], "completed", "the next message goes and completes");
+
+    // D. A question answered: the model has the answer.
+    let fourth = send("p4", "probe-4a form").await;
+    let q = asked("opencode/question").await;
+    println!("probe: D the question as Core keeps it {}", q.params["questions"]);
+    assert_eq!(q.params["questions"][0]["question"], "Which one?", "read as Core's question");
+    ws.respond(&q.id, json!({"answers":[["A"]]})).await.expect("answered");
+    assert_eq!(ended(fourth).await["status"], "completed");
+    let said = tool_results().last().cloned().unwrap_or_default();
+    println!("probe: D the question tool's result {said}");
+    assert!(said.contains("Which one?") && said.contains("A"), "the answer reached the model");
+
+    // F. A question declined: the turn ends declined.
+    let fifth = send("p5", "probe-4a form").await;
+    let q = asked("opencode/question").await;
+    ws.respond(&q.id, json!({"decision":"reject"})).await.expect("declined");
+    let t = ended(fifth).await;
+    println!("probe: F the turn after a decline: {} {}", t["status"], t["error"]);
+    assert!(t["status"] == "interrupted" && t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"), "ended declined");
+
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
 }

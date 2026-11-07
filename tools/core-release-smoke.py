@@ -276,6 +276,29 @@ def conversation_problem(seeded, before, after):
     return None
 
 
+def kept_fields(seeded, now):
+    """Whether `now` still has every field `seeded` had, each unchanged. A
+    newer Core may add fields to what it answers (core.24's project `key`,
+    T-56); a field lost or changed is what the smoke stops on."""
+    return isinstance(now, dict) and all(key in now and now[key] == value for key, value in seeded.items())
+
+
+def records_problem(seeded, projects, task, budget):
+    """The seeded project, task and saved budget as the running Core gives
+    them now: (None, added) when each kept every seeded field, where `added`
+    names the fields a newer Core added to each; else (what changed, added)."""
+    project = next((p for p in projects if isinstance(p, dict) and p.get('id') == seeded['project']['id']), None)
+    added = {}
+    for name, before, now in (('project', seeded['project'], project), ('task', seeded['task'], task),
+                              ('budget', seeded['budget'], budget)):
+        if not kept_fields(before, now):
+            return f'the seeded {name} lost or changed a field', added
+        extra = sorted(set(now) - set(before))
+        if extra:
+            added[name] = extra
+    return None, added
+
+
 IN_PLACE, NEW_DIRECTORY = 'inPlace', 'newDataDirectory'
 
 
@@ -530,10 +553,11 @@ def smoke(args):
             raise ValueError('Release/Workspace/health mismatch')
         if not holds_seeded(json.loads(json.dumps(into['conversation'])), json.loads(json.dumps(snapshot(into)))):
             raise ValueError('Conversation identity/history/settings/read cursor changed')
-        if (into['project'] not in api('projects')['projects']
-                or api('collaboration/task_get', {'taskId': into['task']['id']})['task'] != into['task']
-                or api('jobs/budget')['budget'] != into['budget']):
-            raise ValueError('Project, task or budget changed')
+        problem, added = records_problem(into, api('projects')['projects'],
+                                         api('collaboration/task_get', {'taskId': into['task']['id']})['task'], api('jobs/budget')['budget'])
+        if problem:
+            raise ValueError(f'Project, task or budget changed: {problem}')
+        into.setdefault('addedFields', {})[release] = added
         with opener.open(origin, timeout=15) as response:
             if f'content="{release}"' not in response.read().decode():
                 raise ValueError('Served UI does not match the running release')
@@ -703,8 +727,11 @@ def smoke(args):
             problem = conversation_problem(seeded, before, json.loads(json.dumps(snapshot())))
             if problem:
                 raise ValueError(problem)
-            if state['project'] not in api('projects')['projects'] or api('collaboration/task_get', {'taskId': state['task']['id']})['task'] != state['task'] or api('jobs/budget')['budget'] != state['budget']:
-                raise ValueError('Project, task or budget changed')
+            problem, added = records_problem(state, api('projects')['projects'],
+                                             api('collaboration/task_get', {'taskId': state['task']['id']})['task'], api('jobs/budget')['budget'])
+            if problem:
+                raise ValueError(f'Project, task or budget changed: {problem}')
+            state['addedFields'] = added
             proof = status['operation'].get('recordsProof') or {}
             if not (proof.get('recordsReady') and proof.get('phase') == 'afterRestore' and proof.get('workspaceId') == state['workspaceId'] and proof.get('releaseId') == after_manifest['releaseId']):
                 raise ValueError('Missing successful restoration proof')

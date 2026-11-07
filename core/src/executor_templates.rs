@@ -37,6 +37,8 @@ pub(crate) fn project_key(project: &str) -> String {
 const HARNESSES: [&str; 3] = ["codex", "claude", "opencode"];
 /// An executor's name: `{task}` is the task's ID, `{label}` the template's.
 pub const DEFAULT_NAME_PATTERN: &str = "{task} · {label}";
+/// The general executor's label (YN-2), so its name is `{task} · Executor`.
+pub const GENERAL_LABEL: &str = "Executor";
 const MAX_TEMPLATES: usize = 50;
 pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
 const MAX_CONCURRENT: u32 = 64;
@@ -190,6 +192,28 @@ impl Template {
         Ok(())
     }
 
+    /// The general executor a dispatch with no `templateId` makes (YN-2):
+    /// `harness` is the new-Agent default of the task's Project, else the
+    /// Workspace's, and everything else is unset, so the executor inherits
+    /// the defaults for new Agents as any new Agent does. It has no
+    /// instructions of its own: the Project's handover and the task's
+    /// materials are its instructions. Its id is empty, which no saved
+    /// template can have, so it has no limit of its own (executor_slots.rs).
+    pub(crate) fn general(harness: String) -> Self {
+        Self {
+            id: String::new(), label: GENERAL_LABEL.into(), name_pattern: None, harness, model: None, reasoning_effort: None,
+            permission_preset: None, permission_mode: None, machine_id: None, instructions: None, max_concurrent: None,
+        }
+    }
+
+    /// What a dispatch's materials say of this template, from the list
+    /// `source` names (`project`, `workspace`, or `builtin` for the general
+    /// executor, whose id is none).
+    pub(crate) fn given(&self, source: &str) -> Value {
+        let id = (!self.id.is_empty()).then_some(self.id.as_str());
+        json!({"id":id,"label":self.label,"source":source,"instructions":self.instructions})
+    }
+
     /// The name of the executor this template makes for the task `task` (its
     /// ID): the pattern filled in, cut to the 100 bytes an Agent's name has.
     pub(crate) fn agent_name(&self, task: &str) -> String {
@@ -276,6 +300,21 @@ pub(crate) fn template_in(db: &Connection, project: Option<&str>, id: &str) -> R
         }
     }
     Ok(list_at(db, KEY)?.templates.into_iter().find(|t| t.id == id).map(|t| (t, "workspace")))
+}
+
+/// The template ids a dispatch of a task in `project` can name, its
+/// Project's first, for a refusal that names none of them.
+pub(crate) fn ids_in(db: &Connection, project: Option<&str>) -> Result<Vec<String>> {
+    let mut ids: Vec<String> = match project {
+        Some(project) => list_at(db, &project_key(project))?.templates.into_iter().map(|t| t.id).collect(),
+        None => vec![],
+    };
+    for template in list_at(db, KEY)?.templates {
+        if !ids.contains(&template.id) {
+            ids.push(template.id);
+        }
+    }
+    Ok(ids)
 }
 
 /// The templates a save names, each checked strictly: no field this Core
@@ -423,16 +462,25 @@ struct Save {
     templates: Vec<Value>,
 }
 
+/// What a general executor (YN-2, `executor: {}`) of a task in `project`
+/// would be made with now: its harness and where that came from.
+fn general_view(store: &Store, project: Option<&str>) -> Result<Value> {
+    let (harness, source) = crate::agent_defaults::new_agent_harness(&*store.db.read()?, project)?;
+    Ok(json!({"label": GENERAL_LABEL, "harness": harness, "harnessSource": source}))
+}
+
 async fn get_templates(State(ws): State<Arc<Workspace>>, Query(query): Query<ForProject>) -> Result<Json<Value>, ApiError> {
     Ok(Json(ws.stored(move |s| {
         let workspace = s.executor_templates()?;
-        Ok(match query.project_id {
+        let mut answer = match &query.project_id {
             Some(id) => {
-                let own = s.project_executor_templates(&id)?;
-                view(&workspace, Some((&id, &own)))
+                let own = s.project_executor_templates(id)?;
+                view(&workspace, Some((id, &own)))
             }
             None => view(&workspace, None),
-        })
+        };
+        answer["general"] = general_view(s, query.project_id.as_deref())?;
+        Ok(answer)
     }).await?))
 }
 

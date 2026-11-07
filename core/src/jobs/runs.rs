@@ -607,6 +607,71 @@ fn upstream(run: &Value, stage: &Value, latest: &HashMap<String, Value>) -> Upst
     pending.map_or(Upstream::Ready(ready), Upstream::Pending)
 }
 
+/// How many of this host's own Jobs wait for an earlier stage of their run, or
+/// for its analysis, that can still let them start (T-69). A stage behind a
+/// stage that ended without success or with an unknown outcome, directly or
+/// through another waiting stage, or held back by the run's cost limit, stays
+/// "waiting" until someone retries or cancels: the run shows it as failed,
+/// unknown or blocked, and it is not counted here.
+pub(super) fn waiting_count(db: &Connection) -> Result<i64> {
+    let mut q = db.prepare(
+        "SELECT json_extract(data,'$.run.id'), json_extract(data,'$.run.stage') FROM local_jobs
+         WHERE status IN ('waiting','waiting_analysis') AND json_extract(data,'$.executor') IS NULL
+         AND json_extract(data,'$.cancelRequestedAt') IS NULL",
+    )?;
+    let rows = q
+        .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut stalled: HashMap<String, BTreeSet<String>> = HashMap::new();
+    let mut count = 0;
+    for (run, stage) in rows {
+        let (Some(run), Some(stage)) = (run, stage) else {
+            count += 1;
+            continue;
+        };
+        let stages = match stalled.entry(run) {
+            std::collections::hash_map::Entry::Occupied(known) => known.into_mut(),
+            std::collections::hash_map::Entry::Vacant(new) => {
+                let stages = stalled_stages(db, new.key())?;
+                new.insert(stages)
+            }
+        };
+        if !stages.contains(&stage) {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// The waiting stages of a run that cannot start without a retry or a
+/// cancellation: those `upstream` finds blocked, those behind one of them,
+/// and, once the run's recorded cost reached its limit (it never goes down),
+/// every one.
+fn stalled_stages(db: &Connection, id: &str) -> Result<BTreeSet<String>> {
+    let run = get_run(db, id)?;
+    let all = attempts(db, id)?;
+    let latest = latest(&all);
+    let limited = limit_reached(&run, &all).is_some();
+    let mut stalled = BTreeSet::new();
+    // Run order is dependency order: a stage needs only earlier ones.
+    for stage in run["stages"].as_array().into_iter().flatten() {
+        let key = stage["key"].as_str().unwrap_or("");
+        if latest.get(key).is_none_or(|job| job["status"] != "waiting") {
+            continue;
+        }
+        let behind = stage["needs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .any(|need| stalled.contains(need));
+        if limited || behind || matches!(upstream(&run, stage, &latest), Upstream::Blocked(_)) {
+            stalled.insert(key.to_owned());
+        }
+    }
+    Ok(stalled)
+}
+
 /// What a released stage checks before its command starts: every artifact of
 /// every stage it depends on, directly or through others, against the attempt
 /// that last declared that file in run order. Its Git guard leaves exactly

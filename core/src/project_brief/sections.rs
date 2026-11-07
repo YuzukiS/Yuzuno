@@ -29,6 +29,8 @@ pub(super) struct Row {
     pub updated_turn_id: Option<String>,
     /// Why a section is history: seen, removed or resolved.
     pub history_reason: Option<String>,
+    /// When it became history.
+    pub history_at: Option<String>,
     /// The section's identity on Home: the row's own seq, or the seq of the
     /// report it continues (see update.rs, put after a Seen).
     pub identity: i64,
@@ -79,6 +81,7 @@ fn read_columns(db: &Connection, columns: &str, condition: &str, values: impl ru
                 updated_at: r.get(14)?,
                 updated_turn_id: r.get(15)?,
                 history_reason: r.get(16)?,
+                history_at: r.get(17)?,
                 identity: r.get(18)?,
             },
             r.get::<_, String>(8)?,
@@ -124,6 +127,33 @@ pub(super) fn history(db: &Connection, project: &str) -> Result<Vec<Row>> {
         "project_id=?1 AND live=0 AND history_at>=?2 ORDER BY history_at DESC, seq DESC",
         params![project, history_cutoff()],
     )
+}
+
+/// At most this many entries in brief_get's you.recentlyLeft (YN-7).
+pub(super) const RECENTLY_LEFT: usize = 20;
+
+/// `owner`'s sections that left the live Brief within history's days and
+/// are not live again, newest first, without their bodies: the history
+/// rows that are their key's newest row. A key written again since, or
+/// last left under another owner, is not among them (YN-7).
+pub(super) fn recently_left(db: &Connection, project: &str, owner: &str) -> Result<Vec<Row>> {
+    read_columns(
+        db,
+        INDEX_COLUMNS,
+        "project_id=?1 AND live=0 AND history_at>=?2 AND owner_id=?3
+         AND seq=(SELECT MAX(t.seq) FROM project_brief_sections t
+                  WHERE t.project_id=project_brief_sections.project_id AND t.key=project_brief_sections.key)
+         ORDER BY history_at DESC, seq DESC",
+        params![project, history_cutoff(), owner],
+    )
+}
+
+/// One entry of you.recentlyLeft: which section left, as which version,
+/// why and when. seen: the user marked that version seen; removed: its
+/// owner removed it; resolved: its owner resolved the ask.
+pub(super) fn left_json(row: &Row) -> Value {
+    json!({"key":row.key,"kind":row.kind,"title":row.data["title"],"version":row.version,
+        "reason":row.history_reason,"at":row.history_at})
 }
 
 /// A section as Home shows it: the live one with this key, else its latest
@@ -325,6 +355,27 @@ pub(super) fn continued_identity(db: &Connection, project: &str, key: &str, owne
             |r| r.get(0),
         )
         .optional()?)
+}
+
+/// Why `owner`'s section under `key` is no longer live, said to its owner
+/// when a change names it (YN-7): the key's last ending, if it was theirs.
+/// Endings outlive history, so it is said however long ago.
+pub(super) fn ending_note(db: &Connection, project: &str, key: &str, owner: &str) -> Result<Option<String>> {
+    let ending: Option<(String, String)> = db
+        .query_row(
+            "SELECT reason,at FROM project_brief_endings WHERE project_id=?1 AND key=?2 AND owner_id=?3",
+            params![project, key, owner],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(ending.and_then(|(reason, at)| match reason.as_str() {
+        "seen" => Some(format!(
+            " The user marked your report seen at {at}, so it left the live Brief; put it again under this key to continue it on Home."
+        )),
+        "removed" => Some(format!(" You removed it at {at}.")),
+        "resolved" => Some(format!(" You resolved this ask at {at}.")),
+        _ => None,
+    }))
 }
 
 /// Old history goes, with its snapshot index (the files go with garbage

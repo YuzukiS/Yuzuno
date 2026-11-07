@@ -87,6 +87,32 @@ impl Lab {
             .filter(|c| c["method"] == "POST" && c["path"].as_str().unwrap().starts_with(prefix)).collect()
     }
 
+    /// Each answer Core sent to one of 2.x's requests (T-61 slice 2), in order:
+    /// a permission's or form's reply, or a form declined.
+    fn replies(&self) -> Vec<Value> {
+        self.calls().into_iter().filter(|c| {
+            let path = c["path"].as_str().unwrap_or_default();
+            path.starts_with("/api/session/") && (path.ends_with("/reply") || (c["method"] == "DELETE" && path.contains("/form/")))
+        }).collect()
+    }
+
+    /// Each Workspace MCP add OpenCode was sent (`PUT /api/experimental/mcp/yuzuno`, T-61 slice 1), in order.
+    fn mcp_adds(&self) -> Vec<Value> {
+        self.calls().into_iter().filter(|c| c["method"] == "PUT" && c["path"] == "/api/experimental/mcp/yuzuno").collect()
+    }
+
+    /// The bearer the Workspace MCP was handed to OpenCode with.
+    fn bearer(&self) -> String {
+        let adds = self.mcp_adds();
+        let header = adds[0]["body"]["config"]["headers"]["Authorization"].as_str().unwrap();
+        header.strip_prefix("Bearer ").unwrap().to_owned()
+    }
+
+    /// Each connection the stand-in made of an MCP server, and why (`added`, `changed`, `connect`).
+    async fn mcp_connects(&self) -> Vec<Value> {
+        self.control("mcp", json!({})).await["connects"].as_array().unwrap().clone()
+    }
+
     /// The models made the session's (`POST /api/session/:id/model`, T-32 slice 4a), in order: each body.
     fn switches(&self) -> Vec<Value> {
         self.posts(&format!("/api/session/{}/model", self.session())).into_iter().map(|c| c["body"].clone()).collect()
@@ -437,22 +463,25 @@ async fn answers_go_only_to_the_session_and_process_that_asked() {
     assert_eq!(d.agent.status, "waiting");
     let p = d.pending[0].clone();
     assert_eq!((p.method.as_str(), &p.params["id"]), ("opencode/permission", &asked["id"]));
-    assert_eq!(p.params["patterns"], json!(["ls"]), "kept as OpenCode sent it");
+    assert_eq!((&p.params["action"], &p.params["resources"]), (&json!("shell"), &json!(["ls"])), "kept as OpenCode sent it");
 
-    // `always` is not offered; once is, and goes to that request only.
+    // `always` is not offered; once is, and goes to that request only, in the session that asked (T-61 slice 2).
     assert!(lab.ws.respond(&p.id, json!({"decision":"always"})).await.is_err());
-    assert!(lab.posts("/permission/").is_empty());
-    lab.ws.respond(&p.id, json!({"decision":"once"})).await.unwrap();
-    let answered = lab.posts("/permission/");
+    assert!(lab.replies().is_empty());
+    lab.ws.respond(&p.id, json!({"decision":"once"})).await.expect("a 2.x permission request is answered");
+    let answered = lab.replies();
     assert_eq!((answered[0]["path"].as_str().unwrap(), &answered[0]["body"]),
-        (format!("/permission/{}/reply", asked["id"].as_str().unwrap()).as_str(), &json!({"reply":"once"})));
+        (format!("/api/session/{session}/permission/{}/reply", asked["id"].as_str().unwrap()).as_str(), &json!({"decision":"once"})));
     lab.until("the answered request", |d| d.pending.is_empty()).await;
 
     let question = lab.control("question", json!({"sessionID":session})).await;
     let d = lab.until("the question", |d| !d.pending.is_empty()).await;
     assert!(lab.ws.respond(&d.pending[0].id, json!({"answers":[]})).await.is_err(), "one answer per question");
-    lab.ws.respond(&d.pending[0].id, json!({"answers":[["A"]]})).await.unwrap();
-    assert_eq!(lab.posts("/question/").last().unwrap()["path"], format!("/question/{}/reply", question["id"].as_str().unwrap()));
+    lab.ws.respond(&d.pending[0].id, json!({"answers":[["A"]]})).await.expect("a 2.x question is answered");
+    let answered = lab.replies().last().cloned().unwrap();
+    assert_eq!((answered["path"].as_str().unwrap(), &answered["body"]),
+        (format!("/api/session/{session}/form/{}/reply", question["id"].as_str().unwrap()).as_str(), &json!({"answer":{"q0":"A"}})),
+        "by the field's key and the option's value");
 
     // A request of a process that has ended is never answered to the next one.
     lab.control("ask", json!({"sessionID":session})).await;
@@ -466,7 +495,7 @@ async fn answers_go_only_to_the_session_and_process_that_asked() {
     lab.ws.reconnect(ID).await.unwrap();
     assert_ne!(lab.seen()["pid"].as_u64().unwrap(), old);
     assert!(lab.ws.respond(&stale.id, json!({"decision":"once"})).await.is_err());
-    assert_eq!(lab.posts("/permission/").len(), 1, "only the first answer was sent");
+    assert_eq!(lab.replies().iter().filter(|c| c["path"].as_str().unwrap().contains("/permission/")).count(), 1, "only the first answer was sent");
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -659,10 +688,17 @@ async fn after_a_restart_a_message_connects_the_session_again_and_goes_only_when
     fn prompts(root: &std::path::Path) -> usize {
         calls(root).iter().filter(|c| c["path"].as_str().unwrap().ends_with("/prompt")).count()
     }
-    /// The credential each Workspace MCP registration handed OpenCode, in order.
+    /// Each credential a Workspace MCP add handed OpenCode, in order, once
+    /// (an add goes before each message too, with the same one, T-61).
     fn credentials(root: &std::path::Path) -> Vec<Value> {
-        calls(root).into_iter().filter(|c| c["method"] == "POST" && c["path"] == "/mcp")
-            .map(|c| c["body"]["config"]["headers"]["Authorization"].clone()).collect()
+        let mut handed: Vec<Value> = vec![];
+        for c in calls(root).into_iter().filter(|c| c["method"] == "PUT" && c["path"] == "/api/experimental/mcp/yuzuno") {
+            let credential = c["body"]["config"]["headers"]["Authorization"].clone();
+            if !handed.contains(&credential) {
+                handed.push(credential);
+            }
+        }
+        handed
     }
     async fn send_to(ws: &Arc<Workspace>, agent_id: &str, client: &str) -> anyhow::Result<yuzuno_workspace::model::MessageReceipt> {
         let input: MessageInput = serde_json::from_value(json!({"clientMessageId":client,"text":"after"})).unwrap();
@@ -792,32 +828,39 @@ async fn a_sub_agents_requests_are_shown_with_it_and_answered_in_its_own_session
     assert_eq!(p.params["turnId"], running, "the Agent's running Turn asked it");
     assert_eq!(d.agent.status, "waiting");
 
-    // The same event again adds nothing, and the sub-agent's idle ends no Turn.
+    // The same event again adds nothing.
     lab.control("event", json!({"type":"permission.asked","properties":asked})).await;
-    lab.control("idle", json!({"sessionID":child})).await;
     let question = lab.control("question", json!({"sessionID":child})).await;
     let d = lab.until("the sub-agent's question", |d| d.pending.iter().any(|p| p.params["id"] == question["id"])).await;
     assert_eq!(d.pending.iter().filter(|p| p.params["id"] == asked["id"]).count(), 1);
     assert_eq!(turn(&d, &running)["status"], "inProgress");
 
     // Answered in the session that asked, once.
-    lab.ws.respond(&p.id, json!({"decision":"once"})).await.unwrap();
-    let answered = lab.posts("/permission/");
+    lab.ws.respond(&p.id, json!({"decision":"once"})).await.expect("a sub-agent's 2.x permission request is answered");
+    let answered = lab.replies();
     assert_eq!((answered[0]["path"].as_str().unwrap(), &answered[0]["body"]),
-        (format!("/permission/{}/reply", asked["id"].as_str().unwrap()).as_str(), &json!({"reply":"once"})));
+        (format!("/api/session/{child}/permission/{}/reply", asked["id"].as_str().unwrap()).as_str(), &json!({"decision":"once"})));
     assert!(lab.ws.respond(&p.id, json!({"decision":"once"})).await.is_err(), "answered already");
     let q = d.pending.iter().find(|p| p.params["id"] == question["id"]).unwrap();
     assert_eq!(q.params["_opencodeSession"], child);
-    lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.unwrap();
-    assert_eq!(lab.posts("/question/").last().unwrap()["path"], format!("/question/{}/reply", question["id"].as_str().unwrap()));
+    lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.expect("a sub-agent's 2.x question is answered");
+    assert_eq!(lab.replies().last().unwrap()["path"], format!("/api/session/{child}/form/{}/reply", question["id"].as_str().unwrap()));
     lab.until("the answered requests", |d| d.pending.is_empty()).await;
+    // The sub-agent's run ending ends no Turn of the Agent's (2.x: a run's end ends its requests, so it ends after
+    // they are answered, T-61 slice 2).
+    lab.control("idle", json!({"sessionID":child})).await;
 
-    // A request of a sub-agent whose run ended is not answered.
+    // A request of a sub-agent whose session ended is not answered: 2.x no longer holds it and says so (404; Core
+    // reads no list first, D-10 (a)), and Core removes it.
     lab.control("ask", json!({"sessionID":child})).await;
     let gone = lab.until("the next request", |d| !d.pending.is_empty()).await.pending[0].clone();
     lab.control("close", json!({"sessionID":child})).await;
-    assert!(lab.ws.respond(&gone.id, json!({"decision":"once"})).await.is_err());
-    assert_eq!(lab.posts("/permission/").len(), 1, "only the first permission answer was sent");
+    let refused = lab.ws.respond(&gone.id, json!({"decision":"once"})).await.map_err(|e| e.to_string());
+    assert!(refused.as_ref().is_err_and(|e| e.contains("no longer holds")), "refused as gone: {refused:?}");
+    assert!(lab.detail().pending.iter().all(|r| r.id != gone.id), "and removed");
+    let first = asked["id"].as_str().unwrap();
+    assert_eq!(lab.replies().iter().filter(|c| c["path"].as_str().unwrap().contains(first)).count(), 1,
+        "the first permission request answered once");
 
     // The Agent's own session ends its Turn.
     assert_eq!(turn(&lab.detail(), &running)["status"], "inProgress");
@@ -844,8 +887,10 @@ async fn a_sub_agent_that_asked_while_no_stream_was_open_is_found_again() {
     assert_eq!(p.params["id"], asked["id"]);
     assert_eq!(p.params["_opencodeSession"], child["id"]);
     assert_eq!(p.params["_opencodeChild"], json!({"title":"Check (@general subagent)","agent":"general"}));
-    lab.ws.respond(&p.id, json!({"decision":"reject"})).await.unwrap();
-    assert_eq!(lab.posts("/permission/")[0]["body"], json!({"reply":"reject"}));
+    lab.ws.respond(&p.id, json!({"decision":"reject"})).await.expect("a sub-agent's request read again is answered");
+    let answered = lab.replies();
+    assert_eq!((answered[0]["path"].as_str().unwrap(), &answered[0]["body"]),
+        (format!("/api/session/{}/permission/{}/reply", child["id"].as_str().unwrap(), asked["id"].as_str().unwrap()).as_str(), &json!({"decision":"reject"})));
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -1146,23 +1191,34 @@ async fn images_go_inline_only_to_a_chosen_model_that_reads_them() {
 
 #[tokio::test]
 async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session() {
-    // OpenCode reports the Workspace MCP server failed: nothing is sent.
-    let failed = lab(&[("mcp", "failed")], true).await;
-    let added = failed.posts("/mcp");
-    let config = &added[0]["body"]["config"];
-    assert_eq!((config["type"].as_str(), config["oauth"].as_bool()), (Some("remote"), Some(false)));
-    assert!(config["url"].as_str().unwrap().ends_with(&format!("/mcp/{ID}")));
-    assert!(config["headers"]["Authorization"].as_str().unwrap().starts_with("Bearer "));
-    let status = failed.ws.collaboration_status(ID).await.unwrap();
-    assert!(!status.ready && status.error.unwrap().contains("failed"));
-    let refused = failed.send("c1", "hello").await.unwrap_err();
-    assert!(refused.to_string().contains("协作连接"), "{refused}");
-    assert!(failed.prompts().is_empty());
-    assert!(failed.detail().message_receipts.is_empty(), "refused before any receipt");
-    // No permission rule anywhere: not on the session, not in a prompt.
-    assert!(failed.calls().iter().all(|c| c["method"] != "PATCH"));
-    assert_eq!(failed.posts("/api/session")[0]["body"], json!({"title":"OpenCode","location":{"directory":failed.detail().agent.cwd}}));
-    failed.ws.close_agent(ID).await.unwrap();
+    for status in ["failed", "needs_auth"] {
+        // OpenCode reports the Workspace MCP server not connected: nothing is sent.
+        let refused = lab(&[("mcp", status)], true).await;
+        let cwd = refused.detail().agent.cwd;
+        let added = refused.mcp_adds();
+        assert_eq!(added.len(), 1, "{status}: added once as it connected");
+        assert_eq!(added[0]["query"]["location[directory]"], json!([cwd]), "the Agent's folder, named as its sessions name it");
+        let config = &added[0]["body"]["config"];
+        assert_eq!((config["type"].as_str(), config["oauth"].as_bool(), config["codemode"].as_bool()),
+            (Some("remote"), Some(false), Some(false)), "remote, OAuth off, its tools as tools of their own");
+        assert_eq!(config["timeout"], json!({"startup": 10000, "catalog": 10000}));
+        assert!(config["url"].as_str().unwrap().ends_with(&format!("/mcp/{ID}")));
+        assert!(config["headers"]["Authorization"].as_str().unwrap().starts_with("Bearer "));
+        let shown = refused.ws.collaboration_status(ID).await.unwrap();
+        let error = shown.error.unwrap();
+        assert!(!shown.ready && error.contains(&format!("MCP 状态 {status}：fixture:")), "{error}");
+        let message = refused.send("c1", "hello").await.unwrap_err();
+        assert!(message.to_string().contains("协作连接"), "{message}");
+        assert!(refused.prompts().is_empty());
+        assert!(refused.detail().message_receipts.is_empty(), "refused before any receipt");
+        // No permission rule anywhere, no login begun, nothing to 1.19.3's route.
+        assert!(refused.calls().iter().all(|c| {
+            let path = c["path"].as_str().unwrap();
+            c["method"] != "PATCH" && path != "/mcp" && !path.starts_with("/api/integration") && !path.starts_with("/api/credential")
+        }));
+        assert_eq!(refused.posts("/api/session")[0]["body"], json!({"title":"OpenCode","location":{"directory":cwd}}));
+        refused.ws.close_agent(ID).await.unwrap();
+    }
 
     // Connected: ready, and what the Agent writes names its session and Turn.
     let ready = lab(&[], true).await;
@@ -1171,6 +1227,146 @@ async fn mcp_must_be_connected_before_a_message_goes_and_writes_name_the_session
     let created = ready.ws.store.collaboration_call(Some(ID), "task_create", json!({"requestId":"r1","title":"From OpenCode"})).unwrap();
     assert_eq!(created["activity"]["source"], json!({"agentId":ID,"turnId":running,"sessionId":ready.session()}));
     ready.ws.close_agent(ID).await.unwrap();
+}
+
+/// A message to an OpenCode 2.x Agent goes through the Workspace once its
+/// OpenCode lists the Workspace MCP connected (T-61 slice 1): handed over by
+/// 2.x's own route, which 2.x has, not 1.19.3's `/mcp`, which it has not.
+#[tokio::test]
+async fn a_message_to_a_2x_agent_goes_once_its_opencode_lists_the_workspace_mcp_connected() {
+    let lab = lab(&[], true).await;
+    let receipt = lab.send("c1", "hello").await
+        .unwrap_or_else(|refused| panic!("a message to a 2.x Agent was refused: {refused}"));
+    assert_eq!(receipt.status, "accepted");
+    assert_eq!(lab.prompts().len(), 1);
+    assert!(lab.ws.collaboration_status(ID).await.unwrap().ready);
+    assert!(lab.calls().iter().all(|c| c["path"] != "/mcp"), "nothing to 1.19.3's route");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A message adds and checks the Workspace MCP with OpenCode once (S1 R1
+/// fec92b0a): its admission adds it and lists it, and its send stands on
+/// what that admission confirmed on the same connection, so a server still
+/// connecting is never waited for twice. A message added to the running Turn
+/// too.
+#[tokio::test]
+async fn a_message_adds_and_checks_the_workspace_mcp_once() {
+    let lab = lab(&[], true).await;
+    let session = lab.session();
+    let lists = || lab.calls().iter().filter(|c| c["path"] == "/api/mcp").count();
+    let (added, listed) = (lab.mcp_adds().len(), lists());
+    let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.mcp_adds().len() - added, 1, "one add-and-check per message");
+    assert_eq!(lists() - listed, 2, "listed once before the add and once after it");
+    lab.until("the run", |d| d.agent.status == "working").await;
+
+    let (added, listed) = (lab.mcp_adds().len(), lists());
+    let joined = lab.add("c2", "and this", &first).await.unwrap();
+    assert_eq!((joined.status.as_str(), joined.turn_id.as_deref()), ("accepted", Some(first.as_str())), "{joined:?}");
+    assert_eq!(lab.mcp_adds().len() - added, 1, "one add-and-check for a message added to the running Turn");
+    assert_eq!(lists() - listed, 2);
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("the end", |d| d.agent.status == "idle").await;
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A Workspace MCP server OpenCode lists as still connecting is waited for
+/// (2.x may answer the add of a folder's first server before it has
+/// connected it), and counts only once listed connected; one that does not
+/// connect within the wait is not ready, and a message is refused.
+#[tokio::test]
+async fn a_workspace_mcp_still_connecting_is_waited_for_and_counts_only_once_connected() {
+    let waited = lab(&[("mcpPendingFor", "1")], true).await;
+    let shown = waited.ws.collaboration_status(ID).await.unwrap();
+    assert!(shown.ready, "ready once OpenCode lists it connected: {:?}", shown.error);
+    let listed = waited.calls().iter().filter(|c| c["path"] == "/api/mcp").count();
+    assert!(listed >= 2, "listed while it connected, then connected: {listed}");
+    waited.send("c1", "hello").await.unwrap();
+    waited.ws.close_agent(ID).await.unwrap();
+
+    let stuck = lab(&[("mcp", "pending")], true).await;
+    let shown = stuck.ws.collaboration_status(ID).await.unwrap();
+    let error = shown.error.unwrap_or_default();
+    assert!(!shown.ready && error.contains("MCP 状态 pending"), "{error}");
+    let refused = stuck.send("c1", "hello").await.unwrap_err();
+    assert!(refused.to_string().contains("协作连接"), "{refused}");
+    assert!(stuck.prompts().is_empty());
+    stuck.ws.close_agent(ID).await.unwrap();
+}
+
+/// OpenCode drops a server added at runtime with the Agent's folder (2.x
+/// unloads a folder after an hour without session events, and on a reload):
+/// the next message adds it again before it goes, on the same process, with
+/// the same bearer. While it is held, the add each message makes connects
+/// nothing anew.
+#[tokio::test]
+async fn a_workspace_mcp_opencode_dropped_with_the_folder_is_added_again_before_the_next_message() {
+    let lab = lab(&[], true).await;
+    let (session, pid) = (lab.session(), lab.seen()["pid"].clone());
+    let first = lab.send("c1", "one").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("completion", |d| turn(d, &first)["status"] == "completed").await;
+    assert_eq!(lab.mcp_connects().await.len(), 1, "the adds of a message connect nothing anew");
+    assert_eq!(lab.control("mcpDrop", json!({})).await["dropped"], json!(["yuzuno"]));
+    let dropped_at = lab.calls().len();
+    lab.send("c2", "two").await.unwrap_or_else(|refused| panic!("refused after OpenCode dropped the folder: {refused}"));
+    let after: Vec<Value> = lab.calls()[dropped_at..].to_vec();
+    let prompt = after.iter().position(|c| c["path"].as_str().unwrap().ends_with("/prompt")).expect("the second prompt");
+    assert!(after[..prompt].iter().any(|c| c["method"] == "PUT" && c["path"] == "/api/experimental/mcp/yuzuno"),
+        "added again before the message went");
+    let connects = lab.mcp_connects().await;
+    assert_eq!((connects.len(), connects[1]["why"].as_str()), (2, Some("added")), "{connects:?}");
+    assert_eq!(lab.control("mcp", json!({})).await["servers"]["yuzuno"]["status"], json!({"status":"connected"}));
+    let adds = lab.mcp_adds();
+    assert_eq!(adds.first().unwrap()["body"], adds.last().unwrap()["body"], "the same configuration and bearer");
+    assert_eq!(lab.seen()["pid"], pid, "the same process");
+    assert!(lab.ws.collaboration_status(ID).await.unwrap().ready);
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A reconnect has OpenCode try a Workspace MCP server it lists as failed
+/// again, on the same process; a message adds the same configuration, which
+/// tries nothing again.
+#[tokio::test]
+async fn a_reconnect_has_opencode_try_a_failed_workspace_mcp_again_on_the_same_process() {
+    let lab = lab(&[("mcp", "failed")], true).await;
+    assert!(!lab.ws.collaboration_status(ID).await.unwrap().ready);
+    let pid = lab.seen()["pid"].clone();
+    lab.control("mode", json!({"mcp": "connected"})).await;
+    let refused = lab.send("c1", "hello").await.unwrap_err();
+    assert!(refused.to_string().contains("MCP 状态 failed"), "{refused}");
+    assert_eq!(lab.mcp_connects().await.len(), 1, "a message's add tried nothing again");
+    lab.ws.reconnect(ID).await.unwrap();
+    let shown = lab.ws.collaboration_status(ID).await.unwrap();
+    assert!(shown.ready, "tried again on the reconnect: {:?}", shown.error);
+    assert_eq!(lab.posts("/api/experimental/mcp/yuzuno/connect").len(), 1);
+    assert_eq!(lab.seen()["pid"], pid, "the same process");
+    lab.send("c2", "hello").await.unwrap();
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// What OpenCode answers about the Workspace MCP is never shown or kept with
+/// the Agent's bearer in it: a refused add says its status and kind only, and
+/// a reported error has the bearer taken out. (Core's database holds the
+/// credential itself, by design, so its bytes are not what is checked.)
+#[tokio::test]
+async fn the_workspace_mcp_bearer_is_never_shown_or_kept_from_what_opencode_answers() {
+    for (switches, shown_as) in [(vec![("mcpRefuse", "1")], "HTTP 400, InvalidRequestError"),
+                                 (vec![("mcp", "failed"), ("mcpErrorEcho", "1")], "[redacted]")] {
+        let shown = lab(&switches, true).await;
+        let bearer = shown.bearer();
+        let error = shown.ws.collaboration_status(ID).await.unwrap().error.unwrap();
+        assert!(!error.contains(&bearer), "the bearer is shown in the readiness error: {error}");
+        // A refusal is its status and kind only: what OpenCode answered (here, the request quoted back) is not repeated.
+        assert!(!error.contains("schema rejection"), "OpenCode's answer is repeated in the readiness error: {error}");
+        assert!(error.contains(shown_as), "says what OpenCode reported, {shown_as}: {error}");
+        let refused = shown.send("c1", "hello").await.unwrap_err().to_string();
+        assert!(!refused.contains(&bearer), "the bearer is shown in the refusal: {refused}");
+        assert!(refused.contains(shown_as), "the refusal says what OpenCode reported, {shown_as}: {refused}");
+        let recorded = serde_json::to_string(&shown.detail()).unwrap();
+        assert!(!recorded.contains(&bearer), "the bearer is in the Agent's record");
+        shown.ws.close_agent(ID).await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -2423,33 +2619,146 @@ async fn a_whole_read_in_mid_step_keeps_the_text_streamed_so_far() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
-/// OpenCode 2.x's own permission request and form (T-32 slice 4a): shown at
-/// once with why Yuzuno can't answer them yet, so their run is seen to wait
-/// on them, and an answer is refused before anything is sent.
+/// A rejected permission request ends its turn as declined (T-61 slice 2,
+/// D-7 (a)): 2.x rejects it, and the session's other requests with it, and
+/// ends the run as a shutdown, which for this run Core reads as declined;
+/// the next message goes.
 #[tokio::test]
-async fn a_2x_request_is_shown_waiting_for_an_answer_yuzuno_cannot_give_yet() {
+async fn a_rejected_permission_ends_its_turn_as_declined_and_the_next_message_goes() {
     let lab = lab(&[], false).await;
     let session = lab.session();
     let running = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
-    lab.control("event", json!({"type":"permission.asked","properties":{"id":"per_v2","sessionID":session,"action":"bash","resources":["ls"]}})).await;
-    lab.control("event", json!({"type":"form.created","properties":{"form":{"id":"frm_v2","sessionID":session,"title":"Pick one",
-        "fields":[{"key":"a","type":"string"}]}}})).await;
+    lab.control("ask", json!({"sessionID":session})).await;
+    lab.control("ask", json!({"sessionID":session})).await;
     let d = lab.until("both requests", |d| d.pending.len() == 2).await;
-    assert_eq!(d.agent.status, "waiting");
-    for p in &d.pending {
-        let note = p.params["_opencodeNotYet"].as_str().unwrap_or_default();
-        assert!(note.contains("not yet on OpenCode 2.x") && note.contains("只能中断这一轮"), "shown waiting for an answer Yuzuno can't give yet: {p:?}");
-        assert_eq!(p.params["turnId"], running.as_str());
-        let answered = lab.ws.respond(&p.id, json!({"decision":"reject"})).await.map_err(|e| e.to_string());
-        assert!(answered.as_ref().is_err_and(|e| e.contains("not yet on OpenCode 2.x")), "an answer refused as not yet: {answered:?}");
+    lab.ws.respond(&d.pending[0].id, json!({"decision":"reject"})).await.expect("a 2.x permission request is rejected");
+    assert_eq!(lab.replies().last().unwrap()["body"], json!({"decision":"reject"}));
+    let d = lab.until("the declined turn", |d| turn(d, &running)["status"] != "inProgress").await;
+    let t = turn(&d, &running);
+    assert_eq!(t["status"], "interrupted", "the turn ended: {t:#}");
+    assert!(t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"), "as declined: {t:#}");
+    assert!(d.pending.is_empty(), "2.x rejected the session's other request with it");
+    assert_ne!(d.agent.status, "waiting");
+    let next = lab.send("c2", "again").await.expect("the next message goes");
+    assert_eq!(next.status, "accepted");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A declined question cancels its form, and its turn ends declined
+/// (T-61 slice 2, D-7 (a)).
+#[tokio::test]
+async fn a_declined_question_cancels_its_form_and_ends_its_turn_as_declined() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let running = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
+    let form = lab.control("question", json!({"sessionID":session})).await;
+    let q = lab.until("the question", |d| !d.pending.is_empty()).await.pending[0].clone();
+    lab.ws.respond(&q.id, json!({"decision":"reject"})).await.expect("a 2.x question is declined");
+    let declined = lab.replies();
+    assert_eq!(declined.len(), 1, "one answer sent");
+    assert_eq!((declined[0]["method"].as_str(), declined[0]["path"].as_str()),
+        (Some("DELETE"), Some(format!("/api/session/{session}/form/{}", form["id"].as_str().unwrap()).as_str())), "its form cancelled");
+    let d = lab.until("the declined turn", |d| turn(d, &running)["status"] != "inProgress").await;
+    let t = turn(&d, &running);
+    assert!(t["status"] == "interrupted" && t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"),
+        "the turn ended declined: {t:#}");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A form Yuzuno can't fill (D-8 (a): here not a question's) says why and
+/// takes only a decline: an answer is refused before anything is sent.
+#[tokio::test]
+async fn a_form_yuzuno_cannot_fill_takes_only_a_decline() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.send("c1", "work").await.unwrap();
+    lab.control("question", json!({"sessionID":session,"kind":"mcp"})).await;
+    let q = lab.until("the form", |d| !d.pending.is_empty()).await.pending[0].clone();
+    let why = q.params["_opencodeUnfillable"].as_str().unwrap_or_default().to_owned();
+    assert!(why.contains("not a question"), "it says why Yuzuno can't fill it: {why:?}");
+    let refused = lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.map_err(|e| e.to_string());
+    assert!(refused.as_ref().is_err_and(|e| e.contains("填不了")), "an answer is refused: {refused:?}");
+    assert!(lab.replies().is_empty(), "nothing was sent");
+    lab.ws.respond(&q.id, json!({"decision":"reject"})).await.expect("a form Yuzuno can't fill is declined");
+    assert_eq!(lab.replies()[0]["method"], "DELETE", "declined");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A request 2.x no longer holds (404) is gone: removed, never offered again
+/// nor answered twice (T-61 slice 2, D-10 (a): 2.x's own refusal, no read first).
+#[tokio::test]
+async fn a_request_opencode_no_longer_holds_is_removed_and_not_offered_again() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.send("c1", "work").await.unwrap();
+    let asked = lab.control("ask", json!({"sessionID":session})).await;
+    let p = lab.until("the request", |d| !d.pending.is_empty()).await.pending[0].clone();
+    assert_eq!(lab.control("forget", json!({"id":asked["id"]})).await["forgotten"], true);
+    let gone = lab.ws.respond(&p.id, json!({"decision":"once"})).await.map_err(|e| e.to_string());
+    assert!(gone.as_ref().is_err_and(|e| e.contains("no longer holds")), "refused as gone: {gone:?}");
+    let d = lab.detail();
+    assert!(d.pending.iter().all(|r| r.id != p.id), "the request is removed, not left stale: {:?}", d.pending);
+    assert!(journal(&lab).iter().any(|k| k == "opencode/requestGone"), "the record says it went");
+    assert_eq!(lab.replies().len(), 1, "answered once, never again");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// An answer 2.x can't take (400) leaves the question pending and answerable
+/// (T-61 slice 2, D-9 (a)): nothing was applied, so it can be answered again.
+#[tokio::test]
+async fn an_answer_opencode_cannot_take_leaves_the_question_answerable() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.send("c1", "work").await.unwrap();
+    lab.control("question", json!({"sessionID":session,"fields":[{"key":"q0","type":"string","required":true,"title":"Pick",
+        "description":"Which one?","options":[{"value":"A","label":"A"}]}]})).await;
+    let q = lab.until("the question", |d| !d.pending.is_empty()).await.pending[0].clone();
+    let refused = lab.ws.respond(&q.id, json!({"answers":[[]]})).await.map_err(|e| e.to_string());
+    assert!(refused.as_ref().is_err_and(|e| e.contains("Missing required form field: q0")), "2.x's own reason: {refused:?}");
+    let d = lab.detail();
+    let kept = d.pending.iter().find(|r| r.id == q.id).expect("the question stays pending");
+    assert!(!kept.stale && kept.params["_responseSent"] == false, "and answerable: {kept:?}");
+    lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.expect("answered again, it goes");
+    assert_eq!(lab.replies().last().unwrap()["body"], json!({"answer":{"q0":"A"}}));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// Only a question's answer is kept in Core's journal (T-61 slice 2, D-11
+/// (a)): what another form was answered with is not.
+#[tokio::test]
+async fn only_a_questions_answer_is_kept_in_the_journal() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.send("c1", "work").await.unwrap();
+    lab.control("question", json!({"sessionID":session,"kind":"websearch.provider","fields":[{"key":"provider","type":"string",
+        "custom":false,"title":"Provider","options":[{"value":"allow","label":"Allow searches"}]}]})).await;
+    let q = lab.until("the provider form", |d| !d.pending.is_empty()).await.pending[0].clone();
+    lab.ws.respond(&q.id, json!({"answers":[["Allow searches"]]})).await.expect("a web search provider's form is answered");
+    lab.until("its end", |d| d.pending.is_empty()).await;
+    lab.control("question", json!({"sessionID":session})).await;
+    let q = lab.until("the question", |d| !d.pending.is_empty()).await.pending[0].clone();
+    lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.unwrap();
+    lab.until("its end", |d| d.pending.is_empty()).await;
+    // Answered is not yet journaled: OpenCode's `form.replied` comes on its stream after the answer.
+    let journaled = || -> Vec<Value> {
+        let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/form.replied' ORDER BY seq").unwrap();
+        let rows: Vec<Value> = query.query_map([ID], |r| r.get::<_, String>(0)).unwrap()
+            .map(|data| serde_json::from_str(&data.unwrap()).unwrap()).collect();
+        rows
+    };
+    let mut kept = journaled();
+    for _ in 0..400 {
+        if kept.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        kept = journaled();
     }
-    assert!(lab.posts("/permission/").is_empty() && lab.posts("/question/").is_empty(), "no answer was sent");
-    // 2.x's form ends as Core's question does: no longer waiting.
-    lab.control("event", json!({"type":"form.cancelled","properties":{"id":"frm_v2","sessionID":session}})).await;
-    lab.until("the form's end", |d| d.pending.iter().all(|p| p.params["id"] != "frm_v2")).await;
-    // Interrupting is the way on: the run's end ends the permission request, which 2.x answers with no event.
-    lab.control("event", json!({"type":"session.execution.interrupted","properties":{"sessionID":session,"reason":"user"}})).await;
-    lab.until("the run's end ending its request", |d| d.pending.is_empty() && d.agent.status != "waiting").await;
+    assert_eq!(kept.len(), 2, "both replies journaled: {kept:?}");
+    let answer_of = |row: &Value| row.pointer("/data/answer").cloned().or_else(|| row.pointer("/properties/answer").cloned());
+    assert_eq!(answer_of(&kept[0]), None, "the provider form's answer is not kept: {}", kept[0]);
+    assert_eq!(answer_of(&kept[1]), Some(json!({"q0":"A"})), "the question's is: {}", kept[1]);
     lab.ws.close_agent(ID).await.unwrap();
 }
 

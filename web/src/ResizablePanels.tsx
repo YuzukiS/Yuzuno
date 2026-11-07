@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useAppRoom } from "./app-room";
 import "./resizable-panels.css";
 
 type Side = "rail" | "inspector";
@@ -32,12 +33,14 @@ interface PanelSize {
 
 export function usePanelWidths(railOpen: boolean, inspectorOpen: boolean) {
   const [widths, setWidths] = useState(readWidths);
-  const [viewport, setViewport] = useState(() => window.innerWidth);
-  useEffect(() => {
-    const resize = () => setViewport(window.innerWidth);
-    window.addEventListener("resize", resize);
-    return () => window.removeEventListener("resize", resize);
-  }, []);
+  // How wide these panels are is a statement about the room the app has, not
+  // about the window: a system control area at the side is already out of it,
+  // and reading the window made the rail and the conversation's minimum too
+  // generous by the insets — on the folded-out Duo, by 84px (app-room.ts,
+  // T-15 V6). Whether there is a side-by-side layout at all is the window's
+  // question, kept as it was: that handover belongs to phone-layout.ts and to
+  // the max-width: 520px rules through the stylesheets.
+  const { room: viewport, viewport: windowWidth } = useAppRoom();
   useEffect(() => {
     try {
       localStorage.setItem(storageKey, JSON.stringify(widths));
@@ -46,7 +49,7 @@ export function usePanelWidths(railOpen: boolean, inspectorOpen: boolean) {
     }
   }, [widths]);
 
-  const railVisible = railOpen && viewport > 520;
+  const railVisible = railOpen && windowWidth > 520;
   const inspectorVisible = inspectorOpen && viewport > 1100;
   const railMin = 180;
   const inspectorMin = 240;

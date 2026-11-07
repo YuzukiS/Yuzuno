@@ -119,7 +119,7 @@ try {
     assert.ok(rows.m1.strong);
     assert.equal(rows.m1.result, "returned");
     // The heading counts the steps; each call is its own capsule (T-9).
-    assert.deepEqual(counts, ["5 tool steps", "1 failed"]);
+    assert.deepEqual(counts, ["5 tool steps", "4 returned", "1 failed"]);
     check(`${name}: the capsule names the server and tool`);
     assert.equal(rows.m4.text, `${long.server}/${long.tool}`);
     check(`${name}: a long name is whole in its text${rows.m4.cut ? ", cut short on screen" : ""}`, { cut: rows.m4.cut });

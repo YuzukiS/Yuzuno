@@ -95,7 +95,8 @@ function data(name = "Northstar") {
         errors: [],
         pending: [],
         jobs: [],
-        unseen: 1,
+        // As Core counts them: the result and the replied Ask, neither marked seen.
+        unseen: 2,
         missing: [],
         brief: {
           version: 1,

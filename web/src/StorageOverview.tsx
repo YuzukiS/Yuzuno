@@ -80,6 +80,7 @@ const entryLabelsZh: Record<string, string> = {
   claudeRuntime: "Claude 运行环境缓存",
   opencode: "OpenCode 会话数据库",
   desktopDownloads: "桌面应用下载",
+  previews: "正在预览的会话文件副本",
   backupOperations: "备份与恢复记录",
   backupSchedule: "每日备份计划",
   earlierDatabaseCopy: "早期数据库副本，保留自一次性转换",

@@ -4,7 +4,6 @@ import { Bell } from "lucide-react";
 import type { AgentActionHandlers } from "./agent-actions";
 import { AgentActionsMenu, type AgentActionsMenuHandle, type MenuPoint } from "./AgentActionsMenu";
 import { Avatar } from "./components";
-import { MachineBadge } from "./RemoteControls";
 import type { Agent, WorkSummary } from "./types";
 import { useAgentJobs } from "./live-jobs";
 import { useAgentCI, waitingSummary } from "./live-ci";
@@ -218,6 +217,16 @@ export function AgentRailRow({
         },
       })}
     >
+      {/* Beside both lines, so it is the row's own child rather than the
+          name's. Unread updates ring it, never a dot: dots beside the status
+          say what the Agent is doing. The button below covers the whole row,
+          so pressing the avatar still opens the Agent. */}
+      <span
+        className={`agent-rail-avatar${agent.unreadCount > 0 ? " has-unread" : ""}`}
+        aria-hidden="true"
+      >
+        <Avatar agent={agent} />
+      </span>
       <button
         ref={select}
         className="agent-select agent-row-top"
@@ -227,19 +236,20 @@ export function AgentRailRow({
         aria-current={selected ? "true" : undefined}
         title={`${t.title(agent.name, shown, executor ? null : waiting?.detail ?? null, agent.unreadCount)}${kind ? ` · ${kind.name}` : ""}`}
       >
-        {/* Unread updates ring the avatar, never a dot: dots beside the
-            status say what the Agent is doing. */}
-        <span
-          className={`agent-rail-avatar${agent.unreadCount > 0 ? " has-unread" : ""}`}
-        >
-          <Avatar agent={agent} />
-        </span>
-        {/* The machine heads the name, beside the avatar. */}
         <span className="agent-identity">
-          <MachineBadge agent={agent} />
           <span className="agent-name">{agent.name}</span>
           {kind && !executor && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
         </span>
+      </button>
+      {/* After the card's own target in focus order; drawn at its top right. */}
+      {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
+      {/* Line two, under the whole name: what the Agent is, and then what it
+          is doing. The status word is never shortened -- it is how the list
+          is read -- and the activity after it is what gives way. The name has
+          line one to itself, since a rail this narrow cannot hold both (T-15).
+          An executor's one state (T-43 S2) stands where the status does.
+          The whole card opens the agent; nothing inside is a separate link. */}
+      <div className="agent-row-state">
         {executor ? <ExecutorRowState view={executor} template={template} title={kind?.title} /> : <span
           className={`agent-runtime runtime-${agent.status}${unseen ? ` unseen-${unseen}` : ""}`}
           data-jobs={waiting ? jobs?.active : undefined}
@@ -253,24 +263,21 @@ export function AgentRailRow({
           <span className={`status-dot ${agent.status}`} aria-hidden="true" />
           {label}
         </span>}
-      </button>
-      {/* After the card's own target in focus order; drawn at its top right. */}
-      {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
-      {/* The whole card opens the agent; nothing inside is a separate link. */}
-      {summary && (
-        <div
-          className={`agent-work-summary kind-${summary.kind}`}
-          data-source-kind={summary.kind}
-          title={summary.requestParts ? undefined : summary.text}
-        >
-          {summary.source === "agent" && (
-            <span className="agent-report-prefix">
-              {summary.kind === "result" ? t.reported : t.update}
-            </span>
-          )}
-          <RequestSummary agentId={agent.id} summary={summary} />
-        </div>
-      )}
+        {summary && (
+          <div
+            className={`agent-work-summary kind-${summary.kind}`}
+            data-source-kind={summary.kind}
+            title={summary.requestParts ? undefined : summary.text}
+          >
+            {summary.source === "agent" && (
+              <span className="agent-report-prefix">
+                {summary.kind === "result" ? t.reported : t.update}
+              </span>
+            )}
+            <RequestSummary agentId={agent.id} summary={summary} />
+          </div>
+        )}
+      </div>
       {drop.state && (
         <p className="handoff-hint" role="status">
           {drop.state === "accept" ? t.drop(agent.name) : drop.refusal}

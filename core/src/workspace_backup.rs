@@ -71,6 +71,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("workspace.sqlite-journal", "SQLite's rollback journal"),
     ("claude-runtime", "A cache of the Claude runtime, which Core rebuilds"),
     ("desktop-updates", "Downloaded desktop release packages"),
+    ("previews", "Copies of conversation files being previewed, which go with their preview or when Core restarts"),
     ("opencode", "OpenCode's own session databases: native session data, like Codex and Claude histories"),
     (online::JOURNAL, "This Core's record of its backups and restores"),
     (schedule::FILE, "This Core's daily backup schedule; a restored Workspace starts with none"),

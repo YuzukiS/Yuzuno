@@ -41,6 +41,7 @@ pub mod collaboration_runtime;
 pub mod collaboration_store;
 pub mod commit_sha;
 mod mailbox_notice;
+mod session_baseline;
 mod input_origin;
 pub mod conversation_time;
 pub mod data_dir;
@@ -79,6 +80,9 @@ pub mod remote;
 pub mod remote_access;
 pub mod services;
 pub mod previews;
+/// The test binary's allocator, watched (project_brief, previews).
+#[cfg(test)]
+mod test_alloc;
 mod service_jobs;
 mod remote_images;
 pub mod results;

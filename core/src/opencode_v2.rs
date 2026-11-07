@@ -22,7 +22,7 @@
 //! answer, `MessageAbortedError`; a failed execution is `ExecutionFailed`.
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// What compaction, rewind and fork say on a session whose messages are
 /// 2.x's (Lead 4983, decision A): each still reads 1.19.3's, until its own
@@ -33,6 +33,9 @@ pub(crate) const NOT_YET: &str = "这在 OpenCode 2.x 上还不能用（not yet 
 /// The name Core's record gives a 2.x execution that failed (`halted`).
 pub(crate) const EXECUTION_FAILED: &str = "ExecutionFailed";
 const ABORTED: &str = "MessageAbortedError";
+/// How a turn ends whose run OpenCode stopped because Core rejected one of
+/// its permission requests or declined its form (T-61 slice 2, D-7 (a)).
+pub(crate) const DECLINED: &str = "这一轮已结束：它的一个请求在 Yuzuno 里被拒绝（declined in Yuzuno: a request of this turn was refused）";
 
 /// Whether a session's messages, as `/api/session/:id/message` pages them,
 /// are 2.x's (`{id, type, …}`) rather than 1.19.3's (`{info, parts}`).
@@ -40,14 +43,105 @@ pub fn is_v2(messages: &Value) -> bool {
     messages.as_array().is_some_and(|all| all.iter().any(|m| m.get("info").is_none() && m["type"].is_string()))
 }
 
-/// Whether a pending request is 2.x's own permission request or form (T-32
-/// slice 4a): Core reads and answers 1.19.3's until slice 5, so it can't
-/// answer one of these yet. 2.x's permission request names an `action`, not
-/// a `permission` (schema/src/permission.ts); its form has `fields`, not
-/// `questions` (schema/src/form.ts).
-pub fn is_v2_request(request: &Value) -> bool {
-    (request["action"].is_string() && request.get("permission").is_none())
-        || (request["fields"].is_array() && request.get("questions").is_none())
+/// The forms Yuzuno fills (T-61 slice 2, D-8 (a)), by the rule 2.x's own
+/// ACP client keeps (2.2.5 cli/src/acp/elicitation.ts): a question's or a
+/// web search provider's, none of whose fields is external, conditional,
+/// hidden and required with no default, or named as a secret, and, as
+/// Yuzuno's card shows choices and text only, each a text or multiselect
+/// field. Of any other, why: it can only be declined here.
+fn unfillable(form: &Value) -> Option<&'static str> {
+    const SECRET: [&str; 6] = ["password", "passphrase", "secret", "token", "credential", "private"];
+    let secret = |text: &str| {
+        let text = text.to_lowercase();
+        let squeezed: String = text.chars().filter(|c| !matches!(c, '_' | '-' | ' ')).collect();
+        SECRET.iter().any(|word| text.contains(word)) || squeezed.contains("apikey") || squeezed.contains("privatekey")
+    };
+    if !matches!(form["metadata"]["kind"].as_str(), Some("question" | "websearch.provider")) {
+        return Some("not a question Yuzuno asks for OpenCode");
+    }
+    let fields = form["fields"].as_array().map(Vec::as_slice).unwrap_or_default();
+    for field in fields {
+        let labels = field["options"].as_array().into_iter().flatten().filter_map(|o| o["label"].as_str());
+        if [&field["key"], &field["title"], &field["description"]].into_iter().filter_map(Value::as_str).chain(labels).any(secret) {
+            return Some("it asks for a secret");
+        }
+        match field["type"].as_str() {
+            Some("string" | "multiselect") => {}
+            Some("external") => return Some("it asks for something done outside OpenCode"),
+            _ => return Some("it asks for a kind of answer Yuzuno's card doesn't take"),
+        }
+        if field["when"].as_array().is_some_and(|when| !when.is_empty()) {
+            return Some("its questions depend on each other");
+        }
+        if field["hidden"] == true && field["required"] == true && field.get("default").is_none() {
+            return Some("it needs an answer it doesn't show");
+        }
+    }
+    None
+}
+
+/// A 2.x request as Core keeps it (T-61 slice 2): a permission request as 2.x
+/// sent it; a form with Core's `questions` read from its shown fields (each
+/// one question: its description, else its title, else its key; its title
+/// as the header; its options' labels; `multiple` for a multiselect; typed
+/// text unless `custom` is false), or, one Yuzuno can't fill, with why
+/// (`_opencodeUnfillable`). One function for a form asked live and one a
+/// whole read lists.
+pub fn request_of(request: &Value) -> Value {
+    let mut kept = request.clone();
+    let Some(fields) = request["fields"].as_array() else { return kept };
+    if let Some(why) = unfillable(request) {
+        kept["_opencodeUnfillable"] = why.into();
+        return kept;
+    }
+    let questions: Vec<Value> = fields.iter().filter(|f| f["hidden"] != true).map(|f| {
+        let question = f["description"].as_str().or(f["title"].as_str()).or(f["key"].as_str()).unwrap_or_default();
+        let options: Vec<Value> = f["options"].as_array().into_iter().flatten()
+            .map(|o| json!({"label": o["label"], "description": o["description"]})).collect();
+        json!({"question": question, "header": f["title"].as_str().unwrap_or_default(), "options": options,
+            "multiple": f["type"] == "multiselect", "custom": f["custom"] != false})
+    }).collect();
+    kept["questions"] = questions.into();
+    kept
+}
+
+/// Core's answers to a form (one list per shown question, in its fields'
+/// order: the labels chosen or the text typed) as 2.x takes them, by each
+/// field's key (T-61 slice 2): a label is its option's value; typed text only
+/// where the field takes it; one value for a text field, a list for a
+/// multiselect; an empty list leaves the field unanswered; a hidden field
+/// takes its default, as 2.x's own clients send it (app `providerFormDefaults`).
+pub fn form_answer(form: &Value, answers: &[Vec<String>]) -> anyhow::Result<Value> {
+    use anyhow::{bail, ensure};
+    ensure!(form.get("_opencodeUnfillable").is_none(), "Yuzuno can't fill this form; it can only be declined");
+    let fields = form["fields"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let shown: Vec<&Value> = fields.iter().filter(|f| f["hidden"] != true).collect();
+    ensure!(answers.len() == shown.len(), "the form has {} questions, {} answered", shown.len(), answers.len());
+    let mut answer = serde_json::Map::new();
+    for field in fields.iter().filter(|f| f["hidden"] == true) {
+        if let (Some(key), Some(default)) = (field["key"].as_str(), field.get("default")) {
+            answer.insert(key.to_owned(), default.clone());
+        }
+    }
+    for (field, chosen) in shown.into_iter().zip(answers) {
+        let key = field["key"].as_str().unwrap_or_default();
+        let value = |text: &str| -> anyhow::Result<Value> {
+            let option = field["options"].as_array().into_iter().flatten().find(|o| o["label"] == text);
+            match option {
+                Some(option) => Ok(option["value"].clone()),
+                None if field["custom"] != false => Ok(text.into()),
+                None => bail!("{text:?} is not one of the choices of {key}"),
+            }
+        };
+        match (field["type"].as_str(), chosen.as_slice()) {
+            (_, []) => {}
+            (Some("string"), [one]) => { answer.insert(key.to_owned(), value(one)?); }
+            (Some("string"), _) => bail!("{key} takes one answer"),
+            (Some("multiselect"), many) => { answer.insert(key.to_owned(), many.iter().map(|t| value(t)).collect::<anyhow::Result<Vec<_>>>()?.into()); }
+            _ => bail!("Yuzuno can't answer {key}"),
+        }
+    }
+    Ok(answer.into())
 }
 
 /// The ID of a text or reasoning entry of an answer: never one Core keys by
@@ -351,13 +445,25 @@ impl Cursor {
             shells: read.shells.iter().cloned().collect(), ..Open::default() });
     }
 
-    /// A request a whole read found pending (after `resumed`): one of 2.x's
-    /// own ends with its run, as one asked live does.
+    /// A request a whole read found pending (after `resumed`): it ends with
+    /// its run, as one asked live does.
     pub fn asked(&mut self, request: &Value) {
         let Some(session) = request["sessionID"].as_str() else { return };
-        if is_v2_request(request) {
-            let replied = if request["fields"].is_array() { "question.replied" } else { "permission.replied" };
-            self.sessions.entry(session.to_owned()).or_default().asked(request["id"].as_str(), replied);
+        let replied = if request["fields"].is_array() { "question.replied" } else { "permission.replied" };
+        let open = self.sessions.entry(session.to_owned()).or_default();
+        open.asked(request["id"].as_str(), replied);
+        open.question(request);
+    }
+
+    /// Core is about to reject a permission request of `session`'s run, or
+    /// decline its form (T-61 slice 2, D-7 (a)): 2.x then ends that run as
+    /// it ends one shutting down, `execution.interrupted` with reason
+    /// `shutdown` (probe p0 7d72ea4c), which, after this, ends Core's turn as
+    /// declined. Not read from the events: 2.x rejects and cancels a pending
+    /// request on a real shutdown too. `false` undoes it (the answer failed).
+    pub fn declining(&mut self, session: &str, declining: bool) {
+        if let Some(open) = self.sessions.get_mut(session) {
+            open.declined = declining;
         }
     }
 }
@@ -381,12 +487,25 @@ struct Open {
     /// 2.2.5 sends no reply for a permission request its interrupt ended
     /// (probe p3), so the run's end ends them in Core too (`ended`).
     requests: Vec<(String, &'static str)>,
+    /// Core rejected or declined one of this run's requests (`declining`).
+    declined: bool,
+    /// The forms open now that are questions (their answer is the
+    /// conversation's, kept in Core's journal; another form's is not, D-11).
+    questions: HashSet<String>,
 }
 
 impl Open {
     fn is_empty(&self) -> bool {
         self.user.is_none() && self.inputs.is_empty() && self.steps.is_empty() && self.tools.is_empty() && self.gathered.is_empty()
-            && self.shells.is_empty() && self.compaction.is_none() && self.requests.is_empty()
+            && self.shells.is_empty() && self.compaction.is_none() && self.requests.is_empty() && self.questions.is_empty()
+            // Kept until the run Core declined a request of ends (D-7), after the request's own reply.
+            && !self.declined
+    }
+
+    fn question(&mut self, form: &Value) {
+        if let (Some(id), Some("question")) = (form["id"].as_str(), form["metadata"]["kind"].as_str()) {
+            self.questions.insert(id.to_owned());
+        }
     }
 
     fn asked(&mut self, id: Option<&str>, replied: &'static str) {
@@ -426,17 +545,20 @@ impl Open {
         let status = |kind: &str| made("session.status", json!({"sessionID": session, "status": {"type": kind}}));
         let failed = |error: Value| made("session.error", json!({"sessionID": session, "error": error}));
         match kind {
-            // 2.x's form, asked and ended as Core's question is (`is_v2_request` marks it unanswerable yet).
+            // 2.x's form, asked and ended as Core's question is, read as Core keeps it (`request_of`).
             "form.created" => {
                 self.asked(d["form"]["id"].as_str(), "question.replied");
-                vec![made("question.asked", d["form"].clone())]
+                self.question(&d["form"]);
+                vec![made("question.asked", request_of(&d["form"]))]
             }
+            // Whether it was a question: only a question's answer is kept with the event (D-11).
             "form.replied" | "form.cancelled" => {
                 self.requests.retain(|(open, _)| d["id"] != open.as_str());
-                vec![made("question.replied", json!({"sessionID": session, "requestID": d["id"]}))]
+                let question = d["id"].as_str().is_some_and(|id| self.questions.remove(id));
+                vec![made("question.replied", json!({"sessionID": session, "requestID": d["id"], "question": question}))]
             }
-            // 2.x's own permission request passes as it is (Core marks it unanswerable yet), kept until it ends.
-            "permission.asked" if is_v2_request(d) => {
+            // 2.x's permission request passes as it is, kept until it ends.
+            "permission.asked" => {
                 self.asked(d["id"].as_str(), "permission.replied");
                 vec![event.clone()]
             }
@@ -549,6 +671,9 @@ impl Open {
             "session.retry.scheduled" => vec![status("retry")],
             "session.execution.succeeded" => self.ended(event, vec![status("idle")]),
             "session.execution.failed" => self.ended(event, vec![failed(error(&d["error"], Some(EXECUTION_FAILED))), status("idle")]),
+            // A run Core declined a request of ends as one shutting down does: declined (D-7 (a)).
+            "session.execution.interrupted" if d["reason"] == "shutdown" && self.declined => self.ended(event,
+                vec![failed(error(&json!({"type": "declined", "message": DECLINED}), Some(ABORTED))), status("idle")]),
             // A shutdown leaves the turn open: the execution resumes it (session-message.ts), and a Core that restarts reads it unknown.
             "session.execution.interrupted" if d["reason"] == "shutdown" => vec![],
             "session.execution.interrupted" => {
@@ -572,6 +697,8 @@ impl Open {
         self.user = None;
         self.steps.clear();
         self.tools.clear();
+        self.declined = false;
+        self.questions.clear();
         out
     }
 }

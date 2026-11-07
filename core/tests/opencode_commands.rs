@@ -294,8 +294,9 @@ async fn a_listed_command_runs_under_its_kept_id_with_the_model_opencode_gives_i
             assert_eq!(p.params["_opencodeSession"], child);
             assert_eq!(p.params["_opencodeChild"], json!({"title":"Ask a sub-agent (@reviewer subagent)","agent":"reviewer"}));
             lab.ws.respond(&p.id, json!({"decision":"once"})).await.unwrap();
-            let answered = lab.calls().into_iter().filter(|c| c["path"].as_str().unwrap().starts_with("/permission/")).collect::<Vec<_>>();
-            assert_eq!(answered.len(), 1);
+            let reply = format!("/api/session/{child}/permission/{}/reply", asked["id"].as_str().unwrap());
+            let answered = lab.calls().into_iter().filter(|c| c["path"] == reply.as_str()).collect::<Vec<_>>();
+            assert_eq!(answered.len(), 1, "answered once, in the sub-agent's session (T-61 slice 2)");
             lab.until("the answered request", |d| d.pending.is_empty()).await;
         }
         lab.complete(&id).await;
