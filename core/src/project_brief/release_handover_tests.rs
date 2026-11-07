@@ -86,3 +86,34 @@ async fn a_closed_dispatcher_is_handed_nothing_and_an_open_one_both() {
     home::reply(&ws, project.clone(), reply("r2", shown)).await.unwrap_or_else(|error| panic!("once claimed, the reply goes to the editor: {error}"));
     assert!(ws.store.receipt("a", "r2").unwrap().is_some(), "the editor that claimed it has the reply");
 }
+
+/// YN-14 follow-up: a release that hands an executor's sections to its
+/// dispatcher moves the Brief on as a write of those keys only. Another
+/// section, read before the release and untouched by it, is still written
+/// at the version its author read; the handed-over key, written since,
+/// conflicts by its own key, as any section written after the version read.
+#[tokio::test]
+async fn a_release_handing_sections_over_is_a_write_of_those_keys_only() {
+    let (_dir, ws, project) = lab();
+    // c is an executor here, so it doesn't lead the Project.
+    set_leads(&ws, &project, &["a", "b"]);
+    ws.store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,project_id,template_id,created_by,created_at,updated_at)
+         VALUES('c','executor',?1,'reviewer','agent:a','now','now')", [&project]).unwrap();
+    accept(&ws, "b", input("notes", 0, vec![put("notes", "report")])).await;
+    accept(&ws, "c", input("ask", 1, vec![put("question", "ask")])).await;
+    let read = version(&ws, &project);
+    ws.release_executor(Some("a"), "c").await.unwrap();
+    assert_eq!(version(&ws, &project), read + 1, "the handover moves the Brief on");
+
+    let mut notes = put("notes", "report");
+    notes["title"] = json!("About notes, again");
+    let answer = call(&ws, "b", input("notes-again", read, vec![notes])).await.unwrap();
+    assert!(answer.is_ok(), "an untouched section is written at the version its author read: {answer:?}");
+
+    let mut question = put("question", "ask");
+    question["ask"]["question"] = json!("Which way now?");
+    let rejected = reject(&ws, "a", input("question-again", read, vec![question])).await;
+    assert_eq!((codes(&rejected), rejected["problems"][0]["path"].clone()),
+        (vec!["version_conflict".to_owned()], json!("changes[0].key")), "{rejected}");
+}
