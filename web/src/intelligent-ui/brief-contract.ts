@@ -77,6 +77,8 @@ export const BRIEF_LIMITS = {
   research: {
     claims: 12, plots: 8, rows: 40, parts: 4, sources: 40, definitions: 12, versions: 6, revisions: 12, plans: 6,
     items: 16, links: 4, values: 400, textChars: 1200, pointerChars: 200,
+    // A CSV or TSV cell (YN-7): the columns whose text picks its row, and how long a name or a cell may be.
+    keyColumns: 4, columnChars: 120, cellChars: 200,
   },
 } as const;
 const L = BRIEF_LIMITS;
@@ -125,8 +127,10 @@ const metricValue = z.union([z.number().finite(), short]);
 const tableShape = componentProps.Table.shape;
 
 // ResearchDesk (T-9). A number is the Agent's own (a literal) or one Core
-// reads from a JSON snapshot of this section, {from, pointer}; Core says
-// which, and never calls either a check of the research.
+// reads from a snapshot of this section: from a JSON file, {from, pointer};
+// from a CSV or TSV file, {from, row, column} (YN-7), the row whose named
+// columns hold exactly that text. Core says which, and never calls either a
+// check of the research.
 const R = L.research;
 const researchText = z.string().trim().min(1).max(R.textChars);
 const researchList = <T extends z.ZodType>(item: T) => z.array(item).max(R.items).optional();
@@ -134,7 +138,16 @@ const jsonPointer = z
   .string()
   .max(R.pointerChars)
   .regex(/^(\/([^~/]|~[01])*)+$/, "Use a JSON Pointer into the attachment, e.g. /E/avg4/mean or /rows/0/value.");
-const researchNumber = z.union([z.number().finite(), z.strictObject({ from: attachmentName, pointer: jsonPointer })]);
+const csvColumn = z.string().trim().min(1).max(R.columnChars);
+const csvRow = z
+  .record(csvColumn, z.string().max(R.cellChars))
+  .refine((row) => Object.keys(row).length >= 1 && Object.keys(row).length <= R.keyColumns,
+    `Name 1 to ${R.keyColumns} columns and the text each holds in the row, e.g. {"sport": "alpha", "d": "2"}.`);
+const researchNumber = z.union([
+  z.number().finite(),
+  z.strictObject({ from: attachmentName, pointer: jsonPointer }),
+  z.strictObject({ from: attachmentName, row: csvRow, column: csvColumn }),
+]);
 const lines = z.string().regex(/^[1-9]\d{0,5}(-[1-9]\d{0,5})?$/, "Use a line or a range, e.g. 187 or 187-191.");
 const citation = z.strictObject({ source: id, lines: lines.optional() });
 const definitionVersion = z.number().int().min(1).max(99);
@@ -512,7 +525,7 @@ export const BRIEF_PROBLEM_CODES = {
   attachment_location: "An attachment without exactly one of path or url, or with a path that is not absolute or a url that is not https.",
   duplicate_attachment: "Two attachments share a name.",
   missing_reference: "A ResearchDesk id that names no claim, plot, row, part, source, definition version or plan of that desk.",
-  research_attachment: "A ResearchDesk number read from an attachment that is not a JSON file with a path.",
+  research_attachment: "A ResearchDesk number read from an attachment of the wrong kind: a JSON Pointer needs a .json file, a CSV row a .csv or .tsv file, each with a path.",
   unsaved_definition: "A ResearchDesk definition version citing a source with neither a snapshot nor a Task method record.",
   definition_order: "A ResearchDesk revision whose definition versions do not go from older to newer.",
   too_many_values: `A ResearchDesk reading over ${L.research.values} numbers from attachments.`,
@@ -768,16 +781,22 @@ type Attachment = NonNullable<BriefSection["attachments"]>[number];
 type ResearchNumber = z.infer<typeof researchNumber>;
 type Estimate = z.infer<typeof estimate>;
 
+/** Where Core reads one number of a desk: a JSON Pointer, or a CSV or TSV row and column (YN-7). */
+export type ResearchRead =
+  | { at: string; from: string; pointer: string }
+  | { at: string; from: string; row: Record<string, string>; column: string };
 /**
  * Every number of a desk Core reads from an attachment, with where it sits
  * (`${row or part id}.value|low|high`); Core's research read resolves these.
  */
-export function researchReads(props: ResearchDesk): { at: string; from: string; pointer: string }[] {
-  const reads: { at: string; from: string; pointer: string }[] = [];
+export function researchReads(props: ResearchDesk): ResearchRead[] {
+  const reads: ResearchRead[] = [];
   const add = (owner: string, found: Estimate) => {
     for (const field of ["value", "low", "high"] as const) {
       const number: ResearchNumber | undefined = found[field];
-      if (number !== undefined && typeof number !== "number") reads.push({ at: `${owner}.${field}`, from: number.from, pointer: number.pointer });
+      if (number === undefined || typeof number === "number") continue;
+      const at = `${owner}.${field}`;
+      reads.push("pointer" in number ? { at, from: number.from, pointer: number.pointer } : { at, from: number.from, row: number.row, column: number.column });
     }
   };
   for (const plot of props.plots)
@@ -866,8 +885,11 @@ function checkResearch(
     if (found === undefined || typeof found === "number") return;
     reads++;
     const file = needsFile(found.from, `${path}.from`);
-    if (file && (file.path === undefined || !/\.json$/i.test(file.path)))
-      bad("research_attachment", `${path}.from`, `${desk} reads numbers from JSON files only: attachment "${found.from}" needs a path ending in .json.`);
+    if (!file) return;
+    if ("pointer" in found && (file.path === undefined || !/\.json$/i.test(file.path)))
+      bad("research_attachment", `${path}.from`, `${desk} reads a JSON Pointer from JSON files only: attachment "${found.from}" needs a path ending in .json.`);
+    if ("row" in found && (file.path === undefined || !/\.(csv|tsv)$/i.test(file.path)))
+      bad("research_attachment", `${path}.from`, `${desk} reads a row's cell from CSV or TSV files only: attachment "${found.from}" needs a path ending in .csv or .tsv.`);
   };
   const checkEstimate = (found: Estimate, path: string) => {
     for (const field of ["value", "low", "high"] as const) number(found[field], `${path}.${field}`);
@@ -1574,7 +1596,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   research: [
     componentLine("ResearchDesk"),
     `One block for a research question: what each claim may and may not say, the numbers and intervals it rests on, under which conditions, from which sources and under which definition, and what could be done next. The reader selects a claim, a row or one of its parts; the block keeps that selection across your later versions while the ids stay. Use your own ids and keep them across versions. Row and part ids share one namespace across the whole desk, every plot included: each is used once, so two plots cannot both have a row "a", nor a part the id of a row.`,
-    `Numbers: each value, low and high is a literal, shown as provided by you, or {from, pointer}: a JSON Pointer into one of this section's attachments whose path ends in .json. Yuzuno reads it from the snapshot taken when you wrote the section and shows it as read from that snapshot, with the snapshot's SHA-256 and when it was taken; a pointer that finds no number shows as such. Neither is a check of the research: a snapshot read only says the number is in that file. Yuzuno does not compare your text with the numbers or round anything for you; digits sets how many decimals are displayed, and scale a factor for display only (e.g. 100 for a fraction shown as percentage points, with unit saying so): the value as the file has it is shown beside it. At most ${R.values} numbers read from attachments per desk.`,
+    `Numbers: each value, low and high is a literal, shown as provided by you, or {from, pointer}: a JSON Pointer into one of this section's attachments whose path ends in .json, or {from, row, column} for one whose path ends in .csv or .tsv (a header row, then one row per line): row names 1 to ${R.keyColumns} columns and the text each holds, e.g. {"sport": "alpha", "d": "2"}, every one of which must match, and column is the column the number is in. Cells compare as text as written, without the spaces around them: "2" does not match "2.0". No matching row shows as missing, two or more as ambiguous, never a guess; a cell that is not a number shows as such. Yuzuno reads it from the snapshot taken when you wrote the section and shows it as read from that snapshot, with the snapshot's SHA-256 and when it was taken; a pointer that finds no number shows as such. Neither is a check of the research: a snapshot read only says the number is in that file. Yuzuno does not compare your text with the numbers or round anything for you; digits sets how many decimals are displayed, and scale a factor for display only (e.g. 100 for a fraction shown as percentage points, with unit saying so): the value as the file has it is shown beside it. At most ${R.values} numbers read from attachments per desk.`,
     `Sources: each source may name a snapshot (an attachment of this section); location, revision and sha256 are your description, shown as yours and never read. revision is a commit hash, 7 to 64 lowercase hexadecimal characters (not a branch, tag or other name); sha256 is 64 lowercase hexadecimal characters. A source with a snapshot shows the snapshot's SHA-256 and when it was taken, and whether your sha256 is the same file content; that is file identity, not a result. Yuzuno does not look at the file again later: the snapshot is as of when you wrote the section. A source may instead name a Task research record, task: {taskId, activitySeq} (taskId T-N or a Project task key such as YN-3; any key the task had still names it), one you or another Agent wrote with task_comment research: it is shown as the task keeps it (its type, title, producer and version) and needs no attachment; that is the record's identity, not a check of it. Removing the section leaves the record on its task.`,
     `Definitions: an analysis definition keeps every version you give, each citing a source with a snapshot (with lines when part of a file) or a source naming a Task method record. A version's number names one content: to change a definition, add a new version; Core refuses a version whose text, citation or cited file differs from the same version of the same desk (the element) in this section's previous version; each desk's definitions are its own. Estimates name the definition version they use; rows with the same compare id under two versions show side by side as before and after. Removing old versions is allowed, but the history then shows only what remains.`,
     `Claims: primary is the id of one row of the desk's plots (plots[].rows[].id), the row the claim leads with; not a plot or part id. plots lists plot ids. status (supported, conditional, unsupported, open) and statements are your reading and show as yours; kind criterion is a statistical criterion, interpretation your interpretation, exploratory an exploratory observation. dependsOn names the definition versions a claim rests on; when a newer version exists, the claim shows as affected through that declared dependency only. revisions are your drafts of changed wording for a claim (basis declared, or author when the author confirmed the dependency); Yuzuno shows them for review and never applies them.`,
