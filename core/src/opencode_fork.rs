@@ -28,7 +28,7 @@
 //! cannot be rewound (D-32): their snapshots are in the source's store.
 use super::*;
 use crate::opencode_fork_check as check;
-use crate::opencode_transfer::{self as transfer, ImportAnswer, Payload};
+use crate::opencode_transfer::{self as transfer, Payload, Written};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -320,42 +320,15 @@ impl Workspace {
         let frozen = self.opencode_fork_fixed(row)?;
         self.opencode_fork_reserved(row)?;
         let server = self.opencode_fork_server(row, &frozen, started).await?;
-        let again = "重试会接着核对新 Agent 的 OpenCode，不会写第二次";
-        if let Err(error) = self.opencode_fork_place(&server, &frozen).await {
+        if let Err(error) = transfer::place(&server, &frozen.payload, &frozen.project).await {
             return self.opencode_fork_state(row, "failed", Some(format!("{error:#}"))).await;
         }
-        let listed = server.sessions().await.with_context(|| format!("读不到新 Agent 的 OpenCode 里的会话；{again}"))?;
-        let held = match transfer::holds_only(&listed, &frozen.payload) {
-            Ok(held) => held,
-            Err(error) => return self.opencode_fork_state(row, "failed", Some(format!("{error:#}；没有登记"))).await,
-        };
-        if held {
-            return self.opencode_fork_state(row, "forked", None).await;
+        let (anew, again) = ("可以重新 fork，新的一次会写进它自己的目录", "重试会接着核对新 Agent 的 OpenCode，不会写第二次");
+        match transfer::write_once(&server, &frozen.payload, WATCH, row.state == "uncertain", anew, again).await? {
+            Written::Held => self.opencode_fork_state(row, "forked", None).await,
+            Written::Failed(why) => self.opencode_fork_state(row, "failed", Some(why)).await,
+            Written::Uncertain(why) => self.opencode_fork_state(row, "uncertain", Some(format!("{why}。原 Agent 照常可用"))).await,
         }
-        let anew = "可以重新 fork，新的一次会写进它自己的目录";
-        let before = row.state.clone();
-        match server.import(&frozen.payload, WATCH).await {
-            ImportAnswer::Imported(_) | ImportAnswer::Exists => self.opencode_fork_state(row, "forked", None).await,
-            ImportAnswer::Refused(status) => self.opencode_fork_state(row, "failed",
-                Some(format!("新 Agent 的 OpenCode 拒绝写入这份副本，什么也没有写（{status}）；没有登记，{anew}"))).await,
-            ImportAnswer::Failed(status) => self.opencode_fork_state(row, "failed",
-                Some(format!("新 Agent 的 OpenCode 写入这份副本时出错（{status}）；没有登记，新 Agent 的目录留着，{anew}"))).await,
-            ImportAnswer::Unknown(why) if before == "uncertain" => self.opencode_fork_state(row, "failed",
-                Some(format!("新 Agent 的 OpenCode 又一次没有回答这份副本的写入（{why}），此前它什么也没有；没有登记，新 Agent 的目录留着，{anew}"))).await,
-            ImportAnswer::Unknown(why) => self.opencode_fork_state(row, "uncertain",
-                Some(format!("新 Agent 的 OpenCode 没有确认写入这份副本（{why}）；{again}。原 Agent 照常可用"))).await,
-        }
-    }
-
-    /// The new Agent's OpenCode holds this folder for the source's project:
-    /// its copy is where the source's session is.
-    async fn opencode_fork_place(&self, server: &opencode::Server, frozen: &Frozen) -> Result<()> {
-        let location = server.location(&frozen.payload.directory).await.context("读不到新 Agent 的 OpenCode 认定的目录；没有登记")?;
-        let named = location["directory"].as_str().map(PathBuf::from);
-        let directory = tokio::task::spawn_blocking(move || named.and_then(|d| std::fs::canonicalize(d).ok())).await?;
-        ensure!(directory.as_deref() == Some(Path::new(&frozen.payload.directory)), "新 Agent 的 OpenCode 认定的目录与原 Agent 的不同；没有登记");
-        ensure!(location["project"]["id"] == frozen.project.as_str(), "新 Agent 的 OpenCode 认定的项目与原 Agent 的不同；没有登记");
-        Ok(())
     }
 
     /// The copy as the new Agent's OpenCode holds it, read back whole and
@@ -366,13 +339,7 @@ impl Workspace {
         let frozen = self.opencode_fork_fixed(row)?;
         self.opencode_fork_reserved(row)?;
         let server = self.opencode_fork_server(row, &frozen, started).await?;
-        let unread = "暂时读不到写入新 Agent 的 OpenCode 的副本；重试会再次核对它，不会再写一次";
-        let id = frozen.payload.id();
-        let info = server.session(id).await.context(unread)?;
-        let messages = server.messages(id).await.context(unread)?;
-        let messages = messages.as_array().context(unread)?;
-        let checked = transfer::read_back(&frozen.payload, &frozen.project, &info, messages);
-        match checked {
+        match transfer::read_copy(&server, &frozen.payload, &frozen.project).await? {
             Ok(()) => self.opencode_fork_state(row, "verified", None).await,
             Err(error) => self.opencode_fork_state(row, "failed",
                 Some(format!("{error:#}；没有登记，新 Agent 的目录留着，原 Agent 未改变"))).await,
@@ -486,31 +453,13 @@ impl Workspace {
     /// is asked (Lead 3529): made new, with the attempt it is for.
     fn opencode_fork_reserve(&self, row: &Row) -> Result<()> {
         let folder = self.data_dir.join("opencode").join(&row.target_agent_id);
-        std::fs::create_dir_all(folder.parent().context("没有 OpenCode 的数据目录")?)?;
-        std::fs::create_dir(&folder).context("新 Agent 的目录已经存在；没有 fork")?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))?;
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        use std::io::Write;
-        let mut marker = options.open(folder.join("fork.json"))?;
-        marker.write_all(&serde_json::to_vec(&json!({"requestId": row.request_id, "sourceAgentId": row.source_agent_id,
-            "database": folder.join("opencode.db")}))?)?;
-        marker.sync_all()?;
-        Ok(())
+        transfer::reserve(&folder, "fork.json", &json!({"requestId": row.request_id, "sourceAgentId": row.source_agent_id,
+            "database": folder.join("opencode.db")})).context("没有 fork")
     }
 
     /// The new Agent's folder is still this attempt's, as reserved.
     fn opencode_fork_reserved(&self, row: &Row) -> Result<()> {
-        let marker: Value = read_private(&self.data_dir.join("opencode").join(&row.target_agent_id).join("fork.json"))?;
+        let marker = transfer::reserved(&self.data_dir.join("opencode").join(&row.target_agent_id), "fork.json")?;
         ensure!(marker["requestId"] == row.request_id.as_str() && marker["sourceAgentId"] == row.source_agent_id.as_str(),
             "新 Agent 的目录不是为这次 fork 预留的；没有登记");
         Ok(())

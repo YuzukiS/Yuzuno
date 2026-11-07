@@ -10,9 +10,11 @@
 //! transaction: all of it or nothing. A session it already holds under that
 //! ID is refused (409, `ConflictError`), so the same request sent again
 //! after an answer that never came writes nothing twice.
-use crate::opencode::HttpStatus;
-use anyhow::{ensure, Result};
+use crate::opencode::{HttpStatus, Server};
+use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The message types 2.x keeps in a session (2.2.5
 /// schema/src/session-message.ts `Info`).
@@ -180,6 +182,101 @@ pub fn holds_only(listed: &[Value], payload: &Payload) -> Result<bool> {
             anyhow::bail!("新 Agent 的 OpenCode 里已有不是这次写入的会话（{}）；没有覆盖", ids.join(", "))
         }
     }
+}
+
+/// The new Agent's folder, taken for one attempt alone before anything is
+/// asked (Lead 3529): made new (0700), with `marker` naming the attempt
+/// (0600, on disk). Refused if the folder is there already.
+pub fn reserve(folder: &Path, name: &str, marker: &Value) -> Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(folder.parent().context("没有 OpenCode 的数据目录")?)?;
+    std::fs::create_dir(folder).context("新 Agent 的目录已经存在")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(folder.join(name))?;
+    file.write_all(&serde_json::to_vec(marker)?)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// The marker a folder was reserved with (`reserve`).
+pub fn reserved(folder: &Path, name: &str) -> Result<Value> {
+    let path = folder.join(name);
+    Ok(serde_json::from_slice(&std::fs::read(&path).with_context(|| format!("读不到 {}", path.display()))?)?)
+}
+
+/// The new Agent's OpenCode holds the copy's folder for `project`: its copy
+/// is where the session it comes from was.
+pub async fn place(server: &Server, payload: &Payload, project: &str) -> Result<()> {
+    let location = server.location(&payload.directory).await.context("读不到新 Agent 的 OpenCode 认定的目录；没有登记")?;
+    let named = location["directory"].as_str().map(PathBuf::from);
+    let directory = tokio::task::spawn_blocking(move || named.and_then(|d| std::fs::canonicalize(d).ok())).await?;
+    ensure!(directory.as_deref() == Some(Path::new(&payload.directory)), "新 Agent 的 OpenCode 认定的目录与这份副本的不同；没有登记");
+    ensure!(location["project"]["id"] == project, "新 Agent 的 OpenCode 认定的项目与这份副本的不同；没有登记");
+    Ok(())
+}
+
+/// What writing a copy once came to (rule R5).
+#[derive(Debug)]
+pub enum Written {
+    /// The new OpenCode holds a session under the copy's ID: only a read
+    /// tells which (`read_copy`).
+    Held,
+    /// The attempt fails, written over by nothing: why.
+    Failed(String),
+    /// No answer: why. The same request goes on from here.
+    Uncertain(String),
+}
+
+/// `payload` written once into a new Agent's OpenCode (rule R5): only if it
+/// lists no session at all. One that lists only this very copy, with its
+/// marker, holds it already (an earlier write whose answer was lost);
+/// anything else fails it. The import's answer:
+/// - 200, or 409 for this ID: it holds a session under it;
+/// - any error answer: failed, so that whatever it is for is free to be
+///   asked anew (#736 R1); a session it may have written stays in this
+///   attempt's folder, and a new attempt writes into its own;
+/// - none within `limit`: uncertain. Gone on from there (`again`), its
+///   OpenCode read to hold nothing, none a second time fails it too.
+///
+/// `anew` and `again_said` end what the failed and uncertain ones say.
+/// An error: the new OpenCode could not be read; nothing was asked.
+pub async fn write_once(server: &Server, payload: &Payload, limit: Duration, again: bool, anew: &str, again_said: &str) -> Result<Written> {
+    let listed = server.sessions().await.with_context(|| format!("读不到新 Agent 的 OpenCode 里的会话；{again_said}"))?;
+    match holds_only(&listed, payload) {
+        Ok(true) => return Ok(Written::Held),
+        Ok(false) => {}
+        Err(error) => return Ok(Written::Failed(format!("{error:#}；没有登记"))),
+    }
+    Ok(match server.import(payload, limit).await {
+        ImportAnswer::Imported(_) | ImportAnswer::Exists => Written::Held,
+        ImportAnswer::Refused(status) => Written::Failed(format!("新 Agent 的 OpenCode 拒绝写入这份副本，什么也没有写（{status}）；没有登记，{anew}")),
+        ImportAnswer::Failed(status) => Written::Failed(format!("新 Agent 的 OpenCode 写入这份副本时出错（{status}）；没有登记，新 Agent 的目录留着，{anew}")),
+        ImportAnswer::Unknown(why) if again => Written::Failed(format!(
+            "新 Agent 的 OpenCode 又一次没有回答这份副本的写入（{why}），此前它什么也没有；没有登记，新 Agent 的目录留着，{anew}")),
+        ImportAnswer::Unknown(why) => Written::Uncertain(format!("新 Agent 的 OpenCode 没有确认写入这份副本（{why}）；{again_said}")),
+    })
+}
+
+/// The copy as the new Agent's OpenCode holds it, read back whole and
+/// compared with what was written (rule R6): `Ok(Err(..))` names the first
+/// difference. An outer error: it could not be read, which proves nothing.
+pub async fn read_copy(server: &Server, payload: &Payload, project: &str) -> Result<Result<()>> {
+    let unread = "暂时读不到写入新 Agent 的 OpenCode 的副本；重试会再次核对它，不会再写一次";
+    let info = server.session(payload.id()).await.context(unread)?;
+    let messages = server.messages(payload.id()).await.context(unread)?;
+    let messages = messages.as_array().context(unread)?;
+    Ok(read_back(payload, project, &info, messages))
 }
 
 #[cfg(test)]
