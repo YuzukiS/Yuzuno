@@ -185,6 +185,36 @@ test('every state and stop reason of the merge queue doc has its word, in Englis
   }
 });
 
+// The landing tiers docs/merge-queue.md names (T-37 S2b): each repository
+// card says its landing in words, a later Core's included.
+function landingsOf(text) {
+  const table = text.slice(text.indexOf('## Landing'), text.indexOf('## Pauses'));
+  return [...table.matchAll(/^\| `([a-z-]+)` \|/gm)].map(m => m[1]);
+}
+
+test('every landing the merge queue doc names has its own word, in English and in Chinese', async t => {
+  const read = doc ? landingsOf(doc) : [];
+  if (doc) assert.ok(read.length >= 3, 'the doc landing table was read');
+  else t.diagnostic('docs/merge-queue.md is not in this tree: checked against the landings listed here');
+  const landings = [...new Set(['core-merge', 'github-auto-merge', 'github-merge-queue', ...read])];
+  const cards = landings.map((landing, n) => ({ id: 50 + n, fullName: `owner/landing-${n}`, landing }));
+  const answer = url => {
+    if (url === '/api/collaboration/github_repositories') return { ...linked, repositories: [...linked.repositories, ...cards.map(({ id, fullName }) => ({ id, fullName }))] };
+    const card = cards.find(c => url === `/api/merge-queue/repositories/${c.id}`);
+    return card ? { repositoryId: card.id, enabled: true, landing: card.landing, paused: null, pauses: [], switches: [] } : undefined;
+  };
+  for (const language of ['en', 'zh-Hans']) {
+    const p = mount({ language, answer });
+    try {
+      await opened(p);
+      await until(() => cards.every(c => repoCard(p, c.fullName)?.querySelector('.merge-landing')), 'every repository card says its landing');
+      const said = cards.map(c => repoCard(p, c.fullName).querySelector('.merge-landing').textContent);
+      cards.forEach((c, n) => assert.notEqual(said[n], c.landing, `${language} has a word for the ${c.landing} landing`));
+      assert.equal(new Set(said).size, cards.length, `${language}: each landing has its own word`);
+    } finally { p.close(); }
+  }
+});
+
 test('the pause banner names the reason, the entry and PR that caused it, the red run, and who can unpause', async () => {
   const p = mount();
   try {

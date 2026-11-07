@@ -17,6 +17,10 @@ const WAIT_LIMIT: i64 = 6 * 3600;
 const READ_FAILURES: i64 = 8;
 /// Consecutive merge requests that could not be sent before an entry stops.
 const NOT_SENT_LIMIT: i64 = 5;
+/// The next check of an entry that waits for the user, not for a time: one
+/// that passed every check while the switch is off. Turning the switch on
+/// makes it due (`merge_set_enabled`).
+const UNTIL_SWITCHED_ON: i64 = i64::MAX;
 /// What a switch and a release mean: 2 since Core merges. The dry-run build
 /// (1, no `queueVersion`) wrote the same tables, but there a switch that was
 /// on only let Core check, and `ready` was final.
@@ -118,6 +122,9 @@ fn repository(db: &Connection, id: i64) -> Result<Value> {
     }
     if v.get("paused").is_none() {
         v["paused"] = Value::Null;
+    }
+    if !v["landing"].is_string() {
+        v["landing"] = json!(super::landing::DEFAULT);
     }
     Ok(v)
 }
@@ -770,9 +777,11 @@ impl Store {
                             )
                             .optional()?;
                         let (state, detail, next) = if r["enabled"] != true {
-                            ("ready", format!("Every check held, but the merge queue is off for {}; Core writes nothing to GitHub until the user turns it on.", e["repository"].as_str().unwrap_or("?")), now_epoch + 300)
+                            ("ready", format!("Every check held, but the merge queue is off for {}; Core writes nothing to GitHub, and checks it again once the user turns it on.", e["repository"].as_str().unwrap_or("?")), UNTIL_SWITCHED_ON)
                         } else if !r["paused"].is_null() {
                             ("waiting", format!("Every check held, but the repository's queue is paused ({}).", r["paused"]["reason"].as_str().unwrap_or("?")), now_epoch + 60)
+                        } else if super::landing::Landing::named(&r["landing"]).is_none() {
+                            ("ready", format!("Every check held, but this Core cannot land with '{}', the landing set for {}; it sends nothing.", r["landing"].as_str().unwrap_or("?"), e["repository"].as_str().unwrap_or("?")), now_epoch + 300)
                         } else if let Some((other, other_state)) = busy {
                             let what = if other_state == "merging" { "whose merge is in flight" } else { "whose post-check has not run yet" };
                             ("ready", format!("Every check held; it merges after #{other}, {what}, and a fresh check."), now_epoch + 60)
@@ -787,7 +796,7 @@ impl Store {
                         e["waitingSince"] = Value::Null;
                         if state == "merging" {
                             e["merge"] = json!({"expectedMain":evidence["main"]["before"],"tree":evidence["gate"]["tree"],"gate":evidence["gate"]["kind"],
-                                "head":e["headSha"],"attempts":0,"puts":[],"startedAt":now(),"sha":null,"post":null,"mainCi":null});
+                                "landing":r["landing"],"head":e["headSha"],"attempts":0,"puts":[],"startedAt":now(),"sha":null,"post":null,"mainCi":null});
                         }
                     }
                     Err(Hold::Wait(detail)) => {
@@ -1209,8 +1218,11 @@ impl Store {
         data["updatedAt"] = json!(now());
         save_repository(&tx, repository_id, &data)?;
         if on {
+            // Turning the switch on makes due at once every removal it held up
+            // and every entry still to be checked or merged, a ready one
+            // waiting for the switch included.
             let waiting: Vec<String> = tx
-                .prepare("SELECT data FROM merge_entries WHERE repository_id=?1 AND json_extract(data,'$.batch.cleanup')='pending'")?
+                .prepare("SELECT data FROM merge_entries WHERE repository_id=?1 AND (json_extract(data,'$.batch.cleanup')='pending' OR state IN ('queued','waiting','ready'))")?
                 .query_map([repository_id], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             for raw in waiting {
@@ -1219,6 +1231,25 @@ impl Store {
                 save(&tx, &e)?;
             }
         }
+        let data = repository(&tx, repository_id)?;
+        tx.commit()?;
+        Ok(data)
+    }
+    /// The user's choice of how the repository's entries land; journaled with
+    /// the switch.
+    pub(super) fn merge_set_landing(&self, repository_id: i64, landing: super::landing::Landing) -> Result<Value> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let known: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM github_repositories WHERE id=?1)", [repository_id], |r| r.get(0))?;
+        ensure!(known, "not_found: link the repository to a Project first");
+        let mut data = repository(&tx, repository_id)?;
+        if data["landing"] != landing.name() {
+            let on = data["enabled"] == true;
+            switched(&mut data, on, "user", &format!("Landing set to {}", landing.name()));
+        }
+        data["landing"] = json!(landing.name());
+        data["updatedAt"] = json!(now());
+        save_repository(&tx, repository_id, &data)?;
         let data = repository(&tx, repository_id)?;
         tx.commit()?;
         Ok(data)
