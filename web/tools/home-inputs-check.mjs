@@ -18,6 +18,10 @@
 //    and none over another, turns top to bottom where left to right does
 //    not fit, and selects a node by pointer, touch or keyboard, the segments
 //    of a Segmented following; nothing opens the report;
+//  - (S4) a Figure shows its section's picture with numbered markers on it
+//    and a list that selects them with the segments; Steps walk forward on
+//    a card; a Timeline runs across where each event has room and down on a
+//    phone, never wider than its frame;
 //  - nothing is sent but reads, and nothing is asked of another host.
 // Pattern: YN-7's home-desk-cards-check.mjs.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node --experimental-strip-types tools/home-inputs-check.mjs
@@ -46,12 +50,15 @@ const owner = { agentId: "l", name: "lead-1", state: "active" };
 const node = (type, props, children, visible) => ({ type, props, ...(children ? { children } : {}), ...(visible ? { visible } : {}) });
 const md = (text, visible) => node("Markdown", { text }, undefined, visible);
 let id = 300;
-/** A section as Core keeps it: first accepted by the real contract. */
-const section = (key, title, body) => {
-  const checked = checkBriefSection({ key, kind: "report", title, body });
+/** A section as Core keeps it: first accepted by the real contract; files are its kept images (S4). */
+const section = (key, title, body, files = []) => {
+  const checked = checkBriefSection({ key, kind: "report", title, body, ...(files.length ? { attachments: files.map((f) => ({ name: f.name, path: `/home/me/run/${f.name}` })) } : {}) });
   return { id: id++, key, kind: "report", title, version: 3, owner, updatedAt: at(20), updatedTurnId: "t1",
-    body: checked.body, attachments: [], refs: {}, seen: null, history: false };
+    body: checked.body, attachments: files.map((f) => ({ name: f.name, kind: "image", mime: "image/svg+xml", size: f.svg.length, snapshot: true, mayChange: false, takenAt: at(21), width: 400, height: 260 })),
+    refs: {}, seen: null, history: false };
 };
+// A synthetic drawing of a bike, as the section's kept image (S4).
+const BIKE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 260" width="400" height="260"><rect width="400" height="260" fill="#eef2ea"/><circle cx="100" cy="180" r="60" fill="none" stroke="#445" stroke-width="8"/><circle cx="300" cy="180" r="60" fill="none" stroke="#445" stroke-width="8"/><path d="M100 180 L180 100 L300 180 M180 100 L250 100" stroke="#a54" stroke-width="10" fill="none"/></svg>`;
 const sections = [
   // Wide: a stepper with a slider, a switch, and a block for 6 or more; the page has more.
   section("scones", "Scones for the guests", { root: "body", elements: {
@@ -127,6 +134,34 @@ const sections = [
       { id: "gears", label: "Seven rear gears", shape: "diamond", tone: "accent", detail: "Seven sizes; the derailleur moves the chain between them." },
     ], edges: [{ from: "frame", to: "chain" }, { from: "chain", to: "gears", label: "drives" }] }),
   } }),
+  // Large (S4): the bike's picture with markers; its segments select with them.
+  section("photo", "The bike, part by part", { root: "body", elements: {
+    body: node("BriefBody", { summary: { lead: "lead", visual: "look", size: "large" } }, ["lead", "look"]),
+    lead: md("The frame holds it; the chain drives it."),
+    look: node("Group", {}, ["which", "picture"]),
+    which: node("Segmented", { name: "which", label: "Part", value: "frame", options: [{ value: "frame", label: "Frame" }, { value: "wheel", label: "Rear wheel" }] }),
+    picture: node("Figure", { image: "bike.svg", alt: "A bike from the side", select: "which", hotspots: [
+      { id: "frame", label: "Frame", x: 45, y: 38, detail: "Steel; holds every other part." },
+      { id: "wheel", label: "Rear wheel", x: 75, y: 69, detail: "Seven gears on its hub." },
+    ] }),
+  } }, [{ name: "bike.svg", svg: BIKE_SVG }]),
+  // Small (S4): steps walked on the card.
+  section("oil", "Oiling the chain", { root: "body", elements: {
+    body: node("BriefBody", { summary: { lead: "lead", visual: "how", size: "small" } }, ["lead", "how"]),
+    lead: md("Three steps, five minutes."),
+    how: node("Steps", { mode: "walk", steps: [{ id: "a", title: "Wipe the chain", time: "2 min" }, { id: "b", title: "Oil each link", text: "One drop per link." }, { id: "c", title: "Wipe off the rest" }] }),
+  } }),
+  // Wide (S4): four events, across where they have room.
+  section("service", "Service history", { root: "body", elements: {
+    body: node("BriefBody", { summary: { lead: "lead", visual: "when", size: "wide" } }, ["lead", "when"]),
+    lead: md("Serviced twice; the next one is planned, not booked."),
+    when: node("Timeline", { items: [
+      { id: "a", at: "2026-03-14", title: "Bought", state: "done" },
+      { id: "b", at: "2026-06-02", title: "First service", state: "done", text: "Brakes adjusted." },
+      { id: "c", at: "2026-11-07", title: "Chain replaced", state: "now", text: "Worn past 0.75%." },
+      { id: "d", at: "Spring", title: "Next service", state: "next", text: "Planned, not booked." },
+    ] }),
+  } }),
 ];
 const home = () => ({
   generatedAt: at(0), order: [PROJECT], needsYou: [],
@@ -186,6 +221,7 @@ async function check(run) {
     }
     const detail = path.match(/^\/api\/agents\/(\w)$/);
     if (detail) return route.fulfill({ json: { agent: agents.find((a) => a.id === detail[1]), pending: [], messageReceipts: [], artifacts: [], turns: [] } });
+    if (path === `/api/projects/${PROJECT}/brief/attachments/photo/bike.svg`) return route.fulfill({ body: BIKE_SVG, contentType: "image/svg+xml" });
     const json = {
       "/api/workspace": { workspace: { id: "ws-in" }, agents, projects, runtime: { connected: true }, defaultCwd: "/w" },
       "/api/home": home(),
@@ -360,6 +396,43 @@ async function check(run) {
     await shot(card("bike"), "card-diagram-bike-set");
     await noReport("a Diagram's nodes");
     pass("a node is selected by pointer, touch or keyboard; the Segmented follows; its detail shows; no report opens");
+
+    // ---- (S4) The Figure: its picture loaded, markers on it, the list selecting with the segments.
+    await frame("photo").locator(".brief-figure img").waitFor({ timeout: 10_000 });
+    await page.waitForFunction((sel) => document.querySelector(sel)?.naturalWidth > 0, `#home-section-${PROJECT}-photo .brief-figure img`, { timeout: 10_000 });
+    const pictured = await frame("photo").evaluate((el) => {
+      const picture = el.querySelector(".brief-figure-picture").getBoundingClientRect();
+      const markers = [...el.querySelectorAll(".brief-hotspot")].map((m) => m.getBoundingClientRect());
+      const keys = [...el.querySelectorAll(".brief-figure-key-item")].map((k) => Math.round(k.getBoundingClientRect().height));
+      return { width: Math.round(picture.width), height: Math.round(picture.height), keys,
+        onPicture: markers.every((m) => m.left + m.width / 2 >= picture.left && m.right - m.width / 2 <= picture.right && m.top + m.height / 2 >= picture.top && m.bottom - m.height / 2 <= picture.bottom) };
+    });
+    assert.ok(pictured.onPicture && pictured.keys.every((h) => h >= 40) && Math.abs(pictured.width / pictured.height - 400 / 260) < 0.05, JSON.stringify(pictured));
+    await press(frame("photo").locator(".brief-figure-key-item").nth(1));
+    assert.equal(await frame("photo").locator('[role="radio"][aria-checked="true"]').textContent(), "Rear wheel");
+    assert.match(await frame("photo").locator(".brief-figure-detail").textContent(), /Seven gears/);
+    await press(frame("photo").locator(".brief-hotspot").first());
+    assert.equal(await frame("photo").locator('[role="radio"][aria-checked="true"]').textContent(), "Frame");
+    await shot(card("photo"), "card-figure");
+    // ---- Steps walk forward on the card.
+    await press(frame("oil").locator(".brief-step-move").nth(1));
+    assert.match(await frame("oil").locator(".brief-step-card").textContent(), /Oil each link/);
+    await shot(card("oil"), "card-steps");
+    // ---- The Timeline: across on a wide desktop card, down on a phone; never wider than its frame.
+    const timeline = await frame("service").evaluate((el) => {
+      const line = el.querySelector(".brief-timeline");
+      const body = el.querySelector(".home-card-frame-body");
+      return { layout: line.dataset.layout, width: Math.round(line.clientWidth), sideways: body.scrollWidth > body.clientWidth + 1 };
+    });
+    assert.equal(timeline.layout, timeline.width / 4 >= 104 ? "across" : "down", JSON.stringify(timeline));
+    assert.equal(timeline.layout, run.phone ? "down" : "across", JSON.stringify(timeline));
+    assert.ok(!timeline.sideways, JSON.stringify(timeline));
+    await press(frame("service").locator(".brief-timeline-items button").nth(1));
+    assert.match(await frame("service").textContent(), /Worn past 0\.75%/);
+    await shot(card("service"), "card-timeline");
+    await noReport("a Figure, Steps or a Timeline");
+    pass("a Figure's markers sit on its picture and select with the segments; Steps walk; a Timeline goes across or down by its room; no report opens",
+      { pictured, timeline });
 
     // ---- The keyboard: arrows step the number and move the choice; a focused control shows its ring.
     const field = frame("scones").locator(".brief-number-field");

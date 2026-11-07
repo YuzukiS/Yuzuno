@@ -32,6 +32,9 @@ import {
   type SwitchProps,
   type CalcProps,
   type DiagramProps,
+  type FigureProps,
+  type StepsProps,
+  type TimelineProps,
   researchPath,
   shownRefId,
 } from "./brief-catalog";
@@ -348,6 +351,20 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
           nodes.map((node) => `- ${inline(node.label)}${node.detail ? ` — ${inline(node.detail)}` : ""}`).join("\n"),
           edges.map((edge) => `- ${inline(name.get(edge.from) ?? edge.from)} → ${inline(name.get(edge.to) ?? edge.to)}${edge.label ? ` (${inline(edge.label)})` : ""}`).join("\n")]
           .filter(Boolean);
+      }
+      // A Figure, Steps and a Timeline (YN-16 S4) copy as lists.
+      case "Figure": {
+        const { image, alt, caption, hotspots } = part.props as FigureProps;
+        return [`${w.image}: ${inline(image)} — ${inline(alt)}${caption ? ` (${inline(caption)})` : ""}`,
+          hotspots.map((spot, index) => `${index + 1}. ${inline(spot.label)}${spot.detail ? ` — ${inline(spot.detail)}` : ""}`).join("\n")];
+      }
+      case "Steps": {
+        const { title, steps } = part.props as StepsProps;
+        return [...heading(depth, title), steps.map((step, index) => `${index + 1}. ${inline(step.title)}${step.time ? ` (${inline(step.time)})` : ""}${step.text ? ` — ${inline(step.text)}` : ""}`).join("\n")];
+      }
+      case "Timeline": {
+        const { title, items } = part.props as TimelineProps;
+        return [...heading(depth, title), items.map((item) => `- ${inline(item.at)} · ${inline(item.title)} — ${b.timelineState[item.state ?? "done"]}${item.text ? `: ${inline(item.text)}` : ""}`).join("\n")];
       }
       case "Sources": {
         const { items } = part.props as SourcesProps;

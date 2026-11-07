@@ -60,10 +60,13 @@ const everyComponent = {
     elements: {
       body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources", "desk", "inputs"] },
       // YN-16: inputs, and a block they show only for some values.
-      inputs: { type: "Group", props: { title: "Try it" }, children: ["guests", "vegan", "view", "hint", "amounts", "reset", "flow"] },
+      inputs: { type: "Group", props: { title: "Try it" }, children: ["guests", "vegan", "view", "hint", "amounts", "reset", "flow", "photo", "how", "when"] },
       amounts: { type: "Calc", props: { items: [{ id: "flour", label: "Flour", expr: "250 * guests / 4", unit: "g", digits: 0 }, { id: "oil", label: "Oil", expr: "flour / 10", when: "vegan" }] } },
       reset: { type: "Button", props: { label: "Reset" }, on: { press: { action: "setState", params: { statePath: "/guests", value: 4 } } } },
       flow: { type: "Diagram", props: { select: "step", nodes: [{ id: "mix", label: "Mix" }, { id: "bake", label: "Bake", detail: "220°C, 12 minutes" }], edges: [{ from: "mix", to: "bake" }] } },
+      photo: { type: "Figure", props: { image: "plot.png", alt: "The grid", select: "spot", hotspots: [{ id: "corner", label: "Corner", x: 10, y: 90, detail: "Where it starts." }] } },
+      how: { type: "Steps", props: { title: "How", mode: "walk", steps: [{ id: "a", title: "Mix", time: "2 min" }, { id: "b", title: "Bake", text: "Until golden." }] } },
+      when: { type: "Timeline", props: { items: [{ id: "t1", at: "2026-11-01", title: "Started", state: "done" }, { id: "t2", at: "Week 46", title: "Ship", state: "next", text: "Planned." }] } },
       guests: { type: "NumberInput", props: { name: "guests", label: "Guests", value: 4, min: 1, max: 12, step: 1, unit: "people", control: "both", detail: "Scales every amount" } },
       vegan: { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } },
       view: { type: "Segmented", props: { name: "view", label: "View", value: 2, options: [{ value: 1, label: "One" }, { value: 2, label: "Two" }] } },
@@ -968,7 +971,7 @@ test("YN-16 a summary may name a Group of inputs as its visual, the card's own f
   ]) {
     const found = first(used(group(children)));
     assert.deepEqual([found.code, found.path, found.guide], ["summary", "body.elements.body.props.summary.visual", "brief_guide interactive"], why);
-    assert.match(found.reason, /summary\.visual "box" is a Group, which is a figure only as a Group of inputs: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Diagram, Markdown, Metrics, at least one an input/);
+    assert.match(found.reason, /summary\.visual "box" is a Group, which is a figure only as a Group of inputs: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Diagram, Figure, Steps, Timeline, Markdown, Metrics, at least one an input/);
   }
   const seven = used(group(["guests", "vegan", "note", "m"]));
   Object.assign(seven.body.elements, Object.fromEntries(items(3, (i) => [`x${i}`, { type: "Markdown", props: { text: `${i}` } }])));
@@ -989,7 +992,7 @@ test("YN-16 the guide's interactive part states what the checks check", () => {
   assert.match(part, /only a block inside a Group has one, as the root's own blocks are always shown/);
   assert.match(part, /eq or neq a value of the variable's kind \(for a Segmented, one of its options' values\), or gt, gte, lt or lte a number/);
   assert.match(part, /at most 8 conditions and 3 levels\. Nothing else is read: no \$item, \$index, \$cond, \$bindState or \$computed/);
-  assert.match(part, /name a Group of inputs as the summary's visual: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Diagram, Markdown, Metrics, at least one an input/);
+  assert.match(part, /name a Group of inputs as the summary's visual: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Diagram, Figure, Steps, Timeline, Markdown, Metrics, at least one an input/);
   assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.interactive)));
   assert.match(briefGuide("content"), /\{type, props, children\?, visible\?\} \(visible: see interactive\)/);
   assert.match(briefGuide("content"), /or a Group of inputs the reader sets on the card, see interactive\)/);
@@ -1189,5 +1192,67 @@ test("YN-16 S3 a Diagram may be a summary's visual and part of a Group of inputs
   assert.match(part, /At most 40 nodes and 60 edges/);
   assert.match(part, /select names a variable that then holds the selected node's id \(\"\" while none is\)/);
   assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.flowchart)));
-  assert.match(briefGuide("content"), /^- NumberInput, Switch, Segmented, Calc, Button, Diagram: see interactive\.$/m);
+  assert.match(briefGuide("content"), /^- NumberInput, Switch, Segmented, Calc, Button, Diagram, Figure, Steps, Timeline: see interactive\.$/m);
+});
+
+// YN-16 S4: a Figure over an image of the section, Steps and a Timeline.
+const shot = { attachments: [{ name: "bike.png", path: "/home/me/run/bike.png" }, { name: "notes.txt", path: "/home/me/run/notes.txt" }] };
+const figure = (props = {}) => ({ type: "Figure", props: { image: "bike.png", alt: "A seven-speed bike", hotspots: [{ id: "frame", label: "Frame", x: 40, y: 50 }, { id: "chain", label: "Chain", x: 55, y: 70, detail: "Moves the wheel." }], ...props } });
+
+test("YN-16 S4 a Figure shows an image of the section with its hotspots, and counts as showing it", () => {
+  const put = (props, extra = shot) => ({ ...section("Figure", figure(props).props), ...extra });
+  // Not refused as unused: the Figure shows bike.png; notes.txt is shown by Attachments.
+  const both = put({});
+  both.body.elements.body.children.push("files");
+  both.body.elements.files = { type: "Attachments", props: { items: [{ name: "notes.txt" }] } };
+  assert.ok(checkBriefSection(both));
+  const alone = put({}, { attachments: [shot.attachments[0]] });
+  assert.ok(checkBriefSection(alone));
+  for (const [props, extra, code, path, reason] of [
+    [{ image: "gone.png" }, { attachments: [shot.attachments[0]] }, "missing_attachment", "body.elements.it.props.image", /"gone.png" is not in this section's attachments/],
+    [{ image: "notes.txt" }, { attachments: [shot.attachments[1]] }, "invalid_field", "body.elements.it.props.image", /shows "notes.txt", which is not an image kept with a path/],
+    [{ hotspots: [{ id: "a", label: "A", x: 1, y: 1 }, { id: "a", label: "B", x: 2, y: 2 }] }, { attachments: [shot.attachments[0]] }, "duplicate_id", "body.elements.it.props.hotspots", /hotspot id "a" is used twice/],
+    [{ hotspots: [{ id: "a", label: "A", x: 101, y: 1 }] }, { attachments: [shot.attachments[0]] }, "invalid_field", "body.elements.it.props.hotspots.0.x", /the most is 100/],
+  ]) {
+    const found = first(put(props, extra));
+    assert.deepEqual([found.code, found.path], [code, path], JSON.stringify(props));
+    assert.match(found.reason, reason);
+  }
+  assert.equal(first(put({ hotspots: items(13, (i) => ({ id: `h${i}`, label: `H${i}`, x: i, y: i })) }, { attachments: [shot.attachments[0]] })).code, "too_many");
+  // select: its own variable, or a Segmented's naming every hotspot.
+  const parts = { type: "Segmented", props: { name: "part", value: "frame", options: [{ value: "frame", label: "Frame" }, { value: "chain", label: "Chain" }] } };
+  assert.ok(checkBriefSection({ ...inGroup({ parts, photo: figure({ select: "part" }) }), ...shot, attachments: [shot.attachments[0]] }));
+  const short = first({ ...inGroup({ parts: withProps(parts, { options: [{ value: "frame", label: "Frame" }, { value: "wheel", label: "Wheel" }] }), photo: figure({ select: "part" }) }), attachments: [shot.attachments[0]] });
+  assert.match(short.reason, /Figure "photo" selects into "\/part", whose options do not name "chain"/);
+});
+
+test("YN-16 S4 Steps and a Timeline: unique ids, their limits, and as a summary's visual", () => {
+  const steps = (list, mode) => section("Steps", { ...(mode ? { mode } : {}), steps: list });
+  assert.ok(checkBriefSection(steps([{ id: "a", title: "One" }], "walk")));
+  assert.equal(first(steps([{ id: "a", title: "One" }, { id: "a", title: "Two" }])).code, "duplicate_id");
+  assert.equal(first(steps(items(31, (i) => ({ id: `s${i}`, title: `S${i}` })))).code, "too_many");
+  assert.equal(first(steps([{ id: "a", title: "One", time: "x".repeat(25) }])).code, "too_long");
+  assert.equal(first(steps([{ id: "a", title: "One" }], "carousel")).code, "invalid_field");
+  const timeline = (list) => section("Timeline", { items: list });
+  assert.ok(checkBriefSection(timeline([{ id: "a", at: "2026-11-07T08:00:00Z", title: "A", state: "now" }, { id: "b", at: "Week 46", title: "B", state: "next" }])));
+  assert.equal(first(timeline([{ id: "a", at: "x", title: "A" }, { id: "a", at: "y", title: "B" }])).code, "duplicate_id");
+  assert.equal(first(timeline([{ id: "a", at: "x".repeat(33), title: "A" }])).code, "too_long");
+  assert.equal(first(timeline([{ id: "a", at: "x", title: "A", state: "later" }])).code, "invalid_field");
+  assert.ok(checkBriefSection(BRIEF_EXAMPLES.timeline));
+  for (const visual of ["when", "how"]) {
+    const example = JSON.parse(JSON.stringify(BRIEF_EXAMPLES.timeline));
+    example.body.elements.body.props.summary.visual = visual;
+    assert.ok(checkBriefSection(example), visual);
+  }
+});
+
+test("YN-16 S4 the guide says how a Figure, Steps and a Timeline are written and read", () => {
+  const part = briefGuide("interactive");
+  for (const type of ["Figure", "Steps", "Timeline"]) assert.ok(part.includes(`- ${type} {`), type);
+  assert.match(part, /image names an image attachment of this section \(see attachments\), which the Figure shows, so it needs no Attachments block/);
+  assert.match(part, /x and y, percentages of the image's width and height from its top left corner/);
+  assert.match(part, /mode walk shows one step at a time with Back and Next.*For work and its state \(todo, doing, done, blocked\) use Plan\./);
+  assert.match(part, /next is a plan, not a promise: say so in its text/);
+  assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.timeline)));
+  assert.match(briefGuide("attachments"), /as LineChart\/BarChart\/ScatterChart data\.attachment, or as a Figure's image/);
 });

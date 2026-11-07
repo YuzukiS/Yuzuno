@@ -1758,3 +1758,338 @@ p.brief-preview-frame {
   color: var(--muted);
   font-size: 0.76rem;
 }
+
+/* Figure (YN-16 S4): the section's own picture with numbered markers, and
+ * the list of its parts under it, which the keyboard uses. A marker is a
+ * 28 px disc with a 40 px target. */
+.brief-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+.brief-figure-picture {
+  position: relative;
+  max-width: 100%;
+  margin: 0 auto;
+}
+.brief-figure-picture img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 480px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+.brief-hotspot {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  padding: 0;
+  border: 2px solid var(--paper);
+  border-radius: 50%;
+  background: var(--accent-ink, var(--green));
+  box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
+  color: var(--paper);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.brief-hotspot::before {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+}
+.brief-hotspot[data-selected] {
+  outline: 3px solid var(--focus, var(--green));
+  outline-offset: 1px;
+}
+.brief-figure-missing {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-soft, var(--cream));
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.brief-figure-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.brief-figure-key-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 4px 10px 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.brief-figure-key-item[aria-pressed="true"] {
+  border-color: var(--accent-ink, var(--ink));
+  background: color-mix(in srgb, var(--accent-ink, var(--green)) 12%, var(--paper));
+  font-weight: 600;
+}
+.brief-figure-key-item:focus-visible,
+.brief-timeline-item:is(button):focus-visible,
+.brief-step-dot:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 2px;
+}
+.brief-figure-number {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-ink, var(--green));
+  color: var(--paper);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.brief-figure-detail {
+  min-height: 1.4em;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-soft, var(--cream));
+  font-size: 0.84rem;
+}
+.brief-figure-detail p {
+  margin: 2px 0 0;
+}
+.brief-figure figcaption {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+/* Steps (S4): numbered; in walk mode one card, Back and Next, a dot each. */
+.brief-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.brief-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.brief-steps-list > li,
+.brief-step-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+.brief-step-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+.brief-step-number {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--surface-soft, var(--cream));
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.brief-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.brief-step-body p {
+  margin: 0;
+  color: var(--text-secondary, var(--ink));
+}
+.brief-step-of {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.brief-step-time {
+  color: var(--muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+.brief-step-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.brief-step-move {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 40px;
+  touch-action: manipulation;
+}
+.brief-step-dots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  min-width: 0;
+}
+.brief-step-dot {
+  position: relative;
+  width: 24px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.brief-step-dot::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: var(--line);
+}
+.brief-step-dot[aria-current="step"]::after {
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  background: var(--accent-ink, var(--ink));
+}
+
+/* Timeline (S4): down by default; across where each item has room. */
+.brief-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.brief-timeline-items {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.brief-timeline-items > li {
+  position: relative;
+  padding: 0 0 12px 22px;
+}
+.brief-timeline-items > li::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: 0;
+  left: 6px;
+  width: 2px;
+  background: var(--line);
+}
+.brief-timeline-items > li:last-child::before {
+  display: none;
+}
+.brief-timeline-dot {
+  position: absolute;
+  top: 5px;
+  left: 0;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--green);
+  border-radius: 50%;
+  background: var(--green);
+}
+[data-state="now"] > .brief-timeline-dot {
+  background: var(--paper);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 30%, transparent);
+}
+[data-state="next"] > .brief-timeline-dot {
+  border-style: dashed;
+  border-color: var(--muted);
+  background: var(--paper);
+}
+.brief-timeline-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+button.brief-timeline-item {
+  cursor: pointer;
+}
+button.brief-timeline-item .brief-timeline-title {
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 3px;
+}
+.brief-timeline-at,
+.brief-timeline-state {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+[data-state="next"] .brief-timeline-state {
+  font-style: italic;
+}
+.brief-timeline-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.brief-timeline-text {
+  margin: 4px 0 0;
+  color: var(--text-secondary, var(--ink));
+  font-size: 0.84rem;
+}
+.brief-timeline[data-layout="across"] .brief-timeline-items {
+  flex-direction: row;
+}
+.brief-timeline[data-layout="across"] .brief-timeline-items > li {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 22px 8px 0 0;
+}
+.brief-timeline[data-layout="across"] .brief-timeline-items > li::before {
+  top: 6px;
+  right: 0;
+  bottom: auto;
+  left: 14px;
+  width: auto;
+  height: 2px;
+}
+.brief-timeline[data-layout="across"] .brief-timeline-dot {
+  top: 0;
+}
