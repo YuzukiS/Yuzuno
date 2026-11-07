@@ -30,6 +30,7 @@ import {PointFixOpen} from ${JSON.stringify(path.join(root, "src/point-fix.ts"))
 import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-density.ts"))};
 import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
 import {SummaryCard} from ${JSON.stringify(path.join(root, "src/home/SummaryCard.tsx"))};
+import {ReportOpen} from ${JSON.stringify(path.join(root, "src/home/report/report-open.ts"))};
 const root=createRoot(document.getElementById('root'));
 window.chooseLanguage=(language)=>saveLanguagePreferences({language});
 window.examples=BRIEF_EXAMPLES;
@@ -38,7 +39,11 @@ window.checkBriefSection=checkBriefSection;
 window.renderSection=(section,projectId,extra={},workspaceId='',density)=>{const body=<CardFoldWorkspace.Provider value={workspaceId}><PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider></CardFoldWorkspace.Provider>;flushSync(()=>root.render(density?<BriefDensity.Provider value={density}>{body}</BriefDensity.Provider>:body));};
 window.unmountSection=()=>flushSync(()=>root.render(null));
 // A report as its summary card on Home (T-18), read only: its figure in its frame; on the deck (extra.deck), at its size.
-window.renderCard=(section,projectId,extra={})=>flushSync(()=>root.render(<SummaryCard section={section} projectId={projectId} workspaceId="ws" agents={[]} readOnly={true} onSeen={async()=>{}} {...extra}/>));`,
+// With window.reportOpens an array, the card's way to its report page records each opening (YN-16).
+const opener=()=>window.reportOpens?(projectId,section)=>window.reportOpens.push(section.key):null;
+window.renderCard=(section,projectId,extra={})=>flushSync(()=>root.render(<ReportOpen.Provider value={opener()}><SummaryCard section={section} projectId={projectId} workspaceId="ws" agents={[]} readOnly={true} onSeen={async()=>{}} {...extra}/></ReportOpen.Provider>));
+// A card and, beside it, the same section drawn whole, as a report page beside Home (YN-16): two places.
+window.renderCardAndBody=(section,projectId)=>flushSync(()=>root.render(<ReportOpen.Provider value={opener()}><SummaryCard section={section} projectId={projectId} workspaceId="ws" agents={[]} readOnly={true} onSeen={async()=>{}} deck/><BriefSectionBody section={section} projectId={projectId}/></ReportOpen.Provider>));`,
   );
   const result = await build({
     root,
@@ -855,6 +860,7 @@ test("the contract's examples render without a failed part", async (t) => {
     overview: ["Where we are", "one decision", "Run 12, larger batch", "Validation loss falls 6% once warm-up ends.", "Choose the run 13 split"],
     decision: ["The larger split costs about 6% of training data."],
     form: ["cannot tell a gap under about 5% from noise"],
+    interactive: ["6% of training data", "Validation split", "Current", "Larger", "Training data", "100", "Budget", "GPU-days"],
   };
   const reads = {
     note: [],
@@ -866,6 +872,7 @@ test("the contract's examples render without a failed part", async (t) => {
     overview: [],
     decision: [],
     form: [],
+    interactive: [],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {
@@ -1453,5 +1460,196 @@ test("T-9 switching density keeps the section's state: the same nodes, a table's
   assert.ok(document.querySelector("details.brief-chart-data") === data, "the data table is the same node");
   assert.ok(data.open, "the data table stays open");
   assert.ok(document.activeElement === input, "focus stays where it was");
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-16 S1: inputs, the variables they write and the blocks they show, on a
+// card and on a page. Bodies accepted by the real contract; no Core.
+
+const recipe = (extra = {}) => ({
+  op: "put", key: "scones", kind: "report", title: "Scones",
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "try", size: "wide" } }, children: ["lead", "try", "more"] },
+    lead: { type: "Markdown", props: { text: "Scales with the guests." } },
+    try: { type: "Group", props: {}, children: ["guests", "vegan", "many"] },
+    guests: { type: "NumberInput", props: { name: "guests", label: "Guests", value: 4, min: 1, max: 12, unit: "people", control: "both", detail: "Every amount scales." } },
+    vegan: { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } },
+    many: { type: "Markdown", visible: { $state: "/guests", gte: 6 }, props: { text: "Bake on two trays." } },
+    more: { type: "Group", props: { title: "Method" }, children: ["view", "oil", "side", "top"] },
+    view: { type: "Segmented", props: { name: "view", label: "View", value: "side", options: [{ value: "side", label: "Side" }, { value: "top", label: "Top" }, { value: "cut", label: "Cut" }] } },
+    oil: { type: "Markdown", visible: { $state: "/vegan" }, props: { text: "Use olive oil instead of butter." } },
+    side: { type: "Markdown", visible: { $state: "/view", eq: "side" }, props: { text: "From the side: risen." } },
+    top: { type: "Markdown", visible: { $state: "/view", neq: "side" }, props: { text: "From above: golden." } },
+  } },
+  ...extra,
+});
+const setField = (window, field, value) => {
+  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(field, value);
+  field.dispatchEvent(new window.Event("input", { bubbles: true }));
+};
+const key = (window, target, name) => target.dispatchEvent(new window.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
+
+test("YN-16 inputs set their variables and the blocks that read them follow, requesting nothing", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.renderSection(readSection(page, recipe()), PROJECT);
+  const text = () => document.querySelector(".brief-body").textContent;
+  const field = () => document.querySelector(".brief-number-field");
+  const [minus, plus] = [...document.querySelectorAll(".brief-step")];
+  assert.equal(document.querySelector(".result-part-error"), null, "no part failed");
+  // Starting values: 4 guests, not vegan, the side view; the blocks for other values are not there at all.
+  assert.equal(field().value, "4");
+  assert.equal(field().getAttribute("role"), "spinbutton");
+  assert.equal(field().getAttribute("aria-valuetext"), "4 people");
+  assert.equal(document.querySelector(".brief-number label").textContent, "Guests");
+  assert.equal(minus.getAttribute("aria-label"), "Decrease Guests");
+  assert.ok(/From the side/.test(text()) && !/two trays|olive oil|From above/.test(text()), text());
+  // The stepper and the slider write the same variable; the block for 6 or more shows.
+  plus.click();
+  plus.click();
+  await until(() => field().value === "6", "two steps up");
+  assert.equal(document.querySelector(".brief-slider").value, "6");
+  assert.ok(/Bake on two trays/.test(text()), "shown from 6 guests");
+  setField(window, document.querySelector(".brief-slider"), "2");
+  await until(() => field().value === "2", "the slider sets it");
+  assert.ok(!/two trays/.test(text()), "hidden again under 6");
+  // Keys step and jump; the ends disable their button and nothing passes them.
+  key(window, field(), "ArrowUp");
+  await until(() => field().value === "3", "ArrowUp");
+  key(window, field(), "End");
+  await until(() => field().value === "12", "End");
+  assert.ok(plus.disabled && !minus.disabled, "+ is off at the max");
+  plus.click();
+  assert.equal(field().value, "12");
+  key(window, field(), "Home");
+  await until(() => field().value === "1" && minus.disabled, "Home");
+  // Typed text: a number is stepped into the range when the reader is done; anything else goes back.
+  field().focus();
+  setField(window, field(), "abc");
+  assert.equal(field().value, "abc", "the draft is kept while typing");
+  field().blur();
+  await until(() => field().value === "1", "not a number: the value stays");
+  field().focus();
+  setField(window, field(), "４０");
+  key(window, field(), "Enter");
+  await until(() => field().value === "12", "a full-width number past the max is kept at the max");
+  // The switch: its state, said and drawn; its block shows.
+  const toggle = document.querySelector('[role="switch"]');
+  assert.equal(toggle.getAttribute("aria-checked"), "false");
+  assert.equal(document.querySelector(".brief-switch-state").textContent, "Off");
+  document.querySelector(".brief-switch-label").click();
+  await until(() => toggle.getAttribute("aria-checked") === "true", "its label turns it on");
+  assert.equal(document.querySelector(".brief-switch-state").textContent, "On");
+  assert.ok(/olive oil/.test(text()));
+  // The segments: one choice, arrows move it and the focus, round the ends.
+  const segments = () => [...document.querySelectorAll('[role="radio"]')];
+  assert.deepEqual(segments().map((one) => [one.textContent, one.getAttribute("aria-checked"), one.tabIndex]), [["Side", "true", 0], ["Top", "false", -1], ["Cut", "false", -1]]);
+  segments()[0].focus();
+  key(window, segments()[0], "ArrowLeft");
+  await until(() => segments()[2].getAttribute("aria-checked") === "true", "ArrowLeft wraps to the last");
+  assert.ok(document.activeElement === segments()[2], "focus moves with the choice");
+  assert.ok(/From above/.test(text()) && !/From the side/.test(text()));
+  segments()[1].click();
+  await until(() => segments()[1].getAttribute("aria-checked") === "true", "a click chooses");
+  assert.equal(document.querySelector('[role="radiogroup"]').getAttribute("aria-labelledby"), document.querySelector(".brief-segmented .brief-input-label").id);
+  assert.deepEqual(page.requests, [], "nothing is asked of Core");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 a section's variables start again with each version; two places never share them", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const v3 = readSection(page, recipe());
+  window.renderSection(v3, PROJECT);
+  const plus = () => document.querySelectorAll(".brief-step")[1];
+  plus().click();
+  await until(() => document.querySelector(".brief-number-field").value === "5", "set to 5");
+  window.renderSection({ ...v3 }, PROJECT);
+  assert.equal(document.querySelector(".brief-number-field").value, "5", "the same version keeps the reader's value");
+  window.renderSection({ ...v3, version: 4 }, PROJECT);
+  await until(() => document.querySelector(".brief-number-field").value === "4", "a new version starts from its own value");
+  // The card and the page beside it: the reader sets the card; the page keeps its own.
+  window.renderCardAndBody(readSection(page, recipe()), PROJECT);
+  const fields = () => [...document.querySelectorAll(".brief-number-field")];
+  assert.equal(fields().length, 2);
+  const card = document.querySelector(".home-summary-card");
+  card.querySelectorAll(".brief-step")[1].click();
+  card.querySelectorAll(".brief-step")[1].click();
+  await until(() => fields()[0].value === "6", "the card's value");
+  assert.equal(fields()[1].value, "4", "the page's value is its own");
+  assert.ok(/two trays/.test(card.textContent), "the card shows its own block");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 a card's Group of inputs works on the card, every size; its controls never open the report", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.reportOpens = [];
+  for (const size of ["small", "wide", "large"]) {
+    const put = recipe();
+    put.body.elements.body.props.summary.size = size;
+    window.renderCard(readSection(page, put), PROJECT, { deck: true });
+    const frame = document.querySelector(".home-card-frame.kind-interactive");
+    assert.ok(frame, `${size}: the card draws its Group of inputs`);
+    assert.ok(!frame.closest("[inert]") && !frame.querySelector("[inert]"), `${size}: nothing in it is inert`);
+    assert.ok(document.querySelector(".home-summary-card").classList.contains(`size-${size}`));
+    // Only the summary: the Method group is the page's.
+    assert.ok(!/From the side/.test(frame.textContent), `${size}: only the named figure`);
+    const plus = frame.querySelectorAll(".brief-step")[1];
+    plus.click();
+    plus.click();
+    await until(() => /two trays/.test(frame.textContent), `${size}: the card's block follows its input`);
+    frame.querySelector('[role="switch"]').click();
+    setField(window, frame.querySelector(".brief-slider"), "9");
+    key(window, frame.querySelector(".brief-number-field"), "ArrowUp");
+    await until(() => frame.querySelector(".brief-number-field").value === "10", `${size}: keys work on the card`);
+    window.unmountSection();
+  }
+  assert.deepEqual(window.reportOpens, [], "no control opened the report");
+  // The card's own way there still does, and a card of only its figure and lead has none (the whole report).
+  const put = recipe();
+  window.renderCard(readSection(page, put), PROJECT, { deck: true });
+  document.querySelector(".home-report-open").click();
+  assert.deepEqual(window.reportOpens, ["scones"]);
+  delete put.body.elements.more;
+  for (const id of ["view", "oil", "side", "top"]) delete put.body.elements[id];
+  put.body.elements.body.children = ["lead", "try"];
+  window.renderCard(readSection(page, put), PROJECT, { deck: true });
+  assert.ok(document.querySelector(".home-summary-card.is-whole") && !document.querySelector(".home-report-open"), "the whole report");
+  assert.deepEqual(page.requests, []);
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 inputs speak the interface language; what the Agent wrote stays as written", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.chooseLanguage("zh-Hans");
+  window.renderSection(readSection(page, recipe()), PROJECT);
+  await until(() => document.querySelector(".brief-switch-state")?.textContent === "关", "the switch's state in Chinese");
+  const [minus, plus] = [...document.querySelectorAll(".brief-step")];
+  assert.equal(minus.getAttribute("aria-label"), "减少Guests");
+  assert.equal(plus.getAttribute("aria-label"), "增加Guests");
+  assert.equal(document.querySelector(".brief-number label").textContent, "Guests");
+  assert.equal(document.querySelector(".brief-input small").textContent, "Every amount scales.");
+  window.chooseLanguage("en");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 R1 P3: a NumberInput shows as many decimals as a value it can take, min's and max's included", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const put = recipe();
+  put.body.elements.guests.props = { name: "guests", label: "Guests", value: 1.25, min: 0.25, max: 10 };
+  window.renderSection(readSection(page, put), PROJECT);
+  const field = () => document.querySelector(".brief-number-field");
+  assert.equal(field().value, "1.25");
+  assert.equal(field().getAttribute("aria-valuetext"), "1.25");
+  document.querySelectorAll(".brief-step")[1].click();
+  await until(() => field().value === "2.25", "one step of 1 from 1.25");
   assert.deepEqual(page.errors, []);
 });

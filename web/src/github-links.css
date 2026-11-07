@@ -245,6 +245,42 @@
   display: block;
   margin-top: 4px;
 }
+/* YN-18 S2d: the landing policy, two choices under the switch. Classed like
+   the toggle so they outrank the project form's label and input rules. */
+.merge-queue-switch > .merge-queue-policy {
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.merge-queue-policy legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.merge-queue-policy > .merge-queue-policy-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 4px;
+  cursor: pointer;
+}
+.merge-queue-policy > .merge-queue-policy-option input {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  margin: 3px 0 0;
+  padding: 0;
+  accent-color: var(--green);
+}
+.merge-queue-policy > .merge-queue-policy-option span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.merge-queue-policy:disabled > .merge-queue-policy-option {
+  cursor: default;
+}
 .merge-queue-confirm,
 .merge-queue-paused {
   margin-top: 8px;

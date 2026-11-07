@@ -86,9 +86,12 @@ const button = (w, label) => [...w.document.querySelectorAll("button")].find((b)
 // By value: a choice's note can name another choice ("Return sends").
 const choose = (w, value) => w.document.querySelector(`input[name="input-send-key"][value="${value}"]`).click();
 const checked = (w) => w.document.querySelector('input[name="input-send-key"]:checked')?.value;
-const current = (w) => w.document.querySelector(".settings-current").textContent.trim();
-const status = (w) => w.document.querySelector(".save-status [role=status]")?.textContent.trim() ?? null;
-const alert = (w) => w.document.querySelector(".save-status [role=alert]")?.textContent.trim() ?? null;
+// Settings › Typing & time (YN-8): what is in effect leads with the send
+// key, then where pages open; the sending block says its own save.
+const current = (w) => w.document.querySelector(".settings-current").textContent.trim().split(" · ")[0];
+const block = (w) => w.document.querySelector(".input-send-key") ?? w.document;
+const status = (w) => block(w).querySelector(".save-status [role=status]")?.textContent.trim() ?? null;
+const alert = (w) => block(w).querySelector(".save-status [role=alert]")?.textContent.trim() ?? null;
 // A button's update is drawn in a microtask, after its click returns.
 const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 // The page's objects are its realm's; deepEqual compares prototypes too.
@@ -111,6 +114,7 @@ test("a chosen send key is saved on this device and said so; Restore defaults re
     w.showEditor();
     assert.equal(checked(w), "auto");
     assert.equal(current(w), "Return: Send");
+    assert.equal(w.document.querySelector(".settings-current").textContent.trim(), "Return: Send · Opens inside Yuzuno", "and where pages open");
     assert.equal(status(w), "Using the defaults; nothing is saved on this device yet");
     choose(w, "modEnter");
     await tick();

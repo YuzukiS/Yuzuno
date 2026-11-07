@@ -835,3 +835,10 @@ button.home-card-image-open:focus-visible .brief-image-zoom {
   line-clamp: none;
   overflow: visible;
 }
+/* A figure of inputs (YN-16) works on the card, at every size: its frame grows to hold it whole, as a desk's claim
+   does where it wraps, so no control is ever cut, and the page's flow, not the frame, scrolls. */
+.home-card-frame.kind-interactive > .home-card-frame-body,
+:is(.home-brief, .home-widget-grid) .home-summary-card .home-card-frame.kind-interactive > .home-card-frame-body {
+  height: auto;
+  overflow: visible;
+}

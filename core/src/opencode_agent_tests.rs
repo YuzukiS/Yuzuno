@@ -213,29 +213,44 @@ async fn a_message_never_sent_is_rejected_even_once_settled_as_unknown() {
 /// ends unknown for good; one still waiting in 2.x's inbox (as read before
 /// or after its messages), or 2.x not idle, waits; and so does one the read
 /// may predate, begun before 2.x's answer to it, or with no answer yet
-/// (#699 R2 f4dafc6c).
+/// (#699 R2 f4dafc6c). One asked of an earlier process, or unknown before
+/// Core kept its answer's time, counts as answered before the read began
+/// (#699 P3-a, P3-b, P3-d).
 #[test]
 fn a_whole_read_ends_a_compaction_2x_has_no_record_of_and_one_1193_was_asked_for() {
     let compact = |id: &str, status: &str, attempt: Value| json!({"id": id, "status": status, "items": [], "_opencodeCompact": attempt});
     let mut d = agent("/w");
     d.turns = vec![
         compact("compact_old", "inProgress", json!({"state": "pending", "session": "ses_1", "generation": 1})),
-        compact("compact_lost", "outcomeUnknown", json!({"state": "unknown", "input": "msg_lost", "generation": 1, "answered": 100})),
-        compact("compact_waiting", "inProgress", json!({"state": "pending", "input": "msg_waiting", "generation": 1, "answered": 100})),
-        compact("compact_later", "inProgress", json!({"state": "pending", "input": "msg_later", "generation": 1, "answered": 300})),
-        compact("compact_asking", "inProgress", json!({"state": "pending", "input": "msg_asking", "generation": 1})),
+        compact("compact_lost", "outcomeUnknown", json!({"state": "unknown", "input": "msg_lost", "generation": 1, "askedBy": "srv1", "answered": 100})),
+        compact("compact_waiting", "inProgress", json!({"state": "pending", "input": "msg_waiting", "generation": 1, "askedBy": "srv1", "answered": 100})),
+        compact("compact_later", "inProgress", json!({"state": "pending", "input": "msg_later", "generation": 1, "askedBy": "srv1", "answered": 300})),
+        compact("compact_asking", "inProgress", json!({"state": "pending", "input": "msg_asking", "generation": 1, "askedBy": "srv1"})),
+        compact("compact_crashed", "inProgress", json!({"state": "pending", "input": "msg_crashed", "generation": 0, "askedBy": "srv0"})),
+        compact("compact_unanswered", "outcomeUnknown", json!({"state": "unknown", "input": "msg_unanswered", "generation": 1, "askedBy": "srv1"})),
+        // Asked before Core restarted: the same generation again, a wall-clock `answered` far past this Server's ticks.
+        compact("compact_restarted", "inProgress", json!({"state": "pending", "input": "msg_restarted", "generation": 1,
+            "askedBy": "srv_before", "answered": 1_794_000_000_000u64})),
+        // Asked before Core kept the Server's name at all.
+        compact("compact_unnamed", "inProgress", json!({"state": "pending", "input": "msg_unnamed", "generation": 1, "answered": 1_794_000_000_000u64})),
     ];
     let (first, then) = (json!([{"id": "msg_waiting", "type": "compaction"}]), json!([]));
     let mut busy = d.clone();
-    settle_compactions(&mut busy, &[], [&first, &then], false, 200);
+    settle_compactions(&mut busy, &[], [&first, &then], false, 200, "srv1");
     assert_eq!(busy.turns[1]["_opencodeCompact"]["state"], "unknown", "not idle: a record may still come");
     let mut moved = d.clone();
-    settle_compactions(&mut moved, &[], [&then, &first], true, 200);
+    settle_compactions(&mut moved, &[], [&then, &first], true, 200, "srv1");
     assert_eq!(moved.turns[2]["_opencodeCompact"]["state"], "pending", "in the inbox as read after the messages too");
-    settle_compactions(&mut d, &[], [&first, &then], true, 200);
+    settle_compactions(&mut d, &[], [&first, &then], true, 200, "srv1");
     for (n, why) in [(3, "a read begun before 2.x's answer to it"), (4, "no answer to it yet")] {
         let t = &d.turns[n];
         assert_eq!((&t["status"], &t["_opencodeCompact"]["state"]), (&json!("inProgress"), &json!("pending")), "{why}: {t:#}");
+    }
+    for (n, why) in [(5, "an earlier process's, with no answer kept"), (6, "unknown before Core kept its answer's time"),
+        (7, "asked before Core restarted, in the same generation"), (8, "asked before Core kept its Server's name")] {
+        let t = &d.turns[n];
+        assert_eq!((&t["status"], &t["_opencodeCompact"]["state"]), (&json!("failed"), &json!("absent")),
+            "{why}: answered before this read began, and missing: {t:#}");
     }
     d.turns.truncate(3);
     let (old, lost, waiting) = (&d.turns[0], &d.turns[1], &d.turns[2]);

@@ -151,6 +151,8 @@ pub(super) struct Read {
     pub removed: usize,
     pub kept: usize,
     pub draft: String,
+    /// The session's messages are 2.x's (T-61 slice 5): previewed, not yet confirmed.
+    pub v2: bool,
 }
 
 impl Workspace {
@@ -183,8 +185,12 @@ impl Workspace {
     /// one of its Turns whose message the session holds, and the session of
     /// the project OpenCode holds the Agent's folder for now (Lead 4092). With
     /// files to send back, also unless where OpenCode keeps its snapshots is
-    /// known from how it was started, its `/path` agrees with that, and every
-    /// file comes out known (`opencode_revert_files::plan`).
+    /// known from how it was started, (1.19.3) its `/path` agrees with that,
+    /// and every file comes out known (`opencode_revert_files::plan`). On 2.x
+    /// (T-61 slice 5) the folder and its project are 2.x's `GET /api/location`
+    /// for the Agent's folder, its snapshots under the project's Git top level
+    /// (`targets_v2`), and the Turn's message for a command is the one 2.x
+    /// admitted for it.
     pub(super) async fn opencode_revert_read(self: &Arc<Self>, id: &str, turn: &str) -> Result<Read> {
         // What a send checks, with this Turn among the Turns read; and where it is among all of them.
         let (agent, wanted) = (id.to_owned(), turn.to_owned());
@@ -206,7 +212,7 @@ impl Workspace {
         ensure!(session["revert"].is_null(), "OpenCode 会话里已有一次尚未处理的回退；没有预览回退");
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有预览回退");
         let messages = c.server.messages(&c.session).await.context(unread)?;
-        ensure!(!crate::opencode_v2::is_v2(&messages), "{}；没有预览回退", crate::opencode_v2::NOT_YET);
+        let v2 = crate::opencode_v2::is_v2(&messages);
         let list = messages.as_array().context(unread)?;
         // The same folder however it is written (a link to it, a trailing
         // slash): OpenCode answers with its own resolved one (R3 of #534).
@@ -214,15 +220,31 @@ impl Workspace {
         let cwd = d.agent.cwd.clone();
         let folder = tokio::task::spawn_blocking(move || std::fs::canonicalize(cwd)).await?.context("这个 Agent 的目录无法读取；没有预览回退")?
             .to_str().context("这个 Agent 的目录不是 UTF-8；没有预览回退")?.to_owned();
-        let path = c.server.path().await.context(unread)?;
-        let named = path["directory"].as_str().map(PathBuf::from);
-        let directory = tokio::task::spawn_blocking(move || named.and_then(|d| std::fs::canonicalize(d).ok())).await?;
-        ensure!(directory.as_deref() == Some(Path::new(&folder)), "OpenCode 的工作目录不是这个 Agent 的目录；没有预览回退");
-        let worktree = path["worktree"].as_str().context("OpenCode 没有说它的 worktree；没有预览回退")?.to_owned();
-        let project = c.server.project().await.context(unread)?;
-        let project = project["id"].as_str().context("OpenCode 没有说它的项目；没有预览回退")?.to_owned();
-        ensure!(session["projectID"] == project.as_str(), "OpenCode 会话不属于它现在的项目；没有预览回退");
-        let targets = files::targets(list, turn, &worktree, &folder)?;
+        // The Turn's own message: its ID, or, for a command, the message 2.x admitted for it (T-61 slice 3).
+        let boundary = d.turns[index]["_opencodeCommand"]["native"].as_str().filter(|_| v2).unwrap_or(turn).to_owned();
+        let (targets, project, worktree, path) = if v2 {
+            let location = c.server.location(&folder).await.context(unread)?;
+            let (named, top) = (location["directory"].as_str().map(PathBuf::from), location["project"]["directory"].as_str().map(PathBuf::from));
+            let (directory, toplevel) = tokio::task::spawn_blocking(move || {
+                (named.and_then(|d| std::fs::canonicalize(d).ok()), top.and_then(|t| std::fs::canonicalize(t).ok()))
+            }).await?;
+            ensure!(directory.as_deref() == Some(Path::new(&folder)), "OpenCode 的工作目录不是这个 Agent 的目录；没有预览回退");
+            let project = location["project"]["id"].as_str().context("OpenCode 没有说它的项目；没有预览回退")?.to_owned();
+            ensure!(session["projectID"] == project.as_str(), "OpenCode 会话不属于它现在的项目；没有预览回退");
+            // Snapshots are of the project's Git top level, resolved (2.2.5 core/src/snapshot.ts).
+            let toplevel = toplevel.and_then(|t| t.to_str().map(str::to_owned)).context("OpenCode 没有说这个目录所在的 Git 顶层；没有预览回退")?;
+            (files::targets_v2(list, &boundary, &toplevel, &folder)?, project, toplevel, None)
+        } else {
+            let path = c.server.path().await.context(unread)?;
+            let named = path["directory"].as_str().map(PathBuf::from);
+            let directory = tokio::task::spawn_blocking(move || named.and_then(|d| std::fs::canonicalize(d).ok())).await?;
+            ensure!(directory.as_deref() == Some(Path::new(&folder)), "OpenCode 的工作目录不是这个 Agent 的目录；没有预览回退");
+            let worktree = path["worktree"].as_str().context("OpenCode 没有说它的 worktree；没有预览回退")?.to_owned();
+            let project = c.server.project().await.context(unread)?;
+            let project = project["id"].as_str().context("OpenCode 没有说它的项目；没有预览回退")?.to_owned();
+            ensure!(session["projectID"] == project.as_str(), "OpenCode 会话不属于它现在的项目；没有预览回退");
+            (files::targets(list, turn, &worktree, &folder)?, project, worktree, Some(path))
+        };
         let (entries, root) = if targets.is_empty() {
             (Vec::new(), None)
         } else {
@@ -230,7 +252,10 @@ impl Workspace {
                 .map_err(|why| anyhow!("这次回退会改动文件，而无法事先核对它们会变成什么（{why}）；没有预览回退"))?;
             started.launcher.check()?;
             started.launcher.bound(c.server.pid().context("OpenCode's process has no ID")?)?;
-            started.roots.agrees(&path)?;
+            // 2.x names no data folder (no `/path`): Core set it, and the probe shows 2.x keeps its snapshots there.
+            if let Some(path) = &path {
+                started.roots.agrees(path)?;
+            }
             let store = files::store(&started.roots.data, &project, &worktree)?;
             let at = PathBuf::from(&folder);
             let root = tokio::task::spawn_blocking(move || Root::of(&at)).await??;
@@ -244,9 +269,10 @@ impl Workspace {
             .map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join(""))
             .unwrap_or_default();
         let digest: String = Sha256::digest(serde_json::to_vec(&messages)?).iter().map(|b| format!("{b:02x}")).collect();
-        let from = list.iter().position(|m| m["info"]["id"] == turn).context("OpenCode 会话里没有这一轮的消息；没有预览回退")?;
+        let from = list.iter().position(|m| if v2 { m["id"] == boundary.as_str() } else { m["info"]["id"] == turn })
+            .context("OpenCode 会话里没有这一轮的消息；没有预览回退")?;
         Ok(Read { generation: c.generation, session: c.session.clone(), messages: digest, folder, leaving: list[from..].to_vec(), entries, root,
-            removed: total - kept, kept, draft })
+            removed: total - kept, kept, draft, v2 })
     }
 
     /// Reverts the session as the preview `key` showed it (see the module).
@@ -287,6 +313,8 @@ impl Workspace {
             .context("这个预览已用过或已过期；没有回退")?;
         ensure!(p.at.elapsed() < TTL, "这个预览已过期，请重新预览；没有回退");
         let read = self.opencode_revert_read(id, &p.turn).await?;
+        // 2.x's revert is staged and committed (T-61 slice 6); until then a 2.x revert is only previewed.
+        ensure!(!read.v2, "{}；没有回退", crate::opencode_v2::NOT_YET);
         ensure!(read.generation == p.generation && read.session == p.session, "OpenCode 的连接或会话在预览之后变了；没有回退");
         ensure!(read.messages == p.messages, "OpenCode 会话的消息在预览之后变了；没有回退");
         ensure!(read.entries == p.entries && read.root == p.root, "要送回的文件在预览之后变了；没有回退");

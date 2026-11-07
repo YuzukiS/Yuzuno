@@ -126,6 +126,9 @@ fn repository(db: &Connection, id: i64) -> Result<Value> {
     if !v["landing"].is_string() {
         v["landing"] = json!(super::landing::DEFAULT);
     }
+    if !v["policy"].is_string() {
+        v["policy"] = json!(checks::STRICT);
+    }
     Ok(v)
 }
 fn save_repository(db: &Connection, id: i64, data: &Value) -> Result<()> {
@@ -149,6 +152,18 @@ fn switched(data: &mut Value, on: bool, by: &str, detail: &str) {
     data["switches"] = json!(list);
 }
 
+/// Every completed review round of a PR link (on any task) at `head`, oldest
+/// first (YN-12 item 1): a P0–P2 finding in any of them holds the head back.
+fn rounds_at(db: &Connection, link: &str, head: &str) -> Result<Vec<Value>> {
+    let mut q = db.prepare(
+        "SELECT data FROM pr_reviews WHERE link_id=?1 AND status='completed' AND json_extract(data,'$.headSha')=?2 ORDER BY rowid",
+    )?;
+    let rows = q
+        .query_map(params![link, head], |r| r.get::<_, String>(0))?
+        .map(|r| Ok(serde_json::from_str::<Value>(&r?)?))
+        .collect();
+    rows
+}
 /// The newest completed review of a PR link (on any task), and whether a
 /// round of it is still running.
 fn review(db: &Connection, link: &str) -> Result<(Option<Value>, bool)> {
@@ -247,10 +262,11 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue) ->
     ensure!(linked, "This PR is not linked to the task; link it with github_links first");
     ensure!(
         enabled(db, repository_id)?,
-        "merge_queue_disabled: the merge queue is off for {repository}; only the user can turn it on, through PUT /api/merge-queue/repositories/{{id}} on this Core (a Settings switch comes in T-37 S2b)"
+        "merge_queue_disabled: the merge queue is off for {repository}; only the user can turn it on, in Projects → repositories"
     );
     let (latest, running) = review(db, &link)?;
-    match checks::review(&json!({"headSha":input.head_sha}), latest.as_ref(), running) {
+    let at_head = rounds_at(db, &link, &input.head_sha)?;
+    match checks::review(&json!({"headSha":input.head_sha}), latest.as_ref(), running, &at_head) {
         Ok(_) => {}
         Err(Hold::Wait(detail)) => bail!("review_running: {detail}"),
         Err(Hold::Stop(reason, detail)) => bail!("{reason}: {detail}"),
@@ -319,7 +335,7 @@ fn short(sha: &Value) -> String {
 fn record(e: &Value) -> Value {
     let last = &e["lastEvidence"];
     json!({"entry":e["id"],"repository":e["repository"],"pr":e["number"],"head":e["headSha"],"state":e["state"],
-        "release":e["release"],"review":last["review"],"main":last["main"],"gate":last["gate"],"checkedAt":last["checkedAt"],
+        "release":e["release"],"review":last["review"],"main":last["main"],"gate":last["gate"],"mergeRef":last["mergeRef"],"policy":last["policy"],"checkedAt":last["checkedAt"],
         "batch":e["batch"],"merge":e["merge"],
         "stop":if e["state"] == "stopped" { json!({"reason":e["reason"],"detail":e["detail"]}) } else { Value::Null }})
 }
@@ -344,6 +360,9 @@ fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
     let m = &e["merge"];
     let gate = &e["lastEvidence"]["gate"];
     let body = match (e["state"].as_str(), e["reason"].as_str()) {
+        (Some("merged"), _) if gate["kind"] == "relaxed" => format!(
+            "Merge queue: merged #{n} at {head} as {}, a merge commit pinned to that head, under the relaxed policy. Gate: the PR's own CI green at the head, and Core's own merge of the head into main {} clean (tree {}); CI did not test that merge. Post-check: parents main {} and the head, tree as Core's merge. Core now follows main's push CI on it; red pauses the queue. Entry {id}: merge_get(entryId) has the evidence record.",
+            short(&m["sha"]), short(&m["expectedMain"]), short(&gate["tree"]), short(&m["expectedMain"])),
         (Some("merged"), _) => format!(
             "Merge queue: merged #{n} at {head} as {}, a merge commit pinned to that head. Gate: {} (tree {}), with every CI job on exactly that merge. Post-check: parents main {} and the head, tree as tested. Core now follows main's push CI on it. Entry {id}: merge_get(entryId) has the evidence record.",
             short(&m["sha"]), gate["kind"].as_str().unwrap_or("?"), short(&gate["tree"]), short(&m["expectedMain"])),
@@ -351,6 +370,10 @@ fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
             "Merge queue: main's push CI on {} (#{n}) concluded {}.{} Entry {id}.",
             short(&m["sha"]), m["mainCi"]["conclusion"].as_str().unwrap_or("?"),
             if e["reason"] == "main_red" { " The repository's queue is paused until a lead or the user unpauses it, or CI on a newer main is green." } else { "" }),
+        (_, Some("conflict")) => format!(
+            "Merge queue: #{n} at {head} stopped (conflict): {}. Core merged nothing{}. Next: the task's executor merges the current main into the PR branch, resolves the conflict and pushes; one review round at the new head; then the lead releases the new head (merge_enqueue with its headSha). merge_retry cannot help, since the head changes. Entry {id}.",
+            e["detail"].as_str().unwrap_or(""),
+            if e["batch"].is_object() { " and removes its own batch branch" } else { "" }),
         (_, Some("post_check_failed")) => format!(
             "Merge queue: #{n} at {head} was merged as {}, but the post-check failed: {}. The repository's queue is paused; a person has to look. Entry {id}.",
             short(&m["sha"]), e["detail"].as_str().unwrap_or("")),
@@ -494,6 +517,9 @@ pub(super) enum Journal {
     NotMerging,
     /// The repository's queue is paused: nothing journaled, nothing sent.
     Paused(String),
+    /// The landing policy is no longer the one the merge was checked under:
+    /// nothing journaled, nothing sent; every check runs again (S2d-1 R1).
+    PolicyChanged(String),
 }
 
 /// The main an entry counts main CI from, and since when. A check records its
@@ -531,9 +557,12 @@ pub(super) struct Recorded {
 }
 
 impl Store {
-    pub(super) fn merge_review(&self, link: &str) -> Result<(Option<Value>, bool)> {
+    /// The newest completed round of the PR, whether one is running, and every
+    /// completed round at `head`.
+    pub(super) fn merge_review(&self, link: &str, head: &str) -> Result<(Option<Value>, bool, Vec<Value>)> {
         let db = self.db.read()?;
-        review(&db, link)
+        let (latest, running) = review(&db, link)?;
+        Ok((latest, running, rounds_at(&db, link, head)?))
     }
 
     /// The release's checks before anything is read from GitHub, or the
@@ -776,7 +805,13 @@ impl Store {
                                 |row| Ok((row.get(0)?, row.get(1)?)),
                             )
                             .optional()?;
-                        let (state, detail, next) = if r["enabled"] != true {
+                        // A check counts only under the policy it ran with: one that
+                        // ended after the user changed it is checked again (S2d-1 R1).
+                        let policy = r["policy"].as_str().unwrap_or(checks::STRICT);
+                        let checked = evidence["policy"].as_str().unwrap_or(checks::STRICT);
+                        let (state, detail, next) = if checked != policy {
+                            ("waiting", format!("The landing policy changed to {policy} while this check ran under {checked}; it is checked again under {policy}."), now_epoch)
+                        } else if r["enabled"] != true {
                             ("ready", format!("Every check held, but the merge queue is off for {}; Core writes nothing to GitHub, and checks it again once the user turns it on.", e["repository"].as_str().unwrap_or("?")), UNTIL_SWITCHED_ON)
                         } else if !r["paused"].is_null() {
                             ("waiting", format!("Every check held, but the repository's queue is paused ({}).", r["paused"]["reason"].as_str().unwrap_or("?")), now_epoch + 60)
@@ -796,7 +831,7 @@ impl Store {
                         e["waitingSince"] = Value::Null;
                         if state == "merging" {
                             e["merge"] = json!({"expectedMain":evidence["main"]["before"],"tree":evidence["gate"]["tree"],"gate":evidence["gate"]["kind"],
-                                "landing":r["landing"],"head":e["headSha"],"attempts":0,"puts":[],"startedAt":now(),"sha":null,"post":null,"mainCi":null});
+                                "landing":r["landing"],"policy":evidence["policy"],"head":e["headSha"],"attempts":0,"puts":[],"startedAt":now(),"sha":null,"post":null,"mainCi":null});
                         }
                     }
                     Err(Hold::Wait(detail)) => {
@@ -805,7 +840,12 @@ impl Store {
                         if !repository(&tx, e["repositoryId"].as_i64().unwrap_or(0))?["paused"].is_null() {
                             e["waitingSince"] = Value::Null;
                         }
-                        wait(&mut e, detail, 0, now_epoch)
+                        wait(&mut e, detail, 0, now_epoch);
+                        // A wait for GitHub's merge ref is checked again when its
+                        // grace ends, not later after the backoff (S2c).
+                        if let Some(at) = evidence["mergeRef"]["checkAgainAt"].as_i64().filter(|_| e["state"] == "waiting") {
+                            e["nextCheck"] = json!(e["nextCheck"].as_i64().unwrap_or(at).min(at.max(now_epoch)));
+                        }
                     }
                     Err(Hold::Stop(reason, detail)) => {
                         if reason == "main_red" {
@@ -850,12 +890,19 @@ impl Store {
         if e["attempt"].as_i64() != Some(attempt) || e["state"] != "merging" {
             return Ok(Journal::NotMerging);
         }
-        let paused = repository(&tx, e["repositoryId"].as_i64().unwrap_or(0))?["paused"].clone();
+        let r = repository(&tx, e["repositoryId"].as_i64().unwrap_or(0))?;
+        let paused = r["paused"].clone();
         if !paused.is_null() {
             return Ok(Journal::Paused(format!(
                 "The repository's merge queue is paused ({}) since {}, so the merge request was not sent; the entry waits for the unpause.",
                 paused["reason"].as_str().unwrap_or("paused"),
                 paused["at"].as_str().unwrap_or("?")
+            )));
+        }
+        let (policy, checked) = (r["policy"].as_str().unwrap_or(checks::STRICT), e["merge"]["policy"].as_str().unwrap_or(checks::STRICT));
+        if policy != checked {
+            return Ok(Journal::PolicyChanged(format!(
+                "The landing policy changed to {policy} after this merge was checked under {checked}, so the merge request was not sent; every check runs again under {policy}."
             )));
         }
         e["merge"]["attempts"] = json!(1);
@@ -1250,6 +1297,40 @@ impl Store {
         data["landing"] = json!(landing.name());
         data["updatedAt"] = json!(now());
         save_repository(&tx, repository_id, &data)?;
+        let data = repository(&tx, repository_id)?;
+        tx.commit()?;
+        Ok(data)
+    }
+    /// The user's landing policy for a repository (YN-18 S2d): `strict`, CI on
+    /// the current main through batches, or `relaxed`, the PR's own CI and a
+    /// clean merge with the current main. Journaled with the switch.
+    pub(super) fn merge_set_policy(&self, repository_id: i64, policy: &str) -> Result<Value> {
+        ensure!(
+            matches!(policy, checks::STRICT | checks::RELAXED),
+            "invalid_input: policy is strict or relaxed, not {policy:?}"
+        );
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let known: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM github_repositories WHERE id=?1)", [repository_id], |r| r.get(0))?;
+        ensure!(known, "not_found: link the repository to a Project first");
+        let mut data = repository(&tx, repository_id)?;
+        if data["policy"] != policy {
+            let on = data["enabled"] == true;
+            switched(&mut data, on, "user", &format!("Policy set to {policy}"));
+        }
+        data["policy"] = json!(policy);
+        data["updatedAt"] = json!(now());
+        save_repository(&tx, repository_id, &data)?;
+        // Every entry still to be checked is checked again under the new policy.
+        let waiting: Vec<String> = tx
+            .prepare("SELECT data FROM merge_entries WHERE repository_id=?1 AND state IN ('queued','waiting','ready')")?
+            .query_map([repository_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for raw in waiting {
+            let mut e: Value = serde_json::from_str(&raw)?;
+            e["nextCheck"] = json!(0);
+            save(&tx, &e)?;
+        }
         let data = repository(&tx, repository_id)?;
         tx.commit()?;
         Ok(data)

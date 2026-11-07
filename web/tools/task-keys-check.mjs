@@ -192,7 +192,7 @@ async function projectsWindow(page) {
   await dialog.locator("button", { hasText: "yuzuno-next" }).first().click({ timeout: 10_000 });
   const field = dialog.locator("label", { hasText: "Task key prefix" }).locator("input");
   await field.waitFor({ timeout: 10_000 });
-  return { dialog, field, change: dialog.locator("button", { hasText: /^Change prefix$/ }),
+  return { dialog, field, change: dialog.locator(".settings-savebar:not([hidden]) .primary-button"), // the page's one Save (YN-8)
     note: dialog.locator(".project-note", { hasText: /^Tasks in this project are numbered/ }) };
 }
 
