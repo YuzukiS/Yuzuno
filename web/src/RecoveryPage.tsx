@@ -305,88 +305,98 @@ export function DiagnosticsCopy() {
           <Eye size={14} aria-hidden="true" /> {t.preview(text !== null)}
         </button>
       </header>
-      {state === "reading" && (
-        <p className="diagnostics-note" role="status">
-          {t.gathering}
-        </p>
-      )}
-      {state === "shown" && (
-        <p className="diagnostics-note" role="status">
-          {t.shown}
-        </p>
-      )}
-      {state === "saving" && (
-        <p className="diagnostics-note" role="status">
-          {t.saving(saved)}
-        </p>
-      )}
-      {state === "notSaved" && (
-        <p className="diagnostics-note" role="alert">
-          {t.notSaved(why)}
-        </p>
-      )}
-      {beforeClear && (
-        <p className="diagnostics-note" role="status">
-          {t.beforeClear}
-        </p>
-      )}
-      <DiagnosticsText text={text} state={state} />
-      {text !== null && (
-        <div className="diagnostics-actions">
-          <button type="button" className="secondary-button" onClick={() => void copy()} disabled={state === "reading"}>
-            <Copy size={14} aria-hidden="true" /> {t.copy}
-          </button>
-          <button type="button" className="secondary-button" onClick={download} disabled={state === "reading"}>
-            <Download size={14} aria-hidden="true" /> {t.download}
-          </button>
+      {/* Appearance's cards (YN-8 S6): the text once previewed, then
+          clearing the record, which can't be undone, on its own card. */}
+      {(state !== "idle" || text !== null) && (
+        <div className="settings-group appearance-group">
+          <div className="appearance-field diagnostics-body">
+            {state === "reading" && (
+              <p className="diagnostics-note" role="status">
+                {t.gathering}
+              </p>
+            )}
+            {state === "shown" && (
+              <p className="diagnostics-note" role="status">
+                {t.shown}
+              </p>
+            )}
+            {state === "saving" && (
+              <p className="diagnostics-note" role="status">
+                {t.saving(saved)}
+              </p>
+            )}
+            {state === "notSaved" && (
+              <p className="diagnostics-note" role="alert">
+                {t.notSaved(why)}
+              </p>
+            )}
+            {beforeClear && (
+              <p className="diagnostics-note" role="status">
+                {t.beforeClear}
+              </p>
+            )}
+            <DiagnosticsText text={text} state={state} />
+            {text !== null && (
+              <div className="diagnostics-actions">
+                <button type="button" className="secondary-button" onClick={() => void copy()} disabled={state === "reading"}>
+                  <Copy size={14} aria-hidden="true" /> {t.copy}
+                </button>
+                <button type="button" className="secondary-button" onClick={download} disabled={state === "reading"}>
+                  <Download size={14} aria-hidden="true" /> {t.download}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
-      <div className="diagnostics-clear">
-        <p className="diagnostics-note">{t.record(problem, errors)}</p>
-        <button ref={clearButton} type="button" className="secondary-button" onClick={() => setConfirming(true)} disabled={!!problem || errors === 0 || state === "reading"}>
-          <Trash2 size={14} aria-hidden="true" /> {t.clear}
-        </button>
-        {confirming && (
-          <div className="reveal" ref={revealBox}>
-            <div className="settings-confirm" role="group" aria-label={t.clearLabel} ref={confirmBox} tabIndex={-1}>
-              <p>{t.clearAsk(errors)}</p>
-              <span className="settings-confirm-actions">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={state === "reading"}
-                  onClick={() => {
-                    setConfirming(false);
-                    clear();
-                    setClears((n) => n + 1);
-                  }}
-                >
-                  {t.clearConfirm}
-                </button>
-                <button
-                  type="button"
-                  className="quiet-button"
-                  onClick={() => {
-                    setConfirming(false);
-                    clearButton.current?.focus();
-                  }}
-                >
-                  {t.keep}
-                </button>
-              </span>
+      <div className="settings-group appearance-group">
+        <div className="appearance-field diagnostics-clear">
+          <p className="diagnostics-note">{t.record(problem, errors)}</p>
+          <button ref={clearButton} type="button" className="secondary-button" onClick={() => setConfirming(true)} disabled={!!problem || errors === 0 || state === "reading"}>
+            <Trash2 size={14} aria-hidden="true" /> {t.clear}
+          </button>
+          {confirming && (
+            <div className="reveal" ref={revealBox}>
+              <div className="settings-confirm" role="group" aria-label={t.clearLabel} ref={confirmBox} tabIndex={-1}>
+                <p>{t.clearAsk(errors)}</p>
+                <span className="settings-confirm-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={state === "reading"}
+                    onClick={() => {
+                      setConfirming(false);
+                      clear();
+                      setClears((n) => n + 1);
+                    }}
+                  >
+                    {t.clearConfirm}
+                  </button>
+                  <button
+                    type="button"
+                    className="quiet-button"
+                    onClick={() => {
+                      setConfirming(false);
+                      clearButton.current?.focus();
+                    }}
+                  >
+                    {t.keep}
+                  </button>
+                </span>
+              </div>
             </div>
-          </div>
-        )}
-        {cleared && "cleared" in cleared && (
-          <p className="diagnostics-note" role="status" ref={result} tabIndex={-1}>
-            {t.cleared(cleared.cleared)}
-          </p>
-        )}
-        {cleared && "notCleared" in cleared && (
-          <p className="diagnostics-note" role="alert" ref={result} tabIndex={-1}>
-            {t.notCleared(cleared.notCleared)}
-          </p>
-        )}
+          )}
+          {cleared && "cleared" in cleared && (
+            <p className="diagnostics-note" role="status" ref={result} tabIndex={-1}>
+              {t.cleared(cleared.cleared)}
+            </p>
+          )}
+          {cleared && "notCleared" in cleared && (
+            <p className="diagnostics-note" role="alert" ref={result} tabIndex={-1}>
+              {t.notCleared(cleared.notCleared)}
+            </p>
+          )}
+        </div>
       </div>
     </section>
   );

@@ -208,7 +208,7 @@ try {
   await box.getByRole("button", { name: "清除已记录的错误" }).click();
   const cleared = await box.locator(".diagnostics-clear [role=status]").textContent();
   assert.equal(cleared, "已从此浏览器为此站点清除 1 条已记录的错误。");
-  assert.equal(await box.locator("#settings-diagnostics > [role=status]").last().textContent(), "此文本是在清除已记录的错误之前收集的。重新预览可查看当前的记录。");
+  assert.equal(await box.locator("#settings-diagnostics .diagnostics-body > [role=status]").last().textContent(), "此文本是在清除已记录的错误之前收集的。重新预览可查看当前的记录。");
   await page.screenshot({ path: join(output, "diagnostics-zh.png") });
   check("clearing the recorded errors refused, then done: both said in Chinese", { refused, cleared });
 

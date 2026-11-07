@@ -157,3 +157,11 @@ dl.runtime-group {
   align-items: center;
   gap: 4px 10px;
 }
+/* In Appearance's card (YN-8 S6): a block per source; a machine's facts
+   are a box of the list's colour inside its block. */
+.runtime-section .runtime-group.appearance-field > h4:first-child {
+  margin: 0;
+}
+.runtime-groups .runtime-machine {
+  background: var(--paper);
+}

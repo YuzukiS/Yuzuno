@@ -24,3 +24,17 @@
   .draft-export-rows li { grid-template-columns: minmax(0, 1fr); }
   .draft-export-rows button { grid-column: 1; grid-row: auto; justify-self: start; }
 }
+/* In Appearance's card (YN-8 S6): the drafts are one list, like the
+   Projects' and Machines' lists, and a draft shown whole is the next block. */
+.draft-export-block { display: grid; gap: 10px; }
+.draft-export-block .draft-export-rows {
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  overflow: hidden;
+}
+.draft-export-block .draft-export-rows:empty { display: none; }
+.draft-export-block .draft-export-rows li { border: 0; border-radius: 0; padding: 9px 12px; }
+.draft-export-block .draft-export-rows li + li { border-top: 1px solid var(--line); }
+.draft-export-block:empty { display: none; }

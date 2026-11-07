@@ -197,7 +197,7 @@ export function AboutSection({
           </span>
         )}
       </header>
-      <div className="settings-group">
+      <div className="settings-group appearance-group">
         <div className="settings-row" role="group" aria-label={t.version}>
           <span className="settings-row-main">
             <span className="settings-row-title">{t.version}</span>
