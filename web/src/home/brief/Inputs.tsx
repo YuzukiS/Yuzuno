@@ -62,7 +62,8 @@ export function BriefNumberInput(props: NumberInputProps) {
   const language = useLanguage();
   const id = useId();
   const [value, set, now] = useVariable(name, props.value, isNumber);
-  const digits = props.digits ?? decimalsOf(step);
+  // As many decimals as a value it can take has: the step's, min's or max's (stepped() keeps them).
+  const digits = props.digits ?? Math.max(decimalsOf(step), decimalsOf(min), decimalsOf(max));
   const format = useMemo(
     () => new Intl.NumberFormat(langTag(language), { minimumFractionDigits: digits, maximumFractionDigits: digits, useGrouping: false }),
     [language, digits],

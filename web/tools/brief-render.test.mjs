@@ -1636,3 +1636,18 @@ test("YN-16 inputs speak the interface language; what the Agent wrote stays as w
   window.chooseLanguage("en");
   assert.deepEqual(page.errors, []);
 });
+
+test("YN-16 R1 P3: a NumberInput shows as many decimals as a value it can take, min's and max's included", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const put = recipe();
+  put.body.elements.guests.props = { name: "guests", label: "Guests", value: 1.25, min: 0.25, max: 10 };
+  window.renderSection(readSection(page, put), PROJECT);
+  const field = () => document.querySelector(".brief-number-field");
+  assert.equal(field().value, "1.25");
+  assert.equal(field().getAttribute("aria-valuetext"), "1.25");
+  document.querySelectorAll(".brief-step")[1].click();
+  await until(() => field().value === "2.25", "one step of 1 from 1.25");
+  assert.deepEqual(page.errors, []);
+});
