@@ -99,7 +99,8 @@ function mount(handler) {
     const json = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
     calls.push({ url, init, body: json ?? init.body });
     const override = await handler?.(url, init, json);
-    if (override === "network") throw new TypeError("Failed to fetch");
+    // The page's own TypeError, as a browser's fetch rejects with it.
+    if (override === "network") throw new window.TypeError("Failed to fetch");
     if (override instanceof Error)
       return {
         ok: false,
