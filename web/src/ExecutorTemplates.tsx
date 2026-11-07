@@ -799,13 +799,13 @@ function TemplatePage({ d, t, language, view, locked, machines, savedMachine, ed
             </label>
             {d.harness === "codex" && (
               <label className="settings-row">
-                <span className="settings-row-title">{t.effort}</span>
+                <span className="settings-row-main"><span className="settings-row-title">{t.effort}</span></span>
                 <input className="settings-input" aria-label={t.effort} value={d.reasoningEffort} placeholder={t.inheritEffort}
                   disabled={locked || !d.model.trim()} onChange={e => edit({ reasoningEffort: e.target.value })} />
               </label>
             )}
             <label className="settings-row">
-              <span className="settings-row-title">{t.permission}</span>
+              <span className="settings-row-main"><span className="settings-row-title">{t.permission}</span></span>
               <select className="settings-select" aria-label={t.permission} value={d.permission}
                 onChange={e => edit({ permission: e.target.value })}>
                 <option value="">{t.inheritPermission}</option>
