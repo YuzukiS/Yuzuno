@@ -177,7 +177,9 @@ impl Workspace {
         let info = c.server.session(&c.session).await.context(unread)?;
         ensure!(info["revert"].is_null(), "OpenCode 会话里有一次尚未处理的回退；没有 fork");
         ensure!(info["parentID"].is_null() && info["fork"].is_null(), "OpenCode 会话是另一个会话的子会话或分叉；没有 fork");
-        ensure!(info["metadata"].is_null() || info["metadata"] == json!({}), "OpenCode 会话带有别处写的 metadata，fork 无法照样带到新会话；没有 fork");
+        // Core's own marker (a fork's or an import's, T-61 slices 7 and 8) is replaced by the copy's; anything else can't be carried.
+        let own = info["metadata"].is_null() || info["metadata"].as_object().is_some_and(|m| m.keys().all(|k| k == "yuzuno"));
+        ensure!(own, "OpenCode 会话带有别处写的 metadata，fork 无法照样带到新会话；没有 fork");
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有 fork");
         let listed = c.server.messages(&c.session).await.context(unread)?;
         let list = listed.as_array().context(unread)?.clone();

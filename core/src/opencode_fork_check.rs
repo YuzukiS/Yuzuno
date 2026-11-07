@@ -188,7 +188,9 @@ pub(crate) fn copy(turns: &[Value], session: &str, from: &Value, images: &mut im
             let value = match name.as_str() {
                 "id" | "status" | "error" | "notice" | "_opencodeConfirmed" | "_opencodeCommand" | "_opencodeLastInput"
                 | "_opencodeFollowed" | "_opencodeAnswers" | "_opencodeShells" | "_opencodeSessionError" | "_yuzunoStartedAt"
-                | "_yuzunoCompletedAt" | "_yuzunoDurationMs" | "_yuzunoCompactionStartedAt" => value.clone(),
+                | "_yuzunoCompletedAt" | "_yuzunoDurationMs" | "_yuzunoCompactionStartedAt"
+                // Imported (T-61 slice 8): a fork of it keeps saying so, and Rewind refuses it in the copy too (D-37).
+                | "_yuzunoImported" => value.clone(),
                 // A copy of a copy is marked as the source's, below.
                 "_yuzunoCopiedFrom" => continue,
                 "items" => {

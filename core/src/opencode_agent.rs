@@ -2986,6 +2986,10 @@ pub(crate) use revert::expire_previews as expire_revert_previews;
 mod fork;
 pub(crate) use fork::{migrate as fork_migrate, router as fork_router};
 
+#[path = "opencode_import.rs"]
+mod import;
+pub(crate) use import::{migrate as import_migrate, router as import_router};
+
 #[cfg(test)]
 #[path = "opencode_agent_tests.rs"]
 mod tests;
