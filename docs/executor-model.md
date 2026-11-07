@@ -305,10 +305,10 @@ dispatchId). The mail says where to read them; it doesn't hold them.
   tabs, but no other control characters; a save with one is refused at its
   line and column. The Project's leads write it
   ([below](#a-lead-writes-it)); you read and change it in the Project's
-  settings, under **Handover**. Each save is a new version, kept with who
-  wrote it and why, and a save against a document that changed meanwhile is
-  refused. A Project's document goes with it when the Project is deleted. An
-  archived Project's document can't change.
+  settings, under **Handover**, which shows who changed it last. A save
+  against a document that changed meanwhile is refused. A Project's document
+  goes with it when the Project is deleted. An archived Project's document
+  can't change.
 - **Core's summary of the task so far** (`contextSummary`): at most 4 KiB,
   written by Core from what it holds, in this order:
   - the latest result;
@@ -327,30 +327,30 @@ A lead of the Project writes the handover document directly: no one
 approves it, and nothing about it waits on Home.
 
 - **Reading.** Every member of the Project, its executors too, reads the
-  document with `handover_get`; its answer's `canWrite` says whether the
-  caller may write it: a lead of the Project, while the Project is not
-  archived.
+  document with `handover_get`. Its answer has the document, its `version`
+  (an internal revision, for the next write), who changed it last, when and
+  with what note (`lastModified`), and `canWrite`: whether the caller may
+  write it, as a lead of the Project while the Project is not archived.
 - **Writing.** A lead writes a whole new document with `handover_update`,
-  against the version it read, and says why (`reason`, required, up to
-  1,000 bytes). It is saved at once as a new version, with the lead's name
-  and reason, and every executor dispatched from then on gets it. The same
-  rules apply as for your save: 32 KiB of text, and a write on an older
-  version is refused with the current one named. A retry with the same
-  `requestId` answers the same version; another payload under it is
+  against the `version` it read, with an optional `note` of what changed (up
+  to 200 characters; `reason`, its older name, is still accepted). It is
+  saved at once, and every executor dispatched from then on gets it. The
+  same rules apply as for your save: 32 KiB of text, and a write against an
+  older revision is refused, naming the current one. A retry with the same
+  `requestId` answers as the first write did; another payload under it is
   refused. An executor and any other member are refused with `not_lead`.
-- **What you do.** In the Project's settings, under **Handover**, each
-  version says who wrote it (a lead's name, or You), when and why. **Show
-  version N** reads a past one, and **Restore version N** saves its text
-  again as a new version, "Restored version N"; or edit it and save your
-  own. A lead's next write is checked against your version, as yours is
-  against its.
+- **What you see.** In the Project's settings, under **Handover**: the
+  document, and one line saying who changed it last (a lead's name, or
+  you), when, and its note. You can change the document there too, with
+  an optional note. A lead's next write is checked against your save, as
+  yours is against its. No history of earlier versions is shown; Core keeps
+  each save, but nothing lists or restores them.
 - **Proposals from before.** A lead used to propose a version for you to
   approve on Home (`handover_propose`). That tool is gone: a call to it is
   refused, naming `handover_update`. When this Core first opens a Workspace,
   a proposal still waiting is marked superseded, its text kept, and its lead,
   if open, gets one mail with that text, to write it with `handover_update`
-  if it is still needed. A version a lead proposed and you approved before
-  still says so in the history.
+  if it is still needed.
 
 A dispatch's materials are at most 128 KiB, counting only what the dispatcher
 can shorten: the task's own materials and the dispatch's. The template, the

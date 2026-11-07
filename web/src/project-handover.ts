@@ -1,41 +1,41 @@
 import { api } from "./api";
 
-/** One saved version of a Project's handover document (`/api/projects/{id}/handover`, T-34): written by
- * the user ("user") or a lead of the Project (YN-2 S3); `approvedBy` only on a lead's proposal from before. */
-export type HandoverVersion = {
-  version: number;
-  writtenBy: { id: string; name: string };
-  approvedBy?: string | null;
-  reason?: string | null;
+/** Who changed a Project's handover document last: the user ("user", named You) or a lead of the Project (YN-2 S3). */
+export type HandoverModified = {
+  by: { id: string; name: string };
   at: string;
-  bytes: number;
-  /** Only when one past version is read. */
-  markdown?: string;
+  note?: string | null;
 };
-/** The document as Core keeps it: its latest version, and who wrote each. */
+/** The document as Core keeps it (`/api/projects/{id}/handover`, T-34). `version` is its internal revision,
+ * which a save is checked against; it is never shown. No history is listed (YN-2 S3). */
 export type Handover = {
   projectId: string;
   version: number;
   markdown: string;
-  history: HandoverVersion[];
+  lastModified: HandoverModified | null;
   limit: number;
 };
 
-/** The document as this client reads it: a list, even from an answer without one. */
+const modifiedOf = (value: unknown): HandoverModified | null => {
+  const m = value as Partial<HandoverModified> | null | undefined;
+  return m && m.by && typeof m.by.name === "string" && typeof m.at === "string"
+    ? { by: { id: String(m.by.id ?? ""), name: m.by.name }, at: m.at, note: typeof m.note === "string" ? m.note : null }
+    : null;
+};
+
+/** The document as this client reads it, even from an answer without some of it. */
 export const handoverView = (projectId: string, value: Partial<Handover>): Handover => ({
   projectId,
   version: typeof value.version === "number" ? value.version : 0,
   markdown: typeof value.markdown === "string" ? value.markdown : "",
-  history: Array.isArray(value.history) ? value.history : [],
+  lastModified: modifiedOf(value.lastModified),
   limit: typeof value.limit === "number" ? value.limit : 32 * 1024,
 });
 
 export const readHandover = (projectId: string, signal?: AbortSignal) =>
   api<Partial<Handover>>(`/projects/${encodeURIComponent(projectId)}/handover`, { signal }).then(value => handoverView(projectId, value));
-export const readHandoverVersion = (projectId: string, version: number) =>
-  api<{ projectId: string; past: HandoverVersion }>(`/projects/${encodeURIComponent(projectId)}/handover?version=${version}`);
-/** A new version, checked against the version it was read at. */
-export const saveHandover = (projectId: string, expectedVersion: number, markdown: string, reason?: string) =>
+/** A save, checked against the revision it was read at, with an optional note. */
+export const saveHandover = (projectId: string, expectedVersion: number, markdown: string, note?: string) =>
   api<Partial<Handover>>(`/projects/${encodeURIComponent(projectId)}/handover`, {
-    method: "PUT", body: JSON.stringify({ expectedVersion, markdown, ...(reason?.trim() ? { reason: reason.trim() } : {}) }),
+    method: "PUT", body: JSON.stringify({ expectedVersion, markdown, ...(note?.trim() ? { note: note.trim() } : {}) }),
   }).then(value => handoverView(projectId, value));
