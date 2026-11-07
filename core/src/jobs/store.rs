@@ -914,7 +914,7 @@ impl Store {
                 if candidate.exclusive && state.active > 0 {
                     break;
                 }
-                let Some(job) = self.tried(&tx, candidate, host.as_ref(), disk)? else {
+                let Some(job) = self.tried(&tx, candidate, host.as_ref(), disk, false)? else {
                     continue;
                 };
                 let need: Resources = serde_json::from_value(job["reservation"].clone())?;
@@ -1159,10 +1159,17 @@ impl Store {
     /// machine, its Agent is open and not being released, and (a service's
     /// automatic retry) it may still start. A Job it does not try is rejected,
     /// held or left for the next round there, and is never a head.
-    fn tried(&self, tx: &Connection, candidate: &super::queue::Queued, host: Option<&Value>, disk: Option<&[super::DiskCheck]>) -> Result<Option<Value>> {
+    ///
+    /// With `unread_starts`, a Job with no free-space verdict this round (one
+    /// queued after the round's reads) is tried as if it had one that lets it
+    /// start: `cpu_waiting` holds raises one tick too long for such a Job
+    /// rather than miss one that fits (YN-6 S1, #676 R1).
+    fn tried(&self, tx: &Connection, candidate: &super::queue::Queued, host: Option<&Value>, disk: Option<&[super::DiskCheck]>, unread_starts: bool) -> Result<Option<Value>> {
         if let Some(disk) = disk {
-            if !matches!(disk.iter().find(|d| d.job_id == candidate.id).map(|d| &d.verdict), Some(super::disk::Verdict::Start)) {
-                return Ok(None);
+            match disk.iter().find(|d| d.job_id == candidate.id).map(|d| &d.verdict) {
+                Some(super::disk::Verdict::Start) => {}
+                None if unread_starts => {}
+                _ => return Ok(None),
             }
         }
         let job = get(tx, &candidate.id)?;
@@ -1183,8 +1190,9 @@ impl Store {
     /// turn counts. Read in the admission transaction after what it reserved,
     /// with the scan's own checks in the scan's order (`own_turn` is the
     /// former head that goes first, outside any head's room), changing
-    /// nothing. Not one: a Job the scan does not try, one behind an exclusive
-    /// Job or behind a Job short of host memory, or one waiting for a slot or
+    /// nothing; a Job queued after the round's free-space reads is read as if
+    /// its disk let it start. Not one: a Job the scan does not try, one behind
+    /// an exclusive Job or behind a Job short of host memory, or one waiting for a slot or
     /// a lowered budget, for RAM or swap (of what is free, or of what a
     /// blocked head leaves), for host memory or for a GPU. In admission order.
     #[allow(clippy::too_many_arguments)]
@@ -1216,7 +1224,7 @@ impl Store {
             if except == Some(candidate.id.as_str()) {
                 continue;
             }
-            let Some(job) = self.tried(tx, candidate, host, disk)? else {
+            let Some(job) = self.tried(tx, candidate, host, disk, true)? else {
                 continue;
             };
             // Rejected by the scan this round: no longer queued.

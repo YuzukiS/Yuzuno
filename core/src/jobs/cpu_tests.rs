@@ -380,3 +380,28 @@ fn jobs_that_all_fit_start_at_their_minimum_but_the_last() {
     // The last: 32000 less the two before it (2100 each) and its collector.
     assert_eq!(grants, [json!(2000), json!(2000), json!(16000)], "a burst stays within the budget");
 }
+
+#[test]
+fn a_job_queued_after_the_disk_reads_holds_raises_in_that_tick() {
+    let (_dir, s) = setup();
+    queue(&s, "build", range());
+    let next = queue(&s, "next", json!({"cpuMillis":2000,"memoryMiB":1024,"swapMiB":0}));
+    let build = start(&s);
+    assert_eq!(build["cpuGrantedAtStart"], 2000);
+    s.request_job_cancel(None, id(&next)).unwrap();
+    // The tick read free space for the Job queued then, which waits for disk
+    // space; this one, which fits, was queued after that read.
+    let low = queue(&s, "low disk", range());
+    let late = queue(&s, "late", json!({"cpuMillis":2000,"memoryMiB":1024,"swapMiB":0}));
+    let wait = || disk::Verdict::Wait("Waiting for disk space: test reason".into());
+    let verdicts = [DiskCheck { job_id: id(&low).into(), verdict: wait() }];
+    let (none, _, raises) = s.reserve_next(Some(30000), None, Some(&verdicts)).unwrap();
+    assert!(none.is_none(), "a Job not read this round waits for the next, as before");
+    assert!(raises.is_empty(), "a Job queued after the disk reads, which fits, holds raises in that tick: {raises:?}");
+    // The next round reads it, and it starts.
+    let verdicts = [
+        DiskCheck { job_id: id(&low).into(), verdict: wait() },
+        DiskCheck { job_id: id(&late).into(), verdict: disk::Verdict::Start },
+    ];
+    assert_eq!(s.reserve_next_job(Some(30000), None, Some(&verdicts)).unwrap().unwrap()["id"], late["id"]);
+}
