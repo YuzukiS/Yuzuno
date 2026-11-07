@@ -230,8 +230,8 @@ try {
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);
-  assert.deepEqual(report.writes.map((w) => `${w.method} ${w.path}`), ["PUT /api/executor-slots", "PUT /api/executor-templates"],
-    "the two saves, nothing else written");
+  assert.deepEqual(report.writes.map((w) => `${w.method} ${w.path}`), ["PUT /api/executor-slots"],
+    "the start time limit's save, nothing else written");
   report.status = "passed";
 } catch (error) {
   report.status = "failed";
