@@ -181,7 +181,8 @@ export function IslandRing({ state, progress }: { state: RingState; progress: nu
 }
 
 /** A passing event, said for a few seconds in a pill grown left out of the
- * ring: its words, the ring it shows (✓ or ✕ for a result) and its colour. */
+ * ring, which takes its width from line one: its words, the ring it shows
+ * (✓ or ✕ for a result) and its colour. */
 export type IslandPill = { text: string; ring: RingState | null; tone: "ok" | "bad" | "info" | "working" };
 
 type IslandProps = {

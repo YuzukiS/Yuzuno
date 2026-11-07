@@ -617,12 +617,15 @@ has the blocker (`blocked`); its state stays what it is.
   - At rest a ring, except needs you and failed, which are the row as the
     island (the outline round the whole row) until handled. A row is three
     lines at most.
-  - A passing event grows a pill left out of the ring, over the end of line
-    one, for about three seconds (five for bad news); the row keeps its
-    height and the ring its place: its PR merged, a review asked for changes
+  - A passing event grows a pill left out of the ring for about three
+    seconds (five for bad news): its PR merged, a review asked for changes
     or passed, its checks failed or turned green, it handed in, it started
-    after queuing, new messages came. Nothing on the row's first showing or
-    its PR's first reading, and nothing while the row is the island.
+    after queuing, new messages came. The pill takes its width from line
+    one, whose words wrap rather than being covered, so the row may grow
+    while it shows; the ring keeps its place. Nothing on the row's first
+    showing or its PR's first reading, and nothing while the row is the
+    island. A Job's end grows none yet: the rail reads how many Jobs run,
+    not how each ended.
   - Each change animates the outline from the ring's circle, or from where
     it was, in 320 ms, and back into the ring in 300 ms; nothing moves under
     reduced motion.

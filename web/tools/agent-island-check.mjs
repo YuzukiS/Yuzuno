@@ -2,8 +2,8 @@
 // island in Chromium, with every API answered here (no Core, no CLI, no
 // daily configuration) and synthetic Agents in the states a rail shows:
 // working, handed in, needs you, queued, done with three unread, failed and
-// idle. At 1440 (the rail) and 390 (a phone, touch), light and dark, English
-// and Chinese:
+// idle. At 1440 (the rail at 240 px) and 390 (a phone, touch), light and
+// dark, English and Chinese:
 // - the ring is the state: 22 px at the row's top right, strokes only, a
 //   mark inside for done and failed, nothing for the rest;
 // - at rest needs you and failed are row islands, everything else a ring;
@@ -19,8 +19,9 @@
 //   drawn; on hover it scales up a little in place (its strokes thicken
 //   under reduced motion), with no halo; hover on the row only darkens it;
 // - Tab reaches the row's link, then the ring, labelled with where it goes;
-// - a new message grows a pill left out of the ring, over line one's end
-//   (the words keep their width), and it shrinks back;
+// - a new message and a hand-in each grow a pill left out of the ring that
+//   takes its width from line one (its words wrap, never covered), and
+//   shrink back;
 // - with motion the outline starts as the ring's circle and ends in it;
 //   under reduced motion nothing in the list animates.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/agent-island-check.mjs
@@ -198,6 +199,8 @@ async function run({ width, height, theme, motion, lang = "en" }) {
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, agentOrder: "list" }));
     localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang === "zh" ? "zh-Hans" : "en" }));
+    // The desktop rail at 240 px.
+    localStorage.setItem("yuzuno.panel-widths", JSON.stringify({ rail: 240 }));
     // Where a ring's task goes, as the app is told it.
     window.__tasks = [];
     window.addEventListener("yuzuno:open-task-review", (event) => window.__tasks.push(event.detail?.taskId ?? null));
@@ -304,7 +307,7 @@ async function run({ width, height, theme, motion, lang = "en" }) {
       else assert.ok(scale(ring.transform) === 1 && ring.stroke > rest.stroke + 0.5, `${tag}: under reduced motion its strokes thicken instead: ${rest.stroke} → ${ring.stroke}`);
       assert.ok(row.bg !== rest.bg && row.border === rest.border && scale(row.transform) === 1 && row.stroke === rest.stroke, `${tag}: on the row, the row darkens, no border, the ring stays: ${JSON.stringify(row)}`);
       assert.ok(plain.bg !== rest5.bg && scale(plain.transform) === 1 && plain.stroke === rest5.stroke, `${tag}: a ring that is no button doesn't react; the row under it darkens: ${JSON.stringify([rest5, plain])}`);
-      if (theme === "light") {
+      {
         await ringOf("yn24").hover();
         await page.waitForTimeout(motion ? 250 : 50);
         await list.screenshot({ path: join(output, `${tag}-3-ring-hover.png`) });
@@ -332,27 +335,43 @@ async function run({ width, height, theme, motion, lang = "en" }) {
       check(`${tag}: on touch the ring's hit area is 40 px and a tap goes to its place`);
     }
 
-    // A new message: the pill grows left out of the ring over line one's end (the words keep their width), then shrinks back (the list is read again within 5 s).
+    // Two passing events at once (the list is read again within 5 s): Dev 5's new message, and
+    // YN-24 handing in. Each pill grows left out of its ring and takes its width from line one,
+    // whose words wrap rather than being covered (the user, v10.2); then each shrinks back.
     {
-      const width = await rowOf("dev5").locator(".agent-line-one").evaluate((el) => Math.round(el.getBoundingClientRect().width));
-      agents = agents.map((a) => (a.id === "dev5" ? { ...a, unreadCount: 1 } : a));
-      await page.waitForFunction(() => document.querySelector('.agent-list article[data-agent-id="dev5"]')?.dataset.form === "pill", null, { timeout: 10_000, polling: "raf" });
+      const before = Object.fromEntries(await Promise.all(["dev5", "yn24"].map(async (id) => [id, await rowOf(id).evaluate((r) => ({
+        width: Math.round(r.querySelector(".agent-line-one").getBoundingClientRect().width), height: Math.round(r.getBoundingClientRect().height) }))])));
+      agents = agents.map((a) => (a.id === "dev5" ? { ...a, unreadCount: 1 }
+        : a.id === "yn24" ? { ...a, status: "idle", workSummary: null, executor: { ...a.executor, since: ago(0.2) } } : a));
+      await page.waitForFunction(() => ["dev5", "yn24"].every((id) => document.querySelector(`.agent-list article[data-agent-id="${id}"]`)?.dataset.form === "pill"), null, { timeout: 10_000, polling: "raf" });
       const opening = await rowOf("dev5").evaluate((r) => r.querySelector(".island-shell").getAnimations().map((a) => { const k = a.effect.getKeyframes(); return [k[0].width, k.at(-1).width]; }));
-      const pill = await rowOf("dev5").evaluate((r) => {
+      const pills = Object.fromEntries(await Promise.all(["dev5", "yn24"].map(async (id) => [id, await rowOf(id).evaluate((r) => {
         const p = r.querySelector(".island-pill").getBoundingClientRect(), g = r.querySelector(".island-ringbox").getBoundingClientRect(), s = r.querySelector(".island-shell").getBoundingClientRect();
+        const one = r.querySelector(".agent-line-one"), range = document.createRange();
+        range.selectNodeContents(one);
+        const words = Math.max(...[...range.getClientRects()].map((x) => x.right));
         return { text: r.querySelector(".island-pill").textContent, leftOfRing: p.right <= g.left + 0.5, shell: s.left < p.left && s.right >= g.right && s.height <= 30,
-          inRow: p.left >= r.getBoundingClientRect().left + 4, width: Math.round(r.querySelector(".agent-line-one").getBoundingClientRect().width) };
-      });
-      assert.deepEqual(pill, { text: lang === "zh" ? "1 条新消息" : "1 new message", leftOfRing: true, shell: true, inRow: true, width }, `${tag}: the pill left of the ring, in its outline, over line one's end`);
-      if (theme === "light" && !phone) await shot(list, `${tag}-4-pill`);
-      await page.waitForFunction(() => document.querySelector('.agent-list article[data-agent-id="dev5"]')?.dataset.form === "ring", null, { timeout: 6_000, polling: "raf" });
+          // Pushed, not covered: line one's words end before the pill's outline begins.
+          clear: words <= s.left + 0.5, width: Math.round(one.getBoundingClientRect().width), height: Math.round(r.getBoundingClientRect().height), cut: one.scrollHeight > one.clientHeight + 1 };
+      })])));
+      report.pills = { ...(report.pills ?? {}), [tag]: { before, pills } };
+      const said = lang === "zh" ? { dev5: "1 条新消息", yn24: "已交 #681" } : { dev5: "1 new message", yn24: "Handed in #681" };
+      for (const id of ["dev5", "yn24"]) {
+        const p = pills[id];
+        assert.ok(p.text === said[id] && p.leftOfRing && p.shell && p.clear && !p.cut, `${tag}: ${id}'s pill left of its ring, in its outline, line one's words clear of it: ${JSON.stringify(p)}`);
+        assert.ok(p.width < before[id].width, `${tag}: ${id}'s pill takes its width from line one: ${before[id].width} → ${p.width}`);
+      }
+      if (!phone || theme === "light") await shot(list, `${tag}-4-pills`);
+      await page.waitForFunction(() => ["dev5", "yn24"].every((id) => document.querySelector(`.agent-list article[data-agent-id="${id}"]`)?.dataset.form === "ring"), null, { timeout: 6_000, polling: "raf" });
       const closing = await rowOf("dev5").evaluate((r) => r.querySelector(".island-shell").getAnimations().map((a) => { const k = a.effect.getKeyframes(); return [k[0].width, k.at(-1).width]; }));
+      const after = await rowOf("dev5").evaluate((r) => Math.round(r.querySelector(".agent-line-one").getBoundingClientRect().width));
+      assert.equal(after, before.dev5.width, `${tag}: line one has its width back`);
       report.motion = { ...(report.motion ?? {}), [tag]: { opening, closing } };
       if (motion) {
         assert.ok(opening.some(([from]) => from === "22px"), `${tag}: the outline grows out of the ring (${JSON.stringify(opening)})`);
         assert.ok(closing.some(([, to]) => to === "22px"), `${tag}: and shrinks back into it (${JSON.stringify(closing)})`);
       } else assert.equal(await listAnimations(), 0, `${tag}: under reduced motion nothing in the list animates`);
-      check(`${tag}: a new message grows the pill left out of the ring over line one's end, and it goes back after about 3 s${motion ? "; the outline starts as the ring's circle and ends in it" : ""}`);
+      check(`${tag}: a new message and a hand-in each grow a pill left out of the ring that pushes line one's words aside, and go back after about 3 s${motion ? "; the outline starts as the ring's circle and ends in it" : ""}`);
     }
 
     if (!phone) {
@@ -375,7 +394,8 @@ async function run({ width, height, theme, motion, lang = "en" }) {
       await page.waitForFunction(() => document.activeElement?.dataset?.needsYou === "approval:q1", null, { timeout: 8_000 });
       await page.locator('[data-needs-you="approval:q1"][data-home-highlight]').waitFor({ timeout: 5_000 });
       assert.equal(reads.yn21 ?? 0, before, `${tag}: the needs-you ring never opened the conversation`);
-      if (theme === "light") await page.screenshot({ path: join(output, `${tag}-5-home-needs-you.png`) }), report.screenshots.push(`${tag}-5-home-needs-you`);
+      await page.screenshot({ path: join(output, `${tag}-5-home-needs-you.png`) });
+      report.screenshots.push(`${tag}-5-home-needs-you`);
       check(`${tag}: the needs-you ring goes to its item in Home's Needs you, highlighted`);
     }
   } catch (error) {
@@ -392,8 +412,10 @@ try {
     await run({ width: 1440, height: 900, theme, motion: false });
     await run({ width: 390, height: 844, theme, motion: false });
   }
-  await run({ width: 1440, height: 900, theme: "light", motion: false, lang: "zh" });
-  await run({ width: 390, height: 844, theme: "light", motion: false, lang: "zh" });
+  for (const theme of ["light", "dark"]) {
+    await run({ width: 1440, height: 900, theme, motion: false, lang: "zh" });
+    await run({ width: 390, height: 844, theme, motion: false, lang: "zh" });
+  }
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);
   assert.deepEqual(report.writes, [], "no collaboration write: a check only reads");

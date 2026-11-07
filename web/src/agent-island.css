@@ -137,15 +137,12 @@ button.agent-island:is(:hover, :focus-visible) .island-ringbox {
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
-/* A passing event: a few words left of the ring, floating over line one's
-   end in the pill's outline, so the row never changes height for them and
-   the ring's right edge stays. */
+/* A passing event: a few words left of the ring, in the pill's outline.
+   They take their width from line one, whose words wrap rather than being
+   covered (the user, v10.2): the row may grow while they show, and settles
+   back after; the ring's right edge stays. */
 .island-pill {
-  position: absolute;
-  z-index: 2;
-  top: 50%;
-  right: calc(100% + 7px);
-  transform: translateY(-50%);
+  margin-right: 6px;
   color: var(--pill-tone);
   font-size: calc(9px + var(--font-adjust, 3px));
   font-weight: 700;
@@ -176,7 +173,6 @@ button.agent-island:is(:hover, :focus-visible) .island-ringbox {
   opacity: 1;
 }
 .agent-row[data-form="pill"] > .island-shell {
-  z-index: 1;
   border-color: var(--pill-tone);
   background: color-mix(in srgb, var(--pill-tone) 12%, var(--paper));
 }

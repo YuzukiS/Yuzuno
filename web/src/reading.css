@@ -136,6 +136,10 @@
   justify-self: end;
   margin: 0 0 0 8px;
 }
+/* A pill's outline reaches a little left of its words: room for it, clear of line one. */
+.agent-list .agent-row[data-form="pill"] > .agent-island {
+  margin-left: 16px;
+}
 /* An executor's activity: two lines at most, never cut mid-word without
    its ellipsis. */
 .agent-activity {
