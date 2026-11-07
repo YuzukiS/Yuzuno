@@ -12,16 +12,17 @@
 //! Workspace MCP through the Workspace's own send path, against Yuzuno's own
 //! Workspace MCP endpoint on loopback and the stub provider. T-61 slice 2:
 //! its requests answered. T-61 slice 3: its commands, as Core's transport
-//! reads them and through the Workspace's own send path.
+//! reads them and through the Workspace's own send path. T-61 slice 4: its
+//! compaction, likewise.
 #![cfg(target_os = "linux")]
 
 use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
 use yuzuno_workspace::opencode::{
-    session_of, supported, CommandAnswer, Events, FilePart, Launch, MessageId, Reply, RequestRefused, Server, Submission, EVENT_IDLE_LIMIT,
+    session_of, supported, CommandAnswer, CompactAdmission, Events, FilePart, Launch, MessageId, Reply, RequestRefused, Server, Submission, EVENT_IDLE_LIMIT,
     TEARDOWN,
 };
-use yuzuno_workspace::opencode_v2::{admitted, is_v2, read_messages, Cursor};
+use yuzuno_workspace::opencode_v2::{admitted, is_v2, read_messages, Cursor, COMPACTION};
 use yuzuno_workspace::store::whole::WholeRecord;
 
 fn ended(pid: u64) -> bool {
@@ -1325,6 +1326,202 @@ async fn a_real_opencode_2x_runs_yuzunos_commands_through_the_workspace() {
     println!("probe: 8 /goal: {refused}");
     assert!(refused.contains("会在之后自行开始新的工作"));
     assert_eq!(requests(), seen, "nothing reached the model");
+
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
+}
+
+/// What Core's translator made of `id`'s compaction from `live` events: each
+/// `opencode.compaction` of it, in order.
+fn compacted(live: &[Value], id: &MessageId) -> Vec<Value> {
+    live.iter().filter(|e| e["type"] == COMPACTION && e["data"]["id"] == id.as_str()).map(|e| e["data"].clone()).collect()
+}
+
+/// Whether a stub request after the first `seen` was 2.x's summary prompt.
+fn summary_asked(log: &Path, seen: usize) -> bool {
+    std::fs::read_to_string(log).unwrap_or_default().lines().skip(seen)
+        .any(|l| l.contains("You MUST summarize the conversation above"))
+}
+
+/// A real OpenCode 2.x compacts as Core's transport and translator read it
+/// (T-61 slice 4), against the stub provider. A compaction asked under
+/// Core's ID is admitted under it. With nothing to compact yet it fails in
+/// 2.x's words (`compaction.unavailable`), though its run succeeds. After a
+/// prompt it runs, its summary the stub's answer to 2.x's summary prompt,
+/// and ends. Each is stored under that ID as Core's whole read takes it, and
+/// read live as Core's own `opencode.compaction`. Events printed.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_compacts_under_cores_id_as_cores_transport_reads_it() {
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    // The stub's provider, as slice 3's probes configure it (its commands unused here).
+    std::fs::write(directory.join("opencode.json"), commands_config(port)).unwrap();
+    let launch = Launch::new(program, directory.canonicalize().unwrap(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let model = server.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let mut cursor = Cursor::default();
+    let requests = || std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+
+    // 1. Nothing to compact yet: admitted, then failed in 2.x's words; its run succeeds.
+    let empty = MessageId::new();
+    let seen = requests();
+    let admitted = server.compact(&session, &empty).await.unwrap();
+    println!("probe: 1 an empty session's compaction: {admitted:?}");
+    assert_eq!(admitted, CompactAdmission::Admitted, "admitted under Core's ID");
+    let (run, ended) = until_kind(&mut events, &session, &ENDS, 60).await;
+    println!("probe: 1 its events {:?} (ended {ended})", types(&run));
+    for e in run.iter().filter(|e| e["type"].as_str().is_some_and(|t| t.starts_with("session.compaction.") || t.starts_with("session.inbox."))) {
+        println!("probe: 1 {} {}", e["type"], e["data"]);
+    }
+    assert!(ended, "its run ended");
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded", "its run succeeded");
+    let live: Vec<Value> = run.iter().flat_map(|e| cursor.read(e)).collect();
+    let read = compacted(&live, &empty);
+    println!("probe: 1 read live {read:?}");
+    let last = read.last().expect("read live as Core's own compaction event");
+    assert_eq!((&last["status"], &last["error"]["type"]), (&json!("failed"), &json!("compaction.unavailable")), "{last}");
+    println!("probe: 1 its words {}", last["error"]["message"]);
+    let stored = read_messages(&server.messages(&session).await.unwrap()).compactions;
+    println!("probe: 1 stored {stored:?}");
+    let mine = stored.iter().find(|m| m["id"] == empty.as_str()).expect("stored under Core's ID");
+    assert_eq!((&mine["status"], &mine["error"]["type"]), (&json!("failed"), &json!("compaction.unavailable")), "{mine}");
+    assert!(!summary_asked(&log, seen), "nothing was asked of the model");
+
+    // 2. A prompt, so there is something to compact.
+    assert_eq!(server.submit(&session, &MessageId::new(), "probe-61 compact one").await.unwrap(), Submission::Accepted);
+    let run = one_run(&mut events, &session).await;
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded");
+    run.iter().for_each(|e| { cursor.read(e); });
+
+    // 3. The compaction: admitted, run against the stub's summary, ended, stored.
+    let asked = MessageId::new();
+    let seen = requests();
+    let started = Instant::now();
+    let admitted = server.compact(&session, &asked).await.unwrap();
+    println!("probe: 3 the compaction: {admitted:?} after {:?}", started.elapsed());
+    assert_eq!(admitted, CompactAdmission::Admitted, "admitted under Core's ID");
+    let (run, ended) = until_kind(&mut events, &session, &ENDS, 90).await;
+    println!("probe: 3 its events {:?} (ended {ended} after {:?})", types(&run), started.elapsed());
+    for e in run.iter().filter(|e| e["type"].as_str().is_some_and(|t| t.starts_with("session.compaction.") && t != "session.compaction.delta"
+        || t.starts_with("session.inbox."))) {
+        println!("probe: 3 {} {}", e["type"], e["data"]);
+    }
+    assert!(ended, "its run ended");
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded", "its run succeeded");
+    let begun = run.iter().find(|e| e["type"] == "session.compaction.started").expect("it started");
+    assert_eq!(begun["data"]["inputID"], asked.as_str(), "started under Core's ID");
+    assert!(summary_asked(&log, seen), "2.x asked the stub for its summary");
+    let live: Vec<Value> = run.iter().flat_map(|e| cursor.read(e)).collect();
+    let read = compacted(&live, &asked);
+    println!("probe: 3 read live {:?}", read.iter().map(|c| c["status"].clone()).collect::<Vec<_>>());
+    assert_eq!(read.first().map(|c| c["status"].clone()), Some(json!("running")), "read running first");
+    let last = read.last().unwrap();
+    assert_eq!(last["status"], "completed", "{last}");
+    assert!(last["summary"].as_str().unwrap_or_default().contains("probe-61 compaction summary"), "its summary, live: {last}");
+    let stored = read_messages(&server.messages(&session).await.unwrap()).compactions;
+    let mine = stored.iter().find(|m| m["id"] == asked.as_str()).expect("stored under Core's ID");
+    println!("probe: 3 stored {mine}");
+    assert_eq!(mine["status"], "completed");
+    assert!(mine["summary"].as_str().unwrap_or_default().contains("probe-61 compaction summary"), "its summary, stored: {mine}");
+
+    // 4. The next prompt runs after it.
+    let seen = requests();
+    assert_eq!(server.submit(&session, &MessageId::new(), "probe-61 after").await.unwrap(), Submission::Accepted);
+    let run = one_run(&mut events, &session).await;
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded");
+    let carried = std::fs::read_to_string(&log).unwrap_or_default().lines().skip(seen).any(|l| l.contains("probe-61 compaction summary"));
+    println!("probe: 4 the next prompt's requests carry the summary: {carried}");
+
+    server.shutdown().await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// A real OpenCode 2.x compacts through the Workspace (T-61 slice 4, D-2
+/// (c)), against the stub provider: with nothing to compact yet, the
+/// `/compact` Turn fails in 2.x's words; after a message it completes, its
+/// compaction item's text the stub's summary, and its input makes no Turn
+/// of its own; the next message goes.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_compacts_through_the_workspace() {
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61compact";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let work = work.canonicalize().unwrap();
+    let (mut stub, port, _log) = stub_provider(dir.path());
+    std::fs::write(work.join("opencode.json"), commands_config(port)).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port);
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":work, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let send = |client: &str, text: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":text})).unwrap());
+        async move { ws.send_message(ID, input).await }
+    };
+    let ended = |turn: String| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..900 {
+                let d = ws.store.detail(ID).unwrap();
+                if let Some(t) = d.turns.iter().find(|t| t["id"] == turn.as_str()).filter(|t| t["status"] != "inProgress") {
+                    return t.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 90 s");
+        }
+    };
+    let d = ws.reconnect(ID).await.unwrap();
+    assert!(ws.collaboration_status(ID).await.unwrap().ready, "connected and ready: {}", d.agent.connection_state);
+
+    // 1. Nothing to compact yet: the Turn fails in 2.x's words.
+    let answer = ws.opencode_compact(ID).await.expect("admitted");
+    let t = ended(answer["turnId"].as_str().unwrap().to_owned()).await;
+    println!("probe: 1 the empty session's /compact Turn {} {} {}", t["status"], t["error"], t["_opencodeCompact"]);
+    assert_eq!((&t["status"], &t["_opencodeCompact"]["state"]), (&json!("failed"), &json!("failed")), "{t:#}");
+    assert!(t["error"]["message"].as_str().unwrap_or_default().contains("Nothing to compact yet"), "in 2.x's words: {t:#}");
+
+    // 2. A message, then /compact: completed, with the stub's summary.
+    let first = send("c1", "probe-61 compact one").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(first).await["status"], "completed");
+    let started = Instant::now();
+    let answer = ws.opencode_compact(ID).await.expect("admitted");
+    let t = ended(answer["turnId"].as_str().unwrap().to_owned()).await;
+    println!("probe: 2 the /compact Turn {} after {:?}: {}", t["status"], started.elapsed(), t["_opencodeCompact"]);
+    assert_eq!((&t["status"], &t["_opencodeCompact"]["state"]), (&json!("completed"), &json!("completed")), "{t:#}");
+    let item = t["items"].as_array().unwrap().iter().find(|i| i["type"] == "contextCompaction").expect("its compaction item");
+    assert!(item["text"].as_str().unwrap_or_default().contains("probe-61 compaction summary"), "the stub's summary: {item}");
+    let d = ws.store.detail(ID).unwrap();
+    println!("probe: 2 Turns {:?}", d.turns.iter().map(|t| (t["id"].clone(), t["status"].clone())).collect::<Vec<_>>());
+    assert_eq!(d.turns.len(), 3, "its input made no Turn of its own");
+
+    // 3. The next message goes.
+    let next = send("c2", "probe-61 after").await.expect("the next message goes").turn_id.unwrap();
+    assert_eq!(ended(next).await["status"], "completed");
 
     ws.close_agent(ID).await.unwrap();
     stub.kill().ok();

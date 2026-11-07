@@ -239,19 +239,22 @@ pub enum Submission {
     Unknown(String),
 }
 
-/// What a compaction request (`summarize`) is known to have done (T-10).
+/// What 2.x answered a compaction with (`POST /api/session/:id/compact`,
+/// T-61 slice 4). 2.x admits a compaction and answers at once, before it
+/// runs: what became of it is its message's, under the ID Core asked for.
 #[derive(Debug, PartialEq)]
-pub enum CompactAnswer {
-    /// 200 with the whole body the JSON `true`: OpenCode's handler returned,
-    /// so its run has ended there, however the compaction went (an abort
-    /// ends it too: the run is cancelled and the waiting request answered,
-    /// `effect/runner.ts`). Not that it compacted anything.
-    Ended,
-    /// A 4xx, as OpenCode gave it.
-    Refused(HttpStatus),
-    /// Anything else: no answer, a lost connection, a 5xx (OpenCode's proxy
-    /// turns a broken upstream into a 500, `middleware/proxy.ts`), another
-    /// body. Whether the run has ended is not known.
+pub enum CompactAdmission {
+    /// 200 with the compaction 2.x admitted under the ID asked for.
+    Admitted,
+    /// 200 with another compaction already pending in the session (2.2.5
+    /// core/src/session/inbox.ts): the one asked for was not admitted.
+    OtherPending(String),
+    /// Refused before it was admitted: 404 for a session or folder 2.x does
+    /// not hold, 400 for a request it can't read. 2.x's words of why.
+    Refused { code: u16, message: String },
+    /// Anything else (409 for an ID already a message, a 5xx, no answer, a
+    /// lost connection, another body): it may or may not have been admitted.
+    /// Look for its ID; never send it again.
     Unknown(String),
 }
 
@@ -960,27 +963,41 @@ impl Server {
         Ok(Value::Array(self.all(&format!("/api/session/{}/message", segment(session)?), &[("order", "asc")]).await?))
     }
 
-    /// The request that compacts the session with `provider`'s `model`
-    /// (T-10), as its own `/compact` does (`POST /session/:id/summarize`,
-    /// `auto: false`). OpenCode 1.19.3 writes the compaction's own user
-    /// message, under an ID of its choosing, then runs the compaction and
-    /// answers only once that run ends (`handlers/session.ts` summarize); it
-    /// takes no variant. So, as a command's, the request has no time limit of
-    /// its own and holds nothing of this server, and its answer alone says
-    /// nothing a caller can wait for.
-    pub fn summarize(&self, session: &str, provider: &str, model: &str) -> Result<impl std::future::Future<Output = CompactAnswer> + Send + 'static> {
-        let path = format!("/session/{}/summarize", segment(session)?);
-        let request = self.request(Method::POST, &path).json(&json!({"providerID": provider, "modelID": model, "auto": false}));
-        Ok(async move {
-            match request.send().await {
-                Err(error) => CompactAnswer::Unknown(format!("OpenCode did not answer: {error}")),
-                Ok(response) if response.status().as_u16() == 200 => match response.text().await {
-                    Ok(body) if serde_json::from_str::<Value>(&body).is_ok_and(|v| v == Value::Bool(true)) => CompactAnswer::Ended,
-                    Ok(body) => CompactAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
-                    Err(error) => CompactAnswer::Unknown(format!("OpenCode's answer broke off: {error}")),
-                },
-                Ok(response) if response.status().is_client_error() => CompactAnswer::Refused(status(response).await),
-                Ok(response) => CompactAnswer::Unknown(status(response).await.to_string()),
+    /// Compacts the session under `id` (T-61 slice 4: `POST
+    /// /api/session/:id/compact {id}`), once: an ID this server was given
+    /// before is refused here, whatever became of it. The request carries no
+    /// model: 2.x compacts with the session's, as a prompt runs. 2.x commits a
+    /// revert the session holds first, then admits the compaction and answers
+    /// at once; it has no busy guard (a compaction admitted while a run goes
+    /// on is taken up at its next step), so callers ask only while idle.
+    pub async fn compact(&self, session: &str, id: &MessageId) -> Result<CompactAdmission> {
+        let path = format!("/api/session/{}/compact", segment(session)?);
+        ensure!(self.submitted.lock().unwrap().insert(id.clone()),
+            "Message {} was submitted already; it is never sent again", id.as_str());
+        let sent = self.request(Method::POST, &path).timeout(REQUEST_LIMIT).json(&json!({"id": id.as_str()})).send().await;
+        Ok(match sent {
+            Err(error) => CompactAdmission::Unknown(format!("OpenCode did not answer: {error}")),
+            Ok(response) if response.status().as_u16() == 200 => match response.json::<Value>().await {
+                Ok(answer) if answer["data"]["type"] == "compaction" && answer["data"]["id"] == id.as_str() => CompactAdmission::Admitted,
+                Ok(answer) if answer["data"]["type"] == "compaction" && answer["data"]["id"].is_string() =>
+                    CompactAdmission::OtherPending(answer["data"]["id"].as_str().unwrap_or_default().to_owned()),
+                Ok(_) => CompactAdmission::Unknown("OpenCode answered 200 with no compaction".into()),
+                Err(error) => CompactAdmission::Unknown(format!("OpenCode's answer was not read: {error}")),
+            },
+            Ok(response) => {
+                let code = response.status().as_u16();
+                let answered: Value = response.json().await.unwrap_or_default();
+                let kind = answered["_tag"].as_str().unwrap_or_default();
+                let words = || answered["message"].as_str().unwrap_or("").chars().take(500).collect::<String>();
+                // Only what 2.x refuses before it admits anything: an unknown session or folder, a request it can't read.
+                let refused = matches!((code, kind), (404, "SessionNotFoundError" | "LocationNotFoundError"))
+                    || (code == 400 && kind == "InvalidRequestError"
+                        && matches!(answered["kind"].as_str(), Some("Params" | "Headers" | "Query" | "Payload")));
+                if refused {
+                    CompactAdmission::Refused { code, message: if words().is_empty() { format!("HTTP {code}") } else { words() } }
+                } else {
+                    CompactAdmission::Unknown(format!("OpenCode answered HTTP {code} {kind}"))
+                }
             }
         })
     }
@@ -1081,18 +1098,6 @@ impl Server {
         let response = self.request(Method::POST, "/sync/replay").timeout(REPLAY_LIMIT).json(&body).send().await
             .context("OpenCode did not answer /sync/replay")?;
         success(response).await?.json().await.context("OpenCode's answer to /sync/replay is not JSON")
-    }
-
-    /// Removes one part of a message (`DELETE
-    /// /session/:id/message/:message/part/:part`, T-10). OpenCode 1.19.3 only
-    /// announces the removal (`session.ts` removePart) and deletes the part
-    /// by its ID and session alone (`core/src/session/projector.ts`), with no
-    /// check that it exists, is that message's, or that the session is idle:
-    /// its `true` says none of that. Only a read after it does.
-    pub async fn delete_part(&self, session: &str, message: &str, part: &str) -> Result<()> {
-        let path = format!("/session/{}/message/{}/part/{}", segment(session)?, segment(message)?, segment(part)?);
-        self.json(Method::DELETE, &path, None).await?;
-        Ok(())
     }
 
     /// The sessions OpenCode started under `session` (its sub-agents,
