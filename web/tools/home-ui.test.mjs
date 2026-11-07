@@ -2741,30 +2741,33 @@ const railIds = (p) => [...p.doc.querySelectorAll(".agent-list .agent-row")].map
 const railLabel = (p, id) => p.doc.querySelector(`.agent-row[data-agent-id="${id}"] .agent-runtime`)?.textContent ?? null;
 const shown = (p) => p.doc.querySelector(".conversation-title h1")?.textContent ?? null;
 
-test("Needs you lists an open question and opens its conversation; Turn ends not seen here follow, failed then finished, and stay this device's", async () => {
+test("Needs you lists an open question and opens its conversation; a Turn that ended unseen is not listed there, only marked on the Agent list, and stays this device's (YN-3)", async () => {
   const p = await mount({ workspaceAgents: attentionAgents(), home: attentionHome(), storage: startOnSora });
   try {
     await waitFor(() => p.doc.querySelector('[data-needs-you="question:c:t3:q1"]'), "the question is listed");
-    const unseen = (outcome) => [...p.doc.querySelectorAll(`.home-needs-you [data-unseen="${outcome}"]`)].map((b) => b.dataset.unseenAgent);
-    assert.deepEqual(unseen("failed"), ["a"]);
-    assert.deepEqual(unseen("finished"), ["b"]);
-    // The rail says so too, in the list's order: Appearance chose none.
+    // Only what waits for the user's decision: Mori's failed and Hana's finished Turns,
+    // neither shown here yet, are their Agents' to follow, not the user's (YN-3).
+    const needs = p.doc.querySelector(".home-needs-you");
+    assert.equal(needs.querySelectorAll("[data-unseen]").length, 0, "no Turn end in Needs you");
+    assert.doesNotMatch(needs.textContent, /Finished, not seen/);
+    const rows = needs.querySelectorAll(".home-needs-list > li").length;
+    assert.equal(rows, needs.querySelectorAll("[data-needs-you]").length, "every row is something Core says waits on the user");
+    assert.equal(needs.querySelector("h2 .nav-count").textContent, String(rows), "its count is its rows");
+    // The rail marks them, in the list's order: Appearance chose none.
     assert.deepEqual(railIds(p), ["a", "b", "c"]);
     assert.equal(railLabel(p, "a"), "Failed · unseen");
     assert.equal(railLabel(p, "b"), "Finished · unseen");
     p.doc.querySelector('[data-needs-you="question:c:t3:q1"]').click();
     await waitFor(() => shown(p) === "Sora", "the question opens Sora's conversation");
-    // Shown here, Hana's Turn end is seen on this device, and only here.
-    p.button("Home").click();
-    await waitFor(() => p.doc.querySelector('[data-unseen-agent="b"]'), "Home again");
-    p.doc.querySelector('[data-unseen-agent="b"]').click();
+    // Shown here, from the Agent list, Hana's Turn end is seen on this device, and only here.
+    p.doc.querySelector('.agent-row[data-agent-id="b"] .agent-select').click();
     await waitFor(() => shown(p) === "Hana", "Hana's conversation");
     await waitFor(() => p.w.localStorage.getItem("yuzuno.turnSeen.ws-home") === '{"b":20}', "seen on this device");
     await waitFor(() => railLabel(p, "b") === "Ready", "Hana's label");
     assert.equal(railLabel(p, "a"), "Failed · unseen");
     p.button("Home").click();
-    await waitFor(() => p.doc.querySelector('.home-needs-you [data-unseen="failed"]'), "Home again");
-    assert.equal(p.doc.querySelector('.home-needs-you [data-unseen="finished"]'), null, "nothing finished is unseen");
+    await waitFor(() => p.doc.querySelector('[data-needs-you="question:c:t3:q1"]'), "Home again");
+    assert.equal(p.doc.querySelectorAll(".home-needs-you [data-unseen]").length, 0, "still none in Needs you");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -2805,10 +2808,7 @@ test("a Turn end read past on any device is not unseen on a new one; one that en
   const p = await mount({ workspaceAgents, home: attentionHome(),
     storage: { ...startOnSora, "yuzuno.appearance": JSON.stringify({ agentOrder: "attention", projectGroups: "none" }) } });
   try {
-    await waitFor(() => p.doc.querySelector('.home-needs-you [data-unseen="finished"]'), "Hana's Turn end is listed");
-    const unseen = (outcome) => [...p.doc.querySelectorAll(`.home-needs-you [data-unseen="${outcome}"]`)].map((b) => b.dataset.unseenAgent);
-    assert.deepEqual([unseen("failed"), unseen("finished")], [[], ["b"]], "only the end after the last read");
-    assert.equal(railLabel(p, "b"), "Finished · unseen");
+    await waitFor(() => railLabel(p, "b") === "Finished · unseen", "Hana's Turn end is marked");
     assert.notEqual(railLabel(p, "a"), "Failed · unseen");
     assert.deepEqual(railIds(p), ["c", "b", "a"], "Mori's read end no longer moves Mori up");
     assert.deepEqual(p.errors, []);
@@ -2817,7 +2817,7 @@ test("a Turn end read past on any device is not unseen on a new one; one that en
   }
 });
 
-test("the tab title and the app badge count what Home's tab counts; next needs you goes through Needs you, then Turn ends unseen, and round again", async () => {
+test("the tab title and the app badge count what Home's tab counts; next needs you goes through Needs you and round again, never to a Turn end unseen (YN-3)", async () => {
   const badges = [];
   const p = await mount({
     workspaceAgents: attentionAgents(),
@@ -2843,14 +2843,39 @@ test("the tab title and the app badge count what Home's tab counts; next needs y
     assert.ok(p.doc.querySelector(".home-view"), "still Home");
     press();
     await waitFor(() => shown(p) === "Sora", "then Sora, whose request and question wait");
-    press();
-    await waitFor(() => shown(p) === "Mori", "then the failed Turn not seen here");
-    // Shown, Mori's is seen and leaves the round; it goes on from there.
-    await waitFor(() => p.w.localStorage.getItem("yuzuno.turnSeen.ws-home") === '{"a":30}', "seen on this device");
+    // Mori's failed and Hana's finished Turns, not seen here, are not in the round.
     button.click();
-    await waitFor(() => shown(p) === "Hana", "then the finished one");
-    press();
     await waitFor(() => p.doc.querySelector(".home-view"), "and round again to the Ask");
+    assert.equal(p.w.localStorage.getItem("yuzuno.turnSeen.ws-home"), null, "neither Mori's nor Hana's conversation was shown");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("the tab title, the app badge and Home's count are Needs you's rows, an executor the user dispatched among them (YN-3)", async () => {
+  const badges = [];
+  const home = attentionHome();
+  home.needsYou.push({ kind: "executor", projectId: "p-app", agentId: "b", agentName: "Hana", state: "delivering", taskId: "T-7", title: "Release notes", since: at(2) });
+  const p = await mount({
+    workspaceAgents: attentionAgents(),
+    home,
+    storage: startOnSora,
+    before: (w) => {
+      w.document.title = "Yuzuno · test";
+      w.navigator.setAppBadge = async (count) => badges.push(count);
+      w.navigator.clearAppBadge = async () => badges.push(0);
+    },
+  });
+  try {
+    await waitFor(() => p.doc.querySelector('[data-needs-you="executor:b:delivering"]'), "Hana's result waits for its release");
+    // Mori's Ask, Sora's request and question, Hana's result: four rows, four counted.
+    const rows = p.doc.querySelectorAll(".home-needs-you .home-needs-list > li").length;
+    assert.equal(rows, 4);
+    await waitFor(() => p.doc.title === "(4) Yuzuno · test", `the title counts every row: ${p.doc.title}`);
+    assert.equal(badges.at(-1), 4);
+    assert.equal(p.doc.querySelector(".catchup-nav .nav-count").textContent, "4", "the Home tab's count");
+    assert.equal(p.doc.querySelector(".home-needs-you h2 .nav-count").textContent, "4", "Needs you's own count");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
