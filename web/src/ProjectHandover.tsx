@@ -3,6 +3,7 @@ import { LoaderCircle } from "lucide-react";
 import { errorText } from "./api";
 import { readHandover, saveHandover, type Handover } from "./project-handover";
 import { langTag, strings, useLanguage } from "./i18n";
+import { useSaveBarPart } from "./SettingsSaveBar";
 import "./project-handover.css";
 
 const text = strings({
@@ -81,19 +82,27 @@ export function ProjectHandover({ projectId, disabled = false }: { projectId: st
   const noteSize = [...note.trim()].length;
   const noteTooLong = noteSize > NOTE_CHARS;
   const locked = disabled || busy;
-  async function save() {
-    if (!view) return;
+  async function save(): Promise<boolean> {
+    if (!view) return false;
     setBusy(true);
     setError("");
     try {
       adopt(await saveHandover(projectId, view.version, draft, note));
       setDone(true);
+      return true;
     } catch (e) {
       setError(errorText(e));
+      return false;
     } finally {
       setBusy(false);
     }
   }
+  // On the project's page the change joins its save bar (YN-8).
+  const inBar = useSaveBarPart(`handover:${projectId}`, changed && view && !disabled ? {
+    ready: !tooLarge && !noteTooLong,
+    save,
+    discard: () => { setError(""); adopt(view); },
+  } : null);
   const when = (at: string) => new Date(at).toLocaleString(langTag(language));
   const last = view?.lastModified;
   return (
@@ -131,10 +140,12 @@ export function ProjectHandover({ projectId, disabled = false }: { projectId: st
         </label>
         {noteTooLong && <p className="inline-error" role="alert">{t.noteTooLong(NOTE_CHARS)}</p>}
         <div className="project-handover-actions">
-          <button type="button" className="secondary-button" disabled={locked || !changed || tooLarge || noteTooLong} onClick={() => void save()}>
-            {busy && <LoaderCircle size={13} className="spin" />} {t.save}
-          </button>
-          {changed ? <span className="settings-row-help">{t.unsaved}</span> : done && <span className="settings-row-help" role="status">{t.saved}</span>}
+          {!inBar && (
+            <button type="button" className="secondary-button" disabled={locked || !changed || tooLarge || noteTooLong} onClick={() => void save()}>
+              {busy && <LoaderCircle size={13} className="spin" />} {t.save}
+            </button>
+          )}
+          {changed ? !inBar && <span className="settings-row-help">{t.unsaved}</span> : done && <span className="settings-row-help" role="status">{t.saved}</span>}
         </div>
       </>}
       {error && <p className="inline-error" role="alert">{error}</p>}

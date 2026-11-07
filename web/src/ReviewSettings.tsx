@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errorText } from "./api";
 import { strings, useStrings } from "./i18n";
+import { useSaveBarPart } from "./SettingsSaveBar";
 import type { Model } from "./types";
 import "./pr-reviews.css";
 
@@ -130,8 +131,8 @@ export function ReviewSettings({ active, projectId, disabled = false }: { active
       });
     return () => controller.abort();
   }, [active, draft?.harness]);
-  async function save() {
-    if (!draft || saving) return;
+  async function save(): Promise<boolean> {
+    if (!draft || saving) return false;
     setSaving(true);
     setError("");
     try {
@@ -141,8 +142,10 @@ export function ReviewSettings({ active, projectId, disabled = false }: { active
           body: JSON.stringify({ harness: draft.harness, model: draft.model }),
         }),
       );
+      return true;
     } catch (e) {
       setError(errorText(e));
+      return false;
     } finally {
       setSaving(false);
     }
@@ -169,6 +172,14 @@ export function ReviewSettings({ active, projectId, disabled = false }: { active
   // What can be cleared: this Workspace's choice, or the project's own.
   const own = projectId ? !!saved?.saved : saved?.source === "workspace";
   const locked = saving || disabled;
+  // On a page with a save bar (YN-8) the change joins it, once a model is
+  // there to save; elsewhere this block has its own Save. Back to the
+  // inherited reviewer stays a command here.
+  const inBar = useSaveBarPart(`review:${projectId ?? "workspace"}`, changed && draft && saved && !disabled ? {
+    ready: !!draft.model && !(draft.harness === "claude" && (loading || !selected)),
+    save,
+    discard: () => { setError(""); setDraft(saved); },
+  } : null);
   return (
     <section
       id={projectId ? undefined : "settings-review"}
@@ -266,7 +277,7 @@ export function ReviewSettings({ active, projectId, disabled = false }: { active
             </select>
           </label>
           {/* Saving is offered only once something has changed. */}
-          {(changed || saving || own) && (
+          {(own || (!inBar && (changed || saving))) && (
             <div className="settings-row settings-row-end">
               <div className="settings-row-action">
                 {own && (
@@ -274,7 +285,7 @@ export function ReviewSettings({ active, projectId, disabled = false }: { active
                     {projectId ? t.inherit : t.useBuiltIn}
                   </button>
                 )}
-                {(changed || saving) && (
+                {!inBar && (changed || saving) && (
                   <button
                     type="button"
                     className="primary-button"
