@@ -107,7 +107,11 @@ async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], 
   // Project keys (T-56), as Core keeps them: a Core with keys sends one for
   // every project; without this option the workspace has none, as an older Core's.
   const projectKeys = keys && new Map(Object.entries(keys));
-  const shownProjects = () => (projectKeys ? projects.map((project) => ({ ...project, key: projectKeys.get(project.id) })) : projects);
+  // What this mount's PATCHes changed (the fixture list is shared by every test).
+  const projectChanges = new Map();
+  const shownProjects = () => projects.map((project) => ({
+    ...project, ...projectChanges.get(project.id), ...(projectKeys ? { key: projectKeys.get(project.id) } : {}),
+  }));
   const editorPolicies = new Map();
   const projectLeads = new Map(Object.entries(leads));
   // Project services (T-151): what Core keeps, and what answers on each
@@ -258,6 +262,21 @@ async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], 
       projectKeys.set(match[1], body.key);
       return respond(shownProjects().find((project) => project.id === match[1]));
     }
+    // A name or folder change, as Core answers it: the whole project.
+    if ((match = url.match(/\/api\/projects\/([^/]+)$/)) && init.method === "PATCH" && body && ("name" in body || "defaultDirs" in body)) {
+      const current = shownProjects().find((project) => project.id === match[1]);
+      const next = { ...projectChanges.get(match[1]) };
+      if ("name" in body) next.name = body.name;
+      if ("defaultDirs" in body) {
+        next.defaultDirs = { ...current.defaultDirs };
+        for (const [machine, folder] of Object.entries(body.defaultDirs)) {
+          if (folder) next.defaultDirs[machine] = folder;
+          else delete next.defaultDirs[machine];
+        }
+      }
+      projectChanges.set(match[1], next);
+      return respond(shownProjects().find((project) => project.id === match[1]));
+    }
     if (url.endsWith("/api/projects") && init.method === "POST")
       return respond({ id: "p-new", name: body.name, defaultDirs: body.defaultDirs || {}, createdAt: "", updatedAt: "" });
     if (url.endsWith("/api/agents") && init.method === "POST") {
@@ -306,6 +325,8 @@ async function mount({ storage = {}, agents: overrides = {}, catchupItems = [], 
 function button(page, text, root = page.document) {
   return [...root.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(text));
 }
+// A project page's one save bar (YN-8), when it is shown.
+const saveBar = (root) => [...root.querySelectorAll(".settings-savebar")].find((bar) => !bar.hidden) ?? null;
 const workspaceReads = (page) => page.calls.filter((call) => call.url.endsWith("/api/workspace")).length;
 const dialogOf = (page) => page.document.querySelector('[role="dialog"]');
 // React renders input and change events before dispatchEvent returns (it
@@ -633,7 +654,7 @@ test("unsaved default folders survive workspace refreshes", async () => {
   }
 });
 
-test("T-56 a project's task key prefix is changed in its window: Core decides, says why not in its own words, and the rule only enables the button", async () => {
+test("T-56 a project's task key prefix is changed on its page: Core decides, says why not in its own words, and the rule only enables the page's Save", async () => {
   const keys = { "p-app": "APP", "p-res": "RES", "p-old": "OLD", "p-docs": "DOC" };
   const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, keys, retiredKeys: { GON: "p-gone" } });
   try {
@@ -645,17 +666,25 @@ test("T-56 a project's task key prefix is changed in its window: Core decides, s
     assert.equal(input.value, "APP");
     const note = () => [...dialog.querySelectorAll(".project-note")].find((p) => p.textContent.startsWith("Tasks in this project are numbered"))?.textContent ?? "";
     assert.match(note(), /^Tasks in this project are numbered APP-1, APP-2 and so on; a task in no project keeps T-1\./);
-    const change = () => button(page, "Change prefix", dialog);
+    // The page's one Save (YN-8), shown once something on the page has changed.
+    const change = () => saveBar(dialog)?.querySelector(".primary-button") ?? null;
     const patches = () => page.calls.filter((call) => call.method === "PATCH" && call.body && "key" in call.body);
-    // The rule only enables the button: nothing it refuses is sent.
-    for (const typed of ["", "A", "T", "1AB", "AB-1", "APP"]) {
+    // The rule only enables Save: nothing it refuses is sent.
+    // The bar follows a change once React's effects have run: each state is waited for, then held.
+    for (const typed of ["", "A", "T", "1AB", "AB-1"]) {
       type(page, field(), typed);
-      assert.equal(change().disabled, true, `the button stays off for ${JSON.stringify(typed)}`);
+      await waitFor(() => change()?.disabled === true, `Save is off for ${JSON.stringify(typed)}`);
+      await pause();
+      assert.equal(change()?.disabled, true, `Save stays off for ${JSON.stringify(typed)}`);
+      assert.match(saveBar(dialog).textContent, /1 change not saved · Correct the marked block to save\./);
     }
-    assert.equal(patches().length, 0, "nothing is sent while the button is off");
+    type(page, field(), "APP");
+    await waitFor(() => change() === null, "the saved prefix again: nothing to save");
+    assert.equal(patches().length, 0, "nothing is sent while Save is off");
     // Typed as it is written, in capitals; Core takes it and the note follows.
     type(page, field(), "app2");
     assert.equal(field().value, "APP2", "the field writes the prefix in capitals");
+    await waitFor(() => change()?.disabled === false, "Save is on for APP2");
     change().click();
     await waitFor(() => patches().length === 1, "the new prefix is sent");
     assert.match(patches()[0].url, /\/api\/projects\/p-app$/);
@@ -665,10 +694,12 @@ test("T-56 a project's task key prefix is changed in its window: Core decides, s
     for (const [typed, words] of [["RES", "project_key_taken: RES is or was another Project's key, and keys are never reused"],
       ["GON", "project_key_taken: GON is or was another Project's key, and keys are never reused"]]) {
       type(page, field(), typed);
+      await waitFor(() => change()?.disabled === false, `Save is on for ${typed}`);
       change().click();
       const alert = () => dialog.querySelector(".project-key ~ .inline-error[role=alert]");
       await waitFor(() => alert()?.textContent === words, `the refusal of ${typed}, in Core's own words`);
       assert.match(note(), /APP2-1/, `a refused ${typed} changes nothing`);
+      assert.match(saveBar(dialog).textContent, /1 change not saved · 1 change wasn’t saved: its block says why\./, "the bar says the change is still there");
     }
     assert.deepEqual(patches().map((call) => call.body.key), ["APP2", "RES", "GON"]);
     assert.deepEqual(page.errors, []);
@@ -886,30 +917,94 @@ test("a Project's leads are the user's to set, from its open members that are no
 
     await fromScopeMenu(page, "Manage projects");
     await openProject(page, "App");
-    const section = await waitFor(() => page.document.querySelector(".project-leads-members"), "leads load");
-    const choices = () => [...section.querySelectorAll("label")].map(label => [label.textContent, label.querySelector("input").checked]);
-    // The executor is no choice; nothing in another Project is.
-    assert.deepEqual(choices(), [["Mori", true]]);
-    const save = () => button(page, "Save leads");
-    assert.equal(save().disabled, true, "nothing to save yet");
-    section.querySelector("input").click(); await pause();
-    assert.match(page.document.querySelector(".project-leads").textContent, /No lead: every Agent here can only ask on Home\./);
-    save().click();
+    const dialog = dialogOf(page);
+    // One members block (YN-8): each member with its Lead switch, an executor marked instead.
+    const section = await waitFor(() => page.document.querySelector(".project-leads-members [role=switch]") && page.document.querySelector(".project-leads"), "leads load");
+    const rows = () => [...section.querySelectorAll(".project-leads-members li")].map((li) => [
+      li.querySelector("strong").textContent,
+      li.querySelector("[role=switch]")?.getAttribute("aria-checked") ?? li.querySelector(".settings-tag")?.textContent ?? null,
+    ]);
+    // Nothing in another Project is listed.
+    assert.deepEqual(rows(), [["Mori", "true"], ["Hana", "Executor"]]);
+    const moriLead = () => section.querySelector('[role=switch][aria-label="Lead · Mori"]');
+    assert.ok(moriLead(), "the switch is named for its Agent");
+    assert.equal(saveBar(dialog), null, "nothing to save yet");
+    moriLead().click(); await pause();
+    assert.equal(moriLead().getAttribute("aria-checked"), "false");
+    assert.match(section.textContent, /No lead: every Agent here can only ask on Home\./);
+    assert.match(saveBar(dialog).textContent, /^1 change not saved/);
     const saves = () => page.calls.filter(call => call.method === "PUT" && call.url.endsWith("/leads"));
+    assert.equal(saves().length, 0, "a switch alone sends nothing");
+    button(page, "Save", saveBar(dialog)).click();
     await waitFor(() => saves().length === 1, "the cleared list is saved");
     assert.deepEqual(saves()[0].body, { expectedVersion: 3, leadAgentIds: [] });
     assert.ok(saves()[0].url.endsWith("/api/projects/p-app/leads"));
-    await waitFor(() => !page.document.querySelector(".project-leads-actions").textContent.includes("Unsaved changes"), "saved");
-    // Another window saved meanwhile: the refusal is shown and a reload reads the list again.
+    await waitFor(() => saveBar(dialog)?.textContent === "All changes saved.", "saved");
+    // Another window saved meanwhile: the refusal is shown on the block and a reload reads the list again.
     page.calls.length = 0;
-    section.querySelector("input").click(); await pause();
-    const stale = page.document.querySelector(".project-leads");
+    moriLead().click(); await pause();
     page.window.fetch = ((fetch) => async (url, init = {}) => init.method === "PUT" && url.endsWith("/leads")
       ? { ok: false, status: 400, json: async () => ({}), text: async () => JSON.stringify({ error: "version_conflict: this Project's leads changed; reload before saving" }) }
       : fetch(url, init))(page.window.fetch);
-    save().click();
-    await waitFor(() => stale.querySelector('[role="alert"]')?.textContent.includes("version_conflict"), "the refusal is shown");
-    assert.ok(button(page, "Reload saved leads"), "a reload is offered");
+    button(page, "Save", saveBar(dialog)).click();
+    await waitFor(() => section.querySelector('[role="alert"]')?.textContent.includes("version_conflict"), "the refusal is shown");
+    assert.match(saveBar(dialog).textContent, /1 change not saved · 1 change wasn’t saved: its block says why\./);
+    assert.equal(moriLead().getAttribute("aria-checked"), "true", "the change is kept");
+    assert.ok(button(page, "Reload saved leads", section), "a reload is offered");
+    // Discard: back to what Core saved.
+    button(page, "Discard", saveBar(dialog)).click(); await pause();
+    assert.equal(moriLead().getAttribute("aria-checked"), "false");
+    assert.equal(saveBar(dialog), null);
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally { page.close(); }
+});
+
+test("a project page saves its changed blocks with one Save, each its own request; one Core refuses keeps its change (YN-8)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, leads: { "p-app": { version: 1, leadAgentIds: ["a"] } } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    await openProject(page, "App");
+    const dialog = dialogOf(page);
+    await waitFor(() => dialog.querySelector('.project-leads-members [role=switch]'), "leads load");
+    const nameField = () => [...dialog.querySelectorAll("label")].find((label) => label.textContent.startsWith("Project name")).querySelector("input");
+    const folder = await waitFor(() => dialog.querySelector('input[aria-label="Default folder on GPU box"]'), "the GPU box folder");
+    // No Save button on a block: the page has one.
+    assert.equal(button(page, "Rename", dialog), undefined);
+    assert.equal(button(page, "Save leads", dialog), undefined);
+    assert.equal([...dialog.querySelectorAll(".project-folder-row button")].length, 0);
+    type(page, nameField(), "App two");
+    type(page, folder, "/srv/app");
+    dialog.querySelector('[role=switch][aria-label="Lead · Mori"]').click(); await pause();
+    assert.match(saveBar(dialog).textContent, /^3 changes not saved/);
+    // An emptied name can't be saved: the bar waits for it.
+    type(page, nameField(), "");
+    await waitFor(() => /Correct the marked block/.test(saveBar(dialog).textContent), "the bar waits for the name");
+    assert.match(saveBar(dialog).textContent, /3 changes not saved · Correct the marked block to save\./);
+    assert.equal(button(page, "Save", saveBar(dialog)).disabled, true);
+    assert.match(dialog.textContent, /A project needs a name\./);
+    type(page, nameField(), "App two");
+    await waitFor(() => button(page, "Save", saveBar(dialog)).disabled === false, "Save is on again");
+    // The leads are refused; the name and the folder are saved anyway.
+    const refused = [];
+    page.window.fetch = ((fetch) => async (url, init = {}) => {
+      if (init.method !== "PUT" || !url.endsWith("/leads")) return fetch(url, init);
+      refused.push(JSON.parse(init.body));
+      return { ok: false, status: 400, json: async () => ({}), text: async () => JSON.stringify({ error: "version_conflict: this Project's leads changed; reload before saving" }) };
+    })(page.window.fetch);
+    page.calls.length = 0;
+    button(page, "Save", saveBar(dialog)).click();
+    await waitFor(() => /^1 change not saved · 1 change wasn’t saved/.test(saveBar(dialog)?.textContent ?? ""), "the save ends with only the leads still changed");
+    const writes = page.calls.filter((call) => call.method === "PATCH" || call.method === "PUT").map((call) => [call.method, call.url.replace(/^.*\/api/, ""), call.body]);
+    assert.deepEqual(writes, [
+      ["PATCH", "/projects/p-app", { name: "App two" }],
+      ["PATCH", "/projects/p-app", { defaultDirs: { gpu: "/srv/app" } }],
+    ], "each block its own request, one after another");
+    assert.deepEqual(refused, [{ expectedVersion: 1, leadAgentIds: [] }], "then the leads, against the version read");
+    assert.match(saveBar(dialog).textContent, /^1 change not saved · 1 change wasn’t saved: its block says why\./);
+    assert.match(dialog.querySelector(".project-leads [role=alert]").textContent, /version_conflict/);
+    // The saved name and folder are what the page shows now; only the leads are still changed.
+    assert.equal(nameField().value, "App two");
+    assert.equal(dialog.querySelector('input[aria-label="Default folder on GPU box"]').value, "/srv/app");
     assert.equal(page.errors.length, 0, page.errors.join("\n"));
   } finally { page.close(); }
 });
@@ -1054,7 +1149,14 @@ test("the Projects window reads in Chinese; names, folders and Core's words stay
     await waitFor(() => /还没有服务。/.test(dialog.textContent), "the services section has loaded");
     const text = dialog.textContent;
     assert.match(text, /项目名称/);
-    assert.ok(button(page, "重命名", dialog));
+    // Each member's Lead switch, and the page's one save, in Chinese (YN-8).
+    await waitFor(() => dialog.querySelector('[role=switch][aria-label="负责人 · Mori"]'), "the Lead switch in Chinese");
+    type(page, [...dialog.querySelectorAll("label")].find((label) => label.textContent.startsWith("项目名称")).querySelector("input"), "App 2");
+    await waitFor(() => saveBar(dialog), "the bar");
+    assert.equal(saveBar(dialog).querySelector("span").textContent, "1 处更改还没保存");
+    assert.deepEqual([...saveBar(dialog).querySelectorAll("button")].map((b) => b.textContent.trim()), ["放弃", "保存"]);
+    button(page, "放弃", saveBar(dialog)).click();
+    await waitFor(() => !saveBar(dialog), "discarded");
     assert.match(text, /仓库/);
     assert.match(text, /链接此项目使用的仓库。/);
     assert.match(text, /服务/);

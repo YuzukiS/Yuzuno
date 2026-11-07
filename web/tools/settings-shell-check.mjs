@@ -59,7 +59,9 @@ async function open({ width, height, language = "en", theme = "light", phone = f
     if (agent) return respond({ agent, turns: [{ id: `turn-${agent.id}`, status: "completed", items: [{ id: `reply-${agent.id}`, type: "agentMessage", text: "Synthetic conversation" }] }], pending: [], artifacts: [], messages: [] });
     if (/\/projects\/[^/]+\/services$/.test(url.pathname)) return respond({ services: [] });
     if (/\/projects\/[^/]+\/home-editors$/.test(url.pathname)) return respond({ version: 0, editorAgentIds: null });
-    if (/\/projects\/[^/]+\/leads$/.test(url.pathname)) return respond({ version: 0, leadAgentIds: [] });
+    // A Project's leads: none saved; a save (YN-8 S2b) is taken as sent.
+    if (/\/projects\/[^/]+\/leads$/.test(url.pathname))
+      return respond(request.method() === "PUT" ? { version: 1, leadAgentIds: request.postDataJSON().leadAgentIds } : { version: 0, leadAgentIds: [] });
     if (url.pathname === "/api/collaboration/github_repositories") return respond({ links: [], repositories: [], refreshing: false });
     switch (url.pathname) {
       case "/api/health": return respond({ product: "yuzuno", application: "yuzuno-next", workspaceId: "settings-shell", releaseId: "fixture" });
@@ -258,11 +260,41 @@ try {
       await dialog.locator(".settings-projects > .settings-group").last().evaluate((el) => el.scrollIntoView({ block: "end" }));
       await page.waitForTimeout(100);
       await page.screenshot({ path: resolve(output, `projects-archive-${width}x${height}-${language}-${theme}.png`) });
+      // S2b: one members block, a Lead switch per member; one save bar for the page, in view at the pane's foot.
+      const members = dialog.locator(".project-leads");
+      await members.locator("[role=switch]").first().waitFor();
+      assert.deepEqual(await members.locator(".project-leads-members li strong").allInnerTexts(), ["Pine", "Maple"], `${label}: Orchard's members`);
+      assert.deepEqual(await members.locator("[role=switch]").evaluateAll((list) => list.map((el) => el.getAttribute("aria-checked"))), ["false", "false"]);
+      const bar = dialog.locator(".settings-savebar");
+      assert.equal(await bar.isVisible(), false, `${label}: no bar before a change`);
+      const lead = language === "en" ? "Lead · Pine" : "负责人 · Pine";
+      await members.getByRole("switch", { name: lead }).click();
+      await bar.waitFor({ state: "visible" });
+      assert.equal(await bar.locator("span").first().innerText(), language === "en" ? "1 change not saved" : "1 处更改还没保存");
+      const placed = await bar.evaluate((el) => {
+        let pane = el.parentElement;
+        while (pane && !(pane.scrollHeight > pane.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(pane).overflowY))) pane = pane.parentElement;
+        const b = el.getBoundingClientRect(), p = (pane ?? document.documentElement).getBoundingClientRect();
+        return { inside: b.top >= p.top - 1 && b.bottom <= Math.min(p.bottom, innerHeight) + 1, atFoot: Math.abs(Math.min(p.bottom, innerHeight) - b.bottom) <= 24, buttons: [...el.querySelectorAll("button")].map((x) => x.getBoundingClientRect().right <= b.right + 1) };
+      });
+      assert.deepEqual(placed, { inside: true, atFoot: true, buttons: [true, true] }, `${label}: the bar is in view at the foot of the pane, its buttons inside it`);
+      await noOverflow(page, `${label} with the bar`);
+      await page.screenshot({ path: resolve(output, `projects-savebar-${width}x${height}-${language}-${theme}.png`) });
+      await bar.getByRole("button", { name: language === "en" ? "Discard" : "放弃" }).click();
+      await bar.waitFor({ state: "hidden" });
+      assert.equal(await members.getByRole("switch", { name: lead }).getAttribute("aria-checked"), "false", `${label}: Discard is back to what was saved`);
+      await members.getByRole("switch", { name: lead }).click();
+      const puts = () => calls.filter((call) => call.method === "PUT" && call.path === "/api/projects/orchard/leads").length;
+      const before = puts();
+      await bar.getByRole("button", { name: language === "en" ? "Save" : "保存", exact: true }).click();
+      await bar.getByText(language === "en" ? "All changes saved." : "所有更改都已保存。").waitFor();
+      assert.equal(puts() - before, 1, `${label}: one save of the leads`);
+      assert.equal(await members.getByRole("switch", { name: lead }).getAttribute("aria-checked"), "true");
       await dialog.locator(".settings-crumb").click();
       await dialog.locator(".settings-projects .settings-list").first().waitFor();
       assert.equal(await title.innerText(), language === "en" ? "Projects" : "项目", `${label}: Back returns to the list`);
       await context.close();
-      check(`${label}: the list first; Orchard's page in four cards, every control inside its card; Back to the list`);
+      check(`${label}: the list first; Orchard's page in four cards, every control inside its card; a Lead switch per member, one save bar in view, Discard and Save; Back to the list`);
     }
   }
 
@@ -406,8 +438,10 @@ try {
   // Sent by POST but reads, by the panels opened as they always did: Updates'
   // check, Tasks & messages' task list, and a project's GitHub links.
   const reads = ["/api/updates/check", "/api/collaboration/task_list", "/api/collaboration/github_repositories", "/api/collaboration/github_refresh"];
-  assert.deepEqual(calls.filter((c) => c.method !== "GET" && !reads.includes(c.path)), [], "opening and browsing write nothing");
-  assert.ok(!calls.some((c) => c.method !== "GET" && /^\/api\/(projects|machines|settings|jobs\/budget|remote-access)(\/|$)/.test(c.path)), "no project, machine or setting is written");
+  const leadSaves = (c) => c.method === "PUT" && c.path === "/api/projects/orchard/leads";
+  assert.equal(calls.filter(leadSaves).length, 6, "the projects part's one Save per run (S2b) is its only write");
+  assert.deepEqual(calls.filter((c) => c.method !== "GET" && !reads.includes(c.path) && !leadSaves(c)), [], "opening and browsing write nothing");
+  assert.ok(!calls.some((c) => c.method !== "GET" && !leadSaves(c) && /^\/api\/(projects|machines|settings|jobs\/budget|remote-access)(\/|$)/.test(c.path)), "no other project, machine or setting is written");
   assert.deepEqual(errors, []);
   check("no project, machine or setting writes (only the panels' POST reads) and no page errors");
 } finally {

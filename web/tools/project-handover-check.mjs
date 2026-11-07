@@ -148,23 +148,26 @@ try {
   await page.locator(".workspace-scope").first().waitFor({ timeout: 10_000 });
   await other.goto(`https://${HOST}/other.html`);
 
+  // The project page's one save (YN-8), outside the handover's block.
+  const bar = page.locator(".settings-savebar:not([hidden])");
+  const pageSave = bar.locator(".primary-button");
   // ---- An empty document, written and saved against revision 0.
   let section = await openSection(page);
   await section.getByText("Not written yet.").waitFor({ timeout: 10_000 });
-  assert.equal(await section.getByRole("button", { name: "Save handover" }).isDisabled(), true, "nothing to save yet");
+  assert.equal(await pageSave.count(), 0, "nothing to save yet");
   const first = "# Lab\n\nBuild with `make`; test with `make check`.\nThe fixtures live in tests/fixtures.";
   await section.locator('textarea[aria-label="Handover document"]').fill(first);
   // A note is counted in characters, as Core counts it (handover::MAX_NOTE).
   await section.locator('input[aria-label="Note"]').fill("说".repeat(201));
   await section.getByText("201 of 200 characters.").waitFor({ timeout: 10_000 });
   await section.getByText("At most 200 characters.").waitFor({ timeout: 10_000 });
-  assert.equal(await section.getByRole("button", { name: "Save handover" }).isDisabled(), true, "a note over its limit is not sent");
+  assert.equal(await pageSave.isDisabled(), true, "a note over its limit is not sent");
   check("a 201-character Chinese note is shown in characters and not sent");
   await section.locator('input[aria-label="Note"]').fill("First notes");
-  await section.getByText("Unsaved changes").waitFor({ timeout: 10_000 });
+  await bar.getByText("1 change not saved").waitFor({ timeout: 10_000 });
   await section.getByText(`${Buffer.byteLength(first)} of 32768 bytes.`).waitFor({ timeout: 10_000 });
   await section.screenshot({ path: join(output, "1-unsaved.png") });
-  await section.getByRole("button", { name: "Save handover" }).click();
+  await pageSave.click();
   await section.getByText("Saved.").waitFor({ timeout: 10_000 });
   assert.deepEqual(saves()[0]?.body, { expectedVersion: 0, markdown: first, note: "First notes" }, "a save names the revision it was read at");
   await section.locator(".project-handover-modified", { hasText: /^Last changed by you, .* · First notes$/ }).waitFor({ timeout: 10_000 });
@@ -177,7 +180,7 @@ try {
   // ---- A lead wrote meanwhile: refused as a conflict, the typed text kept, then reloaded with the lead named.
   write("# Lab\n\nWritten by the lead.", "Say where the fixtures are", { id: "lead", name: "Dev Lead" });
   await section.locator('textarea[aria-label="Handover document"]').fill("Overwritten");
-  await section.getByRole("button", { name: "Save handover" }).click();
+  await pageSave.click();
   await section.locator('[role="alert"]', { hasText: "version_conflict: this Project" }).waitFor({ timeout: 10_000 });
   assert.equal(saves()[1].body.expectedVersion, 1);
   assert.equal(await section.locator('textarea[aria-label="Handover document"]').inputValue(), "Overwritten", "a refused save keeps what was typed");
@@ -194,7 +197,7 @@ try {
   await section.locator("h3", { hasText: "交接文档" }).waitFor({ timeout: 10_000 });
   assert.equal(await section.getAttribute("lang"), "zh-Hans");
   assert.equal(await section.locator('textarea[aria-label="交接文档"]').inputValue(), "Unsaved notes", "the unsaved text stays");
-  await section.getByText("有未保存的更改").waitFor({ timeout: 10_000 });
+  await bar.getByText("1 处更改还没保存").waitFor({ timeout: 10_000 });
   await section.locator(".project-handover-modified", { hasText: /^最后由Dev Lead修改，/ }).waitFor({ timeout: 10_000 });
   await section.screenshot({ path: join(output, "4-zh.png") });
   check("in Chinese after a language change in another window, the unsaved text kept");

@@ -1140,6 +1140,19 @@
   color: var(--ink);
   font-size: calc(10px + var(--font-adjust, 3px));
 }
+.settings-savebar[hidden] {
+  display: none;
+}
+.settings-savebar > span:focus {
+  outline: none;
+}
+.settings-savebar > span small {
+  color: var(--text-secondary);
+  font-size: inherit;
+}
+.settings-savebar > span small[role="alert"] {
+  color: var(--error-ink);
+}
 
 /* The slider (SettingsSlider, design A): a drawn track whose fill is the
    value under a native range, a round thumb with hover, pressed and focus

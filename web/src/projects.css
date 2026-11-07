@@ -318,7 +318,7 @@
 }
 .project-rename {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: end;
   gap: 9px;
 }
@@ -328,7 +328,7 @@
 }
 .project-folder-row {
   display: grid;
-  grid-template-columns: minmax(110px, 150px) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(110px, 150px) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
 }
@@ -453,7 +453,7 @@
 
 @media (max-width: 720px) {
   .project-folder-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
   }
   .project-machine {
     grid-column: 1 / -1;
