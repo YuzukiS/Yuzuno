@@ -278,16 +278,41 @@ async fn a_real_opencode_2x_session_reads_through_cores_mapping() {
     assert!(ended(pid), "OpenCode ended and was reaped");
 }
 
+/// The stub provider's process, ended when dropped: a probe that fails before
+/// its last line leaves no process behind, which would keep its Job's cgroup
+/// from emptying and its reservation held (T-61, diag Job 4523e39b).
+struct Stub(std::process::Child);
+
+impl std::ops::Deref for Stub {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Stub {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for Stub {
+    fn drop(&mut self) {
+        self.0.kill().ok();
+        self.0.wait().ok();
+    }
+}
+
 /// The stub provider (tests/fixtures/stub_provider.py), on loopback: its
-/// port, and the file it logs each request to.
-fn stub_provider(dir: &Path) -> (std::process::Child, u16, PathBuf) {
+/// process (ended when dropped), its port, and the file it logs each request to.
+fn stub_provider(dir: &Path) -> (Stub, u16, PathBuf) {
     let log = dir.join("stub-requests.jsonl");
     let mut child = std::process::Command::new("python3")
         .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stub_provider.py")).arg(&log)
         .stdout(std::process::Stdio::piped()).spawn().expect("python3 runs the stub provider");
     let mut line = String::new();
     std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.take().unwrap()), &mut line).unwrap();
-    (child, line.trim().parse().expect("the stub provider's port"), log)
+    (Stub(child), line.trim().parse().expect("the stub provider's port"), log)
 }
 
 /// The events of `session` until its execution ends, within 60 s.
