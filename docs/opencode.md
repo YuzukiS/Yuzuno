@@ -56,8 +56,9 @@ at zero, as 2.x's own fork; sub-agent sessions are not copied, only the main
 one. No login is copied: unless a provider key comes from OpenCode's config or
 environment, sign the new Agent in before its first message. A fork whose
 write was not confirmed goes on with the same request: Yuzuno reads what the
-new OpenCode holds first and never writes the copy twice. A fork that failed
-leaves the new Agent's folder in place.
+new OpenCode holds first and never writes the copy twice. One the new OpenCode
+answers with an error, or doesn't answer a second time, fails, and the turn
+can be forked again. A fork that failed leaves the new Agent's folder in place.
 
 **Rewind** is 2.x's own revert, staged then committed: see
 [Rewind](rewind.md#opencode). Turns a fork copied in can't be rewound in the

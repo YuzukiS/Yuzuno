@@ -306,11 +306,16 @@ impl Workspace {
     /// there once (rule R5): only if it lists no session at all. One that
     /// lists only this very copy, with this request's marker, holds it
     /// already (an earlier write whose answer was lost); anything else fails
-    /// the fork, written over by nothing. The import's answer: 200, or 409
-    /// for this ID, means it holds a session under it (only a read tells
-    /// which); 2.x's own refusal before writing fails the fork; any other,
-    /// or none within WATCH, leaves it uncertain: the same request goes on
-    /// from there (D-33).
+    /// the fork, written over by nothing. The import's answer:
+    /// - 200, or 409 for this ID: it holds a session under it (only a read
+    ///   tells which);
+    /// - any error answer: the fork fails, so that the Turn is free to be
+    ///   forked anew (#736 R1); a session it may have written stays in this
+    ///   attempt's folder (D-36), and a new attempt writes into its own;
+    /// - none within WATCH: uncertain, and the same request goes on from
+    ///   there (D-33). Gone on from there, its new OpenCode read to hold
+    ///   nothing, none a second time fails it as well: an import that never
+    ///   answers never holds the Turn.
     async fn opencode_fork_import(self: &Arc<Self>, row: &mut Row, started: &mut Option<Started>) -> Result<()> {
         let frozen = self.opencode_fork_fixed(row)?;
         self.opencode_fork_reserved(row)?;
@@ -327,10 +332,16 @@ impl Workspace {
         if held {
             return self.opencode_fork_state(row, "forked", None).await;
         }
+        let anew = "可以重新 fork，新的一次会写进它自己的目录";
+        let before = row.state.clone();
         match server.import(&frozen.payload, WATCH).await {
             ImportAnswer::Imported(_) | ImportAnswer::Exists => self.opencode_fork_state(row, "forked", None).await,
             ImportAnswer::Refused(status) => self.opencode_fork_state(row, "failed",
-                Some(format!("新 Agent 的 OpenCode 拒绝写入这份副本，什么也没有写（{status}）；没有登记"))).await,
+                Some(format!("新 Agent 的 OpenCode 拒绝写入这份副本，什么也没有写（{status}）；没有登记，{anew}"))).await,
+            ImportAnswer::Failed(status) => self.opencode_fork_state(row, "failed",
+                Some(format!("新 Agent 的 OpenCode 写入这份副本时出错（{status}）；没有登记，新 Agent 的目录留着，{anew}"))).await,
+            ImportAnswer::Unknown(why) if before == "uncertain" => self.opencode_fork_state(row, "failed",
+                Some(format!("新 Agent 的 OpenCode 又一次没有回答这份副本的写入（{why}），此前它什么也没有；没有登记，新 Agent 的目录留着，{anew}"))).await,
             ImportAnswer::Unknown(why) => self.opencode_fork_state(row, "uncertain",
                 Some(format!("新 Agent 的 OpenCode 没有确认写入这份副本（{why}）；{again}。原 Agent 照常可用"))).await,
         }

@@ -387,14 +387,13 @@ async fn a_fork_of_an_executor_leads_the_sources_project() {
 
 /// I2 (D-33): an import whose answer was lost leaves the fork uncertain and
 /// registers nothing; the same request goes on, finds the copy the new
-/// Agent's OpenCode holds, and writes nothing twice. One whose import failed
-/// (a 500) goes on the same way, and writes it then.
+/// Agent's OpenCode holds, and writes nothing twice.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_lost_import_answer_is_continued_to_one_session() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let (ws, data, _, [_, second, third]) = three(&root).await;
+    let (ws, data, _, [_, second, _]) = three(&root).await;
     plan_new(&data, json!({"import": "lost"}));
     let key = uuid::Uuid::new_v4().to_string();
     let outcome = ws.opencode_fork("oc", request(&key, &second, "Forked")).await.unwrap();
@@ -415,18 +414,43 @@ async fn a_lost_import_answer_is_continued_to_one_session() {
     assert_eq!(starts(&data, &row.target_agent_id), 2, "started again to go on");
     ws.close_agent(&row.target_agent_id).await.unwrap();
 
-    // A 500: nothing written, so going on writes it.
+    ws.close_agent("oc").await.unwrap();
+}
+
+/// #736 R1: an import that fails every time fails the fork, so the Turn is
+/// free to be forked anew, never held by an attempt that can't end: an
+/// answer of any error (here a 500), or no answer a second time once the
+/// new OpenCode was read to hold nothing. The new Agent's folder is kept,
+/// and a new attempt writes into one of its own (D-36).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_import_that_fails_every_time_fails_the_fork_and_frees_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, data, _, [first, second, _]) = three(&root).await;
+    // An error answer.
     plan_new(&data, json!({"import": "fail"}));
     let key = uuid::Uuid::new_v4().to_string();
-    assert_eq!(ws.opencode_fork("oc", request(&key, &third, "Again")).await.unwrap()["state"], "uncertain");
+    let outcome = ws.opencode_fork("oc", request(&key, &second, "Forked")).await.unwrap();
+    assert_eq!(outcome["state"], "failed", "an error answer fails it: {outcome}");
+    assert!(outcome["message"].as_str().unwrap().contains("可以重新 fork"), "{outcome}");
     let row = ws.store.opencode_fork_row(&key).unwrap().unwrap();
-    // It holds nothing yet, so it starts as on a new database again: as it answers then.
+    assert!(ws.listed(&row.target_agent_id).await.is_err(), "nothing registered");
+    assert!(data.join("opencode").join(&row.target_agent_id).join("fork.json").is_file(), "its folder kept");
     plan_new(&data, json!({}));
-    let continued = ws.opencode_fork("oc", request(&key, &third, "Again")).await.unwrap();
-    assert_eq!(continued["state"], "completed", "{continued}");
-    assert_eq!(asked(&data, &row.target_agent_id, "POST", "/api/experimental/session/import").len(), 2, "written when it went on");
-    assert_eq!(sessions_held(&data, &row.target_agent_id), 1, "one session");
-    ws.close_agent(&row.target_agent_id).await.unwrap();
+    let anew = ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &second, "Forked")).await.unwrap();
+    assert_eq!(anew["state"], "completed", "the Turn is free: {anew}");
+    ws.close_agent(anew["agent"]["id"].as_str().unwrap()).await.unwrap();
+    // No answer, twice: the second time, after the new OpenCode was read to hold nothing.
+    plan_new(&data, json!({"import": "hold"}));
+    let key = uuid::Uuid::new_v4().to_string();
+    assert_eq!(ws.opencode_fork("oc", request(&key, &first, "Forked")).await.unwrap()["state"], "uncertain", "once: it may go on");
+    let outcome = ws.opencode_fork("oc", request(&key, &first, "Forked")).await.unwrap();
+    assert_eq!(outcome["state"], "failed", "no answer again: {outcome}");
+    plan_new(&data, json!({}));
+    let anew = ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &first, "Forked")).await.unwrap();
+    assert_eq!(anew["state"], "completed", "the Turn is free: {anew}");
+    ws.close_agent(anew["agent"]["id"].as_str().unwrap()).await.unwrap();
     ws.close_agent("oc").await.unwrap();
 }
 

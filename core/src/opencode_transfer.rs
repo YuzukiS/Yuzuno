@@ -64,7 +64,11 @@ pub enum ImportAnswer {
     /// 2.x refused it before writing anything: a body it could not read
     /// (400 of a request kind), or a parent it does not hold (404).
     Refused(HttpStatus),
-    /// Anything else: no answer, or one that says nothing of what it did.
+    /// Any other error answer: whether anything was written is not known
+    /// (2.x can fail after its transaction too), but the request has ended.
+    Failed(HttpStatus),
+    /// No answer, or one that breaks off or is not an answer: the request
+    /// may still have written the session.
     Unknown(String),
 }
 

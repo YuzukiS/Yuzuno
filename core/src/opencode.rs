@@ -1075,7 +1075,7 @@ impl Server {
             },
             Ok(response) => {
                 let status = status(response).await;
-                import_answer(&status, payload.id()).unwrap_or_else(|| ImportAnswer::Unknown(status.to_string()))
+                import_answer(&status, payload.id()).unwrap_or(ImportAnswer::Failed(status))
             }
         }
     }
