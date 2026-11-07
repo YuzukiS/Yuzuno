@@ -206,4 +206,3 @@ async fn a_message_never_sent_is_rejected_even_once_settled_as_unknown() {
     let receipt = &ws.store.detail("oc").unwrap().message_receipts[0];
     assert_eq!((receipt.status.as_str(), receipt.error.as_deref()), ("rejected", Some(refused.to_string().as_str())));
 }
-

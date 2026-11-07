@@ -241,7 +241,7 @@ async fn an_interrupted_compaction_is_stopped_and_holds_nothing_back() {
     lab.ws.opencode_compact(ID).await.unwrap();
     lab.until("its start", |d| compaction(d)["_opencodeCompact"]["native"]["status"] == "running").await;
     refuses_new_writes(&lab, "OpenCode 正在压缩").await;
-    lab.ws.opencode_interrupt(ID).await.unwrap();
+    lab.ws.interrupt(ID).await.unwrap();
     let d = lab.until("its stop", |d| compaction(d)["status"] != "inProgress").await;
     let stopped = compaction(&d);
     assert_eq!((&stopped["status"], &stopped["_opencodeCompact"]["state"], &stopped["error"]["native"]["type"]),
