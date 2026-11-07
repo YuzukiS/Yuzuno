@@ -210,3 +210,40 @@ test("a lead's version shows with its name and reason, and a past version is res
   assert.ok(button(page, "Restore version 2"), "the lead's version is now a past one, to restore in turn");
   assert.deepEqual(page.errors, []);
 });
+
+test("Restore waits for unsaved edits: it is disabled, says why, and a click saves nothing (YN-2 S3, #661 R1)", async () => {
+  const versions = [
+    { version: 1, markdown: "# Lab", writtenBy: { id: "user", name: "You" }, reason: null, at: "2026-11-05T08:00:00Z" },
+    { version: 2, markdown: "# Lab\nTest with make check.", writtenBy: { id: "lead", name: "Dev Lead" }, reason: "Say how to test", at: "2026-11-05T09:00:00Z" },
+  ];
+  const page = mount((url, method, body) => {
+    if (url.includes("version=")) {
+      const n = Number(url.split("version=")[1]);
+      return [200, { projectId: "p1", past: { ...versions[n - 1], bytes: versions[n - 1].markdown.length } }];
+    }
+    if (method === "PUT") {
+      versions.push({ version: versions.length + 1, markdown: body.markdown, writtenBy: { id: "user", name: "You" }, reason: body.reason ?? null, at: "2026-11-05T10:00:00Z" });
+    }
+    return [200, answer(versions)];
+  });
+  page.window.renderHandover("p1");
+  const section = () => page.document.querySelector("#project-settings-handover");
+  await until(() => /Version 2/.test(section()?.textContent ?? ""), "the versions");
+  await type(page, "Handover document", "# Lab\nMy unsaved notes.");
+  const restore = () => button(page, "Restore version 1");
+  assert.ok(restore(), "the past version is still offered");
+  assert.equal(restore().disabled, true, "Restore waits while the draft has unsaved edits");
+  assert.equal(restore().getAttribute("title"), "Save or discard your edits first", "and says why");
+  restore().click();
+  await tick();
+  assert.equal(puts(page).length, 0, "a click on it saves nothing");
+  assert.equal(field(page, "Handover document").value, "# Lab\nMy unsaved notes.", "the unsaved edits stay");
+  // Back to the saved text: nothing is unsaved, and Restore works as before.
+  await type(page, "Handover document", "# Lab\nTest with make check.");
+  assert.equal(restore().disabled, false);
+  assert.equal(restore().getAttribute("title"), null);
+  restore().click();
+  await until(() => /Version 3/.test(section().textContent), "the restored version");
+  assert.deepEqual(puts(page)[0].body, { expectedVersion: 2, markdown: "# Lab", reason: "Restored version 1" });
+  assert.deepEqual(page.errors, []);
+});

@@ -27,6 +27,7 @@ const text = strings({
   show: (n: number) => `Show version ${n}`,
   restore: (n: number) => `Restore version ${n}`,
   restored: (n: number) => `Restored version ${n}`,
+  saveFirst: "Save or discard your edits first",
   hide: "Hide",
   emptyVersion: "This version is empty.",
 }, {
@@ -51,6 +52,7 @@ const text = strings({
   show: (n) => `查看第 ${n} 版`,
   restore: (n) => `恢复第 ${n} 版`,
   restored: (n) => `恢复为第 ${n} 版`,
+  saveFirst: "先保存或放弃你的修改",
   hide: "收起",
   emptyVersion: "此版本为空。",
 });
@@ -107,7 +109,8 @@ export function ProjectHandover({ projectId, disabled = false }: { projectId: st
   }
   // A past version saved again as a new one, with why: the user's own save (YN-2 S3).
   async function restore(version: number) {
-    if (!view) return;
+    // Restoring replaces the draft: never over unsaved edits (#661 R1).
+    if (!view || changed) return;
     setBusy(true);
     setError("");
     try {
@@ -177,7 +180,8 @@ export function ProjectHandover({ projectId, disabled = false }: { projectId: st
                   {past?.version === v.version ? t.hide : t.show(v.version)}
                 </button>
                 {v.version !== view.version && (
-                  <button type="button" className="quiet-button" disabled={locked} onClick={() => void restore(v.version)}>
+                  <button type="button" className="quiet-button" disabled={locked || changed}
+                    title={changed ? t.saveFirst : undefined} onClick={() => void restore(v.version)}>
                     {t.restore(v.version)}
                   </button>
                 )}
