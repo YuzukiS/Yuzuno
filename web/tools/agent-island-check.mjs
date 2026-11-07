@@ -343,8 +343,9 @@ async function run({ width, height, theme, motion, lang = "en" }) {
     // YN-24 handing in. Each pill grows left out of its ring and takes its width from line one,
     // whose words wrap rather than being covered (the user, v10.2); then each shrinks back.
     {
+      // Line one's room: the row's first column, which line one fills (its own box follows its words).
       const before = Object.fromEntries(await Promise.all(["dev5", "yn24"].map(async (id) => [id, await rowOf(id).evaluate((r) => ({
-        width: Math.round(r.querySelector(".agent-line-one").getBoundingClientRect().width), height: Math.round(r.getBoundingClientRect().height) }))])));
+        width: Math.round(r.querySelector(":scope > .agent-select").getBoundingClientRect().width), height: Math.round(r.getBoundingClientRect().height) }))])));
       agents = agents.map((a) => (a.id === "dev5" ? { ...a, unreadCount: 1 }
         : a.id === "yn24" ? { ...a, status: "idle", workSummary: null, executor: { ...a.executor, since: ago(0.2) } } : a));
       await page.waitForFunction(() => ["dev5", "yn24"].every((id) => document.querySelector(`.agent-list article[data-agent-id="${id}"]`)?.dataset.form === "pill"), null, { timeout: 10_000, polling: "raf" });
@@ -360,20 +361,20 @@ async function run({ width, height, theme, motion, lang = "en" }) {
         const name = r.querySelector(".agent-name"), cut = (el) => !!el && (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1);
         return { text: r.querySelector(".island-pill").textContent, leftOfRing: p.right <= g.left + 0.5, shell: s.left < p.left && s.right >= g.right && s.height <= 30,
           // Pushed, not covered: line one's words end before the pill's outline begins.
-          clear: words <= s.left + 0.5, width: Math.round(one.getBoundingClientRect().width), height: Math.round(r.getBoundingClientRect().height), cut: cut(one) || cut(name) };
+          clear: words <= s.left + 0.5, width: Math.round(r.querySelector(":scope > .agent-select").getBoundingClientRect().width), height: Math.round(r.getBoundingClientRect().height), cut: cut(one) || cut(name) };
       })])));
       report.pills = { ...(report.pills ?? {}), [tag]: { before, pills } };
       const said = lang === "zh" ? { dev5: "1 条新消息", yn24: "已交 #681" } : { dev5: "1 new message", yn24: "Handed in #681" };
       for (const id of ["dev5", "yn24"]) {
         const p = pills[id];
         assert.ok(p.text === said[id] && p.leftOfRing && p.shell && p.clear && !p.cut, `${tag}: ${id}'s pill left of its ring, in its outline, line one's words clear of it: ${JSON.stringify(p)}`);
-        assert.ok(p.width < before[id].width, `${tag}: ${id}'s pill takes its width from line one: ${before[id].width} → ${p.width}`);
+        assert.ok(p.width < before[id].width, `${tag}: ${id}'s pill takes its room from line one: ${before[id].width} → ${p.width}`);
       }
       if (!phone || theme === "light") await shot(list, `${tag}-4-pills`);
       await page.waitForFunction(() => ["dev5", "yn24"].every((id) => document.querySelector(`.agent-list article[data-agent-id="${id}"]`)?.dataset.form === "ring"), null, { timeout: 6_000, polling: "raf" });
       const closing = await rowOf("dev5").evaluate((r) => r.querySelector(".island-shell").getAnimations().map((a) => { const k = a.effect.getKeyframes(); return [k[0].width, k.at(-1).width]; }));
-      const after = await rowOf("dev5").evaluate((r) => Math.round(r.querySelector(".agent-line-one").getBoundingClientRect().width));
-      assert.equal(after, before.dev5.width, `${tag}: line one has its width back`);
+      const after = await rowOf("dev5").evaluate((r) => Math.round(r.querySelector(":scope > .agent-select").getBoundingClientRect().width));
+      assert.equal(after, before.dev5.width, `${tag}: line one has its room back`);
       report.motion = { ...(report.motion ?? {}), [tag]: { opening, closing } };
       if (motion) {
         assert.ok(opening.some(([from]) => from === "22px"), `${tag}: the outline grows out of the ring (${JSON.stringify(opening)})`);
