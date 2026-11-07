@@ -8,6 +8,7 @@ import {
 } from "./executor-templates";
 import { ExecutorSlots } from "./ExecutorSlots";
 import { langTag, strings, useLanguage } from "./i18n";
+import { useSaveBarPart } from "./SettingsSaveBar";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import "./executor-templates.css";
 
@@ -260,16 +261,24 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
       return next;
     }));
   };
-  async function save() {
-    if (!view) return;
+  async function save(): Promise<boolean> {
+    if (!view) return false;
     setBusy(true);
     setError("");
     try {
       adopt(await saveExecutorTemplates(own(view).version, drafts.map(templateOf)));
       setDone(true);
-    } catch (e) { setError(errorText(e)); }
+      return true;
+    } catch (e) { setError(errorText(e)); return false; }
     finally { setBusy(false); }
   }
+  // On Settings › Executors the change joins the page's save bar (YN-8),
+  // held while a template's label or limit can't be saved; alone it keeps its Save.
+  const inBar = useSaveBarPart("executor-templates", changed && view && !disabled ? {
+    ready: !invalid,
+    save,
+    discard: () => { setError(""); setDone(false); adopt(view); },
+  } : null);
   // A preset becomes an unsaved draft; Save writes it, as any edit (T-43 fills the list).
   const addPreset = (id: string) => {
     const preset = view?.presets.find(p => p.id === id);
@@ -411,10 +420,12 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
               {view.presets.map(p => <option key={p.id} value={p.id} title={p.description}>{p.label}</option>)}
             </select>
           )}
-          <button type="button" className="secondary-button" disabled={locked || !changed || invalid} onClick={() => void save()}>
-            {busy && <LoaderCircle size={13} className="spin" />} {t.save}
-          </button>
-          {changed ? <span className="settings-row-help">{t.unsaved}</span> : done && <span className="settings-row-help" role="status">{t.saved}</span>}
+          {!inBar && (
+            <button type="button" className="secondary-button" disabled={locked || !changed || invalid} onClick={() => void save()}>
+              {busy && <LoaderCircle size={13} className="spin" />} {t.save}
+            </button>
+          )}
+          {changed ? !inBar && <span className="settings-row-help">{t.unsaved}</span> : done && <span className="settings-row-help" role="status">{t.saved}</span>}
         </div>
       </>}
       {error && <p className="inline-error" role="alert">{error}</p>}

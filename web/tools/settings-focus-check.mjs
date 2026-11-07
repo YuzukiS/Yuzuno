@@ -188,6 +188,12 @@ for (const run of runs) {
   await page.route("**/*", serve);
   await page.addInitScript(pageHelpers);
   const openEditor = async (query, title, editor) => {
+    // On a phone an open page hides Settings' directory and its search (YN-8): Back to it.
+    const back = page.locator(".settings-center .settings-back");
+    if (await back.isVisible().catch(() => false)) {
+      await back.click();
+      await page.locator(".settings-search input").waitFor({ timeout: 10_000 });
+    }
     if (!(await page.locator(".settings-search input").isVisible())) {
       await page.getByRole("button", { name: "Settings and updates" }).click({ timeout: 10_000 });
       await page.locator(".settings-search input").waitFor({ timeout: 10_000 });
@@ -302,18 +308,19 @@ for (const run of runs) {
       }
     }
 
-    // ---- ST:AD4: New Agent defaults' Save, gone once saved.
+    // ---- ST:AD4: the Agent defaults page's Save (YN-8 S5: its one save bar), gone once saved.
     await openEditor("new agent", "New Agent defaults", "agent-defaults");
     const section = page.locator("#settings-agent-defaults");
     const select = section.locator('select[aria-label="Harness for new Agents"]');
+    const bar = page.locator(".settings-savebar:not([hidden])");
     for (const [how, said] of HOWS) {
       await select.waitFor({ timeout: 10_000 });
       await select.selectOption(harness === "codex" ? "claude" : "codex");
-      await press(section.getByRole("button", { name: "Save", exact: true }), how);
-      const line = section.locator("p[role=status]", { hasText: "Saved. Agents created from now on use these" });
+      await press(bar.getByRole("button", { name: "Save", exact: true }), how);
+      const line = bar.locator("span[role=status]", { hasText: "All changes saved." });
       await line.waitFor({ timeout: 10_000 }).catch(() => {});
       const { on, at } = await focusOn(`defaults Save (${how})`, line);
-      ok(`${tag}: New Agent defaults' Save, ${said}: once saved it is gone, and focus goes to the line that says it was saved (focus: ${JSON.stringify(at)})`, on, at);
+      ok(`${tag}: the Agent defaults page's Save, ${said}: once saved it is gone, and focus goes to the bar's line that says it was saved (focus: ${JSON.stringify(at)})`, on, at);
     }
 
     // ---- ST:B8: the daily backup's Save.

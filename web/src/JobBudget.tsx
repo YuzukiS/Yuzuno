@@ -485,9 +485,12 @@ export function BudgetSettings({
       setToDefault(false);
     },
   } : null);
-  // A track is the whole host where Core says its size, else Core's bounds; never shorter than the value.
-  const top = (whole: number | null | undefined, bound: number | undefined, now: number) =>
-    Math.max(whole ?? bound ?? now, now);
+  // A track is the whole host where Core says its size, cut at Core's bound
+  // when that is lower (#730 R1 P3); never shorter than the value.
+  const top = (whole: number | null | undefined, bound: number | undefined, now: number) => {
+    const end = Math.min(whole ?? Infinity, bound ?? Infinity);
+    return Math.max(Number.isFinite(end) ? end : now, now);
+  };
   const cpuMin = (bounds?.minimum.cpuMillis ?? 200) / 1000;
   const memoryMin = bounds?.minimum.memoryMiB ?? 128;
   const swapMin = bounds?.minimum.swapMiB ?? 0;

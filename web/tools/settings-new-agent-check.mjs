@@ -235,6 +235,12 @@ for (const run of runs) {
     await dialog.getByRole("button", { name: "New agent", exact: true }).waitFor();
   };
   const openEditor = async (query, title, editor) => {
+    // On a phone an open page hides Settings' directory and its search (YN-8): Back to it.
+    const back = page.locator(".settings-center .settings-back");
+    if (await back.isVisible().catch(() => false)) {
+      await back.click();
+      await page.locator(".settings-search input").waitFor({ timeout: 10_000 });
+    }
     if (!(await page.locator(".settings-search input").isVisible().catch(() => false))) {
       await toList();
       await page.getByRole("button", { name: "Settings and updates" }).click({ timeout: 10_000 });
@@ -490,7 +496,8 @@ for (const run of runs) {
         confirmed = { saves: report.presentationSaves.slice(), focus: await focus() };
         // Saved visual again, with nothing unsaved: Restore default restores at once.
         await page.locator(`${box} select`).selectOption("visual");
-        await page.locator(box).getByRole("button", { name: "Save Home preference", exact: true }).click();
+        // Settings › Home's one save bar (YN-8 S5).
+        await page.locator(".settings-savebar:not([hidden])").getByRole("button", { name: "Save", exact: true }).click();
         await page.locator(box).getByRole("button", { name: "Restore default", exact: true }).waitFor({ timeout: 3000 });
         await page.waitForTimeout(200);
         const before = report.presentationSaves.length;
