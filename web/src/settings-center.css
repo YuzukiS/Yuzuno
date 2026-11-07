@@ -1,68 +1,40 @@
 .settings-center { display: flex; flex: 1; flex-direction: column; min-height: 0; }
-.settings-search { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+.settings-search { display: flex; align-items: center; gap: 8px; }
 .settings-search input { width: 100%; min-width: 0; font: inherit; font-size: calc(10.5px + var(--font-adjust, 3px)); color: var(--ink); background: var(--input); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; }
-/* The sidebar is the daily one (updates.css): 9.5rem, an icon and a short
-   name per category, so an editor keeps the width. */
-.settings-center .settings-layout { margin-top: 14px; }
-.settings-center .settings-nav { max-height: 100%; overflow-y: auto; }
 .settings-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* A category's entries, one row above the entry shown. */
-.settings-entries { display: flex; flex-wrap: wrap; gap: 2px 4px; margin: 0 0 4px; }
-.settings-entries button { padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font: inherit; font-size: calc(10.5px + var(--font-adjust, 3px)); cursor: pointer; }
-.settings-entries button:hover { color: var(--ink); background: color-mix(in srgb, currentColor 6%, transparent); }
-.settings-entries [aria-current="true"] { color: var(--accent-ink); background: var(--accent-wash); font-weight: 550; }
-.settings-entries button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 1px; }
-/* Its scope in one line; where its value comes from and when it applies on request. */
-.settings-entry-about > summary { max-width: 100%; }
-.settings-entry-about p { margin: 6px 0 0 2px; color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px)); line-height: 1.5; }
 .settings-catalog-heading h3 { margin: 0 0 8px; }
 .settings-catalog-heading p { color: var(--text-secondary); margin: 0 0 14px; }
 .settings-catalog { display: grid; gap: 8px; }
 .settings-catalog-card { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; overflow-wrap: anywhere; }
 .settings-catalog-card h4 { margin: 0 0 4px; font-size: 1em; }
 .settings-catalog-card p { margin: 4px 0; color: var(--text-secondary); font-size: .9em; line-height: 1.5; }
-/* Where a setting is edited, under its category's row: no frame. */
-.settings-catalog-card.is-brief { padding: 14px 0 0; border: 0; border-radius: 0; }
 .settings-catalog-card .settings-scope { color: var(--ink); }
 .settings-catalog-card .secondary-button { margin-top: 8px; max-width: 100%; white-space: normal; text-align: left; }
 .settings-catalog-card .secondary-button svg { flex-shrink: 0; }
+/* Search results that are set outside Settings say where (YN-8). */
+.settings-elsewhere { margin-top: 18px; }
+.settings-elsewhere h3 { margin: 0 0 4px; font-size: 1em; }
+.settings-elsewhere > p { margin: 0 0 10px; color: var(--text-secondary); font-size: .9em; }
 .settings-object-choice { display: grid; gap: 6px; margin-top: 10px; }
 .settings-object-choice select { min-width: 0; width: 100%; padding: 8px 10px; font: inherit; font-size: calc(10.5px + var(--font-adjust, 3px)); color: var(--ink); background: var(--input); border: 1px solid var(--line); border-radius: 7px; }
-.settings-editor { padding-top: 8px; min-width: 0; scroll-margin-top: 8px; }
+/* A page's editors follow one another, as one page. */
+.settings-editor { min-width: 0; scroll-margin-top: 8px; }
+.settings-editor + .settings-editor:not([hidden]) { margin-top: 24px; }
 /* Data & storage sizes its text in em: in Settings, from the settings rows' size. */
 .settings-editor .storage-overview { font-size: calc(10.5px + var(--font-adjust, 3px)); }
 .settings-editor[hidden] { display: none; }
 .settings-editor:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
-@media (max-width: 720px) {
-  .settings-center .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .settings-center .settings-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 9rem; overflow: auto; margin: 0; padding: 2px; }
-  .settings-center .settings-nav [role="tab"] { width: 100%; font-size: .8em; padding: 8px; }
-  .settings-catalog-card { padding: 10px; }
-}
-
-.settings-category-picker { display: none; }
-/* A phone: the categories are the picker, as on a short screen, and the
-   dialog's description is left to assistive technology (it stays the
-   dialog's description), so an editor gets the height. A 320×640 phone at
-   24 px text kept 89 px for the editor under the eight-tab grid (T-189). */
-@media (max-width: 720px) {
+/* The Projects and Machines managers as pages (YN-8): their own grid, in
+   the page's width. */
+.settings-manager .machines-page { margin-top: 0; }
+/* A phone: the dialog's description is left to assistive technology (it
+   stays the dialog's description), so the list and a page get the height. */
+@media (max-width: 520px) {
   .settings-modal .modal-heading p { display: none; }
-  .settings-center .settings-nav { display: none; }
-  .settings-category-picker { display: block; min-width: 0; }
-  .settings-category-picker select { width: 100%; min-width: 0; min-height: 44px; font: inherit; font-size: calc(10.5px + var(--font-adjust, 3px)); padding: 8px 10px; color: var(--ink); background: var(--input); border: 1px solid var(--line); border-radius: 7px; }
 }
-/* A software keyboard can leave only a short viewport. Give the content
-   the remaining space; all eight categories stay reachable in the picker. */
+/* A software keyboard can leave only a short viewport: the content gets it. */
 @media (max-height: 500px) {
   .modal.settings-modal { height: calc(var(--safe-dvh) - 16px); max-height: calc(var(--safe-dvh) - 16px); padding: 12px; }
   .settings-modal .modal-heading p { display: none; }
-  .settings-center .settings-search { margin-top: 6px; }
-  .settings-center .settings-search input { padding-block: 5px; }
-  .settings-center .settings-nav { display: none; }
-  .settings-category-picker { display: block; min-width: 0; }
-  .settings-category-picker select { width: 100%; min-width: 0; min-height: 0; font: inherit; font-size: calc(10.5px + var(--font-adjust, 3px)); padding: 5px 10px; color: var(--ink); background: var(--input); border: 1px solid var(--line); border-radius: 7px; }
-  .settings-center .settings-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 6px; margin-top: 6px; }
+  .settings-center .settings-layout { margin-top: 6px; }
 }
-
-/* A category's entries ease their hover and selection colours (T-19). */
-.settings-entries button { transition: color var(--motion-micro) var(--ease-standard), background-color var(--motion-micro) var(--ease-standard); }

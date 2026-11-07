@@ -98,6 +98,8 @@ import type {
   WorkSummary,
 } from "./types";
 import type { SettingsDestination, SettingsEditor } from "./settings-catalog";
+import { destinationPage, type SettingsPage } from "./settings-pages";
+import type { SettingsOpenAt } from "./SettingsCenter";
 import { UpdateBanner, WorkspaceUpdatesHost } from "./WorkspaceUpdates";
 import { onFollowApplied, useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
@@ -150,7 +152,7 @@ import { CollaborationBoard } from "./CollaborationBoard";
 import { MachinesPage } from "./MachinesPage";
 import {
   AgentProjectPicker,
-  ProjectManager,
+  ProjectsPage,
   ProjectSwitcher,
 } from "./ProjectWorkspace";
 import {
@@ -373,14 +375,14 @@ export function App() {
   // The letters shown beside New agent, as this device has them.
   const boundKeys = useShortcutKeys();
   const [updatesOpen, setUpdatesOpen] = useState(false);
-  // Settings opened at one editor, as a backup notification's click does (T-196).
-  const [settingsAt, setSettingsAt] = useState<{ editor: SettingsEditor; nonce: number } | null>(null);
+  // Settings opened at a page or an editor, as a backup notification's click
+  // (T-196) and the rail's project and machine entries (YN-8) do.
+  const [settingsAt, setSettingsAt] = useState<SettingsOpenAt | null>(null);
   // Core said the daily backup's last run changed: read again for notifications.
   const [backupRevision, setBackupRevision] = useState(0);
   const [updatesNeedReload, setUpdatesNeedReload] = useState(false);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
   const [settingsInspectorAgent, setSettingsInspectorAgent] = useState<string | null>(null);
-  const [settingsProject, setSettingsProject] = useState<string | null>(null);
   // The composer's `/model`: opens this Agent's settings, never a prompt.
   const [modelRequest, setModelRequest] = useState<{ model: string; nonce: number; kind?: "permissions"; agentId?: string; section?: "model" | "context" } | null>(null);
   // What /new and /resume open New agent with (T-29); null is its usual start.
@@ -611,11 +613,7 @@ export function App() {
   const [readActionsOpen, setReadActionsOpen] = useState(false);
   const [agentScope, setAgentScope] = useState<"active" | "closed">("active");
   const [storedScope, setStoredScope] = useState<ProjectScope>(ALL_PROJECTS);
-  const [projectDialog, setProjectDialog] = useState<"new" | "manage" | null>(
-    null,
-  );
   const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
-  const [machinesOpen, setMachinesOpen] = useState(false);
   const [requestReopen, setRequestReopen] = useState<{
     agentId: string;
     sequence: number;
@@ -1781,9 +1779,7 @@ export function App() {
       !agentSettingsOpen &&
       !turnDockEngaged &&
       !readActionsOpen &&
-      !projectDialog &&
       !scopeMenuOpen &&
-      !machinesOpen &&
       !changesRequest &&
       !forkOpen &&
       !reviewRequest &&
@@ -2246,8 +2242,22 @@ export function App() {
       setUpdatesOpen(true);
     });
   }
+  /** Settings at a page (YN-8): the rail's projects and machines, the status
+   * bar's machines, Home's machine links. */
+  function openSettingsPage(page: SettingsPage, sub?: string) {
+    if (previewMode) return;
+    setSettingsAt({ page, sub, nonce: Date.now() });
+    setUpdatesOpen(true);
+  }
   function openSettingsDestination(destination: SettingsDestination) {
     if (previewMode) return;
+    // A project or the machines is a page of Settings: it stays open.
+    const page = destinationPage(destination);
+    if (page) {
+      if (destination.kind === "project" && !projects.some((project) => project.id === destination.projectId && !project.archivedAt)) return;
+      setSettingsAt({ ...page, nonce: Date.now() });
+      return;
+    }
     setUpdatesOpen(false);
     // Let the Settings dialog release its focus/aria-hidden layer before
     // another existing dialog or the conversation inspector takes over.
@@ -2265,16 +2275,12 @@ export function App() {
       } else {
         setModelRequest({ model: "", nonce: Date.now(), agentId: chosen.id, section: destination.section });
       }
-    } else if (destination.kind === "project") {
-      if (!projects.some((project) => project.id === destination.projectId && !project.archivedAt)) return;
-      setSettingsProject(destination.projectId);
-      setProjectDialog("manage");
     } else if (destination.kind === "taskWorkspaces") {
       // That Task, by its ID, at its own Workspace section: it opens there and
       // lists, and nothing is previewed or removed until it is asked there.
       setTaskFocus({ taskId: destination.taskId, section: "workspaces", at: Date.now() });
       setCollaborationOpen(true);
-    } else if (destination.kind === "machines") setMachinesOpen(true);
+    }
     });
   }
   // An Agent's action menu (T-184), in the list and the conversation header.
@@ -2387,10 +2393,10 @@ export function App() {
     setSourceJump(true);
     setJumpToTurn(null);
   }
-  /** Home links into a conversation (or the Machines page) and leads back. */
+  /** Home links into a conversation (or Settings › Machines) and leads back. */
   function openFromHome(target: HomeTarget) {
     if (target.kind === "machine") {
-      setMachinesOpen(true);
+      openSettingsPage("machines");
       return;
     }
     const owner = workspace?.agents.find((a) => a.id === target.agentId);
@@ -3538,9 +3544,12 @@ export function App() {
           projects={projects}
           agents={workspace?.agents || []}
           onScope={changeScope}
-          onNewProject={() => setProjectDialog("new")}
-          onManage={() => setProjectDialog("manage")}
-          onMachines={() => setMachinesOpen(true)}
+          onNewProject={() => openSettingsPage("projects", "new")}
+          onManage={() => {
+            // The project in scope, else the first, as the manager always opened (YN-8).
+            openSettingsPage("projects", scope.startsWith("project:") ? scope.slice("project:".length) : undefined);
+          }}
+          onMachines={() => openSettingsPage("machines")}
           onOpenChange={setScopeMenuOpen}
           readOnly={previewMode}
         />
@@ -4708,7 +4717,7 @@ export function App() {
         codexAgent={agent?.harness === "codex" ? agent : null}
         coreLabel={core.label}
         coreHealthy={core.healthy}
-        onMachines={() => setMachinesOpen(true)}
+        onMachines={() => openSettingsPage("machines")}
       />
       <WorkspaceUpdatesHost
         enabled={!previewMode}
@@ -4719,6 +4728,38 @@ export function App() {
         navigation={{ agents: workspace?.agents || [], projects, disabled: previewMode, onNavigate: openSettingsDestination }}
         workspaceId={previewMode ? "" : workspaceId}
         preserveDrafts={() => { if (imageUploads.hasPending()) throw new Error("Wait for images to finish saving before updating."); preserveDrafts(); }}
+        pages={{
+          // Settings › Projects and › Machines (YN-8). Each request (the rail,
+          // a search result) opens the projects page anew, at what it names.
+          projects: (open, request) => (
+            <ProjectsPage
+              key={request?.n ?? 0}
+              open={open}
+              onOpenChange={(open) => { if (!open) setUpdatesOpen(false); }}
+              initialView={request?.sub === "new" ? "new" : "manage"}
+              initialProjectId={request?.sub && request.sub !== "new" ? request.sub : null}
+              projects={projects}
+              usage={workspace?.projectUsage}
+              agents={workspace?.agents || []}
+              onChanged={refresh}
+              onCreated={(project) => setNotice(shell.projectReady(project.name))}
+            />
+          ),
+          machines: (open) => (
+            <MachinesPage
+              inline
+              open={open}
+              onOpenChange={(open) => { if (!open) setUpdatesOpen(false); }}
+              agents={workspace?.agents || []}
+              projects={projects}
+              revision={machinesRevision}
+              onOpenAgent={(id) => {
+                setUpdatesOpen(false);
+                selectAgent(id);
+              }}
+            />
+          ),
+        }}
       />
       <CollaborationBoard
         open={collaborationOpen}
@@ -4910,30 +4951,6 @@ export function App() {
                   : shell.created(a.name),
           );
         }}
-      />
-      <MachinesPage
-        open={machinesOpen}
-        onOpenChange={setMachinesOpen}
-        agents={workspace?.agents || []}
-        projects={projects}
-        revision={machinesRevision}
-        onOpenAgent={(id) => {
-          setMachinesOpen(false);
-          selectAgent(id);
-        }}
-      />
-      <ProjectManager
-        open={!!projectDialog}
-        onOpenChange={(open) => { if (!open) { setProjectDialog(null); setSettingsProject(null); } }}
-        initialView={projectDialog || "manage"}
-        initialProjectId={settingsProject}
-        projects={projects}
-        usage={workspace?.projectUsage}
-        agents={workspace?.agents || []}
-        onChanged={refresh}
-        onCreated={(project) =>
-          setNotice(shell.projectReady(project.name))
-        }
       />
       <ArtifactModal
         artifact={artifact}

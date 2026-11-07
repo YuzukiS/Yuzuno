@@ -132,7 +132,7 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
         defaultCwd: "/w",
       });
     if (url.endsWith("/api/updates")) return respond(updates);
-    // Data, privacy & recovery opens at its storage overview (T-187).
+    // The Storage page shows its storage overview (YN-8).
     if (url.endsWith("/api/storage"))
       return respond({ format: 1, readAt: "2026-10-24T22:00:00Z", dataDir: "/w/data", entries: [], unreadable: null,
         database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 }, native: [], notInBackup: [] });
@@ -145,21 +145,18 @@ async function mount({ named = true, storage = {}, clipboard = "ok", desktop = n
 }
 const recovery = (p) => p.doc.querySelector(".app-recovery");
 const railShows = (p, name) => new RegExp(name).test(p.doc.querySelector(".agent-list")?.textContent || "");
-// Settings opens on its categories (T-187): Diagnostics and the stored
-// history are editors under Data, privacy & recovery, opened from its row of
-// entries; one opened before stays mounted when the other is opened.
-async function openSettingsEditor(p, title, selector) {
-  if (!p.doc.querySelector("#settings-tab-data")) p.doc.querySelector('[aria-label="Settings and updates"]').click();
-  await waitFor(() => p.doc.querySelector("#settings-tab-data"), "Settings shows its categories");
-  p.doc.querySelector("#settings-tab-data").click();
-  const entry = () => [...p.doc.querySelectorAll(".settings-entries button")].find((b) => b.textContent === title);
-  await waitFor(entry, `Data, privacy & recovery offers ${title}`);
-  entry().click();
-  await waitFor(() => p.doc.querySelector(selector), `Settings shows ${title}`);
+// Settings' pages (YN-8): Diagnostics has its own; the stored history is on
+// Storage. One opened before stays mounted when another is opened.
+async function openSettingsPage(p, page, selector) {
+  const tab = () => p.doc.querySelector(`#settings-tab-${page}`);
+  if (!tab()) p.doc.querySelector('[aria-label="Settings and updates"]').click();
+  await waitFor(tab, "Settings shows its pages");
+  tab().click();
+  await waitFor(() => p.doc.querySelector(selector), `Settings shows ${page}`);
   return p.doc.querySelector(selector);
 }
-const openDiagnostics = (p) => openSettingsEditor(p, "Diagnostics", "#settings-diagnostics");
-// What was sent: Data opens at its storage overview (T-187), whose list of
+const openDiagnostics = (p) => openSettingsPage(p, "diagnostics", "#settings-diagnostics");
+// What was sent: the Storage page shows its storage overview, whose list of
 // tasks is a read that the collaboration API takes by POST; that is not sent.
 const sent = (p) => p.calls.filter((c) => c.method && c.method !== "GET" && !c.url.endsWith("/api/collaboration/task_list"));
 const shownText = (p) => p.doc.querySelector('textarea[aria-label="Diagnostics"]')?.value;
@@ -464,7 +461,7 @@ test("when Core's memory can't be read, the text says why and everything else is
 const historyCalls = (p) => p.calls.filter((c) => c.url.endsWith("/api/diagnostics/memory/history")).length;
 async function openHistory(p) {
   await waitFor(() => railShows(p, "Mori"), "the app is drawn");
-  return openSettingsEditor(p, "History & memory", "#settings-history");
+  return openSettingsPage(p, "storage", "#settings-history");
 }
 
 test("the held Agents' stored history is read only when Measure is pressed: a chart and a table of Core's numbers, nothing else from the report", async () => {
