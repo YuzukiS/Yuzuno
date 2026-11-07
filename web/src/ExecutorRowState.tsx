@@ -1,6 +1,5 @@
-import { REVIEW_ROUNDS, elapsedText, type ExecutorDetail, type ExecutorShown, type ExecutorView, type PRStatus } from "./executor-display";
+import { REVIEW_ROUNDS, type ExecutorDetail, type ExecutorShown, type ExecutorView, type PRStatus } from "./executor-display";
 import { strings, useLanguage, type Language } from "./i18n";
-import { useMinute } from "./live-executors";
 import "./executor-row.css";
 
 // The executor row's words (T-43 S2): one state, then what it is at. The
@@ -17,10 +16,10 @@ export const executorRowText = strings({
   } as Record<ExecutorShown, string>,
   position: (n: number) => `${n} in line`,
   starting: "Starting",
-  awaitingRelease: "Awaiting release",
+  awaitingRelease: "Handed in, waiting for the lead",
   blocked: (text: string) => `Task blocked: ${text}`,
   check: "Check its result",
-  released: "Released",
+  released: "Archived",
   archiving: "Closing",
   turnFailed: "Its Turn failed",
   closed: "Closed",
@@ -53,10 +52,10 @@ export const executorRowText = strings({
   },
   position: (n) => `第 ${n} 位`,
   starting: "启动中",
-  awaitingRelease: "等待放行",
+  awaitingRelease: "已交，等负责人",
   blocked: (text) => `任务受阻：${text}`,
   check: "核对结果",
-  released: "已放行",
+  released: "已归档",
   archiving: "收尾中",
   turnFailed: "Turn 出错",
   closed: "已关闭",
@@ -78,13 +77,6 @@ export const executorRowText = strings({
   elapsedEnded: (time) => `共用 ${time}`,
 });
 type Text = ReturnType<typeof executorRowText>;
-
-/** Each state's dot, in the status colours every palette sets: at work
- * pulses, waiting for you is the waiting colour, a failure the error one;
- * the rest are quiet and their word says which. */
-const DOT: Record<ExecutorShown, string> = {
-  queued: "idle", working: "working", needsYou: "waiting", review: "idle", done: "idle", failed: "error", stopped: "offline",
-};
 
 export function prText(status: PRStatus, t: Text): string {
   switch (status.kind) {
@@ -129,38 +121,20 @@ export function stateText(view: ExecutorView, language: Language): string {
 }
 
 /**
- * The second line of an executor's row (T-43 S2): its one state, what it is
- * at and how long it has waited for you; the template it was made from when
- * its name doesn't say it; its PR; its time on the task, frozen once it is
- * over. A compact list (Settings → Appearance) keeps the state, the wait and
- * the time.
+ * What an executor's row adds on its second line (T-43 S2), now that its
+ * state, its wait and its time are its island's (v4-2): the template it was
+ * made from when its name doesn't say it, and its PR.
  */
-export function ExecutorRowState({ view, template, title }: { view: ExecutorView; template?: string | null; title?: string }) {
+export function ExecutorRowFacts({ view, template, title }: { view: ExecutorView; template?: string | null; title?: string }) {
   const language = useLanguage();
   const t = executorRowText(language);
-  const now = useMinute();
-  const detail = detailText(view.detail, t, view.shown);
-  const waited = view.waitingSince != null ? elapsedText(now - view.waitingSince, language) : null;
-  const elapsed = view.started != null ? elapsedText((view.ended ?? now) - view.started, language) : null;
+  if (!template && !view.pr) return null;
   const pr = view.pr ? `${t.pr(view.pr.number)} · ${prText(view.pr.status, t)}` : null;
   return (
-    <span className="executor-row-state" data-shown={view.shown} title={title}>
-      <span className="executor-state">
-        <span className={`status-dot ${DOT[view.shown]}`} aria-hidden="true" />
-        <span className="executor-state-word">{t.shown[view.shown]}</span>
-        {detail && <span className="executor-state-detail" title={detail}>{detail}</span>}
-        {waited && <span className="executor-state-waited">{t.waited(waited)}</span>}
-      </span>
-      {(template || view.pr || elapsed) && (
-        <span className="executor-row-facts">
-          {template && <span className="executor-template-chip" title={`${t.template}: ${template}`}>{template}</span>}
-          {view.pr && (
-            <span className="executor-pr-chip" data-tone={view.pr.tone} title={pr ?? undefined}>{t.pr(view.pr.number)}</span>
-          )}
-          {elapsed && (
-            <span className="executor-elapsed" title={view.ended != null ? t.elapsedEnded(elapsed) : t.elapsed(elapsed)}>{elapsed}</span>
-          )}
-        </span>
+    <span className="executor-row-facts" data-shown={view.shown} title={title}>
+      {template && <span className="executor-template-chip" title={`${t.template}: ${template}`}>{template}</span>}
+      {view.pr && (
+        <span className="executor-pr-chip" data-tone={view.pr.tone} title={pr ?? undefined}>{t.pr(view.pr.number)}</span>
       )}
     </span>
   );

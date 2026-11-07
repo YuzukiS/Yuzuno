@@ -120,51 +120,94 @@ async function mount({ storage = {} } = {}) {
   const part = (id, name) => row(id)?.querySelector(name)?.textContent ?? null;
   return {
     w, doc, calls, errors, row,
-    state: (id) => [part(id, ".executor-state-word"), part(id, ".executor-state-detail")],
-    waited: (id) => part(id, ".executor-state-waited"),
-    elapsed: (id) => part(id, ".executor-elapsed"),
+    // Its island (T-43 v4-2): its state and line two, its form, its clock.
+    island: (id) => row(id)?.querySelector(".agent-island") ?? null,
+    state: (id) => {
+      const island = row(id)?.querySelector(".agent-island");
+      return island ? [island.dataset.state, island.querySelector(".island-line")?.textContent ?? null] : null;
+    },
+    clock: (id) => part(id, ".agent-island .island-clock"),
     template: (id) => part(id, ".executor-template-chip"),
+    card: (id) => row(id)?.querySelector(".agent-island-card") ?? null,
+    actions: (id) => [...(row(id)?.querySelectorAll(".agent-island-card .island-actions button") ?? [])].map((b) => b.textContent),
     chip: (id) => row(id)?.querySelector(".executor-pr-chip") ?? null,
     bell: (id) => !!row(id)?.querySelector(".agent-row-bottom .needs-you"),
     close: () => w.close(),
   };
 }
 
-test("waiting for you is said once, with how long; another Agent's row keeps its runtime status and bell", async () => {
+test("needs you opens to two lines by itself, with how long; the bell under the row isn't said again", async () => {
   const p = await mount();
   try {
-    await waitFor(() => p.waited("w"), "how long it has waited, from Home's Needs you");
-    assert.deepEqual(p.state("w"), ["Needs you", null], "its state, and what it asks is its work summary");
-    assert.equal(p.waited("w"), "waited 12 min");
+    await waitFor(() => p.clock("w") === "12m", "how long it has waited, from Home's Needs you");
+    assert.deepEqual(p.state("w"), ["waiting", "Needs you: Approve the design note"], "what it asks is its line two");
+    assert.equal(p.island("w").dataset.form, "two");
+    assert.match(p.island("w").title, /^Needs you · waiting 12m · Approve the design note\n/);
     assert.equal(p.bell("w"), false, "no second \"needs you\" under it");
     assert.match(p.row("w").querySelector(".agent-work-summary").textContent, /Approve the design note/);
     assert.match(p.row("w").querySelector(".agent-select").getAttribute("aria-description"), /^Executor · Needs you, on /);
-    // Another Agent: as before.
-    assert.equal(p.row("s").querySelector(".executor-row-state"), null);
-    assert.ok(p.row("s").querySelector(".agent-runtime"), "its runtime status");
-    assert.equal(p.bell("s"), true, "its bell");
+    // A standing Agent that needs you: its island says it, the same way.
+    assert.deepEqual(p.state("s"), ["waiting", "Needs you: Allow npm test"]);
+    assert.equal(p.clock("s"), "3m");
+    assert.equal(p.bell("s"), false);
+    assert.equal(p.island("s").dataset.status, "Waiting", "the row's status words, kept on the island");
+    assert.equal(p.row("s").querySelector(".agent-rail-avatar"), null, "no avatar on any Agent row");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
   }
 });
 
-test("its PR chip, its template when its name lacks it, and its time on the task, frozen once over", async () => {
+test("its PR on line two and in its chip, its template when its name lacks it, and its clock, frozen once over", async () => {
   const p = await mount();
   try {
     await waitFor(() => p.chip("v"), "the PR chip, from /api/executors/live");
     assert.ok(p.calls.some((c) => c.url.endsWith("/api/executors/live") && c.method === "GET"), "one local read");
-    assert.deepEqual(p.state("v"), ["Review", "1/2"], "in review, at its rounds, without saying Review twice");
+    assert.deepEqual(p.state("v"), ["handed", "Handed in: Review 1/2"], "handed in, at its rounds");
+    assert.equal(p.clock("v"), "5m", "handed in five minutes ago");
+    assert.equal(p.island("v").dataset.form, "ring");
     assert.equal(p.chip("v").textContent, "PR #688");
     assert.equal(p.chip("v").dataset.tone, "wait");
     assert.equal(p.chip("v").title, "PR #688 · Review 1/2");
-    assert.deepEqual(p.state("k"), ["Working", "Draft"], "at work on a draft PR");
+    assert.deepEqual(p.state("k"), ["working", "Working: Draft"], "at work on a draft PR");
+    assert.equal(p.clock("k"), "1h5m", "on its task since its dispatch");
     assert.equal(p.template("v"), "Design first", "its name doesn't say its template: the chip does");
     assert.equal(p.template("w"), null, "its name says it already");
     assert.equal(p.template("g"), "Executor", "made from no template: Executor");
-    assert.equal(p.elapsed("v"), "1 h 05 min", "on its task since its dispatch");
-    assert.deepEqual(p.state("a"), ["Done", "Released"]);
-    assert.equal(p.elapsed("a"), "1 h 30 min", "frozen when it was archived");
+    assert.deepEqual(p.state("a"), ["archived", "Archived"]);
+    assert.equal(p.clock("a"), "1h30m", "its whole time, frozen when it was archived");
+    assert.match(p.island("a").title, /^Archived · 1h30m in total/);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("pressing the island opens its card in the row's place, leading with what the state asks for", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => p.island("w")?.dataset.form === "two" && p.chip("v"), "the rows");
+    p.island("w").click();
+    await waitFor(() => p.card("w"), "w's card");
+    assert.equal(p.island("w").dataset.form, "card");
+    assert.equal(p.island("w").getAttribute("aria-expanded"), "true");
+    assert.deepEqual(p.actions("w"), ["Answer on Home", "Open", "Task"], "an executor's question is answered on Home");
+    assert.equal(p.card("w").querySelector(".island-actions button").className, "primary");
+    assert.equal(p.card("w").querySelector(".island-title").textContent, "Needs you · waiting 12m");
+    assert.equal(p.card("w").querySelector(".island-cover").textContent, "12m");
+    // Escape closes it; the island is two lines again.
+    p.card("w").dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await waitFor(() => !p.card("w"), "closed");
+    assert.equal(p.island("w").dataset.form, "two");
+    // Handed in leads with its result; Open opens the Agent and the card closes.
+    p.island("v").click();
+    await waitFor(() => p.card("v"), "v's card");
+    assert.deepEqual(p.actions("v"), ["See result", "Open"]);
+    const reads = () => p.calls.filter((c) => c.url.endsWith("/api/agents/v")).length;
+    const before = reads();
+    [...p.card("v").querySelectorAll("button")].find((b) => b.textContent === "Open").click();
+    await waitFor(() => reads() > before, "the Agent opens");
+    await waitFor(() => !p.card("v"), "the card closes once it has led somewhere");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -174,14 +217,14 @@ test("its PR chip, its template when its name lacks it, and its time on the task
 test("in Chinese the row reads in Chinese", async () => {
   const p = await mount({ storage: { "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } });
   try {
-    await waitFor(() => p.chip("v") && p.waited("w"), "the PR chip and the wait");
-    assert.deepEqual(p.state("w"), ["等你", null]);
-    assert.equal(p.waited("w"), "等了 12 分钟");
-    assert.deepEqual(p.state("v"), ["审查", "1/2"]);
-    assert.deepEqual(p.state("k"), ["在做", "草稿"]);
-    assert.equal(p.elapsed("v"), "1 小时 05 分");
-    assert.deepEqual(p.state("a"), ["完成", "已放行"]);
+    await waitFor(() => p.chip("v") && p.clock("w") === "12分", "the PR chip and the wait");
+    assert.deepEqual(p.state("w"), ["waiting", "等你：Approve the design note"]);
+    assert.deepEqual(p.state("v"), ["handed", "已交：审查 1/2"]);
+    assert.deepEqual(p.state("k"), ["working", "在做：草稿"]);
+    assert.equal(p.clock("k"), "1时5分");
+    assert.deepEqual(p.state("a"), ["archived", "已归档"]);
     assert.equal(p.template("g"), "执行者");
+    for (const id of ["w", "v", "k", "a"]) assert.doesNotMatch(p.island(id).title, /放行/, `${id}: no 放行`);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

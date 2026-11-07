@@ -3481,7 +3481,10 @@ export function App() {
                 a.status === "idle"
               }
               waitingSince={waited.get(a.id) ?? null}
+              compacting={a.id === selected && compacting}
               onSelect={() => openFromList(a.id)}
+              onOpenHome={goHome}
+              onOpenTask={(taskId) => window.dispatchEvent(new CustomEvent("yuzuno:open-task-review", { detail: { taskId } }))}
               actions={agentActions}
             />
             );

@@ -3,13 +3,13 @@
 // are Core's own answer (tools/fixtures/executor-lifecycle.json). At 1440
 // and 390 wide, in light and dark: the sidebar lists the Project's lead, its
 // other Agent, its task executors by attention (failed, delivered awaiting
-// release, running, archiving, queued or starting), each row saying its one
-// state (T-43 S2) and its PR as /api/executors/live gives it, and folds the
+// release, running, archiving, queued or starting), each row's island saying
+// its one state (T-43 v4-2) and its PR chip as /api/executors/live gives it, and folds the
 // archived one, a closed one in Closed only; Home's Needs you
 // lists the executors you dispatched and no lead's; a task's card and view
 // say its executor's state; Release says what an archiving executor waits
 // for. Once more in Chinese at 1440, light; and once with the compact Agent
-// list, which keeps each executor's state and time and hides the rest.
+// list, which keeps each row's island and hides the rest.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-lifecycle-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -138,20 +138,19 @@ async function shot(locator, name) {
   report.screenshots.push(name);
 }
 const order = (page) => page.locator(".agent-list article[data-agent-id]").evaluateAll((rows) => rows.map((r) => r.dataset.agentId));
-// Each row's state: an executor's word and what it is at, its PR chip; a
-// lead's badge (T-43 S2).
-const states = (page) => page.locator(".agent-list article[data-agent-id]").evaluateAll((rows) =>
+// Each row's state: an executor's island (T-43 v4-2), what its line two says
+// and its PR chip; a lead's badge.
+const states = (page) => page.locator(".agent-list article[data-agent-id]").evaluateAll((rows, executors) =>
   Object.fromEntries(rows.map((r) => {
-    const line = r.querySelector(".executor-row-state");
-    return [r.dataset.agentId, line
-      ? [line.querySelector(".executor-state-word")?.textContent ?? null, line.querySelector(".executor-state-detail")?.textContent ?? null,
-        line.querySelector(".executor-pr-chip")?.textContent ?? null]
+    const island = r.querySelector(".agent-island");
+    return [r.dataset.agentId, executors.includes(r.dataset.agentId)
+      ? [island?.dataset.state ?? null, island?.querySelector(".island-line")?.textContent ?? null, r.querySelector(".executor-pr-chip")?.textContent ?? null]
       : r.querySelector(".agent-kind-badge")?.textContent ?? null];
-  })));
+  })), agents.filter((a) => a.executor).map((a) => a.id));
 // Nothing in the list wider than it: rows, their badges and the headings.
 const fits = (box) => box.evaluate((el) => {
   const right = el.getBoundingClientRect().right + 1;
-  return [...el.querySelectorAll(".agent-row, .agent-kind-badge, .executor-row-state, .rail-subgroup-head, .collab-executor-state, .home-needs-item")]
+  return [...el.querySelectorAll(".agent-row, .agent-kind-badge, .agent-island, .executor-row-facts, .rail-subgroup-head, .collab-executor-state, .home-needs-item")]
     .filter((c) => c.getBoundingClientRect().right > right).map((c) => c.textContent.trim().slice(0, 40));
 });
 
@@ -161,41 +160,43 @@ const fitsRow = (row) => row.evaluate((el) => [...el.querySelectorAll(".home-nee
   .filter((item) => item.getBoundingClientRect().width > el.clientWidth + 1).map((item) => item.textContent.trim().slice(0, 40)));
 
 const english = {
-  states: { queued: "Queued", starting: "Starting", running: "Running", delivering: "Awaiting release", archiving: "Archiving",
+  states: { queued: "Queued", starting: "Starting", running: "Running", delivering: "Handed in", archiving: "Archiving",
     archived: "Archived", failed: "Failed", closed: "Closed" },
   queued: (n) => `Queued · ${n} in line`, executor: "Executor", lead: "Lead",
   executors: "Task executors", delivering: "Awaiting your release", failed: "Its start failed", blocked: "Its task is blocked",
-  // The row's one state (ExecutorRowState.tsx, T-43 S2).
-  shown: { queued: "Queued", working: "Working", review: "Review", done: "Done", failed: "Failed", stopped: "Stopped" },
-  position: (n) => `${n} in line`, starting: "Starting", awaitingRelease: "Awaiting release", released: "Released", closing: "Closing",
-  taskBlocked: (text) => `Task blocked: ${text}`, rounds: "1/2", draft: "Draft", closed: "Closed",
+  // The island's words (AgentIsland.tsx, T-43 v4-2): its state's word, then line two.
+  word: { queued: "Queued", working: "Working", handed: "Handed in", failed: "Failed", archived: "Archived" }, colon: ": ",
+  position: (n) => `${n} in line`, starting: "Starting", leadsTurn: "the lead's turn", closing: "Closing",
+  taskBlocked: (text) => `Task blocked: ${text}`, rounds: "Review 1/2", draft: "Draft", closed: "Closed",
 };
 const chinese = {
-  states: { queued: "排队中", starting: "启动中", running: "运行中", delivering: "交付待放行", archiving: "归档中", archived: "已归档", failed: "失败", closed: "已关闭" },
+  states: { queued: "排队中", starting: "启动中", running: "运行中", delivering: "已交", archiving: "归档中", archived: "已归档", failed: "失败", closed: "已关闭" },
   queued: (n) => `排队中 · 第 ${n} 位`, executor: "执行者", lead: "负责人",
   executors: "任务执行者", delivering: "交付待你放行", failed: "启动失败", blocked: "任务受阻",
-  shown: { queued: "排队", working: "在做", review: "审查", done: "完成", failed: "失败", stopped: "已停止" },
-  position: (n) => `第 ${n} 位`, starting: "启动中", awaitingRelease: "等待放行", released: "已放行", closing: "收尾中",
-  taskBlocked: (text) => `任务受阻：${text}`, rounds: "1/2", draft: "草稿", closed: "已关闭",
+  word: { queued: "排队", working: "在做", handed: "已交", failed: "出错", archived: "已归档" }, colon: "：",
+  position: (n) => `第 ${n} 位`, starting: "启动中", leadsTurn: "等负责人", closing: "收尾中",
+  taskBlocked: (text) => `任务受阻：${text}`, rounds: "审查 1/2", draft: "草稿", closed: "已关闭",
 };
 // What an executor's badge and chip say (executor-lifecycle.ts), from its state.
 const says = (words, lifecycle) =>
   `${words.executor} · ${lifecycle.state === "queued" && lifecycle.position ? words.queued(lifecycle.position) : words.states[lifecycle.state]}`;
-// What an executor's row says (executor-display.ts's rules), from Core's
-// lifecycle in the fixture and this check's runtime status and PRs.
+// What an executor's island says (agent-island.ts over executor-display.ts's
+// rules), from Core's lifecycle in the fixture and this check's runtime
+// status and PRs: its state, and line two as "word: what it is at".
 const rowSays = (words, a) => {
   const l = a.executor;
   const pr = live.executors[a.id]?.pr ? `PR #${live.executors[a.id].pr.number}` : null;
   const prSays = a.id === delivered ? words.rounds : a.id === atWork ? words.draft : null;
+  const line = (state, text) => [state, text ? `${words.word[state]}${words.colon}${text}` : words.word[state], pr];
   switch (l.state) {
-    case "archived": return [words.shown.done, words.released, pr];
-    case "archiving": return [words.shown.done, `${words.closing} · ${l.reason}`, pr];
-    case "failed": return [words.shown.failed, l.reason ?? null, pr];
-    case "closed": return [words.shown.stopped, words.closed, pr];
-    case "queued": return [words.shown.queued, l.position ? words.position(l.position) : null, pr];
-    case "starting": return [words.shown.queued, words.starting, pr];
-    case "delivering": return [words.shown.review, prSays ?? words.awaitingRelease, pr];
-    default: return [words.shown.working, l.blocked ? words.taskBlocked(l.blocked) : prSays, pr];
+    case "archived": return line("archived", null);
+    case "archiving": return line("archived", `${words.closing} · ${l.reason}`);
+    case "failed": return line("failed", l.reason ?? null);
+    case "closed": return line("archived", words.closed);
+    case "queued": return line("queued", l.position ? words.position(l.position) : null);
+    case "starting": return line("queued", words.starting);
+    case "delivering": return line("handed", prSays ?? words.leadsTurn);
+    default: return line("working", l.blocked ? words.taskBlocked(l.blocked) : prSays);
   }
 };
 // The sidebar's order with Attention order: the lead, the other Agent, then
@@ -232,17 +233,19 @@ async function run({ width, height, theme, language, density = "detailed" }) {
     // Attached, not visible: the compact list hides it, as its own assertion below says.
     await list.locator(`article[data-agent-id="${delivered}"] .executor-pr-chip`).waitFor({ state: "attached", timeout: 10_000 });
     assert.deepEqual(await states(page), expected, `${tag}: each executor's row says its one state, and its PR`);
-    assert.equal(await list.locator(".agent-runtime").count(), await list.locator("article[data-agent-id]:not(:has(.executor-row-state))").count(),
-      `${tag}: no runtime status beside an executor's state`);
+    // No avatar on any row; each row's island is the last thing on its line two (T-43 v4-2).
+    const marks = await list.locator("article[data-agent-id]").evaluateAll((rows) => rows.map((r) => [
+      r.dataset.agentId, !!r.querySelector(".agent-rail-avatar, .agent-avatar"), r.querySelector(".agent-row-state")?.lastElementChild?.classList.contains("agent-island") ?? false]));
+    assert.deepEqual(marks.filter(([, avatar, last]) => avatar || !last), [], `${tag}: no avatar, and the island at line two's end`);
     if (density === "compact") {
-      // The compact list keeps the state and the time, and hides the rest.
-      const shownParts = await list.locator(`article[data-agent-id="${delivered}"] .executor-row-state`).evaluate((line) =>
-        Object.fromEntries([".executor-state-word", ".executor-state-detail", ".executor-pr-chip", ".executor-elapsed"].map((part) => {
-          const el = line.querySelector(part);
+      // The compact list keeps the island and hides the rest.
+      const shownParts = await list.locator(`article[data-agent-id="${delivered}"]`).evaluate((row) =>
+        Object.fromEntries([".agent-island", ".executor-row-facts", ".agent-work-summary"].map((part) => {
+          const el = row.querySelector(part);
           return [part, el ? getComputedStyle(el).display !== "none" : null];
         })));
-      assert.deepEqual(shownParts, { ".executor-state-word": true, ".executor-state-detail": false, ".executor-pr-chip": false, ".executor-elapsed": true },
-        `${tag}: compact, the state and the time only`);
+      assert.deepEqual(shownParts, { ".agent-island": true, ".executor-row-facts": false, ".agent-work-summary": null },
+        `${tag}: compact, the island only`);
     }
     assert.equal(await list.locator('[data-rail-part="executors"] .rail-subgroup-head > span').first().textContent(), words.executors);
     // Its words keep one line beside how many run and wait (T-43 S2).
@@ -263,7 +266,7 @@ async function run({ width, height, theme, language, density = "detailed" }) {
     assert.deepEqual(await fits(list), [], `${tag}: opened, it still fits`);
     await shot(list.locator('[data-rail-part="archived"]'), `${tag}-2-archived-open`);
     await fold.click();
-    check(`${tag}: sidebar order, each executor's one state and PR, Task executors group and archived fold`);
+    check(`${tag}: sidebar order, each executor's island and PR, Task executors group and archived fold`);
     if (density === "compact") return;
 
     // Home's Needs you: the executors you dispatched, the failed start first.
