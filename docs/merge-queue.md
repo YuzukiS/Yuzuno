@@ -179,7 +179,10 @@ A refused landing saves nothing. Setting the landing leaves the switch as it
 is, and the switch journal records the change. A merge records the landing it
 started with. If a repository names a landing this Core does not have (a
 later Core set it), a checked entry stays `ready` and Core sends nothing; a
-merge begun that way goes back to `waiting`, unsent.
+merge begun that way goes back to `waiting`, unsent. Known limit: such a
+`ready` entry is checked again every 5 minutes, job logs included, until the
+landing is set to `core-merge`. It happens only after going back from a later
+Core.
 
 ## Pauses
 
