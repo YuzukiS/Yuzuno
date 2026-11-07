@@ -254,11 +254,13 @@
 .app.phone .agent-list .agent-row > .agent-select {
   min-height: 0;
 }
-/* A standing Agent's name, then its kind ("Lead") beside it. */
+/* A standing Agent's name, then its kind ("Lead") beside it, or under it
+   when both don't fit: the name isn't cut for its badge. */
 .agent-list .agent-row .agent-line-one.agent-identity {
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 2px 6px;
 }
 .agent-list .agent-row .agent-line-one.agent-identity > .agent-name {
   flex: 0 1 auto;
