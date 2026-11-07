@@ -13,6 +13,12 @@
 //! that session one notice of what changed, with the current definitions
 //! (capped). Mail reaches the conversation, which the start text cannot. A
 //! new session, an unchanged one, or one Core has no record of gets none.
+//!
+//! The notice joins, it does not ring (Lead 2, mail 7114): it never starts a
+//! Turn by itself. It goes with the Agent's next doorbell, read before the
+//! other mail, or into the Turn it is running (pending_peer_deliveries,
+//! peer_read). Its one cost: an Agent woken by something else reads it in
+//! that Turn. A session that never works again never sees it.
 use crate::model::Agent;
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -22,9 +28,17 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-/// At most this many changed tools are shown with their current
-/// definition, together at most `UNITS` UTF-16 units (Lead 2, mail 7097).
-/// The start text has the same cap. The rest are named only.
+/// The notice's `metadata.kind`: mail that joins a doorbell, never rings one.
+pub(crate) const KIND: &str = "session_changed";
+
+/// At most this many changed tools are shown with what changed, together at
+/// most `UNITS` UTF-16 units (Lead 2, mails 7097 and 7108). A tool whose
+/// change alone is larger is shown by its description and the names of its
+/// changed parameters; past either limit a tool is named only. The start
+/// text has the same cap. Measured on the core.24 list: task_dispatch's
+/// whole input schema is 6,483 units and job_submit's 10,600, so whole
+/// schemas would not fit even one; #658's change to task_dispatch (its
+/// description and executor) is about 3,200.
 pub(crate) const TOOLS_SHOWN: usize = 4;
 pub(crate) const UNITS: usize = 6000;
 
@@ -187,6 +201,22 @@ fn capped(text: &str, limit: usize) -> String {
     kept + mark
 }
 
+/// One changed tool, briefly: its current description and the names of
+/// what changed, for a change too large to show whole.
+fn named(tool: &Tool, change: &Change) -> String {
+    let mut lines = vec![format!("{}:", tool.name), format!("  description: {}", tool.definition["description"])];
+    if !change.parameters.is_empty() {
+        lines.push(format!("  changed parameters (definitions not shown): {}", change.parameters.join(", ")));
+    }
+    if !change.removed.is_empty() {
+        lines.push(format!("  removed parameters: {}", change.removed.join(", ")));
+    }
+    if change.required {
+        lines.push(format!("  required: {}", tool.definition["inputSchema"]["required"]));
+    }
+    lines.join("\n")
+}
+
 /// One changed tool's current definition, only the parts that changed.
 fn shown(tool: &Tool, change: &Change) -> String {
     let mut lines = vec![format!("{}:", tool.name)];
@@ -234,7 +264,8 @@ fn notice(changes: &Changes, start_text: Option<&str>) -> Option<String> {
         let (mut parts, mut used, mut only_named) = (Vec::new(), 0, Vec::new());
         for (name, change) in &changes.changed {
             let Some(tool) = catalog().iter().find(|tool| &tool.name == name) else { continue };
-            let part = shown(tool, change);
+            let whole = shown(tool, change);
+            let part = if units(&whole) <= UNITS { whole } else { named(tool, change) };
             if parts.len() < TOOLS_SHOWN && used + units(&part) <= UNITS {
                 used += units(&part);
                 parts.push(part);
@@ -310,7 +341,7 @@ fn send(db: &Connection, agent: &Agent, body: String, changes: &Changes, start_c
         "recipient":{"kind":"agent","id":agent.id,"name":agent.name},"body":body,"taskId":null,
         "replyTo":null,"threadId":id,"createdAt":crate::model::now(),"priority":"normal",
         "source":{"sessionAttach":agent.id},
-        "metadata":{"kind":"session_changed","name":"Yuzuno Core","status":"changed",
+        "metadata":{"kind":KIND,"name":"Yuzuno Core","status":"changed",
             "tools":{"changed":changed,"added":changes.added,"removed":changes.removed},"startText":start_changed}}))?;
     Ok(id)
 }

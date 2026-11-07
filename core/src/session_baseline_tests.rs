@@ -53,7 +53,8 @@ fn at_most_four_tools_are_shown_within_the_cap_and_the_rest_named() {
     let shown: Vec<_> = small.iter().filter(|name| text.contains(&format!("\n{name}:\n  required: "))).collect();
     assert_eq!(shown.len(), TOOLS_SHOWN, "{text}");
     assert!(text.contains("Not shown here (more than 4 tools or 6000 UTF-16 units): "), "{text}");
-    // A tool larger than the cap by itself is named only; a smaller one after it still fits.
+    // A change larger than the cap by itself: the tool's description and the
+    // names of what changed; a smaller tool after it is still shown whole.
     let before = earlier(|before| {
         for value in before.get_mut("job_submit").unwrap().parameters.values_mut() {
             *value = "earlier".into();
@@ -61,9 +62,11 @@ fn at_most_four_tools_are_shown_within_the_cap_and_the_rest_named() {
         before.get_mut("job_get").unwrap().required = "earlier".into();
     });
     let text = notice(&changes(&before), None).unwrap();
-    assert!(!text.contains("\njob_submit:\n") && text.contains("Not shown here") && text.ends_with("job_submit."), "{text}");
+    assert!(text.contains("\njob_submit:\n  description: \"Submit"), "{text}");
+    assert!(text.contains("  changed parameters (definitions not shown): requestId, taskId"), "{text}");
+    assert!(!text.contains("  parameter argv:") && !text.contains("Not shown here"), "{text}");
     assert!(text.contains("\njob_get:\n  required: "), "{text}");
-    let shown = text.split("(JSON):\n").nth(1).unwrap().split("\n\nNot shown").next().unwrap();
+    let shown = text.split("(JSON):\n").nth(1).unwrap();
     assert!(units(shown) <= UNITS);
 }
 

@@ -621,7 +621,7 @@ mod tests {
             StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{port}/mcp/agent-a")).auth_header(token),
         );
         let client = tokio::time::timeout(Duration::from_secs(10), ().serve(transport)).await.unwrap().unwrap();
-        let version = client.peer_info().unwrap().server_info.version.clone();
+        let version = client.peer_info().unwrap().server_info.as_ref().unwrap().version.clone();
         assert_ne!(version, env!("CARGO_PKG_VERSION"));
         let digest = version.strip_prefix("development-").unwrap_or_default();
         assert!(digest.len() == 12 && digest.bytes().all(|b| b.is_ascii_hexdigit()), "{version}");

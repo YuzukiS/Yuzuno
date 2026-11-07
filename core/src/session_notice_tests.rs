@@ -25,7 +25,7 @@ fn attached_earlier(ws: &Workspace, agent: &str, native: Option<&str>) {
 }
 
 /// Core's notices in `agent`'s mailbox, as the Agent reads them.
-async fn notices(ws: &Workspace, agent: &str) -> Vec<Value> {
+async fn notices(ws: &Arc<Workspace>, agent: &str) -> Vec<Value> {
     let read = ws.collaboration_call(Some(agent), "peer_read", json!({"afterSeq":0,"limit":200})).await.unwrap();
     read["messages"].as_array().unwrap().iter()
         .filter(|m| m["sender"]["id"] == "core" && m["metadata"]["kind"] == "session_changed")
