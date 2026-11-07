@@ -37,8 +37,8 @@ window.checkBriefSection=checkBriefSection;
 // With a density, as Home draws its cards (T-9); without one, as anywhere else.
 window.renderSection=(section,projectId,extra={},workspaceId='',density)=>{const body=<CardFoldWorkspace.Provider value={workspaceId}><PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider></CardFoldWorkspace.Provider>;flushSync(()=>root.render(density?<BriefDensity.Provider value={density}>{body}</BriefDensity.Provider>:body));};
 window.unmountSection=()=>flushSync(()=>root.render(null));
-// A report as its summary card on Home (T-18), read only: its figure in its frame.
-window.renderCard=(section,projectId)=>flushSync(()=>root.render(<SummaryCard section={section} projectId={projectId} workspaceId="ws" agents={[]} readOnly={true} onSeen={async()=>{}}/>));`,
+// A report as its summary card on Home (T-18), read only: its figure in its frame; on the deck (extra.deck), at its size.
+window.renderCard=(section,projectId,extra={})=>flushSync(()=>root.render(<SummaryCard section={section} projectId={projectId} workspaceId="ws" agents={[]} readOnly={true} onSeen={async()=>{}} {...extra}/>));`,
   );
   const result = await build({
     root,
@@ -536,6 +536,82 @@ test("Mark up on a Brief image tells Point & Fix the image shown and its card, k
     "it reads the version shown, not the card's newer one");
   assert.ok(page.requests.every((r) => r.method === "GET"));
   delete window.pointFixOpen;
+});
+
+// YN-3: a card's kept image opens whole on Home, in the viewer its report page opens (T-20), not the report.
+const cardShot = (page, size, read = {}) => readSection(page, {
+  op: "put", key: "shots", kind: "report", title: "Screens",
+  attachments: [{ name: "shot.png", path: "/runs/shot.png" }],
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "files", size } }, children: ["lead", "files"] },
+    lead: { type: "Markdown", props: { text: "The new login screen." } },
+    files: { type: "Attachments", props: { items: [{ name: "shot.png", caption: "Login screen" }] } },
+  } },
+}, { attachments: [attachment("shot.png", "image", "image/png")], ...read });
+
+test("YN-3 a card's kept image opens whole in place, at the version shown, by a button the keyboard reaches; focus goes back to it", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.renderCard(cardShot(page, "large"), PROJECT);
+  const picture = () => document.querySelector(".home-card-frame button.home-card-image-open");
+  assert.ok(picture(), "the card's picture is a button");
+  assert.equal(picture().getAttribute("aria-label"), "Open image shot.png");
+  assert.ok(!picture().closest("[inert]") && picture().tabIndex === 0, "in the keyboard's reach: not inert");
+  assert.ok(picture().querySelector("img") && picture().querySelector(".brief-image-zoom"), "the picture, and the sign that it opens larger");
+  const dialog = () => document.querySelector('[role="dialog"]');
+  picture().focus();
+  picture().click();
+  await until(dialog, "the viewer opens on Home");
+  assert.equal(dialog().querySelector("h2").textContent, "Login screen");
+  assert.match(dialog().textContent, /shot\.png · Snapshot /);
+  assert.equal(dialog().querySelector(".input-image-dialog img").getAttribute("src"), `${base}/attachments/shots/shot.png?version=3`);
+  // The card is updated while the viewer is open: what is shown stays.
+  window.renderCard(cardShot(page, "large", { version: 4 }), PROJECT);
+  await until(() => document.querySelector(".home-card-frame img")?.getAttribute("src").endsWith("version=4"), "the card shows its new snapshot");
+  assert.equal(dialog().querySelector(".input-image-dialog img").getAttribute("src"), `${base}/attachments/shots/shot.png?version=3`);
+  dialog().dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await until(() => !dialog(), "Escape closes it");
+  assert.ok(document.activeElement === picture(), "focus returns to the picture");
+  assert.ok(page.requests.every((r) => r.method === "GET"), "opening it writes nothing");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-3 a small card's kept image is a View image button that opens the same viewer, in English and Chinese; a referenced or failed one opens nothing", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const view = () => [...document.querySelectorAll("button.home-card-image-view")];
+  window.renderCard(cardShot(page, "small"), PROJECT, { deck: true });
+  assert.ok(!document.querySelector(".home-card-frame"), "a small card draws no frame");
+  assert.equal(view().length, 1, "its image is one button away");
+  assert.equal(view()[0].textContent, "View image");
+  assert.equal(view()[0].getAttribute("aria-label"), "View image shot.png");
+  const dialog = () => document.querySelector('[role="dialog"]');
+  view()[0].focus();
+  view()[0].click();
+  await until(dialog, "the viewer opens");
+  assert.equal(dialog().querySelector(".input-image-dialog img").getAttribute("src"), `${base}/attachments/shots/shot.png?version=3`);
+  dialog().dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await until(() => !dialog(), "Escape closes it");
+  assert.ok(document.activeElement === view()[0], "focus returns to View image");
+  window.chooseLanguage("zh-Hans");
+  await until(() => view()[0]?.textContent === "查看图片", "View image in Chinese");
+  assert.equal(view()[0].getAttribute("aria-label"), "查看图片 shot.png");
+  window.chooseLanguage("en");
+  await until(() => view()[0]?.textContent === "View image", "back in English");
+  // Referenced, not kept: nothing to open, small or large.
+  const referenced = { attachments: [attachment("shot.png", "image", "image/png", { snapshot: false })] };
+  window.renderCard(cardShot(page, "small", referenced), PROJECT, { deck: true });
+  assert.equal(view().length, 0, "a referenced image has no View image");
+  window.renderCard(cardShot(page, "large", referenced), PROJECT);
+  assert.ok(!document.querySelector("button.home-card-image-open"), "nor a picture to open");
+  // Kept, but it could not be loaded: said in its frame, nothing to open.
+  window.renderCard(cardShot(page, "large", { version: 5 }), PROJECT);
+  document.querySelector(".home-card-frame img").dispatchEvent(new window.Event("error"));
+  await until(() => document.querySelector(".home-card-figure-unavailable"), "the failure is shown");
+  assert.ok(!document.querySelector("button.home-card-image-open"), "no broken picture to open");
+  assert.deepEqual(page.errors, []);
 });
 
 test("live references open the app's existing panels, GitHub pages or nothing", async (t) => {

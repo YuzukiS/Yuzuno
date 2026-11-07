@@ -35,6 +35,8 @@ export const cardText = strings({
   valuesShown: (shown: number, total: number) => `${shown} of ${total} values`,
   figureKind: { LineChart: "Line chart", BarChart: "Bar chart", ScatterChart: "Scatter chart", Metrics: "Metrics", table: "Table", image: "Image", desk: "ResearchDesk" },
   figureOnPage: (kind: string, status: boolean) => `${kind} · on the ${status ? "status page" : "report"}`,
+  viewImage: "View image",
+  viewImageLabel: (name: string) => `View image ${name}`,
 }, {
   openReport: "打开报告",
   openStatus: "打开状态",
@@ -68,4 +70,6 @@ export const cardText = strings({
   valuesShown: (shown: number, total: number) => `${total} 个值中的 ${shown} 个`,
   figureKind: { LineChart: "折线图", BarChart: "柱状图", ScatterChart: "散点图", Metrics: "指标", table: "表格", image: "图片", desk: "研究桌面" },
   figureOnPage: (kind: string, status: boolean) => `${kind} · 在${status ? "状态" : "报告"}页中`,
+  viewImage: "查看图片",
+  viewImageLabel: (name: string) => `查看图片 ${name}`,
 });

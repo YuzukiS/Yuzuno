@@ -1,5 +1,5 @@
 import { memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Eye, Image as ImageIcon, LoaderCircle, MessageSquareReply, MoreHorizontal, Square, SquareCheckBig } from "lucide-react";
+import { ArrowRight, Eye, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareReply, MoreHorizontal, Square, SquareCheckBig } from "lucide-react";
 import { errorText } from "../api";
 import { CopyButton } from "../components";
 import { useLanguage, useStrings } from "../i18n";
@@ -12,6 +12,7 @@ import { CardChart, type ChartKind } from "./brief/Charts";
 import { rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { keptSnapshot, useKeptImage } from "./brief/kept-image";
+import { useKeptImagePreview } from "./brief/image-preview";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { PinOff } from "lucide-react";
@@ -36,8 +37,9 @@ import "./summary-card.css";
  * A report or status on Home as its summary (T-18, Lead 2270; Dev 7's v7
  * and v9): the whole body is read on the report page. Its title and "Open
  * report" are the two ways there; nothing else on the card opens it, so the
- * card's own controls stay theirs. What it shows is what the author named
- * (the conclusion, what it holds under, one figure); when they named none,
+ * card's own controls stay theirs. A kept image it shows opens whole in
+ * place, as on its report page (YN-3), not the report. What it shows is
+ * what the author named (the conclusion, what it holds under, one figure); when they named none,
  * only that, under its title: nothing is taken from the body for them.
  */
 export const SummaryCard = memo(function SummaryCard({
@@ -114,12 +116,15 @@ export const SummaryCard = memo(function SummaryCard({
   const open = (from: HTMLElement) => openReport?.(projectId, section, from);
   const status = section.kind === "status";
   // A small card draws no figure (Dev 7's v12, v15): Metrics as big numbers;
-  // any other, one line naming it and where it is read, "Open report" below.
+  // a kept image, a button that opens it whole in place (YN-3); any other,
+  // one line naming it and where it is read, "Open report" below.
   const shown = content.kind === "named" ? content.figure : null;
   const figure = !shown ? null : size !== "small" ? (
     <FigureFrame section={section} projectId={projectId} figure={shown} large={size === "large"} />
   ) : metricsOf(section, shown) ? (
     <BigNumbers items={metricsOf(section, shown)!} />
+  ) : shown.kind === "image" && shown.kept ? (
+    <ImageView section={section} projectId={projectId} figure={shown} />
   ) : (
     <p className="home-card-figure-note">{t.figureOnPage(figureKindOf(section, shown, t.figureKind), status)}</p>
   );
@@ -451,11 +456,30 @@ function BigNumbers({ items }: { items: Metric[] }) {
   );
 }
 
+/** A small card's kept image (YN-3): not drawn in a frame, but one click
+ * or key away, whole, in the image viewer, as from its report page. */
+function ImageView({ section, projectId, figure }: { section: Section; projectId: string; figure: Extract<CardFigure, { kind: "image" }> }) {
+  const t = useStrings(cardText);
+  const file = section.attachments.find((item) => item.name === figure.name);
+  const viewer = useKeptImagePreview(projectId, section, file, figure.caption ?? undefined);
+  return (
+    <div className="home-card-figure-note">
+      <button type="button" className="quiet-button home-card-image-view" aria-label={t.viewImageLabel(figure.name)} onClick={viewer.open}>
+        <ImageIcon size={13} aria-hidden="true" />
+        {t.viewImage}
+      </button>
+      {viewer.dialog}
+    </div>
+  );
+}
+
 /**
- * The card's one figure, bounded, in a fixed frame; it is no control and
- * opens nothing. A large card shows more of what the figure has (Dev 7,
- * 2547): a table's first 8 rows and 6 columns, up to 6 Metrics values in a
- * grid; anything shorter than the frame sits in its middle. A chart is drawn
+ * The card's one figure, bounded, in a fixed frame. Only a kept image is a
+ * control: it opens whole in the image viewer, in place, as on its report
+ * page (YN-3); anything else in the frame opens nothing. A large card shows
+ * more of what the figure has (Dev 7, 2547): a table's first 8 rows and 6
+ * columns, up to 6 Metrics values in a grid; anything shorter than the frame
+ * sits in its middle. A chart is drawn
  * to fit the frame, its axes and legend with it (CardChart, Lead 2655); the
  * report page has the whole chart.
  */
@@ -474,6 +498,9 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
     : "";
   const src = figure.kind === "image" ? attachmentUrl(projectId, section.key, figure.name, section.version) : "";
   const kept = useKeptImage(snapshot, `${snapshot}\n${section.version}\n${src}`);
+  const viewer = useKeptImagePreview(projectId, section, figure.kind === "image" && figure.kept ? file : undefined, figure.kind === "image" ? figure.caption ?? undefined : undefined);
+  // What a click or a key opens: a kept image while it is not known to have failed.
+  const opens = figure.kind === "image" && figure.kept && !kept.failed && !!file;
   const shape = large ? LARGE_TABLE_PREVIEW : TABLE_PREVIEW;
   const table = figure.kind === "table" ? { columns: figure.columns.slice(0, shape.columns), rows: figure.rows.slice(0, shape.rows) } : null;
   const metrics = large ? metricsOf(section, figure) : null;
@@ -481,7 +508,7 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
   const brief = useMemo(() => ({ projectId, section }), [projectId, section]);
   return (
     <figure className={`home-card-frame kind-${figure.kind}${chart ? " is-chart" : ""}`}>
-      <div className="home-card-frame-body" inert>
+      <FrameBody opens={opens} label={figure.kind === "image" ? words.openImage(figure.name) : ""} onOpen={viewer.open}>
         {metrics ? (
           <MetricsGrid items={metrics} />
         ) : chart ? (
@@ -536,7 +563,7 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
             <span>{t.deskCounts(figure.claims, figure.plots)} · {t.deskInteractive}</span>
           </p>
         ) : null}
-      </div>
+      </FrameBody>
       {(table || (figure.kind === "image" && figure.caption) || (metrics && metrics.length > LARGE_METRICS)) && (
         <figcaption>
           {table && figure.kind === "table" && t.tableCounts(table.rows.length, figure.totalRows, table.columns.length, figure.totalColumns)}
@@ -544,7 +571,27 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
           {metrics && metrics.length > LARGE_METRICS && t.valuesShown(LARGE_METRICS, metrics.length)}
         </figcaption>
       )}
+      {viewer.dialog}
     </figure>
+  );
+}
+
+/** The frame's body: inert, so nothing drawn in it takes focus or a click; or, for an image that opens, the button that
+ * opens it, with the report page's sign that it opens larger, for touch as for the pointer. */
+function FrameBody({ opens, label, onOpen, children }: { opens: boolean; label: string; onOpen: () => void; children: React.ReactNode }) {
+  if (!opens)
+    return (
+      <div className="home-card-frame-body" inert>
+        {children}
+      </div>
+    );
+  return (
+    <button type="button" className="home-card-frame-body home-card-image-open" aria-label={label} onClick={onOpen}>
+      {children}
+      <span className="brief-image-zoom" aria-hidden="true">
+        <Maximize2 size={13} />
+      </span>
+    </button>
   );
 }
 
