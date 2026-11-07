@@ -30,7 +30,6 @@ import "./work-dock.css";
 const column = strings({
   title: "Work activity",
   back: "Back to Agents",
-  attention: "Needs a look",
   jobs: "Jobs",
   runs: "CI",
   subAgents: "Sub-agents",
@@ -42,7 +41,6 @@ const column = strings({
 }, {
   title: "工作活动",
   back: "返回 Agent 列表",
-  attention: "需要注意",
   jobs: "Jobs",
   runs: "CI",
   subAgents: "子 Agent",
@@ -57,14 +55,12 @@ const entry = strings({
   label: "Work activity",
   // Each kind says its own thing; there is never a total across them.
   running: (n: number) => `${n} running`,
-  needsLook: (n: number) => `${n} need a look`,
   unknown: (n: number) => `${n} not recognised`,
   quiet: "nothing running",
   open: "Open the list",
 }, {
   label: "工作活动",
   running: (n) => `${n} 个在进行`,
-  needsLook: (n) => `${n} 个待查看`,
   unknown: (n) => `${n} 个无法识别`,
   quiet: "没有在进行的工作",
   open: "打开列表",
@@ -299,23 +295,24 @@ function useSettleOnEnd(node: RefObject<HTMLElement | null>, status: string) {
 }
 
 /**
- * This Agent's work in the rail, in place of the Agents: what needs a look
- * first, then the Jobs, the checks and the sub-agents, each opening the
- * detail it already has. The entry in the head counts exactly these, so the
- * number on it and what opens here are the same work (T-15, V9).
+ * This Agent's work in the rail, in place of the Agents: the Jobs, the
+ * checks, the sub-agents, the background tasks and the reviews, each opening
+ * the detail it already has. What went wrong stays in its own kind's group,
+ * with its state, ahead of the rest of that group; there is no group of its
+ * own for it (user decision, YN-17 S2). The entry in the head counts what is
+ * running here, so the number on it and what opens here are the same work
+ * (T-15, V9).
  */
 export function WorkActivityColumn({ onBack }: { onBack: () => void }) {
   const t = useStrings(column);
   const language = useLanguage();
   const entries = useContext(Entries);
-  // The same definition the entry counts by: exceptions are what needs a
-  // look, and work this build has no word for is shown apart rather than
-  // folded in. The column said exception-or-unrecognised, so its heading
-  // could count more than the entry did (#459 round 1, P3a).
-  const needsLook = entries.filter((e) => e.state === "exception");
+  // Work this build has no word for is shown apart rather than folded into
+  // a kind, as the entry counts it apart. Everything else is in its kind's
+  // group, in the order `byAttention` gave the entries: what went wrong
+  // first, then what is going on, then what ended well.
   const unknown = entries.filter((e) => e.state === "unrecognized");
-  const rest = (kind: WorkKind) =>
-    entries.filter((e) => e.kind === kind && e.state !== "exception" && e.state !== "unrecognized");
+  const ofKind = (kind: WorkKind) => entries.filter((e) => e.kind === kind && e.state !== "unrecognized");
   // Each kind's own way into its whole list, which by touch the dock itself
   // no longer offers: its heading and its "+N more" are 28x24 and the dock
   // takes no presses there, so the column carries them instead (#459 round
@@ -325,12 +322,11 @@ export function WorkActivityColumn({ onBack }: { onBack: () => void }) {
   // way into its list: nothing in it is counted, and it is still reachable.
   const held = useContext(Held);
   const every: { id: string; kind?: WorkKind; label: string; items: readonly WorkEntry[]; openList?: OpenList }[] = [
-    { id: "attention", label: t.attention, items: needsLook, openList: undefined },
-    { id: "jobs", kind: "job", label: t.jobs, items: rest("job"), openList: lists.job },
-    { id: "runs", kind: "run", label: t.runs, items: rest("run"), openList: lists.run },
-    { id: "subAgents", kind: "subAgent", label: t.subAgents, items: rest("subAgent"), openList: lists.subAgent },
-    { id: "backgroundTasks", kind: "backgroundTask", label: t.backgroundTasks, items: rest("backgroundTask"), openList: lists.backgroundTask },
-    { id: "reviews", kind: "review", label: t.reviews, items: rest("review"), openList: lists.review },
+    { id: "jobs", kind: "job", label: t.jobs, items: ofKind("job"), openList: lists.job },
+    { id: "runs", kind: "run", label: t.runs, items: ofKind("run"), openList: lists.run },
+    { id: "subAgents", kind: "subAgent", label: t.subAgents, items: ofKind("subAgent"), openList: lists.subAgent },
+    { id: "backgroundTasks", kind: "backgroundTask", label: t.backgroundTasks, items: ofKind("backgroundTask"), openList: lists.backgroundTask },
+    { id: "reviews", kind: "review", label: t.reviews, items: ofKind("review"), openList: lists.review },
     { id: "unknown", label: t.unknown, items: unknown, openList: undefined },
   ];
   const groups = every.filter((group) => group.items.length > 0 || (!!group.kind && held.includes(group.kind) && !!group.openList));
@@ -352,7 +348,7 @@ export function WorkActivityColumn({ onBack }: { onBack: () => void }) {
         <div className="work-activity-column-list">
           {groups.map((group) => (
             <section key={group.id} aria-label={group.label}>
-              <h3 data-attention={group.id === "attention" || undefined}>{group.label}</h3>
+              <h3>{group.label}</h3>
               <ul>
                 {group.items.map((item) => (
                   <li key={`${item.kind}:${item.id}`}>
@@ -409,9 +405,10 @@ export function WorkDock({
 
 /**
  * One line for everything the conversation has running, instead of a column
- * of every piece of it. What needs a look is named first and always, even
- * with nothing running: it is the reason the entry is there. The list behind
- * it is unchanged, and is where the detail stays.
+ * of every piece of it: how many are running, and how many this build has no
+ * word for, else "nothing running". What went wrong is not counted here; it
+ * is in its own kind's group in the list this opens, which is where the
+ * detail stays (user decision, YN-17 S2).
  */
 export function WorkActivityEntry({
   onOpen,
@@ -447,7 +444,6 @@ export function WorkActivityEntry({
   };
   // Said apart, never added up: these are different kinds of fact.
   const parts = [
-    activity.exception > 0 ? t.needsLook(activity.exception) : null,
     activity.current > 0 ? t.running(activity.current) : null,
     activity.unrecognized > 0 ? t.unknown(activity.unrecognized) : null,
   ].filter(Boolean);
@@ -455,7 +451,6 @@ export function WorkActivityEntry({
     <button
       type="button"
       className="work-activity-entry"
-      data-needs-look={activity.exception > 0 || undefined}
       // The name is read from what is inside, so the counts a reader can see
       // are the counts a screen reader says and the words voice control
       // listens for. An aria-label would be a second copy of them, free to

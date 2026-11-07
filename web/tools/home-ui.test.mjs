@@ -1017,9 +1017,10 @@ test("Home is laid out as Needs you, My widgets, then the projects; widgets are 
     // The project panels keep their own inner .home-widgets; the column shares no class with them.
     assert.equal(column.matches(".home-widgets") || !!column.querySelector(".home-widget, .home-widgets"), false);
     assert.equal(column.querySelector(".home-widget-count").textContent, "0 pinned");
-    // Manage opens the Machines page.
+    // Manage opens that machine's page of Settings › Machines (YN-8 S3): here the Core host's.
     p.button("Manage", column).click();
-    await waitFor(() => /Where your agents run/.test(p.doc.querySelector('[role="dialog"]')?.textContent || ""), "the Machines page opens");
+    await waitFor(() => p.doc.querySelector('[role="dialog"] #settings-machines-title')?.textContent === "Core host"
+      && /The computer that runs your Workspace Core/.test(p.doc.querySelector('[role="dialog"]').textContent), "the Core host's page opens");
     p.doc.querySelector('[role="dialog"]').dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await waitFor(() => !p.doc.querySelector('[role="dialog"]'), "the Machines page closes");
     // Organize: a dialog; hidden, a widget is not drawn and reads nothing; the choice is kept.

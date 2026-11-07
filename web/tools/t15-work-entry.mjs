@@ -1,7 +1,8 @@
 // The one entry for everything the conversation has running (T-15, V1).
 // Jobs, CI runs and sub-agents each hand their work to the dock, and the
-// entry beside the conversation's name says it once: what needs a look
-// first, then what is going on, never a total across the three.
+// entry beside the conversation's name says it once: what is going on,
+// never a total across the three. Since YN-17 S2 (the user's decision) it
+// does not count what went wrong; that is listed in the column it opens.
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-work-entry.mjs
 // T15_LANG=zh-Hans reads the same screen in Chinese. That exact value: a
 // language this does not know falls back to English and passes, which is
@@ -145,16 +146,15 @@ console.log(JSON.stringify(seen, null, 1));
 // The fixture: 7 jobs (2 running, 1 failed, 1 cancelled, 3 succeeded) and
 // 3 CI runs (1 running, 1 success, 1 failure), each run a workflow of its own.
 //
-// Two need a look, not three: the Job the user cancelled is not a problem to
-// go and see, so Work activity does not count it (#459 round 1, P2c;
-// deviation row 14). The failed Job and the failed run are the two.
-// t15-counting.mjs holds that rule on its own fixtures.
+// Four still going: two Jobs, the running run and the sub-agent. The failed
+// Job and the failed run are not counted on the entry (YN-17 S2); they are
+// in their own groups in the column (work-activity-column-ui.test.mjs).
 check(seen.shown, "the conversation says what it has running");
 check(seen.inHead, "beside its name, where there is room to read it");
 // By the numbers, not by English words: the same entry is read in Chinese.
-check(/\b2\b/.test(seen.counts), `what needs a look is counted, the user's own cancel aside (${seen.counts})`);
-check(seen.needsLook, "and the entry says so to the eye as well");
-check(/\b4\b/.test(seen.counts), `and what is still going (${seen.counts})`);
+check(/\b4\b/.test(seen.counts), `what is still going is counted (${seen.counts})`);
+check(!/\b2\b/.test(seen.counts) && !seen.needsLook,
+  `and what went wrong is not, by number or by mark (${seen.counts}, marked ${seen.needsLook})`);
 // Never one number across the three kinds.
 check(!/\b\d+ (succeeded|done|passed)\b/.test(seen.text || ""),
   "nothing claims a total of successes across the kinds");

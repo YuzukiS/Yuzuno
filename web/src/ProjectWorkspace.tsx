@@ -42,7 +42,6 @@ import { AgentDefaults } from "./AgentDefaults";
 import { ExecutorTemplates } from "./ExecutorTemplates";
 import { ProjectHandover } from "./ProjectHandover";
 import { ReviewSettings } from "./ReviewSettings";
-import { HomeContentEditors } from "./home/HomeContentEditors";
 import { ProjectLeads } from "./ProjectLeads";
 
 function useOutsideClose(
@@ -1051,9 +1050,6 @@ function ProjectDetail({
         </fieldset>
         <div className="appearance-field project-block">
           <ProjectLeads key={`leads:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
-        </div>
-        <div className="appearance-field project-block">
-          <HomeContentEditors key={`editors:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
         </div>
         <div className="appearance-field project-block">
           <ProjectHandover key={`handover:${project.id}`} projectId={project.id} disabled={archived} />

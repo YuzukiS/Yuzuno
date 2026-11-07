@@ -6,7 +6,7 @@
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
 use yuzuno_workspace::opencode::{
-    session_of, CommandAnswer, Events, HttpStatus, Launch, Mcp, McpRefused, MessageId, Reply, RequestRefused, Server, Submission,
+    session_of, CommandAnswer, CompactAdmission, Events, HttpStatus, Launch, Mcp, McpRefused, MessageId, Reply, RequestRefused, Server, Submission,
     EVENT_IDLE_LIMIT,
 };
 
@@ -778,5 +778,44 @@ async fn a_command_goes_through_2xs_route_with_its_name_and_text_only() {
     lab.control("mode", json!({"command":"drop"})).await;
     assert!(matches!(server.command(&session, &MessageId::new(), "explain", "x").unwrap().await, CommandAnswer::Unknown(_)));
     assert_eq!(lab.calls().iter().filter(|c| c["path"] == format!("/session/{session}/command")).count(), 0, "never 1.19.3's route");
+    server.shutdown().await.unwrap();
+}
+
+/// A compaction goes to 2.x by its own route (T-61 slice 4): under Core's
+/// ID, once, and answered at once. Admitted only when 2.x answers with that
+/// compaction; another one already waiting answers in its place; only a 404
+/// for the session or a 400 for the request is a refusal before admitting;
+/// a 409, a 500 or no answer is unknown, and never sent again.
+#[tokio::test]
+async fn a_compaction_goes_through_2xs_route_under_cores_id_and_is_admitted_only_as_asked() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    let id = MessageId::new();
+    assert_eq!(server.compact(&session, &id).await.unwrap(), CompactAdmission::Admitted);
+    let sent = lab.posts(&format!("/api/session/{session}/compact"));
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["body"], json!({"id": id.as_str()}), "Core's ID, and no model");
+    assert!(server.compact(&session, &id).await.is_err(), "an ID it was given before is never sent again");
+    assert_eq!(lab.posts(&format!("/api/session/{session}/compact")).len(), 1);
+
+    for (mode, expected) in [("refuse-404", "404"), ("invalid-400", "400")] {
+        lab.control("mode", json!({"compact": mode})).await;
+        match server.compact(&session, &MessageId::new()).await.unwrap() {
+            CompactAdmission::Refused { code, message } => assert!(code.to_string() == expected && !message.is_empty(), "{mode}: {code} {message}"),
+            other => panic!("{mode}: refused before admitting, not {other:?}"),
+        }
+    }
+    for mode in ["conflict-409", "500", "drop-unadmitted"] {
+        lab.control("mode", json!({"compact": mode})).await;
+        assert!(matches!(server.compact(&session, &MessageId::new()).await.unwrap(), CompactAdmission::Unknown(_)), "{mode}: unknown");
+    }
+    lab.control("mode", json!({"compact": "other-pending"})).await;
+    let ours = MessageId::new();
+    match server.compact(&session, &ours).await.unwrap() {
+        CompactAdmission::OtherPending(other) => assert_ne!(other, ours.as_str(), "another's ID"),
+        other => panic!("another compaction waiting answers in its place, not {other:?}"),
+    }
+    assert_eq!(lab.calls().iter().filter(|c| c["path"].as_str().unwrap_or_default().ends_with("/summarize")).count(), 0, "never 1.19.3's route");
     server.shutdown().await.unwrap();
 }

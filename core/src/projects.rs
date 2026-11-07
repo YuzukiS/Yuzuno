@@ -335,6 +335,26 @@ impl Store {
         Ok(())
     }
 
+    /// The user's move of an Agent (POST /api/agents/{id}/project): moved into
+    /// another Project, it leads it, unless it is an executor (YN-2 S4). Not
+    /// for fixtures or Agents' calls: `set_agent_project` changes membership
+    /// only. Whether its Project changed (a lead leaving one, or joining one),
+    /// for the caller to announce.
+    pub fn user_moves_agent(&self, agent_id: &str, project_id: Option<&str>) -> Result<bool> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agents WHERE id=?1)", [agent_id], |r| r.get(0))?;
+        ensure!(exists, "Agent does not exist");
+        let before = agent_project(&tx, agent_id)?;
+        set_agent_project_in(&tx, agent_id, project_id)?;
+        if let Some(project) = project_id.filter(|project| before.as_deref() != Some(*project)) {
+            crate::agent_roles::user_added(&tx, agent_id, project)?;
+        }
+        tx.commit()?;
+        Ok(before.as_deref() != project_id)
+    }
+
     /// Agents and tasks linked to each project; a project with either can only be archived.
     pub fn project_usage(&self) -> Result<HashMap<String, serde_json::Value>> {
         let db = self.db.read()?;

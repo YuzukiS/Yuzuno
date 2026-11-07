@@ -1002,6 +1002,8 @@ mod tests {
         let (_dir, ws) = fixture();
         let project = ws.store.create_project("Code", Default::default()).unwrap().id;
         ws.store.set_agent_project("a", Some(&project)).unwrap();
+        // It leads the Project, so it edits Home (YN-2 S4).
+        crate::agent_roles::save(&ws.store, &project, 0, vec!["a".into()]).unwrap();
         let editor = ws.result_publish("a", input("hint-a", "t1", spec(None))).await.unwrap().unwrap();
         assert_eq!(editor["homeHint"], crate::project_brief::outcome_hint());
         // In no Project, so no Brief of its own.
@@ -1018,9 +1020,10 @@ mod tests {
         let (_dir, ws) = fixture();
         let project = ws.store.create_project("Code", Default::default()).unwrap().id;
         ws.store.set_agent_project("a", Some(&project)).unwrap();
-        // An editor policy Core cannot read makes the lookup fail.
+        crate::agent_roles::save(&ws.store, &project, 0, vec!["a".into()]).unwrap();
+        // A Home preference Core cannot read makes an editor's lookup fail.
         ws.store.db.write().unwrap().execute(
-            "INSERT OR REPLACE INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'not json')", [&project]).unwrap();
+            "INSERT OR REPLACE INTO workspace_meta(key,value) VALUES('home.presentation',X'00')", []).unwrap();
         let published = ws.result_publish("a", input("broken-hint", "t1", spec(None))).await.unwrap().unwrap();
         assert!(published.get("homeHint").is_none(), "{published}");
         assert_eq!(rows(&ws, "interactive_results"), 1);

@@ -122,7 +122,6 @@ async function openPage({
   settingsResponse,
   compactResponse,
   // Giving up an OpenCode compaction (T-10): url, init -> answer.
-  abandonResponse,
   // The other Agent's harness (Hana), "codex" unless given.
   otherHarness,
   skillsResponse,
@@ -180,7 +179,6 @@ async function openPage({
     if (url.endsWith("/messages") && messageResponse) return messageResponse(url, init);
     if (url.endsWith("/settings") && settingsResponse) return settingsResponse(url, init);
     if (url.endsWith("/compact") && compactResponse) return compactResponse(url, init);
-    if (url.endsWith("/compact/abandon") && abandonResponse) return abandonResponse(url, init);
     if (url.endsWith("/interrupt") && interruptResponse) return interruptResponse(url, init);
     if (url.includes("/reconnect") && reconnectResponse) return reconnectResponse(url, init);
     if (url.endsWith("/codex/skills") && skillsResponse) return skillsResponse(url, init);
@@ -6184,111 +6182,6 @@ test("an OpenCode Agent's /compact asks OpenCode itself to compact and is never 
     assert.deepEqual(posts(page), ["/api/agents/a/compact"]);
     assert.equal(composerText(composer), "/compact keep the API notes");
     assert.match(page.document.body.textContent, /OpenCode's own compaction takes no instructions/);
-    assert.deepEqual(page.errors, []);
-  } finally { page.close(); }
-});
-
-// T-10: giving up an OpenCode compaction that OpenCode still holds, against
-// a stand-in Core. Both Agents are OpenCode Agents showing such a Turn under
-// the same ID, so that nothing of one can show as the other's.
-function stoppedCompaction() {
-  return {
-    id: "compact_1",
-    status: "interrupted",
-    error: { message: "The operation was aborted.。OpenCode 里这次压缩仍未完成，在处理它之前不会发送新消息" },
-    items: [{ id: "compaction", type: "contextCompaction", text: "The conversation so far, in short." }],
-    _opencodeCompact: { state: "stopped", nativePending: true, message: "msg_c", part: "prt_c" },
-  };
-}
-const answer = (status, body) => ({ ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) });
-async function mountGiveUp(abandonResponse) {
-  const turn = stoppedCompaction();
-  const opencode = { opencodeSessionId: "ses_0123456789", opencodeVersion: "2.2.5", opencodeMajor: "2", connectionState: "connected" };
-  const page = await mount({ harness: "opencode", otherHarness: "opencode", agentFields: opencode, otherAgentFields: { harness: "opencode", ...opencode },
-    extraTurns: [turn], abandonResponse });
-  const refresh = async () => { page.window.dispatchEvent(new page.window.Event("focus")); await pause(); await pause(); };
-  const area = () => page.document.querySelector('[data-turn-id="compact_1"]');
-  const giveUp = () => [...(area()?.querySelectorAll("button") ?? [])].find((b) => /Give up this compaction|Giving up…|Waiting for Core's record…/.test(b.textContent));
-  const alerts = () => [...(area()?.querySelectorAll('.turn-compaction-give-up [role="alert"]') ?? [])].map((a) => a.textContent);
-  const asked = () => page.calls.filter((c) => c.url.endsWith("/compact/abandon")).map((c) => [c.url, JSON.parse(c.init.body)]);
-  return { page, turn, refresh, area, giveUp, alerts, asked };
-}
-
-test("giving up an OpenCode compaction asks Core once, for its Agent and Turn, and never says it was given up before Core's record does (T-10)", async () => {
-  const held = [];
-  const { page, turn, refresh, area, giveUp, asked } = await mountGiveUp(() => new Promise((resolve) => held.push(resolve)));
-  try {
-    await until(giveUp, "the give-up button");
-    // Pressed three times in one moment: asked once, for this Agent and this Turn.
-    giveUp().click();
-    giveUp().click();
-    giveUp().click();
-    await pause();
-    assert.deepEqual(asked(), [["/api/agents/a/compact/abandon", { turnId: "compact_1" }]]);
-    assert.equal(giveUp().textContent, "Giving up…");
-    assert.equal(giveUp().disabled, true);
-    // Core answers 200, while its record shown here still holds the compaction: not said to be given up, nor asked again.
-    held[0](answer(200, { abandoned: true, turnId: "compact_1" }));
-    await pause();
-    await pause();
-    assert.equal(giveUp()?.textContent, "Waiting for Core's record…");
-    assert.equal(giveUp().disabled, true, "not to be pressed again while Core's record is awaited");
-    assert.doesNotMatch(area().textContent, /given up|放弃了/i);
-    // Core's record says it is given up: the button goes; nothing else is asked.
-    turn._opencodeCompact = { ...turn._opencodeCompact, state: "abandoned", nativePending: false };
-    await refresh();
-    assert.equal(giveUp(), undefined);
-    assert.match(area().textContent, /The conversation so far, in short\./, "its summary stays");
-    assert.equal(asked().length, 1);
-    assert.deepEqual(page.errors, []);
-  } finally { page.close(); }
-});
-
-test("a refused give-up says why where it was asked, asks nothing again by itself, and keeps the summary; an answer arriving after leaving shows on no other Agent (T-10)", async () => {
-  const held = [];
-  const { page, refresh, area, giveUp, alerts, asked } = await mountGiveUp(() => new Promise((resolve) => held.push(resolve)));
-  const refusal = "OpenCode 会话不是空闲状态；不能放弃，没有删除任何内容";
-  try {
-    await until(giveUp, "Mori's give-up button");
-    // Refused: said here; the press can be made again, and nothing is asked again by itself.
-    giveUp().click();
-    await pause();
-    held[0](answer(400, { error: refusal }));
-    await until(() => alerts().length, "the refusal");
-    assert.deepEqual(alerts(), [refusal]);
-    assert.equal(giveUp().textContent, "Give up this compaction");
-    assert.equal(giveUp().disabled, false);
-    assert.match(area().textContent, /The conversation so far, in short\./, "its summary stays");
-    await refresh();
-    await pause();
-    assert.equal(asked().length, 1, "no request again by itself");
-    // Asked again, then away to Hana before Core answers; its refusal arrives there.
-    giveUp().click();
-    await pause();
-    assert.deepEqual(asked().at(-1), ["/api/agents/a/compact/abandon", { turnId: "compact_1" }]);
-    button(page, "Hana").click();
-    await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Hana"]'), "Hana's conversation");
-    await until(giveUp, "Hana's give-up button");
-    held[1](answer(400, { error: refusal }));
-    await pause();
-    await pause();
-    assert.deepEqual(alerts(), [], "Mori's refusal never shows on Hana");
-    assert.equal(giveUp().textContent, "Give up this compaction", "nor Mori's pending press");
-    assert.equal(giveUp().disabled, false);
-    // Hana's own press is Hana's.
-    giveUp().click();
-    await pause();
-    assert.deepEqual(asked().at(-1), ["/api/agents/b/compact/abandon", { turnId: "compact_1" }]);
-    held[2](answer(200, { abandoned: true, turnId: "compact_1" }));
-    await pause();
-    // Back to Mori: nothing is asked again by itself, and Hana's press shows nothing here.
-    button(page, "Mori").click();
-    await until(() => page.document.querySelector('[data-composer-input][aria-label="Message Mori"]'), "Mori's conversation");
-    await until(giveUp, "Mori's give-up button again");
-    await pause();
-    assert.equal(asked().length, 3, "three presses, three requests; none by itself");
-    assert.equal(giveUp().textContent, "Give up this compaction");
-    assert.match(area().textContent, /The conversation so far, in short\./);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

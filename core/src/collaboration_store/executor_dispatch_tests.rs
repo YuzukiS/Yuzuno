@@ -60,6 +60,27 @@ fn row(store: &Store, actor: &str, request: &str) -> (String, Option<String>) {
         params![actor, request], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
 }
 
+/// YN-2 S4: an executor a dispatch creates in the task's Project never leads
+/// it, though an Agent the user creates there does.
+#[test]
+fn an_executor_a_dispatch_creates_never_leads_its_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    let t = task(&store, "Review", Some(&p), None);
+    let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
+    let mut detail = agent_detail(&plan.dispatch.agent_id, &plan.name);
+    detail.agent.project_id = Some(p.clone());
+    store.insert_created_then(&detail, Some(plan.then())).unwrap();
+    let db = store.db.read().unwrap();
+    let id = plan.dispatch.agent_id.as_str();
+    assert_eq!(crate::projects::agent_project(&db, id).unwrap().as_deref(), Some(p.as_str()), "a member of the task's Project");
+    assert_eq!(crate::agent_roles::kind(&db, id).unwrap(), crate::agent_roles::EXECUTOR);
+    assert!(!crate::agent_roles::leads(&db, id, &p).unwrap(), "an executor never leads its Project");
+    assert!(crate::agent_roles::leads_in(&db, &p).unwrap().lead_agent_ids.is_empty());
+}
+
 /// T-34: a template dispatch is a row of its own, keyed by its caller and
 /// requestId, so a retry goes on where the first stopped and never creates a
 /// second executor; once dispatched, a retry gets the first answer.

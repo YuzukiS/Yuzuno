@@ -880,6 +880,10 @@ impl Workspace {
         }).await?;
         self.changed(&source.agent.id);
         self.changed(&agent.id);
+        if project_kept {
+            // The fork leads the source's Project (YN-2 S4).
+            self.projects_changed();
+        }
         row.state = "completed".into();
         row.fork_agent_id = Some(agent.id);
         Ok(())
@@ -1000,6 +1004,9 @@ impl Store {
         let project_kept = match project_id {
             Some(project) if !crate::projects::is_archived(&tx, project)? => {
                 crate::projects::set_agent_project_in(&tx, &detail.agent.id, Some(project))?;
+                // The user's fork leads the source's Project, even when the
+                // source is an executor: the fork is a standing Agent (YN-2 S4).
+                crate::agent_roles::user_added(&tx, &detail.agent.id, project)?;
                 true
             }
             _ => false,

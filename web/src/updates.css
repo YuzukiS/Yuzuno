@@ -967,6 +967,12 @@
   color: var(--text-secondary);
   font-size: calc(9px + var(--font-adjust, 3px));
 }
+.settings-list-meta {
+  flex: none;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
 .settings-list-chev {
   flex: none;
   color: var(--text-quiet);
@@ -1006,8 +1012,8 @@
   align-items: center;
   justify-self: start;
   gap: 2px;
-  margin: -4px 0 -6px -4px;
-  padding: 2px 8px 2px 2px;
+  margin: -4px 0 -6px;
+  padding: 2px 8px 2px 0;
   border: 0;
   border-radius: 6px;
   background: transparent;

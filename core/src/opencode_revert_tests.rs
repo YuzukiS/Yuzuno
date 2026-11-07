@@ -231,7 +231,8 @@ async fn a_confirm_reads_again_keeps_its_attempt_asks_once_and_the_turns_it_reve
     // Until the next message a compaction would apply it first: refused, saying to send a message.
     let error = ws.opencode_compact("oc").await.expect_err("no compaction while the session holds the revert").to_string();
     assert!(error.contains("请先发一条消息"), "{error}");
-    assert!(!asked(&data).iter().any(|(method, path)| method == "POST" && path.ends_with("/summarize")), "nothing asked: {:?}", asked(&data));
+    assert!(!asked(&data).iter().any(|(method, path)| method == "POST" && (path.ends_with("/compact") || path.ends_with("/summarize"))),
+        "nothing asked: {:?}", asked(&data));
     // Asked again for the same preview: that attempt as it stands, nothing asked.
     assert_eq!(ws.opencode_revert_confirm("oc", &key).await.unwrap(), outcome);
     assert_eq!(reverts(&data), 1, "never asked again");

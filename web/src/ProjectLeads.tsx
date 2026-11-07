@@ -13,10 +13,10 @@ export interface ProjectLeadsValue {
 
 const text = strings({
   leads: "Leads",
-  intro: "Leads answer for this Project's tasks. Later, a lead can have Core start an Agent for a task from a template; for now this only marks them. Only you set this.",
+  intro: "Leads answer for this Project's tasks: they dispatch executors, edit Home and write the handover. Other Agents can only ask. An Agent you create in this Project or add to it leads it; you never have to set one, and you can remove a lead here. Executors never lead.",
   loading: "Loading leads…",
   members: "Leads of this Project",
-  none: "No lead. The Project works as before.",
+  none: "No lead: every Agent here can only ask on Home.",
   some: (n: number) => `${n} ${n === 1 ? "lead" : "leads"} selected.`,
   unavailable: "Unavailable member",
   save: "Save leads",
@@ -24,10 +24,10 @@ const text = strings({
   reload: "Reload saved leads",
 }, {
   leads: "负责人",
-  intro: "负责人对此 Project 的任务负责。之后，负责人可以让 Core 按模板为任务启动 Agent；目前只作标记。只有你能设置。",
+  intro: "负责人为这个 Project 的任务负责：派发执行者、编辑 Home、写交接文档。其他 Agent 只能提问。你在这个 Project 里新建或加入的 Agent 就是负责人；你不必设置，也可以在这里移除负责人。执行者不会成为负责人。",
   loading: "正在读取负责人…",
   members: "此 Project 的负责人",
-  none: "没有负责人。Project 照常工作。",
+  none: "没有负责人：这里的每个 Agent 在 Home 上都只能提问。",
   some: (n) => `已选择 ${n} 位负责人。`,
   unavailable: "无法选择的成员",
   save: "保存负责人",

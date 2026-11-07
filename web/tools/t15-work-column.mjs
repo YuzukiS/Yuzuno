@@ -2,6 +2,8 @@
 // entry counted (T-15, V9). Jobs, CI runs and sub-agents are three kinds in
 // one count, so the view it opens has to be able to show all three: the
 // Jobs dialog shows only its own source, which is what this replaces.
+// Since YN-17 S2 (the user's decision) the column has no group of what went
+// wrong: it is first in its own kind's group, and the entry counts what runs.
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-work-column.mjs
 // T15_LANG=zh-Hans reads the same screen in Chinese. That exact value: a
 // language this does not know falls back to English and passes, which is
@@ -157,15 +159,22 @@ console.log(JSON.stringify(column, null, 1));
 check(column.shown && !column.agents, "it takes the rail in place of the Agents");
 check(/Work activity|工作活动/.test(column.title || ""), `headed with what it is (${column.title})`);
 check(column.back, "with a way back to the Agents");
-check(column.groups[0]?.attention === true, `what needs a look comes first (${column.groups[0]?.label})`);
+check(!column.groups.some((g) => g.attention || /Needs a look|需要注意/.test(g.label || "")),
+  `no group of its own for what went wrong (${column.groups.map((g) => g.label).join(", ")})`);
+// Within each group: what went wrong, then what is going on, then what ended.
+const rank = { exception: 0, current: 2, unrecognized: 3, done: 4 };
+const order = column.groups.map((g) => g.rows.map((r) => r.state).filter(Boolean));
+check(order.every((states) => states.every((st, i) => i === 0 || rank[states[i - 1]] <= rank[st]))
+  && order.some((states) => states[0] === "exception"),
+  `what went wrong comes first in its own group (${JSON.stringify(order)})`);
 // The three kinds are all here, which the Jobs dialog alone could not do.
 const labels = column.groups.map((g) => g.label).join(" ");
 check(/Jobs/.test(labels) && /CI/.test(labels) && /Sub-agents|子 Agent/.test(labels),
   `Jobs, CI and sub-agents are all in it (${labels})`);
 // Every count on the entry is an item that can be opened here.
-const exceptions = column.groups.filter((g) => g.attention).reduce((n, g) => n + g.rows.length, 0);
+const running = column.groups.reduce((n, g) => n + g.rows.filter((r) => r.state === "current").length, 0);
 const said = Number((seen.counts.match(/(\d+)/) || [])[1]);
-check(exceptions === said, `the entry's "needs a look" count is what the column lists (${said} vs ${exceptions})`);
+check(running === said, `the entry's running count is what the column lists as running (${said} vs ${running})`);
 check(column.groups.every((g) => g.rows.every((r) => r.openable)),
   "every item opens the detail it already has");
 check(column.groups.every((g) => g.rows.every((r) => r.height >= 44)),
