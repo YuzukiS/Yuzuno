@@ -199,6 +199,14 @@ async function run({ width, height, theme, motion }) {
     await waiting.locator(".agent-island").click();
     await waiting.locator(".agent-island-card").waitFor({ timeout: 5_000 });
     assert.deepEqual(await waiting.locator(".island-actions button").allTextContents(), ["Answer on Home", "Open", "Task"]);
+    // Opened near the list's end, its actions are scrolled into view.
+    const inView = await waiting.locator(".island-actions").evaluate((el) => {
+      let box = el.parentElement;
+      while (box && !(/(auto|scroll)/.test(getComputedStyle(box).overflowY) && box.scrollHeight > box.clientHeight)) box = box.parentElement;
+      const a = el.getBoundingClientRect(), b = (box ?? document.documentElement).getBoundingClientRect();
+      return a.top >= Math.max(0, b.top) - 1 && a.bottom <= Math.min(innerHeight, b.bottom) + 1;
+    });
+    assert.ok(inView, `${tag}: the card's actions are in view`);
     await page.waitForTimeout(400);
     await shot(phone ? page : list, `${tag}-3-card-needs-you`);
     check(`${tag}: the island's card opens in its row and leads with what the state asks for; Escape closes it`);

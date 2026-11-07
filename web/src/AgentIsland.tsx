@@ -179,8 +179,11 @@ export const IslandCard = forwardRef<HTMLDivElement, { view: IslandView; name: s
     const now = useMinute();
     const line = islandLineText(view, language);
     const ms = view.clock ? clockMs(view.clock, now) : null;
+    const card = useRef<HTMLElement>(null);
     const actions = useRef<HTMLDivElement>(null);
     useEffect(() => {
+      // Opened near the list's end (a phone), its actions come into view.
+      card.current?.scrollIntoView?.({ block: "nearest" });
       actions.current?.querySelector("button")?.focus({ preventScroll: true });
     }, []);
     const onKeyDown = (event: KeyboardEvent) => {
@@ -189,7 +192,7 @@ export const IslandCard = forwardRef<HTMLDivElement, { view: IslandView; name: s
       onClose();
     };
     return (
-      <section className="agent-island-card" data-state={view.state} aria-label={t.card(name)} onKeyDown={onKeyDown} onClick={(event) => event.stopPropagation()}>
+      <section ref={card} className="agent-island-card" data-state={view.state} aria-label={t.card(name)} onKeyDown={onKeyDown} onClick={(event) => event.stopPropagation()}>
         <div className="island-player">
           <div ref={coverRef} className="island-cover" aria-hidden="true">
             {ms != null && view.clock?.kind !== "since" ? islandTime(ms, language, true) : <span className="island-dot" />}

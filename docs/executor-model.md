@@ -509,8 +509,8 @@ has the blocker (`blocked`); its state stays what it is.
     lines: the ring becomes the card's cover, beside the state with its
     clock and what the Agent is at; then the clock's line, the unread count
     and its actions (Answer on Home for an executor's question, See result
-    for one handed in, Open, and Task for an executor's task). Opening moves
-    focus to its first action, and Escape closes it.
+    for one handed in, Open, and Task for an executor's task). Opening scrolls it
+    into view and moves focus to its first action, and Escape closes it.
   - Its size morphs in 280 ms and its cover slides in 320 ms; nothing moves
     under reduced motion.
   - Beside what an executor is doing are its template, when its name doesn't
