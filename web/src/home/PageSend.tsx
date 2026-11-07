@@ -44,9 +44,15 @@ export const pageSlot = (to: PageReplyTo) => JSON.stringify([to.workspaceId, to.
 /** The message as the Agent reads it, under Core's line naming the section and its version. */
 export const pageMessage = (name: string, text: string) => `From the page “${name}”:\n\n${text}`;
 
+/** How long a newly shown message is read before Send takes it (S6 R1 P2): a
+ * page cannot swap its text as the pointer leaves the frame for Send. */
+export const READ_FIRST_MS = 1000;
+
 export type PageSendState = {
   /** The page's newest message, not sent: a newer one replaces it. */
   offer: string | null;
+  /** Shown long enough to have been read: Send takes it. Every new text starts unarmed. */
+  armed: boolean;
   busy: boolean;
   /** Who the last one was sent to. */
   sent: string | null;
@@ -55,7 +61,7 @@ export type PageSendState = {
   /** The text that failed, so Send again is named only for it. */
   failed: string | null;
 };
-const IDLE: PageSendState = { offer: null, busy: false, sent: null, error: "", failed: null };
+const IDLE: PageSendState = { offer: null, armed: false, busy: false, sent: null, error: "", failed: null };
 
 /** A page's messages, offered one at a time and sent only by the user, to `to`. */
 export function usePageSend(to: PageReplyTo | null) {
@@ -64,21 +70,38 @@ export function usePageSend(to: PageReplyTo | null) {
   now.current = state;
   const target = useRef(to);
   target.current = to;
+  // The page's newest text, set as it arrives, before any redraw: Send sends
+  // only the text it showed, and only while nothing newer has come.
+  const latest = useRef<string | null>(null);
   const slot = to ? pageSlot(to) : "";
   // Another page, version or author: what the last one offered is not this one's.
   const of = to ? `${slot} ${to.version} ${to.agent?.id ?? ""}` : "";
-  useEffect(() => setState(IDLE), [of]);
+  useEffect(() => {
+    latest.current = null;
+    setState(IDLE);
+  }, [of]);
+  // A new text is armed once it has been shown READ_FIRST_MS; a newer one starts again.
+  useEffect(() => {
+    if (state.offer === null || state.armed) return;
+    const shown = state.offer;
+    const timer = setTimeout(() => setState((s) => (s.offer === shown ? { ...s, armed: true } : s)), READ_FIRST_MS);
+    return () => clearTimeout(timer);
+  }, [state.offer, state.armed]);
   const offer = useCallback((text: string) => {
     if (!target.current) return;
-    setState((s) => ({ ...s, offer: text, sent: null, error: s.busy ? s.error : "" }));
+    latest.current = text;
+    // The same text again changes nothing: it stays as read as it was.
+    setState((s) => (s.offer === text ? s : { ...s, offer: text, armed: false, sent: null, error: s.busy ? s.error : "" }));
   }, []);
-  const send = useCallback(async () => {
+  /** Sends `text`, the message Send showed: refused unless it is still the newest and was shown long enough. */
+  const send = useCallback(async (text: string) => {
     const to = target.current;
-    const { offer: text, busy } = now.current;
-    if (!to?.agent || busy || text === null) return;
+    const { offer: shown, armed, busy } = now.current;
+    if (!to?.agent || busy || !armed || shown === null || text !== shown || latest.current !== shown) return;
     const slot = pageSlot(to);
     const agent = to.agent;
-    setState({ offer: null, busy: true, sent: null, error: "", failed: null });
+    latest.current = null;
+    setState({ offer: null, armed: false, busy: true, sent: null, error: "", failed: null });
     try {
       // The same text again reuses its client id: Core never delivers it twice.
       await sendReply(slot, to.projectId, {
@@ -88,7 +111,10 @@ export function usePageSend(to: PageReplyTo | null) {
     } catch (error) {
       // Refused before it was read, so never submitted: no retry record.
       if (olderCore(error)) dropPendingReply(slot);
-      setState((s) => ({ ...s, busy: false, error: explain(error), offer: s.offer ?? text, failed: text }));
+      // Not sent: the text the user read comes back as it was, ready to send again,
+      // unless the page offered another meanwhile.
+      if (latest.current === null) latest.current = text;
+      setState((s) => ({ ...s, busy: false, error: explain(error), failed: text, ...(s.offer === null ? { offer: text, armed: true } : {}) }));
     }
   }, []);
   const discard = useCallback(() => {
@@ -96,6 +122,7 @@ export function usePageSend(to: PageReplyTo | null) {
     if (!to || now.current.busy) return;
     // Discarded here; one not confirmed may still have been delivered.
     if (pendingReply(pageSlot(to))) dropPendingReply(pageSlot(to));
+    latest.current = null;
     setState(IDLE);
   }, []);
   return { state, offer, send, discard };
@@ -105,7 +132,8 @@ export function usePageSend(to: PageReplyTo | null) {
 export function PageSendBar({ to, state, onSend, onDiscard }: {
   to: PageReplyTo;
   state: PageSendState;
-  onSend: () => void;
+  /** With the text this bar shows: nothing else is ever sent. */
+  onSend: (text: string) => void;
   onDiscard: () => void;
 }) {
   const t = useStrings(cardText);
@@ -119,7 +147,7 @@ export function PageSendBar({ to, state, onSend, onDiscard }: {
           <p className="home-page-send-text">{state.offer}</p>
           <div className="home-page-send-actions">
             {to.agent && (
-              <button type="button" className="primary-button" disabled={state.busy} onClick={onSend}>
+              <button type="button" className="primary-button" disabled={state.busy || !state.armed} onClick={() => onSend(state.offer!)}>
                 <Send size={13} aria-hidden="true" /> {state.error && state.offer === state.failed ? t.pageSendAgain : t.pageSend}
               </button>
             )}

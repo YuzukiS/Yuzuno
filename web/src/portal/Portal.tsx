@@ -670,7 +670,7 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
         )}
       </div>
       {pageLive && replyTo && (
-        <PageSendBar to={replyTo} state={sending.state} onSend={() => void sending.send()} onDiscard={sending.discard} />
+        <PageSendBar to={replyTo} state={sending.state} onSend={(text) => void sending.send(text)} onDiscard={sending.discard} />
       )}
       {managed ? (
         <ServiceLifecycle service={managed} browserReach={reach} previewUrl={connectionUrl} disconnected={disconnected}

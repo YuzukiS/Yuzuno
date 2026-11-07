@@ -3406,7 +3406,27 @@ test("YN-16 S6 a card's page talks to Home only through the bridge: the theme on
     // Send: the user's own reply from Home, to the section's author, at the version shown.
     fromPage(p, { type: "yuzuno:send", text: "Ring size 7, gold" }, page);
     await waitFor(() => bar(), "offered again");
-    p.button("Send", bar()).click();
+    // Send takes a message only once it has been shown a second (S6 R1 P2).
+    const sendButton = () => p.button("Send", bar());
+    assert.equal(sendButton().disabled, true, "not yet: just shown");
+    const shownAt = Date.now();
+    await waitFor(() => !sendButton().disabled, "armed once read");
+    assert.ok(Date.now() - shownAt >= 900, `armed after about a second, not ${Date.now() - shownAt} ms`);
+    // The page swaps its text as the pointer reaches Send, and the click lands
+    // before the bar is drawn again: the text the user read is not the newest,
+    // so nothing is sent; the new text is shown, and Send waits for it to be read.
+    const read = sendButton();
+    fromPage(p, { type: "yuzuno:send", text: "Ring size 9, silver" }, page);
+    read.click();
+    await waitFor(() => /Ring size 9, silver/.test(bar().textContent), "the new text shown");
+    assert.equal(sendButton().disabled, true, "the new text is not read yet");
+    await pause(60);
+    assert.deepEqual(p.posts(/\/brief\/reply$/), [], "neither the text read nor the one swapped in is sent");
+    // The page offers the first again: a new text to read, then Send sends what it shows.
+    fromPage(p, { type: "yuzuno:send", text: "Ring size 7, gold" }, page);
+    await waitFor(() => bar().querySelector(".home-page-send-text").textContent === "Ring size 7, gold" && sendButton().disabled, "shown again, not armed");
+    await waitFor(() => !sendButton().disabled, "armed again");
+    sendButton().click();
     await waitFor(() => /Sent to Mori\./.test(bar()?.textContent ?? ""), "sent");
     const sent = p.posts(/\/brief\/reply$/);
     assert.equal(sent.length, 1);

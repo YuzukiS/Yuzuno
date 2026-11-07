@@ -180,6 +180,8 @@ test("YN-16 S6 a Brief section's page in the Portal gets the theme on its first 
   assert.equal(bar.querySelector(".home-page-send-text").textContent, "Done: 4 rounds", "another window's message is not offered");
   assert.equal(frame.style.height, "", "the Portal keeps its own height");
   assert.deepEqual(page.requests.filter((r) => /\/brief\/reply$/.test(r.url)), [], "nothing sent before Send");
+  assert.equal(page.button("Send", bar).disabled, true, "not until it has been read");
+  await until(() => !page.button("Send", bar).disabled, "Send armed once read", 3000);
   page.click(page.button("Send", bar));
   await until(() => /Sent to Mori\./.test(page.panel().querySelector(".home-page-send")?.textContent ?? ""), "sent");
   const replies = page.requests.filter((r) => /\/brief\/reply$/.test(r.url));

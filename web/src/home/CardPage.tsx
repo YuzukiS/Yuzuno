@@ -191,7 +191,7 @@ export function CardPage({ projectId, section, figure, title, workspaceId, agent
         </button>
       )}
     </div>
-    {live && <PageSendBar to={to} state={sending.state} onSend={() => void sending.send()} onDiscard={sending.discard} />}
+    {live && <PageSendBar to={to} state={sending.state} onSend={(text) => void sending.send(text)} onDiscard={sending.discard} />}
     </>
   );
 }

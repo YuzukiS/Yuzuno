@@ -459,6 +459,8 @@ async function check(run) {
       assert.equal(sends().length, 0, "nothing sent without Send");
       await inside.locator("#send").click();
       await bar.waitFor({ timeout: 5_000 });
+      // Send waits until the message has been shown a second (S6 R1 P2); the click below waits for it.
+      const armed = await bar.getByRole("button", { name: w.pageSend, exact: true }).isDisabled();
       const buttons = await bar.locator("button").evaluateAll((list) => list.map((b) => Math.round(b.getBoundingClientRect().height)));
       if (run.phone) assert.ok(buttons.every((h) => h >= 40), `buttons 40 px tall on a phone: ${buttons}`);
       await ring.scrollIntoViewIfNeeded();
@@ -468,8 +470,9 @@ async function check(run) {
       assert.deepEqual(sends().map(({ body: { key, agentId, text, version, title } }) => ({ key, agentId, text, version, title })),
         [{ key: "ring", agentId: "l", text: "From the page “ring.html”:\n\nRing size 7, gold", version: 2, title: "Ring design" }]);
       assert.equal(await page.locator(".home-report").count(), 0, "the report page is not opened");
+      assert.ok(armed, "Send was disabled as the message was first shown");
       pass("a card's page gets Home's theme and gives its height; its message goes to the section's author only on Send; another window's is not offered",
-        { theme: before.theme, paper: before.paper, other: changed.paper, buttons });
+        { theme: before.theme, paper: before.paper, other: changed.paper, buttons, sendDisabledWhenShown: armed });
     }
 
     // ---- Answered Asks are answer cards (YN-3, the user's D3): small cards the deck packs, two sharing a row;
