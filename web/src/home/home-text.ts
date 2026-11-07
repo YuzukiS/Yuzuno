@@ -39,7 +39,7 @@ export const homeText = strings({
   needsYou: "Needs you",
   waitingSince: (title: string, at: string) => `${title} · waiting since ${at}`,
   nothingNeedsYou: "Nothing needs you right now.",
-  // Turn ends this device hasn't shown (T-42).
+  // What an executor the user dispatched waits for, in Needs you (T-36 S3).
   executorNeeds: {
     delivering: "Awaiting your release",
     failed: "Its start failed",
