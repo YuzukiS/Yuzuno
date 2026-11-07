@@ -270,6 +270,11 @@
   -webkit-line-clamp: none;
   overflow: visible;
 }
+/* Its key and clock too: they wrap rather than end in "…". */
+.agent-list .agent-row[data-form="pill"] > .agent-row-meta {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .agent-list .agent-row[data-form="pill"] .agent-line-one.agent-identity {
   flex-wrap: wrap;
 }
