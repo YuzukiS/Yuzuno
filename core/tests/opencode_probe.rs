@@ -1953,3 +1953,245 @@ async fn a_real_opencode_2x_rewind_is_confirmed_through_the_workspace() {
     stub.wait().ok();
     endpoint.abort();
 }
+
+/// The message list `messages` cut as a fork through `turn` cuts it: up to
+/// the idle that ended its last run before the next user message.
+fn cut_after(messages: &[Value], turn: &MessageId) -> usize {
+    let start = messages.iter().position(|m| m["id"] == turn.as_str()).expect("the Turn's message");
+    let next = messages[start + 1..].iter().position(|m| m["type"] == "user").map(|i| start + 1 + i).unwrap_or(messages.len());
+    (start..next).rev().find(|&i| messages[i]["type"] == "idle").expect("an idle ended the Turn's run") + 1
+}
+
+/// A real OpenCode 2.x takes Core's copy of a session as a fork writes it
+/// (T-61 slice 7, D-28 F-A), against the stub provider: a session of two
+/// Turns (the first writes files and runs a shell), cut after the first, is
+/// imported into a second OpenCode on an empty database in the same folder.
+/// - (a) 200 with the ID Core chose; the same body again, 409;
+/// - (b) its info: the folder, the project, the marker, no fork or parent,
+///   no usage;
+/// - (c) its messages, read in pages, the very copy (Core's read-back);
+/// - (d) the source unchanged, and no `session.forked` on its stream;
+/// - (e) the source's export, cut at the same place, the same as Core's
+///   paged read (D-30);
+/// - (f) no credential in the new database;
+/// - (g) nothing runs once it is imported;
+/// - (h) a prompt in the copy runs, its model sent the copied conversation;
+/// - (i) the copy's store lacks the source's snapshot trees [P].
+///   Then, facts only: 2.x's own fork, in the source's database.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
+async fn a_real_opencode_2x_imports_a_copy_as_cores_fork_writes_it() {
+    use yuzuno_workspace::opencode_transfer::{self as transfer, ImportAnswer, Payload};
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (root, second) = (dir.path().join("db"), dir.path().join("db2"));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&second).unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    let (folder, repo) = rewind_repo(dir.path(), port);
+    let launch = Launch::new(program.clone(), folder.clone(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let model = server.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let (turn_a, turn_b) = (MessageId::new(), MessageId::new());
+    for (turn, prompt) in [(&turn_a, "probe-61 write"), (&turn_b, "probe-61 three")] {
+        assert_eq!(server.submit(&session, turn, prompt).await.unwrap(), Submission::Accepted);
+        let run = one_run(&mut events, &session).await;
+        assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded", "{prompt}");
+    }
+    let info = server.session(&session).await.unwrap();
+    println!("probe: the source's info {info}");
+    let messages = server.messages(&session).await.unwrap().as_array().unwrap().clone();
+    println!("probe: the source's messages {:?}", messages.iter().map(|m| format!("{} {}", m["type"], m["id"])).collect::<Vec<_>>());
+    let cut = cut_after(&messages, &turn_a);
+    let prefix = messages[..cut].to_vec();
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let password = password_of(server.pid().unwrap());
+    // (e) What 2.x's own export holds, cut at the same place.
+    let exported: Value = http.get(format!("{}/api/experimental/session/{session}/export", server.base())).basic_auth("opencode", Some(&password))
+        .send().await.unwrap().json().await.unwrap();
+    let exported = exported["data"]["messages"].as_array().unwrap().clone();
+    assert_eq!(exported[..cut], prefix[..], "(e) the export, cut there, is Core's paged read");
+    // The copy, as a fork makes it.
+    let idle = prefix.last().unwrap();
+    let id = transfer::session_id();
+    let mut sent = json!({"id": id, "projectID": info["projectID"], "title": "Forked", "location": {"directory": folder},
+        "metadata": {"yuzuno": {"fork": "probe-request"}}, "cost": 0, "tokens": transfer::no_tokens(),
+        "time": {"created": info["time"]["created"], "updated": idle["time"]["created"], "idle": idle["time"]["created"]},
+        "outcome": idle["outcome"], "permissions": info["permissions"],
+        "agent": transfer::selected(&prefix, "agent-switched", "agent", &info["agent"]),
+        "model": transfer::selected(&prefix, "model-switched", "model", &info["model"])});
+    transfer::without_nulls(&mut sent);
+    let payload = Payload { info: sent, messages: prefix.clone(), directory: folder.to_string_lossy().into_owned() };
+    let before = (server.session(&session).await.unwrap(), server.messages(&session).await.unwrap());
+
+    let target_launch = Launch::new(program, folder.clone(), &second, dir.path().join("cache"));
+    let target = Server::start(&target_launch).await.unwrap();
+    // (a) Written once under Core's ID; again, refused as a conflict.
+    let answer = target.import(&payload, Duration::from_secs(60)).await;
+    println!("probe: (a) the import: {answer:?}");
+    assert!(matches!(&answer, ImportAnswer::Imported(info) if info["id"] == id.as_str()), "{answer:?}");
+    let again = target.import(&payload, Duration::from_secs(60)).await;
+    println!("probe: (a) again: {again:?}");
+    assert!(matches!(again, ImportAnswer::Exists), "{again:?}");
+    // (b) and (c): as Core reads it back.
+    let project = target.location(folder.to_str().unwrap()).await.unwrap()["project"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(project, info["projectID"].as_str().unwrap(), "the same project for the same folder");
+    let copied = target.session(&id).await.unwrap();
+    println!("probe: (b) the copy's info {copied}");
+    let read = target.messages(&id).await.unwrap();
+    transfer::read_back(&payload, &project, &copied, read.as_array().unwrap()).expect("(b), (c) the copy as written");
+    assert_eq!(target.sessions().await.unwrap().len(), 1, "one session in the new database");
+    // (d) The source as it was.
+    assert_eq!((server.session(&session).await.unwrap(), server.messages(&session).await.unwrap()), before, "(d) the source unchanged");
+    // (f) No credential crossed.
+    let target_password = password_of(target.pid().unwrap());
+    let credentials: Value = http.get(format!("{}/api/credential", target.base())).basic_auth("opencode", Some(&target_password))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(credentials["data"].as_array().map(Vec::len), Some(0), "(f) no credential in the new database");
+    // (g) Nothing runs.
+    let active: Value = http.get(format!("{}/api/session/active", target.base())).basic_auth("opencode", Some(&target_password))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(active["data"], json!({}), "(g) nothing runs once imported");
+    // (h) A prompt in the copy runs, with the copied conversation sent to the model.
+    let mut copy_events = target.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    target.switch_model(&id, &target.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").unwrap(), None).await.unwrap();
+    let seen = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+    let turn_c = MessageId::new();
+    assert_eq!(target.submit(&id, &turn_c, "probe-61 three").await.unwrap(), Submission::Accepted);
+    let run = one_run(&mut copy_events, &id).await;
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded", "(h) the copy's prompt");
+    let asked: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().skip(seen).map(|l| l.to_owned()).collect();
+    assert!(asked.iter().any(|l| l.contains("probe-61 write")), "(h) the model was sent the copied conversation");
+    // (i) The copy's store has its own snapshots, not the source's [P].
+    let start = prefix.iter().find_map(|m| m["snapshot"]["start"].as_str()).expect("a copied step's snapshot").to_owned();
+    let found = walk_git_dirs(&target_launch.data.join("opencode"));
+    println!("probe: (i) the copy's stores {found:?}; the source's tree {start}");
+    assert!(!found.is_empty(), "(i) the copy's own prompt took its own snapshots");
+    for store in &found {
+        let held = std::process::Command::new("git").arg("--git-dir").arg(store).args(["cat-file", "-e", &start])
+            .env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", "/dev/null").status().unwrap();
+        println!("probe: (i) {} holds {start}: {}", store.display(), held.success());
+        assert!(!held.success(), "(i) the copy's store lacks the source's tree");
+    }
+    let _ = repo;
+    // (d) No fork of 2.x's own on the source's stream.
+    let mut kinds = Vec::new();
+    while let Ok(Ok(Some(event))) = tokio::time::timeout(Duration::from_millis(500), events.next()).await {
+        kinds.push(event["type"].as_str().unwrap_or("?").to_owned());
+    }
+    assert!(!kinds.iter().any(|k| k == "session.forked"), "(d) no fork on the source's stream: {kinds:?}");
+    // Facts only: 2.x's own fork, in the source's own database.
+    let native: Value = http.post(format!("{}/api/session/{session}/fork", server.base())).basic_auth("opencode", Some(&password))
+        .json(&json!({"before": turn_b.as_str()})).send().await.unwrap().json().await.unwrap();
+    println!("probe: 2.x's own fork {}", native["data"]);
+    if let Some(forked) = native["data"]["id"].as_str() {
+        let listed = server.messages(forked).await.unwrap();
+        println!("probe: 2.x's own fork's messages {:?}", listed.as_array().unwrap().iter().map(|m| m["id"].clone()).collect::<Vec<_>>());
+    }
+    target.shutdown().await.unwrap();
+    server.shutdown().await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// Every Git store under `root` (a folder holding `HEAD` and `objects`).
+fn walk_git_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if dir.join("HEAD").is_file() && dir.join("objects").is_dir() {
+            found.push(dir);
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            if entry.path().is_dir() {
+                stack.push(entry.path());
+            }
+        }
+    }
+    found
+}
+
+/// A fork through the Workspace on a real OpenCode 2.x (T-61 slice 7, D-2),
+/// against the stub provider: an Agent of two Turns forked through the
+/// first; the new Agent registered and connected, holding that Turn under
+/// its own ID, its OpenCode holding the copy; a message sent to it through
+/// the Workspace runs with the copied conversation; the source unchanged.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
+async fn a_real_opencode_2x_agent_is_forked_through_the_workspace() {
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61fork";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    let (folder, _repo) = rewind_repo(dir.path(), port);
+    let ws = Workspace::new(dir.path().join("data"), folder.to_string_lossy().into(), "unused".into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port);
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":folder, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let send = |agent: String, client: &str, text: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":text})).unwrap());
+        async move { ws.send_message(&agent, input).await }
+    };
+    let ended = |agent: String, turn: String| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..900 {
+                let d = ws.store.detail(&agent).unwrap();
+                if d.agent.status == "idle" && d.turns.iter().any(|t| t["id"] == turn.as_str() && t["status"] != "inProgress") {
+                    return d.turns.iter().find(|t| t["id"] == turn.as_str()).unwrap().clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 90 s");
+        }
+    };
+    let turn_ids = |agent: &str| ws.store.detail(agent).unwrap().turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect::<Vec<_>>();
+    ws.reconnect(ID).await.unwrap();
+    let a = send(ID.into(), "c1", "probe-61 write").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(ID.into(), a.clone()).await["status"], "completed");
+    let b = send(ID.into(), "c2", "probe-61 three").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(ID.into(), b.clone()).await["status"], "completed");
+    let requests = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+
+    let preview = ws.opencode_fork_preview(ID, &a).await.expect("a 2.x fork is previewed");
+    println!("probe: the preview {preview}");
+    assert_eq!((&preview["keptTurns"], &preview["laterTurns"]), (&json!(1), &json!(1)), "{preview}");
+    let request = serde_json::from_value(json!({"requestId": uuid::Uuid::new_v4().to_string(), "turnId": a, "name": "Forked"})).unwrap();
+    let outcome = ws.opencode_fork(ID, request).await.expect("forked");
+    println!("probe: the fork {outcome}");
+    assert_eq!((&outcome["state"], &outcome["connected"]), (&json!("completed"), &json!(true)), "{outcome}");
+    let target = outcome["agent"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(turn_ids(&target), vec![a.clone()], "the Turn through the fork's, under its own ID");
+    assert_eq!(turn_ids(ID), vec![a.clone(), b], "the source unchanged");
+    assert_eq!(std::fs::read_to_string(&log).unwrap_or_default().lines().count(), requests, "nothing asked of the model by the fork");
+    // The new Agent goes on through the Workspace, its model sent the copied conversation.
+    let c = send(target.clone(), "c3", "probe-61 three").await.expect("sent to the new Agent").turn_id.unwrap();
+    assert_eq!(ended(target.clone(), c.clone()).await["status"], "completed");
+    assert_eq!(turn_ids(&target), vec![a, c]);
+    let sent: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().skip(requests).map(|l| l.to_owned()).collect();
+    assert!(sent.iter().any(|l| l.contains("probe-61 write")), "the model was sent the copied conversation");
+    // Its copied Turn can't be rewound there.
+    let error = ws.opencode_revert_preview(&target, &turn_ids(&target)[0]).await.expect_err("a copied Turn").to_string();
+    assert!(error.contains("复制来的"), "{error}");
+
+    ws.close_agent(&target).await.unwrap();
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
+}

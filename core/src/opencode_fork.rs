@@ -61,7 +61,7 @@ pub(crate) struct Which {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Request {
+pub struct Request {
     request_id: String,
     turn_id: String,
     name: String,
@@ -117,7 +117,7 @@ struct Read {
 impl Workspace {
     /// What a fork through `turn` would keep, read without a write (contract
     /// 1): refused, saying why, unless one could start now.
-    pub(crate) async fn opencode_fork_preview(self: &Arc<Self>, id: &str, turn: &str) -> Result<Value> {
+    pub async fn opencode_fork_preview(self: &Arc<Self>, id: &str, turn: &str) -> Result<Value> {
         let _permit = self.admission.enter_work()?;
         let read = self.opencode_fork_read(id, turn).await?;
         Ok(json!({
@@ -204,7 +204,7 @@ impl Workspace {
     /// a client that goes away drops only its wait for the outcome. Asked
     /// again with the same request, it goes on from where that attempt is,
     /// and never writes the copy twice.
-    pub(crate) async fn opencode_fork(self: &Arc<Self>, id: &str, request: Request) -> Result<Value> {
+    pub async fn opencode_fork(self: &Arc<Self>, id: &str, request: Request) -> Result<Value> {
         let permit = self.admission.enter_work()?;
         ensure!(uuid::Uuid::parse_str(&request.request_id).is_ok(), "fork 请求编号无效");
         ensure!(!request.turn_id.is_empty() && request.turn_id.len() <= 200 && !request.turn_id.chars().any(char::is_control), "fork 的 Turn 无效");
