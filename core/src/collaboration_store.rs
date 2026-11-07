@@ -244,28 +244,33 @@ impl Store {
                AND NOT EXISTS(
                SELECT 1 FROM collaboration_message_reads seen WHERE seen.message_seq=older.seq AND seen.reader_id=older.recipient_id))
             ,COALESCE(json_extract(m.data,'$.priority'),'normal') AS priority
+            -- Mail that rings: all but Core's session notices, which join (YN-5).
+            ,SUM(COALESCE(json_extract(m.data,'$.metadata.kind'),'')!=?1) AS ringing
             FROM collaboration_messages m
             WHERE delivery_state='pending' AND COALESCE(json_extract(m.data,'$.metadata.kind'),'')!='update_wait'
               AND NOT EXISTS(SELECT 1 FROM collaboration_message_reads r
                 WHERE r.message_seq=m.seq AND r.reader_id=m.recipient_id)
             GROUP BY recipient_id,priority ORDER BY CASE priority WHEN 'urgent' THEN 0 ELSE 1 END,MIN(seq)")?;
-        let rows = q.query_map([], |r| {
+        let rows = q.query_map([crate::session_baseline::KIND], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
                 r.get::<_, i64>(2)?,
                 r.get::<_, i64>(3)?,
                 r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })?;
         let mut batches = Vec::new();
         for row in rows {
-            let (id, through, count, after, priority) = row?;
+            let (id, through, count, after, priority, ringing) = row?;
             // The listed view: parsing whole records here, on every wake-up
             // while mail waits, held back every other Agent's events.
             if let Some(brief) = self.brief_in(&db, &id)? {
                 if brief.agent.closed_at.is_none() {
-                    batches.push(json!({"agentId":id,"priority":priority,"throughSeq":through,"afterSeq":after,"messageCount":count}));
+                    // joinOnly: nothing in it may start a Turn (YN-5).
+                    batches.push(json!({"agentId":id,"priority":priority,"throughSeq":through,"afterSeq":after,
+                        "messageCount":count,"joinOnly":ringing == 0}));
                 }
             }
         }
@@ -1635,6 +1640,9 @@ fn peer_read(db: &Connection, actor: Option<&str>, input: &Value) -> Result<Valu
         messages.push(load_message(db, &id)?);
         next = seq;
     }
+    // Core's session notice first: it says what the rest is read with (YN-5).
+    // Only the order within this page changes; its cursor does not.
+    messages.sort_by_key(|m| m["metadata"]["kind"] != crate::session_baseline::KIND);
     Ok(json!({"messages":messages,"nextAfterSeq":next,"hasMore":has_more}))
 }
 

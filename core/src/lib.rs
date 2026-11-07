@@ -40,6 +40,7 @@ pub mod collaboration_runtime;
 pub mod collaboration_store;
 pub mod commit_sha;
 mod mailbox_notice;
+mod session_baseline;
 mod input_origin;
 pub mod conversation_time;
 pub mod data_dir;
