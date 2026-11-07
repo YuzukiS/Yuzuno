@@ -2122,6 +2122,15 @@ def main():
         sys.stderr.write('\x1b[31mERROR\x1b[0m\nUnrecognized flag: --mdns in command opencode serve\n')
         sys.exit(1)
     new = not (ROOT / 'state.json').exists()
+    # A save file a stand-in killed in the middle of a save left beside its state (T-61 S0, R1 note): never read,
+    # removed once the process that wrote it is gone.
+    for stale in ROOT.glob('state.json.*.tmp'):
+        try:
+            os.kill(int(stale.name.split('.')[2]), 0)
+        except (ValueError, IndexError, ProcessLookupError):
+            stale.unlink(missing_ok=True)
+        except PermissionError:
+            pass
     load()
     modes['mcp'] = switch('mcp') or 'connected'
     # The MCP modes a test needs before the Agent first connects, from switches of the same names.
