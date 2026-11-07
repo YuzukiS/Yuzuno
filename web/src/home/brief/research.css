@@ -2,6 +2,16 @@
  * rest of a Brief; the layout follows the section card's own width
  * (container brief-body): three columns when wide, the claims above the
  * view when medium, one column on a phone. Nothing here depends on hover. */
+/* A desk drawn as a Home card's figure (YN-7, DeskCardClaim) is outside a section body (brief.css): it takes the same
+ * state colours, and the desk's own, here. */
+.research-card {
+  --brief-working: var(--state-working, #c19465);
+  --brief-done: var(--state-done, var(--green));
+  --brief-error: var(--state-error, var(--coral));
+  --research-read: var(--brief-done);
+  --research-attention: var(--brief-error);
+  --research-line: var(--line);
+}
 .research-desk {
   --research-gap: 16px;
   --research-read: var(--brief-done);

@@ -91,11 +91,11 @@ const words = {
   en: { status: "Holds under conditions (the author's reading)", more: "+1 claim · interactive on the report page",
     fold: /^\+(\d+) more conditions(?: \((\d+) open\))?$/, fewer: "Show fewer conditions",
     note: "Locations and revisions below are as described by the Agent; they were not read.", prefix: "As described by the Agent",
-    line: "study/results.json · Revision 0f3a9c1" },
+    line: "study/results.json · Revision 0f3a9c1", sources: "Sources" },
   "zh-Hans": { status: "有条件成立 (作者的判断)", more: "另有 1 个主张 · 在报告页中可交互",
     fold: /^还有 (\d+) 项条件(?:（(\d+) 项未完成）)?$/, fewer: "收起条件",
     note: "下面的位置和版本是 Agent 的描述，未经读取。", prefix: "Agent 的描述",
-    line: "study/results.json · 版本 0f3a9c1" },
+    line: "study/results.json · 版本 0f3a9c1", sources: "来源" },
 };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
@@ -257,12 +257,12 @@ async function check(run) {
     await card("dose").locator(".home-report-open").click();
     const aside = page.locator(".home-report .research-aside");
     await aside.waitFor({ timeout: 10_000 });
-    const listed = await aside.evaluate((el, prefix) => {
-      const panel = [...el.querySelectorAll(".research-panel")].find((p) => p.querySelector(".research-sources .research-source"));
+    const listed = await aside.evaluate((el, [prefix, heading]) => {
+      const panel = [...el.querySelectorAll(".research-panel")].find((p) => p.querySelector("h5")?.textContent === heading);
       return { notes: [...panel.querySelectorAll(".research-described-note")].map((n) => n.textContent),
         lines: [...panel.querySelectorAll(".research-sources .research-described")].map((n) => n.textContent),
         prefixed: [...panel.querySelectorAll(".research-sources .research-described")].filter((n) => n.textContent.includes(prefix)).length };
-    }, w.prefix);
+    }, [w.prefix, w.sources]);
     await shot(aside, "report-sources");
     assert.deepEqual(listed, { notes: [w.note], lines: [w.line], prefixed: 0 }, JSON.stringify(listed));
     pass("the report page's list of sources says once that locations and revisions are the Agent's; its lines do not repeat it", listed);
