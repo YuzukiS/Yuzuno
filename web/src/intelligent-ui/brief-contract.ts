@@ -887,7 +887,7 @@ export function withMarkdownBody(input: unknown): unknown {
 }
 
 /** What a markdown put gives wrong before its body is built (YN-14 A3). */
-function markdownProblems(input: unknown): BriefProblem[] {
+export function markdownProblems(input: unknown): BriefProblem[] {
   if (!object(input)) return [];
   const found: BriefProblem[] = [];
   const { markdown, size, body } = input;
