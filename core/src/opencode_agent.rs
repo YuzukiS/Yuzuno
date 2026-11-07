@@ -678,11 +678,14 @@ impl Workspace {
         let _held = gate.lock().await;
         let agent = self.listed(id).await?;
         ensure_agent_open(&agent)?;
+        let live = self.opencodes.lock().unwrap().contains_key(id);
         match self.opencode_ensure(id).await {
-            // The Workspace MCP checked again on the same process, a failed
-            // one tried again (T-61 slice 1): its readiness shows on the
-            // record, and a reconnect is not refused for it.
-            Ok(c) => { let _ = self.opencode_mcp(id, &agent, &c, true).await; }
+            // On a connection already live, the Workspace MCP is checked
+            // again on the same process and a failed one tried again (T-61
+            // slice 1); one just started reported it as it attached. Its
+            // readiness shows on the record; a reconnect is not refused for it.
+            Ok(c) if live => { let _ = self.opencode_mcp(id, &agent, &c, true).await; }
+            Ok(_) => {}
             Err(error) => {
                 self.failed(id, &error).await;
                 return Err(error);

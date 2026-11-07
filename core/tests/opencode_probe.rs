@@ -712,9 +712,10 @@ async fn a_real_opencode_2x_reaches_the_workspace_mcp_through_cores_send_path() 
     let bearer = config["headers"]["Authorization"].as_str().unwrap().strip_prefix("Bearer ").unwrap().to_owned();
     let requests = || -> Vec<Value> { std::fs::read_to_string(&log).unwrap_or_default().lines()
         .map(|l| serde_json::from_str::<Value>(l).unwrap()).collect() };
-    // The Workspace tool's results the model was given, as the newest request with tools carries the history.
-    let reached = |requests: &[Value]| requests.iter().rev().find(|r| r["tools"] == true).map_or(0, |r| r["messages"]
-        .as_array().unwrap().iter().filter(|m| m["role"] == "tool" && m.to_string().contains(ID)).count());
+    // Each time the Workspace tool's result, holding this Agent's ID, reached the model: a request whose newest
+    // message is that result (the stub calls the tool once per turn; 2.x does not replay old tool output whole).
+    let reached = |requests: &[Value]| requests.iter().filter(|r| r["messages"].as_array().and_then(|m| m.last())
+        .is_some_and(|m| m["role"] == "tool" && m.to_string().contains(ID))).count();
     let finished = |turn: &str| {
         let (ws, turn) = (ws.clone(), turn.to_owned());
         async move {
