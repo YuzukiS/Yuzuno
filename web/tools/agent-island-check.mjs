@@ -117,7 +117,15 @@ async function route(route) {
   if (/^\/api\/agents\/[^/]+\/reading$/.test(path)) return route.fulfill({ json: method === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
   if (method !== "GET" && path.startsWith("/api/collaboration/")) {
     const op = path.split("/").at(-1);
+    // The reads a ring's task opens (the task board): answered, not counted as writes.
     if (op === "task_list") return route.fulfill({ json: { tasks: [], counts: {}, hasMore: false, nextAfterSeq: null } });
+    if (op === "task_get") {
+      const id = (() => { try { return JSON.parse(request.postData() || "{}").taskId; } catch { return null; } })() || "YN-0";
+      const you = { kind: "user", id: "user", name: "You" };
+      return route.fulfill({ json: { task: { id, title: `Task ${id}`, description: "", status: "doing", version: 1, projectId: "p1", progress: "", blocker: "", result: null,
+        github: [], createdAt: ago(60), updatedAt: ago(5), createdBy: you, updatedBy: you }, activities: [], executions: [], hasMore: false } });
+    }
+    if (op === "github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
     report.writes.push({ method, path });
     return route.fulfill({ status: 404, json: { error: "not in the fixture" } });
   }
@@ -335,6 +343,8 @@ async function run({ width, height, theme, motion, lang = "en" }) {
       await rowOf("dev5").locator(".agent-select").focus();
       await page.keyboard.press("Tab");
       assert.equal(await page.evaluate(() => !!document.activeElement?.closest(".agent-island")), false, `${tag}: a ring that is no button isn't in the Tab order`);
+      // The screenshots after this show no keyboard focus.
+      await page.evaluate(() => document.activeElement?.blur());
       check(`${tag}: each ring goes to its place (its task, its unread), never elsewhere; its hit area is 28 px; hover grows it a little in place${motion ? "" : " (thicker strokes under reduced motion)"}, no halo, and darkens only the row elsewhere; Tab reaches the row and then the ring, Enter goes`);
     } else {
       check(`${tag}: on touch the ring's hit area is 40 px and a tap goes to its place`);
