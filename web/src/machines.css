@@ -292,10 +292,21 @@
 .machine-executor-limit {
   display: grid;
   gap: 6px;
-  max-width: 420px;
 }
-.machine-executor-limit label {
-  margin-top: 0;
+.machine-executor-limit > .quiet-button {
+  justify-self: start;
+}
+/* The Core host's Job budget (YN-8): a slider per amount, its help under it. */
+.jobs-settings-slider {
+  display: grid;
+  gap: 2px;
+  padding: 6px 0;
+}
+.jobs-settings-slider > .settings-row-help {
+  margin: 0;
+}
+.jobs-settings-slider > .quiet-button {
+  justify-self: start;
 }
 .machine-executor-limit-actions {
   display: flex;
@@ -314,5 +325,39 @@
   .last-check-harnesses,
   .last-check-error {
     grid-column: 1 / -1;
+  }
+}
+
+/* An SSH machine's settings on its page (YN-8): text fields as the add form
+   has them, then sliders, the budget pair and the limit mode's cards. */
+.machine-settings .machine-settings-fields > label:first-child,
+.machine-settings .machine-settings-budget > label {
+  margin-top: 0;
+}
+.machine-settings .machine-settings-budget {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.machine-settings .settings-slider {
+  margin-top: 8px;
+}
+/* Under a slider: that it is the default, or the command back to it. */
+.machine-settings .machine-settings-default {
+  margin: 0 0 6px;
+}
+.machine-settings .machine-settings-budget + .appearance-help {
+  margin-top: 6px;
+}
+.machine-settings .machine-settings-label {
+  margin: 14px 0 8px;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 500;
+}
+@media (max-width: 560px) {
+  .machine-settings .machine-settings-budget {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

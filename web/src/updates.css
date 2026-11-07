@@ -1194,6 +1194,14 @@
   border-radius: 8px;
   background: color-mix(in srgb, var(--accent-ink) 78%, transparent);
 }
+/* What is in use now (a machine's running Jobs), striped over the fill. */
+.settings-slider-used {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--settings-slider-used, 0%);
+  border-radius: 8px 0 0 8px;
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--ink) 42%, transparent) 0 3px, transparent 3px 6px);
+}
 .settings-slider-ticks {
   position: absolute;
   left: 10px;
