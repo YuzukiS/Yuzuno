@@ -12,6 +12,8 @@
 //  - the report page starts from the section's own values, not the card's,
 //    and an input in its summary shows a block in a later part of the page;
 //    back on Home, the card keeps the reader's values;
+//  - (S2) a Calc on a card works its numbers out again as the reader sets
+//    the inputs, and its Button sets them back, without opening the report;
 //  - nothing is sent but reads, and nothing is asked of another host.
 // Pattern: YN-7's home-desk-cards-check.mjs.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node --experimental-strip-types tools/home-inputs-check.mjs
@@ -77,6 +79,20 @@ const sections = [
     city: node("Segmented", { name: "city", label: "City", value: 2, options: [{ value: 1, label: "Lisbon" }, { value: 2, label: "Berlin" }, { value: 3, label: "Paris" }] }),
     share: node("Switch", { name: "share", label: "Shared flat", value: true }),
     over: md("Over a third of a typical income.", { $state: "/rent", gt: 1500 }),
+  } }),
+  // Wide (S2): a Calc as Metrics and a Button that sets the inputs back.
+  section("bill", "Splitting the bill", { root: "body", elements: {
+    body: node("BriefBody", { summary: { lead: "lead", visual: "split", size: "wide" } }, ["lead", "split", "why"]),
+    lead: md("Dinner came to €600 before the tip."),
+    split: node("Group", {}, ["people", "tip", "shares", "reset"]),
+    people: node("NumberInput", { name: "people", label: "People", value: 4, min: 1, max: 12 }),
+    tip: node("Segmented", { name: "tip", label: "Tip", value: 10, options: [{ value: 0, label: "None" }, { value: 10, label: "10%" }, { value: 15, label: "15%" }] }),
+    shares: node("Calc", { layout: "metrics", items: [
+      { id: "total", label: "Total", expr: "round(600 * (1 + tip / 100), 2)", prefix: "€", digits: 2 },
+      { id: "each", label: "Each", expr: "round(total / people, 2)", prefix: "€", digits: 2, emphasis: true },
+    ] }),
+    reset: { ...node("Button", { label: "Back to 4 people" }), on: { press: { action: "setState", params: { statePath: "/people", value: 4 } } } },
+    why: md("The tip is shared evenly."),
   } }),
 ];
 const home = () => ({
@@ -182,12 +198,12 @@ async function check(run) {
 
     // ---- Every size draws its Group of inputs live: targets of 40 px, inside the frame, nothing cut.
     const layout = {};
-    for (const [key, size] of [["scones", "wide"], ["split", "small"], ["budget", "large"]]) {
+    for (const [key, size] of [["scones", "wide"], ["split", "small"], ["budget", "large"], ["bill", "wide"]]) {
       await frame(key).waitFor({ timeout: 10_000 });
       layout[key] = await card(key).evaluate((el) => {
         const body = el.querySelector(".home-card-frame.kind-interactive > .home-card-frame-body");
         const f = body.getBoundingClientRect();
-        const targets = [...body.querySelectorAll(".brief-step, .brief-segment, .brief-switch-control, .brief-number-box, .brief-slider")].map((t) => {
+        const targets = [...body.querySelectorAll(".brief-step, .brief-segment, .brief-switch-control, .brief-number-box, .brief-slider, .brief-button")].map((t) => {
           const r = t.getBoundingClientRect();
           return { what: t.className, width: Math.round(r.width), height: Math.round(r.height), inside: r.left >= f.left - 1 && r.right <= f.right + 1 && r.top >= f.top - 1 && r.bottom <= f.bottom + 1 };
         });
@@ -202,7 +218,7 @@ async function check(run) {
         assert.ok(t.inside, `${key}: ${t.what} inside its frame: ${JSON.stringify(t)}`);
         assert.ok(t.height >= 40 && (t.what.includes("brief-slider") || t.what.includes("brief-number-box") || t.width >= 40), `${key}: ${t.what} is a 40 px target: ${JSON.stringify(t)}`);
       }
-      await shot(card(key), `card-${size}`);
+      await shot(card(key), key === "bill" ? "card-calc" : `card-${size}`);
     }
     pass("a small, a wide and a large card draw their inputs live, every control a 40 px target inside its frame, nothing cut", layout);
 
@@ -255,6 +271,21 @@ async function check(run) {
     assert.ok(Number(after.rent.replace(/[^\d.]/g, "")) > 1500 && (await frame("budget").getByText("Over a third").isVisible()), `past 1500, its block shows: ${after.rent}`);
     await noReport("the slider");
     pass("dragging the slider moves it and shows its block, without scrolling Home or opening the report", { before, after });
+
+    // ---- (S2) A Calc on the card follows its inputs; its Button sets them back; no report.
+    const each = () => frame("bill").locator('.brief-calc [data-item="each"] dd').textContent();
+    assert.equal(await each(), "€165.00");
+    const billPlus = frame("bill").locator(".brief-step").nth(1);
+    await press(billPlus);
+    await page.waitForFunction((sel) => document.querySelector(sel)?.textContent === "€132.00", `#home-section-${PROJECT}-bill .brief-calc [data-item="each"] dd`, { timeout: 5000 });
+    await press(frame("bill").locator('[role="radio"]').nth(2));
+    await page.waitForFunction((sel) => document.querySelector(sel)?.textContent === "€138.00", `#home-section-${PROJECT}-bill .brief-calc [data-item="each"] dd`, { timeout: 5000 });
+    await shot(card("bill"), "card-calc-set");
+    await press(frame("bill").locator(".brief-button"));
+    await page.waitForFunction((sel) => document.querySelector(sel)?.textContent === "€172.50", `#home-section-${PROJECT}-bill .brief-calc [data-item="each"] dd`, { timeout: 5000 });
+    assert.equal(await frame("bill").locator(".brief-number-field").inputValue(), "4");
+    await noReport("the Calc's inputs and its Button");
+    pass("a card's Calc works its numbers out again as the inputs change, and its Button sets them back, opening no report", { each: await each() });
 
     // ---- The keyboard: arrows step the number and move the choice; a focused control shows its ring.
     const field = frame("scones").locator(".brief-number-field");

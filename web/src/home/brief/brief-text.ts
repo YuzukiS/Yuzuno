@@ -111,6 +111,7 @@ export const briefText = strings({
   increase: (label: string) => `Increase ${label}`,
   on: "On",
   off: "Off",
+  notComputed: "Can't be worked out for these values",
 }, {
   change: {
     new: ["新", "自你标为已看后新增"],
@@ -200,4 +201,5 @@ export const briefText = strings({
   increase: (label) => `增加${label}`,
   on: "开",
   off: "关",
+  notComputed: "按这些值无法算出",
 });
