@@ -705,16 +705,23 @@ function repliedFixture() {
   return home;
 }
 
-test("a replied ask shows in short, waiting for its owner; the question and the owner's later update stay reachable", async () => {
+test("a replied ask is one line, waiting for its owner, its reply in short, never New; unfolded, the reply, Reply again, the question and the owner's later update (T-132, YN-3)", async () => {
   const p = await mount({ home: repliedFixture() });
   try {
     const budget = card(p, "p-app", "budget");
     assert.ok(budget.classList.contains("is-replied"), "marked replied");
+    // One line: whom it waits for, its title, the reply in short; the rest folded (YN-3).
+    assert.ok(budget.classList.contains("is-short"), "one line");
     const kind = budget.querySelector(".home-kind");
-    assert.equal(kind.textContent.trim(), "Replied");
+    assert.equal(kind.textContent.trim(), "Replied · waiting for Hana");
     assert.ok(kind.classList.contains("is-replied"), "no attention colour once answered");
-    // Compact: the answer and who acts next, no reply controls and no Defer.
-    assert.match(budget.querySelector(".home-ask-replied").textContent, /Replied · waiting for Hana\s*Plan B/);
+    assert.equal(budget.querySelector(".home-replied-short").textContent, "Plan B");
+    assert.ok(!budget.querySelector(".home-changed"), "answered, it is not New, though never marked seen");
+    assert.ok(budget.querySelector(":scope > .home-card-body").hidden, "the rest folded");
+    budget.querySelector(".home-fold").click();
+    await waitFor(() => !budget.querySelector(":scope > .home-card-body").hidden, "unfolded");
+    // Unfolded: the answer, no reply controls and no Defer.
+    assert.match(budget.querySelector(".home-ask-replied").textContent, /Your reply:\s*Plan B/);
     assert.equal(budget.querySelector(".home-ask-reply"), null);
     assert.equal(p.button("Defer", budget), undefined);
     assert.equal(budget.querySelector(":scope > .home-card-body > .home-question"), null, "the question is folded away");
@@ -727,13 +734,19 @@ test("a replied ask shows in short, waiting for its owner; the question and the 
     // Reply again brings the controls back.
     p.button("Reply again", budget).click();
     await waitFor(() => p.button("Choose B", budget), "the choice is offered again");
-    // Updated by its owner after the reply: that update stays in view, still replied.
+    // Updated by its owner after the reply: Updated, not New; that update in view once unfolded, still replied.
     const deploy = card(p, "p-app", "deploy");
-    assert.ok(deploy.classList.contains("is-replied"));
+    assert.ok(deploy.classList.contains("is-replied") && deploy.classList.contains("is-short"));
+    assert.equal(deploy.querySelector(".home-changed").textContent, "Updated");
+    assert.equal(deploy.querySelector(".home-replied-short").textContent, "Yes, deploy");
+    deploy.querySelector(".home-fold").click();
+    await waitFor(() => !deploy.querySelector(":scope > .home-card-body").hidden, "unfolded");
     assert.match(deploy.querySelector(":scope > .home-card-body > .home-section-body").textContent, /Deploy started; waiting for CI/);
     assert.match(deploy.querySelector(".home-ask-updated").textContent, /^Hana updated it .+, after your reply$/);
-    assert.match(deploy.querySelector(".home-ask-replied").textContent, /Replied · waiting for Hana\s*Yes, deploy/);
+    assert.match(deploy.querySelector(".home-ask-replied").textContent, /Your reply:\s*Yes, deploy/);
     assert.equal(deploy.querySelector(".home-replied-details summary").textContent.trim(), "Question");
+    // The panel's new count is Core's, less the answered Ask its owner has not changed since.
+    assert.match(p.panel("p-app").querySelector(".home-panel-chips").textContent, /^1 new/);
     // An open ask is unchanged: highlighted, question in view, Defer offered.
     const release = card(p, "p-app", "release");
     assert.ok(!release.classList.contains("is-replied"));
@@ -750,6 +763,33 @@ test("a replied ask shows in short, waiting for its owner; the question and the 
     assert.equal(migrate.querySelector(".home-question").textContent, "Run the migration now?");
     assert.equal(migrate.querySelector(".home-history-reply").textContent, "Your reply: Run it tonight");
     assert.match(migrate.textContent, /Migrated 12 tables/);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("an Ask answered here keeps its card until the next visit to Home, then is one line (YN-3)", async () => {
+  const p = await mount();
+  try {
+    const release = () => card(p, "p-app", "release");
+    await type(p, release().querySelector("textarea"), "Ship it after the docs fix");
+    p.button("Send", release()).click();
+    await waitFor(() => /Replied · waiting for Mori/.test(release().textContent), "replied here");
+    // Core now reads it replied; Home reads again in this visit.
+    const ask = p.state.home.projects.find((entry) => entry.project.id === "p-app").brief.sections.find((s) => s.key === "release");
+    ask.ask = { ...ask.ask, state: "replied", repliedAt: at(0), replyText: "Ship it after the docs fix" };
+    p.doc.querySelector('[aria-label="Refresh Home"]').click();
+    await waitFor(() => release().classList.contains("is-replied"), "read as replied");
+    assert.ok(!release().classList.contains("is-short"), "still its card in this visit");
+    assert.ok(!release().querySelector(":scope > .home-card-body").hidden, "nothing folded under the user's hand");
+    // The next visit to Home: one line.
+    p.doc.querySelector('.agent-row[data-agent-id="b"] .agent-select').click();
+    await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Hana", "away from Home");
+    p.button("Home").click();
+    await waitFor(() => release()?.classList.contains("is-short"), "one line at the next visit");
+    assert.ok(release().querySelector(":scope > .home-card-body").hidden, "the rest folded");
+    assert.equal(release().querySelector(".home-replied-short").textContent, "Ship it after the docs fix");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -1220,22 +1260,26 @@ function readingFixture() {
   return home;
 }
 
-test("a summary card says what it is, when its data is from and that nobody keeps it; a body naming no summary gives no excerpt (T-173, T-18)", async () => {
+test("a summary card says what it is, when its data is from and that nobody keeps it; a body naming no summary shows its opening paragraph and no more (T-173, T-18, YN-3)", async () => {
   const p = await mount({ home: readingFixture() });
   try {
     await waitFor(() => card(p, "p-docs", "layout"), "the Docs cards are drawn");
     const overview = card(p, "p-docs", "overview");
     const evidence = card(p, "p-docs", "evidence");
     const layout = card(p, "p-docs", "layout");
-    // These bodies name no summary: the card says so, lightly, and takes nothing
-    // from the body, neither its opening paragraph nor its chart (Lead 2292).
+    // These bodies name no summary: each card shows how its body opens, as a folded
+    // card does (YN-3): the first paragraph of an accent Group or a Markdown, and
+    // nothing after it; a body opening with a plain Group gives none.
+    const lead = (root) => root.querySelector(".home-summary-lead")?.textContent.trim() ?? null;
+    assert.equal(lead(overview), "Release core.15 is out; two lines wait for main.");
+    assert.equal(lead(layout), "Daily runs core.12.");
+    assert.equal(lead(evidence), null, "a body opening with a plain Group gives no paragraph");
     for (const root of [overview, evidence, layout]) {
-      assert.equal(root.querySelector(".home-summary-unnamed").textContent, "No summary named");
-      assert.equal(root.querySelector(".home-summary-lead"), null);
-      assert.equal(root.querySelector(".home-card-frame"), null);
-      assert.equal(root.querySelector(".brief-body"), null, "no block of the body on Home");
+      assert.ok(!/No summary named/.test(root.textContent), "never “No summary named”");
+      assert.ok(!root.querySelector(".home-card-frame"), "no frame: a card with no summary is small");
+      assert.ok(!root.querySelector(".brief-body"), "no block of the body on Home");
     }
-    assert.doesNotMatch(overview.textContent, /core\.15/);
+    assert.doesNotMatch(overview.textContent, /Details below/);
     // When its data is from, in the foot of a status; a report says when it was updated.
     assert.match(layout.querySelector(".home-summary-foot").textContent, /Data as of/);
     assert.doesNotMatch(overview.querySelector(".home-summary-foot").textContent, /Data as of/);
@@ -2737,30 +2781,33 @@ const railIds = (p) => [...p.doc.querySelectorAll(".agent-list .agent-row")].map
 const railLabel = (p, id) => p.doc.querySelector(`.agent-row[data-agent-id="${id}"] .agent-runtime`)?.textContent ?? null;
 const shown = (p) => p.doc.querySelector(".conversation-title h1")?.textContent ?? null;
 
-test("Needs you lists an open question and opens its conversation; Turn ends not seen here follow, failed then finished, and stay this device's", async () => {
+test("Needs you lists an open question and opens its conversation; a Turn that ended unseen is not listed there, only marked on the Agent list, and stays this device's (YN-3)", async () => {
   const p = await mount({ workspaceAgents: attentionAgents(), home: attentionHome(), storage: startOnSora });
   try {
     await waitFor(() => p.doc.querySelector('[data-needs-you="question:c:t3:q1"]'), "the question is listed");
-    const unseen = (outcome) => [...p.doc.querySelectorAll(`.home-needs-you [data-unseen="${outcome}"]`)].map((b) => b.dataset.unseenAgent);
-    assert.deepEqual(unseen("failed"), ["a"]);
-    assert.deepEqual(unseen("finished"), ["b"]);
-    // The rail says so too, in the list's order: Appearance chose none.
+    // Only what waits for the user's decision: Mori's failed and Hana's finished Turns,
+    // neither shown here yet, are their Agents' to follow, not the user's (YN-3).
+    const needs = p.doc.querySelector(".home-needs-you");
+    assert.equal(needs.querySelectorAll("[data-unseen]").length, 0, "no Turn end in Needs you");
+    assert.doesNotMatch(needs.textContent, /Finished, not seen/);
+    const rows = needs.querySelectorAll(".home-needs-list > li").length;
+    assert.equal(rows, needs.querySelectorAll("[data-needs-you]").length, "every row is something Core says waits on the user");
+    assert.equal(needs.querySelector("h2 .nav-count").textContent, String(rows), "its count is its rows");
+    // The rail marks them, in the list's order: Appearance chose none.
     assert.deepEqual(railIds(p), ["a", "b", "c"]);
     assert.equal(railLabel(p, "a"), "Failed · unseen");
     assert.equal(railLabel(p, "b"), "Finished · unseen");
     p.doc.querySelector('[data-needs-you="question:c:t3:q1"]').click();
     await waitFor(() => shown(p) === "Sora", "the question opens Sora's conversation");
-    // Shown here, Hana's Turn end is seen on this device, and only here.
-    p.button("Home").click();
-    await waitFor(() => p.doc.querySelector('[data-unseen-agent="b"]'), "Home again");
-    p.doc.querySelector('[data-unseen-agent="b"]').click();
+    // Shown here, from the Agent list, Hana's Turn end is seen on this device, and only here.
+    p.doc.querySelector('.agent-row[data-agent-id="b"] .agent-select').click();
     await waitFor(() => shown(p) === "Hana", "Hana's conversation");
     await waitFor(() => p.w.localStorage.getItem("yuzuno.turnSeen.ws-home") === '{"b":20}', "seen on this device");
     await waitFor(() => railLabel(p, "b") === "Ready", "Hana's label");
     assert.equal(railLabel(p, "a"), "Failed · unseen");
     p.button("Home").click();
-    await waitFor(() => p.doc.querySelector('.home-needs-you [data-unseen="failed"]'), "Home again");
-    assert.equal(p.doc.querySelector('.home-needs-you [data-unseen="finished"]'), null, "nothing finished is unseen");
+    await waitFor(() => p.doc.querySelector('[data-needs-you="question:c:t3:q1"]'), "Home again");
+    assert.equal(p.doc.querySelectorAll(".home-needs-you [data-unseen]").length, 0, "still none in Needs you");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -2801,10 +2848,7 @@ test("a Turn end read past on any device is not unseen on a new one; one that en
   const p = await mount({ workspaceAgents, home: attentionHome(),
     storage: { ...startOnSora, "yuzuno.appearance": JSON.stringify({ agentOrder: "attention", projectGroups: "none" }) } });
   try {
-    await waitFor(() => p.doc.querySelector('.home-needs-you [data-unseen="finished"]'), "Hana's Turn end is listed");
-    const unseen = (outcome) => [...p.doc.querySelectorAll(`.home-needs-you [data-unseen="${outcome}"]`)].map((b) => b.dataset.unseenAgent);
-    assert.deepEqual([unseen("failed"), unseen("finished")], [[], ["b"]], "only the end after the last read");
-    assert.equal(railLabel(p, "b"), "Finished · unseen");
+    await waitFor(() => railLabel(p, "b") === "Finished · unseen", "Hana's Turn end is marked");
     assert.notEqual(railLabel(p, "a"), "Failed · unseen");
     assert.deepEqual(railIds(p), ["c", "b", "a"], "Mori's read end no longer moves Mori up");
     assert.deepEqual(p.errors, []);
@@ -2813,7 +2857,7 @@ test("a Turn end read past on any device is not unseen on a new one; one that en
   }
 });
 
-test("the tab title and the app badge count what Home's tab counts; next needs you goes through Needs you, then Turn ends unseen, and round again", async () => {
+test("the tab title and the app badge count what Home's tab counts; next needs you goes through Needs you and round again, never to a Turn end unseen (YN-3)", async () => {
   const badges = [];
   const p = await mount({
     workspaceAgents: attentionAgents(),
@@ -2839,14 +2883,39 @@ test("the tab title and the app badge count what Home's tab counts; next needs y
     assert.ok(p.doc.querySelector(".home-view"), "still Home");
     press();
     await waitFor(() => shown(p) === "Sora", "then Sora, whose request and question wait");
-    press();
-    await waitFor(() => shown(p) === "Mori", "then the failed Turn not seen here");
-    // Shown, Mori's is seen and leaves the round; it goes on from there.
-    await waitFor(() => p.w.localStorage.getItem("yuzuno.turnSeen.ws-home") === '{"a":30}', "seen on this device");
+    // Mori's failed and Hana's finished Turns, not seen here, are not in the round.
     button.click();
-    await waitFor(() => shown(p) === "Hana", "then the finished one");
-    press();
     await waitFor(() => p.doc.querySelector(".home-view"), "and round again to the Ask");
+    assert.equal(p.w.localStorage.getItem("yuzuno.turnSeen.ws-home"), null, "neither Mori's nor Hana's conversation was shown");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("the tab title, the app badge and Home's count are Needs you's rows, an executor the user dispatched among them (YN-3)", async () => {
+  const badges = [];
+  const home = attentionHome();
+  home.needsYou.push({ kind: "executor", projectId: "p-app", agentId: "b", agentName: "Hana", state: "delivering", taskId: "T-7", title: "Release notes", since: at(2) });
+  const p = await mount({
+    workspaceAgents: attentionAgents(),
+    home,
+    storage: startOnSora,
+    before: (w) => {
+      w.document.title = "Yuzuno · test";
+      w.navigator.setAppBadge = async (count) => badges.push(count);
+      w.navigator.clearAppBadge = async () => badges.push(0);
+    },
+  });
+  try {
+    await waitFor(() => p.doc.querySelector('[data-needs-you="executor:b:delivering"]'), "Hana's result waits for its release");
+    // Mori's Ask, Sora's request and question, Hana's result: four rows, four counted.
+    await waitFor(() => p.doc.title === "(4) Yuzuno · test", `the title counts every row: ${p.doc.title}`);
+    const rows = p.doc.querySelectorAll(".home-needs-you .home-needs-list > li").length;
+    assert.equal(rows, 4, "four rows, no Turn end among them");
+    assert.equal(badges.at(-1), 4);
+    assert.equal(p.doc.querySelector(".catchup-nav .nav-count").textContent, "4", "the Home tab's count");
+    assert.equal(p.doc.querySelector(".home-needs-you h2 .nav-count").textContent, "4", "Needs you's own count");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

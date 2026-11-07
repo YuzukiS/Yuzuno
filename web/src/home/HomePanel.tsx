@@ -311,7 +311,12 @@ export function HomePanel({
   const [seeingAll, setSeeingAll] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => setChoice(readPanelChoice(workspaceId, id)), [workspaceId, id]);
-  const quiet = panel.unseen === 0 && needsYou.length === 0 && panel.pending.length === 0;
+  // Core's count of what changed since the user marked it seen, less the Asks
+  // the user answered that their owner has not changed since: those are not
+  // new to the user (changedSinceSeen, YN-3).
+  const answered = panel.brief.sections.filter((s) => s.ask?.state === "replied" && (!s.seen || s.seen.version < s.version) && !changedSinceSeen(s)).length;
+  const unseen = Math.max(0, panel.unseen - answered);
+  const quiet = unseen === 0 && needsYou.length === 0 && panel.pending.length === 0;
   const session = JSON.stringify([workspaceId, id]);
   // Decided when the panel first shows in this page session, then follows
   // later reads only while the user has not acted in this panel.
@@ -425,7 +430,7 @@ export function HomePanel({
           <h2 id={`${projectDomId(id)}-name`}>{panel.project.name}</h2>
         </button>
         <span className="home-panel-chips">
-          {panel.unseen > 0 && <span className="home-chip is-new">{t.newCount(panel.unseen)}</span>}
+          {unseen > 0 && <span className="home-chip is-new">{t.newCount(unseen)}</span>}
           {needsYou.length > 0 && <span className="home-chip is-attention">{t.needCount(needsYou.length)}</span>}
           {collapsed && quiet && <span className="home-quiet">{t.quiet}</span>}
         </span>

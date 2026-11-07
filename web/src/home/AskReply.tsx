@@ -17,13 +17,8 @@ import { relative } from "./format";
 import { dropPendingReply, outboxKey, pendingReply, resendReply, sendReply, type HomeReplyInput } from "./home-api";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
+import { repliedThenUpdated } from "./brief-layout";
 import type { Section } from "./types";
-
-/** Its owner changed the section after the user's reply (an edit keeps it replied). */
-export function repliedThenUpdated(section: Section) {
-  const at = section.ask?.repliedAt;
-  return !!at && Date.parse(section.updatedAt) > Date.parse(at);
-}
 
 type ReplyContext = {
   projectId: string;
@@ -228,7 +223,9 @@ const formVersions = draftStore<FormBegun>("yuzuno.home-ask-form-versions.v1");
  * user message through Core, to the section's owner unless the user picks
  * another Agent. Nothing here acts on the Agent's behalf.
  */
-export function AskReply({ section, ...context }: ReplyContext & { section: Section }) {
+/** `inRow`: in a replied Ask's one-line row (YN-3), which already says it is
+ * replied and whom it waits for: the reply is labelled as the user's. */
+export function AskReply({ section, inRow = false, ...context }: ReplyContext & { section: Section; inRow?: boolean }) {
   const language = useLanguage();
   const t = homeText(language);
   const ask = section.ask!;
@@ -477,7 +474,7 @@ export function AskReply({ section, ...context }: ReplyContext & { section: Sect
       <div className="home-ask-replied" role="status" ref={repliedBlock} tabIndex={-1}>
         <MessageSquareReply size={14} />
         <div>
-          <strong>{t.repliedWaiting(ask.state === "replied" ? section.owner.name : targetName)}</strong>
+          <strong>{inRow ? t.yourReply.trim() : t.repliedWaiting(ask.state === "replied" ? section.owner.name : targetName)}</strong>
           {(ask.replyText || sentText) && <p>{ask.replyText || sentText}</p>}
           {ask.state === "replied" && repliedThenUpdated(section) && (
             <p className="home-ask-updated">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</p>

@@ -972,8 +972,9 @@ ul.home-widget {
    Cards come in three sizes, as iOS widgets do (Lead 2377): small (one
    column), wide (two columns) and large (two columns, two rows). Each card
    has a minimum height, never a cap, and a row is as tall as its tallest
-   card: a card that needs more grows its row, and an Ask's own row, or a
-   card with no summary, takes only the height it needs (Dev 7, 2396).
+   card: a card that needs more grows its row, and an Ask's own row takes
+   only the height it needs (Dev 7, 2396). A card whose author named no
+   summary shows how its body opens and takes the same minimum (YN-3).
    Placement is the grid's own row flow, never dense: a card that does not
    fit where a row ends starts the next, leaving the gap empty, so the
    keyboard's order, the author's, is the order on screen. */
@@ -990,7 +991,8 @@ ul.home-widget {
   .home-brief {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .home-brief .home-summary-card:not(.is-unnamed) {
+  /* A card whose author named no summary too: it shows how its body opens (YN-3). */
+  .home-brief .home-summary-card {
     min-height: 260px;
   }
   .home-brief .home-summary-card:is(.size-wide, .size-large) {
@@ -1378,6 +1380,83 @@ ul.home-widget {
 .home-replied-details .home-question {
   margin-top: 6px;
 }
+/* A replied Ask waiting for its owner, as it was when first shown in this
+   visit (YN-3): one line, whom it waits for, its title and the reply in
+   short; the reply in full, Reply again and its question when unfolded.
+   Where the pane is narrow, three short lines (below). */
+.home-section.is-short {
+  padding-block: 8px;
+}
+.home-section.is-short > .home-section-head {
+  flex-wrap: nowrap;
+  align-items: center;
+  min-width: 0;
+}
+.home-section.is-short .home-kind {
+  flex: none;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.home-replied-title {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.home-replied-title h3 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-replied-title > :not(h3) {
+  flex: none;
+}
+.home-replied-short {
+  flex: 1 1 8em;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-replied-short::before {
+  content: "“";
+}
+.home-replied-short::after {
+  content: "”";
+}
+/* Beside whom it waits for, at the right, on a phone too (where a card's
+   meta otherwise takes a line of its own, below). */
+.home-section.is-short .home-section-meta {
+  flex: none;
+  width: auto;
+  margin-left: auto;
+}
+/* Narrow, three lines: whom it waits for and when; the title and its marks;
+   the reply in short, and Seen when there is something to mark. */
+@container home (max-width: 640px) {
+  .home-section.is-short > .home-section-head {
+    flex-wrap: wrap;
+  }
+  .home-section.is-short .home-section-meta {
+    order: 1;
+  }
+  .home-replied-title {
+    flex-basis: 100%;
+    order: 2;
+  }
+  .home-replied-short {
+    flex: 1 1 0;
+    order: 3;
+  }
+  .home-section.is-short .home-seen {
+    order: 4;
+  }
+}
 .home-history-reply {
   margin: 4px 0 0;
   color: var(--home-ink-2);
@@ -1611,11 +1690,3 @@ ul.home-widget {
   outline-offset: 1px;
 }
 
-/* In Needs you's row after what waits, the Turns that failed and then those
-   that finished since this device last showed them (T-42). */
-.home-needs-item.kind-unseen-failed svg {
-  color: #a96a5b;
-}
-.home-needs-item.kind-unseen-finished svg {
-  color: #6f8a5c;
-}

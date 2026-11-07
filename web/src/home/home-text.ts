@@ -40,14 +40,11 @@ export const homeText = strings({
   waitingSince: (title: string, at: string) => `${title} · waiting since ${at}`,
   nothingNeedsYou: "Nothing needs you right now.",
   // Turn ends this device hasn't shown (T-42).
-  unseenFailed: "Failed",
-  unseenFinished: "Finished, not seen",
   executorNeeds: {
     delivering: "Awaiting your release",
     failed: "Its start failed",
     blocked: "Its task is blocked",
   } as Record<"delivering" | "failed" | "blocked", string>,
-  unseenOpen: (name: string) => `Open ${name}'s conversation`,
   questionTitle: (title: string) => `Question · ${title}`,
   // A card's fold.
   expand: "Expand",
@@ -324,14 +321,11 @@ export const homeText = strings({
   needsYou: "需要你处理",
   waitingSince: (title, at) => `${title} · 自 ${at} 起等待`,
   nothingNeedsYou: "目前没有需要你处理的事项。",
-  unseenFailed: "失败",
-  unseenFinished: "完成未看",
   executorNeeds: {
     delivering: "交付待你放行",
     failed: "启动失败",
     blocked: "任务受阻",
   },
-  unseenOpen: (name) => `打开 ${name} 的会话`,
   questionTitle: (title) => `提问 · ${title}`,
   expand: "展开",
   collapse: "收起",
@@ -458,7 +452,7 @@ export const homeText = strings({
   keptNotSent: (title, version) => `你对“${title}”（版本 ${version}）的回复未发送：那张卡片已不在 Home 上。`,
   copyText: "复制文字",
   discard: "丢弃",
-  repliedWaiting: (agent) => `已回复 · 等待 ${agent}`,
+  repliedWaiting: (agent) => `已回复 · 等 ${agent} 处理`,
   updatedAfterReply: (owner, when) => `${owner} 在你回复后更新了它（${when}）`,
   replyAgain: "再次回复",
   replyOptions: "回复选项",

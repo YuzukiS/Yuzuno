@@ -1,4 +1,4 @@
-import { firstParagraph } from "./card-summary.ts";
+import { firstParagraph, sectionSummary } from "./card-summary.ts";
 import { summaryOf } from "./report/report-model.ts";
 import type { Section } from "./types";
 
@@ -35,13 +35,16 @@ export type CardFigure =
  * summary; the whole body is read on the report page.
  * - `named`: the author named the summary. Its lead's first paragraph, the
  *   conditions it holds under (the block, shown with it), its figure.
- * - `unnamed`: the author named none. The card shows no paragraph or figure
- *   of its own choosing (Lead 2292): a conclusion taken from the body could
- *   leave behind the conditions it holds under. Its title and page say the rest.
+ * - `unnamed`: the author named none. The card shows how its body opens, as
+ *   a folded card does (sectionSummary): its first paragraph, verbatim; or,
+ *   when the body opens with a figure a card can show instead, that block,
+ *   as a small card shows figures. With neither, its title says it alone.
+ *   The user asked for this (YN-3), in place of Lead 2292's "nothing taken
+ *   from the body": its page has the conditions the opening may leave out.
  */
 export type CardContent =
   | { kind: "named"; lead: string | null; conditions: string | null; figure: CardFigure | null; size: CardSize | null }
-  | { kind: "unnamed" };
+  | { kind: "unnamed"; lead: string | null; figure: CardFigure | null };
 
 function tree(section: Section) {
   const body = section.body as Body;
@@ -150,5 +153,7 @@ export function cardContent(section: Section): CardContent {
       size: named.size,
     };
   }
-  return { kind: "unnamed" };
+  const lead = sectionSummary(section);
+  const first = body?.top[0];
+  return { kind: "unnamed", lead, figure: lead === null && first !== undefined ? figureOf(section, first) : null };
 }
