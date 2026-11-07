@@ -479,18 +479,21 @@ test("an OpenCode command that ran with no turn of its own says why under that t
   ];
   try {
     await tick(); await tick();
+    // Text and booleans only: a failing assertion on a jsdom element can take the whole test's memory to print it.
     const note = (page) => page.document.querySelector(".turn-notice");
-    assert.equal(note(pages[0])?.textContent, "OpenCode ran /explain; it started no turn.");
+    assert.equal(note(pages[0])?.textContent, "OpenCode ran /explain; it started no turn.", "the no-turn notice, in English");
     assert.equal(note(pages[1])?.textContent,
-      "OpenCode runs this command in a background sub-agent (reviewer). Its result comes back to the session later, in a run of OpenCode’s own, not in this turn.");
-    assert.equal(note(pages[2])?.textContent, "OpenCode 在后台的子 Agent（reviewer）中执行这条命令；它的结果之后由 OpenCode 自己交回会话，不属于这一轮。");
-    assert.equal(note(pages[3])?.textContent, "OpenCode 执行了 /explain；它没有开始新的一轮。");
+      "OpenCode runs this command in a background sub-agent (reviewer). Its result comes back to the session later, in a run of OpenCode’s own, not in this turn.",
+      "the sub-agent notice, in English");
+    assert.equal(note(pages[2])?.textContent, "OpenCode 在后台的子 Agent（reviewer）中执行这条命令；它的结果之后由 OpenCode 自己交回会话，不属于这一轮。",
+      "the sub-agent notice, in Chinese");
+    assert.equal(note(pages[3])?.textContent, "OpenCode 执行了 /explain；它没有开始新的一轮。", "the no-turn notice, in Chinese");
     for (const page of pages.slice(0, 4)) {
-      assert.equal(note(page).closest('[role="alert"]'), null, "plain text under the turn, not an alert");
-      assert.equal(page.document.querySelector(".inline-error"), null, "nothing failed");
+      assert.equal(note(page).closest('[role="alert"]') === null, true, "plain text under the turn, not an alert");
+      assert.equal(page.document.querySelector(".inline-error") === null, true, "nothing failed");
     }
-    assert.equal(note(pages[4]), null, "a kind this version doesn't know shows nothing");
-    assert.equal(note(pages[5]), null, "no notice, no line");
+    assert.equal(note(pages[4]) === null, true, "a kind this version doesn't know shows nothing");
+    assert.equal(note(pages[5]) === null, true, "no notice, no line");
     for (const page of pages) assert.deepEqual(page.errors, []);
   } finally { for (const page of pages) page.close(); }
 });
