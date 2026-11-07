@@ -35,9 +35,10 @@ window.renderTurns=(list)=>root.render(<>{list.map((props)=><Turn key={props.tur
 const agent = { id: "agent-1", name: "Dev", status: "idle", color: "sage", harness: "codex" };
 const long = { server: "a-very-long-mcp-server-name-for-checking", tool: "an_extremely_long_tool_name_that_does_not_fit_in_one_row" };
 const items = [
-  { id: "m1", type: "mcpToolCall", server: "yuzuno", tool: "task_get", status: "completed", arguments: { taskId: "T-1" },
+  // A Yuzuno tool whose answer the capsule doesn't read (task_get's it does, T-43 S3a).
+  { id: "m1", type: "mcpToolCall", server: "yuzuno", tool: "job_get", status: "completed", arguments: { jobId: "j1" },
     result: { content: [{ type: "text", text: "ok" }] } },
-  { id: "m2", type: "mcpToolCall", server: "yuzuno", tool: "task_get", status: "completed", arguments: { taskId: "T-2" } },
+  { id: "m2", type: "mcpToolCall", server: "yuzuno", tool: "job_get", status: "completed", arguments: { jobId: "j2" } },
   { id: "m3", type: "mcpToolCall", server: "yuzuno", status: "failed" },
   { id: "m4", type: "mcpToolCall", ...long, status: "completed" },
   { id: "ls", type: "commandExecution", command: "ls", aggregatedOutput: "Cargo.toml\n", status: "completed", exitCode: 0 },
@@ -75,10 +76,10 @@ test("a Codex MCP call's capsule names its server and tool", async () => {
   const page = await mount();
   try {
     const m1 = row(page, "m1");
-    assert.equal(label(m1).textContent, "yuzuno/task_get");
+    assert.equal(label(m1).textContent, "yuzuno/job_get");
     // The server quieter, the tool in bold; the tip has the name whole.
     assert.equal(label(m1).querySelector(".tool-call-server")?.textContent, "yuzuno/");
-    assert.equal(label(m1).querySelector("strong")?.textContent, "task_get");
+    assert.equal(label(m1).querySelector("strong")?.textContent, "job_get");
     // A call that returned says so, and no more (T-9: never success).
     assert.equal(result(m1), "returned");
 

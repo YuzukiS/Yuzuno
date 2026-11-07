@@ -9,7 +9,7 @@ import type { NativeItem } from "./types";
  * answer the row already holds is read, never fetched for it. A call that
  * returned is not work that succeeded, so `returned` is the quiet state.
  *
- * Yuzuno's own answers say more, and only these six are read; every other
+ * Yuzuno's own answers say more, and only YUZUNO_TOOLS' are read; every other
  * tool says just its state. A refusal comes first: Core's `error` or
  * `problems`, or the harness's failure. A task's status is the task record,
  * not code merged or released; a mail's delivery is as it stood when it was
@@ -47,7 +47,9 @@ export type CallFacts = {
   caution: string | null;
 };
 
-const YUZUNO_TOOLS = ["task_comment", "task_update", "brief_get", "brief_update", "peer_read", "peer_send"] as const;
+const YUZUNO_TOOLS = ["task_comment", "task_update", "brief_get", "brief_update", "peer_read", "peer_send",
+  // The executor flow (T-43 S3).
+  "task_get", "task_submit_result", "task_dispatch", "executor_release"] as const;
 type YuzunoTool = (typeof YUZUNO_TOOLS)[number];
 const isYuzunoTool = (name: string): name is YuzunoTool => (YUZUNO_TOOLS as readonly string[]).includes(name);
 
@@ -109,6 +111,20 @@ export const callWords = strings({
   } as Record<string, string>,
   taskCaution: "This is the task record as Core returned it; it doesn't mean code was merged or released.",
   mailCaution: "Delivery as it stood when sent. Delivered doesn't mean it was read or acted on.",
+  result: "Result",
+  dispatch: "Dispatch",
+  notified: "Dispatcher told",
+  waitsFor: "Waits for",
+  taskRead: (task: string, status: string) => `read ${task} · ${status}`,
+  materialsRead: (task: string) => `dispatch materials of ${task}`,
+  historyRead: (task: string, count: number, more: boolean) => `${task} · ${count} ${count === 1 ? "activity" : "activities"}${more ? " · more to read" : ""}`,
+  resultSubmitted: (task: string, status: string) => `result submitted on ${task} · ${status}`,
+  resultCaution: "A result is its author's report: it isn't accepted, merged or released by this.",
+  dispatched: (task: string, to: string | null) => (to ? `${task} dispatched to ${to}` : `${task} dispatched`),
+  dispatchCaution: "A dispatch hands the task over; it doesn't mean the work has started or is done.",
+  released: "executor released · archived",
+  releasing: "executor released · archiving once its work ends",
+  releaseRecorded: "release recorded",
 }, {
   tone: {
     running: "运行中",
@@ -167,6 +183,20 @@ export const callWords = strings({
   },
   taskCaution: "这是 Core 返回的任务记录，不表示代码已合并或发布。",
   mailCaution: "这是发送时的投递状态；已投递也不表示对方已读或已处理。",
+  result: "结果",
+  dispatch: "派发",
+  notified: "通知派发者",
+  waitsFor: "等待",
+  taskRead: (task, status) => `读取 ${task} · ${status}`,
+  materialsRead: (task) => `${task} 的派发材料`,
+  historyRead: (task, count, more) => `${task} · ${count} 条活动${more ? " · 还有更多" : ""}`,
+  resultSubmitted: (task, status) => `${task} 结果已提交 · ${status}`,
+  resultCaution: "结果是作者的报告：不表示已验收、合并或发布。",
+  dispatched: (task, to) => (to ? `${task} 已派发给 ${to}` : `${task} 已派发`),
+  dispatchCaution: "派发只是交出任务，不表示工作已开始或已完成。",
+  released: "执行者已放行 · 已归档",
+  releasing: "执行者已放行 · 工作结束后归档",
+  releaseRecorded: "放行已记录",
 });
 
 type Words = ReturnType<typeof callWords>;
@@ -190,11 +220,11 @@ function yuzunoCall(item: NativeItem): { tool: YuzunoTool; answer: unknown; fiel
   return tool && isYuzunoTool(tool) ? { tool, answer: item.output, field: "output" } : null;
 }
 
-/** Which of the six Yuzuno tools `item` calls, if one. */
+/** Which of the Yuzuno tools above `item` calls, if one. */
 export const yuzunoTool = (item: NativeItem): YuzunoTool | null => yuzunoCall(item)?.tool ?? null;
 
 /** The capsule's name: Claude's names for Yuzuno's tools, and OpenCode's for
- * the six above, read as Codex's do ("yuzuno/task_get"). Every other name
+ * YUZUNO_TOOLS, read as Codex's do ("yuzuno/task_get"). Every other name
  * stays as the harness gave it. */
 export function capsuleName(item: NativeItem, label: string): string {
   const name = typeof item.name === "string" ? item.name : "";
@@ -262,7 +292,7 @@ function taskLine(answer: Answer, t: Words): { id: string; details: CallDetail[]
   return { id, details: [{ label: t.task, value: title ? `${id} · ${clip(title, 120)}` : id, given: true }] };
 }
 
-/** What each of the six answers says. null: it isn't the answer expected. */
+/** What each answer says. null: it isn't the answer expected. */
 const readers: Record<YuzunoTool, (answer: Answer, t: Words, language: Language) => Read | null> = {
   task_comment(answer, t) {
     const task = taskLine(answer, t);
@@ -351,6 +381,70 @@ const readers: Record<YuzunoTool, (answer: Answer, t: Words, language: Language)
         ...(task ? [{ label: t.task, value: task, given: true }] : []),
         ...(message.priority === "urgent" ? [{ label: t.priority, value: t.urgent }] : []),
       ],
+    };
+  },
+  // The current view, a page of history, or a dispatch's materials.
+  task_get(answer, t, language) {
+    const words = boardText(language).statuses as Record<string, string>;
+    if (record(answer.current)) {
+      const current = answer.current;
+      const id = text(current.taskId), status = text(current.status);
+      if (!id || !status) return null;
+      const title = text(current.title);
+      const version = scalar(current.version);
+      return {
+        note: t.taskRead(id, words[status] ?? status), noteGiven: false, caution: null,
+        details: [{ label: t.task, value: title ? `${id} · ${clip(title, 120)}` : id, given: true },
+          { label: t.statusThen, value: words[status] ?? status, given: !words[status] },
+          ...(version ? [{ label: t.version, value: version, given: true }] : [])],
+      };
+    }
+    if (record(answer.dispatchMaterials)) {
+      const id = record(answer.latestTask) ? text(answer.latestTask.taskId) : null;
+      return id ? { note: t.materialsRead(id), noteGiven: false, caution: null, details: [{ label: t.task, value: id, given: true }] } : null;
+    }
+    const activities = Array.isArray(answer.activities) ? answer.activities : null;
+    if (activities && record(answer.task) && typeof answer.hasMore === "boolean") {
+      const task = answer.task;
+      const id = (record(answer.keys) ? text(answer.keys.global) : null) ?? text(task.title);
+      return id ? { note: t.historyRead(id, activities.length, answer.hasMore), noteGiven: false, caution: null, details: [] } : null;
+    }
+    return null;
+  },
+  task_submit_result(answer, t, language) {
+    const task = taskLine(answer, t);
+    const status = record(answer.task) ? text(answer.task.status) : null;
+    const result = record(answer.task) && record(answer.task.result) ? answer.task.result : null;
+    if (!task || !status || !result) return null;
+    const words = boardText(language).statuses as Record<string, string>;
+    const notification = record(result.notification) ? text(result.notification.state) : null;
+    const id = text(result.id);
+    return {
+      note: t.resultSubmitted(task.id, words[status] ?? status), noteGiven: false, caution: t.resultCaution,
+      details: [...task.details, { label: t.statusThen, value: words[status] ?? status, given: !words[status] },
+        ...(id ? [{ label: t.result, value: id.slice(0, 8), given: true }] : []),
+        ...(notification ? [{ label: t.notified, value: t.delivery[notification] ?? notification, given: !t.delivery[notification] }] : [])],
+    };
+  },
+  task_dispatch(answer, t) {
+    const task = taskLine(answer, t);
+    const dispatch = record(answer.task) && record(answer.task.dispatch) ? answer.task.dispatch : null;
+    if (!task || !dispatch) return null;
+    const assignee = record(answer.task) && record(answer.task.assignee) ? text(answer.task.assignee.name) : null;
+    const id = text(dispatch.id);
+    return {
+      note: t.dispatched(task.id, assignee), noteGiven: false, caution: t.dispatchCaution,
+      details: [...task.details, ...(assignee ? [{ label: t.recipient, value: assignee, given: true }] : []),
+        ...(id ? [{ label: t.dispatch, value: id.slice(0, 8), given: true }] : [])],
+    };
+  },
+  executor_release(answer, t) {
+    if (!text(answer.agentId)) return null;
+    const archiving = record(answer.archiving) ? answer.archiving : null;
+    const reason = archiving ? text(archiving.reason) : null;
+    return {
+      note: text(answer.releasedAt) ? t.released : archiving ? t.releasing : t.releaseRecorded, noteGiven: false, caution: null,
+      details: reason ? [{ label: t.waitsFor, value: clip(reason, 200), given: true }] : [],
     };
   },
 };
