@@ -172,6 +172,8 @@ async function check(run) {
     ...(run.phone ? { isMobile: true, hasTouch: true } : {}),
   });
   await context.addInitScript((language) => {
+    // Yuzuno's page only: a card's sandboxed preview frame has no storage of its own to set (YN-3 C2).
+    if (window !== window.top) return;
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
     // The window opens on trainer-2, whose request waits: no Turn end is shown first.
