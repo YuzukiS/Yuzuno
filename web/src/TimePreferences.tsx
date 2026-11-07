@@ -1,5 +1,6 @@
 import { strings, useStrings } from "./i18n";
 import { SaveStatus } from "./SaveStatus";
+import { ChoiceCards } from "./SettingsChoices";
 import {
   restoreDefaultTimePreferences,
   retryTimePreferencesWrite,
@@ -26,8 +27,6 @@ const sample = (clock: ClockFormat) => {
 // Time zone names are identifiers (IANA's), shown as they are written.
 const text = strings({
   title: "Clock & time zone",
-  intro: "How times are written. It is kept on this device only.",
-  current: "In effect now",
   clockLegend: "Write times with",
   system: "System",
   systemNote: "As this browser writes times for its language and region.",
@@ -41,8 +40,6 @@ const text = strings({
   where: "Used for message times and Turn endings in conversations, and for times on Home, with their dates in that time zone. Other places, such as Jobs, CI and Settings, still write times as this browser does. Relative times (“5 min ago”) don’t change, nor does any time Yuzuno stores; Defer’s “Tomorrow 9:00” is this device’s 9:00.",
 }, {
   title: "时钟与时区",
-  intro: "时间的显示方式。只保存在此设备上。",
-  current: "当前生效",
   clockLegend: "时间显示为",
   system: "系统",
   systemNote: "按此浏览器的语言和地区显示时间。",
@@ -73,40 +70,23 @@ export function TimePreferencesSection() {
   const save = useTimePreferencesSave();
   const own = systemTimeZone();
   const zones = timeZones();
+  // Settings › Typing & time's second card (YN-8): the page's heading is
+  // the first card's; what is in effect is said in each clock card.
   return (
     <section className="settings-section input-preferences time-preferences" aria-labelledby="settings-time-title">
-      <header className="settings-section-heading">
-        <div>
-          <h3 id="settings-time-title">{t.title}</h3>
-          <p>{t.intro}</p>
-        </div>
-        <span className="settings-current" title={t.current}>
-          {sample(clock)}
-          {timeZone && ` · ${zoneName(timeZone)}`}
-        </span>
-      </header>
-      <div className="settings-group">
-        <fieldset className="input-send-key">
+      <h4 className="settings-group-title" id="settings-time-title">{t.title}</h4>
+      <div className="settings-group appearance-group">
+        <fieldset className="appearance-field input-send-key">
           <legend>{t.clockLegend}</legend>
-          {choices.map(({ value, label, note }) => (
-            <label key={value} className="input-send-choice">
-              <input
-                type="radio"
-                name="time-clock-format"
-                value={value}
-                checked={clock === value}
-                onChange={() => saveTimePreferences({ ...preferences, clock: value })}
-              />
-              <span>
-                <strong>
-                  {label} · {sample(value)}
-                </strong>
-                <small>{note}</small>
-              </span>
-            </label>
-          ))}
+          <ChoiceCards
+            name="time-clock-format"
+            value={clock}
+            choices={choices.map(({ value, label, note }) => ({ value, label: `${label} · ${sample(value)}`, note }))}
+            onChange={(value) => saveTimePreferences({ ...preferences, clock: value })}
+            className="input-send-choice"
+          />
         </fieldset>
-        <fieldset className="input-send-key time-zone-choice">
+        <fieldset className="appearance-field input-send-key time-zone-choice">
           <legend>{t.zoneLegend}</legend>
           <select
             className="settings-select"
@@ -123,18 +103,18 @@ export function TimePreferencesSection() {
               </option>
             ))}
           </select>
+          <p className="appearance-help input-preferences-fixed">{t.where}</p>
+          <SaveStatus
+            outcome={save?.outcome ?? null}
+            action={save?.action}
+            attempt={save?.attempt}
+            stored={timePreferencesStored()}
+            scope="this device"
+            onRetry={retryTimePreferencesWrite}
+            onRestoreDefaults={restoreDefaultTimePreferences}
+          />
         </fieldset>
-        <p className="input-preferences-fixed">{t.where}</p>
       </div>
-      <SaveStatus
-        outcome={save?.outcome ?? null}
-        action={save?.action}
-        attempt={save?.attempt}
-        stored={timePreferencesStored()}
-        scope="this device"
-        onRetry={retryTimePreferencesWrite}
-        onRestoreDefaults={restoreDefaultTimePreferences}
-      />
     </section>
   );
 }

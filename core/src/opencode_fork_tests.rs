@@ -644,14 +644,15 @@ async fn a_fork_answered_after_its_watch_settles_that_attempt_and_the_same_reque
     ws.close_agent("oc").await.unwrap();
 }
 
-/// On a session whose messages are 2.x's, rewind and fork still read
-/// 1.19.3's: each refuses, before doing anything, until its own slice moves
-/// it (T-32 slice 3b, Lead 4983 decision A). Compaction has moved (T-61
-/// slice 4): it goes by 2.x's own route, never 1.19.3's. The stand-in sends
-/// 2.x's messages here, as it does by default.
+/// On a session whose messages are 2.x's, fork still reads 1.19.3's: it
+/// refuses, before doing anything, until its own slice moves it (T-32 slice
+/// 3b, Lead 4983 decision A). A rewind is previewed on 2.x (T-61 slice 5),
+/// its confirm refused until slice 6; compaction has moved (T-61 slice 4):
+/// it goes by 2.x's own route, never 1.19.3's. The stand-in sends 2.x's
+/// messages here, as it does by default.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn rewind_and_fork_refuse_a_session_of_2x_messages_and_compaction_goes_by_2xs_route() {
+async fn on_2x_a_rewind_is_previewed_not_confirmed_fork_refuses_and_compaction_goes_by_2xs_route() {
     program();
     let dir = tempfile::tempdir().unwrap();
     let (root, cwd) = (dir.path().canonicalize().unwrap(), dir.path().canonicalize().unwrap().join("work"));
@@ -670,8 +671,9 @@ async fn rewind_and_fork_refuse_a_session_of_2x_messages_and_compaction_goes_by_
     let not_yet = crate::opencode_v2::NOT_YET;
     // What each says, or nothing when it went ahead.
     let said = |result: anyhow::Result<()>| result.err().map(|e| e.to_string()).unwrap_or_default();
-    let rewind = said(ws.opencode_revert_preview("oc", &turn).await.map(drop));
-    assert!(rewind.contains(not_yet) && rewind.contains("没有预览回退"), "rewind refuses: {rewind}");
+    let preview = ws.opencode_revert_preview("oc", &turn).await.expect("a 2.x rewind is previewed");
+    let rewind = said(ws.opencode_revert_confirm("oc", preview["previewId"].as_str().unwrap()).await.map(drop));
+    assert!(rewind.contains(not_yet) && rewind.contains("没有回退"), "its confirm refuses: {rewind}");
     let fork = said(ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &turn, "F")).await.map(drop));
     assert!(fork.contains(not_yet) && fork.contains("没有 fork"), "fork refuses: {fork}");
     assert!(asked(&data, "oc", "POST", "/revert").is_empty() && asked(&data, "oc", "POST", "/fork").is_empty(),

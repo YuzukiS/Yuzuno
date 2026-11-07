@@ -44,7 +44,9 @@ async fn templates_are_the_workspaces_saved_against_the_version_read() {
     let (status, saved) = call(&ws, "PUT", "/api/executor-templates",
         Some(json!({"expectedVersion":0,"templates":[template("reviewer", "codex"), writer.clone()]}))).await;
     assert_eq!((status, saved["workspace"]["version"].clone()), (StatusCode::OK, json!(1)), "{saved}");
-    assert_eq!(saved["workspace"]["templates"][1], writer, "kept as saved");
+    let mut kept = writer.clone();
+    kept.as_object_mut().unwrap().remove("maxConcurrent");
+    assert_eq!(saved["workspace"]["templates"][1], kept, "kept as saved, but an older page's maxConcurrent is dropped (YN-2 S5)");
     let announced: Value = serde_json::from_str(&events.try_next().expect("a kept save is announced").data).unwrap();
     assert_eq!((announced["type"].clone(), announced["executorTemplates"].clone()), (json!("workspace.changed"), json!(true)));
 
@@ -91,7 +93,7 @@ async fn a_save_keeps_what_a_later_core_stored() {
     let later = json!({"id":"z","label":"A later shape","laterHarness":{"kind":"remote"}});
     // A later Core's templates that read, but hold what this Core refuses (R2 70093e91).
     let refused = [json!({"id":"g","label":"Another harness","harness":"gemini"}),
-        json!({"id":"m","label":"More at once","harness":"codex","maxConcurrent":65})];
+        json!({"id":"m","label":"Yet another harness","harness":"kimi"})];
     ws.store.db.write().unwrap().execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)", params![KEY,
         json!({"version":1,"laterList":"kept","templates":[{"id":"a","label":"A","harness":"codex","laterField":"kept"}, later.clone(),
             refused[0].clone(), refused[1].clone()]}).to_string()]).unwrap();
@@ -151,12 +153,6 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         (with(json!({"instructions":"x".repeat(MAX_INSTRUCTIONS + 1)})), "A template's instructions are at most 8 KiB"),
         (with(json!({"namePattern":"{title} done"})), "A name pattern can use {task} and {label}, not {title}"),
         (with(json!({"namePattern":"{task"})), "A name pattern's `{` is not closed"),
-        // T-35 S4: one sentence for every value it can't take, serde's included.
-        (with(json!({"maxConcurrent":0})), "At most at once is a whole number from 1 to 64"),
-        (with(json!({"maxConcurrent":65})), "At most at once is a whole number from 1 to 64"),
-        (with(json!({"maxConcurrent":-1})), "At most at once is a whole number from 1 to 64"),
-        (with(json!({"maxConcurrent":2.5})), "At most at once is a whole number from 1 to 64"),
-        (with(json!({"maxConcurrent":"2"})), "At most at once is a whole number from 1 to 64"),
     ] {
         let got = refused(template.clone());
         assert!(got.starts_with(says), "{template} should be refused with {says}; got: {got}");
@@ -168,9 +164,11 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         let auto = parse_save(&[with(json!({"harness":harness,"machineId":"auto"}))], true, &[]).unwrap();
         assert_eq!(auto[0].machine_id.as_deref(), Some("auto"), "{harness}: a template may say auto");
     }
-    for (limit, kept) in [(json!(1), Some(1)), (json!(64), Some(64)), (Value::Null, None)] {
+    // YN-2 S5: a template has no limit of its own; an older page's
+    // maxConcurrent is taken and dropped, whatever it says, for one release.
+    for limit in [json!(1), json!(64), json!(0), json!(65), json!(2.5), json!("2"), Value::Null] {
         let saved = parse_save(&[with(json!({"maxConcurrent":limit}))], true, &[]).unwrap();
-        assert_eq!(saved[0].max_concurrent, kept, "{limit}");
+        assert!(serde_json::to_value(&saved[0]).unwrap().get("maxConcurrent").is_none(), "{limit} is dropped");
     }
     let off = parse_save(&[template("o", "opencode")], false, &[]).unwrap_err().to_string();
     assert_eq!(off, "OpenCode Agents aren't enabled on this Core");
