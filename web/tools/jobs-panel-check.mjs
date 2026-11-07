@@ -443,6 +443,14 @@ try {
     const tabs = page.getByRole("tablist", { name: "Job source" }).getByRole("tab");
     assert.deepEqual(await tabs.allTextContents(), ["Local2", "GitHub Actions", "Reviews", "Merge queue"]);
     assert.equal(await tabs.first().getAttribute("aria-selected"), "true");
+    // The sources rail's tabs keep their own height, packed at the top (YN-8: S1's Settings nav
+    // made them rows of a grid stretched down the whole column, ~340 px each at 1440).
+    const railTabs = await tabs.evaluateAll((els) => els.map((el) => {
+      const r = el.getBoundingClientRect();
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom), height: Math.round(r.height) };
+    }));
+    assert.ok(railTabs.every((r) => r.height <= 44), `each source tab at its own height: ${JSON.stringify(railTabs)}`);
+    assert.ok(railTabs.slice(1).every((r, i) => r.top - railTabs[i].bottom <= 4), `the tabs packed at the top: ${JSON.stringify(railTabs)}`);
     const groups = () => page.locator(".job-group-title").evaluateAll((els) => els.map((el) => el.textContent));
     assert.deepEqual(await groups(), ["Running and queued2", "Finished13"]);
     assert.equal(await page.locator(".job-group-done .job-row").count(), 10);
@@ -466,11 +474,12 @@ try {
     assert.equal(marks.row.color, marks.dock.color, "a failed mark is the same colour in the panel and on the dock");
     await page.locator(".job-row").filter({ hasText: "browser check" }).click();
     await page.locator(".job-log").waitFor();
-    assert.deepEqual(await page.locator(".job-card-heading strong").allTextContents(), ["Summary", "Command", "Output", "Declared output files"]);
+    // Provenance: where a result came from (T-168, 62a45faa), last.
+    assert.deepEqual(await page.locator(".job-card-heading strong").allTextContents(), ["Summary", "Command", "Output", "Declared output files", "Provenance"]);
     assert.match(await page.locator(".job-detail-title .job-state").textContent(), /^Failed · 4m 10s$/);
     assert.equal(await page.locator(".job-detail-actions").getByRole("button", { name: "Run again…" }).count(), 1);
     await shot("local-light-1440.png");
-    check("Local: sources rail, two groups with Finished folded, queued and finished times, live row times, the dock's marks and card details", { rowTime });
+    check("Local: sources rail with its tabs at their own height and packed at the top, two groups with Finished folded, queued and finished times, live row times, the dock's marks and card details", { rowTime, railTabs });
 
     // The budget as meters, its form a step away.
     const meters = await page.getByRole("meter").evaluateAll((els) => els.map((el) => [el.getAttribute("aria-label"), el.getAttribute("aria-valuetext"), el.getAttribute("aria-valuenow")]));

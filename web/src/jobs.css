@@ -80,6 +80,20 @@
   min-height: 0;
   margin-top: 22px;
 }
+/* The sources rail: Settings' nav class gives its tabs their look. Since
+   YN-8 S1 that nav holds groups (a grid with room between them), so on a
+   desktop the rail keeps its own: its tabs at their height, close together,
+   at the top, staying in view as the panes scroll. Narrow, it is the row of
+   tabs Settings' nav becomes (updates.css). */
+@media (min-width: 721px) {
+  .settings-nav.jobs-rail {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    align-content: start;
+    gap: 2px;
+  }
+}
 .jobs-rail-count {
   margin-left: auto;
   color: var(--text-secondary);
