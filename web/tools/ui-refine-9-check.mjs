@@ -613,7 +613,8 @@ try {
       const settings = page.locator(".modal.settings-modal");
       await settings.waitFor();
       try {
-        const editor = settings.locator("#settings-editor-jobs-budget:not([hidden])");
+        // The Core host's budget is on its machine page since YN-8 S3.
+        const editor = settings.locator("#settings-editor-machines:not([hidden])");
         for (const group of ["This host's Job budget", "Disk reserve", "GPU 0 · NVIDIA GeForce RTX 5090"])
           await editor.locator(`[aria-label="${group}"]`).waitFor();
         // By role: a closing dialog's fading copy keeps its classes, not its role.

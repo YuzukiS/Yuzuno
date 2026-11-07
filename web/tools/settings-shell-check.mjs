@@ -610,6 +610,17 @@ try {
         if (tab === "storage") {
           const parts = await dialog.locator("#settings-storage .storage-parts").evaluateAll((all) => all.map((card) => card.querySelector(".claude-runtime-copies") !== null));
           assert.deepEqual(parts, [false, true], `${label}: Storage is two cards, the prepared Claude runtimes (which removes) last`);
+          // While Drafts' listing is on its way its block is empty: no empty card (#743's review).
+          const empty = await dialog.evaluate((el) => {
+            const card = document.createElement("div");
+            card.className = "settings-group appearance-group";
+            card.innerHTML = '<div class="appearance-field draft-export-block"></div>';
+            el.querySelector("#settings-drafts").append(card);
+            const display = getComputedStyle(card).display;
+            card.remove();
+            return display;
+          });
+          assert.equal(empty, "none", `${label}: an empty Drafts card isn't drawn`);
         }
         if (tab === "backup") {
           // Every command is drawn as a button, not as bare text (S6b).
