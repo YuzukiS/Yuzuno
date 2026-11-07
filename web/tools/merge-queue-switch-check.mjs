@@ -141,6 +141,13 @@ try {
   await row.getByText("Off: Core writes nothing to GitHub here.").waitFor({ timeout: 10_000 });
   await row.getByText("Lands with core-merge: Core sends the merge itself.", { exact: false }).waitFor({ timeout: 10_000 });
   await row.screenshot({ path: join(output, "1-off.png") });
+  // The switch is a checkbox beside its title, not the project form's full-width field.
+  const besideTitle = await row.evaluate((el) => {
+    const input = el.querySelector('input[role="switch"]').getBoundingClientRect();
+    const title = el.querySelector("label strong").getBoundingClientRect();
+    return input.width <= 24 && title.left >= input.right && title.top < input.bottom;
+  });
+  assert.equal(besideTitle, true, "the switch is a small box beside its title");
   await row.locator('input[role="switch"]').click();
   const confirm = row.locator(".merge-queue-confirm");
   await confirm.waitFor({ timeout: 10_000 });

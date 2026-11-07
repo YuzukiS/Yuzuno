@@ -223,8 +223,14 @@
   gap: 8px;
   cursor: pointer;
 }
+/* A checkbox, not the project form's full-width text field (.project-form input). */
 .merge-queue-switch > label input {
-  margin-top: 3px;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin: 3px 0 0;
+  padding: 0;
+  accent-color: var(--green);
 }
 .merge-queue-switch > label span {
   display: flex;
