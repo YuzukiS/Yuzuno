@@ -167,7 +167,12 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
         let prev = ws.stored(move |s| s.merge_entry(&prev_id)).await?;
         let same = prev["batch"]["commit"] == batch["chain"]["base"];
         let going = matches!(prev["state"].as_str(), Some("queued" | "waiting" | "ready" | "merging")) || (prev["state"] == "merged" && prev["merge"]["post"].is_null());
-        let landed = matches!(prev["state"].as_str(), Some("merged" | "done")) && prev["merge"]["post"]["ok"] == true && prev["merge"]["sha"] == main.as_str();
+        // Landed through its batch: main's tree is the tree this step's batch
+        // was built on.
+        let landed = matches!(prev["state"].as_str(), Some("merged" | "done"))
+            && prev["merge"]["post"]["ok"] == true
+            && prev["merge"]["sha"] == main.as_str()
+            && prev["merge"]["tree"] == prev["batch"]["tree"];
         if same && going {
             evidence["batch"] = batch.clone();
             return Ok((evidence, Err(Hold::Wait(format!(

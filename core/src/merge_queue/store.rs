@@ -1497,6 +1497,16 @@ impl Store {
         let mut r = repository(&tx, repository_id)?;
         let chain = r["chain"].clone();
         let live = chain_live(&tx, &chain, id)?;
+        // An entry whose own step still stands where it is keeps its place: a
+        // check that stopped before its batch was whole resumes it.
+        let own = &e["batch"]["chain"];
+        let stands = match live.last() {
+            None => own["prev"].is_null() && own["base"] == main,
+            Some(tip) => own["prev"] == tip["id"] && own["base"] == tip["batch"]["commit"],
+        };
+        if own["id"] == chain["id"] && e["batch"]["cleanup"].is_null() && stands && live.len() < checks::CHAIN_STEPS {
+            return Ok(Join::Step(own.clone()));
+        }
         let link = match live.last() {
             None => {
                 let cid = uuid::Uuid::new_v4().to_string();
