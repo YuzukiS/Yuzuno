@@ -286,160 +286,166 @@ export function StorageOverview({ active, updates, onOpenTaskWorkspaces }: {
         </div>
       </header>
 
-      <section className="storage-part" aria-labelledby="storage-device">
-        <h4 id="storage-device">{t.device}</h4>
-        <p className="storage-note">{t.deviceNote}</p>
-        {device && !device.available && <p className="updates-error" role="alert">{t.deviceReason(device.reason ?? "")}</p>}
-        {device?.available && (
-          <>
-            <ul className="storage-rows">
-              {device.groups.map((group) => {
-                const [label, note] = t.group(group.id);
-                return (
-                  <li key={group.id} data-group={group.id}>
-                    <span className="storage-name">{label}</span>
-                    <span className="storage-size">{t.about(sizeText(group.bytes))}</span>
-                    <span className="storage-detail">
-                      {t.entries(group.keys)} · {note}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-            <p className="storage-note">{t.drafts(device.draftAgents, device.unreadableDrafts, device.unsentMessages)}</p>
-          </>
-        )}
-        <p className="storage-note" data-estimate>
-          {estimate === undefined
-            ? t.asking
-            : estimate === null
-              ? t.noEstimate
-              : t.estimate(sizeText(estimate.usage), sizeText(estimate.quota))}
-        </p>
-      </section>
-
-      <section className="storage-part" aria-labelledby="storage-core">
-        <h4 id="storage-core">{t.core}</h4>
-        {loadError && (
-          <p className="updates-error" role="alert">
-            {t.couldNotRead(loadError)}{" "}
-            <button type="button" className="inline-link" onClick={() => void refresh()}>
-              {t.tryAgain}
-            </button>
+      {/* Appearance's card (YN-8 S6): a block per part. What removes
+          something, the prepared Claude runtimes, is a card of its own, last. */}
+      <div className="settings-group appearance-group storage-parts">
+        <section className="storage-part appearance-field" aria-labelledby="storage-device">
+          <h4 id="storage-device">{t.device}</h4>
+          <p className="storage-note">{t.deviceNote}</p>
+          {device && !device.available && <p className="updates-error" role="alert">{t.deviceReason(device.reason ?? "")}</p>}
+          {device?.available && (
+            <>
+              <ul className="storage-rows">
+                {device.groups.map((group) => {
+                  const [label, note] = t.group(group.id);
+                  return (
+                    <li key={group.id} data-group={group.id}>
+                      <span className="storage-name">{label}</span>
+                      <span className="storage-size">{t.about(sizeText(group.bytes))}</span>
+                      <span className="storage-detail">
+                        {t.entries(group.keys)} · {note}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="storage-note">{t.drafts(device.draftAgents, device.unreadableDrafts, device.unsentMessages)}</p>
+            </>
+          )}
+          <p className="storage-note" data-estimate>
+            {estimate === undefined
+              ? t.asking
+              : estimate === null
+                ? t.noEstimate
+                : t.estimate(sizeText(estimate.usage), sizeText(estimate.quota))}
           </p>
-        )}
-        {!view && !loadError && <p className="storage-note">{t.reading}</p>}
-        {view && (
-          <>
-            <p className="storage-note">
-              {t.where(at(view.readAt))[0]}
-              <code>{view.dataDir}</code>
-              {t.where(at(view.readAt))[1]}
+        </section>
+
+        <section className="storage-part appearance-field" aria-labelledby="storage-core">
+          <h4 id="storage-core">{t.core}</h4>
+          {loadError && (
+            <p className="updates-error" role="alert">
+              {t.couldNotRead(loadError)}{" "}
+              <button type="button" className="inline-link" onClick={() => void refresh()}>
+                {t.tryAgain}
+              </button>
             </p>
-            {view.unreadable && <p className="updates-error">{t.partUnreadable(view.unreadable)}</p>}
+          )}
+          {!view && !loadError && <p className="storage-note">{t.reading}</p>}
+          {view && (
+            <>
+              <p className="storage-note">
+                {t.where(at(view.readAt))[0]}
+                <code>{view.dataDir}</code>
+                {t.where(at(view.readAt))[1]}
+              </p>
+              {view.unreadable && <p className="updates-error">{t.partUnreadable(view.unreadable)}</p>}
+              <ul className="storage-rows">
+                {view.entries.map((entry) => (
+                  <EntryRow key={entry.name} entry={entry} t={t} />
+                ))}
+              </ul>
+              {view.database.freePages !== null && view.database.pageSize !== null && (
+                <p className="storage-note">{t.freeSpace(sizeText(view.database.freePages * view.database.pageSize))}</p>
+              )}
+              {view.jobs.total !== null && (
+                <p className="storage-note">{t.jobs(view.jobs.total, view.jobs.unfinished)}</p>
+              )}
+            </>
+          )}
+        </section>
+
+        <section className="storage-part appearance-field" aria-labelledby="storage-task-folders">
+          <h4 id="storage-task-folders">{t.taskFolders}</h4>
+          <p className="storage-note">{t.taskFoldersNote}</p>
+          {!onOpenTaskWorkspaces ? (
+            <p className="storage-note">{t.taskFoldersElsewhere}</p>
+          ) : tasksError ? (
+            <p className="updates-error" role="alert">{t.tasksNotRead(tasksError)}</p>
+          ) : !taskChoices ? (
+            <p className="storage-note">{t.readingTasks}</p>
+          ) : taskChoices.tasks.length === 0 ? (
+            <p className="storage-note">{t.noTasks}</p>
+          ) : (
+            <div className="storage-task-open">
+              <label>
+                <span>{t.task}</span>
+                <select className="settings-select" value={chosenTask} onChange={(event) => setChosenTask(event.target.value)}>
+                  <option value="">{t.chooseTask}</option>
+                  {taskChoices.tasks.map((task) => (
+                    <option key={task.id} value={task.id}>
+                      {task.id} · {task.title} · {task.status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!taskChoices.tasks.some((task) => task.id === chosenTask)}
+                onClick={() => onOpenTaskWorkspaces(chosenTask)}
+              >
+                {t.openFolders}
+              </button>
+              {!taskChoices.complete && <p className="storage-note">{t.moreTasks(taskChoices.tasks.length)}</p>}
+            </div>
+          )}
+        </section>
+
+        <section className="storage-part appearance-field" aria-labelledby="storage-updates">
+          <h4 id="storage-updates">{t.updates}</h4>
+          {!updates ? (
+            <p className="storage-note">{t.notRead}</p>
+          ) : updates.managed ? (
+            <p className="storage-note">
+              {t.releases(
+                sizeText(updates.storage.releaseBytes),
+                updates.storage.retainedReleases,
+                updates.storage.keepReleases,
+                sizeText(updates.storage.backupBytes),
+              )}
+            </p>
+          ) : (
+            <p className="storage-note">{t.notManaged}</p>
+          )}
+        </section>
+
+        <section className="storage-part appearance-field" aria-labelledby="storage-native">
+          <h4 id="storage-native">{t.native}</h4>
+          {view && view.native.length === 0 && <p className="storage-note">{t.noNative}</p>}
+          {view && view.native.length > 0 && (
             <ul className="storage-rows">
-              {view.entries.map((entry) => (
-                <EntryRow key={entry.name} entry={entry} t={t} />
+              {view.native.map((group) => (
+                <li key={`${group.harness}:${group.machine ?? ""}`}>
+                  <span className="storage-name">
+                    {harnessNames[group.harness] ?? group.harness} · {group.machine ?? t.coreHost}
+                  </span>
+                  <span className="storage-size">{t.sizeUnknown}</span>
+                  <span className="storage-detail">
+                    {t.agents(group.agents, group.closed)} ·{" "}
+                    {group.harness === "opencode" ? t.opencodeKept : t.keptBy(harnessNames[group.harness] ?? group.harness)}
+                  </span>
+                </li>
               ))}
             </ul>
-            {view.database.freePages !== null && view.database.pageSize !== null && (
-              <p className="storage-note">{t.freeSpace(sizeText(view.database.freePages * view.database.pageSize))}</p>
-            )}
-            {view.jobs.total !== null && (
-              <p className="storage-note">{t.jobs(view.jobs.total, view.jobs.unfinished)}</p>
-            )}
-          </>
-        )}
-      </section>
-
-      <ClaudeRuntimeCopies />
-
-      <section className="storage-part" aria-labelledby="storage-task-folders">
-        <h4 id="storage-task-folders">{t.taskFolders}</h4>
-        <p className="storage-note">{t.taskFoldersNote}</p>
-        {!onOpenTaskWorkspaces ? (
-          <p className="storage-note">{t.taskFoldersElsewhere}</p>
-        ) : tasksError ? (
-          <p className="updates-error" role="alert">{t.tasksNotRead(tasksError)}</p>
-        ) : !taskChoices ? (
-          <p className="storage-note">{t.readingTasks}</p>
-        ) : taskChoices.tasks.length === 0 ? (
-          <p className="storage-note">{t.noTasks}</p>
-        ) : (
-          <div className="storage-task-open">
-            <label>
-              <span>{t.task}</span>
-              <select className="settings-select" value={chosenTask} onChange={(event) => setChosenTask(event.target.value)}>
-                <option value="">{t.chooseTask}</option>
-                {taskChoices.tasks.map((task) => (
-                  <option key={task.id} value={task.id}>
-                    {task.id} · {task.title} · {task.status}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!taskChoices.tasks.some((task) => task.id === chosenTask)}
-              onClick={() => onOpenTaskWorkspaces(chosenTask)}
-            >
-              {t.openFolders}
-            </button>
-            {!taskChoices.complete && <p className="storage-note">{t.moreTasks(taskChoices.tasks.length)}</p>}
-          </div>
-        )}
-      </section>
-
-      <section className="storage-part" aria-labelledby="storage-updates">
-        <h4 id="storage-updates">{t.updates}</h4>
-        {!updates ? (
-          <p className="storage-note">{t.notRead}</p>
-        ) : updates.managed ? (
-          <p className="storage-note">
-            {t.releases(
-              sizeText(updates.storage.releaseBytes),
-              updates.storage.retainedReleases,
-              updates.storage.keepReleases,
-              sizeText(updates.storage.backupBytes),
-            )}
-          </p>
-        ) : (
-          <p className="storage-note">{t.notManaged}</p>
-        )}
-      </section>
-
-      <section className="storage-part" aria-labelledby="storage-native">
-        <h4 id="storage-native">{t.native}</h4>
-        {view && view.native.length === 0 && <p className="storage-note">{t.noNative}</p>}
-        {view && view.native.length > 0 && (
-          <ul className="storage-rows">
-            {view.native.map((group) => (
-              <li key={`${group.harness}:${group.machine ?? ""}`}>
-                <span className="storage-name">
-                  {harnessNames[group.harness] ?? group.harness} · {group.machine ?? t.coreHost}
-                </span>
-                <span className="storage-size">{t.sizeUnknown}</span>
-                <span className="storage-detail">
-                  {t.agents(group.agents, group.closed)} ·{" "}
-                  {group.harness === "opencode" ? t.opencodeKept : t.keptBy(harnessNames[group.harness] ?? group.harness)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {view && view.notInBackup.length > 0 && (
-        <section className="storage-part" aria-labelledby="storage-not-backed-up">
-          <h4 id="storage-not-backed-up">{t.never}</h4>
-          <ul className="storage-list">
-            {view.notInBackup.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
+          )}
         </section>
-      )}
+
+        {view && view.notInBackup.length > 0 && (
+          <section className="storage-part appearance-field" aria-labelledby="storage-not-backed-up">
+            <h4 id="storage-not-backed-up">{t.never}</h4>
+            <ul className="storage-list">
+              {view.notInBackup.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>
+
+      <div className="settings-group appearance-group storage-parts">
+        <ClaudeRuntimeCopies />
+      </div>
 
       <p className="storage-note">{t.footer}</p>
     </section>

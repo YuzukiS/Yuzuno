@@ -184,7 +184,7 @@ export function ClaudeRuntimeCopies() {
     : null;
 
   return (
-    <section className="storage-part claude-runtime-copies" aria-labelledby="storage-claude-runtimes">
+    <section className="storage-part appearance-field claude-runtime-copies" aria-labelledby="storage-claude-runtimes">
       <h4 id="storage-claude-runtimes">{t.title}</h4>
       <p className="storage-note">{t.note}</p>
       <p>

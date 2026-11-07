@@ -18,6 +18,12 @@
   --history-turns: #d8a060;
   --history-metadata: #aaa398;
 }
+/* In Appearance's card (YN-8 S6): the chart, the table and its notes. */
+.history-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
 .history-section .settings-section-heading button {
   display: inline-flex;
   align-items: center;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { api, errorText, NetworkError } from "./api";
 import { BackupRetention } from "./BackupRetention";
 import { strings, useLanguage } from "./i18n";
+import { useSaveBarPart } from "./SettingsSaveBar";
 import "./workspace-backup.css";
 
 /** T-192: Settings → Backup. Core backs up its own Workspace, checks a
@@ -526,6 +527,7 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
             />
             <button
               type="button"
+              className="secondary-button"
               disabled={busy || !view?.canBackUp || !to.trim()}
               onClick={() => void send({ path: "/workspace/backups", body: { requestId: requestId(), to: to.trim() } })}
             >
@@ -569,6 +571,7 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
             />
             <button
               type="button"
+              className="secondary-button"
               disabled={busy || !checkPath.trim()}
               onClick={() =>
                 void send({ path: "/workspace/backups/check", body: { requestId: requestId(), path: checkPath.trim() } })
@@ -605,11 +608,12 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
               disabled={busy}
               onChange={(e) => setInto(e.target.value)}
             />
-            <button type="button" disabled={busy || prechecking || !from.trim() || !into.trim()} onClick={() => void runPrecheck()}>
+            <button type="button" className="secondary-button" disabled={busy || prechecking || !from.trim() || !into.trim()} onClick={() => void runPrecheck()}>
               {t.checkRestore}
             </button>
             <button
               type="button"
+              className="secondary-button"
               disabled={busy || !prechecked}
               onClick={() =>
                 void send({ path: "/workspace/restores", body: { requestId: requestId(), from, to: into } })
@@ -648,7 +652,7 @@ export function WorkspaceBackup({ active }: { active: boolean }) {
       {lost && pending && (
         <div className="workspace-backup-refusal" role="alert">
           <p>{t.lost}</p>
-          <button type="button" onClick={() => void send(pending)}>
+          <button type="button" className="secondary-button" onClick={() => void send(pending)}>
             {t.tryAgain}
           </button>
         </div>
@@ -764,7 +768,9 @@ function DailyBackup({ schedule, canChange, onSaved }: {
   const savedLine = useRef<HTMLParagraphElement>(null);
   const afterSave = useRef<HTMLButtonElement | null>(null);
   const changed = enabled !== schedule.enabled || time !== (schedule.timeUtc || "03:00") || folder !== (schedule.folder ?? "");
-  async function save(pressed: HTMLButtonElement) {
+  /** Saves the schedule as it stands; false when Core refused it, which the block says. */
+  async function save(pressed?: HTMLButtonElement): Promise<boolean> {
+    const sent = { enabled, time, folder };
     setSaving(true);
     setError("");
     setSaved(false);
@@ -774,14 +780,33 @@ function DailyBackup({ schedule, canChange, onSaved }: {
         body: JSON.stringify({ enabled, timeUtc: time, folder: folder.trim() || null }),
       });
       onSaved(answer.schedule);
-      afterSave.current = pressed;
+      // What was sent is now as Core saved it (a folder trimmed); a field
+      // edited during the save stays a change.
+      setEnabled((now) => (now === sent.enabled ? answer.schedule.enabled : now));
+      setTime((now) => (now === sent.time ? answer.schedule.timeUtc || "03:00" : now));
+      setFolder((now) => (now === sent.folder ? answer.schedule.folder ?? "" : now));
+      afterSave.current = pressed ?? null;
       setSaved(true);
+      return true;
     } catch (e) {
       setError(errorText(e));
+      return false;
     } finally {
       setSaving(false);
     }
   }
+  // On Settings › Backup & restore the schedule joins the page's save bar
+  // (YN-8 S6b); mounted alone it keeps its own Save.
+  const inBar = useSaveBarPart("backup-daily", canChange && changed ? {
+    save: () => save(),
+    discard: () => {
+      setError("");
+      setSaved(false);
+      setEnabled(schedule.enabled);
+      setTime(schedule.timeUtc || "03:00");
+      setFolder(schedule.folder ?? "");
+    },
+  } : null);
   // Saved, Save has nothing left to save and is off: focus it had, or lost, goes to the line that
   // says it was saved, unless it has gone elsewhere meanwhile (T-19 ST:B8).
   useLayoutEffect(() => {
@@ -828,9 +853,11 @@ function DailyBackup({ schedule, canChange, onSaved }: {
             value={folder}
             onChange={(e) => edited(() => setFolder(e.target.value))}
           />
-          <button type="button" disabled={saving || !changed} onClick={(event) => void save(event.currentTarget)}>
-            {saving ? t.saving : t.save}
-          </button>
+          {!inBar && (
+            <button type="button" className="primary-button" disabled={saving || !changed} onClick={(event) => void save(event.currentTarget)}>
+              {saving ? t.saving : t.save}
+            </button>
+          )}
         </div>
       )}
       {canChange && /^\d\d:\d\d$/.test(time) && (
@@ -838,7 +865,7 @@ function DailyBackup({ schedule, canChange, onSaved }: {
           {t.timeHere(time, localTime(time))}
         </p>
       )}
-      {saved && !changed && (
+      {saved && !changed && !inBar && (
         <p ref={savedLine} className="workspace-backup-note" role="status" tabIndex={-1}>
           {t.dailySaved}
         </p>
@@ -957,7 +984,8 @@ function AutoRemoval({ schedule, canChange, onSaved }: {
   const kept = preview?.entries.filter((e) => e.verdict === "keep").length ?? 0;
   const held = preview?.entries.filter((e) => e.verdict === "protected" || e.verdict === "unknown").length ?? 0;
   return (
-    <div className="settings-group workspace-backup-auto-removal" aria-label={t.autoRemoval}>
+    // A block of the daily backup's card (YN-8 S6b), not a card inside it.
+    <div className="workspace-backup-auto-removal" aria-label={t.autoRemoval}>
       <div className="settings-row workspace-backup-row">
         <span className="settings-row-main">
           <span className="settings-row-title">{t.autoRemoval}</span>
@@ -1000,11 +1028,11 @@ function AutoRemoval({ schedule, canChange, onSaved }: {
               setPreview(null);
             }}
           />
-          <button type="button" disabled={!valid || busy} onClick={() => void runPreview()}>
+          <button type="button" className="secondary-button" disabled={!valid || busy} onClick={() => void runPreview()}>
             {t.preview}
           </button>
           {on && (
-            <button type="button" disabled={busy} onClick={() => void turnOff()}>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => void turnOff()}>
               {t.turnOff}
             </button>
           )}
@@ -1038,7 +1066,7 @@ function AutoRemoval({ schedule, canChange, onSaved }: {
           )}
           <p className="settings-row-help">{t.autoAfter(preview.sizeBasis)}</p>
           {previewed && !same && (
-            <button type="button" disabled={busy} onClick={() => void turnOn()}>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => void turnOn()}>
               {on ? t.saveSettings : t.turnOn}
             </button>
           )}
@@ -1085,6 +1113,7 @@ function OperationView({ op, canStop }: { op: Operation; canStop: boolean }) {
       {canStop && (
         <button
           type="button"
+          className="secondary-button"
           disabled={stopping}
           onClick={async () => {
             setStopping(true);

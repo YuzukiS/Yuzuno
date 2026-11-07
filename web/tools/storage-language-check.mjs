@@ -199,16 +199,21 @@ try {
       return window.realSetItem.call(this, name, ...rest);
     };
   });
-  await box.getByRole("button", { name: "清除已记录的错误" }).click();
+  // Clearing asks first, below its button (T-19 ST:SX-105).
+  const clearConfirmed = async () => {
+    await box.getByRole("button", { name: "清除已记录的错误" }).click();
+    await box.locator('[role="group"][aria-label="清除已记录的错误"]').getByRole("button", { name: "清除", exact: true }).click();
+  };
+  await clearConfirmed();
   const refused = await box.locator(".diagnostics-clear [role=alert]").textContent();
   assert.match(refused, /^没有清除任何内容：此浏览器拒绝保存这次更改（.+）。已记录的错误保持原样。$/);
   await page.evaluate(() => {
     Storage.prototype.setItem = window.realSetItem;
   });
-  await box.getByRole("button", { name: "清除已记录的错误" }).click();
+  await clearConfirmed();
   const cleared = await box.locator(".diagnostics-clear [role=status]").textContent();
   assert.equal(cleared, "已从此浏览器为此站点清除 1 条已记录的错误。");
-  assert.equal(await box.locator("#settings-diagnostics > [role=status]").last().textContent(), "此文本是在清除已记录的错误之前收集的。重新预览可查看当前的记录。");
+  assert.equal(await box.locator("#settings-diagnostics .diagnostics-body > [role=status]").last().textContent(), "此文本是在清除已记录的错误之前收集的。重新预览可查看当前的记录。");
   await page.screenshot({ path: join(output, "diagnostics-zh.png") });
   check("clearing the recorded errors refused, then done: both said in Chinese", { refused, cleared });
 

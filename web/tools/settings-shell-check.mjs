@@ -47,6 +47,37 @@ const projects = [
   { id: "garden", name: "Garden", defaultDirs: { local: "/fixture/garden" }, createdAt: "", updatedAt: "" },
   { id: "orchard", name: "Orchard", defaultDirs: { local: "/fixture/orchard" }, createdAt: "", updatedAt: "" },
 ];
+// The Data and About pages (S6), as Core answers them (synthetic folders).
+const storage = {
+  format: 1, readAt: "2026-11-07T08:00:00Z", dataDir: "/fixture/data/workspace",
+  entries: [
+    { name: "claude-runtime", what: "claudeRuntime", kind: "folder", backup: "excluded", backupReason: "A cache of the Claude runtime, which Core rebuilds" },
+    { name: "input-images", what: "inputImages", kind: "folder", backup: "copied", backupReason: null },
+    { name: "workspace.sqlite", what: "database", kind: "file", bytes: 3145728, diskBytes: 3149824, modifiedAt: null, backup: "copied", backupReason: null },
+  ],
+  unreadable: null,
+  database: { pageSize: 4096, pages: 768, freePages: 10 },
+  jobs: { total: 12, unfinished: 1 },
+  native: [{ harness: "codex", machine: null, agents: 2, closed: 1 }],
+  notInBackup: ["Native session histories kept by Codex, Claude Code and OpenCode outside the Workspace"],
+};
+const schedule = {
+  enabled: true, timeUtc: "03:00", folder: "/fixture/backups/daily", nextRunAt: "2026-11-08T03:00:00Z", retentionNote: null,
+  retention: { keep: 2, folder: "/fixture/backups/daily", confirmedAt: "2026-11-06T10:00:00Z" },
+  lastRun: { slot: "2026-11-07T03:00:00Z", missed: 0, startedAt: "2026-11-07T03:00:05Z", to: "/fixture/backups/daily/yuzuno-backup-20261107T0300Z",
+    operationId: "op9", state: "succeeded", error: null, finishedAt: "2026-11-07T03:01:00Z", cleanup: null },
+};
+const backup = {
+  canChange: true, workspaceId: "settings-shell", canBackUp: true, refusals: [], unfinishedJobs: [], estimateBytes: 3 * 1024 * 1024,
+  current: null, recent: [], notCovered: ["Native CLI accounts, keys and configuration (Codex, Claude Code, OpenCode)"],
+  replaceRunningWorkspace: "Replacing the Workspace this Core uses needs Core stopped; it is not offered here", schedule,
+};
+const claudeSdk = {
+  format: 1, readAt: "2026-11-07T08:00:00Z", runtime: { kind: "release", release: "core-fixture" },
+  sdk: { state: "locked", version: "0.3.296", registry: "registry.npmjs.org" },
+  copy: { state: "inUse", copy: { version: "0.3.296", source: { from: "release", release: "core-fixture" }, at: "2026-11-07T07:00:00Z" } },
+};
+const codexMcp = { state: "observed", reason: "", generation: 1, more: 0, servers: [{ name: "github", status: "ready", error: null, failureReason: null, observedAt: "2026-11-07T07:59:00Z" }] };
 const checks = [], errors = [], calls = [];
 const check = (name) => { checks.push(name); console.log(`PASS ${name}`); };
 const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png" };
@@ -75,6 +106,8 @@ async function open({ width, height, language = "en", theme = "light", phone = f
     const agent = agents.find((a) => url.pathname === `/api/agents/${a.id}`);
     if (agent) return respond({ agent, turns: [{ id: `turn-${agent.id}`, status: "completed", items: [{ id: `reply-${agent.id}`, type: "agentMessage", text: "Synthetic conversation" }] }], pending: [], artifacts: [], messages: [] });
     if (/\/projects\/[^/]+\/services$/.test(url.pathname)) return respond({ services: [] });
+    if (/^\/api\/agents\/[^/]+\/codex\/mcp$/.test(url.pathname)) return respond(codexMcp);
+    if (/^\/api\/agents\/[^/]+\/claude\/mcp-status$/.test(url.pathname)) return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "no report" }) });
     if (/\/projects\/[^/]+\/home-editors$/.test(url.pathname)) return respond({ version: 0, editorAgentIds: null });
     // A Project's leads: none saved; a save (YN-8 S2b) is taken as sent.
     if (/\/projects\/[^/]+\/leads$/.test(url.pathname))
@@ -97,6 +130,9 @@ async function open({ width, height, language = "en", theme = "light", phone = f
       case "/api/ci": return respond(noCiRuns);
       case "/api/reviews": return respond(noReviews);
       case "/api/catchup": return respond({ items: [], agents: [] });
+      case "/api/storage": return respond(storage);
+      case "/api/workspace/backup": return respond(backup);
+      case "/api/claude-sdk": return respond(claudeSdk);
       default: return respond(url.pathname.includes("/collaboration/") ? { tasks: [], messages: [], agents: [] } : {});
     }
   });
@@ -535,6 +571,84 @@ try {
     assert.equal(await home.locator('select[aria-label="Home presentation"]').inputValue(), "default", `${label}: Discard is back to what was saved`);
     await context.close();
     check(`${label}: Home's change shows the page's bar, another page doesn't, back on Home it is still there; Discard`);
+  }
+
+  // ---- Data and About (S6): each page's cards fit, at 1440 and 390. The
+  // restyled pages are Appearance's cards (Storage's removal card last), and
+  // no note in a card is larger than a block's title.
+  const cards = {
+    storage: "#settings-storage .storage-parts",
+    diagnostics: "#settings-diagnostics .appearance-group .diagnostics-clear",
+    runtime: "#settings-runtime .runtime-groups",
+    about: "#settings-about .appearance-group",
+    backup: "#settings-backup .workspace-backup-daily",
+  };
+  // Backup's cards are the settings rows' own (S6b); every line on it counts.
+  const notesOf = { backup: "#settings-backup :is(p, .settings-row-help, summary)" };
+  for (const [width, height, phone] of [[1440, 900, false], [390, 844, true]]) {
+    for (const [language, theme] of [["en", "light"], ["zh-Hans", "dark"]]) {
+      const label = `data and about ${width}x${height} ${language} ${theme}`;
+      const { page, context } = await open({ width, height, language, theme, phone });
+      await openSettings(page);
+      await page.waitForTimeout(300); // the dialog's entrance
+      const dialog = settings(page);
+      for (const tab of ["storage", "backup", "diagnostics", "updates", "runtime", "about"]) {
+        await dialog.locator(`#settings-tab-${tab}`).click();
+        await dialog.locator(".settings-editor:not([hidden])").first().waitFor();
+        if (cards[tab]) await dialog.locator(cards[tab]).first().waitFor();
+        await page.waitForTimeout(250);
+        await noOverflow(page, `${label} ${tab}`);
+        if (cards[tab]) {
+          const sizes = await dialog.evaluate((el, selector) => {
+            const adjust = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--font-adjust")) || 0;
+            const notes = [...el.querySelectorAll(selector)].filter((p) => p.getClientRects().length);
+            return { title: 11 + adjust, notes: notes.map((p) => ({ text: p.textContent.slice(0, 40), size: parseFloat(getComputedStyle(p).fontSize) })) };
+          }, notesOf[tab] ?? ".settings-editor:not([hidden]) .appearance-group :is(p, .settings-row-help)");
+          assert.ok(sizes.notes.length > 0, `${label} ${tab}: notes in its cards`);
+          for (const note of sizes.notes) assert.ok(note.size <= sizes.title + 0.01, `${label} ${tab}: "${note.text}" is ${note.size}px, larger than a block's title (${sizes.title}px)`);
+        }
+        if (tab === "storage") {
+          const parts = await dialog.locator("#settings-storage .storage-parts").evaluateAll((all) => all.map((card) => card.querySelector(".claude-runtime-copies") !== null));
+          assert.deepEqual(parts, [false, true], `${label}: Storage is two cards, the prepared Claude runtimes (which removes) last`);
+          // While Drafts' listing is on its way its block is empty: no empty card (#743's review).
+          const empty = await dialog.evaluate((el) => {
+            const card = document.createElement("div");
+            card.className = "settings-group appearance-group";
+            card.innerHTML = '<div class="appearance-field draft-export-block"></div>';
+            el.querySelector("#settings-drafts").append(card);
+            const display = getComputedStyle(card).display;
+            card.remove();
+            return display;
+          });
+          assert.equal(empty, "none", `${label}: an empty Drafts card isn't drawn`);
+        }
+        if (tab === "backup") {
+          // Every command is drawn as a button, not as bare text (S6b).
+          const bare = await dialog.locator("#settings-backup button").evaluateAll((all) => all.filter((b) => b.getClientRects().length).filter((b) => {
+            const style = getComputedStyle(b);
+            return !(parseFloat(style.borderTopWidth) > 0) && style.backgroundColor === "rgba(0, 0, 0, 0)";
+          }).map((b) => b.textContent.trim()));
+          assert.deepEqual(bare, [], `${label}: Backup's commands are drawn as buttons`);
+          // The daily schedule's change shows in the page's bar, not a Save of its own; Discard sends nothing.
+          const daily = dialog.locator("#settings-backup .workspace-backup-daily");
+          await daily.locator('input[type="checkbox"]').click();
+          const bar = dialog.locator(".settings-savebar:not([hidden])");
+          await bar.waitFor();
+          assert.equal(await daily.getByRole("button", { name: language === "en" ? "Save" : "保存", exact: true }).count(), 0, `${label}: no Save of the daily backup's own`);
+          await page.screenshot({ path: resolve(output, `data-about-backup-bar-${width}x${height}-${language}-${theme}.png`) });
+          await bar.getByRole("button", { name: language === "en" ? "Discard" : "放弃" }).click();
+          await page.waitForFunction(() => !document.querySelector(".settings-savebar:not([hidden])"));
+        }
+        await page.screenshot({ path: resolve(output, `data-about-${tab}-${width}x${height}-${language}-${theme}.png`) });
+        if (phone) {
+          await dialog.locator(".settings-back").click();
+          await dialog.locator(".settings-center.is-root").waitFor();
+          await page.waitForTimeout(200);
+        }
+      }
+      await context.close();
+      check(`${label}: Storage, Backup & restore, Diagnostics, Updates, Runtime and About & help fit; their cards' notes are no larger than a block's title; Backup's commands are buttons and its daily schedule's change shows in the page's bar`);
+    }
   }
 
   // ---- Deep links: the Workspace menu and the status bar open their pages.

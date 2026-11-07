@@ -71,3 +71,13 @@
   padding-top: 10px;
   border-top: 1px solid var(--line, #cfc5b6);
 }
+/* In Appearance's cards (YN-8 S6): the previewed text is a block, and a
+   note in a block is in the cards' help type (Diagnostics, Drafts, History). */
+.diagnostics-body {
+  display: grid;
+  gap: 10px;
+}
+.appearance-field .diagnostics-note {
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
