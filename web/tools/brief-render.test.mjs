@@ -1851,7 +1851,7 @@ test("YN-16 S3 a Diagram on a card works there and never opens the report; its l
   // A Diagram alone as the visual is the card's live figure too.
   const alone = bike();
   alone.body.elements.body.props.summary.visual = "steps";
-  alone.body.elements.body.children = ["lead", "steps", "parts"];
+  alone.body.elements.body.children = ["lead", "steps", "parts", "more"];
   alone.body.elements.more.children = ["about"];
   window.renderCard(readSection(page, alone), PROJECT, { deck: true });
   const live = await until(() => document.querySelector(".home-card-frame.kind-interactive .brief-diagram svg"), "a Diagram as the visual");
