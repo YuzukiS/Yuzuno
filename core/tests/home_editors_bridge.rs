@@ -16,8 +16,9 @@ fn json_file(path: &Path) -> Value {
 }
 
 /// A running Claude Stop hook still asks Core's real policy, after the user
-/// revokes and grants editing; since T-154 the answer is never to hold the
-/// Turn for a Brief update, editor or not.
+/// revokes and grants editing (since YN-2 S4, by choosing the Project's
+/// leads); since T-154 the answer is never to hold the Turn for a Brief
+/// update, editor or not.
 #[tokio::test]
 async fn running_claude_stop_asks_real_core_policy_and_is_never_held_for_the_brief() {
     std::env::set_var("YUZUNO_CLAUDE_BRIDGE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/home_editors_bridge.mjs"));
@@ -38,17 +39,17 @@ async fn running_claude_stop_asks_real_core_policy_and_is_never_held_for_the_bri
     let serving = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     ws.reconnect("claude-policy").await.unwrap();
     let client = reqwest::Client::new();
-    let endpoint = format!("http://127.0.0.1:{port}/api/projects/{project}/home-editors");
+    let endpoint = format!("http://127.0.0.1:{port}/api/projects/{project}/leads");
 
     for (n, ids) in [(1, json!([])), (2, json!(["claude-policy"]))] {
         let sent = ws.send("claude-policy", format!("fixture turn {n}")).await.unwrap();
         until(|| lab.path().join(format!("ready-{n}")).is_file()).await;
         assert_eq!(ws.store.agent("claude-policy").unwrap().status, "working");
         let response = client.put(&endpoint).header("X-Yuzuno-Client", "desktop")
-            .json(&json!({"expectedVersion":n-1,"editorAgentIds":ids})).send().await.unwrap();
+            .json(&json!({"expectedVersion":n-1,"leadAgentIds":ids})).send().await.unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let policy: Value = response.json().await.unwrap();
-        assert_eq!(policy["editorAgentIds"], ids);
+        assert_eq!(policy["leadAgentIds"], ids);
         std::fs::write(lab.path().join(format!("release-{n}")), "go").unwrap();
         let stopped = lab.path().join(format!("stop-{n}.json"));
         until(|| stopped.is_file()).await;

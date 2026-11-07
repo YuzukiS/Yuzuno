@@ -672,6 +672,10 @@ mod defaults_create_tests {
 async fn create(State(ws): State<Arc<Workspace>>, Json(p): Json<Create>) -> ApiResult<Json<Value>> {
     let (project, save_default) = (p.project_id.clone(), p.save_project_default);
     let (agent, sources) = create_agent(&ws, p, None).await?;
+    if project.is_some() {
+        // It leads the Project it was created in (YN-2 S4): its leads changed.
+        ws.projects_changed();
+    }
     // The Agent already exists; a failed default update must not hide it.
     let mut response = serde_json::to_value(&agent)?;
     response["defaultSources"] = sources;
@@ -887,8 +891,12 @@ struct AgentProject {
 }
 async fn set_agent_project(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(p): Json<AgentProject>) -> ApiResult<Json<Value>> {
     let agent = id.clone();
-    ws.stored(move |store| store.set_agent_project(&agent, p.project_id.as_deref())).await?;
+    let moved = ws.stored(move |store| store.user_moves_agent(&agent, p.project_id.as_deref())).await?;
     ws.changed(&id);
+    if moved {
+        // The Agents' listed kind changed: clients read the Workspace again.
+        ws.projects_changed();
+    }
     Ok(Json(serde_json::to_value(ws.listed(&id).await?)?))
 }
 async fn machines(State(ws): State<Arc<Workspace>>) -> ApiResult<Json<Value>> {

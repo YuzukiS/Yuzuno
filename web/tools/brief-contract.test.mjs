@@ -503,7 +503,11 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /keys: omit for every section with its body; \[\] for an index/);
   assert.match(briefGuide("sections"), new RegExp(`What goes where: ${BRIEF_OUTCOME_HINT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.match(BRIEF_HARD_RULES, /editContent is false.*only your own Asks/);
-  assert.match(briefGuide("errors"), /ask_only.*Only the user/);
+  assert.match(briefGuide("errors"), /ask_only.*removing your own older sections.*A Project's leads edit Home; the user chooses them\./);
+  // YN-2 S4: the leads edit Home; an Ask-only member may also take down its own older sections.
+  assert.match(rules[3], /^3\. Leads edit Home; the user chooses leads\. If editContent is false and writeOwnAsk is true, write only your own Asks\./);
+  assert.match(briefGuide(), /When editContent is false and writeOwnAsk is true, only create\/update\/resolve\/remove your own Asks, remove your own older sections, or send noChange/);
+  assert.doesNotMatch(BRIEF_HARD_RULES, /selects Home content editors/);
   for (const phrase of [/expectedVersion/, /version_conflict.*re-read.*merge/, /only their own sections.*topic\/sub/, /question plus .*options, freeText, a form or a choice/, /Resolve your asks explicitly/, /never executes actions/, /brief_guide/])
     assert.match(BRIEF_HARD_RULES, phrase);
   assert.ok(rules.findIndex((line) => /never executes actions/.test(line)) < rules.findIndex((line) => /brief_guide for formats/.test(line)));

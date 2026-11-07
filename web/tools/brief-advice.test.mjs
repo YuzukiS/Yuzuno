@@ -143,8 +143,8 @@ test("advice never changes the checked section", () => {
 
 test("the tools and the guide say what a check writes, what advice is and both problem limits", () => {
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /validateOnly:true pre-checks without writing\./);
-  // T-175's hint and preference, for Home content editors only; the preference grants nothing.
-  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /for a Home content editor homeHint, and homePreference once the user set one: .*granting nothing\}/);
+  // T-175's hint and preference, for Home editors (a Project's leads, YN-2 S4) only; the preference grants nothing.
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /for a lead \(a Home editor\) homeHint, and homePreference once the user set one: .*granting nothing\}/);
   const sections = briefGuide("sections");
   assert.match(sections, /validateOnly:true pre-checks a brief_update: it runs the checks made before the write.* writes nothing: no requestId kept, no version or space reserved, and it is not your update\./);
   assert.match(sections, /valid, whether the pre-check passed, and checkedAll, only whether it ran all its steps\..*false means later steps did not run and the problems listed may not be all\./);
