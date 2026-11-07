@@ -232,6 +232,88 @@
   }
 }
 
+/* Open PRs by what they need (Home, YN-8 S7): a group a heading and rows
+   whose number, title, author and checks line up across the groups. */
+.repo-activity .repo-groups {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+.repo-activity .repo-group h5 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 2px;
+  color: var(--repo-muted);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.repo-activity .repo-group h5 .repo-count {
+  margin-left: 0;
+}
+.repo-activity .repo-group[data-group="failure"] h5 {
+  color: var(--repo-attention);
+}
+.repo-activity :is(.repo-group, .repo-footer) ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.repo-activity :is(.repo-group, .repo-footer) li {
+  display: block;
+  font-size: inherit;
+  line-height: 1.8;
+}
+.repo-activity .repo-group .repo-row {
+  display: grid;
+  grid-template-columns: 4.5em minmax(0, 1fr) minmax(0, 9em) 1.4em;
+  align-items: center;
+  gap: 8px;
+}
+.repo-activity .repo-group .repo-row small {
+  max-width: none;
+  white-space: nowrap;
+}
+.repo-activity .repo-pull-ci {
+  justify-content: flex-end;
+}
+.repo-activity .repo-groups-empty {
+  margin: 6px 0 0;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+/* Under the PRs: more on GitHub, the commits folded, the runs on GitHub. */
+.repo-activity .repo-footer {
+  margin-top: 6px;
+}
+.repo-activity .repo-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 14px;
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.repo-activity .repo-footer-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--accent-ink);
+}
+.repo-activity .repo-commits-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  color: var(--repo-muted);
+  font-size: inherit;
+}
+.repo-activity .repo-commits {
+  margin-top: 4px;
+}
+.repo-activity .repo-commits[hidden] {
+  display: none;
+}
+
 /* Narrow (≤ 520 px of panel): one column, three rows a list. */
 @container repo-activity (max-width: 520px) {
   .repo-activity .repo-activity-lists {
@@ -250,5 +332,18 @@
   .repo-activity .repo-activity-repo > header {
     flex-wrap: wrap;
     gap: 0 8px;
+  }
+  /* A PR in two lines: its number and title, then its author and checks. */
+  .repo-activity .repo-group .repo-row {
+    grid-template-columns: 4em minmax(0, 1fr) 1.4em;
+    row-gap: 0;
+  }
+  .repo-activity .repo-group .repo-pull-author {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .repo-activity .repo-group .repo-pull-ci {
+    grid-column: 3;
+    grid-row: 1;
   }
 }

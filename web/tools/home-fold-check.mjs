@@ -64,7 +64,7 @@ try {
       const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
       assert.equal(url.hostname, "yuzuno-home-fold.test");
       if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: linked });
-      // The links, once Repository details show them, ask Core to refresh them (as before T-18): counted apart.
+      // A refresh of the links: Home asks none since they moved to Settings (YN-8 S7); counted apart.
       if (method === "POST" && path === "/api/collaboration/github_refresh") {
         report.refreshes.push({ viewport: viewport.name, path });
         return route.fulfill({ json: linked });
@@ -108,25 +108,22 @@ try {
     check(`${viewport.name}: each card with a body has a visible fold of at least ${least} px; the summary card and the repositories' line have none`, { folds: labels });
     await page.screenshot({ path: resolve(output, `${viewport.name}-expanded.png`), fullPage: true });
 
-    // Repository details, by keyboard, without folding the project (T-18).
-    const repos = page.locator(".home-repos-details");
-    assert.equal(await repos.getAttribute("aria-expanded"), "false");
-    assert.equal(await page.locator(".home-repos .repo-activity-lists").count(), 0, "one line until details open");
-    await repos.focus();
-    assert.deepEqual(report.refreshes.filter((r) => r.viewport === viewport.name), [], "no refresh before details open");
+    // A repository's recent commits, by keyboard, without folding the project (T-18; YN-8 S7).
+    const commits = page.locator(".home-repos .repo-commits-toggle");
+    const list = page.locator(".home-repos .repo-commits");
+    assert.equal(await commits.getAttribute("aria-expanded"), "false");
+    assert.equal(await list.isHidden(), true, "the commits are folded");
+    await commits.focus();
     await page.keyboard.press("Enter");
-    assert.equal(await repos.getAttribute("aria-expanded"), "true");
-    await page.locator(".home-repos .repo-activity-lists").waitFor();
+    assert.equal(await commits.getAttribute("aria-expanded"), "true");
+    await list.waitFor();
     assert.equal(await page.locator(".home-panel").first().evaluate((el) => el.classList.contains("is-collapsed")), false);
     await page.keyboard.press(" ");
-    assert.equal(await repos.getAttribute("aria-expanded"), "false");
-    assert.equal(await page.locator(".home-repos .repo-activity-lists").count(), 0);
+    assert.equal(await commits.getAttribute("aria-expanded"), "false");
+    assert.equal(await list.isHidden(), true);
     await page.locator(".home-repos .repo-line").waitFor();
-    // The refresh follows the links' first read: wait for it, at most 5 s.
-    for (let end = Date.now() + 5000; !report.refreshes.some((r) => r.viewport === viewport.name) && Date.now() < end; ) await page.waitForTimeout(50);
-    assert.deepEqual(report.refreshes.filter((r) => r.viewport === viewport.name).map((r) => r.path), ["/api/collaboration/github_refresh"],
-      "showing the links asked for one refresh");
-    check(`${viewport.name}: Repository details open and close on their own, with Enter and Space; showing the links asks Core for one refresh`);
+    assert.deepEqual(report.refreshes.filter((r) => r.viewport === viewport.name), [], "no refresh of the links: they are in Settings");
+    check(`${viewport.name}: a repository's recent commits open and close on their own, with Enter and Space; Home asks no refresh of the links`);
 
     // Seen and the fold do not set each other off, on the Ask that folds.
     const ship = page.locator('[data-section-key="ship"]');

@@ -2463,6 +2463,10 @@ export function App() {
       openSettingsPage("machines", target.machineId);
       return;
     }
+    if (target.kind === "projectSettings") {
+      openSettingsPage("projects", target.projectId);
+      return;
+    }
     const owner = workspace?.agents.find((a) => a.id === target.agentId);
     const source = {
       agentId: target.agentId,

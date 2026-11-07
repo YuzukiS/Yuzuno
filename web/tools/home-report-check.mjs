@@ -228,7 +228,7 @@ async function serve(route) {
   if (request.method() !== "GET" && path.startsWith("/api/")) {
     // A list read (home-api.ts): it starts no GitHub sync.
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [linkedRepo], links: [] } });
-    // The links, once Repository details show them, ask Core to refresh them (as before T-18): a read, counted apart.
+    // A refresh of the links: Home asks none since they moved to Settings (YN-8 S7); a read, counted apart.
     if (path === "/api/collaboration/github_refresh") {
       report.refreshes.push(path);
       return route.fulfill({ json: { repositories: [linkedRepo], links: [] } });
@@ -270,7 +270,7 @@ async function serve(route) {
     "/api/models": () => ({ models: [] }),
   }[path];
   if (json) return route.fulfill({ json: json() });
-  // The linked repository's merge queue, as Repository details read it (T-37): off, as a fixture repository's is.
+  // The linked repository's merge queue (T-37), as Settings reads it: off, as a fixture repository's is.
   const queue = path.match(/^\/api\/merge-queue\/repositories\/(\d+)$/);
   if (queue && request.method() === "GET") return route.fulfill({ json: { repositoryId: Number(queue[1]), enabled: false, paused: null, landing: "core-merge" } });
   if (path.startsWith("/api/")) {
@@ -656,7 +656,7 @@ try {
           repos: (() => {
             const bar = document.querySelector('[data-home-project="p1"] .home-repos'), line = bar?.querySelector(".repo-line");
             return bar && { height: Math.round(bar.getBoundingClientRect().height), lineHeight: Math.round(line.getBoundingClientRect().height),
-              text: line.innerText.replace(/\s+/g, " "), details: bar.querySelector(".home-repos-details")?.textContent ?? null };
+              text: line.innerText.replace(/\s+/g, " "), manage: bar.querySelector(".home-repos-manage")?.textContent ?? null };
           })(),
           sideways: scroller.scrollWidth > scroller.clientWidth || [...document.querySelectorAll(".home-view *")].some((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX === "auto" && !el.closest(".result-table-scroll, pre")),
         };
@@ -733,17 +733,17 @@ try {
       assert.ok(deckShape.machines.height <= (wide ? 140 : 210), `Machines stays short: ${JSON.stringify(deckShape.machines)}`);
       // Repositories: one line under the project head where there is room.
       assert.match(deckShape.repos.text, /example\/atlas-notes.*main.*passed\s*CI.*b2eaeea\s*Merge the synthetic loader fix.*2 open PRs/);
-      assert.equal(deckShape.repos.details, "Repository details");
+      assert.equal(deckShape.repos.manage, "Manage in Settings");
       if (deckShape.container >= 800) assert.ok(deckShape.repos.lineHeight <= 30, `one line: ${JSON.stringify(deckShape.repos)}`);
       await shot(`${name}.png`);
       // Every palette and theme (Dev 7, 2351), the controls that show only after a click included:
-      // the conditions' toggle both ways, a card's More actions, Repository details opened.
+      // the conditions' toggle both ways, a card's More actions, a repository's commits opened.
       const CARD_TEXT = [
         ".home-summary-card :is(.home-summary-title-link, .home-summary-lead, .home-summary-foot span, .home-report-open, .home-card-condition-chips li, figcaption, .home-card-conditions-label, .home-card-conditions-toggle)",
         ".home-summary-card .home-card-conditions .brief-markdown :is(p, li)",
         ".home-summary-card .home-card-numbers :is(dt, dd)",
         ".home-summary-card :is(.home-sub-of, .home-card-numbers-count)",
-        '[data-home-project="p1"] .home-repos :is(.repo-name, .repo-branch, .repo-state, .repo-row-title, .repo-line-pulls, .repo-asof, .home-repos-details)',
+        '[data-home-project="p1"] .home-repos :is(.repo-name, .repo-branch, .repo-state, .repo-row-title, .repo-line-pulls, .repo-asof, .home-repos-manage, .repo-group h5, .repo-pull-number, .repo-pull-author, .repo-footer-links a, .repo-commits-toggle)',
         ".home-machines :is(.home-load-title, .home-load-short, .home-machine-job-count, .home-machine-job-first, .home-machines-manage)",
       ];
       const measured = { closed: await contrast(CARD_TEXT) };
@@ -790,12 +790,11 @@ try {
       for (const key of ["audit", "batches"])
         if (measured[`open ${key} aria`]) assert.equal(measured[`open ${key} aria`].expanded, "true", key);
       await shot(`${name}-conditions-open.png`);
-      // Details first: a click outside a card's More list closes it.
+      // The commits first: a click outside a card's More list closes it.
       const refreshed = report.refreshes.length;
-      await page.locator('[data-home-project="p1"] .home-repos-details').click();
-      await page.locator('[data-home-project="p1"] .home-repos .repo-activity-lists').waitFor();
-      for (let end = Date.now() + 5000; report.refreshes.length < refreshed + 1 && Date.now() < end; ) await sleep(50);
-      assert.equal(report.refreshes.length, refreshed + 1, "showing the links asked Core for one refresh");
+      await page.locator('[data-home-project="p1"] .home-repos .repo-commits-toggle').click();
+      await page.locator('[data-home-project="p1"] .home-repos .repo-commits:not([hidden])').waitFor();
+      assert.equal(report.refreshes.length, refreshed, "no refresh of the links: they are in Settings");
       await card("audit").locator(".home-summary-more > button").click();
       await card("audit").locator(".home-summary-more-list").waitFor();
       measured.opened = await contrast([...CARD_TEXT, ".home-summary-more-list :is(.quiet-button, .copy-button, legend, .home-size-options label:not(.is-disabled))"]);
@@ -819,10 +818,10 @@ try {
         await card("audit").locator(".home-summary-more > button").click();
         await card("audit").locator(".home-summary-more-list").waitFor();
       }
-      // Back as it was for the frame of the top: More closed (Escape, its button focused), details closed.
+      // Back as it was for the frame of the top: More closed (Escape, its button focused), the commits folded.
       await page.keyboard.press("Escape");
       await card("audit").locator(".home-summary-more-list").waitFor({ state: "hidden" });
-      await page.locator('[data-home-project="p1"] .home-repos-details').click();
+      await page.locator('[data-home-project="p1"] .home-repos .repo-commits-toggle').click();
       // The top: Machines and the project's Repositories line, for review.
       await page.evaluate(() => document.querySelector(".home-machines").scrollIntoView({ block: "start" }));
       await sleep(150);

@@ -113,7 +113,7 @@ await context.route("**/*", async (route) => {
   if (path.startsWith("/api/")) report.reads.push(`${method} ${path}`);
   // Linked repositories are read with a POST.
   if (method === "POST" && path === "/api/collaboration/github_repositories") return route.fulfill({ json: linked });
-  // The links, once Repository details show them, ask Core to refresh them (as before T-18): counted apart.
+  // A refresh of the links: Home asks none since they moved to Settings (YN-8 S7); counted apart.
   if (method === "POST" && path === "/api/collaboration/github_refresh") {
     report.refreshes.push(path);
     return route.fulfill({ json: linked });
@@ -206,8 +206,9 @@ const shown = () => page.evaluate(() => {
     widgets: { heading: one(".home-widget-column-head h2"), arrange: one(".home-widget-column-head button"), tools: labels(".home-organize-tools button") },
     machines: { heading: one(".home-machines h2"), manage: one(".home-machines-manage"), titles: all(".home-machines .home-load-title"), gpu: all(".home-gpus .home-fact"), empty: one(".home-machine-jobs .home-note") },
     pinned: { label: document.querySelector(".home-pinned").getAttribute("aria-label"), title: one(".home-pinned-head h2 span"), from: one(".home-pinned-from"), foot: all(".home-pinned-foot button") },
-    // The repository's line, and its lists with Repository details open (T-18).
-    repo: { heads: all(".repo-activity-lists h5"), runs: all(".repo-activity-lists .repo-row .repo-state").filter(Boolean), checks: labels(".repo-activity-lists .repo-row .repo-state[aria-label]"), asOf: one(".repo-line .repo-asof"), titles: all(".repo-activity-lists .repo-row-title"), name: one(".repo-line .repo-name") },
+    // The repository's line, its PRs by what they need and its footer (T-18; YN-8 S7).
+    repo: { heads: all(".repo-group h5"), runs: all(".repo-line .repo-state").filter(Boolean), checks: labels(".repo-group .repo-pull-ci[aria-label]"), asOf: one(".repo-line .repo-asof"), titles: all(".repo-group .repo-row-title"),
+      footer: all(".repo-footer-links > *"), commits: all(".repo-commits .repo-row-title"), manage: one(".home-repos-manage"), name: one(".repo-line .repo-name") },
   };
 });
 /** What each report page shows (T-18): its body and meta for the report and
@@ -261,14 +262,12 @@ try {
   await page.locator('[data-section-key="ship"] .home-defer > button').click();
   await page.locator('[data-section-key="ship"] .home-defer [role="group"]').waitFor();
   await page.locator('[data-home-project="p1"] .home-team-details summary').click();
-  // The repository's line read, and its details open (T-18).
+  // The repository's line and its PRs read (T-18; YN-8 S7), its commits unfolded.
   await page.locator(".home-repos .repo-line .repo-asof").waitFor({ timeout: 10_000 });
-  assert.deepEqual(report.refreshes, [], "no refresh before details open");
-  await page.locator(".home-repos-details").click();
-  await page.locator(".home-repos .repo-activity-lists").waitFor({ timeout: 10_000 });
-  // The refresh follows the links' first read: wait for it, at most 5 s.
-  for (let end = Date.now() + 5000; !report.refreshes.length && Date.now() < end; ) await page.waitForTimeout(50);
-  assert.deepEqual(report.refreshes, ["/api/collaboration/github_refresh"], "showing the links asked for one refresh");
+  await page.locator(".home-repos .repo-group").first().waitFor({ timeout: 10_000 });
+  await page.locator(".home-repos .repo-commits-toggle").click();
+  await page.locator(".home-repos .repo-commits:not([hidden])").waitFor({ timeout: 10_000 });
+  assert.deepEqual(report.refreshes, [], "no refresh of the links: they are in Settings");
   // A status pinned to the widgets, from its card's More actions (T-18), which are being arranged.
   await page.locator('[data-section-key="load"] .home-summary-more > button').click();
   await page.locator('[data-section-key="load"] .home-pin').click();
@@ -304,7 +303,8 @@ try {
   assert.deepEqual(en.widgets, { heading: "My widgets", arrange: "Organize", tools: ["Move Machines up", "Move Machines down", "Hide Machines", "Move Build load up", "Move Build load down", "Hide Build load", "Unpin Build load"] });
   assert.deepEqual(en.machines, { heading: "Machines", manage: "Manage", titles: ["CPU 20% of 8 cores", "Memory 8.8 GiB of 32.0 GiB", "GPU", "Jobs on this machine"], gpu: ["GPU unknown"], empty: "No Jobs running" });
   assert.deepEqual(en.pinned, { label: "Build load, pinned from Yuzuno", title: "Build load", from: "Yuzuno · Mori · Updated 5 min ago", foot: ["Open in Yuzuno", "Reply"] });
-  assert.deepEqual(en.repo, { heads: ["Commits", "Pull requests1 open", "Actions"], runs: ["passed"], checks: ["Checks passed"], asOf: "as of 1 min ago", titles: ["Fold every Home card", "Cards fold", "CI"], name: "acme/app" });
+  assert.deepEqual(en.repo, { heads: ["Checks passed 1"], runs: ["passed"], checks: ["Checks passed"], asOf: "as of 1 min ago", titles: ["Cards fold"],
+    footer: ["Recent commits", "Runs on GitHub"], commits: ["Fold every Home card"], manage: "Manage in Settings", name: "acme/app" });
   assert.deepEqual(enPages.blocks.blocks.checklist, ["Before release", "1 of 2 done"]);
   assert.deepEqual(enPages.blocks.blocks.items, ["Docs updated", "Smoke test", "Build installer", "Sign build", "Installer path is long"]);
   assert.deepEqual(enPages.blocks.blocks.chips, ["Done", "Blocked", "High"]);
@@ -345,7 +345,8 @@ try {
   assert.deepEqual(zh.widgets, { heading: "我的组件", arrange: "整理组件", tools: ["上移 机器", "下移 机器", "隐藏 机器", "上移 Build load", "下移 Build load", "隐藏 Build load", "取消固定 Build load"] });
   assert.deepEqual(zh.machines, { heading: "机器", manage: "管理", titles: ["CPU 20% / 8 核", "内存 8.8 GiB / 32.0 GiB", "GPU", "此机器上的 Job"], gpu: ["GPU 未知"], empty: "没有正在运行的 Job" });
   assert.deepEqual(zh.pinned, { label: "Build load，固定自 Yuzuno", title: "Build load", from: "Yuzuno · Mori · 更新于 5 分钟前", foot: ["在 Yuzuno 中打开", "回复"] });
-  assert.deepEqual(zh.repo, { heads: ["提交", "拉取请求1 个开放", "Actions"], runs: ["通过"], checks: ["检查通过"], asOf: "截至 1 分钟前", titles: en.repo.titles, name: "acme/app" });
+  assert.deepEqual(zh.repo, { heads: ["检查通过 1"], runs: ["通过"], checks: ["检查通过"], asOf: "截至 1 分钟前", titles: en.repo.titles,
+    footer: ["最近的提交", "在 GitHub 上看运行"], commits: en.repo.commits, manage: "在设置中管理", name: "acme/app" });
   check("Chinese: Home's own words follow the language changed in another window");
   check("Chinese: widgets, Machines, the pinned status and repository activity follow it; GitHub's titles as written; arranging still on");
   // What Agents and the user wrote, as it was: the Ask on Home (the reports' bodies are read on their pages below).

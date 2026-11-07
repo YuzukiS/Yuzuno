@@ -6,7 +6,9 @@ export type HomeTarget =
   | { kind: "request"; agentId: string; requestId: string }
   | { kind: "changes"; agentId: string; requestId: string; turnId?: string; itemId?: string }
   | { kind: "error"; agentId: string }
-  | { kind: "machine"; machineId: string };
+  | { kind: "machine"; machineId: string }
+  /** A project's page in Settings, where its repositories are linked (YN-8 S7). */
+  | { kind: "projectSettings"; projectId: string };
 
 export const HomeNavigation = createContext<(target: HomeTarget) => void>(() => {});
 export const useHomeNavigation = () => useContext(HomeNavigation);

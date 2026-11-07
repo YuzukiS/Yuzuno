@@ -1203,14 +1203,21 @@ test("every Home card that holds a body folds on its own and keeps its header; a
   }
 });
 
-// T-18: a project's repositories are one bar of one line each; the lists,
-// the GitHub summary and the links open with Repository details.
-test("a project's repository is one line: name, branch, the default branch's run, the last commit and open PRs; details open the lists and close again; only the links' refresh is sent (T-18)", async () => {
+// T-18: a project's repositories, one line each; YN-8 S7 (the design's
+// layout A): under it the open PRs by what they need, the recent commits
+// folded, and the links managed in Settings, not on Home.
+test("a project's repository: its line, its open PRs grouped by what they need, its commits folded; Manage in Settings opens the project's page; nothing is sent (T-18, YN-8 S7)", async () => {
+  const pull = (number, title, extra = {}) => ({ number, title, author: "kumo", url: `https://github.com/acme/app/pull/${number}`, draft: false, ...extra });
   const activity = {
     defaultBranch: "main",
     commits: [{ sha: "c40b8361234567", title: "Merge the cache fix", author: "mori", at: at(2), url: "https://github.com/acme/app/commit/c40b836" }],
-    pulls: [{ number: 71, title: "Home slice 1", author: "kumo", url: "https://github.com/acme/app/pull/71", draft: false }],
-    pullsTotal: 2,
+    pulls: [
+      pull(71, "Home slice 1", { ci: { state: "success" } }),
+      pull(72, "Sketch", { draft: true, ci: { state: "failure" } }),
+      pull(73, "Cache fix", { ci: { state: "failure" } }),
+      pull(74, "Docs"),
+    ],
+    pullsTotal: 6,
     runs: [
       { id: 9, name: "CI", branch: "feat/home", status: "in_progress", conclusion: null, at: at(1), url: "https://github.com/acme/app/actions/runs/9" },
       { id: 8, name: "CI", branch: "main", status: "completed", conclusion: "success", at: at(3), url: "https://github.com/acme/app/actions/runs/8" },
@@ -1221,7 +1228,7 @@ test("a project's repository is one line: name, branch, the default branch's run
     const repos = () => p.panel("p-app").querySelector(".home-repos");
     await waitFor(() => repos()?.querySelector(".repo-line .repo-line-commit .repo-row"), "the repository's line is read");
     assert.equal(repos().getAttribute("aria-label"), "Repositories");
-    assert.equal(fold(repos()), null, "one line needs no fold");
+    assert.equal(fold(repos()), null, "no fold of its own");
     const line = repos().querySelector(".repo-line");
     assert.equal(repos().querySelectorAll(".repo-line").length, 1);
     assert.equal(line.querySelector(".repo-name").textContent, "acme/app");
@@ -1230,26 +1237,33 @@ test("a project's repository is one line: name, branch, the default branch's run
     assert.equal(line.querySelector(".repo-line-run a").getAttribute("href"), "https://github.com/acme/app/actions/runs/8");
     assert.match(line.querySelector(".repo-line-run").textContent, /passed\s*CI/);
     assert.match(line.querySelector(".repo-line-commit").textContent, /c40b836\s*Merge the cache fix/);
-    assert.equal(line.querySelector(".repo-line-pulls").textContent, "2 open PRs");
-    assert.equal(repos().querySelector(".repo-activity-lists"), null, "no lists until details open");
-    const sent = () => p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url);
-    assert.deepEqual(sent(), [], "reading the line sends nothing");
-    const details = repos().querySelector(".home-repos-details");
-    assert.equal(details.getAttribute("aria-expanded"), "false");
-    assert.equal(p.doc.getElementById(details.getAttribute("aria-controls")).hidden, true);
-    details.click();
-    await waitFor(() => repos().querySelector(".repo-activity-lists"), "the lists open");
-    assert.equal(details.getAttribute("aria-expanded"), "true");
-    assert.equal(details.textContent, "Hide repository details");
-    await waitFor(() => repos().querySelector('[aria-label="GitHub repositories"] .github-entry'), "the links are listed");
-    assert.equal(repos().querySelectorAll(".repo-line").length, 1, "the line stays");
-    details.click();
+    assert.equal(line.querySelector(".repo-line-pulls").textContent, "6 open PRs");
+    // The PRs by what they need: failing first, drafts last whatever their checks.
+    const groups = [...repos().querySelectorAll(".repo-group")];
+    assert.deepEqual(groups.map((g) => g.dataset.group), ["failure", "success", "unknown", "draft"]);
+    assert.deepEqual(groups.map((g) => g.querySelector("h5").textContent), ["Needs attention 1", "Checks passed 1", "Checks unknown 1", "Drafts 1"]);
+    const row = groups[0].querySelector("a.repo-row");
+    assert.equal(row.getAttribute("href"), "https://github.com/acme/app/pull/73");
+    assert.match(row.textContent, /#73\s*Cache fix\s*kumo/);
+    assert.equal(row.querySelector(".repo-pull-ci").getAttribute("aria-label"), "Checks failed");
+    assert.equal(groups[2].querySelector(".repo-pull-ci").getAttribute("aria-label"), "checks unknown");
+    assert.equal(repos().querySelector(".repo-activity-lists"), null, "no Commits / PRs / Actions columns");
+    // More on GitHub; the commits folded; the runs on GitHub.
+    const links = [...repos().querySelectorAll(".repo-footer-links a")].map((a) => [a.textContent.trim(), a.getAttribute("href")]);
+    assert.deepEqual(links, [["2 more open on GitHub", "https://github.com/acme/app/pulls"], ["Runs on GitHub", "https://github.com/acme/app/actions"]]);
+    const commits = repos().querySelector(".repo-commits-toggle");
+    assert.equal(commits.getAttribute("aria-expanded"), "false");
+    assert.equal(p.doc.getElementById(commits.getAttribute("aria-controls")).hidden, true);
+    commits.click();
     await pause();
-    assert.equal(repos().querySelector(".repo-activity-lists"), null, "closed again");
-    assert.equal(p.doc.getElementById(details.getAttribute("aria-controls")).hidden, true);
-    assert.ok(repos().querySelector('[aria-label="GitHub repositories"]'), "the links stay mounted, with anything typed in them");
-    // The links, once shown, ask Core to refresh them, as Repository details did before T-18; nothing else.
-    assert.deepEqual(sent(), ["/api/collaboration/github_refresh"], "opening details asks only for the links' refresh");
+    assert.equal(commits.getAttribute("aria-expanded"), "true");
+    assert.match(p.doc.getElementById(commits.getAttribute("aria-controls")).textContent, /c40b836\s*Merge the cache fix/);
+    // The links are in Settings now: none on Home, and nothing sent.
+    assert.equal(repos().querySelector('[aria-label="GitHub repositories"]'), null, "no link form on Home");
+    const sent = () => p.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/api/collaboration/github_repositories")).map((c) => c.url);
+    assert.deepEqual(sent(), [], "reading and folding send nothing");
+    repos().querySelector(".home-repos-manage").click();
+    await waitFor(() => p.doc.querySelector('.modal.settings-modal #settings-tab-projects[aria-selected="true"]'), "Settings › Projects opens");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -2081,24 +2095,23 @@ test("a Home image whose author is gone is never offered to another Agent: the u
   }
 });
 
-// T-189: a project's repository details on Home follow the interface
+// T-189: a project's repository card on Home follows the interface
 // language, changed in another window; the repository's name stays.
-test("Home's repository details follow a language change; the repository stays as named and nothing is read again (T-189)", async () => {
-  const p = await mount({ linked: [repo] });
+test("Home's repository card follows a language change; the repository stays as named and nothing is read again (T-189)", async () => {
+  const activity = { pulls: [{ number: 73, title: "Cache fix", author: "kumo", url: "https://github.com/acme/app/pull/73", draft: false, ci: { state: "failure" } }] };
+  const p = await mount({ linked: [repo], activity });
   try {
-    await waitFor(() => p.panel("p-app").querySelector(".home-repos .repo-activity"), "the Repositories block is read");
-    p.panel("p-app").querySelector(".home-repos-details").click();
-    await waitFor(() => p.panel("p-app").querySelector('.home-repos [aria-label="GitHub repositories"] .github-entry'), "the repositories are listed");
-    const reads = () => p.calls.filter((c) => c.url.endsWith("/api/collaboration/github_repositories")).length;
+    const repos = () => p.panel("p-app").querySelector(".home-repos");
+    await waitFor(() => repos()?.querySelector(".repo-group h5"), "the Repositories block is read");
+    const reads = () => p.calls.filter((c) => c.url.endsWith("/repo-activity")).length;
     const before = reads();
     p.w.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
     p.w.dispatchEvent(new p.w.StorageEvent("storage", { key: "yuzuno.language" }));
-    await waitFor(() => p.panel("p-app").querySelector('.home-repos [aria-label="GitHub 仓库"]'), "the details follow the language");
-    const details = p.panel("p-app").querySelector('.home-repos [aria-label="GitHub 仓库"]');
-    assert.equal(details.querySelector("h4").textContent, "仓库");
-    assert.ok(details.textContent.includes("链接此项目使用的仓库。一个仓库可以属于多个项目。"));
-    assert.ok(details.querySelector(".github-entry").textContent.includes("acme/app"), "the repository as named");
-    assert.equal(reads(), before, "no github_repositories read again");
+    await waitFor(() => repos().querySelector(".repo-group h5")?.textContent === "需要处理 1", "the card follows the language");
+    assert.equal(repos().querySelector(".repo-commits-toggle").textContent.trim(), "最近的提交");
+    assert.equal(repos().querySelector(".home-repos-manage").textContent, "在设置中管理");
+    assert.equal(repos().querySelector(".repo-name").textContent, "acme/app", "the repository as named");
+    assert.equal(reads(), before, "no repo-activity read again");
   } finally {
     p.close();
   }
