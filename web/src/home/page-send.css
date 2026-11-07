@@ -27,10 +27,10 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-@media (pointer: coarse) {
-  .home-page-send-actions > button {
-    min-height: 40px;
-  }
+/* 40 px targets everywhere, as the Brief's own controls (brief.css): a phone's
+   pointer is not always reported coarse. */
+.home-page-send-actions > button {
+  min-height: 40px;
 }
 /* In the Portal, under its page. */
 .portal-panel .home-page-send {
