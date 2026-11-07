@@ -1,0 +1,399 @@
+/* An executor's session tabs and its Overview (ExecutorOverview.tsx, T-43 S3,
+   the user's t43-templates preview): cards on the paper, one line of tabs.
+   Tones are the Agent row's island ones (agent-island.css), so a state reads
+   the same in the rail and here, and each also has a word. */
+.conversation-body[hidden],
+.composer-area[hidden] {
+  display: none !important;
+}
+
+.executor-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.executor-tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  padding: 9px 10px 8px;
+  font: inherit;
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color var(--motion-micro) var(--ease-standard), border-color var(--motion-micro) var(--ease-standard);
+}
+.executor-tabs button:hover {
+  color: var(--ink);
+}
+.executor-tabs button[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+  font-weight: 600;
+}
+.executor-tabs button:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+/* To a finger each tab is 44 px tall: on a touch screen, and on a phone
+   whatever its pointer says. */
+@media (pointer: coarse) {
+  .executor-tabs button {
+    min-height: 44px;
+  }
+}
+.app.phone .executor-tabs button {
+  min-height: 44px;
+}
+
+.executor-overview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 20px 18px;
+  font-size: 0.84rem;
+  color: var(--ink);
+}
+.executor-overview > * {
+  flex: none;
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+.executor-overview-loading,
+.executor-overview-error {
+  margin-block: 0;
+  color: var(--text-secondary);
+}
+.executor-overview-error button {
+  margin-left: 6px;
+}
+
+.executor-overview-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.executor-overview-head h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.executor-overview-head h2 span {
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.executor-overview-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.executor-overview-chips .chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--cream);
+  font: inherit;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+.executor-overview-chips .chip.template {
+  color: var(--ink);
+  font-weight: 600;
+}
+.executor-overview-chips .chip.state[data-state="failed"] {
+  color: var(--island-error);
+}
+.executor-overview-chips .chip.link {
+  cursor: pointer;
+  color: var(--green);
+}
+.executor-overview-chips .chip.link:hover {
+  border-color: var(--green);
+}
+@media (pointer: coarse) {
+  .executor-overview-chips .chip.link {
+    min-height: 44px;
+    padding: 0 14px;
+  }
+  .executor-overview-card .more {
+    min-height: 44px;
+  }
+}
+.app.phone .executor-overview-chips .chip.link {
+  min-height: 44px;
+  padding: 0 14px;
+}
+.app.phone .executor-overview-card .more {
+  min-height: 44px;
+}
+.app.phone .executor-tabs,
+.app.phone .executor-overview {
+  padding-inline: 14px;
+}
+
+.executor-overview-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--paper);
+}
+.executor-overview-card h3,
+.executor-overview-card > summary {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+.executor-overview-card > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.executor-overview-card > summary::-webkit-details-marker {
+  display: none;
+}
+.executor-overview-card > summary h3 {
+  margin: 0;
+}
+.executor-overview-card:not([open]) > summary {
+  margin-bottom: 0;
+}
+.executor-overview-card .note {
+  font-weight: 400;
+  font-size: 0.74rem;
+  color: var(--muted);
+  text-align: end;
+}
+.executor-overview-card .empty,
+.executor-overview .empty {
+  margin: 0;
+  color: var(--muted);
+}
+.executor-overview-card p {
+  margin: 0;
+}
+.executor-overview-card a {
+  color: var(--green);
+}
+
+.executor-overview-kv {
+  display: grid;
+  grid-template-columns: minmax(72px, max-content) 1fr;
+  gap: 3px 12px;
+  margin: 0;
+}
+.executor-overview-kv dt {
+  color: var(--muted);
+}
+.executor-overview-kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+.executor-overview-kv dd.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.executor-overview-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.executor-overview-steps .step {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-areas: "mark label ref";
+  column-gap: 8px;
+  align-items: center;
+}
+.executor-overview-steps .mark {
+  grid-area: mark;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--island-quiet);
+  box-sizing: border-box;
+}
+.executor-overview-steps .label {
+  grid-area: label;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* The state's word, for a reader that has no colour or mark. */
+.executor-overview-steps .state {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.executor-overview-steps .ref {
+  grid-area: ref;
+  color: var(--muted);
+  font-size: 0.76rem;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+.executor-overview-steps .step[data-state="done"] .mark {
+  border-color: var(--island-ok);
+  background: var(--island-ok);
+}
+.executor-overview-steps .step[data-state="doing"] .mark {
+  border-color: var(--island-working);
+  box-shadow: inset 0 0 0 2.5px var(--paper), inset 0 0 0 7px var(--island-working);
+}
+.executor-overview-steps .step[data-state="blocked"] .mark {
+  border-color: var(--island-attention);
+  border-style: dashed;
+}
+.executor-overview-steps .step[data-state="blocked"] .ref {
+  color: var(--island-attention);
+}
+.executor-overview-steps .step[data-state="failed"] .mark {
+  border-color: var(--island-error);
+  background: linear-gradient(45deg, transparent 43%, var(--island-error) 43% 57%, transparent 57%);
+}
+.executor-overview-steps .step[data-state="failed"] .ref {
+  color: var(--island-error);
+}
+.executor-overview-steps .step[data-state="todo"] .label {
+  color: var(--muted);
+}
+.executor-overview-card .more {
+  margin-top: 6px;
+  border: 0;
+  background: none;
+  padding: 2px 0;
+  font: inherit;
+  font-size: 0.76rem;
+  color: var(--green);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.executor-overview-card .more:hover {
+  text-decoration: underline;
+}
+/* Its own controls only: a request's card keeps its own focus. */
+.executor-overview-chips .chip.link:focus-visible,
+.executor-overview-card .more:focus-visible,
+.executor-overview-card > summary:focus-visible,
+.executor-overview-card a:focus-visible,
+.executor-overview-error button:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.executor-overview-now {
+  margin-block: 0;
+  padding: 0 2px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.executor-overview-now strong {
+  margin-right: 6px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.executor-overview-banner {
+  border: 1px solid color-mix(in srgb, var(--island-attention) 38%, transparent);
+  background: color-mix(in srgb, var(--island-attention) 9%, var(--paper));
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.executor-overview-banner h3 {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--island-attention);
+}
+.executor-overview-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.executor-overview-requests .pending-card {
+  margin: 0;
+}
+:is(.executor-overview-banner, .executor-overview-requests) .note {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.executor-overview-evidence {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.executor-overview-evidence li {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+}
+.executor-overview-evidence .k {
+  color: var(--muted);
+  font-size: 0.72rem;
+  min-width: 3.5em;
+}
+.executor-overview-evidence .n {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.executor-overview-evidence .v {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--island-attention);
+}
+.executor-overview-evidence .v[data-tone="ok"] {
+  color: var(--island-ok);
+}
+.executor-overview-evidence .v[data-tone="bad"] {
+  color: var(--island-error);
+}
+.executor-overview-evidence .v[data-tone="none"] {
+  color: var(--muted);
+}
+
+.executor-overview-report {
+  border-left: 3px solid var(--island-ok);
+  padding-left: 10px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}

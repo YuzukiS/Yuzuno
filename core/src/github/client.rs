@@ -785,6 +785,13 @@ impl Client {
             snapshot["headBranch"] = v["head"]["ref"].clone();
             snapshot["baseBranch"] = v["base"]["ref"].clone();
             snapshot["ci"] = checks_summary(sha, &checks, &statuses)?;
+            // Its diff in size, as GitHub counts it (T-43 S3: the executor
+            // Overview's Changes): only when GitHub gives all three.
+            if let (Some(additions), Some(deletions), Some(files)) =
+                (v["additions"].as_u64(), v["deletions"].as_u64(), v["changed_files"].as_u64())
+            {
+                snapshot["changes"] = json!({"additions": additions, "deletions": deletions, "files": files});
+            }
         }
         Ok(snapshot)
     }

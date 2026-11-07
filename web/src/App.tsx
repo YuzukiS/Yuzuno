@@ -236,6 +236,7 @@ import { useOpenAsks } from "./home/open-asks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
 import { OpenCodeRevertHost } from "./Rewind";
 import { OpenCodeForkHost, type OpenCodeForkOutcome } from "./ForkOpenCode";
+import { ExecutorOverview, ExecutorPaneTabs, type ExecutorPaneTab } from "./ExecutorOverview";
 
 type TurnProps = ComponentProps<typeof Turn>;
 /** Streamed changes replace only the Turn they touch; the others keep their
@@ -718,6 +719,23 @@ export function App() {
   // far into the message it was; `thread`: the native session it was read in.
   const [catchupSource, setCatchupSource] = useState<(CatchupItem & { openDetails?: boolean; link?: MessageLink; restore?: number; progress?: number; thread?: string; where?: "desktop" | "browser" }) | null>(null);
   const [sourceJump, setSourceJump] = useState(false);
+  // An executor's session has two tabs (T-43 S3): its Overview, the one it
+  // opens on, and its Conversation. Each executor keeps the one last chosen.
+  const [executorTabs, setExecutorTabs] = useState<Record<string, ExecutorPaneTab>>({});
+  const overviewFirst = (id: string) =>
+    workspace?.agents.find((a) => a.id === id)?.kind === "executor" && (executorTabs[id] ?? "overview") === "overview";
+  // Where its conversation was read when its Overview was chosen, put back
+  // when the Conversation is chosen again.
+  const conversationTop = useRef<{ agentId: string; top: number } | null>(null);
+  // A reading position left in an executor's conversation waits until its
+  // Conversation shows (T-166 returns there): its Overview shows first.
+  const readingDeferred = useRef<string | null>(null);
+  // A jump into a conversation (a source, a link, a Turn) shows it.
+  const showConversation = (id: string) => {
+    conversationTop.current = null;
+    if (readingDeferred.current === id) readingDeferred.current = null;
+    setExecutorTabs((tabs) => (tabs[id] === "conversation" ? tabs : { ...tabs, [id]: "conversation" }));
+  };
   // What the source strip says about a place that is gone, worded on show (T-189).
   const [sourceNotice, setSourceNotice] = useState<((t: ShellWords) => string) | null>(null);
   // A message link waiting for the Workspace to load.
@@ -1357,6 +1375,31 @@ export function App() {
   const time = useTimeDisplay();
   const timeMarks = conversationTimeMarks(currentDetail?.turns ?? [], time);
   const pending = currentDetail?.pending || [];
+  // An executor's Overview, while it is the tab chosen (T-43 S3).
+  const overviewShown = !!agent && !homeOpen && overviewFirst(agent.id);
+  // Choosing its Conversation again puts it back where it was read: where it
+  // was left before this tab, or a reading position kept from earlier.
+  function chooseExecutorTab(tab: ExecutorPaneTab) {
+    if (!agent) return;
+    if (tab === "conversation" && readingDeferred.current === agent.id) {
+      readingDeferred.current = null;
+      const saved = readingPositions?.get(agent.id);
+      if (saved?.mode === "anchor" && restoreReading(agent.id, saved)) return;
+    }
+    if (tab === "overview" && !overviewShown)
+      conversationTop.current = scroll.current ? { agentId: agent.id, top: scroll.current.scrollTop } : null;
+    setExecutorTabs((tabs) => (tabs[agent.id] === tab ? tabs : { ...tabs, [agent.id]: tab }));
+  }
+  // A hidden conversation has no scroll position of its own to keep: put
+  // back the one it had, or its end while it follows the latest.
+  useLayoutEffect(() => {
+    if (overviewShown) return;
+    const kept = conversationTop.current;
+    conversationTop.current = null;
+    const el = scroll.current;
+    if (!el || !kept || kept.agentId !== selected) return;
+    el.scrollTop = stickToBottom.current ? el.scrollHeight : kept.top;
+  }, [overviewShown, selected]);
   // A request that arrives live while its conversation is open fades in, once (T-19 CV:Q-01): one
   // that a detail lists, new in this Workspace, Agent and native session, after Core announced a
   // change to the Agent. The first detail of that scope, and any new request a reconnect, poll or
@@ -1998,7 +2041,8 @@ export function App() {
     if (initialReading.current || !workspace || !selected || homeOpen || incomingLink) return;
     initialReading.current = true;
     const saved = readingPositions?.get(selected);
-    if (saved?.mode === "anchor") restoreReading(selected, saved);
+    if (saved?.mode === "anchor" && overviewFirst(selected)) readingDeferred.current = selected;
+    else if (saved?.mode === "anchor") restoreReading(selected, saved);
   }, [workspace, selected, homeOpen, incomingLink, readingPositions]);
   // Leaving a conversation (another Agent, Home, a hidden or closed page)
   // keeps where it was being read.
@@ -2413,7 +2457,10 @@ export function App() {
     setPhoneList(false);
     // Reopening a conversation returns where it was left (T-166).
     const saved = !turnId && (id !== selected || homeOpen) ? readingPositions?.get(id) : null;
-    if (saved?.mode === "anchor" && restoreReading(id, saved)) return;
+    const deferred = saved?.mode === "anchor" && overviewFirst(id);
+    readingDeferred.current = deferred ? id : null;
+    if (saved?.mode === "anchor" && !deferred && restoreReading(id, saved)) return;
+    if (turnId) showConversation(id);
     revealAgent(workspace?.agents.find((a) => a.id === id));
     setAgentScope(
       workspace?.agents.find((a) => a.id === id)?.closedAt
@@ -2451,6 +2498,7 @@ export function App() {
     stickToBottom.current = false;
     setAtBottom(false);
     setSelected(item.agentId);
+    showConversation(item.agentId);
     setHomeOpen(false);
     setCatchupSource({ ...item, openDetails, ...extra });
     setSourceNotice(null);
@@ -2706,6 +2754,7 @@ export function App() {
   // conversation (PhoneDocks.tsx): the panel closes on the Turn it goes to.
   function navigateToTurn(turnId: string) {
     jumpItem.current = null;
+    if (selected) showConversation(selected);
     setPhoneDock(null);
     setHistoryReading(true);
     searchReading.current = true;
@@ -3983,9 +4032,18 @@ export function App() {
                 onReconnected={refresh}
               />
             )}
+            {agent.kind === "executor" && (
+              <ExecutorPaneTabs tab={overviewShown ? "overview" : "conversation"} onChoose={chooseExecutorTab} />
+            )}
             <div
               ref={conversationBody}
               className="conversation-body"
+              {...(agent.kind === "executor"
+                ? { id: "executor-conversation", role: "tabpanel", "aria-labelledby": "executor-tab-conversation" }
+                : {})}
+              // Kept, not unmounted, behind an executor's Overview: its
+              // reading place, drafts and live follow carry on.
+              hidden={overviewShown}
               // Back to latest floats here: on a desktop the pane ends above
               // it while it shows (turn-dock.css, YN-19).
               data-latest={pillShown ? "shown" : undefined}
@@ -4320,7 +4378,7 @@ export function App() {
                     scope={turnScope ?? ""}
                     onShown={previewsShown}
                   />
-                  {pending.map((request) => (
+                  {!overviewShown && pending.map((request) => (
                     <PendingCard
                       key={request.id}
                       request={request}
@@ -4410,6 +4468,25 @@ export function App() {
                 </div>
               )}
             </div>
+            {overviewShown && (
+              <ExecutorOverview
+                agent={agent}
+                revision={`${boardRevision}:${jobsRevision}:${mergeQueueRevision}`}
+                // The same cards as in its Conversation, shown here instead while this tab is.
+                requests={pending.length ? pending.map((request) => (
+                  <PendingCard
+                    key={request.id}
+                    request={request}
+                    refresh={refresh}
+                    disabled={previewMode || closed}
+                    onViewChanges={() => showProposedChanges(request)}
+                    permissionMode={currentDetail?.claudeRuntime?.permissionMode}
+                    draftScope={requestDraftScope}
+                  />
+                )) : null}
+                onOpenTask={(taskId) => window.dispatchEvent(new CustomEvent("yuzuno:open-task-review", { detail: { taskId } }))}
+              />
+            )}
             <PendingQuestions key={`${workspaceId}:${selected}`} ref={questionPanel} agentId={selected} workspaceId={workspaceId}
               detail={detail?.agent.id === selected ? detail : null} shown={currentDetail} known={coreQuestions}
               outgoing={outgoing} pendingInputs={pendingInputs} disabled={closed || previewMode || isClaude} live={dockLive}
@@ -4452,7 +4529,8 @@ export function App() {
                 </div>
               </>
             ) : (
-              <div className="composer-area">
+              // An executor's Overview has no composer: its Conversation does (the T-43 preview).
+              <div className="composer-area" hidden={overviewShown}>
                 {/* What the conversation asks of you before you write; on a short
                     phone screen it gives way to the composer (T-170). */}
                 <div className="composer-notices">

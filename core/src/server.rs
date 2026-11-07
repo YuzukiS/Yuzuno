@@ -138,6 +138,7 @@ fn browser_routes(assets: PathBuf, updates: Option<Arc<crate::updates::controlle
         .merge(crate::executor_templates::router())
         .merge(crate::executor_slots::router())
         .merge(crate::executor_live::router())
+        .merge(crate::executor_overview::router())
         .merge(crate::executor_release::router())
         .merge(crate::handover::router())
         .merge(crate::appearance_preset::router())
