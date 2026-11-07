@@ -334,29 +334,12 @@ export function checkSpec(json: unknown): { spec: ResultSpec; defaults: string[]
       }
     }
     if (node.type === "Table" || node.type === "BarChart") {
-      const props =
-        node.type === "Table"
-          ? componentProps.Table.parse(node.props)
-          : componentProps.BarChart.parse(node.props);
-      if (groups.has(props.id))
+      const id = (node.props as { id: string }).id;
+      if (groups.has(id))
         throw new ResultError("duplicate_id", "Selection IDs must be unique.", `${at}.id`);
-      groups.add(props.id);
-      const rows = "rows" in props ? props.rows : props.data;
-      if (new Set(rows.map((row) => row.id)).size !== rows.length)
-        throw new ResultError("duplicate_id", "Row IDs must be unique.", at);
-      for (const row of rows) references.push(...(row.sourceIds || []));
-      if ("columns" in props) {
-        const keys = props.columns.map((column) => column.key);
-        if (new Set(keys).size !== keys.length)
-          throw new ResultError("duplicate_id", "Column keys must be unique.", `${at}.columns`);
-        for (const row of props.rows) {
-          if (
-            Object.keys(row.cells).length !== keys.length ||
-            keys.some((key) => !(key in row.cells))
-          )
-            throw new ResultError("row_mismatch", "Every row must match its columns.", `${at}.rows`);
-        }
-      }
+      groups.add(id);
+      // Then what one element shows alone, as checkElement checks it.
+      for (const row of checkRows(node.type, node.props, at)) references.push(...(row.sourceIds || []));
     }
     if ((node.type === "Continue" || node.type === "Clarification" || node.type === "TaskStatus") && ++actions > 1)
       throw new ResultError("extra_action", "Only one continuation, clarification form or task status proposal is allowed.", `elements.${key}`);
@@ -396,22 +379,29 @@ export function checkElement(key: string, json: unknown): ResultSpec["elements"]
       seen.add(item.id);
     }
   }
-  if (node.type === "Table" || node.type === "BarChart") {
-    const props =
-      node.type === "Table" ? componentProps.Table.parse(node.props) : componentProps.BarChart.parse(node.props);
-    const rows = "rows" in props ? props.rows : props.data;
-    if (new Set(rows.map((row) => row.id)).size !== rows.length)
-      throw new ResultError("duplicate_id", "Row IDs must be unique.", at);
-    if ("columns" in props) {
-      const keys = props.columns.map((column) => column.key);
-      if (new Set(keys).size !== keys.length)
-        throw new ResultError("duplicate_id", "Column keys must be unique.", `${at}.columns`);
-      for (const row of props.rows)
-        if (Object.keys(row.cells).length !== keys.length || keys.some((key) => !(key in row.cells)))
-          throw new ResultError("row_mismatch", "Every row must match its columns.", `${at}.rows`);
-    }
-  }
+  if (node.type === "Table" || node.type === "BarChart") checkRows(node.type, node.props, at);
   return node;
+}
+
+/**
+ * A Table's or BarChart's own rows (checkElement, checkSpec): unique row and
+ * bar ids, unique column keys, rows that match their columns. Returns the
+ * rows, which checkSpec reads their sourceIds from. Throws ResultError.
+ */
+function checkRows(type: "Table" | "BarChart", props: unknown, at: string): { id: string; sourceIds?: string[] }[] {
+  const parsed = type === "Table" ? componentProps.Table.parse(props) : componentProps.BarChart.parse(props);
+  const rows = "rows" in parsed ? parsed.rows : parsed.data;
+  if (new Set(rows.map((row) => row.id)).size !== rows.length)
+    throw new ResultError("duplicate_id", "Row IDs must be unique.", at);
+  if ("columns" in parsed) {
+    const keys = parsed.columns.map((column) => column.key);
+    if (new Set(keys).size !== keys.length)
+      throw new ResultError("duplicate_id", "Column keys must be unique.", `${at}.columns`);
+    for (const row of parsed.rows)
+      if (Object.keys(row.cells).length !== keys.length || keys.some((key) => !(key in row.cells)))
+        throw new ResultError("row_mismatch", "Every row must match its columns.", `${at}.rows`);
+  }
+  return rows;
 }
 
 /** The optional tool an Agent uses to publish a result instead of a JSON
