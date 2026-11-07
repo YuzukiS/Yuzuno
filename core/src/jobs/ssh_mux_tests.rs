@@ -5,6 +5,7 @@
 use super::remote::{call, Machine, Programs, Reply};
 use super::ssh_mux::{destination, Lease, Mux};
 use crate::remote::{ssh_with_control, Control, RemoteMachine};
+use crate::test_ports::free_port;
 use serde_json::json;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -28,10 +29,6 @@ impl Drop for Sshd {
 fn run(program: &str, args: &[&str]) {
     let status = std::process::Command::new(program).args(args).status().unwrap();
     assert!(status.success(), "{program} {args:?}");
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
 impl Sshd {

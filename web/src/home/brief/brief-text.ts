@@ -106,6 +106,11 @@ export const briefText = strings({
   attachments: "Attachments",
   showFirst: (count: number) => `Show the first ${count}`,
   showAll: (count: number) => `Show all ${count} attachments`,
+  // Inputs (YN-16): what a control does, for screen readers, and a switch's state.
+  decrease: (label: string) => `Decrease ${label}`,
+  increase: (label: string) => `Increase ${label}`,
+  on: "On",
+  off: "Off",
 }, {
   change: {
     new: ["新", "自你标为已看后新增"],
@@ -191,4 +196,8 @@ export const briefText = strings({
   attachments: "附件",
   showFirst: (count) => `只显示前 ${count} 个`,
   showAll: (count) => `显示全部 ${count} 个附件`,
+  decrease: (label) => `减少${label}`,
+  increase: (label) => `增加${label}`,
+  on: "开",
+  off: "关",
 });

@@ -1377,3 +1377,209 @@ p.brief-preview-frame {
     --image-room: 100cqw;
   }
 }
+
+/* Inputs (YN-16): a number, a switch and a choice the reader sets, on a
+ * card or a page. Every control is a target of at least 40 px; none of them
+ * opens the report it sits in. A slider takes a drag as its own (touch-action
+ * none), so dragging it never scrolls the page under it; the stepper's
+ * buttons take a quick second tap as a tap, not a zoom. */
+.brief-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.brief-input > label,
+.brief-input-label {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.brief-input small {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+.brief-number-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.brief-number-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--input, var(--paper));
+}
+.brief-number-box:focus-within {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 1px;
+}
+.brief-number-field {
+  min-width: 2ch;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.brief-number-field:focus {
+  outline: none;
+}
+.brief-affix {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.brief-step {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft, var(--cream));
+  color: var(--ink);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.brief-step:hover:not(:disabled) {
+  background: var(--surface-hover, var(--cream));
+}
+.brief-step:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
+.brief-slider {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 360px;
+  height: 40px;
+  margin: 0;
+  accent-color: var(--accent-ink, var(--green));
+  cursor: pointer;
+  touch-action: none;
+}
+.brief-switch {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+.brief-switch-control {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  min-width: 48px;
+  min-height: 40px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.brief-switch-track {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 42px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft, var(--cream));
+  transition: background-color var(--motion-micro, 140ms) var(--ease-standard, ease);
+}
+.brief-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 22%, var(--paper));
+  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+  transition: transform var(--motion-micro, 140ms) var(--ease-standard, ease);
+}
+.brief-switch-control[aria-checked="true"] .brief-switch-track {
+  border-color: var(--green);
+  background: var(--green);
+}
+.brief-switch-control[aria-checked="true"] .brief-switch-thumb {
+  background: var(--paper);
+  transform: translateX(18px);
+}
+.brief-switch-control:focus-visible,
+.brief-step:focus-visible,
+.brief-segment:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 2px;
+}
+.brief-switch-text {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.brief-switch-label {
+  cursor: pointer;
+}
+.brief-switch-state {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-soft, var(--cream));
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+.brief-segments {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-self: flex-start;
+  gap: 2px;
+  max-width: 100%;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft, var(--cream));
+}
+.brief-segment {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.brief-segment:hover {
+  color: var(--ink);
+}
+.brief-segment[aria-checked="true"] {
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .brief-switch-track,
+  .brief-switch-thumb {
+    transition: none;
+  }
+}

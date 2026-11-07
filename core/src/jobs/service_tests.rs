@@ -5,6 +5,7 @@ use crate::remote::RemoteMachine;
 use crate::service_jobs::Link;
 use crate::services::NewService;
 use crate::store::Store;
+use crate::test_ports::free_port;
 
 struct Lab {
     _dir: tempfile::TempDir,
@@ -29,11 +30,6 @@ fn lab() -> Lab {
         .collaboration_call(None, "task_create", json!({"requestId":"loose","title":"Loose","status":"doing"}))
         .unwrap();
     Lab { _dir: dir, ws, project }
-}
-
-/// A port nothing listens on now.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
 async fn service(lab: &Lab, name: &str, machine: &str, port: u16) -> String {

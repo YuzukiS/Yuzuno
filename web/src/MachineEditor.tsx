@@ -312,9 +312,9 @@ export function MachineEditor({
           aria-label={executorText.title}
           value={executorsShown}
           onChange={(e) => setExecutors(e.target.value)}
-          placeholder={executorText.placeholder}
+          placeholder={executorText.placeholder(executorLimit.preset)}
         />
-        <span className="field-hint">{executorLimit.readError || executorText.help}</span>
+        <span className="field-hint">{executorLimit.readError || executorText.help(executorLimit.preset)}</span>
       </label>
       {error && (
         <p role="alert" className="remote-field-error">

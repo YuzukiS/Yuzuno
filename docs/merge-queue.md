@@ -10,9 +10,7 @@ Core writes to GitHub only while the repository's switch is on. The switch is
 off by default, and only the user can turn it on: in Projects, each linked
 repository has the switch (`PUT /api/merge-queue/repositories/{id}` with
 `{"enabled": true}`; there is no MCP tool). Turning it on first lists these
-writes; turning it off saves at once. On YuzukiS/Yuzuno it stays off until a
-Core with the queue is installed and the user turns it on; until then merges
-happen by hand.
+writes; turning it off saves at once.
 
 In the dry-run build of the queue, a switch that was on only let Core check.
 That consent does not carry over: the first time this build opens a Workspace,
@@ -29,7 +27,11 @@ login:
 - A batch, when CI tested an older main: the branch `queue/merge-{entry}` at
   the current main, the released head merged into it (`POST merges`), and a
   draft PR from it, whose pull_request event runs CI.
-- Removing that batch afterwards: closing its PR and deleting its branch.
+- Under the relaxed policy (below), a probe instead of a batch: the same
+  branch at the current main with the head merged in, but no PR, so no CI
+  runs on it. It shows that the head merges cleanly into the current main
+  and gives the tree the merge must land.
+- Removing that batch or probe afterwards: closing its PR, if any, and deleting its branch.
   Core records the branch before it asks GitHub to create it, so a branch
   whose creation answer was lost is still deleted; a 404 or 422 then means it
   never existed.
@@ -54,7 +56,9 @@ entry is created:
   the PR reviewed exactly the released head and passes the review policy
   (`no_findings`, or `approved_with_notes` with P3 notes only). The entry
   records that round's ID. A head committed after the last round has no passing
-  review of its own, so it is refused.
+  review of its own, so it is refused. A P0–P2 finding of any completed round at
+  the released head refuses it too, even when a later round of the same head
+  passed: only a new head, with a passing round of its own, clears it.
 - **No other entry holds the PR.**
 
 Core does not ask the user for exceptions. A head that does not meet these
@@ -69,7 +73,11 @@ entry's check that ended a pause re-anchored it, the outcome is dropped and the
 entry is checked again from the new anchor.
 
 1. The PR is open, not a draft, at the released head, and on the base branch it
-   was released for.
+   was released for. If GitHub already reports that the PR cannot merge into
+   its base (`mergeable` false, or merge state `dirty`), the entry stops with
+   `conflict` at once: GitHub runs no CI for a PR with conflicts, so waiting
+   for its runs would only end at the six-hour limit. While GitHub is still
+   computing whether the PR can merge, nothing is decided here.
 2. The last completed review round still passes at that head. If a round is
    running, Core waits for it.
 3. Two reads of the base branch name the same commit.
@@ -79,7 +87,13 @@ entry is checked again from the new anchor.
    main read at release (or at the last retry or unpause) and the time of that
    read. Runs of the anchor main itself count. Runs of older commits that began
    before the anchor do not. Running, superseded and green runs are fine. A red
-   run stops the entry and pauses the repository's queue.
+   run stops the entry and pauses the repository's queue. Under the relaxed
+   policy the rule is the one of the moment instead: the newest finished push
+   run of CI on the base branch (not superseded) succeeded and no newer one is
+   red. A red main makes the entry wait until main is green again; it neither
+   stops nor pauses. A main run still waiting to start (held by its
+   concurrency group) makes it wait too, so each merge keeps a main run of its
+   own. A red run an unpause accepted does not count.
 6. The newest run of every workflow on the head has finished green (success,
    skipped or neutral). CI, and any workflow named in `requireWorkflows`, ran.
    Every page of the run list is read; if more runs exist than Core reads, the
@@ -94,11 +108,26 @@ entry is checked again from the new anchor.
    at the batch commit, its CI is green, and every CI job checked out the merge
    of main and the batch commit, whose tree is the batch's tree. Core reads
    every job (all pages), and each job's log, at most 4 MiB, for the
-   `HEAD is now at …` line, keeping the log's sha256.
+   `HEAD is now at …` line, keeping the log's sha256. Under the relaxed policy
+   the gate is the probe instead: Core's own merge of the head into the current
+   main is clean, and its tree is the tree the merge must land. CI on the PR may
+   have tested an older main, and the merge ref may be stale.
 
 If the PR's own CI tested the head on an older main, Core builds a batch on the
 current main and waits for CI on it. A batch on a main that has since moved is
 removed, and a new one is built.
+
+The batch is Core's own merge of the head into the current main, so it needs
+nothing from GitHub's merge ref, and Core does not wait for GitHub to move it:
+- If the merge ref is the merge of an older main and the head, CI on the PR
+  checked out that ref (GitHub only moves it forward), so it cannot have tested
+  the current main. Core builds the batch in that check, without reading job
+  logs. GitHub may leave such a ref unmoved for a long time: in the lab it
+  stayed on the older main for over 19 minutes. One compare read shows that
+  the ref's main is an ancestor of the current main.
+- If GitHub has not computed a merge ref for the head, or the ref's main is not
+  known to be older, Core waits two minutes from the first check that saw it,
+  checks again when they end, and then builds the batch.
 
 Once every check holds, the entry merges, one merge at a time per repository:
 
@@ -160,7 +189,12 @@ repository's queue is paused does not count: a paused entry waits for the
 unpause however long it takes. While GitHub reads are
 cooling down, the entry waits until the cooldown ends. Each GitHub read holds
 one of Core's shared GitHub slots only while it runs; job-log downloads hold
-none.
+none. Every read asks GitHub again, with the cached ETag, so an unchanged
+answer is a 304, which GitHub does not count against the primary rate limit.
+That holds even where GitHub asks clients to wait longer before reading again
+(`X-Poll-Interval`, 300 seconds with ref reads): a ref kept that long would
+name an older main than the branch read beside it. The CI monitor's own
+polling keeps the interval.
 
 ## Landing
 
@@ -172,8 +206,8 @@ There are three tiers:
 | Landing | What lands the merge | In this Core |
 | --- | --- | --- |
 | `core-merge` | Core sends the merge request itself, as described above. Any repository can use it; it needs no branch protection or paid plan. | Yes, the default. |
-| `github-auto-merge` | GitHub, once the repository's required checks pass; Core queues and updates the branch. For repositories with branch protection. | No: refused with "comes in core.25". |
-| `github-merge-queue` | GitHub's own merge queue, where the repository has one (organization-owned repositories). | No: refused with "comes in core.25". |
+| `github-auto-merge` | GitHub, once the repository's required checks pass; Core queues and updates the branch. For repositories with branch protection. | No: refused, naming the landing. |
+| `github-merge-queue` | GitHub's own merge queue, where the repository has one (organization-owned repositories). | No: refused, naming the landing. |
 
 A refused landing saves nothing. Setting the landing leaves the switch as it
 is, and the switch journal records the change. A merge records the landing it
@@ -183,6 +217,33 @@ merge begun that way goes back to `waiting`, unsent. Known limit: such a
 `ready` entry is checked again every 5 minutes, job logs included, until the
 landing is set to `core-merge`. It happens only after going back from a later
 Core.
+
+## Policy
+
+Each repository has a landing policy, `policy` in
+`GET /api/merge-queue/repositories/{id}`, set only by the user, in the same
+switch block of Projects → repositories (`PUT …` with `{"policy": …}`; no MCP
+tool). It follows the user's merge rule of 2026-11-07:
+
+| Policy | When | What a merge needs |
+| --- | --- | --- |
+| `strict` (the default) | The last round before a release cut. | CI tested exactly the current main plus the head, through a CI-only batch when the PR's own CI tested an older main, and main CI has not been red since the release. |
+| `relaxed` | Day to day. | The PR's own CI green at the head (on whatever main it tested), Core's own merge of the head into the current main clean (the probe), and main CI not red now. |
+
+Both need the same review: one passing round at exactly the released head and
+no P0–P2 finding at that head. Under both, the merge is pinned to the head, the
+post-check compares the merge commit's parents and tree (the batch's or the
+probe's), and main's push CI on the merge commit is followed: red ends the
+entry `done` with `main_red` and pauses the queue. Under `relaxed` that red is
+the expected way a bad merge shows itself, since CI did not test the merge.
+
+A change of policy applies from the next check of every waiting entry, and the
+switch journal records it. A check counts only under the policy it ran with:
+one still running when the policy changes does not merge, and a merge request
+not yet sent is not sent; the entry is checked again under the new policy. A
+merge records the policy it started with. If the
+policy turns strict while an entry holds a probe on the current main, the probe
+becomes its batch: Core opens the draft PR from it.
 
 ## Pauses
 
@@ -250,7 +311,11 @@ version.
 
 When an entry merges, ends or stops, Core writes a comment to the task as
 Yuzuno Core, with the evidence record attached as `mergeEvidence`. It also
-mails the Agent that released the entry and the task's executor.
+mails the Agent that released the entry and the task's executor. A `conflict`
+stop says what comes next: the executor merges the current main into the PR
+branch, resolves and pushes, one review round runs at the new head, and the
+lead releases that head. `merge_retry` cannot help there, since the head
+changes.
 
 The record holds:
 
@@ -258,7 +323,9 @@ The record holds:
 - the review round;
 - main at release and at the check, with the CI runs examined;
 - the gate: the merge ref or the batch (its branch, commit, PR and tree), and
-  each CI job's checkout and log sha256;
+  each CI job's checkout and log sha256; when the merge ref was not the slot,
+  `mergeRef` says what it was (stale or missing), since when, and whether its
+  main was an older one;
 - the merge: each request sent, the merge commit, and the post-check of its
   parents and tree;
 - the batch's removal;

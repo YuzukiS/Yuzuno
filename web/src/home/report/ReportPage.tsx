@@ -16,6 +16,7 @@ import type { SeenMark } from "../home-api";
 import { BriefDensity } from "../home-density";
 import { homeText } from "../home-text";
 import { SectionBody } from "../SectionBody";
+import { BriefStateScope } from "../brief/brief-state";
 import { SectionTime } from "../SectionCard";
 import type { HomeData, Section, SectionAttachment } from "../types";
 import { figuresOf, linkTo, outlineOf, partsOf, reportPlace, type FigureEntry, type OutlineEntry, type ReportPlace } from "./report-model";
@@ -260,7 +261,10 @@ export function ReportPage({
             {error}
           </p>
         )}
+        {/* The page's variables (YN-16): every block of this version reads
+            the same, and none of them is its card's. */}
         {shown && parts && (
+          <BriefStateScope section={shown}>
           <BriefDensity.Provider value="high">
             <article className="report-article" aria-labelledby={headingId}>
               <div className="report-layout">
@@ -386,6 +390,7 @@ export function ReportPage({
               </div>
             </article>
           </BriefDensity.Provider>
+          </BriefStateScope>
         )}
       </div>
     </section>
