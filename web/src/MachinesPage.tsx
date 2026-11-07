@@ -8,7 +8,6 @@ import {
   Clock3,
   LoaderCircle,
   Monitor,
-  Pencil,
   Plus,
   Server,
   Trash2,
@@ -26,6 +25,8 @@ import {
 } from "./machine-checks";
 import { MachineEditor } from "./MachineEditor";
 import { MachineExecutorLimit } from "./MachineExecutorLimit";
+import { MachineSettings } from "./MachineSettings";
+import { SaveBarScope } from "./SettingsSaveBar";
 import { JobsBudgetEditor } from "./JobsSettings";
 import { strings, useLanguage, type Language } from "./i18n";
 import { shellText } from "./shell-text";
@@ -195,8 +196,6 @@ const text = strings({
   local: "Local · runs your Workspace Core",
   checking: "Checking…",
   test: "Test connection",
-  editName: (name: string) => `Edit ${name}`,
-  edit: "Edit",
   removeName: (name: string) => `Remove ${name}`,
   remove: "Remove",
   stillWorking: (names: string, count: number) =>
@@ -236,8 +235,6 @@ const text = strings({
   local: "本机 · 运行你的 Workspace Core",
   checking: "正在检查…",
   test: "测试连接",
-  editName: (name) => `编辑 ${name}`,
-  edit: "编辑",
   removeName: (name) => `移除 ${name}`,
   remove: "移除",
   stillWorking: (names, count) => `${names} 仍在此机器上工作。请先关闭${count === 1 ? "该" : "这些"} Agent，再移除此机器。`,
@@ -298,9 +295,9 @@ export function MachinesPage({
   const [loadError, setLoadError] = useState("");
   const [checking, setChecking] = useState<Record<string, boolean>>({});
   const [checkErrors, setCheckErrors] = useState<Record<string, string>>({});
-  // One change at a time: adding a machine, or editing or removing one.
+  // One change at a time: adding a machine or removing one (a machine's settings are its page's).
   const [change, setChange] = useState<
-    { kind: "add" } | { kind: "edit" | "remove"; id: string } | null
+    { kind: "add" } | { kind: "remove"; id: string } | null
   >(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState("");
@@ -384,7 +381,6 @@ export function MachinesPage({
           const here = agents.filter((a) => machineIdOf(a) === machine.id);
           const working = here.filter((a) => !a.closedAt);
           const busy = !!checking[machine.id];
-          const editing = change?.kind === "edit" && change.id === machine.id;
           const confirming =
             change?.kind === "remove" && change.id === machine.id;
           return (
@@ -425,21 +421,6 @@ export function MachinesPage({
                   {/* The Core host is where Core runs: checked, not edited. */}
                   {machine.kind === "ssh" && (
                     <>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        aria-label={t.editName(machine.name)}
-                        title={t.edit}
-                        disabled={busy}
-                        aria-pressed={editing}
-                        onClick={() =>
-                          startChange(
-                            editing ? null : { kind: "edit", id: machine.id },
-                          )
-                        }
-                      >
-                        <Pencil size={14} />
-                      </button>
                       <button
                         type="button"
                         className="icon-button"
@@ -503,24 +484,6 @@ export function MachinesPage({
                     )}
                   </div>
                 </div>
-              )}
-              {editing && (
-                <MachineEditor
-                  key={machine.id}
-                  machine={machine}
-                  language={language}
-                  onCancel={() => setChange(null)}
-                  onMachineSaved={(saved) => setMachines((list) => withMachine(list, saved))}
-                  onSaved={(saved) => {
-                    setChange(null);
-                    // What Core saved shows at once, as for an added machine,
-                    // so a failed read of the list after it doesn't show the
-                    // old values (T-187). Core drops a check that described
-                    // the old address.
-                    setMachines((list) => (list || []).map((m) => (m.id === saved.id ? saved : m)));
-                    reload();
-                  }}
-                />
               )}
               <LastCheck check={machine.lastCheck} checking={busy} now={now} language={language} />
               {checkErrors[machine.id] && (
@@ -702,11 +665,28 @@ export function MachinesPage({
           </div>
         </div>
       ) : (
-        <>
+        // One save bar for the page (YN-8), anew for each machine.
+        <SaveBarScope key={view.id}>
           {shownMachine && (
-            <div className="settings-group appearance-group">
-              <div className="appearance-field machine-block">{card(shownMachine)}</div>
-            </div>
+            <>
+              <div className="settings-group appearance-group">
+                <div className="appearance-field machine-block">{card(shownMachine)}</div>
+              </div>
+              {/* An SSH machine's settings are its page's, saved with the bar; the Core host's are below. */}
+              {shownMachine.kind === "ssh" && (
+                <MachineSettings
+                  machine={shownMachine}
+                  language={language}
+                  onSaved={(saved) => {
+                    // What Core saved shows at once, so a failed read of the
+                    // list after it doesn't show the old values (T-187). Core
+                    // drops a check that described the old address.
+                    setMachines((list) => (list || []).map((m) => (m.id === saved.id ? saved : m)));
+                    reload();
+                  }}
+                />
+              )}
+            </>
           )}
           {/* The Core host's Job budget (T-55) is its page's; shown while the
               list is read too, since it reads itself. */}
@@ -721,7 +701,7 @@ export function MachinesPage({
               </div>
             </>
           )}
-        </>
+        </SaveBarScope>
       )}
       {/* What a check is, beside the states the list and each page show. */}
       {view.kind !== "add" && machines && <p className="machine-note machines-footnote">{t.footnote}</p>}

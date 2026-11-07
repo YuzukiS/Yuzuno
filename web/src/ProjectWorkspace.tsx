@@ -15,11 +15,9 @@ import {
   Server,
   Settings2,
   Trash2,
-  X,
 } from "lucide-react";
 import { api, errorText, patch, post, remove } from "./api";
 import { strings, useLanguage, useStrings } from "./i18n";
-import { Avatar } from "./components";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import {
   ALL_PROJECTS,

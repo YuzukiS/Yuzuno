@@ -31,6 +31,8 @@ import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-densi
 import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
 import {SummaryCard} from ${JSON.stringify(path.join(root, "src/home/SummaryCard.tsx"))};
 import {ReportOpen} from ${JSON.stringify(path.join(root, "src/home/report/report-open.ts"))};
+import {sectionMarkdown} from ${JSON.stringify(path.join(root, "src/home/brief/brief-copy.ts"))};
+window.sectionMarkdown=sectionMarkdown;
 const root=createRoot(document.getElementById('root'));
 window.chooseLanguage=(language)=>saveLanguagePreferences({language});
 window.examples=BRIEF_EXAMPLES;
@@ -88,6 +90,8 @@ function mount(respond) {
   const { window } = dom;
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+  // dagre (YN-16 S3) clones with structuredClone, which every browser Yuzuno supports has and a jsdom window lacks.
+  window.structuredClone ??= (value) => structuredClone(value);
   window.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), method: init.method || "GET", headers: init.headers || {} });
     const { status = 200, body = {}, text } = (await respond?.(String(url))) ?? {};
@@ -862,6 +866,7 @@ test("the contract's examples render without a failed part", async (t) => {
     form: ["cannot tell a gap under about 5% from noise"],
     interactive: ["6% of training data", "Validation split", "Current", "Larger", "Training data", "100", "Budget", "GPU-days"],
     calculator: ["¥684", "People", "None", "15%", "Round each share up", "Total", "¥752", "Each", "¥188.10", "Back to 4, 10%"],
+    flowchart: ["its own CI and one review round", "Push the branch → PR CI", "All green? → Merged (yes)", "Fix and push → PR CI"],
   };
   const reads = {
     note: [],
@@ -875,6 +880,7 @@ test("the contract's examples render without a failed part", async (t) => {
     form: [],
     interactive: [],
     calculator: [],
+    flowchart: [],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {
@@ -1765,5 +1771,109 @@ test("YN-16 S2 a card's Calc and Button work on the card and never open the repo
   frame.querySelector(".brief-button").click();
   await until(() => shownValue(frame, "each") === "¥165.00", "the card's Button");
   assert.deepEqual(window.reportOpens, [], "no control opened the report");
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-16 S3: a Diagram laid out by Yuzuno (dagre, loaded when a body has one);
+// its nodes selected by pointer or keyboard, into its own variable or a
+// Segmented's. No request.
+const bike = () => ({
+  op: "put", key: "bike", kind: "report", title: "Bike",
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "parts", size: "wide" } }, children: ["lead", "parts", "more"] },
+    lead: { type: "Markdown", props: { text: "Seven gears, one chain." } },
+    parts: { type: "Group", props: {}, children: ["pick", "drawing"] },
+    pick: { type: "Segmented", props: { name: "part", label: "Part", value: "frame", options: [{ value: "frame", label: "Frame" }, { value: "chain", label: "Chain" }, { value: "gears", label: "Gears" }] } },
+    drawing: { type: "Diagram", props: { title: "Drive", select: "part", nodes: [
+      { id: "frame", label: "Frame", detail: "Holds it all." },
+      { id: "chain", label: "Chain", detail: "Moves the wheel." },
+      { id: "gears", label: "Rear gears", shape: "diamond", tone: "accent" },
+    ], edges: [{ from: "frame", to: "chain" }, { from: "chain", to: "gears", label: "drives" }] } },
+    more: { type: "Group", props: { title: "More" }, children: ["about", "steps"] },
+    about: { type: "Markdown", visible: { $state: "/part", eq: "chain" }, props: { text: "Oil the chain monthly." } },
+    steps: { type: "Diagram", props: { direction: "right", nodes: [{ id: "a", label: "Shift" }, { id: "b", label: "Pedal", detail: "Keep pedalling while shifting." }], edges: [{ from: "a", to: "b" }] } },
+  } },
+});
+const node = (document, scope, id) => scope.querySelector(`.brief-diagram-node[data-node="${id}"]`);
+
+test("YN-16 S3 a Diagram draws every node and edge once laid out; selecting a node shows its detail and sets the variable", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.renderSection(readSection(page, bike()), PROJECT);
+  const svg = await until(() => document.querySelector('.brief-diagram svg[aria-label="Drive"]'), "the drive diagram, laid out");
+  assert.equal(document.querySelector(".result-part-error"), null);
+  assert.equal(svg.querySelectorAll(".brief-diagram-node").length, 3);
+  assert.equal(svg.querySelectorAll(".brief-diagram-edge path").length, 2);
+  assert.ok(svg.querySelector('[data-edge="chain>gears"] .brief-diagram-edge-label').textContent === "drives");
+  assert.match(svg.getAttribute("viewBox"), /^0 0 \d+ \d+$/);
+  // The connections in words for a screen reader.
+  assert.deepEqual([...document.querySelectorAll('.brief-diagram ul[aria-label="Connections"] li')].slice(0, 2).map((li) => li.textContent), ["Frame → Chain", "Chain → Rear gears (drives)"]);
+  // The Segmented's starting value is the diagram's selected node.
+  assert.equal(node(document, svg, "frame").getAttribute("aria-pressed"), "true");
+  assert.match(svg.closest(".brief-diagram").querySelector(".brief-diagram-detail").textContent, /Frame.*Holds it all\./);
+  node(document, svg, "chain").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await until(() => node(document, svg, "chain").getAttribute("aria-pressed") === "true", "the chain selected");
+  assert.equal(document.querySelector('[role="radio"][aria-checked="true"]').textContent, "Chain", "the segments follow the nodes");
+  assert.ok(/Oil the chain monthly/.test(document.querySelector(".brief-body").textContent), "visible reads the selection");
+  // The keyboard: a node is a button; Enter or Space selects it, and pressed again it stays selected.
+  const gears = node(document, svg, "gears");
+  assert.equal(gears.getAttribute("tabindex"), "0");
+  assert.equal(gears.getAttribute("aria-label"), "Rear gears");
+  gears.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await until(() => document.querySelector('[role="radio"][aria-checked="true"]')?.textContent === "Gears", "Enter selects it");
+  gears.dispatchEvent(new window.KeyboardEvent("keydown", { key: " ", bubbles: true }));
+  await tick(30);
+  assert.equal(document.querySelector('[role="radio"][aria-checked="true"]').textContent, "Gears", "still selected");
+  // A segment selects the node.
+  document.querySelectorAll('[role="radio"]')[1].click();
+  await until(() => node(document, svg, "chain").getAttribute("aria-pressed") === "true", "a segment selects the node");
+  // A Diagram without select keeps its own selection; a node without detail says only its label.
+  const steps = [...document.querySelectorAll(".brief-diagram")][1];
+  assert.match(steps.querySelector(".brief-diagram-detail").textContent, /Select a node to read about it/);
+  node(document, steps, "b").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await until(() => /Keep pedalling/.test(steps.querySelector(".brief-diagram-detail").textContent), "its own selection");
+  assert.equal(node(document, svg, "chain").getAttribute("aria-pressed"), "true", "the other diagram's selection stays");
+  assert.deepEqual(page.requests, []);
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S3 a Diagram on a card works there and never opens the report; its labels are as written in any language", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.reportOpens = [];
+  window.chooseLanguage("zh-Hans");
+  window.renderCard(readSection(page, bike()), PROJECT, { deck: true });
+  const frame = document.querySelector(".home-card-frame.kind-interactive");
+  const svg = await until(() => frame.querySelector(".brief-diagram svg"), "the card's diagram");
+  assert.ok(!frame.closest("[inert]"));
+  assert.equal(frame.querySelector(".brief-diagram-hint"), null, "the starting selection shows its detail");
+  node(document, svg, "chain").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await until(() => frame.querySelector('[role="radio"][aria-checked="true"]')?.textContent === "Chain", "on the card");
+  assert.deepEqual(window.reportOpens, []);
+  // A Diagram alone as the visual is the card's live figure too.
+  const alone = bike();
+  alone.body.elements.body.props.summary.visual = "steps";
+  alone.body.elements.body.children = ["lead", "steps", "parts", "more"];
+  alone.body.elements.more.children = ["about"];
+  window.renderCard(readSection(page, alone), PROJECT, { deck: true });
+  const live = await until(() => document.querySelector(".home-card-frame.kind-interactive .brief-diagram svg"), "a Diagram as the visual");
+  assert.match(live.closest(".brief-diagram").querySelector(".brief-diagram-detail").textContent, /选择一个节点查看说明/);
+  window.chooseLanguage("en");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S2 R1 P3: Copy report leaves out a Calc that shows nothing at the starting values, title and all", (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { window } = page;
+  const put = bill();
+  put.body.elements.split.children.push("hiddenCalc");
+  put.body.elements.hiddenCalc = { type: "Calc", props: { title: "Only when rounding", items: [{ id: "spare", label: "Spare", expr: "people * 2", when: "roundUp" }] } };
+  const copied = window.sectionMarkdown(readSection(page, put), "en", { clock: "h24", timeZone: "UTC" });
+  assert.ok(!copied.includes("Only when rounding"), copied);
+  assert.equal(copied.split("Worked out from the starting values").length - 1, 1, "only the Calc that shows something says it");
+  assert.match(copied, /#+ Shares\n+_Worked out from the starting values_\n+- Total: ¥660\.00\n- Each: ¥165\.00/);
   assert.deepEqual(page.errors, []);
 });

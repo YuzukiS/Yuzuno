@@ -47,27 +47,29 @@
 .conversation-body > :is(.jump-latest, .jump-latest-leaving) {
   bottom: 12px;
 }
-/* Off the end and not reading history, the one way back rides the top edge
-   of the composer, clear of the right dock -- not over a line of the reply
-   being read, which is where a fixed distance from the bottom put it (T-15).
-   A phone keeps it where it was: that corner belongs to the dock buttons
-   there, and they are what it has to stay clear of.
-
-   It sits below the text, not half over it. Straddling the conversation's
-   bottom edge left its top 16px inside the pane, and a line whose visible
-   part fell in that band was covered at the pill's width: measured, 125x14px
-   of a reply under it. English lines often end short of there, so it showed
-   up only sometimes and only in a fixture whose scroll happened to leave
-   such a line at that height; Chinese wraps to the column's full width, so
-   for that reader it is most lines (#459 R4, found by the corrected
-   measurement in t15-one-way-back). Its top is the pane's bottom edge now,
-   so it covers no line at any scroll position, and it still rides the
-   composer's edge, which is what it is there to do. */
-.app:not(.phone) .conversation-body > .jump-latest {
-  left: auto;
-  right: calc(var(--gutter-right) + var(--conversation-scrollbar) + 8px);
-  bottom: 0;
-  transform: translateY(100%);
+/* On a desktop Back to latest is centred on the conversation's column, just
+   above the composer (YN-19, the user's choice). From T-15 it rode the
+   composer's top edge at the right, where it lay over the composer's expand
+   icon. It covers no line of text: while it shows, the pane ends above it
+   and it sits in a band of its own, and while it does not the column's end
+   keeps that band as room, so neither its coming nor its going moves what
+   is being read or the end of it (the pane and the room change together).
+   A phone keeps it in the dock buttons' strip, between them
+   (phone-docks.css). */
+.app:not(.phone) .conversation-body {
+  --latest-band: 44px;
+}
+.app:not(.phone) .conversation-body > .conversation-scroll > .conversation-inner {
+  padding-bottom: calc(25px + var(--latest-band));
+}
+.app:not(.phone) .conversation-body[data-latest] > .conversation-scroll {
+  margin-bottom: var(--latest-band);
+}
+.app:not(.phone) .conversation-body[data-latest] > .conversation-scroll > .conversation-inner {
+  padding-bottom: 25px;
+}
+.app:not(.phone) .conversation-body > :is(.jump-latest, .jump-latest-leaving) {
+  bottom: 6px;
 }
 .turn-dock {
   position: absolute;
@@ -305,6 +307,24 @@
       )
     );
   }
+  /* Back to latest stays centred on that column: the same rule, from the
+     pane's own width, scrollbar included (YN-19). */
+  .app:not(.phone) .conversation-body:is(:has(.turn-dock), :has(> .work-dock > .work-dock-scroll:not(:empty)))
+    > :is(.jump-latest, .jump-latest-leaving) {
+    --latest-column: min(
+      890px,
+      calc(100% - var(--conversation-scrollbar) - var(--gutter-left) - var(--gutter-right))
+    );
+    left: calc(
+      max(
+        var(--gutter-left),
+        min(
+          calc((100% - var(--latest-column)) / 2),
+          calc(100% - var(--conversation-scrollbar) - var(--gutter-right) - var(--latest-column))
+        )
+      ) + var(--latest-column) / 2
+    );
+  }
 }
 @container conversation (max-width: 480px) {
   .conversation-body {
@@ -319,6 +339,10 @@
     --column: calc(100% - var(--gutter-left) - var(--gutter-right));
     margin-left: var(--gutter-left);
     padding-inline: 8px;
+  }
+  .app:not(.phone) .conversation-body:is(:has(.turn-dock), :has(> .work-dock > .work-dock-scroll:not(:empty)))
+    > :is(.jump-latest, .jump-latest-leaving) {
+    left: calc(var(--gutter-left) + (100% - var(--conversation-scrollbar) - var(--gutter-left) - var(--gutter-right)) / 2);
   }
 }
 /* Touch reads the dock, it does not scroll by it. A finger landing on the
