@@ -1,108 +1,84 @@
 import { forwardRef, useLayoutEffect, useRef, type RefObject } from "react";
-import { clockMs, islandTime, type IslandAction, type IslandClock, type IslandForm, type IslandLine, type IslandState, type IslandView } from "./agent-island";
+import { clockMs, islandTime, type IslandAction, type IslandClock, type IslandForm, type IslandLine, type IslandState, type IslandStay, type IslandView } from "./agent-island";
 import { detailText, executorRowText } from "./ExecutorRowState";
 import { strings, useLanguage, type Language } from "./i18n";
 import { useMinute } from "./live-executors";
 import "./agent-island.css";
 
-// The island's words (T-43, 灵动环 v10.2). What Agents and Core wrote is shown as it came.
+// The island's words (T-43, rail v11). What Agents and Core wrote is shown as it came.
 export const islandText = strings({
-  word: {
-    idle: "Idle", working: "Working", handed: "Handed in", waiting: "Needs you", queued: "Queued",
-    offline: "Offline", done: "Done", failed: "Failed", archived: "Archived",
-  } as Record<IslandState, string>,
-  state: {
-    idle: "Idle", working: "Working", handed: "Handed in · waiting for the lead", waiting: "Needs you", queued: "Queued",
-    offline: "Offline", done: "Done", failed: "Failed", archived: "Archived",
-  } as Record<IslandState, string>,
+  word: { idle: "Idle", working: "Working", waiting: "Needs you", done: "Done", failed: "Failed" } as Record<IslandState, string>,
+  stay: {
+    queued: (position: number | null) => (position ? `Queued · ${position} in line` : "Queued"),
+    starting: "Starting", lead: "Lead's turn", review: "In review", changes: "Changes asked", ciFailed: "CI failed",
+    ready: "Ready to merge", merged: "Merged", offline: "Offline",
+  },
   colon: ": ",
   gap: " · ",
   clock: {
-    working: (x: string) => `for ${x}`, handed: (x: string) => `handed in ${x} ago`, waiting: (x: string) => `waiting ${x}`,
-    queued: (x: string) => `queued ${x}`, since: (x: string) => `${x} ago`, total: (x: string) => `${x} in total`,
+    working: (x: string) => `for ${x}`, waiting: (x: string) => `waiting ${x}`, live: (x: string) => `for ${x}`,
+    since: (x: string) => `${x} ago`, total: (x: string) => `${x} in total`,
   },
   /** The clock on line two: "1h12m", "1m ago", "1h12m in all". */
   time: { live: (x: string) => x, since: (x: string) => `${x} ago`, total: (x: string) => `${x} in all` },
-  handedWord: (pr: number | null) => (pr != null ? `Handed in #${pr}` : "Handed in"),
-  lead: "waiting for the lead",
-  nextSlice: (pr: number | null) => (pr != null ? `Handed in #${pr}; on the next slice` : "Handed in; on the next slice"),
-  unread: (n: number) => `${n} unread`,
+  unread: "updates unread",
   /** Where the ring goes, as its label says it. */
   go: {
-    answer: () => "Answer its question on Home",
-    why: () => "See why it failed",
-    result: (pr: number | null) => (pr != null ? `See the result of #${pr}` : "See its result"),
-    queue: () => "See its place in the queue",
-    task: (key: string | null) => (key ? `Open task ${key}` : "Open its task"),
-    turn: () => "See the Turn that failed",
-    unread: (n: number) => `Read ${n} unread`,
+    answer: "Answer its question on Home", why: "See why it failed", result: "See its result", queue: "See its place in the queue",
+    task: (key: string | null) => (key ? `Open task ${key}` : "Open its task"), turn: "See the Turn that failed", reply: "Read its reply",
   },
-  pill: {
-    ciGreen: "CI green", ciFailed: "CI failed", messages: (n: number) => (n === 1 ? "1 new message" : `${n} new messages`),
-    handedIn: (pr: number | null) => (pr != null ? `Handed in #${pr}` : "Handed in"), reviewOk: "Review passed",
-    reviewChanges: "Changes asked", started: "Started", merged: (pr: number | null) => (pr != null ? `Merged #${pr}` : "Merged"),
-  },
+  pill: { ciGreen: "CI green", ciFailed: "CI failed", started: "Started", merged: "Merged" },
 }, {
-  word: {
-    idle: "空闲", working: "在做", handed: "已交", waiting: "等你", queued: "排队",
-    offline: "离线", done: "完成", failed: "出错", archived: "已归档",
-  },
-  state: {
-    idle: "空闲", working: "在做", handed: "已交 · 等负责人", waiting: "等你", queued: "排队",
-    offline: "离线", done: "完成", failed: "出错", archived: "已归档",
+  word: { idle: "空闲", working: "在做", waiting: "等你", done: "完成", failed: "出错" },
+  stay: {
+    queued: (position) => (position ? `排队 · 第 ${position} 位` : "排队"),
+    starting: "启动中", lead: "等负责人", review: "审查中", changes: "要改", ciFailed: "CI 红了",
+    ready: "等合并", merged: "已合入", offline: "离线",
   },
   colon: "：",
   gap: " · ",
   clock: {
-    working: (x) => `已用 ${x}`, handed: (x) => `已交 ${x}`, waiting: (x) => `已等 ${x}`,
-    queued: (x) => `排队 ${x}`, since: (x) => `${x}前`, total: (x) => `共用 ${x}`,
+    working: (x) => `已用 ${x}`, waiting: (x) => `已等 ${x}`, live: (x) => `已用 ${x}`,
+    since: (x) => `${x}前`, total: (x) => `共用 ${x}`,
   },
   time: { live: (x) => x, since: (x) => `${x}前`, total: (x) => `共 ${x}` },
-  handedWord: (pr) => (pr != null ? `已交 #${pr}` : "已交"),
-  lead: "等负责人",
-  nextSlice: (pr) => (pr != null ? `已交 #${pr}，在做下一片` : "已交，在做下一片"),
-  unread: (n) => `${n} 条未读`,
+  unread: "有未读更新",
   go: {
-    answer: () => "去 Home 回答提问",
-    why: () => "看出错原因",
-    result: (pr) => (pr != null ? `看结果 #${pr}` : "看结果"),
-    queue: () => "看排队位置",
-    task: (key) => (key ? `看任务 ${key}` : "看任务"),
-    turn: () => "看出错的那一轮",
-    unread: (n) => `看 ${n} 条未读`,
+    answer: "去 Home 回答提问", why: "看出错原因", result: "看结果", queue: "看排队位置",
+    task: (key) => (key ? `看任务 ${key}` : "看任务"), turn: "看出错的那一轮", reply: "看它的回复",
   },
-  pill: {
-    ciGreen: "CI 绿了", ciFailed: "CI 红了", messages: (n) => `${n} 条新消息`,
-    handedIn: (pr) => (pr != null ? `已交 #${pr}` : "已交"), reviewOk: "审查通过",
-    reviewChanges: "审查要改", started: "开始了", merged: (pr) => (pr != null ? `已合入 #${pr}` : "已合入"),
-  },
+  pill: { ciGreen: "CI 绿了", ciFailed: "CI 红了", started: "开始了", merged: "已合入" },
 });
 
 const reducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const EASE_OUT = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 const EASE_IN = "cubic-bezier(0.4, 0, 0.2, 1)";
 
-/** A line's words. */
-export function lineText(line: IslandLine, state: IslandState, language: Language): string {
-  const t = islandText(language);
+/** Line two's words. */
+export function lineText(line: IslandLine, language: Language): string {
   switch (line.kind) {
     case "detail": return detailText(line.detail, executorRowText(language)) ?? "";
     case "text": return line.text;
-    case "handed": return state === "handed" ? t.lead : t.nextSlice(line.pr);
-    case "task": return line.title;
     case "none": return "";
   }
 }
 
-/** An executor's line one: the state's word (none while it works), then
- * what it is doing. "Needs you: approve the design note", "Handed in #688 ·
- * waiting for the lead", "Slice 2: evidence Job running". */
-export function islandActivity(view: IslandView, language: Language): { word: string | null; sep: string; text: string } {
-  const t = islandText(language);
-  const text = lineText(view.line, view.state, language);
-  if (view.state === "working") return { word: text ? null : t.word.working, sep: "", text };
-  if (view.state === "handed") return { word: t.handedWord(view.pr), sep: t.gap, text };
-  return { word: t.word[view.state], sep: text ? t.colon : "", text };
+/** A state that stays, in words: "等负责人", "排队 · 第 2 位". */
+export function stayText(stay: IslandStay, language: Language): string {
+  const t = islandText(language).stay;
+  return stay.kind === "queued" ? t.queued(stay.position) : t[stay.kind];
+}
+
+/** How a staying state's pill is coloured: good news, bad news, work going
+ * on, the lead's turn, or quiet (queued, starting, offline). */
+export function stayTone(stay: IslandStay): IslandPill["tone"] {
+  switch (stay.kind) {
+    case "ready": case "merged": return "ok";
+    case "changes": case "ciFailed": return "bad";
+    case "review": return "working";
+    case "lead": return "info";
+    default: return "quiet";
+  }
 }
 
 /** The clock as a caption: "已用 1时12分", "14分前", "共用 1时12分". */
@@ -111,7 +87,7 @@ export function clockCaption(state: IslandState, clock: IslandClock, now: number
   const x = islandTime(clockMs(clock, now), language);
   if (clock.kind === "total") return t.clock.total(x);
   if (clock.kind === "since") return t.clock.since(x);
-  return state === "handed" ? t.clock.handed(x) : state === "waiting" ? t.clock.waiting(x) : state === "queued" ? t.clock.queued(x) : t.clock.working(x);
+  return state === "waiting" ? t.clock.waiting(x) : state === "working" ? t.clock.working(x) : t.clock.live(x);
 }
 
 /** The clock as line two writes it: "1h12m", "1m ago", "1h12m in all". */
@@ -119,71 +95,51 @@ export function clockShort(clock: IslandClock, now: number, language: Language):
   return islandText(language).time[clock.kind](islandTime(clockMs(clock, now), language));
 }
 
-/** The whole island in words, for the ring's title: the state, its clock,
- * what it is at and the unread count. */
+/** The whole island in words, for the ring's title: the state, what stays,
+ * its clock, what it is at and whether a lead has updates unread. */
 export function islandLabel(view: IslandView, now: number, language: Language): string {
   const t = islandText(language);
-  const line = lineText(view.line, view.state, language);
-  return [t.state[view.state], view.clock ? clockCaption(view.state, view.clock, now, language) : null, line || null, view.unread > 0 ? t.unread(view.unread) : null]
+  const line = lineText(view.line, language);
+  return [t.word[view.state], view.stay ? stayText(view.stay, language) : null, view.clock ? clockCaption(view.state, view.clock, now, language) : null,
+    line || null, view.dot ? t.unread : null]
     .filter(Boolean).join(" · ");
 }
 
 /** Where the ring goes, in words: its label. */
 export function goText(go: IslandAction, view: IslandView, language: Language): string {
   const t = islandText(language).go;
-  switch (go) {
-    case "answer": return t.answer();
-    case "why": return t.why();
-    case "result": return t.result(view.pr);
-    case "queue": return t.queue();
-    case "task": return t.task(view.task);
-    case "turn": return t.turn();
-    case "unread": return t.unread(view.unread);
-  }
+  return go === "task" ? t.task(view.task) : t[go];
 }
 
-/** What a ring can show: a state, or a passing event's result. */
+/** What a ring can show: one of its five states, or a passing event's result. */
 export type RingState = IslandState | "green" | "red";
 const C = 2 * Math.PI * 9.5;
 
 /**
- * The ring (T-43 v10.2): strokes only, and the state by itself. Working is
- * an arc that turns, its length the progress (a fixed quarter until
- * templates carry their steps); handed in, an outer arc of its review
- * rounds round an inner ring; needs you, a full ring that breathes; queued,
- * dots that turn slowly; offline, dashes; done ✓, failed ✕ and archived (a
- * box) a mark inside. Under reduced motion nothing turns or breathes.
+ * The ring (T-43 rail v11): five states a glance tells apart. Working is an
+ * arc that turns; needs you a full ring that breathes, orange; done ✓ and
+ * failed ✕ a mark inside; idle a thin grey ring. Under reduced motion
+ * nothing turns or breathes.
  */
-export function IslandRing({ state, progress }: { state: RingState; progress: number | null }) {
-  const circle = (className: string, extra: Record<string, string> = {}, r = 9.5) => <circle cx="12" cy="12" r={r} className={className} {...extra} />;
+export function IslandRing({ state }: { state: RingState }) {
+  const circle = (className: string, extra: Record<string, string> = {}) => <circle cx="12" cy="12" r="9.5" className={className} {...extra} />;
   let body;
   switch (state) {
     case "idle": body = circle("r-idle"); break;
-    case "working": {
-      const len = progress == null ? 0.25 : Math.max(0.08, Math.min(1, progress));
-      body = <>{circle("r-track")}<g className="r-spin">{circle("r-arc", { strokeDasharray: `${C * len} ${C}`, transform: "rotate(-90 12 12)" })}</g></>;
+    case "working":
+      body = <>{circle("r-track")}<g className="r-spin">{circle("r-arc", { strokeDasharray: `${C * 0.25} ${C}`, transform: "rotate(-90 12 12)" })}</g></>;
       break;
-    }
-    case "handed": {
-      const len = Math.max(0, Math.min(1, progress ?? 0));
-      const outer = 2 * Math.PI * 10.5;
-      body = <>{circle("r-faint", {}, 10.5)}{len > 0 && circle("r-rounds", { strokeDasharray: `${outer * len} ${outer * 2}`, transform: "rotate(-90 12 12)" }, 10.5)}{circle("r-inner", {}, 6.8)}</>;
-      break;
-    }
     case "waiting": body = circle("r-breathe"); break;
-    case "queued": body = <g className="r-march">{circle("r-dots", { strokeDasharray: "0.1 4.2" })}</g>; break;
-    case "offline": body = circle("r-dashed", { strokeDasharray: "4.5 3" }); break;
     case "done": case "green": body = <>{circle("r-full")}<path className="r-mark" d="M7.6 12.3 L10.6 15.2 L16.4 8.9" /></>; break;
     case "failed": case "red": body = <>{circle("r-full")}<path className="r-mark" d="M8.6 8.6 L15.4 15.4 M15.4 8.6 L8.6 15.4" /></>; break;
-    case "archived": body = <>{circle("r-idle r-archived")}<path className="r-mark r-box" d="M7.5 9.2 H16.5 M8.4 9.2 V15.6 H15.6 V9.2 M10.6 11.8 H13.4" /></>; break;
   }
   return <svg viewBox="0 0 24 24" className="island-ring" data-ring={state} aria-hidden="true" focusable="false">{body}</svg>;
 }
 
-/** A passing event, said for a few seconds in a pill grown left out of the
- * ring, which takes its width from line one: its words, the ring it shows
- * (✓ or ✕ for a result) and its colour. */
-export type IslandPill = { text: string; ring: RingState | null; tone: "ok" | "bad" | "info" | "working" };
+/** A pill beside the ring, which takes its width from line one: a state
+ * that stays (its phrase, for as long as it holds), or a passing event for
+ * a few seconds in its place (its words and the ring it shows: ✓ or ✕). */
+export type IslandPill = { text: string; ring: RingState | null; tone: "ok" | "bad" | "info" | "working" | "quiet"; event: boolean };
 
 type IslandProps = {
   view: IslandView;
@@ -203,12 +159,12 @@ type IslandProps = {
 };
 
 /**
- * The ring at the row's top right (T-43 v10.2). With somewhere to go, it is
- * a button labelled with where ("Answer its question on Home"): its hit
- * area is larger than the ring (28 px with a mouse, 40 on touch) with
- * nothing drawn, and on hover or focus the ring scales up a little in
- * place (a thicker stroke under reduced motion). With nowhere of its own,
- * it is part of the row, whose click opens the conversation.
+ * The ring at the row's top right (T-43). With somewhere to go, it is a
+ * button labelled with where ("Answer its question on Home"): its hit area
+ * is larger than the ring (28 px with a mouse, 40 on touch) with nothing
+ * drawn, and on hover or focus the ring scales up a little in place (a
+ * thicker stroke under reduced motion). With nowhere of its own, it is part
+ * of the row, whose click opens the conversation.
  */
 export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
   function AgentIsland({ view, form, name, pill, onGo, detail, ...hooks }, ref) {
@@ -219,10 +175,12 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
     const go = view.go;
     const body = (
       <>
-        {form === "pill" && pill && <span className="island-pill" data-tone={pill.tone} aria-hidden="true">{pill.text}</span>}
+        {form === "pill" && pill && (
+          <span className="island-pill" data-tone={pill.tone} data-event={pill.event || undefined} aria-hidden="true">{pill.text}</span>
+        )}
         <span className="island-ringbox" data-ring={ring}>
-          <IslandRing state={ring} progress={view.progress} />
-          {view.unread > 0 && <span className="island-notch" aria-hidden="true">{view.unread > 99 ? "99+" : view.unread}</span>}
+          <IslandRing state={ring} />
+          {view.dot && <span className="island-dot" aria-hidden="true" />}
         </span>
       </>
     );
@@ -230,13 +188,14 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
       ...hooks,
       className: "agent-island",
       "data-state": view.state,
+      "data-stay": view.stay?.kind,
       "data-form": form,
       "data-go": go ?? undefined,
       "data-clock": view.clock?.kind,
-      "data-unread": view.unread > 0 ? (view.unread > 1 ? "count" : "dot") : undefined,
+      "data-dot": view.dot || undefined,
     };
     // Nowhere of its own: part of the row, whose link says the state.
-    if (!go) return <span {...shared} aria-hidden="true">{body}</span>;
+    if (!go) return <span {...shared} title={label} aria-hidden="true">{body}</span>;
     const where = goText(go, view, language);
     return (
       <button
@@ -282,7 +241,7 @@ function shellBox(row: HTMLElement, form: IslandForm): Box | null {
  * from the ring's circle, or from where it was, and back into the ring;
  * nothing moves under reduced motion.
  */
-export function useIslandShell(row: RefObject<HTMLElement | null>, shell: RefObject<HTMLElement | null>, form: IslandForm) {
+export function useIslandShell(row: RefObject<HTMLElement | null>, shell: RefObject<HTMLElement | null>, form: IslandForm, words: string | null = null) {
   const last = useRef<{ form: IslandForm; box: Box | null } | null>(null);
   useLayoutEffect(() => {
     const el = row.current, outline = shell.current;
@@ -292,6 +251,7 @@ export function useIslandShell(row: RefObject<HTMLElement | null>, shell: RefObj
     else outline.removeAttribute("style");
     const prev = last.current;
     last.current = { form, box };
+    // A pill whose words changed is drawn round them at once, without a motion.
     if (!prev || prev.form === form || !box || reducedMotion() || typeof outline.animate !== "function") return;
     if (form === "ring") {
       // Back into the ring.
@@ -303,5 +263,5 @@ export function useIslandShell(row: RefObject<HTMLElement | null>, shell: RefObj
     const from = prev.form === "ring" || form === "pill" || !prev.box ? ring : prev.box;
     if (from) outline.animate([frame(from), frame(box)], { duration: 320, easing: EASE_OUT });
     el.querySelector<HTMLElement>(":scope > .agent-island .island-pill")?.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: 120, fill: "backwards" });
-  }, [form]);
+  }, [form, words]);
 }

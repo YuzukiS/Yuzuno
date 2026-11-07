@@ -138,11 +138,20 @@ test("Copy agent link is offered for any Agent, closed or without a Turn, where 
   page.close();
 });
 
+// A sidebar row has no "…" (T-43 rail v11): its link opens the menu at the
+// context-menu key or Shift+F10, as a right-click and a long-press do.
+const openRow = async (page, id, how = { key: "ContextMenu" }) => {
+  const link = page.document.querySelector(`.agent-row[data-agent-id="${id}"] .agent-select`);
+  link.dispatchEvent(new page.window.KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...how }));
+  await tick();
+  return link;
+};
+
 test("its button opens it by click or keys, keys move through it, and Escape closes it without interrupting", async () => {
   const page = mount();
-  page.window.renderRows([agent("a", { status: "working" })]);
+  page.window.renderHeader(agent("a", { status: "working" }));
   await tick();
-  const trigger = page.document.querySelector('[aria-label="Actions for A"]');
+  const trigger = page.document.querySelector('[aria-label="Conversation actions"]');
   assert.equal(trigger.getAttribute("aria-haspopup"), "menu");
   assert.equal(trigger.getAttribute("aria-expanded"), "false");
   trigger.click();
@@ -174,6 +183,28 @@ test("its button opens it by click or keys, keys move through it, and Escape clo
   await tick();
   assert.ok(page.menu() === null, "Tab closes it");
   assert.equal(page.calls.length, 0);
+  assert.deepEqual([...page.window.opened], [], "opening the menu did not open the Agent");
+  page.close();
+});
+
+test("a sidebar row has no \"…\": the context-menu key or Shift+F10 on its link opens the menu, and Escape returns there", async () => {
+  const page = mount();
+  page.window.renderRows([agent("a", { status: "working" })]);
+  await tick();
+  assert.equal(page.document.querySelector('[aria-label="Actions for A"]'), null, "no button on the row");
+  assert.equal(page.document.querySelectorAll(".agent-row button").length, 1, "its link only (the ring has nowhere of its own here)");
+  for (const how of [{ key: "ContextMenu" }, { key: "F10", shiftKey: true }]) {
+    const link = await openRow(page, "a", how);
+    assert.ok(page.menu(), `${JSON.stringify(how)} opened it`);
+    assert.equal(page.document.activeElement.dataset.action, "interrupt", "focus on its first entry");
+    page.key(page.document.activeElement, "Escape");
+    await tick();
+    assert.equal(page.menu(), null);
+    assert.ok(page.document.activeElement === link, "focus back on the row's link");
+  }
+  // F10 alone, or another key, opens nothing.
+  await openRow(page, "a", { key: "F10" });
+  assert.equal(page.menu(), null);
   assert.deepEqual([...page.window.opened], [], "opening the menu did not open the Agent");
   page.close();
 });
@@ -265,10 +296,7 @@ test("each entry acts once on the Agent it was opened on, and sends no message",
   const page = mount((url) => (url.includes("/reconnect") ? new Promise((resolve) => { release = () => resolve({ body: {} }); }) : {}));
   page.window.renderRows([agent("a", { status: "offline", connectionState: "disconnected" }), agent("b", { status: "working" })]);
   await tick();
-  const open = async (id) => {
-    page.document.querySelector(`[aria-label="Actions for ${id.toUpperCase()}"]`).click();
-    await tick();
-  };
+  const open = (id) => openRow(page, id);
   await open("a");
   page.item("reconnect").click();
   await tick();
@@ -300,23 +328,20 @@ test("a disabled entry runs nothing, and a failure is reported for that Agent", 
   const page = mount((url) => (url.includes("/reconnect") ? { status: 400, body: { error: "Could not start Codex" } } : {}));
   page.window.renderRows([agent("a", { status: "offline", connectionState: "connecting" }), agent("b", { status: "offline", connectionState: "disconnected" })]);
   await tick();
-  page.document.querySelector('[aria-label="Actions for A"]').click();
-  await tick();
+  await openRow(page, "a");
   assert.equal(page.item("reconnect").disabled, true);
   page.item("reconnect").click();
   await tick();
   assert.equal(page.calls.length, 0, "Core is already connecting it");
   page.key(page.document.activeElement, "Escape");
   await tick();
-  page.document.querySelector('[aria-label="Actions for B"]').click();
-  await tick();
+  await openRow(page, "b");
   page.item("reconnect").click();
   await tick();
   await tick();
   assert.deepEqual([...page.window.failed], ["b: Could not start Codex"]);
   // A failed request may be tried again.
-  page.document.querySelector('[aria-label="Actions for B"]').click();
-  await tick();
+  await openRow(page, "b");
   page.item("reconnect").click();
   await tick();
   await tick();
@@ -340,7 +365,7 @@ test("a menu opened for one Agent closes when its control comes to show another"
   page.close();
 });
 
-test("a scroll closes it only when it moves its button: a conversation following a running turn leaves it open", async () => {
+test("a scroll closes it only when it moves where it opened: a conversation following a running turn leaves it open", async () => {
   const page = mount();
   const scroll = (target) => target.dispatchEvent(new page.window.Event("scroll"));
   // Another pane, as the conversation under the header, scrolling as output grows.
@@ -357,19 +382,17 @@ test("a scroll closes it only when it moves its button: a conversation following
   await tick();
   assert.deepEqual(page.calls.map((c) => `${c.method} ${c.url}`), ["POST /api/agents/a/interrupt"]);
   // In the list: another pane's scroll leaves it open; the list it is in, or
-  // the page, scrolling moves its button and closes it.
+  // the page, scrolling moves the row it opened from and closes it.
   page.window.renderRows([agent("b")]);
   await tick();
-  page.document.querySelector('[aria-label="Actions for B"]').click();
-  await tick();
+  await openRow(page, "b");
   scroll(pane);
   await tick();
   assert.ok(page.menu(), "another pane's scroll leaves it open");
   scroll(page.document.getElementById("root"));
   await tick();
   assert.equal(page.menu(), null, "the list it is in scrolled: closed");
-  page.document.querySelector('[aria-label="Actions for B"]').click();
-  await tick();
+  await openRow(page, "b");
   assert.ok(page.menu());
   scroll(page.document);
   await tick();

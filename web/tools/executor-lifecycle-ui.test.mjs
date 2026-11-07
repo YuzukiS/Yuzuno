@@ -122,11 +122,15 @@ async function mount({ storage = {} } = {}) {
     order: () => [...doc.querySelectorAll(".agent-list article[data-agent-id]")].filter((r) => !r.closest('[data-rail-part="archived"]')).map((r) => r.dataset.agentId),
     all: () => [...doc.querySelectorAll(".agent-list article[data-agent-id]")].map((r) => r.dataset.agentId),
     badge: (id) => row(id)?.querySelector(".agent-kind-badge")?.textContent ?? null,
-    // An executor's ring (T-43 v10.1): its state, and what its line one says.
+    // An executor's ring (T-43 rail v11): one of five states, what its line
+    // one says (its task), and the pill that stays for any other state.
     state: (id) => {
       const island = row(id)?.querySelector(".agent-island");
-      return island ? [island.dataset.state, row(id).querySelector(".agent-line-one")?.textContent ?? null] : null;
+      return island ? [island.dataset.state, row(id).querySelector(".agent-line-one")?.textContent ?? null,
+        island.querySelector(".island-pill")?.textContent ?? null] : null;
     },
+    // Line two: what it is doing, then its clock.
+    two: (id) => row(id)?.querySelector(".agent-row-meta")?.textContent ?? null,
     island: (id) => row(id)?.querySelector(".agent-island") ?? null,
     part: (name) => doc.querySelector(`.agent-list [data-rail-part="${name}"]`),
     button: (text) => [...doc.querySelectorAll("button")].find((b) => b.textContent.trim() === text),
@@ -150,17 +154,20 @@ test("the sidebar lists a Project's leads, its other Agents, its task executors 
     // Each executor's row says its one state; a lead's badge says Lead.
     assert.equal(p.badge("l"), "Lead");
     assert.equal(p.badge("d"), null, "an executor's row has no lifecycle badge beside its state");
-    assert.deepEqual(p.state("d"), ["handed", "Handed in · waiting for the lead"], "its result in, idle: handed in, the lead's turn (no release wording)");
-    assert.deepEqual(p.state("q"), ["queued", "Queued: 2 in line"]);
-    assert.deepEqual(p.state("r"), ["working", "Work r"], "nothing said yet: its task's title");
-    assert.deepEqual(p.state("g"), ["archived", "Archived: Closing · Waiting to close: a Job is still running: build (j1)."]);
-    assert.deepEqual(p.state("f"), ["failed", "Failed: Both starts failed"]);
+    // Line one is its task (no short name in these: the title); its ring one of five; any other state a pill that stays.
+    assert.deepEqual(p.state("d"), ["idle", "Work d", "Lead's turn"], "its result in, idle: the lead's turn (no release wording)");
+    assert.deepEqual(p.state("q"), ["idle", "Work q", "Queued · 2 in line"]);
+    assert.deepEqual(p.state("r"), ["working", "Work r", null], "nothing said yet: its task's title");
+    assert.deepEqual(p.state("g"), ["done", "Work g", null]);
+    assert.match(p.two("g"), /^Closing · Waiting to close: a Job is still running: build \(j1\)\./, "what an archiving one waits for is line two");
+    assert.deepEqual(p.state("f"), ["failed", "Work f", null]);
+    assert.match(p.two("f"), /^Both starts failed/);
     assert.equal(p.row("r").querySelector(".status-dot"), null, "no runtime status beside it");
     assert.equal(p.row("r").querySelector(".agent-rail-avatar"), null, "no avatar on an Agent row");
     assert.match(p.island("g").title, /Archiving: Waiting to close: a Job is still running: build \(j1\)\./);
     assert.match(p.island("f").title, /T-f · Work f\nBoth starts failed\nDispatched by you/);
-    // Only needs you and failed are row islands by themselves.
-    assert.deepEqual(["d", "q", "r", "g", "f"].map((id) => p.island(id).dataset.form), ["ring", "ring", "ring", "ring", "row"]);
+    // Only needs you and failed are row islands by themselves; a state that stays is a pill.
+    assert.deepEqual(["d", "q", "r", "g", "f"].map((id) => p.island(id).dataset.form), ["pill", "pill", "ring", "ring", "row"]);
     for (const id of ["d", "q", "r", "g", "f"]) assert.doesNotMatch(p.island(id).title, /[Rr]eleas/, `${id}: no release wording`);
     // Archived ones are folded away; a closed one is in Closed only.
     const toggle = p.part("archived")?.querySelector(".rail-archived-toggle");
@@ -170,7 +177,7 @@ test("the sidebar lists a Project's leads, its other Agents, its task executors 
     assert.ok(hidden, "neither the archived executor nor the closed one is listed");
     toggle.click();
     await waitFor(() => p.row("a"), "opened, the archived executor is listed");
-    assert.deepEqual(p.state("a"), ["archived", "Archived: Work a"]);
+    assert.deepEqual(p.state("a"), ["done", "Work a", null]);
     assert.deepEqual(JSON.parse(p.w.localStorage.getItem("yuzuno.archivedExecutorsOpen.ws-exec")), ["all"], "the fold is remembered on this device");
     assert.ok(!p.row("c"), "a closed executor stays in Closed");
     assert.deepEqual(p.errors, []);
@@ -196,11 +203,12 @@ test("in Chinese the groups and states read in Chinese", async () => {
     assert.equal(p.part("executors").querySelector(".rail-subgroup-head").textContent, "任务执行者1 排队 · 3 运行6",
       "in Chinese, how many run and how many wait");
     assert.equal(p.part("archived").querySelector(".rail-archived-toggle").textContent, "已归档1");
-    assert.deepEqual(p.state("d"), ["handed", "已交 · 等负责人"]);
-    assert.deepEqual(p.state("q"), ["queued", "排队：第 2 位"]);
-    assert.deepEqual(p.state("r"), ["working", "Work r"]);
-    assert.deepEqual(p.state("g"), ["archived", "已归档：收尾中 · Waiting to close: a Job is still running: build (j1)."]);
-    assert.deepEqual(p.state("f"), ["failed", "出错：Both starts failed"]);
+    assert.deepEqual(p.state("d"), ["idle", "Work d", "等负责人"]);
+    assert.deepEqual(p.state("q"), ["idle", "Work q", "排队 · 第 2 位"]);
+    assert.deepEqual(p.state("r"), ["working", "Work r", null]);
+    assert.deepEqual(p.state("g"), ["done", "Work g", null]);
+    assert.match(p.two("g"), /^收尾中 · Waiting to close/);
+    assert.deepEqual(p.state("f"), ["failed", "Work f", null]);
     assert.match(p.island("g").title, /归档中：Waiting to close/);
     for (const id of ["d", "q", "r", "g", "f"]) assert.doesNotMatch(p.island(id).title, /放行/, `${id}: no 放行`);
     assert.deepEqual(p.errors, []);

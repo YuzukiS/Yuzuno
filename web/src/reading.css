@@ -140,9 +140,9 @@
 .agent-list .agent-row[data-form="pill"] > .agent-island {
   margin-left: 16px;
 }
-/* An executor's activity: two lines at most, never cut mid-word without
-   its ellipsis. */
-.agent-activity {
+/* An executor's task by its short name (else its title): two lines at
+   most, never cut mid-word without its ellipsis (rail v11). */
+.agent-task-name {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -155,11 +155,12 @@
   text-align: left;
   overflow-wrap: anywhere;
 }
-.agent-row :is(.agent-activity, .is-alert) > .island-word {
+.agent-row .is-alert > .island-word {
   color: var(--tone);
   font-weight: 700;
 }
-/* Its task's key, small and grey, and its clock in the state's colour. */
+/* An executor's line two: what it is doing now, small and grey, then its
+   clock in the state's colour; one line, ending in "…" (rail v11). */
 .agent-row-meta {
   min-width: 0;
   overflow: hidden;
@@ -176,7 +177,7 @@
   font-variant-numeric: tabular-nums;
 }
 :root[data-theme="dark"] .agent-row-meta > .island-clock,
-:root[data-theme="dark"] .agent-row :is(.agent-activity, .is-alert) > .island-word {
+:root[data-theme="dark"] .agent-row .is-alert > .island-word {
   color: var(--tone);
 }
 /* A standing Agent that needs you or failed: the word, then what it said. */
@@ -208,38 +209,18 @@
 :root[data-agent-list="compact"] .agent-list .agent-row > .agent-row-meta {
   display: none;
 }
-/* Where the reader is -- the selected row, or the keyboard on its link or
-   on the "…" itself -- the "…" opens beside the ring; elsewhere it takes no
-   width, and is still reached by keyboard (T-15), a right-click or a
-   long-press. Not under the pointer or on the ring: hover only darkens the
-   row (the user, v9), and the ring stays where it was clicked. */
-.agent-list .agent-row > .agent-row-menu {
-  position: relative;
-  top: auto;
-  right: auto;
-  z-index: 1;
-  grid-column: 3;
-  grid-row: 1;
-  align-self: start;
-  width: 0;
-  /* Centred on the ring, and no taller than it in the row's layout. */
-  height: 26px;
-  margin-block: -2px;
-  margin-left: 0;
-  overflow: hidden;
+/* The open Agent's row looks as a row under the pointer does (the user,
+   rail v11): its background only, no border, fill or ink of its own. Its
+   actions have no "…": a right-click, a long-press or the context-menu key. */
+.agent-list .agent-row.selected {
+  background: #eeeee5;
+  border-color: transparent;
+  box-shadow: none;
 }
-.agent-list .agent-row:is(.selected, :has(> .agent-select:focus-visible), :has(> .agent-row-menu:is(:focus-visible, [aria-expanded="true"]))) > .agent-row-menu {
-  width: 26px;
-  margin-left: 3px;
-}
-@media (pointer: coarse) {
-  .agent-list .agent-row > .agent-row-menu {
-    height: 38px;
-    margin-block: -8px;
-  }
-  .agent-list .agent-row:is(.selected, :has(> .agent-select:focus-visible), :has(> .agent-row-menu:is(:focus-visible, [aria-expanded="true"]))) > .agent-row-menu {
-    width: 38px;
-  }
+:root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"])) .agent-list .agent-row.selected {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: inherit;
 }
 /* To a finger the whole row is the target, 44 px at least; its link
    needn't be. */
@@ -265,16 +246,17 @@
 .agent-list .agent-row .agent-line-one.agent-identity > .agent-name {
   flex: 0 1 auto;
 }
-/* While a pill takes line one's width, line one wraps rather than being cut
-   (the user, v10.2): an activity past its two lines, a name past its one.
-   The row grows for those few seconds. */
-.agent-list .agent-row[data-form="pill"] .agent-activity {
+/* While a passing event's pill takes line one's width, line one wraps
+   rather than being cut (the user, v10.2): a task past its two lines, a
+   name past its one; the row grows for those few seconds. A state that
+   stays keeps its pill with line one at two lines. */
+.agent-list .agent-row[data-form="pill"]:has(.island-pill[data-event]) .agent-task-name {
   display: block;
   -webkit-line-clamp: none;
   overflow: visible;
 }
-/* Its key and clock too: they wrap rather than end in "…". */
-.agent-list .agent-row[data-form="pill"] > .agent-row-meta {
+/* Its line two too: it wraps rather than ending in "…". */
+.agent-list .agent-row[data-form="pill"]:has(.island-pill[data-event]) > .agent-row-meta {
   white-space: normal;
   overflow-wrap: anywhere;
 }

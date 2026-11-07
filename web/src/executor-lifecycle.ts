@@ -12,8 +12,9 @@ export type ExecutorState = "queued" | "starting" | "running" | "delivering" | "
 export type ExecutorLifecycle = {
   state: ExecutorState;
   agentId: string;
-  /** Its task: `id` is the key it has now (YN-3), `T-<n>` while it has none (T-43 S2). */
-  task?: { id: string; title: string } | null;
+  /** Its task: `id` is the key it has now (YN-3), `T-<n>` while it has none (T-43 S2);
+   * `shortName` what it is about in plain words, as a lead named it (T-43 R1). */
+  task?: { id: string; title: string; shortName?: string | null } | null;
   /** The template it was made from (T-43 S2); `label` as its dispatch's materials give it, null for an older
    * dispatch. An empty `id` is an executor made from no template. */
   template?: { id: string; label?: string | null } | null;

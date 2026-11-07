@@ -90,8 +90,12 @@ export function AgentActionsMenu({
   label,
   ref,
   missingTurns = false,
+  trigger: withTrigger = true,
 }: {
   agent: Agent;
+  /** Its "…" button; false where the menu opens only at a right-click, a
+   * long-press or the context-menu key (the sidebar's rows, rail v11). */
+  trigger?: boolean;
   handlers: AgentActionHandlers;
   /** A check found Turns missing from the native history (T-198); only the
    * open conversation knows, from its record. */
@@ -178,7 +182,8 @@ export function AgentActionsMenu({
     const dismiss = (event: Event) => {
       const target = event.target;
       if (target instanceof Node && list.current?.contains(target)) return;
-      const anchor = trigger.current;
+      // Its button, or without one the place it opened from (a row's link).
+      const anchor = trigger.current ?? current.current?.returnTo ?? null;
       if (!(target instanceof Node) || !anchor || target.contains(anchor)) close(false, false);
     };
     document.addEventListener("pointerdown", outside, true);
@@ -257,7 +262,7 @@ export function AgentActionsMenu({
 
   return (
     <>
-      <button
+      {withTrigger && <button
         ref={trigger}
         type="button"
         className={`agent-actions-button ${className}`.trim()}
@@ -279,7 +284,7 @@ export function AgentActionsMenu({
         }}
       >
         <MoreHorizontal size={16} />
-      </button>
+      </button>}
       {leaving &&
         !menu &&
         createPortal(
