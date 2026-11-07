@@ -72,6 +72,7 @@ pub mod opencode_login;
 mod opencode_fork_check;
 pub mod opencode_v2;
 pub mod opencode_revert_files;
+pub mod opencode_transfer;
 pub mod rail;
 pub mod reading_handoff;
 pub mod record_rows;

@@ -2,8 +2,9 @@
 """A stand-in `opencode serve`, for tests/opencode_transport.rs and the
 suites that start OpenCode. It starts, answers `/api/info` and stops as
 OpenCode 2.x does (T-32 slice 2: 2.2.5's flags, listening line, password
-variable and teardown on SIGTERM); its other calls still have OpenCode
-1.19.3's shape, until their slices of T-32. It reads only its arguments and
+variable and teardown on SIGTERM); its other routes are 2.x's too (T-32,
+T-61), over a store kept in OpenCode 1.19.3's shape (`v2_events`, `v2_view`).
+It reads only its arguments and
 the environment Core starts it with, and keeps its state in memory. It writes
 what it saw to the folder of OPENCODE_DB (start.json, calls.jsonl), where a
 test may leave a switch before it starts: `host` (the address it reports),
@@ -24,34 +25,39 @@ with their status only (`GET /api/mcp`), connected again (`…/connect`), kept i
 (control `mcpDrop`, as 2.x unloads an idle folder). Mode `mcpPendingFor` (seconds) lists one as `pending` that long
 after it is added, as 2.x may for a folder's first, before its status settles; `mcpRefuse` answers an add with 400
 quoting the request, as a schema rejection may; `mcpErrorEcho` puts the request's Authorization in a failed one's
-error. 1.19.3's `POST /mcp` and `GET /mcp` are answered only in the 1.19.3 mode (`v1Messages`).
-Permission requests and forms are 2.x's (T-61 slice 2), in every mode, the 1.19.3 mode too: made by controls `ask` and
+error.
+Permission requests and forms are 2.x's (T-61 slice 2): made by controls `ask` and
 `question`, listed per session (`GET /api/session/:id/permission`, `…/form`) and answered by 2.x's routes (`POST
 …/permission/:id/reply`, `POST …/form/:id/reply`, `DELETE …/form/:id`): 204, 404 for one not pending in that session,
 400 for a form answer 2.x can't take (the form stays pending). A reject or a declined form ends the run as 2.2.5 ends
 one shutting down (`session.execution.interrupted`, reason `shutdown`, and no idle message); an interrupt drops the
 session's permission requests with nothing said and cancels its forms. Control `forget` drops one with nothing said, as
-if OpenCode no longer held it. 1.19.3's request routes (`/permission`, `/question`) are gone.
+if OpenCode no longer held it.
 Commands are 2.x's (T-61 slice 3): listed by name and description (`GET /api/command`) and run by `POST
-/api/session/:id/command` (mode `command`); 1.19.3's `POST /session/:id/command` is gone.
+/api/session/:id/command` (mode `command`).
 Compaction is 2.x's (T-61 slice 4): `POST /api/session/:id/compact` admits one into the session's inbox and answers at
 once; it then runs as 2.x's does (`session.compaction.*`), its message under the ID it was admitted under (`compact_v2`).
 Mode `compact`: `run`, `hold` (until control `finishCompaction` or an interrupt), `fail`, `unavailable`, `late`, `drop`,
 `drop-unadmitted`, `refuse-404`, `invalid-400`, `conflict-409`, `500`, `500-admitted`, `other-pending`. Control
-`autoCompact` runs one of 2.x's own; `compacts` lists what the route was sent. 1.19.3's `POST /session/:id/summarize`
-and its part removal (`DELETE /session/:id/message/:id/part/:id`) are gone.
-Reverts are 2.x's too (T-61 slice 6), outside the 1.19.3 mode: staged from each later step's snapshot (`POST
+`autoCompact` runs one of 2.x's own; `compacts` lists what the route was sent.
+Reverts are 2.x's too (T-61 slice 6): staged from each later step's snapshot (`POST
 /api/session/:id/revert/stage`, mode `stage`, `stage_v2`), committed (`POST …/revert/commit`, mode `commit`) or cleared
-(`DELETE …/revert`); new input (a prompt, a command, a compaction) commits a staged one first (`v2_commit`). 1.19.3's
-`POST /session/:id/revert` and `…/unrevert` are still answered, as before.
+(`DELETE …/revert`); new input (a prompt, a command, a compaction) commits a staged one first (`v2_commit`).
+Sessions are 2.x's (T-61 slice 7, `v2_info`): `POST /api/session`, `GET /api/session/:id` and the
+list answer `location: {directory}`, `cost`, `tokens` and `time` (ms; `busy`, `idle` and `outcome` as each execution
+starts and ends, `v2_mark`), and no top-level `directory` or `workspaceID`. A session is imported (`POST
+/api/experimental/session/import`, `import_v2`) under the ID its body gives, and exported (`GET
+/api/experimental/session/:id/export`), settled messages only (`settled`); what was imported is listed as it was sent,
+before what the session stores later (`v2_view`). Mode `import`: `ok`, `lost`, `hold` (until `goOn` with that ID), `fail`,
+`tamper`, `conflict-other`.
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
-Its folders are worked out as OpenCode's (XDG_* and HOME), and `GET /path` and `GET /project/current`
-answer them. Snapshots of the work folder go into a real Git store in OpenCode's own layout
-(<data>/snapshot/<project>/<sha1 of the worktree>), only when XDG_DATA_HOME is a folder a test marked
-with a `.yuzuno-fixture` file; otherwise they are off, as with OpenCode's `snapshot: false`, and no Git
-runs on any store (a revert then deletes each file it would send back, as OpenCode does with no store).
+Its data folder is worked out as OpenCode's (XDG_DATA_HOME, else HOME). Snapshots of the work folder go
+into a real Git store in OpenCode's own layout (<data>/snapshot/<project>/<sha1 of the worktree>), only
+when XDG_DATA_HOME is a folder a test marked with a `.yuzuno-fixture` file; otherwise they are off, as
+with OpenCode's `snapshot: false`, and no Git runs on any store (a restore is then refused, as 2.x
+refuses one: `v2_restore`).
 """
 import base64
 import hashlib
@@ -78,8 +84,8 @@ USERNAME = 'opencode'
 STARTED = time.monotonic()
 AUTHORIZATION = 'Basic ' + base64.b64encode(f'{USERNAME}:{PASSWORD}'.encode()).decode()
 
-# What `GET /config/providers` answers (T-10): OpenCode's configured providers,
-# each with the fields that can hold credentials (`key`, `options`, `env`, and
+# OpenCode's configured providers (T-10), which 2.x's lists are made of (`v2_models`, `v2_providers`,
+# `v2_integrations`): each with the fields that can hold credentials (`key`, `options`, `env`, and
 # a model's `options` and `headers`), here fake; `mode` replaces it.
 SECRETS = ['fixture-secret-key', 'fixture-secret-option', 'fixture-secret-header', 'FIXTURE_SECRET_ENV']
 
@@ -101,7 +107,7 @@ PROVIDERS = {'providers': [
          'max': {'thinking': {'budgetTokens': 32000}, 'apiKey': SECRETS[1]}, 'high': {'reasoningEffort': 'high'}})}},
 ], 'default': {'openrouter': 'anthropic/claude-x', 'deepseek': 'deepseek-flash'}}
 
-# What `GET /config` answers (T-10): OpenCode's whole configuration. As in
+# OpenCode's whole configuration (T-10). As in
 # OpenCode it holds provider keys and options (here fake) beside the commands
 # (`command`), whose templates may hold paths and shell lines; one command
 # names a model of its own (`pinned`) and one is a sub-agent's (`delegate`,
@@ -127,7 +133,9 @@ lock = threading.Lock()
 active = set()
 counter = [0]
 # `permissions` and `forms`: 2.x's pending permission requests and forms (T-61 slice 2), in the order asked.
-sessions, messages, statuses, permissions, forms, mcp = {}, {}, {}, [], [], {}
+sessions, messages, statuses, permissions, forms = {}, {}, {}, [], []
+# The messages 2.x imported into a session (T-61 slice 7, `import_v2`), by session: in 2.x's shape, as they were sent.
+imported = {}
 # 2.x's MCP servers added at runtime (T-61 slice 1), by name: their configuration, status and folder; and each
 # connection it made of one (a name and why), which the same configuration added again does not make.
 mcp_servers, mcp_connects = {}, []
@@ -140,9 +148,8 @@ compacts_seen = []
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
          'command': 'run', 'compact': 'run', 'defaultModel': None, 'failListOnce': False,
-         'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'directory': None, 'fork': 'ok', 'history': 'ok',
-         'replay': 'ok', 'html': [], 'activeShape': 'object', 'integrations': [], 'oauth': {}, 'loginRefuse': False,
-         'holdOauthStatus': False, 'replyLost': None, 'stage': 'ok', 'commit': 'ok'}
+         'holdPermission': False, 'directory': None, 'html': [], 'activeShape': 'object', 'integrations': [], 'oauth': {},
+         'loginRefuse': False, 'holdOauthStatus': False, 'replyLost': None, 'stage': 'ok', 'commit': 'ok', 'import': 'ok'}
 # 2.x's logins (T-32 slice 4b): its credentials, values included, as its database keeps them; its sign-in attempts;
 # and those cancelled.
 credentials, attempts, cancelled = {}, {}, []
@@ -151,14 +158,13 @@ held_reads = []
 # Compactions held running (`compact` mode `hold`), by session: their message's ID, until `finishCompaction` or an
 # interrupt ends one.
 compacting = {}
-# Reverts, unreverts or 2.x's revert stages held (mode `hold`) or answered late (mode `late`), by session: what lets
-# them go on.
+# Revert stages held (`stage` mode `hold`) or answered late (`late`), and imports held (`import` mode `hold`), by
+# session: what lets them go on (`goOn`).
 reverting = {}
-# OpenCode's durable events (T-10 Fork), as its database keeps them (`core/src/event.ts`): every v1
-# session, message and part event, under its session (the aggregate), numbered from 0 in each.
-DURABLE = {'session.created', 'session.updated', 'session.deleted', 'message.updated', 'message.removed',
-           'message.part.updated', 'message.part.removed'}
-durable, aggregates = [], {}
+# The store's events whose changes are saved once sent (`publish`): each session, message and part event naming its
+# session.
+SAVED = {'session.created', 'session.updated', 'session.deleted', 'message.updated', 'message.removed',
+         'message.part.updated', 'message.part.removed'}
 streams = []
 generation = [0]  # a new generation ends every open event stream
 tools = []
@@ -192,27 +198,12 @@ def v2_message_id():
 
 
 def publish(kind, properties):
-    """An event of the stand-in's own store, kept in 1.19.3's shape: sent as 2.x sends its own (T-32 slice 3b), or as it
-    is in the 1.19.3 mode (switch or mode `v1Messages`), which only the tests of fork use until its slice moves them
-    (rewind moved in T-61 slice 6). Durable ones are kept for `/sync/history` as they are."""
-    if v1():
-        sent = send(kind, properties)
-    else:
-        sent = None
-        for kind2, data, *created in v2_events(kind, properties):
-            send(kind2, data, *created)
-    kept = kind in DURABLE and isinstance(properties.get('sessionID'), str)
-    if kept:
-        evt = sent or new_id('evt')
-        with lock:
-            aggregate = properties['sessionID']
-            seq = aggregates.get(aggregate, -1) + 1
-            aggregates[aggregate] = seq
-            durable.append({'id': evt, 'aggregate_id': aggregate, 'seq': seq, 'type': kind + '.1',
-                            'data': json.loads(json.dumps(properties))})
-        save()
-    elif sent is None and kind == 'session.status':
-        # What an execution's end changed in 2.x's own store: its idle message, and the inbox it delivered.
+    """An event of the stand-in's own store, kept in 1.19.3's shape, sent as 2.x sends its own (T-32 slice 3b,
+    `v2_events`); what it changed is then saved (`SAVED`), as is what an execution's end changed in 2.x's own store: its
+    idle message, and the inbox it delivered."""
+    for kind2, data, *created in v2_events(kind, properties):
+        send(kind2, data, *created)
+    if kind == 'session.status' or (kind in SAVED and isinstance(properties.get('sessionID'), str)):
         save()
 
 
@@ -225,11 +216,6 @@ def send(kind, data, created=None, event_id=None):
     return event['id']
 
 
-def v1():
-    # The switch beside every Agent's folder applies to each of them (a fork's new Agent too).
-    return bool(modes.get('v1Messages')) or switch('v1Messages') is not None or (ROOT.parent / 'v1Messages').exists()
-
-
 # What sending the store's events as 2.x's needs to remember, by session (T-32 slice 3b).
 v2_state = {}
 
@@ -240,6 +226,118 @@ def v2_of(session):
     return v2_state.setdefault(session, {'delivered': set(), 'started': set(), 'ended': set(), 'parts': set(),
                                          'error': None, 'idles': [], 'pending': [], 'steer': set(), 'shells': [],
                                          'shutdown': False, 'compacts': {}})
+
+
+def zero_tokens():
+    # The token counts of a session nothing has run in yet (2.2.5 schema/src/token-usage.ts).
+    return {'input': 0, 'output': 0, 'reasoning': 0, 'cache': {'read': 0, 'write': 0}}
+
+
+def v2_info(stored):
+    """A stored session as 2.x answers it (2.2.5 core/src/session/info.ts fromRow, protocol/src/groups/session.ts
+    PublicSessionInfo; T-61 slice 7): its folder as `location: {directory}` (a sub-agent's, its parent's; else the work
+    folder), no top-level `directory` or `workspaceID`; `cost`, `tokens` and `time` (ms) always; a model without a variant
+    as its "default" one; nothing unset."""
+    # Copied at once first, as another request's thread may add to it (`v2_mark`).
+    info = json.loads(json.dumps({k: v for k, v in dict(stored).items()
+                                  if k not in ('directory', 'workspaceID') and v is not None}))
+    parent = sessions.get(stored.get('parentID')) or {}
+    info['location'] = {'directory': stored.get('directory') or parent.get('directory') or str(WORK)}
+    info.setdefault('cost', 0)
+    info.setdefault('tokens', zero_tokens())
+    info['time'] = {'created': 0, **(info.get('time') or {})}
+    info['time'].setdefault('updated', info['time']['created'])
+    if info.get('model'):
+        info['model'] = {**info['model'], 'variant': info['model'].get('variant') or 'default'}
+    return info
+
+
+def v2_mark(session, outcome=None):
+    """What an execution's start (no `outcome`) or end changes on 2.x's session (2.2.5 core/src/session/projector.ts
+    `Execution.Started`, projectIdle): its start `time.busy`; its end `time.idle`, always later than the one before, and
+    `outcome`. An end as one shutting down changes neither (`shut_down`)."""
+    now = int(time.time() * 1000)
+    with lock:
+        stored = sessions.get(session)
+        if stored is None:
+            return
+        times = stored.setdefault('time', {})
+        if outcome is None:
+            times['busy'] = now
+        else:
+            times['idle'] = max(now, times['idle'] + 1) if isinstance(times.get('idle'), (int, float)) else now
+            stored['outcome'] = outcome
+
+
+def settled(message):
+    # What 2.x imports and exports of a session (2.2.5 core/src/session/transfer.ts isSettled).
+    if message.get('type') == 'assistant':
+        return (message.get('time') or {}).get('completed') is not None
+    if message.get('type') in ('shell', 'compaction'):
+        return message.get('status') != 'running'
+    return True
+
+
+def has_message(session, mid):
+    # A message 2.x holds in the session: one it stored, or one imported into it.
+    return mid in messages.get(session, {}) or any(m.get('id') == mid for m in imported.get(session, []))
+
+
+def v2_idle_base(session):
+    """The first number free for the session's own idle messages (`v2_idle`): after every one imported into it, whose IDs
+    came from the session they were exported from. 2.x names each by its event, so none repeats."""
+    taken = [int(m['id'][len('msg_idle'):]) for m in imported.get(session, [])
+             if isinstance(m.get('id'), str) and re.fullmatch(r'msg_idle\d+', m['id'])]
+    return max(taken) + 1 if taken else 0
+
+
+# The types of 2.x's messages (2.2.5 schema/src/session-message.ts Info).
+MESSAGE_TYPES = ('agent-switched', 'model-switched', 'location-switched', 'user', 'synthetic', 'system', 'skill', 'shell',
+                 'assistant', 'compaction', 'idle')
+# The modes of `import` (`import_v2`).
+IMPORT_MODES = ('ok', 'lost', 'hold', 'fail', 'tamper', 'conflict-other')
+
+
+def import_refused(body):
+    """Why 2.x can't decode an import's body (2.2.5 protocol/src/groups/session.ts session.import), or None: its `info`
+    lacks one of what a session's info needs (`id`, `projectID`, `cost`, `tokens`, `time.created`, `time.updated`,
+    `location.directory`) or holds one of the wrong type, its `location` is not an absolute folder, or one of its
+    `messages` is not a message (an `msg_` ID, one of 2.x's types, `time.created`). Each message's other fields are taken
+    as they are; an unset field (null) as one left out."""
+    number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    unset_or = lambda v, ok: v is None or ok(v)
+    if not isinstance(body, dict) or not isinstance(body.get('info'), dict):
+        return 'an import takes an object with an info'
+    info, times, tokens = body['info'], body['info'].get('time'), body['info'].get('tokens')
+    checks = [
+        ('info.id', isinstance(info.get('id'), str) and info['id'].startswith('ses')),
+        ('info.projectID', isinstance(info.get('projectID'), str)),
+        ('info.cost', number(info.get('cost'))),
+        ('info.tokens', isinstance(tokens, dict) and all(number(tokens.get(k)) for k in ('input', 'output', 'reasoning'))
+         and isinstance(tokens.get('cache'), dict) and all(number(tokens['cache'].get(k)) for k in ('read', 'write'))),
+        ('info.time', isinstance(times, dict) and number(times.get('created')) and number(times.get('updated'))
+         and all(unset_or(times.get(k), number) for k in ('busy', 'idle', 'viewed', 'archived'))),
+        ('info.location', isinstance(info.get('location'), dict) and isinstance(info['location'].get('directory'), str)),
+        ('info.parentID', unset_or(info.get('parentID'), lambda v: isinstance(v, str) and v.startswith('ses'))),
+        ('info.outcome', info.get('outcome') in (None, 'succeeded', 'failed', 'interrupted')),
+        ('info.title', unset_or(info.get('title'), lambda v: isinstance(v, str))),
+        ('info.agent', unset_or(info.get('agent'), lambda v: isinstance(v, str))),
+        ('info.model', unset_or(info.get('model'), lambda v: isinstance(v, dict) and isinstance(v.get('id'), str)
+                                and isinstance(v.get('providerID'), str))),
+        ('info.metadata', unset_or(info.get('metadata'), lambda v: isinstance(v, dict))),
+        ('info.permissions', unset_or(info.get('permissions'), lambda v: isinstance(v, list))),
+        ('location', unset_or(body.get('location'), lambda v: isinstance(v, dict) and isinstance(v.get('directory'), str)
+                              and os.path.isabs(v['directory']))),
+        ('messages', isinstance(body.get('messages'), list)),
+    ]
+    for name, ok in checks:
+        if not ok:
+            return f'Invalid {name}'
+    for n, m in enumerate(body['messages']):
+        if not (isinstance(m, dict) and isinstance(m.get('id'), str) and m['id'].startswith('msg_')
+                and m.get('type') in MESSAGE_TYPES and isinstance(m.get('time'), dict) and number(m['time'].get('created'))):
+            return f'Invalid messages[{n}]'
+    return None
 
 
 def v2_models():
@@ -553,6 +651,7 @@ def v2_events(kind, p):
         status = (p.get('status') or {}).get('type')
         state = v2_of(session)
         if status == 'busy':
+            v2_mark(session)
             return [('session.execution.started', {'sessionID': session})]
         if status == 'retry':
             return [('session.retry.scheduled', {'sessionID': session, 'assistantMessageID': '', 'attempt': 1, 'at': 0,
@@ -570,16 +669,20 @@ def v2_events(kind, p):
             last = next(reversed(messages.get(session, {})), None)
             if error and error.get('name') == 'MessageAbortedError':
                 state['idles'].append({'after': last, 'outcome': 'interrupted', 'error': v2_error(error)})
+                v2_mark(session, 'interrupted')
                 return ahead + [('session.execution.interrupted', {'sessionID': session, 'reason': 'user'})]
             if error:
                 state['idles'].append({'after': last, 'outcome': 'failed', 'error': v2_error(error)})
+                v2_mark(session, 'failed')
                 return ahead + [('session.execution.failed', {'sessionID': session, 'error': v2_error(error)})]
             state['idles'].append({'after': last, 'outcome': 'succeeded'})
+            v2_mark(session, 'succeeded')
             return ahead + [('session.execution.succeeded', {'sessionID': session})]
         return []
     if kind == 'session.error':
         # 2.x reports it with the execution's end (session-event.ts Execution); with none running, at once.
         if session not in statuses:
+            v2_mark(session, 'failed')
             return [('session.execution.failed', {'sessionID': session, 'error': v2_error(p.get('error'))})]
         v2_of(session)['error'] = p.get('error')
         return []
@@ -587,7 +690,9 @@ def v2_events(kind, p):
         info = p.get('info') or {}
         return [('session.created', {'sessionID': info.get('id'), 'projectID': info.get('projectID', PROJECT), 'parentID': info.get('parentID'),
                                      'title': info.get('title'), 'agent': info.get('agent'), 'slug': info.get('id'), 'version': '2.2.5',
-                                     'location': {'directory': info.get('directory') or str(WORK)}})]
+                                     'location': {'directory': info.get('directory') or str(WORK)},
+                                     # An imported one's own (`import_v2`), as 2.x's event carries them.
+                                     **{k: info[k] for k in ('model', 'metadata', 'permissions', 'subpath') if info.get(k) is not None}})]
     if kind in ('session.updated', 'message.removed', 'message.part.removed', 'message.part.delta'):
         return []
     return [(kind, p)]
@@ -597,15 +702,16 @@ def v2_view(session):
     """The session's stored messages as 2.x's `/api/session/:id/message` lists them (schema/src/session-message.ts): in
     the order 2.x stored them, with each execution's idle message after the message it ended at. A message steered in
     is stored when 2.x delivers it (`v2_deliver`): before the first step answering it or a later one, or at the
-    execution's end; not yet delivered, it is in the inbox only (`v2_inbox`)."""
+    execution's end; not yet delivered, it is in the inbox only (`v2_inbox`). What was imported into it (`import_v2`)
+    comes first, as it was sent, as 2.x stored it before anything else; its own idle messages are numbered after those."""
     state = v2_of(session)
     idles = {}
-    for n, idle in enumerate(state['idles']):
+    for n, idle in enumerate(state['idles'], start=v2_idle_base(session)):
         idles.setdefault(idle['after'], []).append((n, idle))
     shells = {}
     for shell in state['shells']:
         shells.setdefault(shell['after'], []).append(shell)
-    out, waiting = [], []
+    out, waiting = json.loads(json.dumps(imported.get(session, []))), []
 
     def delivered(upto=None):
         # Those waiting, up to `upto` (all of them when None), as 2.x stored them on delivery.
@@ -739,13 +845,13 @@ def save():
     # ended in the middle of a save never leaves a cut state.json that its next start can't read (CI 42314910718).
     with lock:
         data = json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0],
-                           'durable': durable, 'aggregates': aggregates,
                            # 2.x stores its idle messages with the session's others,
                            # and its inbox.
                            'idles': {s: v['idles'] for s, v in v2_state.items()},
                            'inbox': {s: {'pending': v['pending'], 'steer': sorted(v['steer']), 'compacts': v['compacts']}
                                      for s, v in v2_state.items()},
-                           'shells': {s: v['shells'] for s, v in v2_state.items()}})
+                           'shells': {s: v['shells'] for s, v in v2_state.items()},
+                           'imported': imported})
         written = ROOT / f'state.json.{os.getpid()}.tmp'
         with open(written, 'w') as out:
             time.sleep(float(switch('slowSave') or 0))
@@ -760,14 +866,13 @@ def load():
         sessions.update(state['sessions'])
         messages.update(state['messages'])
         counter[0] = state['counter']
-        durable.extend(state.get('durable', []))
-        aggregates.update(state.get('aggregates', {}))
         for s, idles in state.get('idles', {}).items():
             v2_of(s)['idles'] = idles
         for s, inbox in state.get('inbox', {}).items():
             v2_of(s).update(pending=inbox['pending'], steer=set(inbox['steer']), compacts=inbox.get('compacts', {}))
         for s, shells in state.get('shells', {}).items():
             v2_of(s)['shells'] = shells
+        imported.update(state.get('imported', {}))
         # A compaction its process ended in the middle of is failed when it starts again, with nothing said (no stream
         # is open yet), as 2.x's `compaction.interrupted` (core/src/session/compaction.ts).
         for s, stored in messages.items():
@@ -906,10 +1011,10 @@ def xdg(name, *default):
 XDG_DATA = switch('xdg-data') or os.environ.get('XDG_DATA_HOME')
 if XDG_DATA:
     os.environ['XDG_DATA_HOME'] = XDG_DATA
-DATA, STATE, CONFIG = xdg('XDG_DATA_HOME', '.local', 'share'), xdg('XDG_STATE_HOME', '.local', 'state'), xdg('XDG_CONFIG_HOME', '.config')
+DATA = xdg('XDG_DATA_HOME', '.local', 'share')
 # The project OpenCode names this folder's (`core/src/project.ts`; a fixed one here).
 PROJECT = 'fixtureproject'
-# The project `/project/current` names now (control `project`); snapshots stay under PROJECT's store.
+# The project `/api/location` names now (control `project`), an import's too; snapshots stay under PROJECT's store.
 current_project = [PROJECT]
 # OpenCode's snapshot store for this worktree (`snapshot/index.ts`: data/snapshot/<project>/<sha1 of the worktree>).
 STORE = Path(DATA) / 'snapshot' / PROJECT / hashlib.sha1(str(WORK).encode()).hexdigest()
@@ -957,32 +1062,6 @@ def track():
         return git('write-tree').stdout.decode().strip()
 
 
-def restore(snapshot):
-    """The whole snapshot written back (`Snapshot.restore`: read-tree, then checkout-index -a -f)."""
-    with lock:
-        git('read-tree', snapshot)
-        git('checkout-index', '-a', '-f')
-
-
-def revert_file(hash, file):
-    """One file back as `hash` holds it (`Snapshot.revert`): checked out; if that fails, kept when the snapshot
-    lists it, else deleted. What became of it."""
-    rel = os.path.relpath(file, WORK)
-    if not SNAPSHOTS:
-        # No store a test made: as OpenCode with none, the checkout and the listing fail.
-        Path(file).unlink(missing_ok=True)
-        return 'deleted'
-    with lock:
-        if git('checkout', hash, '--', file, check=False).returncode == 0:
-            return 'restored'
-        listed = git('ls-tree', hash, '--', rel, check=False)
-    if listed.returncode == 0 and listed.stdout.strip():
-        log({'fixture': 'checkout failed, kept', 'file': rel})
-        return 'kept'
-    Path(file).unlink(missing_ok=True)
-    return 'deleted'
-
-
 def write(rel, content):
     path = WORK / rel
     if content is None:
@@ -1000,68 +1079,6 @@ def busy(session):
 
 def ordered(session):
     return sorted(messages.get(session, {}).values(), key=lambda m: (m['info']['time']['created'], m['info']['id']))
-
-
-def forked_title(title):
-    # `session/session.ts` getForkedTitle.
-    found = re.match(r'^(.+) \(fork #(\d+)\)$', title)
-    return f'{found.group(1)} (fork #{int(found.group(2)) + 1})' if found else f'{title} (fork #1)'
-
-
-def project(event):
-    """What OpenCode's v1 projectors make of a replayed durable event (T-10 Fork): here only the events a fork
-    writes. Called with `lock` held. Afterwards this process's own IDs come after every ID it took in."""
-    kind, data = event['type'], event['data']
-    session = data['sessionID']
-    if kind == 'session.created.1':
-        sessions[session] = data['info']
-        taken = [session]
-    elif kind == 'message.updated.1':
-        found = messages.setdefault(session, {}).get(data['info']['id'])
-        messages[session][data['info']['id']] = {'info': data['info'], 'parts': found['parts'] if found else []}
-        taken = [data['info']['id']]
-    elif kind == 'message.part.updated.1':
-        part = data['part']
-        message = messages.setdefault(session, {}).setdefault(part['messageID'], {'info': None, 'parts': []})
-        at = next((i for i, p in enumerate(message['parts']) if p['id'] == part['id']), None)
-        if at is None:
-            message['parts'].append(part)
-        else:
-            message['parts'][at] = part
-        taken = [part['id']]
-    else:
-        raise ValueError(f'Unknown durable event type {kind}')
-    for id in taken:
-        tail = id.rsplit('_', 1)[-1]
-        if tail.isdigit():
-            counter[0] = max(counter[0], int(tail))
-
-
-def cleanup(session):
-    """As OpenCode 1.19.3 applies a revert waiting in the session at its next prompt, command or summarize
-    (`session/revert.ts` cleanup), here in the 1.19.3 mode and at 1.19.3's own `prompt_async` (2.x commits one instead,
-    `v2_commit`): the messages from its boundary on are deleted, each announced, and the revert is cleared; files are
-    left as they are."""
-    revert = sessions[session].get('revert')
-    if not revert:
-        return
-    stored = ordered(session)
-    index = next((i for i, m in enumerate(stored) if m['info']['id'] == revert['messageID']), -1)
-    remove = [] if index < 0 else stored[index + (1 if revert.get('partID') else 0):]
-    for message in remove:
-        with lock:
-            messages[session].pop(message['info']['id'], None)
-        publish('message.removed', {'sessionID': session, 'messageID': message['info']['id']})
-    if revert.get('partID') and index >= 0:
-        target = stored[index]
-        at = next((i for i, p in enumerate(target['parts']) if p['id'] == revert['partID']), -1)
-        if at >= 0:
-            gone, target['parts'] = target['parts'][at:], target['parts'][:at]
-            for part in gone:
-                publish('message.part.removed', {'sessionID': session, 'messageID': target['info']['id'], 'partID': part['id']})
-    sessions[session].pop('revert', None)
-    save()
-    publish('session.updated', {'sessionID': session, 'info': sessions[session]})
 
 
 def v2_commit(session):
@@ -1164,15 +1181,14 @@ STEP_INTERRUPTED = {'name': 'aborted', 'data': {'message': 'Step interrupted'}}
 
 def shut_down(session):
     """As 2.2.5 ends a run once a permission request of it is rejected or its form declined (probe p0), as the
-    interrupt ends one (the abort below) but as a shutdown: the requests left go with it, its answer is marked aborted
+    interrupt ends one (`interrupt`) but as a shutdown: the requests left go with it, its answer is marked aborted
     ("Step interrupted"), and the execution ends with `session.execution.interrupted`, reason `shutdown`, the session
-    idle and no idle message written. In the 1.19.3 mode, as the interrupt there: the aborted answer, then idle."""
+    idle and no idle message written."""
     end_requests(session)
     if session in statuses and modes['abortEvidence']:
         answer_prompt(session, error=STEP_INTERRUPTED)
-    if not v1():
-        with lock:
-            v2_of(session)['shutdown'] = True
+    with lock:
+        v2_of(session)['shutdown'] = True
     go_idle(session)
 
 
@@ -1256,8 +1272,7 @@ def control(name, body):
             go_idle(session)
         return v2_listed(session, mid)
     if name == 'ask':
-        # A permission request as 2.2.5 makes one (core/src/permission.ts), sent as 2.x sends it in every mode, the
-        # 1.19.3 mode too: Core reads only 2.x's requests.
+        # A permission request as 2.2.5 makes one (core/src/permission.ts), sent as 2.x sends it.
         request = {'id': new_id('per'), 'sessionID': body['sessionID'], 'action': body.get('action', 'shell'),
                    'resources': body.get('resources', ['ls']), 'save': body.get('save', ['ls *']),
                    'source': {'type': 'tool', 'id': 'call_1', 'messageID': 'msg_fixture'}}
@@ -1268,7 +1283,7 @@ def control(name, body):
         send('permission.asked', request)
         return request
     if name == 'question':
-        # A form as 2.2.5's question tool makes one (core/src/form.ts), in every mode; `kind` another form's.
+        # A form as 2.2.5's question tool makes one (core/src/form.ts); `kind` another form's.
         form = {'id': new_id('frm'), 'sessionID': body['sessionID'], 'title': body.get('title', 'Questions'),
                 'metadata': {'kind': body.get('kind', 'question'), 'tool': {'id': 'call_1', 'messageID': 'msg_fixture'}},
                 'fields': body.get('fields', [{'key': 'q0', 'type': 'string', 'custom': True, 'title': 'Pick',
@@ -1404,7 +1419,7 @@ def control(name, body):
             generation[0] += 1
         return True
     if name == 'revert':
-        # A revert waiting in the session, as OpenCode keeps one until its next prompt.
+        # A revert staged in the session, as 2.x keeps one until it is committed or cleared.
         sessions[body['sessionID']]['revert'] = {'messageID': body.get('messageID', 'msg_reverted')}
         save()
         return True
@@ -1431,7 +1446,7 @@ def control(name, body):
             write(rel, content)
         return True
     if name == 'goOn':
-        # A held revert or unrevert goes on, or a late one is answered.
+        # A held revert stage or import goes on, or a late stage is answered.
         reverting.pop(body['sessionID']).set()
         return True
     raise ValueError(name)
@@ -1630,8 +1645,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, control(parts[1], body or {}))
         authorized = self.headers.get('authorization') == AUTHORIZATION
         log({'method': method, 'path': url.path, 'query': parse_qs(url.query), 'body': body, 'authorized': authorized})
-        # The instance the request names (`?directory=`), as OpenCode routes one.
-        self.directory = parse_qs(url.query).get('directory', [''])[0]
         if not authorized:
             return self.reply(401)
         # A route that answers late (T-10), as a busy OpenCode might.
@@ -1660,13 +1673,6 @@ class Handler(BaseHTTPRequestHandler):
             if time.time() < modes['refuseEventsUntil']:
                 return self.reply(503, {'name': 'UnknownError', 'data': {'message': 'fixture: not now'}})
             return self.stream()
-        if key == ('GET', 'path'):
-            # `handlers/instance.ts` getPath: OpenCode's own folders and the instance's worktree and directory
-            # (mode `directory`: another one, as if the instance were another folder's).
-            return self.reply(200, {'home': HOME, 'state': STATE, 'config': CONFIG, 'worktree': str(WORK),
-                                    'directory': modes['directory'] or str(WORK)})
-        if key == ('GET', 'project', 'current'):
-            return self.reply(200, {'id': current_project[0], 'worktree': str(WORK), 'vcs': 'git'})
         if key == ('GET', 'api', 'location'):
             # 2.x's location (server/src/handlers/location.ts, T-61 slice 5): the folder asked for
             # (`location[directory]`), resolved, and the project held for it now (control `project`), whose directory
@@ -1679,10 +1685,14 @@ class Handler(BaseHTTPRequestHandler):
             # 2.x takes the session's folder from the body (server/src/handlers/session.ts).
             session = {'id': new_id('ses'), 'projectID': PROJECT, 'title': (body or {}).get('title', ''),
                        'directory': ((body or {}).get('location') or {}).get('directory', '')}
+            # 2.x's own info (`v2_info`): its folder the body's, else the server's own (process.cwd()).
+            now = int(time.time() * 1000)
+            session.update(directory=session['directory'] or str(WORK), cost=0, tokens=zero_tokens(),
+                           time={'created': now, 'updated': now})
             sessions[session['id']] = session
             save()
             publish('session.created', {'sessionID': session['id'], 'info': session})
-            return self.reply(200, {'data': session})
+            return self.reply(200, {'data': v2_info(session)})
         if key == ('GET', 'api', 'session', 'active'):
             # 2.x lists the sessions this process runs, each as running (server/src/handlers/session.ts); mode
             # `activeShape` `list` answers another shape than 2.x's.
@@ -1694,14 +1704,12 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(url.query)
             # A next page's cursor carries the list's filters, as 2.x's does (schema/src/session.ts).
             parent = query.get('parentID', [None])[0] or cursor_of(query).get('kept', {}).get('parentID')
-            listed = [s for s in sessions.values() if parent is None or s.get('parentID') == parent]
+            listed = [v2_info(s) for s in list(sessions.values()) if parent is None or s.get('parentID') == parent]
             return self.reply(*page(listed, query, {'parentID': parent}))
         if parts[:2] in (['api', 'integration'], ['api', 'credential']):
             return self.login(method, parts[1], parts[2:], body or {})
         if len(parts) >= 3 and parts[:2] == ['api', 'session']:
             return self.api_session(method, parts[2], parts[3:], parse_qs(url.query), body)
-        if key == ('GET', 'mcp') and v1():
-            return self.reply(200, mcp)
         if key == ('GET', 'api', 'mcp'):
             # Each server of the folder, its status only (2.2.5 core/src/mcp/index.ts `servers()`).
             location = parse_qs(url.query).get('location[directory]', [str(WORK)])[0]
@@ -1711,8 +1719,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'location': {'directory': location}, 'data': listed})
         if parts[:3] == ['api', 'experimental', 'mcp'] and len(parts) in (4, 5):
             return self.mcp_v2(method, parts[3], parts[4:], parse_qs(url.query), body)
-        if key == ('GET', 'config', 'providers'):
-            return self.reply(200, modes['providers'])
+        # 2.x's session transfer (T-61 slice 7).
+        if key == ('POST', 'api', 'experimental', 'session', 'import'):
+            return self.import_v2(body)
+        if method == 'GET' and len(parts) == 5 and parts[:3] == ['api', 'experimental', 'session'] and parts[4] == 'export':
+            return self.export_v2(parts[3])
         if key == ('GET', 'api', 'command'):
             # 2.x's own list (protocol/src/groups/command.ts): each command's name and description, nothing else of it.
             listed = [{'name': name, **({'description': c['description']} if c.get('description') else {})}
@@ -1722,20 +1733,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_models()})
         if key == ('GET', 'api', 'provider'):
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_providers()})
-        if key == ('GET', 'config'):
-            return self.reply(200, modes['config'])
-        if key == ('POST', 'mcp') and v1():
-            status = {'status': modes['mcp']}
-            if modes['mcp'] == 'failed':
-                status['error'] = 'fixture: connection refused'
-            mcp[body['name']] = status
-            return self.reply(200, {body['name']: status})
-        if key == ('POST', 'sync', 'history'):
-            return self.history(body)
-        if key == ('POST', 'sync', 'replay'):
-            return self.replay(body)
-        if len(parts) >= 2 and parts[0] == 'session':
-            return self.session(method, parts[1], parts[2:], body)
         if parts[:1] == ['api']:
             # An /api route 2.x does not have: an empty 404 (cli/src/services/web-ui.ts).
             return self.reply(404)
@@ -1753,28 +1750,23 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def api_session(self, method, session, rest, query, body=None):
-        # 2.x's own routes of one session (protocol/src/groups/session.ts, message.ts); what they hold keeps
-        # 1.19.3's shape here until their slices.
+        # 2.x's own routes of one session (protocol/src/groups/session.ts, message.ts).
         if session not in sessions:
             return self.reply(404, {'_tag': 'SessionNotFoundError', 'message': f'Session not found: {session}'})
         if (method, *rest) == ('GET',):
-            # 2.x reads a model without a variant as its "default" one (core/src/session/info.ts).
-            info = dict(sessions[session])
-            if info.get('model'):
-                info['model'] = {**info['model'], 'variant': info['model'].get('variant') or 'default'}
-            return self.reply(200, {'data': info})
+            return self.reply(200, {'data': v2_info(sessions[session])})
         if (method, *rest) == ('POST', 'prompt'):
             return self.prompt_v2(session, body or {})
         if (method, *rest) == ('POST', 'command'):
             return self.command_v2(session, body)
         if (method, *rest) == ('POST', 'compact'):
             return self.compact_v2(session, body)
-        # 2.x's revert routes (T-61 slice 6); 1.19.3 has none of them.
-        if (method, *rest) == ('POST', 'revert', 'stage') and not v1():
+        # 2.x's revert routes (T-61 slice 6).
+        if (method, *rest) == ('POST', 'revert', 'stage'):
             return self.stage_v2(session, body)
-        if (method, *rest) == ('POST', 'revert', 'commit') and not v1():
+        if (method, *rest) == ('POST', 'revert', 'commit'):
             return self.commit_v2(session)
-        if (method, *rest) == ('DELETE', 'revert') and not v1():
+        if (method, *rest) == ('DELETE', 'revert'):
             return self.clear_v2(session)
         if (method, *rest) == ('POST', 'model'):
             # 2.x's switchModel (T-32 slice 4a): the session's model for its next steps; 204.
@@ -1783,14 +1775,12 @@ class Handler(BaseHTTPRequestHandler):
             save()
             return self.reply(204)
         if (method, *rest) == ('POST', 'interrupt'):
-            # 2.x's interrupt: what 1.19.3's abort did, answered with whether a run was going on.
-            return self.session('POST', session, ['abort'], body, interrupt=True)
+            return self.interrupt(session)
         if method == 'GET' and len(rest) == 2 and rest[0] == 'message':
             # 2.x's one message, as its list holds it: once delivered (a message steered in waits in the inbox).
             if modes.get('failMessageReads'):
                 return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: message read failed'})
-            listed = list(messages.get(session, {}).values()) if v1() else v2_view(session)
-            found = next((m for m in listed if (m.get('info') or m).get('id') == rest[1]), None)
+            found = next((m for m in v2_view(session) if m.get('id') == rest[1]), None)
             between_reads(session)
             if found is None:
                 return self.reply(404, {'_tag': 'MessageNotFoundError', 'message': f'Message not found: {rest[1]}'})
@@ -1799,11 +1789,7 @@ class Handler(BaseHTTPRequestHandler):
             if modes['failListOnce']:
                 modes['failListOnce'] = False
                 return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: list read failed'})
-            if v1():
-                stored = sorted(messages.get(session, {}).values(), key=lambda m: m['info']['time']['created'])
-            else:
-                stored = v2_view(session)
-            return self.reply(*page(stored, query, {}))
+            return self.reply(*page(v2_view(session), query, {}))
         if (method, *rest) == ('GET', 'permission'):
             if modes['holdPermission']:
                 # Once: this read waits for `release`, after the reads before it in a whole
@@ -1823,64 +1809,46 @@ class Handler(BaseHTTPRequestHandler):
         if method == 'DELETE' and len(rest) == 2 and rest[0] == 'form':
             return self.form_cancel(session, rest[1], query)
         if (method, *rest) == ('GET', 'inbox'):
-            listed = [] if v1() else v2_inbox(session)
+            listed = v2_inbox(session)
             between_reads(session)
             return self.reply(200, {'data': listed})
         return self.reply(404)
 
-    def session(self, method, session, rest, body, interrupt=False):
-        if session not in sessions:
-            return self.missing(f'Session {session}')
-        if (method, *rest) == ('POST', 'prompt_async'):
-            return self.prompt(session, body)
-        if (method, *rest) == ('POST', 'revert'):
-            return self.revert(session, body)
-        if (method, *rest) == ('POST', 'unrevert'):
-            return self.unrevert(session)
-        if (method, *rest) == ('POST', 'fork'):
-            return self.fork(session, body)
-        if method == 'GET' and len(rest) == 2 and rest[0] == 'message':
-            if modes.get('failMessageReads'):
-                return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: message read failed'}})
-            found = messages.get(session, {}).get(rest[1])
-            return self.reply(200, found) if found else self.missing(f'Message {rest[1]}')
-        if (method, *rest) == ('POST', 'abort'):
-            # The run ends; its pending requests go with it (as 2.2.5's interrupt ends them: `end_requests`), and
-            # (as OpenCode does) its answer is marked aborted.
-            running = session in statuses
-            end_requests(session)
-            self.reply(200, {'interrupted': running} if interrupt else True)
-            aborted = ABORTED
+    def interrupt(self, session):
+        """2.x's interrupt, answered with whether a run was going on: the run ends; its pending requests go with it (as
+        2.2.5's interrupt ends them: `end_requests`), and (as OpenCode does) its answer is marked aborted."""
+        running = session in statuses
+        end_requests(session)
+        self.reply(200, {'interrupted': running})
+        aborted = ABORTED
+        with lock:
+            held = compacting.pop(session, None)
+        if held:
+            # As 2.x interrupts a compaction (core/src/session/compaction.ts): it fails as `aborted`, and its run
+            # ends as interrupted (`session.execution.interrupted`), with no aborted answer.
+            compaction_failed(session, held, 'aborted', 'fixture: interrupted')
             with lock:
-                held = compacting.pop(session, None)
-            if held:
-                # As 2.x interrupts a compaction (core/src/session/compaction.ts): it fails as `aborted`, and its run
-                # ends as interrupted (`session.execution.interrupted`), with no aborted answer.
-                compaction_failed(session, held, 'aborted', 'fixture: interrupted')
-                if not v1():
-                    with lock:
-                        v2_of(session)['error'] = aborted
-                go_idle(session)
-                return None
-            if running and modes['abortEvidence'] and modes['abortOrder'] == 'native':
-                # As OpenCode 1.19.3's processor halts an aborted run: the
-                # session error and idle first, the aborted answer only after
-                # its cleanup, then the runner's own idle.
-                publish('session.error', {'sessionID': session, 'error': aborted})
-                go_idle(session)
-                answer_prompt(session, error=aborted)
-                go_idle(session)
-                return None
-            if running and modes['abortEvidence'] and modes['abortOrder'] == 'late':
-                # Idle first, and the aborted answer after it, with no session error.
-                go_idle(session)
-                answer_prompt(session, error=aborted)
-                return None
-            if running and modes['abortEvidence']:
-                answer_prompt(session, error=aborted)
+                v2_of(session)['error'] = aborted
             go_idle(session)
             return None
-        return self.missing('/'.join(rest))
+        if running and modes['abortEvidence'] and modes['abortOrder'] == 'native':
+            # As OpenCode 1.19.3's processor halts an aborted run: the
+            # session error and idle first, the aborted answer only after
+            # its cleanup, then the runner's own idle.
+            publish('session.error', {'sessionID': session, 'error': aborted})
+            go_idle(session)
+            answer_prompt(session, error=aborted)
+            go_idle(session)
+            return None
+        if running and modes['abortEvidence'] and modes['abortOrder'] == 'late':
+            # Idle first, and the aborted answer after it, with no session error.
+            go_idle(session)
+            answer_prompt(session, error=aborted)
+            return None
+        if running and modes['abortEvidence']:
+            answer_prompt(session, error=aborted)
+        go_idle(session)
+        return None
 
     def login(self, method, group, rest, body):
         """2.x's integration and credential routes (protocol/src/groups/integration.ts, credential.ts; T-32 slice 4b).
@@ -1959,8 +1927,7 @@ class Handler(BaseHTTPRequestHandler):
         """As 2.x's prompt (protocol/src/groups/session.ts session.prompt, T-32 slice 4a): its text and files, each a
         `data:` URI, under its `id`; answered with the message as admitted, or a ConflictError (409) for an ID the
         session holds already. Its model is the session's, as switchModel made it. A revert staged in the session is
-        committed before it is admitted (`v2_commit`; applied, `cleanup`, in the 1.19.3 mode). The 1.19.3 prompt's modes
-        apply."""
+        committed before it is admitted (`v2_commit`). Mode `prompt` applies (`prompt`)."""
         files = []
         for f in body.get('files') or []:
             uri = f.get('uri') or ''
@@ -1968,7 +1935,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'fixture: a file here is a data: URI'})
             files.append({'type': 'file', 'mime': uri[5:].split(';', 1)[0], 'filename': f.get('name'), 'url': uri})
         message_id = body.get('id') or new_id('msg')
-        if message_id in messages.get(session, {}) or message_id in v2_of(session)['pending']:
+        if has_message(session, message_id) or message_id in v2_of(session)['pending']:
             return self.reply(409, {'_tag': 'ConflictError', 'message': f'Message already exists: {message_id}'})
         old = {'messageID': message_id, 'parts': [{'type': 'text', 'text': body.get('text', '')}, *files]}
         current = sessions[session].get('model')
@@ -1976,42 +1943,30 @@ class Handler(BaseHTTPRequestHandler):
             old['model'] = {'providerID': current.get('providerID'), 'modelID': current.get('id')}
             if current.get('variant'):
                 old['variant'] = current['variant']
-        return self.prompt(session, old, admitted=True)
+        return self.prompt(session, old)
 
-    def prompt(self, session, body, admitted=False):
-        # 2.x answers with the message admitted (`admitted`); 1.19.3's prompt_async, 204. Mode `renamed`: stored, and
-        # answered as another message's admission.
+    def prompt(self, session, body):
+        # A prompt `prompt_v2` read, its parts in the store's shape. 2.x answers with the message admitted. Mode
+        # `renamed`: stored, and answered as another message's admission.
         accepted = lambda: self.reply(200, {'data': {'id': new_id('msg') if mode == 'renamed' else message_id, 'sessionID': session,
                                                      'type': 'user', 'delivery': 'steer',
-                                                     'payload': {'text': text}, 'time': {'created': int(time.time() * 1000)}}}) \
-            if admitted else self.reply(204)
+                                                     'payload': {'text': text}, 'time': {'created': int(time.time() * 1000)}}})
         message_id = body.get('messageID') or new_id('msg')
         text = ''.join(p.get('text', '') for p in body.get('parts', []) if p.get('type') == 'text')
-        # As OpenCode 1.19.3's `FilePartInput` (`schema/src/v1/session.ts`):
-        # a `mime` and a `url` are required, anything else is refused (400).
         files = [p for p in body.get('parts', []) if p.get('type') == 'file']
-        if any(not isinstance(f.get('mime'), str) or not isinstance(f.get('url'), str) for f in files):
-            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: a file part needs mime and url'}})
-        files = [{k: f[k] for k in ('type', 'mime', 'filename', 'url') if k in f} for f in files]
         mode = modes['prompt']
         if mode != 'error':
-            # `prompt` applies a revert waiting in the session before its message (`session/prompt.ts`); 2.x's commits a
-            # staged one after its preparation, before it admits the message (2.2.5 core/src/session/session.ts).
-            if admitted and not v1():
-                v2_commit(session)
-            else:
-                cleanup(session)
+            # 2.x commits a staged revert after its preparation, before it admits the message (2.2.5
+            # core/src/session/session.ts).
+            v2_commit(session)
         model = body.get('model') or modes['defaultModel']
         if mode in ('store', 'renamed', 'store-unannounced'):
             # `store-unannounced`: admitted with no event Core sees (its stream missed it).
             admit(session, message_id, text, files, model=model, announce=mode != 'store-unannounced', answered=accepted)
             return None
         if mode == 'unstored':
-            # Answered, then storing failed; OpenCode's session.error names no message. 2.x says nothing of it.
+            # Answered, then storing failed: 2.x says nothing of it.
             accepted()
-            if v1():
-                publish('session.error', {'sessionID': session,
-                                          'error': {'name': 'UnknownError', 'data': {'message': 'fixture: not stored'}}})
             return None
         if mode == 'error':
             return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture failure'}})
@@ -2036,9 +1991,8 @@ class Handler(BaseHTTPRequestHandler):
         """As 2.x's command (2.2.5 protocol/src/groups/session.ts session.command, core/src/config/plugin/command.ts; T-61
         slice 3): `{name, text}` (`files`, `agents`, `skills`, `delivery` may come too), no message ID and no model; each
         request is kept in `commands_seen`. A name mode `config` has no command of: 404 CommandNotFoundError. A config
-        command's own `model` and `agent` become the session's (`select`), a staged revert is committed (`v2_commit`;
-        applied, `cleanup`, in the 1.19.3 mode), and its template, expanded with the text (`expand`), is admitted as a
-        prompt's message is (`admit`), under an ID
+        command's own `model` and `agent` become the session's (`select`), a staged revert is committed (`v2_commit`),
+        and its template, expanded with the text (`expand`), is admitted as a prompt's message is (`admit`), under an ID
         of the stand-in's own, with the session's model; answered 204 once admitted, the run going on as a prompt's. A
         `subtask` one starts a sub-agent session under this one instead (control `child`) and admits nothing here. Mode
         `command`: `run`; `fail` (500 CommandExecutionError, nothing done); `fail-after` (admitted, then that 500);
@@ -2074,10 +2028,7 @@ class Handler(BaseHTTPRequestHandler):
                               'announce': mode != 'unannounced'})
             return failed() if mode == 'fail-after' else self.reply(204)
         # 2.x runs a command as a prompt (core/src/config/plugin/command.ts), which commits a staged revert first.
-        if v1():
-            cleanup(session)
-        else:
-            v2_commit(session)
+        v2_commit(session)
         select(session, command)
         current = sessions[session].get('model')
         model = {'providerID': current.get('providerID'), 'modelID': current.get('id')} if current else modes['defaultModel']
@@ -2088,8 +2039,7 @@ class Handler(BaseHTTPRequestHandler):
     def compact_v2(self, session, body):
         """As 2.x's compaction (2.2.5 protocol/src/groups/session.ts session.compact, core/src/session/inbox.ts; T-61 slice
         4): `{id?, delivery?}` and no model (it runs on the session's, `compaction_model`); each request is kept in
-        `compacts_seen`. A staged revert is committed (`v2_commit`; applied, `cleanup`, in the 1.19.3 mode), then it is
-        admitted into the inbox at
+        `compacts_seen`. A staged revert is committed (`v2_commit`), then it is admitted into the inbox at
         once under its `id` (else a 2.x ID, `v2_message_id`), `delivery` by default `steer` while a run goes on, else
         `queue`: `session.inbox.enqueued`, answered 200 with the item, then run (`compact_run`), or once the run going
         on ends (`compact_later`). Its `id` again: the same item while it waits in the inbox, a ConflictError (409) once
@@ -2138,7 +2088,7 @@ class Handler(BaseHTTPRequestHandler):
             other = next((m for m in state['pending'] if m in state['compacts']), None)
         if same:
             return self.reply(200, {'data': v2_compact_item(session, mid)})
-        if mid in messages.get(session, {}):
+        if has_message(session, mid):
             return conflict()
         if other:
             return self.reply(200, {'data': v2_compact_item(session, other)})
@@ -2147,10 +2097,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'data': {'id': mid, 'sessionID': session, 'time': {'created': int(time.time() * 1000)},
                                              'type': 'compaction', 'payload': {}, 'delivery': delivery or 'queue'}})
         # 2.x commits a staged revert before it admits a compaction (2.2.5 core/src/session/session.ts `compact`).
-        if v1():
-            cleanup(session)
-        else:
-            v2_commit(session)
+        v2_commit(session)
         mid, running = mid or v2_message_id(), session in statuses
         delivery = delivery or ('steer' if running else 'queue')
         with lock:
@@ -2314,257 +2261,98 @@ class Handler(BaseHTTPRequestHandler):
         send('session.revert.cleared', {'sessionID': session})
         return self.reply(204)
 
-    def revert(self, session, body):
-        """As OpenCode 1.19.3's revert (`session/revert.ts`), refused while the session runs (409): the
-        boundary is the message asked for, or the user message before an answer asked for; none found
-        answers the session unchanged. A snapshot of the whole folder is taken (a revert already waiting
-        is restored first), each file a later patch names is checked out of its first such patch's
-        snapshot (kept if that fails and the snapshot lists it, deleted otherwise, as when it did not exist
-        or the snapshot is gone), and the revert is kept in the session with that snapshot.
-        Mode `revert`: `ok`, `files-fail` (every checkout taken as failed with the snapshot listing the
-        file: only logged, the answer the same), `refuse` (409 as when busy, nothing done), `error` (500,
-        nothing done), `drop` (done, then the
-        connection ends with no answer), `late` (done, answered only on `goOn`), `hold` (nothing done
-        until `goOn`), `conflict` (409 with another body, nothing done), `unmarked` (200 with the session
-        unchanged, nothing done, as when no message matches), `unmarked-files` (the files checked out,
-        then 200 with no revert kept), `encode-fail` (done, then 400 as OpenCode answers a response it
-        cannot encode: `BadRequest` of kind `Body`)."""
-        if statuses.get(session, {}).get('type') == 'busy':
-            return self.reply(409, busy(session))
-        mode = modes['revert']
-        if mode == 'refuse':
-            return self.reply(409, busy(session))
-        if mode == 'error':
-            return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: revert failed'}})
-        if mode == 'conflict':
-            return self.reply(409, {'_tag': 'ConflictError', 'message': 'fixture: not a busy session'})
-        if mode == 'unmarked':
-            return self.reply(200, sessions[session])
-        if mode == 'hold':
-            go_on = threading.Event()
-            reverting[session] = go_on
-            go_on.wait(60)
-        target, part = body.get('messageID'), body.get('partID')
-        last_user, revert, patches = None, None, []
-        for message in ordered(session):
-            if message['info']['role'] == 'user':
-                last_user = message['info']
-            remaining = []
-            for p in message['parts']:
-                if revert:
-                    if p['type'] == 'patch':
-                        patches.append(p)
-                    continue
-                if (message['info']['id'] == target and not part) or p['id'] == part:
-                    kept = part if any(r['type'] in ('text', 'tool') for r in remaining) else None
-                    revert = {'messageID': last_user['id'] if not kept and last_user else message['info']['id']}
-                    if kept:
-                        revert['partID'] = kept
-                remaining.append(p)
-        info = sessions[session]
-        if revert:
-            waiting = info.get('revert') or {}
-            snapshot = waiting.get('snapshot') or track()
-            if waiting.get('snapshot'):
-                restore(waiting['snapshot'])
-            seen, restored = set(), []
-            for p in patches:
-                for file in p['files']:
-                    if file in seen:
-                        continue
-                    seen.add(file)
-                    if mode == 'files-fail':
-                        log({'fixture': 'checkout failed, kept', 'file': os.path.relpath(file, WORK)})
-                        continue
-                    if revert_file(p['hash'], file) != 'kept':
-                        restored.append(os.path.relpath(file, WORK))
-            if mode == 'unmarked-files':
-                return self.reply(200, info)
-            if snapshot:
-                revert['snapshot'] = snapshot
-                revert['diff'] = git('diff', snapshot, check=False).stdout.decode(errors='replace')
-            info['revert'] = revert
-            info['summary'] = {'additions': 0, 'deletions': 0, 'files': len(restored)}
-            save()
-            publish('session.diff', {'sessionID': session, 'diff': [{'file': rel} for rel in restored]})
-            publish('session.updated', {'sessionID': session, 'info': info})
-        if mode == 'drop':
-            self.close_connection = True
-            return None
-        if mode == 'encode-fail':
-            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: the answer could not be encoded', 'kind': 'Body'}})
-        if mode == 'late':
-            go_on = threading.Event()
-            reverting[session] = go_on
-            go_on.wait(60)
-        return self.reply(200, info)
-
-    def fork(self, session, body):
-        """As OpenCode 1.19.3's `Session.fork` (`session/session.ts`, `handlers/session.ts`): a new session in
-        the instance the request names, holding a copy of every message before `messageID` under new IDs, each
-        part under a new ID, an answer's `parentID` mapped to its copied parent (kept as it was if that is not
-        copied), a compaction part's `tail_start_id` mapped (dropped if not copied). Nothing is checked: a
-        `messageID` the session does not hold copies every message, and a busy session or a waiting revert is
-        copied as it is. The new session has no parent, agent, model, permission or revert. Modes (`fork`):
-        `lost` (done, then no answer), `fail` (the session and its first message written, then a 500),
-        `unmapped` (the first answer keeps its old `parentID`), `hold` (held until `goOn`, then done)."""
-        cutoff = (body or {}).get('messageID')
-        if cutoff is not None and not (isinstance(cutoff, str) and cutoff.startswith('msg')):
-            return self.reply(400, {'name': 'BadRequest', 'data': {}})
-        mode = modes['fork']
-        if mode == 'hold':
-            # Held before anything is written, until the test lets it go (`goOn`).
-            waiter = threading.Event()
-            with lock:
-                reverting[session] = waiter
-            waiter.wait(30)
-        original = sessions[session]
-        now = int(time.time() * 1000)
-        info = {'id': new_id('ses'), 'projectID': PROJECT, 'directory': self.directory,
-                'title': forked_title(original.get('title', '')), 'time': {'created': now, 'updated': now}}
-        for name in ('workspaceID', 'metadata'):
-            if original.get(name) is not None:
-                info[name] = json.loads(json.dumps(original[name]))
-        with lock:
-            sessions[info['id']] = info
-        save()
-        publish('session.created', {'sessionID': info['id'], 'info': info})
-        stored = ordered(session)
-        target = next((i for i, m in enumerate(stored) if m['info']['id'] == cutoff), len(stored))
-        ids, unmapped = {}, mode == 'unmapped'
-        for index, message in enumerate(stored[:target]):
-            copied = json.loads(json.dumps(message['info']))
-            copied.update({'id': new_id('msg'), 'sessionID': info['id']})
-            ids[message['info']['id']] = copied['id']
-            parent = message['info'].get('parentID')
-            if copied['role'] == 'assistant' and parent in ids:
-                if unmapped:
-                    unmapped = False
-                else:
-                    copied['parentID'] = ids[parent]
-            parts = []
-            for part in message['parts']:
-                part = json.loads(json.dumps(part))
-                part.update({'id': new_id('prt'), 'messageID': copied['id'], 'sessionID': info['id']})
-                if part.get('type') == 'compaction' and part.get('tail_start_id'):
-                    if part['tail_start_id'] in ids:
-                        part['tail_start_id'] = ids[part['tail_start_id']]
-                    else:
-                        del part['tail_start_id']
-                parts.append(part)
-            with lock:
-                messages.setdefault(info['id'], {})[copied['id']] = {'info': copied, 'parts': parts}
-            save()
-            publish('message.updated', {'sessionID': info['id'], 'info': copied})
-            for part in parts:
-                publish('message.part.updated', {'sessionID': info['id'], 'part': part, 'time': now})
-            if mode == 'fail':
-                return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: fork failed part way'}})
-        if mode == 'lost':
-            self.close_connection = True
-            return None
-        return self.reply(200, info)
-
-    def history(self, body):
-        """As OpenCode 1.19.3's `/sync/history` (`handlers/sync.ts`): every durable event in the database, by
-        sequence number across aggregates, but those at or before the sequence the body gives for their
-        aggregate. Modes (`history`): `fail` (a 500), `{'noise': n}` (also an event of another session holding
-        n bytes)."""
-        known = body or {}
-        if not isinstance(known, dict) or any(not isinstance(v, int) or v < 0 for v in known.values()):
-            return self.reply(400, {'name': 'BadRequest', 'data': {}})
-        mode = modes['history']
+    def import_v2(self, body):
+        """As 2.x imports a session (2.2.5 protocol/src/groups/session.ts session.import, server/src/handlers/session.ts,
+        core/src/session/transfer.ts; T-61 slice 7): `{info, messages, location?}`, all or nothing. A body 2.x can't
+        decode (`import_refused`): 400 InvalidRequestError, kind `Payload`. A session stored under `info.id` already: 409
+        ConflictError; a `parentID` not stored: 404 SessionNotFoundError; nothing done. Else the session is stored under
+        `info.id` in the body's `location`, else the server's folder, for the project held now (control `project`; its
+        `projectID` and `location` are not taken), with its `title`, `agent`, `model`, `metadata`, `permissions`,
+        `parentID`, `cost`, `tokens`, `time.created`, `time.idle` (and `outcome` only with it; `busy` and `viewed` no later
+        than it), `time.archived`, and `time.updated` now; nothing else of it (`fork`, `revert`). Only its settled messages
+        are kept (`settled`), as they were sent, in order (`v2_view`); one `session.created` is sent; 200 {data: the
+        session as `GET /api/session/:id` answers it}. Mode `import`: `ok`; `lost` (done, then the connection ends with no
+        answer); `hold` (nothing done until `goOn` with `info.id`, then as `ok`); `fail` (500 UnknownError, nothing done);
+        `tamper` (done with its first message kept changed: a user's text, else a `tampered` key, then 200, as a target
+        that does not keep what it was sent); `conflict-other` (another session, `other` and with no messages, stored under
+        `info.id`, as if held before, then the 409)."""
+        why = import_refused(body)
+        if why:
+            return self.reply(400, {'_tag': 'InvalidRequestError', 'kind': 'Payload', 'message': f'fixture: {why}'})
+        mode = modes['import']
+        if mode not in IMPORT_MODES:
+            return self.reply(500, {'_tag': 'UnknownError', 'message': f'fixture: no import mode {mode}'})
         if mode == 'fail':
-            return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: history failed'}})
+            return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: the import failed', 'ref': 'err_fixture'})
+        info, times = body['info'], body['info']['time']
+        sid = info['id']
+        if mode == 'hold':
+            go_on = threading.Event()
+            reverting[sid] = go_on
+            go_on.wait(60)
+        directory = (body.get('location') or {}).get('directory') or str(WORK)
+        kept = [json.loads(json.dumps(m)) for m in body['messages'] if settled(m)]
+        if len({m['id'] for m in kept}) != len(kept):
+            # 2.x's insert of a message ID twice dies (core/src/session/transfer.ts), and nothing is written.
+            return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: a message ID repeats', 'ref': 'err_fixture'})
+        if mode == 'tamper' and kept:
+            if kept[0]['type'] == 'user':
+                kept[0]['text'] = str(kept[0].get('text', '')) + ' (tampered)'
+            else:
+                kept[0]['tampered'] = True
+        now = int(time.time() * 1000)
+        stored = {'id': sid, 'projectID': current_project[0], 'directory': directory, 'cost': info['cost'],
+                  'tokens': json.loads(json.dumps(info['tokens'])), 'time': {'created': times['created'], 'updated': now}}
+        if directory.startswith(str(WORK) + os.sep):
+            # Its folder relative to the project's (2.x's `subpath`); the project's own folder has none.
+            stored['subpath'] = os.path.relpath(directory, WORK)
+        for name in ('title', 'agent', 'model', 'metadata', 'permissions', 'parentID'):
+            if info.get(name) is not None:
+                stored[name] = json.loads(json.dumps(info[name]))
+        if times.get('idle') is not None:
+            stored['time']['idle'] = times['idle']
+            for name in ('busy', 'viewed'):
+                if times.get(name) is not None:
+                    stored['time'][name] = min(times['idle'], times[name])
+            if info.get('outcome') is not None:
+                stored['outcome'] = info['outcome']
+        if times.get('archived') is not None:
+            stored['time']['archived'] = times['archived']
+        conflict = lambda: self.reply(409, {'_tag': 'ConflictError', 'message': f'Session already exists: {sid}', 'resource': sid})
         with lock:
-            rows = [r for r in durable if not (r['aggregate_id'] in known and r['seq'] <= known[r['aggregate_id']])]
-        if isinstance(mode, dict) and mode.get('noise'):
-            rows = [{'id': 'evt_noise', 'aggregate_id': 'ses_noise', 'seq': 0, 'type': 'session.updated.1',
-                     'data': {'sessionID': 'ses_noise', 'info': {'title': 'n' * mode['noise']}}}] + rows
-        return self.reply(200, sorted(rows, key=lambda r: r['seq']))
-
-    def replay(self, body):
-        """As OpenCode 1.19.3's `/sync/replay` (`handlers/sync.ts`, `core/src/event.ts` replayAll): one
-        aggregate's events, numbered on from the first with no gap; each committed on its own, projected first.
-        One already stored at its number is passed over if it is the same event (ID, type, data); otherwise
-        the replay ends there ("diverged"), as does a gap after what is stored or an event ID stored before.
-        Modes (`replay`): `{'failAfter': k}` (k events committed, then a 500), `lost` (all committed, then no
-        answer), `tamper` (each text part kept with other text, as a projection that went wrong)."""
-        events = (body or {}).get('events')
-        if not isinstance((body or {}).get('directory'), str) or not isinstance(events, list) or not events:
-            return self.reply(400, {'name': 'BadRequest', 'data': {}})
-        def fail(message):
-            return self.reply(500, {'name': 'UnknownError', 'data': {'message': message}})
-        source = events[0]['aggregateID']
-        if any(e['aggregateID'] != source for e in events):
-            return fail('Replay events must belong to the same aggregate')
-        if any(e['seq'] != events[0]['seq'] + i for i, e in enumerate(events)):
-            return fail('Replay sequence mismatch')
-        mode = modes['replay']
-        for index, event in enumerate(events):
-            if isinstance(mode, dict) and index == mode.get('failAfter'):
-                return fail('fixture: replay failed part way')
-            refused = None
-            with lock:
-                latest = aggregates.get(source, -1)
-                if event['seq'] <= latest:
-                    stored = next((r for r in durable if r['aggregate_id'] == source and r['seq'] == event['seq']), None)
-                    if not (stored and stored['id'] == event['id'] and stored['type'] == event['type']
-                            and stored['data'] == event['data']):
-                        refused = f"Replay diverged at aggregate {source} sequence {event['seq']}"
-                elif event['seq'] != latest + 1:
-                    refused = f"Sequence mismatch for aggregate {source}: expected {latest + 1}, got {event['seq']}"
-                elif any(r['id'] == event['id'] for r in durable):
-                    refused = f"Event {event['id']} already exists"
-                else:
-                    try:
-                        if mode == 'tamper' and event['type'] == 'message.part.updated.1' and event['data']['part'].get('type') == 'text':
-                            event = json.loads(json.dumps(event))
-                            event['data']['part']['text'] = 'tampered'
-                        project(event)
-                    except ValueError as error:
-                        refused = str(error)
-                    else:
-                        aggregates[source] = event['seq']
-                        durable.append({'id': event['id'], 'aggregate_id': source, 'seq': event['seq'],
-                                        'type': event['type'], 'data': event['data']})
-            if refused:
-                return fail(refused)
-            save()
+            if sid in sessions:
+                held = 'conflict'
+            elif info.get('parentID') is not None and info['parentID'] not in sessions:
+                held = 'parent'
+            elif mode == 'conflict-other':
+                sessions[sid] = {'id': sid, 'projectID': current_project[0], 'directory': directory, 'title': 'other', 'cost': 0,
+                                 'tokens': zero_tokens(), 'time': {'created': now, 'updated': now}}
+                held = 'other'
+            else:
+                sessions[sid] = stored
+                imported[sid] = kept
+                held = None
+        if held == 'conflict':
+            return conflict()
+        if held == 'parent':
+            parent = info['parentID']
+            return self.reply(404, {'_tag': 'SessionNotFoundError', 'sessionID': parent, 'message': f'Session not found: {parent}'})
+        save()
+        if held == 'other':
+            return conflict()
+        publish('session.created', {'sessionID': sid, 'info': stored})
         if mode == 'lost':
             self.close_connection = True
             return None
-        return self.reply(200, {'sessionID': source})
+        return self.reply(200, {'data': v2_info(stored)})
 
-    def unrevert(self, session):
-        """As OpenCode 1.19.3's unrevert, refused while the session runs (409): the whole folder goes back
-        to the revert's snapshot (every file it holds written again, none deleted) and the revert is cleared.
-        Mode `unrevert`: `ok`, `error`, `drop`, `late`, `hold`, as for a revert."""
-        if statuses.get(session, {}).get('type') == 'busy':
-            return self.reply(409, busy(session))
-        mode = modes['unrevert']
-        if mode == 'error':
-            return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: unrevert failed'}})
-        if mode == 'hold':
-            go_on = threading.Event()
-            reverting[session] = go_on
-            go_on.wait(60)
-        info = sessions[session]
-        revert = info.get('revert')
-        if revert:
-            if revert.get('snapshot'):
-                restore(revert['snapshot'])
-            info.pop('revert', None)
-            save()
-            publish('session.updated', {'sessionID': session, 'info': info})
-        if mode == 'drop':
-            self.close_connection = True
-            return None
-        if mode == 'late':
-            go_on = threading.Event()
-            reverting[session] = go_on
-            go_on.wait(60)
-        return self.reply(200, info)
+    def export_v2(self, session):
+        """As 2.x exports a session (2.2.5 protocol/src/groups/session.ts session.export, core/src/session/transfer.ts;
+        T-61 slice 7): 200 {data: {info, messages}}, its info as `GET /api/session/:id` answers it and its settled messages
+        (`settled`), oldest first; 404 SessionNotFoundError for one not stored. `sanitize` is not mirrored."""
+        if session not in sessions:
+            return self.reply(404, {'_tag': 'SessionNotFoundError', 'sessionID': session, 'message': f'Session not found: {session}'})
+        return self.reply(200, {'data': {'info': v2_info(sessions[session]), 'messages': [m for m in v2_view(session) if settled(m)]}})
 
     def permission_reply(self, session, request_id, body):
         """2.x's answer to a permission request (2.2.5 core/src/permission.ts): `decision` `once` or `reject`, 204. One

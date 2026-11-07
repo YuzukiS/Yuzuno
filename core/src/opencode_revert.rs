@@ -254,6 +254,10 @@ impl Workspace {
         let cwd = d.agent.cwd.clone();
         let folder = tokio::task::spawn_blocking(move || std::fs::canonicalize(cwd)).await?.context("这个 Agent 的目录无法读取；没有预览回退")?
             .to_str().context("这个 Agent 的目录不是 UTF-8；没有预览回退")?.to_owned();
+        // A Turn a fork copied in, with every one after it (copies come first): its files' snapshots are in the
+        // source Agent's store, not this one's (T-61 slice 7, D-32).
+        ensure!(d.turns[index].get("_yuzunoCopiedFrom").is_none(),
+            "这个 Turn 是 fork 时从原 Agent 复制来的：它改动文件时的快照在原 Agent 的 OpenCode 里，不在这个 Agent 的，不能回退到它之前；没有预览回退");
         // The Turn's own message: its ID, or, for a command, the message 2.x admitted for it (T-61 slice 3).
         let boundary = d.turns[index]["_opencodeCommand"]["native"].as_str().unwrap_or(turn).to_owned();
         let location = c.server.location(&folder).await.context(unread)?;
