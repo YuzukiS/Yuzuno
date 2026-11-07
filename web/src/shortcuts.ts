@@ -146,7 +146,11 @@ export function shortcutGroups({ modifier, sendKey, touch, desktopApp, keys = de
     {
       title: t.home,
       shortcuts: [
-        { keys: [modifier, "Return"], action: t.reply, source: "home/CardReply.tsx, home/AskReply.tsx" },
+        // A reply from Home takes the composer's Return keys (YN-3, device-preferences.ts returnKey).
+        send
+          ? { keys: ["Return"], action: t.reply, source: "home/CardReply.tsx, home/AskReply.tsx, device-preferences.ts" }
+          : { keys: ["Return"], action: t.newLine, source: "home/CardReply.tsx, home/AskReply.tsx, device-preferences.ts" },
+        { keys: [modifier, "Return"], action: t.reply, source: "home/CardReply.tsx, home/AskReply.tsx, device-preferences.ts" },
         { keys: ["Esc"], action: t.closeReply, source: "home/CardReply.tsx" },
       ],
     },
