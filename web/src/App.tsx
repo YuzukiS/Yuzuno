@@ -3325,7 +3325,10 @@ export function App() {
             title={core.description}
             data-core-status={core.status}
           >
-            <span />
+            {/* The dot is named too: the dot rule once matched every span in
+                here, the label included, which drew it as a second 5px dot
+                with its words wrapped over the icons (YN-17). */}
+            <span className="connection-dot" />
             {/* Named, so a screen too short for the words can keep the dot
                 and its title (T-15 V5). */}
             <span className="connection-label">{core.label}</span>

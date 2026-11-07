@@ -283,14 +283,21 @@ p {
   color: #989c8d;
   font-size: calc(10px + var(--font-adjust, 3px));
 }
-.connection > span {
+/* The dot alone: `.connection > span` also matched the label once it became
+   a span of its own (#459), and drew it as a second dot (YN-17). */
+.connection-dot {
+  flex: none;
   width: 5px;
   height: 5px;
   border-radius: 50%;
   background: #a9aa9d;
 }
-.connection.connected > span {
+.connection.connected .connection-dot {
   background: #7b9671;
+}
+/* The words stay on one line beside the dot, never a word to a line. */
+.connection-label {
+  white-space: nowrap;
 }
 .icon-button {
   display: inline-flex;
