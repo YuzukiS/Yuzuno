@@ -2396,7 +2396,7 @@ export function App() {
   /** Home links into a conversation (or Settings › Machines) and leads back. */
   function openFromHome(target: HomeTarget) {
     if (target.kind === "machine") {
-      openSettingsPage("machines");
+      openSettingsPage("machines", target.machineId);
       return;
     }
     const owner = workspace?.agents.find((a) => a.id === target.agentId);
@@ -4745,11 +4745,12 @@ export function App() {
               onCreated={(project) => setNotice(shell.projectReady(project.name))}
             />
           ),
-          machines: (open) => (
+          machines: (open, request) => (
             <MachinesPage
-              inline
+              key={request?.n ?? 0}
               open={open}
-              onOpenChange={(open) => { if (!open) setUpdatesOpen(false); }}
+              initialMachineId={request?.sub ?? null}
+              initialBlock={request?.block}
               agents={workspace?.agents || []}
               projects={projects}
               revision={machinesRevision}

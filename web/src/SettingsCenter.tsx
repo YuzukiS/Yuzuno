@@ -6,7 +6,7 @@ import {
 import type { Agent, Project } from "./types";
 import { langTag, strings, TranslatedPart, useLanguage, useStrings } from "./i18n";
 import { findSettings, localizedEntry, translatedEditors, type SettingEntry, type SettingsDestination, type SettingsEditor } from "./settings-catalog";
-import { groupLabel, pageLabel, pageOfEditor, pageOfEntry, settingsGroups, settingsPages, type PageEditor, type SettingsPage } from "./settings-pages";
+import { groupLabel, legacyEditors, pageLabel, pageOfEditor, pageOfEntry, settingsGroups, settingsPages, type PageEditor, type SettingsPage } from "./settings-pages";
 import { usePhone } from "./phone-layout";
 import "./settings-center.css";
 
@@ -19,11 +19,11 @@ export type SettingsNavigation = {
 /** Settings opened at a page from elsewhere: a page (and within it a
  * project or machine, `sub`), or the editor an older caller names. Each
  * nonce opens it once. */
-export type SettingsOpenAt = { page?: SettingsPage; sub?: string; editor?: PageEditor; nonce: number };
+export type SettingsOpenAt = { page?: SettingsPage; sub?: string; block?: string; editor?: PageEditor; nonce: number };
 /** The latest request to open a page at something in it: `sub` is a
  * project or machine id, or "new". Each request has its own `n`, so a page
  * starts anew for a request and keeps its state across tab changes. */
-export type SettingsRequest = { sub?: string; n: number };
+export type SettingsRequest = { sub?: string; block?: string; n: number };
 const pageIcons: Record<SettingsPage, LucideIcon> = {
   appearance: Palette, typing: Send, language: Globe, shortcuts: Type, notifications: Bell, transfer: HardDrive,
   projects: Folder, machines: Server, agents: Bot, executors: Users, home: House, phone: Monitor,
@@ -94,6 +94,12 @@ const text = strings({
 });
 
 const editorsOf = (page: SettingsPage) => settingsPages.find((item) => item.id === page)!.editors;
+/** An editor as a page shows it: one an older caller names that is now part
+ * of a page (the Job budgets) is that page's first editor, at its `sub`. */
+function resolve(editor: PageEditor, sub?: string, block?: string): { editor: PageEditor; sub?: string; block?: string } {
+  const legacy = legacyEditors[editor as SettingsEditor];
+  return legacy ? { editor: editorsOf(legacy.page)[0], sub: sub ?? legacy.sub, block: block ?? legacy.block } : { editor, sub, block };
+}
 /** Whether this version shows an editor in the interface language (T-189). */
 const translated = (id: PageEditor) => id === "projects" || id === "machines" || translatedEditors.includes(id as SettingsEditor);
 
@@ -114,15 +120,16 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   const [page, setPage] = useState<SettingsPage>(initial);
   // A request Settings is opened with is its page's from the first render,
   // so that page is built once, at what was asked for.
+  const [opening] = useState(() => openAt ? resolve(openAt.editor ?? editorsOf(initial)[0], openAt.sub, openAt.block) : null);
   const [requests, setRequests] = useState<Partial<Record<SettingsPage, SettingsRequest>>>(() =>
-    openAt ? { [initial]: { sub: openAt.sub, n: 1 } } : {});
+    opening ? { [initial]: { sub: opening.sub, block: opening.block, n: 1 } } : {});
   const applied = useRef(openAt?.nonce);
   // A phone starts at the list of pages; a page has Back to it.
   const [root, setRoot] = useState(phone && !openAt);
   const [query, setQuery] = useState("");
   const [visited, setVisited] = useState<PageEditor[]>(() => [...editorsOf(initial)]);
-  const [focusEditor, setFocusEditor] = useState<{ editor: PageEditor; n: number } | null>(() =>
-    openAt ? { editor: openAt.editor ?? editorsOf(initial)[0], n: 1 } : null);
+  const [focusEditor, setFocusEditor] = useState<{ editor: PageEditor; block?: string; n: number } | null>(() =>
+    opening ? { editor: opening.editor, block: opening.block, n: 1 } : null);
   const content = useRef<HTMLDivElement>(null);
   const language = useLanguage();
   const t = text(language);
@@ -152,12 +159,13 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   }
   /** Shows an editor's page, as a new request for it, and moves focus to
    * that editor. */
-  function openEditor(editor: PageEditor, sub?: string) {
+  function openEditor(named: PageEditor, asked?: string, askedBlock?: string) {
+    const { editor, sub, block } = resolve(named, asked, askedBlock);
     const next = pageOfEditor(editor);
     setQuery("");
     show(next);
-    setRequests((old) => ({ ...old, [next]: { sub, n: (old[next]?.n ?? 0) + 1 } }));
-    setFocusEditor((old) => ({ editor, n: (old?.n ?? 0) + 1 }));
+    setRequests((old) => ({ ...old, [next]: { sub, block, n: (old[next]?.n ?? 0) + 1 } }));
+    setFocusEditor((old) => ({ editor, block, n: (old?.n ?? 0) + 1 }));
   }
   function open(entry: SettingEntry, objectId?: string) {
     const target = entry.target;
@@ -171,7 +179,7 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
     if (!openAt || openAt.nonce === applied.current) return;
     applied.current = openAt.nonce;
     const editor = openAt.editor ?? (openAt.page ? editorsOf(openAt.page)[0] : undefined);
-    if (editor) openEditor(editor, openAt.sub);
+    if (editor) openEditor(editor, openAt.sub, openAt.block);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openAt?.nonce]);
   // Opened together with its dialog (openAt), this comes after the dialog's
@@ -180,7 +188,9 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   // Edit in Settings, T-55), so nothing comes after this.
   useEffect(() => {
     if (!focusEditor) return;
-    const target = document.getElementById(`settings-editor-${focusEditor.editor}`);
+    // A block asked for (the Core host's Job budget) when its page shows it.
+    const target = (focusEditor.block && document.getElementById(`settings-block-${focusEditor.block}`))
+      || document.getElementById(`settings-editor-${focusEditor.editor}`);
     target?.focus();
     target?.scrollIntoView?.({ block: "start" });
   }, [focusEditor]);

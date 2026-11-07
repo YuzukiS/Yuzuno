@@ -30,8 +30,8 @@ export const settingsPages: readonly { id: SettingsPage; group: SettingsGroup; l
   { id: "notifications", group: "device", label: { en: "Notifications", zh: "通知" }, editors: ["notifications"] },
   { id: "transfer", group: "device", label: { en: "Move to another device", zh: "迁移到其他设备" }, editors: ["transfer"] },
   { id: "projects", group: "workspace", label: { en: "Projects", zh: "项目" }, editors: ["projects"] },
-  // Until each machine's page carries its own (S3), the Job budgets follow the machines.
-  { id: "machines", group: "workspace", label: { en: "Machines", zh: "机器" }, editors: ["machines", "jobs-budget", "jobs-remote"] },
+  // Each machine's page has its Job settings (S3): the Core host's budget on its own page.
+  { id: "machines", group: "workspace", label: { en: "Machines", zh: "机器" }, editors: ["machines"] },
   { id: "agents", group: "workspace", label: { en: "Agent defaults", zh: "Agent 默认" }, editors: ["agent-defaults", "auto-continue", "review"] },
   { id: "executors", group: "workspace", label: { en: "Executors", zh: "执行者" }, editors: ["executor-templates"] },
   { id: "home", group: "workspace", label: { en: "Home", zh: "主页" }, editors: ["home"] },
@@ -44,9 +44,16 @@ export const settingsPages: readonly { id: SettingsPage; group: SettingsGroup; l
   { id: "about", group: "about", label: { en: "About & help", zh: "关于与帮助" }, editors: ["about"] },
 ];
 
+/** Editors older callers still name that are now part of a page: the Job
+ * budgets are each machine's (YN-8 S3), the Core host's on its own page. */
+export const legacyEditors: Partial<Record<SettingsEditor, { page: SettingsPage; sub?: string; block?: string }>> = {
+  "jobs-budget": { page: "machines", sub: "local", block: "jobs" },
+  "jobs-remote": { page: "machines" },
+};
 /** The page an editor is on. */
 export function pageOfEditor(editor: PageEditor): SettingsPage {
-  return settingsPages.find((page) => page.editors.includes(editor))!.id;
+  const legacy = legacyEditors[editor as SettingsEditor];
+  return legacy ? legacy.page : settingsPages.find((page) => page.editors.includes(editor))!.id;
 }
 /** A catalog entry's page, or null for one edited elsewhere (an Agent's own
  * settings, accounts): search lists those under Elsewhere. */

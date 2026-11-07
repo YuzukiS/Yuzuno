@@ -14,6 +14,10 @@ assert.notEqual(dist, resolve("dist"));
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT || "../target/ui-refine-6-browser");
 await mkdir(output, { recursive: true });
 const report = { checks: [], errors: [], mutations: [], unexpected: [] };
+// The built-in New Agent defaults, nothing saved.
+const builtIn = { harness: "codex", codexPermissionPreset: null, claudePermissionMode: "default", codexModel: null, codexReasoningEffort: null, claudeModel: null };
+const agentDefaults = { saved: {}, builtIn, modelAppliesTo: "Codex Agents created on the Core host.",
+  effective: Object.fromEntries(Object.entries(builtIn).map(([key, value]) => [key, { value, source: "builtin" }])) };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -101,6 +105,8 @@ try {
       "/api/jobs": { jobs, liveJobs: [jobs[0]], hasMore: false, nextBefore: null },
       "/api/jobs/live": noLiveJobs, "/api/ci": { runs, subscriptions: [], hasMore: false, nextBefore: null }, "/api/reviews": noReviews,
       "/api/catchup": { items: [], generatedAt: "", source: "records", coverage: { fromSeq: 0, toSeq: 0 } },
+      // Settings › Agent defaults (YN-8) shows the New Agent defaults with its other editors.
+      "/api/agent-defaults": agentDefaults,
     }[path];
     if (json) return route.fulfill({ json });
     if (path.startsWith("/api/")) {
@@ -161,7 +167,9 @@ try {
   await settings.locator('input[name="appearance-dock-jobs"]').fill("2");
   await settings.locator('input[name="appearance-dock-actions"]').fill("0");
   // Local jobs, GitHub Actions, PR reviews (T-25, two until chosen), Sub-agents.
-  assert.deepEqual(await dock.locator("output").allTextContents(), ["2", "Hidden", "2", "5"]);
+  // Slider A (YN-8): each value beside its slider, typeable; 0 also says Hidden.
+  assert.deepEqual(await dock.locator(".settings-slider-value input").evaluateAll((inputs) => inputs.map((input) => input.value)), ["2", "0", "2", "5"]);
+  assert.deepEqual(await dock.locator("output").allTextContents(), ["", "Hidden", "", ""]);
   await shot("settings-dock-limits.png");
   await page.keyboard.press("Escape");
   await settings.waitFor({ state: "detached" });
@@ -212,19 +220,29 @@ try {
   await dialog.waitFor({ state: "detached" });
   check("Agent settings chooses model, reasoning effort and permissions with chips");
 
-  // Machines: add, edit and remove SSH machines in place.
+  // Machines (Settings › Machines, YN-8): the list, a page each; add, edit
+  // and remove SSH machines there.
+  const machine = async (id) => {
+    const back = dialog.locator(".settings-machines .settings-crumb");
+    if (await back.count()) await back.click();
+    await dialog.locator(`[data-machine-row="${id}"]`).click();
+    await dialog.locator(`article[data-machine-id="${id}"]`).waitFor();
+  };
   await page.locator(".workspace-scope").click();
   await page.getByRole("menuitem", { name: "Machines…" }).click();
-  await dialog.locator('[data-machine-id="mini"]').waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "Edit Core host" }).count(), 0);
+  await dialog.locator('[data-machine-row="mini"]').waitFor();
   await shot("machines.png");
+  await machine("local");
+  assert.equal(await dialog.getByRole("button", { name: "Edit Core host" }).count(), 0);
+  await dialog.locator(".settings-machines .settings-crumb").click();
   await dialog.getByRole("button", { name: "Add SSH machine" }).click();
   await dialog.getByLabel("Machine name").fill("Studio");
   await dialog.getByLabel("SSH destination").fill("me@studio");
   await dialog.getByLabel("Default working folder").fill("/Users/me/studio");
   await shot("machines-add.png");
   await dialog.getByRole("button", { name: "Save machine" }).click();
-  await dialog.locator('[data-machine-id="studio"]').waitFor();
+  await dialog.locator('article[data-machine-id="studio"]').waitFor();
+  await machine("mini");
   await dialog.getByRole("button", { name: "Edit Mac mini" }).click();
   assert.equal(await dialog.getByLabel("SSH destination").inputValue(), "me@mac-mini");
   await dialog.getByLabel("Machine name").fill("Mac mini (office)");
@@ -238,11 +256,12 @@ try {
   await refusal.scrollIntoViewIfNeeded();
   await shot("machines-remove-in-use.png");
   await refusal.getByRole("button", { name: "OK" }).click();
+  await machine("studio");
   await dialog.getByRole("button", { name: "Remove Studio" }).click();
   await dialog.locator('[data-machine-id="studio"] .machine-remove').scrollIntoViewIfNeeded();
   await shot("machines-remove.png");
   await dialog.getByRole("button", { name: "Remove machine" }).click();
-  await dialog.locator('[data-machine-id="studio"]').waitFor({ state: "detached" });
+  await dialog.locator('article[data-machine-id="studio"]').waitFor({ state: "detached" });
   const changes = report.mutations.filter((m) => m.path.startsWith("/api/machines")).map((m) => `${m.method} ${m.path}`);
   assert.deepEqual(changes, ["POST /api/machines", "PUT /api/machines/mini", "DELETE /api/machines/studio"]);
   check("Machines adds, edits and removes SSH machines; one with an open agent is kept, the Core host is only checked", { changes });
