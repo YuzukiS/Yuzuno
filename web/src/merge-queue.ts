@@ -151,7 +151,7 @@ export interface MergePause {
 export interface MergeRepository {
   repositoryId: number;
   enabled: boolean;
-  /** How a merge lands: "core-merge" (Core merges) from T-37 S2b; absent before. */
+  /** How a merge lands: "core-merge" (Core merges) from T-37 S2b, or a later Core's "github-auto-merge" or "github-merge-queue"; absent before. */
   landing?: string;
   paused: MergePause | null;
   pauses?: MergePause[];
