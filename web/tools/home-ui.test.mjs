@@ -3107,6 +3107,55 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
   }
 });
 
+// PR C1's review (P3, the Lead's ruling of 04:33Z): a render packs the deck once and keeps its one
+// ResizeObserver; only a change of the deck's size packs it again, in the next frame.
+test("YN-3 a deck keeps one ResizeObserver over Home's renders; a render packs it once, a size change once more in the next frame", async () => {
+  const made = [];
+  const passes = new Map();
+  const p = await mount({
+    before: (w) => {
+      w.ResizeObserver = class {
+        constructor(seen) { this.seen = seen; made.push(this); }
+        observe(target) { this.target = target; }
+        disconnect() { this.off = true; }
+      };
+      // Each packing pass reads its grid's columns once.
+      const own = w.getComputedStyle.bind(w);
+      w.getComputedStyle = (element, pseudo) => {
+        if (element?.classList?.contains("home-brief")) passes.set(element, (passes.get(element) ?? 0) + 1);
+        return own(element, pseudo);
+      };
+    },
+  });
+  try {
+    const decks = () => made.filter((observer) => observer.target?.classList?.contains("home-brief"));
+    await waitFor(() => decks().length > 0, "a deck is watched");
+    await pause(100);
+    const watched = decks().length;
+    // Home reads again: its panels render again.
+    p.doc.querySelector('[aria-label="Refresh Home"]').click();
+    await waitFor(() => p.calls.filter((call) => call.url.endsWith("/api/home")).length >= 2, "Home read again");
+    await pause(150);
+    assert.equal(decks().length, watched, "one observer per deck, not one per render");
+    assert.ok(decks().every((observer) => !observer.off), "each still watching");
+    // Its first report is of the size just packed: nothing; a later one packs once, in the next frame.
+    const deck = decks()[0];
+    const count = () => passes.get(deck.target) ?? 0;
+    const before = count();
+    deck.seen([{ target: deck.target }]);
+    await pause(60);
+    assert.equal(count(), before, "the first report packs nothing more");
+    deck.seen([{ target: deck.target }]);
+    deck.seen([{ target: deck.target }]);
+    await waitFor(() => count() > before, "a size change packs again");
+    await pause(60);
+    assert.equal(count(), before + 1, "once, for two reports in one frame");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 // YN-3, the user's item: Return sends a reply from Home as it does from the conversation's composer.
 test("YN-3 Enter sends a reply from Home as the composer's Return does: from an Ask, Reply again and a report's Reply; Shift+Enter and Enter while an input method composes do not", async () => {
   const p = await mount({ home: deckFixture() });
