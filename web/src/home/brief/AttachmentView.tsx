@@ -24,6 +24,7 @@ import { htmlFile } from "../../portal/html-file";
 import { keptSnapshot, useKeptImage } from "./kept-image";
 import { useKeptImagePreview } from "./image-preview";
 import { CardFoldWorkspace } from "../card-fold";
+import { pageReplyTo } from "../PageSend";
 
 /** Rows of a data file shown inline; the file itself opens in full. */
 export const PREVIEW_ROWS = 20;
@@ -390,6 +391,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   const time = useTimeDisplay();
   const t = useStrings(briefText);
   const { projectId, section } = useBrief();
+  const workspaceId = useContext(CardFoldWorkspace);
   const attachment = section.attachments.find((item) => item.name === name);
   const label = caption || attachment?.caption;
   // A kept image opens whole in the app, as a conversation's images do,
@@ -477,6 +479,7 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
               source: { kind: "briefAttachment", projectId, section: section.key, name: attachment.name, version: section.version },
               name: attachment.name,
               from: `Home · ${section.title}`,
+              replyTo: pageReplyTo(section, projectId, workspaceId, attachment.name),
             })}
             onSource={() => window.open(url, "_blank", "noopener,noreferrer")}
           />

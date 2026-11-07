@@ -6,8 +6,11 @@ import { formatBytes } from "../item-payload";
 import { openInPortal, phonePreviewsOff, provesPreview, type PortalTarget } from "../portal";
 import { OpenChoice } from "../portal/OpenChoice";
 import type { Minted } from "../portal/portal-state";
+import type { Agent } from "../types";
 import type { CardFigure } from "./card-preview";
 import { cardText } from "./card-text";
+import { useFrameBridge } from "./frame-bridge";
+import { PageSendBar, pageReplyTo, usePageSend } from "./PageSend";
 import type { Section } from "./types";
 
 type PageFigure = Extract<CardFigure, { kind: "page" }>;
@@ -59,10 +62,16 @@ type State =
  * without previews, a Core that keeps no card previews, any refusal, another
  * version) the card names the file and offers its Preview, as before.
  */
-export function CardPage({ projectId, section, figure, title }: { projectId: string; section: Section; figure: PageFigure; title: string }) {
+export function CardPage({ projectId, section, figure, title, workspaceId, agents }: {
+  projectId: string; section: Section; figure: PageFigure; title: string;
+  /** Where a message from the page goes (YN-16 S6): the section's author, if open among these. */
+  workspaceId: string; agents?: Agent[];
+}) {
   const t = useStrings(cardText);
   const box = useRef<HTMLDivElement>(null);
   const large = useRef<HTMLButtonElement>(null);
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const to = pageReplyTo(section, projectId, workspaceId, figure.name, agents);
   const [shown, setShown] = useState<State>({ state: "waiting" });
   // Loads of the page shown, counted for that page alone: a new version's page starts again at its first (PR C2's review).
   const [loads, setLoads] = useState<{ of: string; n: number }>({ of: "", n: 0 });
@@ -73,6 +82,7 @@ export function CardPage({ projectId, section, figure, title }: { projectId: str
     source: { kind: "briefAttachment", projectId, section: section.key, name: figure.name, version },
     name: figure.name,
     from: `Home · ${title}`,
+    replyTo: to,
   });
   useEffect(() => {
     const element = box.current;
@@ -121,8 +131,15 @@ export function CardPage({ projectId, section, figure, title }: { projectId: str
   }, [projectId, section.key, figure.name, version]);
   const page = shown.state === "ready" ? `${shown.at.version} ${shown.at.url}` : "";
   const moved = shown.state === "ready" && loads.of === page && loads.n > 1;
+  // The page's own height, once it gives one; a new page starts without.
+  const [height, setHeight] = useState<{ of: string; px: number } | null>(null);
+  const sized = height && height.of === page ? height.px : null;
+  const live = shown.state === "ready" && !moved;
+  const sending = usePageSend(live ? to : null);
+  const giveTheme = useFrameBridge(frameRef, live, { send: sending.offer, height: (px) => setHeight({ of: page, px }) });
   return (
-    <div ref={box} className="home-card-page" data-page-state={shown.state}>
+    <>
+    <div ref={box} className={`home-card-page${sized ? " is-sized" : ""}`} data-page-state={shown.state}>
       {moved ? (
         // Its first load is the page; any later one is a page it went to, which this card no longer shows (Portal.tsx).
         <div className="home-card-page-state" role="status">
@@ -133,15 +150,22 @@ export function CardPage({ projectId, section, figure, title }: { projectId: str
         </div>
       ) : shown.state === "ready" ? (
         <iframe
+          ref={frameRef}
           key={`${frame} ${page}`}
           className="home-card-page-frame"
+          style={sized ? { height: sized, minHeight: sized } : undefined}
           title={figure.name}
           src={shown.at.url}
           // Scripts only: no same-origin, forms, popups or top navigation (as the Portal).
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
           allow=""
-          onLoad={() => setLoads((seen) => (seen.of === page ? { of: page, n: seen.n + 1 } : { of: page, n: 1 }))}
+          onLoad={() => {
+            // The theme goes to its first load only: a later one is a page it went to.
+            const first = loads.of !== page || loads.n === 0;
+            setLoads((seen) => (seen.of === page ? { of: page, n: seen.n + 1 } : { of: page, n: 1 }));
+            if (first) giveTheme();
+          }}
         />
       ) : shown.state === "static" ? (
         <div className="home-card-page-state home-card-page-static">
@@ -167,11 +191,15 @@ export function CardPage({ projectId, section, figure, title }: { projectId: str
         </button>
       )}
     </div>
+    {live && <PageSendBar to={to} state={sending.state} onSend={() => void sending.send()} onDiscard={sending.discard} />}
+    </>
   );
 }
 
 /** A small card's page: no frame, one line that opens it (as a small card's kept image is a View image button). */
-export function CardPageLine({ projectId, section, figure, title }: { projectId: string; section: Section; figure: PageFigure; title: string }) {
+export function CardPageLine({ projectId, section, figure, title, workspaceId, agents }: {
+  projectId: string; section: Section; figure: PageFigure; title: string; workspaceId: string; agents?: Agent[];
+}) {
   const t = useStrings(cardText);
   return (
     <div className="home-card-page-line" aria-label={t.pagePreviewLabel(figure.name)}>
@@ -182,6 +210,7 @@ export function CardPageLine({ projectId, section, figure, title }: { projectId:
           source: { kind: "briefAttachment", projectId, section: section.key, name: figure.name, version: section.version },
           name: figure.name,
           from: `Home · ${title}`,
+          replyTo: pageReplyTo(section, projectId, workspaceId, figure.name, agents),
         })}
       />
     </div>

@@ -16,6 +16,11 @@
 //    opened, is a card's (PR B; 1920 px too, where the deck has four columns);
 //  - in Chinese, Enter sends a reply from Home as from the composer: Shift+Enter
 //    makes a new line, Enter while an input method composes sends nothing (PR B);
+//  - a card's HTML page and Home talk through the bridge (YN-16 S6): the page
+//    gets Home's theme on its first load and again when it changes, sets its
+//    frame's height, and its message, from a click in the real sandboxed
+//    frame, is offered under it and sent to the section's author only on
+//    Send; a message from another window (Home's own) is not offered;
 //  - nothing is wider than the window, and nothing is sent but reads.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/home-cards-check.mjs
 import assert from "node:assert/strict";
@@ -31,7 +36,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "YN-3", runs: [], posts: [], replies: [], previews: [], unexpected: [], errors: [] };
+const report = { task: "YN-3", runs: [], posts: [], replies: [], pageSends: [], previews: [], unexpected: [], errors: [] };
 // A secure origin, as Core's own (localhost, or https on a tailnet): a reply needs crypto.randomUUID, which a
 // browser gives only there. Every request is answered here; none leaves the browser.
 const HOST = "localhost:47391";
@@ -137,9 +142,11 @@ const home = () => ({
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
   en: { viewImage: "View image", replied: "Replied · waiting for lead-1", updated: "Updated", replyAgain: "Reply again", openImage: "Open image loss.png", next: "Next: lead-1 acts on your reply",
-    repliedGroup: "Replied, waiting · 2", outOfDate: /^Out of date · 1 status · newest data as of / },
+    repliedGroup: "Replied, waiting · 2", outOfDate: /^Out of date · 1 status · newest data as of /,
+    pageAsk: "ring.html asks to send this to lead-1, as your reply:", pageSend: "Send", pageDontSend: "Don't send", pageSent: "Sent to lead-1." },
   "zh-Hans": { viewImage: "查看图片", replied: "已回复 · 等 lead-1 处理", updated: "已更新", replyAgain: "再次回复", openImage: "打开图片 loss.png", next: "下一步：lead-1 按你的回复处理",
-    repliedGroup: "已回复，等处理 · 2", outOfDate: /^已过期 · 1 个状态 · 最新数据 / },
+    repliedGroup: "已回复，等处理 · 2", outOfDate: /^已过期 · 1 个状态 · 最新数据 /,
+    pageAsk: "ring.html 请求以你的回复发给 lead-1：", pageSend: "发送", pageDontSend: "不发", pageSent: "已发给 lead-1。" },
 };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
@@ -157,6 +164,7 @@ assert.deepEqual(report.unexpected, [], "nothing was asked of another host");
 assert.deepEqual(report.errors, [], "no page errors");
 assert.deepEqual(report.posts, [], "nothing but reads, and the replies sent by Enter");
 assert.deepEqual(report.replies.map((r) => r.run), runs.filter((r) => r.language === "zh-Hans").map((r) => r.name), "one reply by Enter in each Chinese run");
+assert.deepEqual(report.pageSends.map((r) => r.run), runs.map((r) => r.name), "one page message sent by Send in each run");
 console.log(`home-cards-check: ${report.runs.length} runs, ${report.runs.reduce((n, r) => n + r.checks.length, 0)} checks`);
 
 async function check(run) {
@@ -187,8 +195,16 @@ async function check(run) {
         status: 200, contentType: "text/html; charset=utf-8",
         headers: { "Content-Security-Policy": `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors http://${HOST}` },
         body: `<!doctype html><meta charset="utf-8"><title>Ring</title><style>body{font:15px system-ui,sans-serif;margin:12px;background:#f3efe3}</style>` +
-          `<h1 id="ring">Ring design</h1><p id="ran">scripts did not run</p>` +
-          `<script>document.getElementById("ran").textContent = "scripts ran in origin " + String(window.origin);</script>`,
+          `<h1 id="ring">Ring design</h1><p id="ran">scripts did not run</p><p id="theme">no theme</p>` +
+          `<button id="send" type="button">Send my ring size</button>` +
+          `<script>document.getElementById("ran").textContent = "scripts ran in origin " + String(window.origin);` +
+          // The bridge as brief_guide attachments shows it (YN-16 S6): the theme in, a height and a message out.
+          `addEventListener("message", (e) => { if (e.data?.type !== "yuzuno:theme") return;` +
+          ` for (const [name, value] of Object.entries(e.data.vars)) document.documentElement.style.setProperty(name, value);` +
+          ` document.getElementById("theme").textContent = e.data.scheme + " " + e.data.vars["--paper"];` +
+          ` document.body.dataset.themes = String(Number(document.body.dataset.themes || 0) + 1); });` +
+          `addEventListener("load", () => parent.postMessage({ type: "yuzuno:height", px: 360 }, "*"));` +
+          `document.getElementById("send").addEventListener("click", () => parent.postMessage({ type: "yuzuno:send", text: "Ring size 7, gold" }, "*"));</script>`,
       });
       const proof = url.pathname.match(/^\/\.well-known\/yuzuno-preview\/c-(\w+)$/);
       if (proof) return route.fulfill({ status: 200, contentType: "text/plain", headers: { "Access-Control-Allow-Origin": `http://${HOST}` }, body: `a-${proof[1]}` });
@@ -204,7 +220,8 @@ async function check(run) {
     // A reply sent from Home, which the check sends by Enter: answered as Core receives one.
     if (method === "POST" && path === "/api/projects/p-orch/brief/reply") {
       const body = JSON.parse(request.postData() || "{}");
-      report.replies.push({ run: run.name, body });
+      // A card page's message, sent by Send under its frame (YN-16 S6), apart from the replies sent by Enter.
+      (String(body.text).startsWith("From the page ") ? report.pageSends : report.replies).push({ run: run.name, body });
       return route.fulfill({ json: { input: { ...body, expectedTurnId: null, question: null }, status: "accepted", turnId: "t-enter", error: null } });
     }
     if (method === "POST" && path === "/api/previews") {
@@ -401,6 +418,58 @@ async function check(run) {
       await page.waitForTimeout(200);
       await cardShot("ring", "page-card");
       pass("a report's HTML page works on its card once in view, sandboxed; the card is the whole report", { inView });
+    }
+
+    // ---- The page's bridge (YN-16 S6), in the real sandboxed frame: Home's theme on its first load and on a
+    // change, the height it gives, and its message offered under it, sent to the section's author only on Send.
+    {
+      const ring = card("ring");
+      const frame = ring.locator("iframe.home-card-page-frame");
+      const inside = await (await frame.elementHandle()).contentFrame();
+      const home = () => page.evaluate(() => ({ theme: document.documentElement.dataset.theme,
+        paper: getComputedStyle(document.documentElement).getPropertyValue("--paper").trim() }));
+      const before = await home();
+      await inside.waitForFunction(() => document.body.dataset.themes === "1", null, { timeout: 10_000 });
+      assert.equal(await inside.locator("#theme").innerText(), `${before.theme} ${before.paper}`, "Home's theme, as Home has it");
+      assert.ok(before.paper, "a colour, not nothing");
+      assert.equal(await inside.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--paper").trim()), before.paper, "the page uses it");
+      await page.waitForFunction((el) => Math.round(el.getBoundingClientRect().height) === 360, await frame.elementHandle(), { timeout: 5_000 });
+      // The theme changes: given again, at once; then back.
+      const other = before.theme === "dark" ? "light" : "dark";
+      await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, other);
+      await inside.waitForFunction(() => document.body.dataset.themes === "2", null, { timeout: 5_000 });
+      const changed = await home();
+      assert.notEqual(changed.paper, before.paper);
+      assert.equal(await inside.locator("#theme").innerText(), `${other} ${changed.paper}`);
+      await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, before.theme);
+      await inside.waitForFunction(() => document.body.dataset.themes === "3", null, { timeout: 5_000 });
+      // A message from another window (Home's own) is not this page's: nothing offered.
+      const bar = ring.locator(".home-page-send");
+      await page.evaluate(() => window.postMessage({ type: "yuzuno:send", text: "from Home's own window" }, "*"));
+      await page.waitForTimeout(200);
+      assert.equal(await bar.count(), 0, "another window's message is not offered");
+      const sends = () => report.pageSends.filter((entry) => entry.run === run.name);
+      // The page's own message: offered, Don't send sends nothing; offered again, Send sends it.
+      await inside.locator("#send").click();
+      await bar.waitFor({ timeout: 5_000 });
+      assert.equal(await bar.locator(".home-page-send-head").innerText(), w.pageAsk);
+      assert.equal(await bar.locator(".home-page-send-text").innerText(), "Ring size 7, gold");
+      await bar.getByRole("button", { name: w.pageDontSend }).click();
+      await bar.waitFor({ state: "detached", timeout: 5_000 });
+      assert.equal(sends().length, 0, "nothing sent without Send");
+      await inside.locator("#send").click();
+      await bar.waitFor({ timeout: 5_000 });
+      const buttons = await bar.locator("button").evaluateAll((list) => list.map((b) => Math.round(b.getBoundingClientRect().height)));
+      if (run.phone) assert.ok(buttons.every((h) => h >= 40), `buttons 40 px tall on a phone: ${buttons}`);
+      await ring.scrollIntoViewIfNeeded();
+      await cardShot("ring", "page-message");
+      await bar.getByRole("button", { name: w.pageSend, exact: true }).click();
+      await bar.getByText(w.pageSent).waitFor({ timeout: 5_000 });
+      assert.deepEqual(sends().map(({ body: { key, agentId, text, version, title } }) => ({ key, agentId, text, version, title })),
+        [{ key: "ring", agentId: "l", text: "From the page “ring.html”:\n\nRing size 7, gold", version: 2, title: "Ring design" }]);
+      assert.equal(await page.locator(".home-report").count(), 0, "the report page is not opened");
+      pass("a card's page gets Home's theme and gives its height; its message goes to the section's author only on Send; another window's is not offered",
+        { theme: before.theme, paper: before.paper, other: changed.paper, buttons });
     }
 
     // ---- Answered Asks are answer cards (YN-3, the user's D3): small cards the deck packs, two sharing a row;

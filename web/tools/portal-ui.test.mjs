@@ -153,6 +153,59 @@ test("a prototype opens beside the chat only once this browser proves it reaches
   assert.deepEqual(page.errors, []);
 });
 
+// YN-16 S6: a Brief section's page in the Portal, and who its message may go to.
+const timerReply = { workspaceId: "ws", projectId: "p1", key: "timer", version: 2, title: "Timer", name: "pomodoro.html", agent: { id: "a", name: "Mori" }, owner: "Mori" };
+const timerPage = { kind: "snapshot", source: { kind: "briefAttachment", projectId: "p1", section: "timer", name: "pomodoro.html", version: 2 },
+  name: "pomodoro.html", from: "Home · Timer", replyTo: timerReply };
+
+test("YN-16 S6 a Brief section's page in the Portal gets the theme on its first load and keeps the Portal's height; its message goes to the section's author only on Send", async (t) => {
+  const page = mount({ respond: (r) => (/\/brief\/reply$/.test(r.url) ? { body: { input: r.body, status: "accepted", turnId: "t1", error: null } } : undefined) });
+  t.after(page.close);
+  page.window.renderChoice(timerPage);
+  page.click(page.document.querySelector(".open-choice-split .primary-button"));
+  const frame = await until(page.frame, "the page's frame");
+  const given = [];
+  Object.defineProperty(frame.contentWindow, "postMessage", { configurable: true, value: (message, origin) => given.push([message, origin]) });
+  frame.dispatchEvent(new page.window.Event("load"));
+  assert.deepEqual(given.map(([message, origin]) => [message.type, origin]), [["yuzuno:theme", "*"]], "the theme, on its first load");
+  const from = (data, source = frame.contentWindow, origin = "null") =>
+    page.window.dispatchEvent(new page.window.MessageEvent("message", { data, source, origin }));
+  from({ type: "yuzuno:height", px: 300 });
+  from({ type: "yuzuno:send", text: "Done: 4 rounds" }, page.window);
+  await new Promise((done) => setTimeout(done, 50));
+  assert.equal(page.panel().querySelector(".home-page-send"), null, "another window's message is not offered");
+  assert.equal(frame.style.height, "", "the Portal keeps its own height");
+  from({ type: "yuzuno:send", text: "Done: 4 rounds" });
+  const bar = await until(() => page.panel().querySelector(".home-page-send"), "offered under the page");
+  assert.equal(bar.querySelector(".home-page-send-head").textContent, "pomodoro.html asks to send this to Mori, as your reply:");
+  assert.deepEqual(page.requests.filter((r) => /\/brief\/reply$/.test(r.url)), [], "nothing sent before Send");
+  page.click(page.button("Send", bar));
+  await until(() => /Sent to Mori\./.test(page.panel().querySelector(".home-page-send")?.textContent ?? ""), "sent");
+  const replies = page.requests.filter((r) => /\/brief\/reply$/.test(r.url));
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].url, "/api/projects/p1/brief/reply");
+  const { key, agentId, text, version, title } = replies[0].body;
+  assert.deepEqual({ key, agentId, text, version, title }, { key: "timer", agentId: "a", text: "From the page “pomodoro.html”:\n\nDone: 4 rounds", version: 2, title: "Timer" });
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S6 a page in the Portal that no Brief section answers for (a conversation's file) gets the theme, and its message is not offered", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  page.window.renderChoice(snapshot);
+  page.click(page.document.querySelector(".open-choice-split .primary-button"));
+  const frame = await until(page.frame, "the page's frame");
+  const given = [];
+  Object.defineProperty(frame.contentWindow, "postMessage", { configurable: true, value: (message) => given.push(message.type) });
+  frame.dispatchEvent(new page.window.Event("load"));
+  assert.deepEqual(given, ["yuzuno:theme"]);
+  page.window.dispatchEvent(new page.window.MessageEvent("message", { data: { type: "yuzuno:send", text: "hello" }, source: frame.contentWindow, origin: "null" }));
+  await new Promise((done) => setTimeout(done, 50));
+  assert.equal(page.panel().querySelector(".home-page-send"), null);
+  assert.equal(page.requests.filter((r) => r.method === "POST" && !r.url.endsWith("/api/previews")).length, 0, "nothing sent: POST /api/previews alone");
+  assert.deepEqual(page.errors, []);
+});
+
 test("without a proven port, or when Core refuses the file, no page is framed and the Portal says why", async (t) => {
   const unreachable = mount({ respond: (r) => (r.url === PROOF ? { text: "something else" } : undefined) });
   t.after(unreachable.close);
