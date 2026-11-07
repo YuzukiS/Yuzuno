@@ -861,8 +861,6 @@ impl Server {
         status_of(&self.data(Method::GET, "/api/session/active", &[], None).await?, session)
     }
 
-    /// The session's messages, status and inbox, read now, with the requests
-    /// pending in it and in the sub-agent sessions `children`.
     /// The next tick of this process's own clock (`ticks`), from 1: a later
     /// call answers more. A tick of another Server means nothing here.
     pub fn tick(&self) -> u64 {
@@ -874,6 +872,8 @@ impl Server {
         &self.id
     }
 
+    /// The session's messages, status and inbox, read now, with the requests
+    /// pending in it and in the sub-agent sessions `children`.
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
         let began = self.tick();
         let path = format!("/api/session/{}/inbox", segment(session)?);
