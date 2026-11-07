@@ -5,6 +5,7 @@ mod executor_archive;
 mod executor_archiving;
 mod executor_lifecycle;
 mod executor_live;
+mod executor_overview;
 pub mod executor_templates;
 pub mod executor_template_changes;
 pub mod handover;

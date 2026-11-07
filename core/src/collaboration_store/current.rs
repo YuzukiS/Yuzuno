@@ -135,7 +135,7 @@ pub(super) fn activity(db: &Connection, task: &SharedTask, after: i64, limit: i6
 /// observed, the newest review of the link, and the newest CI subscriptions
 /// with the newest run each one saw. Nothing is decided here; an unknown,
 /// stale or unobserved state is shown as it is.
-fn delivery(db: &Connection, task: &str) -> Result<Value> {
+pub(super) fn delivery(db: &Connection, task: &str) -> Result<Value> {
     let links = crate::github::store::task_summaries(db, &[task])?.remove(task).unwrap_or_default();
     let mut pulls = Vec::new();
     let mut issues = Vec::new();
@@ -177,6 +177,8 @@ fn delivery(db: &Connection, task: &str) -> Result<Value> {
         pulls.push(json!({"linkId": link["id"], "repositoryId": link["repositoryId"], "repository": link["repository"], "number": link["number"],
             "url": link["url"], "title": snapshot["title"], "state": snapshot["state"], "headSha": head,
             "baseSha": snapshot["baseSha"], "baseBranch": snapshot["baseBranch"],
+            // Its diff's size as GitHub counted it at observedAt; null before Core read it (T-43 S3).
+            "changes": snapshot["changes"],
             // When Core read the PR from GitHub, not the PR's own updated_at; a
             // failed refresh moves lastAttemptAt and sets error, never observedAt.
             "observedAt": snapshot["observedAt"], "syncedAt": link["syncedAt"], "lastAttemptAt": link["lastAttemptAt"],
