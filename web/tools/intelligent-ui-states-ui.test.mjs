@@ -337,7 +337,7 @@ test("the words around a result follow the language; what the Agent wrote and th
   assert.equal(page.requests.length, 0, "no requests, no messages, no model calls");
 });
 
-test("a form in a reply is refused in the interface language: forms go to a Home Ask (YN-14 A5)", async (t) => {
+test("a form in a reply is not drawn; a neutral note in the interface language says its content is in the details (YN-14 A5)", async (t) => {
   const { clarificationExample } = await import("../src/intelligent-ui/clarification.ts");
   const page = mount();
   t.after(page.close);
@@ -350,8 +350,10 @@ test("a form in a reply is refused in the interface language: forms go to a Home
     },
   };
   page.window.renderReply({ text: reply(JSON.stringify(spec)) });
-  const note = await until(() => page.document.querySelector('[data-result-state="acts"]'), "the refusal");
-  assert.equal(note.querySelector("p[role=status] span").textContent, "此交互结果无法显示：回复里的结果只用于展示。表单、选择和状态变更会以提问的形式出现在 Home。");
+  const note = await until(() => page.document.querySelector('[data-result-state="acts"]'), "the note");
+  assert.equal(note.querySelector("p[role=status] span").textContent, "这个结果用了已停用的部件，原内容在详情里。");
+  assert.ok(note.classList.contains("result-notice"), "information, not a failure");
+  assert.ok(note.querySelector(".lucide-info") && !note.querySelector(".lucide-triangle-alert"), "an info mark, not a warning");
   assert.ok(note.textContent.includes("代码display_only"), "the validator's code as it is");
   assert.ok(note.textContent.includes("Forms, choices and status changes go to a Home Ask; a reply block only displays."), "its reason as it is");
   assert.equal(page.document.querySelector("form, input, textarea, .clarification-delivery"), null, "no form is drawn");
