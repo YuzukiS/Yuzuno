@@ -1121,9 +1121,10 @@ test("each call is its own capsule, named by its kind, its MCP server and tool o
   ] };
   const page = await mount({ extraTurns: [turn] });
   try {
-    // How many steps; each call says the rest in its own capsule (T-9).
+    // How many steps, and how many returned beside the one still running
+    // (T-15); each call says the rest in its own capsule (T-9).
     const overview = () => page.document.querySelector('[data-turn-id="counts"] .tool-activity > summary .tool-overview').textContent;
-    assert.equal(overview(), "12 tool steps");
+    assert.equal(overview(), "12 tool steps1 returned");
     assert.equal(page.document.querySelectorAll('[data-turn-id="counts"] .tool-count').length, 0);
     const group = page.document.querySelector('[data-turn-id="counts"] .tool-activity');
     if (!group.open) { group.querySelector("summary").click(); await pause(); }
@@ -3613,11 +3614,12 @@ test("tool activity that arrives live unfolds and settles; what loads with the p
     assert.deepEqual(played, [], "what loads with the page does not move");
     assert.equal(row("tool-a")?.hasAttribute("data-running"), true);
     assert.equal(spinner()?.hasAttribute("data-on"), true);
-    // A row arrives: it unfolds, the count ticks, the finished status settles.
+    // A row arrives: it unfolds, the count ticks, the finished status settles,
+    // and the returned count beside the running row comes in (T-15).
     turn.items[2] = shell("tool-a", "completed", 0);
     turn.items.push(shell("tool-b"));
     await refresh();
-    assert.deepEqual(played.sort(), ["tool-count-tick:tool-overview-part", "tool-result:tool-result", "tool-unfold:item-tool-b"]);
+    assert.deepEqual(played.sort(), ["tool-count-in:tool-overview-part", "tool-count-tick:tool-overview-part", "tool-result:tool-result", "tool-unfold:item-tool-b"]);
     assert.equal(row("tool-a")?.hasAttribute("data-running"), false);
     // Commentary folds the block, whose rows then change out of sight; the
     // heading settles and the next block unfolds.
@@ -4967,14 +4969,26 @@ test("rail shows attributed current work as plain text; the inspector opens the 
     // One target opens the card, then its actions (T-184); the machine is
     // shown, the working folder is not.
     assert.deepEqual([...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")), ["Open Mori", "Actions for Mori"]);
-    // The machine heads the name, beside the avatar, inside the one target.
+    // The name has the row's first line to itself (T-15): a rail this narrow
+    // cannot hold an avatar, a whole name and the status word together, so
+    // where the Agent runs moved into the actions menu, which a pointer, a
+    // finger and the keyboard can all open.
     const identity = rail.querySelector(".agent-select .agent-identity");
     assert.deepEqual(
       [...(identity?.children || [])].map((el) => el.className),
-      ["remote-machine-badge", "agent-name"],
+      ["agent-name"],
     );
-    assert.match(identity?.textContent || "", /^Core host/);
+    assert.match(identity?.textContent || "", /^Mori/);
+    assert.doesNotMatch(identity?.textContent || "", /Core host/, "not beside the name any more");
     assert.match(rail.querySelector(".agent-select").getAttribute("aria-description"), /on Core host/);
+    // Said as words in the menu, not only in a label on the button that opens it.
+    rail.querySelector('button[aria-label="Actions for Mori"]').click();
+    await pause();
+    const where = page.document.querySelector(".agent-actions-where");
+    assert.ok(where, "the menu says where the Agent runs");
+    assert.match(where.textContent, /Core host/);
+    page.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await pause();
     assert.doesNotMatch(rail.textContent, /workspace/);
     page.document.querySelector(".inspector-work-source").click();
     await pause();
