@@ -79,6 +79,9 @@ pub mod remote;
 pub mod remote_access;
 pub mod services;
 pub mod previews;
+/// The test binary's allocator, watched (project_brief, previews).
+#[cfg(test)]
+mod test_alloc;
 mod service_jobs;
 mod remote_images;
 pub mod results;
