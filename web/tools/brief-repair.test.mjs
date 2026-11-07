@@ -219,4 +219,8 @@ test("a markdown put is repaired as the body Core builds for it (YN-14 A3)", () 
   assert.equal(section.body.elements.text.props.text, "Why: it costs a day.");
   // A markdown with a body is refused as sent, never repaired into one of them.
   assert.throws(() => acceptBriefSection({ ...ask, body: section.body }), (error) => error instanceof BriefError && error.problems[0].path === "markdown");
+  // Blank markdown or a wrong size is refused as sent, even when another slip could be repaired (#723 R1 P3).
+  for (const wrong of [{ markdown: "  " }, { size: "huge" }])
+    assert.throws(() => acceptBriefSection({ ...ask, ...wrong }), (error) => error instanceof BriefError
+      && error.problems.some((found) => found.path === Object.keys(wrong)[0]), JSON.stringify(wrong));
 });

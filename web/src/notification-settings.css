@@ -1,5 +1,6 @@
-/* Notifications in Settings (T-188). */
-.notification-settings input[type="checkbox"] {
+/* Notifications in Settings (T-188). Its on/offs are switches (YN-8:
+   .settings-toggle in updates.css); a plain checkbox keeps this look. */
+.notification-settings input[type="checkbox"]:not(.settings-toggle) {
   flex: none;
   width: 18px;
   height: 18px;
@@ -8,7 +9,7 @@
 }
 /* A touch screen gets a target its own size. */
 @media (pointer: coarse) {
-  .notification-settings input[type="checkbox"] {
+  .notification-settings input[type="checkbox"]:not(.settings-toggle) {
     width: 22px;
     height: 22px;
   }

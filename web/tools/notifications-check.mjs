@@ -178,7 +178,8 @@ try {
     assert.match(await editor.locator(".notification-access").innerText(), new RegExp(labels[before]));
     assert.equal(await page.evaluate(() => Notification.permission), before, "opening Settings changed nothing");
     await shot(page, "settings-not-granted-1280.png");
-    const box = editor.getByRole("checkbox", { name: /Notify me on this device/ });
+    // The on/offs are switches (YN-8 S4b): checkboxes with role="switch".
+    const box = editor.getByRole("switch", { name: /Notify me on this device/ });
     let after = before;
     if (await box.count()) {
       await box.click();
@@ -190,7 +191,7 @@ try {
     assert.match(await editor.locator(".notification-access").innerText(), new RegExp(labels[after]));
     const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("yuzuno.notifications")));
     assert.equal(!!saved?.enabled, after === "granted", `saved only when allowed: ${JSON.stringify(saved)}`);
-    if (after !== "granted") assert.equal(await editor.getByRole("checkbox", { name: /Notify me on this device/ }).count(), after === "default" ? 1 : 0);
+    if (after !== "granted") assert.equal(await editor.getByRole("switch", { name: /Notify me on this device/ }).count(), after === "default" ? 1 : 0);
     await shot(page, "settings-after-asking-1280.png");
     report.observed.notGranted = { before, after, saved };
     check("not granted: the editor shows Chromium's own permission; the browser is asked only from the switch; on anything but allow nothing is saved", report.observed.notGranted);
@@ -202,7 +203,7 @@ try {
     const { context, page } = await open("granted", { grant: true });
     const editor = await openNotifications(page);
     assert.match(await editor.locator(".notification-access").innerText(), /Allowed/);
-    await editor.getByRole("checkbox", { name: /Notify me on this device/ }).click();
+    await editor.getByRole("switch", { name: /Notify me on this device/ }).click();
     await page.waitForFunction(() => JSON.parse(localStorage.getItem("yuzuno.notifications") || "{}").enabled === true);
     await editor.getByRole("button", { name: "Send a test" }).click();
     const result = editor.locator(".notification-test-result");
@@ -310,7 +311,7 @@ try {
           focusInView: f.top >= Math.max(p.top, 0) - 1 && f.bottom <= Math.min(p.bottom, innerHeight) + 1,
         };
       });
-    const mute = editor.getByRole("checkbox", { name: /Mute on this device/ });
+    const mute = editor.getByRole("switch", { name: /Mute on this device/ });
     await mute.focus();
     await page.keyboard.press("Space");
     await page.locator("#settings-notifications .save-status-failed").waitFor();

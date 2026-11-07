@@ -134,7 +134,7 @@ export function PushSettings({ prefs, host = browserPushHost() }: { prefs: Notif
           : device.subscription && device.state?.state === "none" ? t.forgotten
             : active ? t.help.active : t.help.available;
   return (
-    <div className="settings-group push-settings" data-support={support} data-state={device.state?.state ?? "none"}>
+    <div className="settings-group appearance-group push-settings" data-support={support} data-state={device.state?.state ?? "none"}>
       <label className="settings-row">
         <span className="settings-row-main">
           <span className="settings-row-title">{t.title}</span>
@@ -142,7 +142,7 @@ export function PushSettings({ prefs, host = browserPushHost() }: { prefs: Notif
           {problem && <span className="settings-row-help notification-ask-result" role="status">{problem}</span>}
         </span>
         {usable && (
-          <input type="checkbox" checked={!!active} disabled={busy} aria-label={t.title}
+          <input type="checkbox" role="switch" className="settings-toggle" checked={!!active} disabled={busy} aria-label={t.title}
             onChange={(event) => void turn(event.target.checked)} />
         )}
       </label>
