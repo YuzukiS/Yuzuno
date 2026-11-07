@@ -210,23 +210,35 @@ async fn a_message_never_sent_is_rejected_even_once_settled_as_unknown() {
 /// A whole read settles each compaction asked for and not yet ended (T-61
 /// slice 4, #699 R1 a136ddf1): one 2.x, idle, has no record of did not run,
 /// so its Turn fails and it holds nothing back; one 1.19.3 was asked for
-/// ends unknown for good; one still waiting in 2.x's inbox, or 2.x not idle,
-/// waits.
+/// ends unknown for good; one still waiting in 2.x's inbox (as read before
+/// or after its messages), or 2.x not idle, waits; and so does one the read
+/// may predate, begun before 2.x's answer to it, or with no answer yet
+/// (#699 R2 f4dafc6c).
 #[test]
 fn a_whole_read_ends_a_compaction_2x_has_no_record_of_and_one_1193_was_asked_for() {
     let compact = |id: &str, status: &str, attempt: Value| json!({"id": id, "status": status, "items": [], "_opencodeCompact": attempt});
     let mut d = agent("/w");
     d.turns = vec![
         compact("compact_old", "inProgress", json!({"state": "pending", "session": "ses_1", "generation": 1})),
-        compact("compact_lost", "outcomeUnknown", json!({"state": "unknown", "input": "msg_lost", "generation": 1})),
-        compact("compact_waiting", "inProgress", json!({"state": "pending", "input": "msg_waiting", "generation": 1})),
+        compact("compact_lost", "outcomeUnknown", json!({"state": "unknown", "input": "msg_lost", "generation": 1, "answered": 100})),
+        compact("compact_waiting", "inProgress", json!({"state": "pending", "input": "msg_waiting", "generation": 1, "answered": 100})),
+        compact("compact_later", "inProgress", json!({"state": "pending", "input": "msg_later", "generation": 1, "answered": 300})),
+        compact("compact_asking", "inProgress", json!({"state": "pending", "input": "msg_asking", "generation": 1})),
     ];
-    let inbox = json!([{"id": "msg_waiting", "type": "compaction"}]);
+    let (first, then) = (json!([{"id": "msg_waiting", "type": "compaction"}]), json!([]));
     let mut busy = d.clone();
-    settle_compactions(&mut busy, &[], &inbox, false);
+    settle_compactions(&mut busy, &[], [&first, &then], false, 200);
     assert_eq!(busy.turns[1]["_opencodeCompact"]["state"], "unknown", "not idle: a record may still come");
-    settle_compactions(&mut d, &[], &inbox, true);
+    let mut moved = d.clone();
+    settle_compactions(&mut moved, &[], [&then, &first], true, 200);
+    assert_eq!(moved.turns[2]["_opencodeCompact"]["state"], "pending", "in the inbox as read after the messages too");
+    settle_compactions(&mut d, &[], [&first, &then], true, 200);
     let (old, lost, waiting) = (&d.turns[0], &d.turns[1], &d.turns[2]);
+    for (n, why) in [(3, "a read begun before 2.x's answer to it"), (4, "no answer to it yet")] {
+        let t = &d.turns[n];
+        assert_eq!((&t["status"], &t["_opencodeCompact"]["state"]), (&json!("inProgress"), &json!("pending")), "{why}: {t:#}");
+    }
+    d.turns.truncate(3);
     assert_eq!((&old["status"], &old["_opencodeCompact"]["state"]), (&json!("outcomeUnknown"), &json!("lost")), "1.19.3's: {old:#}");
     assert!(lost["status"] == "failed" && lost["_opencodeCompact"]["state"] == "absent"
         && lost["error"]["message"].as_str().unwrap_or_default().contains("它没有执行"), "no record at idle: it did not run: {lost:#}");

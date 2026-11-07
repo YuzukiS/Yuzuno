@@ -323,6 +323,13 @@ pub enum Mcp {
 /// What OpenCode holds for one session now.
 #[derive(Debug)]
 pub struct Snapshot {
+    /// When the read began, in milliseconds since the epoch (#699 R2): what it
+    /// found missing was missing from then on, never before.
+    pub began: i64,
+    /// The inbox as read first, before the messages (#699 R2): an item 2.x
+    /// delivers and stores while the read goes on is in this list or in
+    /// `messages`, never in neither.
+    pub inbox_first: Value,
     /// The session's messages, oldest first, as `GET /api/session/:id/message`
     /// pages them (`messages`).
     pub messages: Value,
@@ -845,13 +852,18 @@ impl Server {
     /// The session's messages, status and inbox, read now, with the requests
     /// pending in it and in the sub-agent sessions `children`.
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
+        let began = chrono::Utc::now().timestamp_millis();
+        let path = format!("/api/session/{}/inbox", segment(session)?);
+        let inbox_first = self.data(Method::GET, &path, &[], None).await?;
+        ensure!(inbox_first.is_array(), "OpenCode's {path} is not a list");
         let messages = self.messages(session).await?;
         let status = self.session_status(session).await?;
-        let path = format!("/api/session/{}/inbox", segment(session)?);
         let inbox = self.data(Method::GET, &path, &[], None).await?;
         ensure!(inbox.is_array(), "OpenCode's {path} is not a list");
         let sessions: Vec<&str> = std::iter::once(session).chain(children.iter().map(String::as_str)).collect();
         Ok(Snapshot {
+            began,
+            inbox_first,
             messages,
             status,
             inbox,

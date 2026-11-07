@@ -1819,6 +1819,8 @@ impl Workspace {
             Ok(admission) => admission,
             Err(error) => opencode::CompactAdmission::Refused { code: 0, message: format!("没有发送：{error}") },
         };
+        // When 2.x's answer to it was known (#699 R2 f4dafc6c): only a whole read begun after it can find it missing.
+        let answered = chrono::Utc::now().timestamp_millis();
         let refused = |message: String| {
             let (failed, error) = (turn.clone(), message.clone());
             let data = json!({"turnId":&failed,"error":message});
@@ -1852,10 +1854,11 @@ impl Workspace {
                 if !self.opencode_compact_found(id, &c, &turn, input.as_str()).await {
                     let message = format!("OpenCode 没有确认收下这次 /compact（{reason}），它的记录里也没有找到；结果未确认，不会重发。若它已开始，结果会显示在这一轮");
                     let (lost, words) = (turn.clone(), message.clone());
-                    self.record_update(id, "opencode/compactUnconfirmed", json!({"turnId":turn,"submission":reason}), Sel::Turns(vec![turn.clone()]),
-                        move |d| {
+                    self.record_update(id, "opencode/compactUnconfirmed", json!({"turnId":turn,"submission":reason,"answered":answered}),
+                        Sel::Turns(vec![turn.clone()]), move |d| {
                             if let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == lost.as_str()) {
                                 compaction_unknown(entry, &words);
+                                entry["_opencodeCompact"]["answered"] = answered.into();
                             }
                             refresh_status(d);
                         }).await?;
@@ -1864,6 +1867,12 @@ impl Workspace {
                 }
             }
         }
+        let admitted = turn.clone();
+        self.record_update(id, "opencode/compactAnswered", json!({"turnId":turn,"answered":answered}), Sel::Turns(vec![turn.clone()]), move |d| {
+            if let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == admitted.as_str()) {
+                entry["_opencodeCompact"]["answered"] = answered.into();
+            }
+        }).await?;
         Ok(json!({"accepted":true,"turnId":turn}))
     }
 
@@ -2429,24 +2438,30 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
         }
     }
     status(d, &snapshot.status);
-    settle_compactions(d, &compactions, &snapshot.inbox, snapshot.status["type"] == "idle");
+    settle_compactions(d, &compactions, [&snapshot.inbox_first, &snapshot.inbox], snapshot.status["type"] == "idle", snapshot.began);
 }
 
 /// What a whole read of the session (T-61 slice 4) says of each compaction
 /// asked for and not yet ended: by its ID, as 2.x stores it (`compactions`)
-/// or still waits to run it (`inbox`), whatever its events could tell, by
-/// this process or one before it. One asked of OpenCode 1.19.3 (T-10, no
+/// or still waits to run it (either of the read's `inboxes`, before and
+/// after its messages), whatever its events could tell, by this process or
+/// one before it. It is missing from 2.x only by a read that `began` after
+/// 2.x's answer to it was known (`answered`, #699 R2 f4dafc6c): an earlier
+/// read may predate its admission. One asked of OpenCode 1.19.3 (T-10, no
 /// input ID: an empty 2.x session read as 1.19.3's before slice 4) has an
 /// answer this Core no longer reads, so nothing more of it can come.
-pub(crate) fn settle_compactions(d: &mut AgentDetail, compactions: &[Value], inbox: &Value, idle: bool) {
+pub(crate) fn settle_compactions(d: &mut AgentDetail, compactions: &[Value], inboxes: [&Value; 2], idle: bool, began: i64) {
     for turn in d.turns.iter_mut().filter(|t| matches!(t["_opencodeCompact"]["state"].as_str(), Some("pending" | "unknown"))) {
         let Some(input) = turn["_opencodeCompact"]["input"].as_str().map(str::to_owned) else {
             compaction_lost(turn);
             continue;
         };
+        // One whose answer came before this Core kept the time of it (unknown already) counts as answered long ago.
+        let answered = turn["_opencodeCompact"]["answered"].as_i64().or_else(|| (turn["_opencodeCompact"]["state"] == "unknown").then_some(0));
+        let waiting = inboxes.iter().any(|inbox| inbox.as_array().into_iter().flatten().any(|item| item["id"] == input.as_str()));
         if let Some(stored) = compactions.iter().find(|m| m["id"] == input.as_str()) {
             compaction_seen(turn, stored);
-        } else if !inbox.as_array().into_iter().flatten().any(|item| item["id"] == input.as_str()) {
+        } else if !waiting && answered.is_some_and(|at| began > at) {
             turn["_opencodeCompact"]["absent"] = true.into();
         }
         settle_compaction(turn, idle);
