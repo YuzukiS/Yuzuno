@@ -47,10 +47,10 @@ try {
     await card.scrollIntoViewIfNeeded();
     // A card on Home is its summary; its report page shows the section whole.
     await card.locator(".home-report-open").first().click();
-    const report = page.locator(".home-report");
-    await report.waitFor({ timeout: 20_000 });
+    const reportPage = page.locator(".home-report");
+    await reportPage.waitFor({ timeout: 20_000 });
     // The attachment's main open button; its ▾ beside it shares the class.
-    await report.locator(".brief-attachment .open-choice-split .primary-button").first().click({ timeout: 20_000 });
+    await reportPage.locator(".brief-attachment .open-choice-split .primary-button").first().click({ timeout: 20_000 });
     // The page's last script, at the very end of the file, ran.
     const end = page.frameLocator("iframe.portal-frame").locator("#end");
     await end.filter({ hasText: "ran to the end" }).waitFor({ timeout: 60_000 });
