@@ -6,9 +6,10 @@ import type { NeedsYouItem } from "./types";
 const AWAY_SAFETY_NET_MS = 60_000;
 
 /**
- * The open Asks and handover proposals (T-34 S3b) in Needs you, for the Home
- * tab's count. Approvals are counted from the Agent list, which is live;
- * Asks and proposals are read from Home's data: Home
+ * The open Asks and executors the user dispatched (T-36 S3) in Needs you,
+ * for the Home tab's count, so that it counts what Needs you lists (YN-3).
+ * Approvals and questions are counted from the Agent list, which is live;
+ * the rest are read from Home's data: Home
  * reports each of its reads, and while Home is closed this reads it again
  * when a Brief changes (revision) and once a minute. The items read are
  * returned too, for system notifications (T-188).
@@ -41,5 +42,5 @@ export function useOpenAsks(workspaceId: string, away: boolean, revision: number
   }, [away]);
   const items = read?.workspaceId === workspaceId ? read.items : null;
   // Neither is in an Agent's pendingCount, so neither is counted twice.
-  return [items ? items.filter((item) => item.kind === "ask" || item.kind === "handover").length : 0, report, items] as const;
+  return [items ? items.filter((item) => item.kind === "ask" || item.kind === "executor").length : 0, report, items] as const;
 }

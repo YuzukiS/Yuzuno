@@ -345,6 +345,16 @@ pub(crate) async fn claude_start_option(ws: &Workspace, agent: &str) -> Result<V
     Ok(json!({"required":required,"recheck":true,"hardRules":if required { seam.hard_rules() } else { String::new() }}))
 }
 
+/// The hard rules a session of `agent` starts with, when it is a Project's
+/// Agent the turn-end check applies to: what `claude_start_option` and
+/// `with_hard_rules` add. None when it is not; an error when that can't be
+/// read, which says nothing about the rules (YN-5 R1).
+pub(crate) async fn start_hard_rules(ws: &Workspace, agent: &str) -> Result<Option<String>> {
+    let seam = ws.brief_turns.seam();
+    let (id, check) = (agent.to_owned(), seam.clone());
+    Ok(ws.stored(move |store| check.requires(store, &id)).await?.map(|_| seam.hard_rules()))
+}
+
 /// Codex start/resume params with the Brief's hard rules after the configured
 /// developer instructions and the result notice, for a Project's Agent. Only
 /// where Core composed `developerInstructions` (the Yuzuno MCP is attached and

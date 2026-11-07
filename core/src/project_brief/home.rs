@@ -250,21 +250,6 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                 closed: a.closed_at.is_some(), name: a.name.as_str(), project: a.project_id.as_deref() });
             sections::owner(agent, row)
         };
-        // A lead's handover proposal waits for the user's decision (T-34 S3b),
-        // named by its proposer, as an approval is.
-        let mut handover = crate::handover_proposals::pending_summary(&db, id)?;
-        // With the document's version now: the card reads the proposal again when it moves (#612 R1).
-        if let Some(proposal) = handover.as_mut() {
-            proposal["currentVersion"] = json!(crate::handover_proposals::current_version(&db, id)?);
-        }
-        if let Some(proposal) = &handover {
-            let since = proposal["at"].as_str().unwrap_or_default().to_owned();
-            let title: String = proposal["reason"].as_str().and_then(|r| r.lines().find(|l| !l.trim().is_empty()))
-                .unwrap_or("A new version of the handover").chars().take(200).collect();
-            needs.push((priority, time(&since), json!({"kind":"handover","projectId":id,
-                "agentId":proposal["proposer"]["id"],"agentName":proposal["proposer"]["name"],
-                "proposalId":proposal["id"],"title":title,"since":since})));
-        }
         for row in live.iter().filter(|row| row.kind == "ask" && row.ask_state.as_deref() == Some("open")) {
             if row.deferred_until.as_deref().and_then(time).is_some_and(|until| until > at) {
                 continue;
@@ -296,7 +281,6 @@ pub(super) fn build(store: &Store) -> Result<Value> {
             "agents":counts(&members),
             "errors":errors,
             "pending":requests,
-            "handoverProposal":handover,
             "jobs":jobs.iter().filter(|job| job.project.as_deref() == Some(id)).map(|job| job.shown.clone()).collect::<Vec<_>>(),
             "contentEditors":policy,
             "brief":{"version":sections::brief_version(&db, id)?,"sections":shown(&visible),"teamSections":shown(&team),"history":shown(&history)},

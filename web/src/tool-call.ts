@@ -394,8 +394,12 @@ export function callFacts(item: NativeItem, label: string, language: Language, e
 
 /** What a Tool activity's heading says of its calls: how many steps, and
  * how many failed, were refused or are not confirmed. A running call is the
- * heading's own spinner; a call that returned needs no count. */
+ * heading's own spinner. How many returned is said only beside a call that
+ * did not (T-15): when every call returned, the steps already say so. A call
+ * counts as returned by its own tone, never as what the others leave over,
+ * and returned is not a claim that the work went well. */
 const notable: readonly CallTone[] = ["failed", "refused", "unconfirmed"];
+const unreturned: readonly CallTone[] = ["running", ...notable];
 export function toolOverview(items: readonly NativeItem[], language: Language, executionUnconfirmed: boolean) {
   const seen = new Set<string>();
   const held = new Map<CallTone, number>();
@@ -403,7 +407,12 @@ export function toolOverview(items: readonly NativeItem[], language: Language, e
     if (seen.has(item.id) || item.type === "userMessage" || item.type === "agentMessage") continue;
     seen.add(item.id);
     const { tone } = callFacts(item, "", language, executionUnconfirmed);
-    if (tone && notable.includes(tone)) held.set(tone, (held.get(tone) ?? 0) + 1);
+    if (tone) held.set(tone, (held.get(tone) ?? 0) + 1);
   }
-  return { steps: seen.size, notable: notable.filter((tone) => held.has(tone)).map((tone) => ({ tone, count: held.get(tone)! })) };
+  const returned = held.get("returned") ?? 0;
+  return {
+    steps: seen.size,
+    returned: unreturned.some((tone) => held.has(tone)) ? returned : 0,
+    notable: notable.filter((tone) => held.has(tone)).map((tone) => ({ tone, count: held.get(tone)! })),
+  };
 }

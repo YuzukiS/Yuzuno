@@ -207,7 +207,7 @@ try {
       // The measure sees a cut: at 393 px the long MCP name is one.
       if (view.touch) assert.ok(shown.find((c) => c.id === "long").nameCut, `${view.name}: the long name is cut short`);
       const overview = await page.locator("#turn-done .tool-activity > summary .tool-overview-part").allTextContents();
-      assert.deepEqual(overview, ["12 tool steps", "2 failed", "1 refused"]);
+      assert.deepEqual(overview, ["12 tool steps", "8 returned", "2 failed", "1 refused"]);
       assert.equal(await page.locator(".tool-activity .tool-count").count(), 0, "no capsule stack in the heading");
       record(`${view.name}: one capsule per call, one line inside its row, nothing sideways; the heading is an overview`, { cut, over, overview });
       await shoot(page.locator("#turn-done .tool-activity").first(), `${view.name}-calls`);

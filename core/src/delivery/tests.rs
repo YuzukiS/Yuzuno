@@ -1091,3 +1091,26 @@ fn a_delivery_uses_the_reviewer_of_its_tasks_project() {
     let run = start(&s, &t, "review");
     assert_eq!((run["requestedHarness"].clone(), run["requestedModel"].clone()), (json!("claude"), json!(OPUS_ALIAS)));
 }
+
+/// YN-4: an automated delivery's candidate is submitted for review. An
+/// intermediate result (doing) can't carry it, nor can done: each is refused
+/// in the words of the one status it takes, and nothing is written.
+#[test]
+fn a_delivery_candidate_is_submitted_only_with_status_review() {
+    let (_d, s, t) = setup();
+    let f = enable(&s, &t);
+    for status in ["doing", "done"] {
+        let mut v = result(&s, &t, Some(f["candidate"].clone()), status);
+        v["status"] = json!(status);
+        let error = match s.collaboration_call(None, "task_submit_result", v) {
+            Ok(answer) => panic!("{status}: a delivery candidate is refused, not saved: {answer}"),
+            Err(error) => error.to_string(),
+        };
+        assert_eq!(error, "Submit an automated delivery with status review", "{status}");
+    }
+    let read = s.collaboration_call(None, "task_get", json!({"taskId":t})).unwrap();
+    assert!(read["task"]["result"].is_null(), "no result was written: {}", read["task"]);
+    assert!(get(&s, &t)["rounds"][0]["resultId"].is_null(), "the round has no result");
+    let v = result(&s, &t, Some(f["candidate"].clone()), "review");
+    assert_eq!(s.collaboration_call(None, "task_submit_result", v).unwrap()["task"]["status"], "review", "review takes it");
+}

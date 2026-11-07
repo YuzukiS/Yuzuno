@@ -263,7 +263,7 @@ async fn only_the_owner_changes_a_section_and_others_add_sub_topics() {
     assert_eq!(read["version"], 2);
     assert_eq!(section(&read, "round-12")["owner"]["agentId"], "a");
     assert_eq!(section(&read, "round-12/review")["owner"]["agentId"], "b");
-    assert_eq!(read["you"], json!({"agentId":"b","ownsKeys":["round-12/review"],"openAsks":0,"repliedAsks":[],"staleStatus":[],
+    assert_eq!(read["you"], json!({"agentId":"b","ownsKeys":["round-12/review"],"openAsks":0,"repliedAsks":[],"staleStatus":[],"recentlyLeft":[],"recentlyLeftMore":0,
         "capabilities":{"editContent":true,"requiresTurnUpdate":false,"writeOwnAsk":true},"homeHint":outcome_hint()}));
     for change in [op("remove", "round-12"), op("claim", "round-12")] {
         let codes = codes(&reject(&ws, "b", input("b3", 2, vec![change])).await);
@@ -648,46 +648,9 @@ async fn a_kept_image_has_the_size_core_read_from_its_header_and_nothing_else_ha
     assert!(history.as_array().unwrap().iter().all(|shown| shown.get("width").is_none() && shown.get("height").is_none()), "{history}");
 }
 
-/// Refuses, once armed, any one allocation past ARMED_LIMIT, and keeps the
-/// largest asked for. Only a test process of its own arms it (`kept_apart`):
-/// it shows what Core asks of memory to keep an image whose header lies,
-/// without the machine being asked for it (T-19 HM:B14).
-mod watched {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
-
-    pub(super) static ARMED: AtomicBool = AtomicBool::new(false);
-    pub(super) static LARGEST: AtomicUsize = AtomicUsize::new(0);
-    pub(super) const ARMED_LIMIT: usize = 16 << 20;
-
-    fn refused(size: usize) -> bool {
-        if !ARMED.load(Relaxed) {
-            return false;
-        }
-        LARGEST.fetch_max(size, Relaxed);
-        size > ARMED_LIMIT
-    }
-
-    struct Watched;
-    unsafe impl GlobalAlloc for Watched {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            if refused(layout.size()) { std::ptr::null_mut() } else { System.alloc(layout) }
-        }
-        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-            if refused(layout.size()) { std::ptr::null_mut() } else { System.alloc_zeroed(layout) }
-        }
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-            if refused(size) { std::ptr::null_mut() } else { System.realloc(ptr, layout, size) }
-        }
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            System.dealloc(ptr, layout)
-        }
-    }
-
-    #[global_allocator]
-    static WATCHED: Watched = Watched;
-}
-use watched::{ARMED, ARMED_LIMIT, LARGEST};
+/// The test binary's allocator, armed only in a test process of its own
+/// (`kept_apart`).
+use crate::test_alloc::{ARMED, ARMED_LIMIT, LARGEST};
 
 const APART: &str = "YUZUNO_TEST_KEPT_APART";
 
@@ -1566,7 +1529,7 @@ fn the_tools_come_from_the_contract_and_brief_get_and_update_load_without_search
     let limits = &brief_contract().unwrap()["limits"];
     for (key, value) in [("topics", MAX_TOPICS as u64), ("subtopicsPerTopic", MAX_SUBTOPICS as u64), ("openAsksPerAgent", MAX_OPEN_ASKS as u64),
         ("attachments", MAX_ATTACHMENTS as u64), ("snapshotFileBytes", SNAPSHOT_FILE_BYTES), ("snapshotBriefBytes", SNAPSHOT_BRIEF_BYTES),
-        ("historyDays", HISTORY_DAYS as u64), ("chartSeries", attachments::CHART_SERIES as u64),
+        ("historyDays", HISTORY_DAYS as u64), ("recentlyLeft", sections::RECENTLY_LEFT as u64), ("chartSeries", attachments::CHART_SERIES as u64),
         ("chartPointsPerSeriesFromData", attachments::CHART_POINTS as u64)] {
         assert_eq!(limits[key].as_u64(), Some(value), "{key}");
     }
@@ -1615,7 +1578,8 @@ async fn an_html_attachment_is_found_for_a_preview_as_its_kept_snapshot() {
     // The source file changes; the preview reads the snapshot kept with the section.
     std::fs::write(&file, "changed").unwrap();
     let kept = crate::project_brief::attachment_file(&ws, &project, "design", "proto.html", None).await.unwrap();
-    assert_eq!(std::fs::read_to_string(kept).unwrap(), "<button>Try</button>");
+    assert_eq!(std::fs::read_to_string(&kept.path).unwrap(), "<button>Try</button>");
+    assert_eq!(kept.path.file_name().and_then(|n| n.to_str()), Some(kept.sha256.as_str()), "named by its SHA-256");
     assert!(crate::project_brief::attachment_file(&ws, &project, "design", "other.html", None).await.is_err());
     assert!(crate::project_brief::attachment_file(&ws, &project, "nope", "proto.html", None).await.is_err());
 }
@@ -1741,6 +1705,8 @@ mod editors_tests;
 mod release_handover_tests;
 #[path = "executor_needs_tests.rs"]
 mod executor_needs_tests;
+#[path = "recently_left_tests.rs"]
+mod recently_left_tests;
 #[path = "cas_tests.rs"]
 mod cas_tests;
 

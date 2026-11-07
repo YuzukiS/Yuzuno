@@ -231,3 +231,22 @@ fn a_named_model_is_confirmed_by_the_core_hosts_catalog() {
     assert_eq!(confirm_models(&mut changed, &saved, &unread).unwrap_err().to_string(),
         "Can't read this Core host's Codex models; nothing was saved", "its effort changed");
 }
+
+/// YN-2 S1: the templates' view says what a general executor (`executor: {}`)
+/// of the read Project would be made with now: its harness and where that
+/// default comes from, the Project's, the Workspace's or the built-in one.
+#[tokio::test]
+async fn the_view_says_what_a_general_executor_would_be_made_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let p = ws.store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into())])).unwrap().id;
+    let general = |harness: &str, source: &str| json!({"label":"Executor","harness":harness,"harnessSource":source});
+    let (_, view) = call(&ws, "GET", "/api/executor-templates", None).await;
+    assert_eq!(view["general"], general("codex", "builtin"), "the view names the general executor: {view}");
+    ws.store.save_agent_defaults(&crate::agent_defaults::AgentDefaults { harness: Some("claude".into()), ..Default::default() }).unwrap();
+    let (_, view) = call(&ws, "GET", &format!("/api/executor-templates?projectId={p}"), None).await;
+    assert_eq!(view["general"], general("claude", "workspace"));
+    ws.store.save_project_agent_defaults(&p, &crate::agent_defaults::AgentDefaults { harness: Some("codex".into()), ..Default::default() }).unwrap();
+    let (_, view) = call(&ws, "GET", &format!("/api/executor-templates?projectId={p}"), None).await;
+    assert_eq!(view["general"], general("codex", "project"));
+}

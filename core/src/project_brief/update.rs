@@ -529,7 +529,15 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
             };
             problem("not_owner", format!("{at}.key"), reason, "sections")
         };
-        let missing = || problem("not_found", format!("{at}.key"), format!("No live section has key {key}."), "sections");
+        // Why a key that is not live left the Brief, when it was this
+        // Agent's (YN-7). Each key is changed once per update, so a key
+        // with no planned section is one the live Brief does not have.
+        let gone = || -> Result<String> {
+            Ok(sections::ending_note(db, &ctx.project, key, &ctx.agent)?.unwrap_or_default())
+        };
+        let missing = || -> Result<Value> {
+            Ok(problem("not_found", format!("{at}.key"), format!("No live section has key {key}.{}", gone()?), "sections"))
+        };
         match change.op {
             Op::Put => {
                 match &existing {
@@ -567,13 +575,15 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
             }
             // Changes no owner, kind or ask state; the blocks are `edited`'s.
             Op::Edit => match &existing {
-                None => problems.push(problem("not_found", format!("{at}.key"),
-                    format!("No live section has key {key}; create it with put."), "sections")),
+                None => problems.push(problem("not_found", format!("{at}.key"), match gone()? {
+                    note if note.is_empty() => format!("No live section has key {key}; create it with put."),
+                    note => format!("No live section has key {key}, so there is nothing to edit.{note}"),
+                }, "sections")),
                 Some(p) if p.owner != ctx.agent => problems.push(not_owner(p)),
                 Some(_) => {}
             },
             Op::Resolve => match &existing {
-                None => problems.push(missing()),
+                None => problems.push(missing()?),
                 Some(p) if p.owner != ctx.agent => problems.push(not_owner(p)),
                 Some(p) if !p.open_ask => problems.push(problem("not_ask", format!("{at}.key"),
                     format!("{key} is not an unresolved ask; remove a report or status instead."), "sections")),
@@ -582,7 +592,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 }
             },
             Op::Remove => match &existing {
-                None => problems.push(missing()),
+                None => problems.push(missing()?),
                 Some(p) if p.owner != ctx.agent => problems.push(not_owner(p)),
                 Some(p) if p.open_ask => problems.push(problem("ask_unresolved", format!("{at}.op"),
                     format!("{key} is an unresolved ask; it leaves the Brief when you resolve it."), "ask")),
@@ -591,7 +601,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 }
             },
             Op::Claim => match &existing {
-                None => problems.push(missing()),
+                None => problems.push(missing()?),
                 Some(p) if p.owner == ctx.agent => problems.push(problem("not_orphan", format!("{at}.key"),
                     format!("{key} is already yours."), "sections")),
                 Some(_) if orphaned.is_none() => problems.push(problem("not_orphan", format!("{at}.key"),

@@ -6,7 +6,7 @@ mod executor_archiving;
 mod executor_lifecycle;
 pub mod executor_templates;
 pub mod handover;
-pub mod handover_proposals;
+pub mod handover_tools;
 mod executor_dispatch;
 mod executor_release;
 mod executor_slots;
@@ -40,6 +40,7 @@ pub mod collaboration_runtime;
 pub mod collaboration_store;
 pub mod commit_sha;
 mod mailbox_notice;
+mod session_baseline;
 mod input_origin;
 pub mod conversation_time;
 pub mod data_dir;
@@ -78,6 +79,9 @@ pub mod remote;
 pub mod remote_access;
 pub mod services;
 pub mod previews;
+/// The test binary's allocator, watched (project_brief, previews).
+#[cfg(test)]
+mod test_alloc;
 mod service_jobs;
 mod remote_images;
 pub mod results;

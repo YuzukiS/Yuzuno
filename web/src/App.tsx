@@ -70,7 +70,7 @@ import {
   shortcutModifier,
 } from "./api";
 import { nativeControl } from "./slash-commands";
-import { touchKeyboard } from "./touch-input";
+import { touchKeyboard, useTouchInput } from "./touch-input";
 import { returnSends, useDevicePreferences } from "./device-preferences";
 import { pressed, shortcutKeys, useShortcutKeys } from "./shortcut-keys";
 import {
@@ -181,6 +181,8 @@ import { OutgoingMessages } from "./OutgoingMessages";
 import { sendingInTurn } from "./delivery-note";
 import { CurrentTurnPrompt } from "./CurrentTurnPrompt";
 import { Jobs, ConversationJobs } from "./Jobs";
+import { WorkActivityColumn, WorkActivityEntry, WorkActivityProvider } from "./WorkDock";
+import { RailTurnIndex } from "./RailTurnIndex";
 import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
 import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
 import { refreshLiveJobs } from "./live-jobs";
@@ -223,7 +225,6 @@ import {
   orderByAttention,
   unseenEnd,
   waitingSince,
-  proposersWaiting,
   type NeedsJump,
   type NeedsTarget,
 } from "./attention";
@@ -492,12 +493,60 @@ export function App() {
   const [inspector, setInspector] = useState(true);
   // A wide window's choice; on a phone the list is a screen of its own.
   const [railOpen, setRailOpen] = useState(true);
+  // The rail shows where the reader is instead of the Agents, until they go
+  // back. One place for it, rather than a drawer of its own beside the one a
+  // phone already has (T-15).
+  const [railIndex, setRailIndex] = useState(false);
+  // The same left column, showing this Agent's work instead (T-15, V9).
+  const [railWork, setRailWork] = useState(false);
   // Phones (T-170): one screen at a time, the Agent list or what is open.
   // The list covers the open view instead of replacing it, so its drafts,
   // reading place and any annotation stay as they were.
   const phone = usePhone();
-  // On a phone the shell fits what the on-screen keyboard leaves.
-  useEffect(() => (phone ? followVisualViewport() : undefined), [phone]);
+  // Both head entries open a view *in the rail*, so opening one has to bring
+  // the rail back: collapsed from the toolbar the rail is `display: none`
+  // (styles.css `.rail-hidden .rail`), and a press that only swapped which
+  // view it renders changed nothing a reader could see — while the index
+  // beside it still reported itself open. On a touched screen that is the
+  // whole way in to the work list and the Turn index, since the docks there
+  // take no presses, so it was a dead path (#459 R1, P2).
+  //
+  // Each press answers what is *on screen*, not what was last asked for.
+  // Reading the view's own state instead left a second dead press: with the
+  // work view open and the rail then collapsed from the toolbar, the state
+  // still said open, so a press turned it off behind a hidden rail and a
+  // second press was needed to see anything (#459 R2, P3-1). Closing a view
+  // that is on screen leaves the rail as it is: the reader asked for the
+  // view to go, not for the column to.
+  //
+  // On a phone each opens its drawer the way the drawer's own buttons do,
+  // through the dock's motion: setting it directly skipped T-19's way in and
+  // out (#459 R8, P3).
+  const chooseDock = dockMotion.choose;
+  const openWorkView = useCallback(() => {
+    if (phone) return chooseDock(phoneDock === "work" ? null : "work");
+    if (railWork && railOpen) return setRailWork(false);
+    setRailIndex(false);
+    setRailWork(true);
+    setRailOpen(true);
+  }, [phone, phoneDock, chooseDock, railWork, railOpen]);
+  const openIndexView = useCallback(() => {
+    if (phone) return chooseDock(phoneDock === "turns" ? null : "turns");
+    if (railIndex && railOpen) return setRailIndex(false);
+    setRailWork(false);
+    setRailIndex(true);
+    setRailOpen(true);
+  }, [phone, phoneDock, chooseDock, railIndex, railOpen]);
+  // Touch rows wherever a finger is the pointer, not only where the phone
+  // layout applies: a folding phone opened is wide and still all touch (T-15).
+  const touchInput = useTouchInput();
+  // The shell fits what the on-screen keyboard leaves wherever a finger is
+  // the pointer, not only where the phone layout applies (T-15). A tablet, or
+  // a folding phone opened, is wide enough to keep the side-by-side layout
+  // and still has the same keyboard over the bottom of it: with this gated on
+  // the phone layout, the input area on those screens was left under the
+  // keyboard, which is the very thing T-170 fixed for phones.
+  useEffect(() => (phone || touchInput ? followVisualViewport() : undefined), [phone, touchInput]);
   const [phoneList, setPhoneList] = useState(true);
   const [phoneInspector, setPhoneInspector] = useState(false);
   const phoneBack = useRef<HTMLButtonElement>(null);
@@ -678,6 +727,63 @@ export function App() {
   const readingFrame = useRef(0);
   const initialReading = useRef(false);
   const scroll = useRef<HTMLDivElement>(null);
+  // The last thing focused inside the composer, and nothing else: a layout
+  // change may drop the focus, and only a composer's is given back (T-15).
+  const composerFocus = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const note = (event: FocusEvent) => {
+      const target = event.target as HTMLElement | null;
+      composerFocus.current = target?.closest?.(".composer") ? target : null;
+    };
+    document.addEventListener("focusin", note);
+    return () => document.removeEventListener("focusin", note);
+  }, []);
+  /**
+   * Folding a phone open or shut crosses the phone layout under the app, with
+   * no reload: the conversation reflows at a new width and the composer may be
+   * drawn again. What the reader was at is held by the anchor the conversation
+   * already keeps -- its Turn and message, not a scroll ratio, which a reflow
+   * does not preserve -- and the focus is given back to the composer it was in.
+   *
+   * The conversation's own ReadingAnchor (ConversationWindow) does not reach
+   * this: it holds a reflow it is part of, by looking at the old DOM before
+   * its own commit, and folding changes the layout in CSS without an update to
+   * that subtree for it to look before. Extending it to settle width changes
+   * was tried and left the message 300px from where it had been, so the hold
+   * is driven from here instead, off the anchor the conversation already keeps.
+   *
+   * Neither is forced: with no anchor, or none of it still drawn, the
+   * conversation is left where it is rather than sent to the end, and the
+   * focus is only restored when the change dropped it, never taken from
+   * whatever the reader moved to themselves (T-15).
+   */
+  useLayoutEffect(() => {
+    const pane = scroll.current;
+    const saved = reading.current?.position;
+    const hold = () => {
+      if (!pane?.isConnected || saved?.mode !== "anchor") return;
+      const of = (id: string) => `[data-turn-id="${CSS.escape(id)}"]`;
+      const read = saved.itemId
+        ? pane.querySelector<HTMLElement>(`${of(saved.turnId)} [data-item-id="${CSS.escape(saved.itemId)}"]`)
+        : pane.querySelector<HTMLElement>(of(saved.turnId));
+      if (!read) return;
+      const drift = read.getBoundingClientRect().top - pane.getBoundingClientRect().top - saved.offset;
+      if (Math.abs(drift) > 1) pane.scrollTop += drift;
+    };
+    // Rows measured after the width change move it again, as the Portal's own
+    // resize finds (portal/Portal.tsx); a few frames of correction settle it.
+    hold();
+    let frames = 0;
+    let request = requestAnimationFrame(function again() {
+      hold();
+      if (++frames < 6) request = requestAnimationFrame(again);
+    });
+    const was = composerFocus.current;
+    const active = document.activeElement;
+    if (was?.isConnected && (!active || active === document.body) && was.closest(".composer"))
+      was.focus({ preventScroll: true });
+    return () => cancelAnimationFrame(request);
+  }, [phone]);
   // The conversation's scroller, as state too: its end is put in view when
   // the scroller is first drawn, not only when the detail arrives. The detail
   // can come before the Workspace that draws it (T-170): the conversation
@@ -1557,9 +1663,10 @@ export function App() {
     (r) => r.status === "uncertain" || (r.status === "sending" && !(sending && outgoing.some((m) =>
       m.agentId === selected && m.receipt.status === "sending" && m.receipt.input.clientMessageId === r.input.clientMessageId))),
   );
-  // The Home tab counts what Needs you lists: requests and open Asks. Unread
-  // turns stay with their conversations: Home does not list them, so its
-  // badge does not count them.
+  // The Home tab counts what Needs you lists, only what waits for the user's
+  // decision (YN-3): requests and questions, open Asks and executors the user
+  // dispatched. Turns that ended unseen stay with their
+  // conversations and the Agent list's mark: Home does not list or count them.
   const totalPending = activeAgents.reduce((n, a) => n + a.pendingCount, 0);
   const [openAsks, reportNeedsYou, needsYouItems] = useOpenAsks(workspaceId, !homeOpen && !previewMode, asksRevision);
   // This device's system notifications, where it chose them and its system
@@ -1615,14 +1722,14 @@ export function App() {
     const done = needsYou > 0 ? badge.setAppBadge?.(needsYou) : badge.clearAppBadge?.();
     done?.catch(() => {});
   }, [previewMode, needsYou]);
-  // Next needs you: Home's Needs you in Core's order, then the Turn ends not
-  // seen here (attention.ts). After an Ask, Home stays the place shown.
+  // Next needs you: Home's Needs you in Core's order (attention.ts). After an
+  // Ask, Home stays the place shown.
   const needsTargets = useMemo(
-    () => needsYouTargets(needsYouItems, activeAgents, turnSeen),
-    [needsYouItems, activeAgents, turnSeen],
+    () => needsYouTargets(needsYouItems, activeAgents),
+    [needsYouItems, activeAgents],
   );
   const lastNeedsJump = useRef<NeedsJump | null>(null);
-  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; proposalId?: string; n: number } | null>(null);
+  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; n: number } | null>(null);
   const goNextNeedsYou = () => {
     const shown: NeedsTarget | null = homeOpen
       ? lastNeedsJump.current && lastNeedsJump.current.target.kind !== "agent" ? lastNeedsJump.current.target : null
@@ -1635,8 +1742,7 @@ export function App() {
       selectAgent(target.agentId);
     } else {
       goHome();
-      setHomeJump((last) => ({ projectId: target.projectId, n: (last?.n ?? 0) + 1,
-        ...(target.kind === "handover" ? { proposalId: target.proposalId } : { sectionKey: target.sectionKey }) }));
+      setHomeJump((last) => ({ projectId: target.projectId, n: (last?.n ?? 0) + 1, sectionKey: target.sectionKey }));
     }
   };
   const nextNeedsYou = useRef(goNextNeedsYou);
@@ -2464,6 +2570,52 @@ export function App() {
       if (position) reading.current = { agentId: shown, position };
     });
   }
+  // A name too long for the header is opened by pressing it, since the rail
+  // may have had to cut it too and a title only answers a pointer (T-15).
+  const nameRef = useRef<HTMLHeadingElement>(null);
+  const [nameOpen, setNameOpen] = useState(false);
+  const [nameCut, setNameCut] = useState(false);
+  useLayoutEffect(() => setNameOpen(false), [selected]);
+  useLayoutEffect(() => { setRailIndex(false); setRailWork(false); }, [selected]);
+  useLayoutEffect(() => {
+    const element = nameRef.current;
+    if (!element || nameOpen) return;
+    const measure = () => {
+      // Whatever is doing the clipping. Once the name is cut the h1 holds a
+      // `.conversation-name` button that clips its own overflow, so the h1
+      // stops overflowing and measuring the h1 answered "it fits" — which
+      // rendered plain text, which overflowed, which cut it again. Each
+      // frame and each ResizeObserver tick flipped it, and whichever
+      // happened to be last decided whether a cut name had anything to
+      // press at all: after closing an expanded name, the third measurement
+      // left it truncated and unpressable, the one case this exists for
+      // (#459 R2, P2).
+      const box = element.querySelector<HTMLElement>(".conversation-name") ?? element;
+      setNameCut(box.scrollWidth > box.clientWidth + 1);
+    };
+    measure();
+    // Somewhere without one, the first measurement is the only one, as the
+    // conversation's own layout does (ConversationWindow, useAutoRead).
+    if (typeof ResizeObserver === "undefined") return;
+    // The controls beside it and the fonts settle over the next frames, and
+    // the heading's own box may never change while its text does.
+    let frame = requestAnimationFrame(() => {
+      measure();
+      frame = requestAnimationFrame(measure);
+    });
+    const watch = new ResizeObserver(measure);
+    watch.observe(element);
+    if (element.parentElement) watch.observe(element.parentElement);
+    return () => {
+      cancelAnimationFrame(frame);
+      watch.disconnect();
+    };
+  }, [agent?.name, nameOpen, selected]);
+  // The reading bar and what it says: a source being read, or a window of
+  // earlier messages. Either one carries the single way back to the latest.
+  const source = catchupSource?.agentId === selected ? catchupSource : null;
+  const historyWindow = !!currentDetail?.conversation?.hasAfter;
+  const readingBar = !!source || historyWindow;
   // Search offers to open a message, Agent or report link; a Home link is
   // what a notification opens, not something to paste.
   const pastedLink = searchOpen ? parseAppLink(search) : null;
@@ -3071,7 +3223,7 @@ export function App() {
   // ordered within each group as grouping keeps the list's order.
   const filteredAgents =
     appearance.agentOrder === "attention"
-      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems), waiting: proposersWaiting(needsYouItems) })
+      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems) })
       : searched;
 
   return (
@@ -3079,6 +3231,7 @@ export function App() {
     <PointFixOpen.Provider value={previewMode ? null : openPointFix}>
     <MessageLinks.Provider value={messageLinks}>
     <HomeReplyLinks.Provider value={previewMode || !workspaceId ? null : homeReplyLinks}>
+    <WorkActivityProvider>
     <div
       className={`app ${isNative ? "native" : "web"} ${railOpen || phone ? "" : "rail-hidden"} ${inspectorShown && !phone ? "with-inspector" : ""}${phone ? ` phone${listShown ? " phone-list" : ""}${inspectorShown ? " phone-inspector" : ""}` : ""}`}
       style={panelWidths.style}
@@ -3172,8 +3325,13 @@ export function App() {
             data-core-status={core.status}
           >
             <span />
-            {core.label}
+            {/* Named, so a screen too short for the words can keep the dot
+                and its title (T-15 V5). */}
+            <span className="connection-label">{core.label}</span>
           </span>
+          {/* Where the bottom bar has no room to stand, its way in stands
+              here instead; StatusBar.tsx fills this (T-15 V5). */}
+          <span className="core-status-slot" id="core-status-slot" />
           {updatesNeedReload && <UpdateBanner onOpen={() => setUpdatesOpen(true)} />}
             <button
               className="icon-button workspace-settings"
@@ -3201,6 +3359,26 @@ export function App() {
       </header>
       <aside className="rail" id="agent-sidebar" ref={railBox} lang={langTag(language)} inert={phone && !phoneList ? true : undefined}>
         <PanelResizeHandle side="rail" size={panelWidths.rail} />
+        {railWork && !phone ? (
+          <WorkActivityColumn
+            onBack={() => {
+              // Before the column goes, so the browser does not drop focus on
+              // `body` when the button inside it is removed. The entry itself
+              // is in the head and stays mounted either way.
+              document.querySelector<HTMLElement>(".work-activity-entry")?.focus();
+              setRailWork(false);
+            }}
+          />
+        ) : railIndex && !phone ? (
+          <RailTurnIndex
+            turns={logicalTurns}
+            readingTurnId={readingTurn}
+            loadedNumbering={!!currentDetail?.history}
+            onNavigate={navigateToTurn}
+            onBack={() => setRailIndex(false)}
+          />
+        ) : (
+        <>
         <div className="rail-top">
           <RailHeading
             scope={agentScope}
@@ -3306,7 +3484,7 @@ export function App() {
               agentScope === "closed" ? agents.map(row) : (
                 <ExecutorRail agents={agents} listKey={key} workspaceId={workspaceId} selectedId={homeOpen ? null : selected}
                   searching={!!search.trim()} renderAgent={row}
-                  order={appearance.agentOrder === "attention" ? { seen: turnSeen, waiting: proposersWaiting(needsYouItems) } : undefined} />
+                  order={appearance.agentOrder === "attention" ? { seen: turnSeen } : undefined} />
               );
             return groups ? (
               <GroupedAgents
@@ -3366,6 +3544,8 @@ export function App() {
           onOpenChange={setScopeMenuOpen}
           readOnly={previewMode}
         />
+        </>
+        )}
       </aside>
 
       <ClarificationHost.Provider value={{ workspaceId, detail: currentDetail, outgoing, pendingInputs, readOnly: previewMode, submit: submitMessage, refresh }}>
@@ -3437,7 +3617,6 @@ export function App() {
             onNavigate={openFromHome}
             onChanged={refresh}
             onNeedsYou={reportNeedsYou}
-            turnSeen={turnSeen}
             jumpTo={homeJump}
             arrival={homeArrival}
             onBackToReply={(link) => openMessageLink(link)}
@@ -3450,7 +3629,22 @@ export function App() {
               <div className="conversation-title">
                 <Avatar agent={agent} />
                 <div className="conversation-heading">
-                  <h1 title={agent.name}>{agent.name}</h1>
+                  {/* Whole, on demand: pressing it lets the name wrap, for
+                      the reader who has no pointer to hover with. */}
+                  <h1 ref={nameRef} title={agent.name} data-open={nameOpen || undefined}>
+                    {nameCut || nameOpen ? (
+                      <button
+                        type="button"
+                        className="conversation-name"
+                        aria-expanded={nameOpen}
+                        onClick={() => setNameOpen((open) => !open)}
+                      >
+                        {agent.name}
+                      </button>
+                    ) : (
+                      agent.name
+                    )}
+                  </h1>
                   <span className={`status-label runtime-${agent.status}`}>
                     <span className={`status-dot ${agent.status}`} />
                     {closed
@@ -3459,6 +3653,29 @@ export function App() {
                         ? shell.compacting
                         : shell.status[agent.status]}
                   </span>
+                  {/* One line for the Jobs, runs and sub-agents this
+                      conversation has, where there is room to read it; the
+                      dock keeps the detail (T-15). */}
+                  <WorkActivityEntry
+                    expanded={phone ? phoneDock === "work" : railWork && railOpen}
+                    drawer={phone}
+                    onOpen={openWorkView}
+                  />
+                  {/* And beside it, the way into where the reader is: the
+                      rail takes the index where there is a rail, and a phone
+                      opens the drawer it already has. One entry either way,
+                      rather than one per shape (T-15). */}
+                  <button
+                    type="button"
+                    className="conversation-index-entry"
+                    aria-expanded={phone ? phoneDock === "turns" : railIndex && railOpen}
+                    aria-label={shell.readingIndex}
+                    title={shell.readingIndex}
+                    onClick={openIndexView}
+                  >
+                    <History size={14} aria-hidden="true" />
+                    <span>{readingTurnNumber || logicalTurns.length}/{logicalTurns.length}</span>
+                  </button>
                 </div>
               </div>
               <div
@@ -3583,24 +3800,43 @@ export function App() {
                     <button className="quiet-button" onClick={dismissReading}>{shell.notNow}</button>
                   </div>
                 )}
-                {catchupSource?.agentId === selected && (
+                {/* One reading bar, and one way back to the latest in it:
+                    a source being read, the place left off, or a window of
+                    earlier messages. The floating button stands in only when
+                    no bar is showing, so two never appear at once (T-15). */}
+                {readingBar && (
                   <div className="source-navigation" lang={langTag(language)}>
-                    <button
-                      className="quiet-button"
-                      onClick={() =>
-                        sourceOrigin === "home"
-                          ? goHome()
-                          : backToLatest()
-                      }
-                    >
+                    {/* The way back to the latest, always: a reader who is
+                        not at the end needs it whatever brought them here,
+                        and the floating button is suppressed while this bar
+                        shows. Going back to Home is a different destination,
+                        so it stands beside this one rather than in its place.
+                        It used to replace it, and `sourceOrigin` starts at
+                        "home", so a source read from anywhere but the rail
+                        offered no way to the latest at all — the window's own
+                        link having gone when this bar became the one entry
+                        (#459 R3, P2). */}
+                    <button className="quiet-button" onClick={backToLatest}>
                       <ArrowLeft size={13} />
-                      {sourceOrigin === "home" ? shell.backHome : shell.backLatest}
+                      {shell.backLatest}
                     </button>
+                    {source && sourceOrigin === "home" && (
+                      <button className="inline-link source-navigation-home" onClick={goHome}>
+                        {shell.backHome}
+                      </button>
+                    )}
                     <span role="status">
-                      {sourceNotice?.(shell) || (catchupSource.progress !== undefined ? (catchupSource.where ? shell.readingIn(catchupSource.where) : catchupSource.title)
-                        : catchupSource.restore !== undefined ? shell.leftOff
-                        : catchupSource.link ? shell.linked : shell.original)}
+                      {source
+                        ? sourceNotice?.(shell) || (source.progress !== undefined ? (source.where ? shell.readingIn(source.where) : source.title)
+                          : source.restore !== undefined ? shell.leftOff
+                          : source.link ? shell.linked : shell.original)
+                        : shell.earlierMessages}
                     </span>
+                    {historyWindow && (
+                      <button className="inline-link" disabled={live.windowLoading} onClick={() => changeHistoryPage("after")}>
+                        {live.windowLoading ? shell.loadingHistory : shell.newerMessages}
+                      </button>
+                    )}
                   </div>
                 )}
               </ConversationStrips>
@@ -3813,11 +4049,13 @@ export function App() {
                       </p>
                     </div>
                   )}
-                  {currentDetail?.conversation?.hasAfter && <div className="conversation-history-window">
+                  {/* Where the loaded window ends. Back to latest is not
+                      repeated here: the reading bar above carries the one
+                      entry for it (T-15). */}
+                  {historyWindow && <div className="conversation-history-window">
                     <button className="inline-link" disabled={live.windowLoading} onClick={() => changeHistoryPage("after")}>
-                      {live.windowLoading ? "Loading history…" : "Continue to newer messages"}
+                      {live.windowLoading ? shell.loadingHistory : shell.newerMessages}
                     </button>
-                    <button className="inline-link" onClick={backToLatest}>Back to latest</button>
                   </div>}
                   <OutgoingMessages
                     agentId={agent.id}
@@ -3886,6 +4124,10 @@ export function App() {
                   loading: conversationInputs.loading, onEarlier: conversationInputs.loadEarlier } : undefined}
                 atLatest={atBottom && !historyReading}
                 onLatest={backToLatest}
+                // A phone presses this dock in its drawer, so there it keeps
+                // its larger rows. Everywhere else a finger reads it and
+                // chooses from the index instead, so it is a scale and its
+                // rows are the smaller ones again (T-15, V8).
                 touch={phone}
               />
               {phone && (
@@ -3898,7 +4140,7 @@ export function App() {
                   inputs={readingBy === "inputs"}
                 />
               )}
-              {latestShown && (
+              {latestShown && !readingBar && (
                 <button className="jump-latest" ref={latestButton} onClick={backToLatest}>
                   <ArrowDown size={13} />
                   Back to latest
@@ -4464,6 +4706,8 @@ export function App() {
         machinesRevision={String(machinesRevision)}
         claudeRuntime={isClaude ? currentDetail?.claudeRuntime : undefined}
         codexAgent={agent?.harness === "codex" ? agent : null}
+        coreLabel={core.label}
+        coreHealthy={core.healthy}
         onMachines={() => setMachinesOpen(true)}
       />
       <WorkspaceUpdatesHost
@@ -4722,6 +4966,7 @@ export function App() {
       <ToastStack notice={notice} error={menuError} />
       <HandoffDropStrip />
     </div>
+    </WorkActivityProvider>
     </HomeReplyLinks.Provider>
     </MessageLinks.Provider>
     </PointFixOpen.Provider>

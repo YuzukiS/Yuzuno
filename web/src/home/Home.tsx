@@ -8,7 +8,7 @@ import { reportLinkHref, type MessageLink, type ReportLink } from "../deep-link"
 import { arrivalOf, sameSectionLive } from "../home-reply/home-reply-model";
 import { ReplyArrival } from "../home-reply/ReplyArrival";
 import { rememberSeenBlocks } from "./brief/block-changes";
-import { keepUnchanged, projectDomId, requestDomId, sectionDomId, handoverDomId } from "./brief-layout";
+import { keepUnchanged, projectDomId, requestDomId, sectionDomId } from "./brief-layout";
 import { markSeen, readHome, saveHomeOrder, type SeenMark } from "./home-api";
 import { usePhone } from "../phone-layout";
 import { useDelayedPresence, useSurfaceIn } from "../surface";
@@ -19,7 +19,6 @@ import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
 import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou } from "./NeedsYou";
-import { unseenEnd, type TurnSeen } from "../attention";
 import { PinNotes, PinnedSection } from "./PinnedSection";
 import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
@@ -92,7 +91,6 @@ export function Home({
   onNavigate,
   onChanged,
   onNeedsYou,
-  turnSeen,
   jumpTo = null,
   arrival = null,
   onBackToReply,
@@ -111,10 +109,8 @@ export function Home({
   onChanged: () => void;
   /** Each read's Needs you, for the Home tab's count. */
   onNeedsYou?: (items: NeedsYouItem[]) => void;
-  /** What this device has seen of each Agent's last Turn end (T-42). */
-  turnSeen?: TurnSeen;
   /** An Ask "next needs you" goes to; another jump is another `n`. */
-  jumpTo?: { projectId: string | null; sectionKey?: string; proposalId?: string; n: number } | null;
+  jumpTo?: { projectId: string | null; sectionKey?: string; n: number } | null;
   /** "Open on Home" on a reply from Home (T-9): the section and version it
    * answered, and the message to go back to; another opening is another `n`. */
   arrival?: { origin: HomeReplyOrigin; back: MessageLink; n: number } | null;
@@ -138,22 +134,12 @@ export function Home({
   // Workspace's overview (or its cards). Abort is checked before writes.
   const [reading, setReading] = useState<{ workspaceId: string; value: HomeData } | null>(null);
   const data = readOnly ? previewHome : reading?.workspaceId === workspaceId ? reading.value : null;
-  // The Turn ends this device hasn't shown (T-42): failed, then finished.
-  const unseenEnds = useMemo(() => {
-    const open = readOnly || !turnSeen ? [] : agents.filter((a) => !a.closedAt);
-    return {
-      failed: open.filter((a) => unseenEnd(a, turnSeen!) === "failed"),
-      finished: open.filter((a) => unseenEnd(a, turnSeen!) === "finished"),
-    };
-  }, [agents, turnSeen, readOnly]);
   // An Ask "next needs you" chose: shown as its own row's click shows it.
   const jumpToItem = useRef<(item: NeedsYouItem) => void>(() => {});
   const jumped = useRef(0);
   useEffect(() => {
     if (!jumpTo || !data || jumped.current === jumpTo.n) return;
-    const item = data.needsYou.find((n) => n.projectId === jumpTo.projectId && (jumpTo.proposalId
-      ? n.kind === "handover" && n.proposalId === jumpTo.proposalId
-      : n.kind === "ask" && n.sectionKey === jumpTo.sectionKey));
+    const item = data.needsYou.find((n) => n.projectId === jumpTo.projectId && n.kind === "ask" && n.sectionKey === jumpTo.sectionKey);
     if (!item) return;
     jumped.current = jumpTo.n;
     jumpToItem.current(item);
@@ -354,9 +340,7 @@ export function Home({
     revealIn(panel.project.id, () =>
       item.kind === "approval" && item.requestId
         ? document.getElementById(requestDomId(item.requestId))
-        : item.kind === "handover" && item.proposalId
-          ? document.getElementById(handoverDomId(item.proposalId))
-          : item.sectionKey
+        : item.sectionKey
           ? document.getElementById(sectionDomId(panel.project.id, item.sectionKey))
           : null,
     );
@@ -840,8 +824,6 @@ export function Home({
               items={data.needsYou}
               projectName={projectName}
               onJump={jump}
-              unseen={unseenEnds}
-              onOpenAgent={(agentId) => onNavigate({ kind: "agent", agentId })}
             />
           </div>
           {/* The design preview has no workspace: its own default layout, not changed. */}

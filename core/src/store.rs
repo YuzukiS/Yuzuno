@@ -1204,6 +1204,7 @@ impl Store {
         crate::collaboration_store::migrate(&db)?;
         crate::projects::migrate(&db)?;
         crate::agent_roles::migrate(&db)?;
+        crate::session_baseline::migrate(&db)?;
         crate::executor_archiving::migrate(&db)?;
         crate::handover::migrate(&db)?;
         crate::services::migrate(&db)?;

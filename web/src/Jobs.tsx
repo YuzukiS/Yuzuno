@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, useMemo } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { DialogExitGhost } from "./DialogExitGhost";
 import {
@@ -46,7 +46,8 @@ import {
   type CiOpen,
   type Run,
 } from "./CiJobs";
-import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore } from "./WorkDock";
+import { WorkDock, WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity, type WorkEntry } from "./WorkDock";
+import { jobWork, runWork } from "./work-activity.ts";
 import { useAppearance } from "./appearance";
 import { useDocumentVisible } from "./document-visible";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
@@ -176,6 +177,10 @@ type Log = {
  * job's details and output no longer change (T-60). An unknown job is not
  * one: Core holds its reservation and checks the attempt again. */
 const FINISHED = new Set(["succeeded", "failed", "cancelled", "interrupted", "rejected"]);
+/** The Jobs that wait for an earlier stage of their run (T-69), in neither
+ * the running nor the queued count; undefined from a Core that does not
+ * count them. */
+const waitingOf = (budget: JobsBudgetView) => (Number.isFinite(budget.waitingCount) ? budget.waitingCount : undefined);
 /** Still to finish: holding capacity, queued, or a stage waiting for its upstream. */
 const active = (job: Job) =>
   job.reserved || job.status === "queued" || job.status === "waiting";
@@ -385,6 +390,70 @@ export function ConversationJobs({
   // A running job's time so far, as a finished one shows how long it took.
   const now = useNow(shown.some(live));
   const runs = first(ci.runs, runActive, (run) => time(run.updatedAt), dock.actions);
+  /**
+   * What Work activity counts, which is deliberately not everything the Jobs
+   * panel keeps (#459 round 1, P2c; recorded as deviation row 14, a
+   * refinement of d6 B2).
+   *
+   * The panel is the history. This line is what needs a look and what is
+   * going on, so a thing already answered is not held against the count for
+   * good:
+   *
+   *  - a CI workflow is its **latest run**. An older failing run that a
+   *    later run of the same workflow has replaced is history; counting it
+   *    meant one bad run made the entry say "needs a look" forever.
+   *  - a Job the **user cancelled** is not a problem to go and see.
+   *  - a Job that failed and whose **name has since succeeded** is resolved.
+   *
+   * Anything still running counts whatever else is true of it, and nothing
+   * here changes what the panel itself lists.
+   */
+  const work = useMemo<WorkEntry[]>(() => {
+    // One run per workflow — repository and workflow name — the newest kept.
+    const newestRun = new Map<string, Run>();
+    for (const run of ci.runs) {
+      const workflow = `${run.repository}\u0000${run.name}`;
+      const had = newestRun.get(workflow);
+      const newer =
+        !had ||
+        time(run.createdAt) > time(had.createdAt) ||
+        (time(run.createdAt) === time(had.createdAt) && run.cursor > had.cursor);
+      if (newer) newestRun.set(workflow, run);
+    }
+    // When each name last succeeded, so an earlier failure of it is answered.
+    const succeededAt = new Map<string, number>();
+    for (const job of jobs)
+      if (job.status === "succeeded")
+        succeededAt.set(job.name, Math.max(succeededAt.get(job.name) ?? 0, time(job.finishedAt)));
+    const jobState = (job: Job) => {
+      const state = jobWork(job.status);
+      if (state !== "exception") return state;
+      if (job.status === "cancelled") return "uncounted";
+      const answered = succeededAt.get(job.name);
+      return answered && answered > time(job.finishedAt) ? "uncounted" : state;
+    };
+    return [
+      ...jobs.map((job) => ({ id: job.id, kind: "job" as const, state: jobState(job),
+        resumable: checkpointed(job) || stoppingAtCheckpoint(job),
+        name: job.name, says: stateOf(job, t).name,
+        // Its own detail, where it already lives.
+        onOpen: () => openJobs({ jobId: job.id, agentId }) })),
+      ...[...newestRun.values()].map((run) => ({ id: run.id, kind: "run" as const,
+        state: runWork(run.status, run.conclusion),
+        name: run.name, says: run.conclusion ?? run.status,
+        onOpen: () => openJobs({ agentId, source: "github_actions" }) })),
+    ].filter((item) => item.state !== "uncounted") as WorkEntry[];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs, ci.runs, agentId, t]);
+  // The way into each whole list, which the column offers where the dock's
+  // own heading and "+N more" take no presses by touch (#459 round 1, P2a).
+  // Offered while there are any at all, counted or not: a conversation
+  // whose only Job was cancelled has it on the dock, and by touch this is
+  // the one way to it (#459 R8, P3).
+  useWorkActivity("job", work.filter((item: WorkEntry) => item.kind === "job"),
+    () => openJobs({ agentId }), jobs.length > 0);
+  useWorkActivity("run", work.filter((item: WorkEntry) => item.kind === "run"),
+    () => openJobs({ agentId, source: "github_actions" }), ci.runs.length > 0);
   // Jobs, then CI, as marks on the conversation's left edge (WorkDock.tsx).
   // A kind set to 0 has no group here at all.
   return (
@@ -427,8 +496,10 @@ export function ConversationJobs({
           more={ci.runs.length - runs.length}
         />
       )}
-      {/* Its PR reviews, after the runs (T-25), as many as Settings allows. */}
-      {dock.reviews > 0 && <ConversationReviews agentId={agentId} revision={revision} disabled={disabled} limit={dock.reviews} />}
+      {/* Its PR reviews, after the runs (T-25), as many as Settings allows.
+          Mounted at 0 too: it draws nothing then, but it is what tells Work
+          activity about them (#459 R7, P3). */}
+      <ConversationReviews agentId={agentId} revision={revision} disabled={disabled} limit={dock.reviews} />
       {children}
     </WorkDock>
   );
@@ -893,7 +964,8 @@ export function Jobs({
   }, [open]);
   const overlay = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
-  const waiting = budget ? budget.activeCount + budget.queuedCount : 0;
+  const upstream = budget ? waitingOf(budget) : undefined;
+  const waiting = budget ? budget.activeCount + budget.queuedCount + (upstream ?? 0) : 0;
   return (
     <Dialog.Root
       open={open}
@@ -922,10 +994,11 @@ export function Jobs({
           {budget && (
             <span
               className="nav-count"
-              aria-label={t.counts(budget.activeCount, budget.queuedCount)}
-              title={t.countsTitle(budget.activeCount, budget.queuedCount)}
+              aria-label={t.counts(budget.activeCount, budget.queuedCount, upstream)}
+              title={t.countsTitle(budget.activeCount, budget.queuedCount, upstream)}
             >
               {budget.activeCount} / {budget.queuedCount}
+              {upstream !== undefined && ` / ${upstream}`}
             </span>
           )}
         </button>
@@ -1019,7 +1092,7 @@ export function Jobs({
                   {id === "local" && waiting > 0 && (
                     <span
                       className="jobs-rail-count"
-                      title={t.onMachine(budget!.activeCount, budget!.queuedCount)}
+                      title={t.onMachine(budget!.activeCount, budget!.queuedCount, upstream)}
                     >
                       {waiting}
                     </span>
@@ -1295,10 +1368,10 @@ function JobsBudget({
           <strong>{budget.machine.name}</strong>
           {slots ? (
             <span className="jobs-budget-counts" title={t.slotsTitle(slots.value, slots.set)}>
-              {t.activeOf(budget.activeCount, slots.value, budget.queuedCount)}
+              {t.activeOf(budget.activeCount, slots.value, budget.queuedCount, waitingOf(budget))}
             </span>
           ) : (
-            <span className="jobs-budget-counts">{t.activeQueued(budget.activeCount, budget.queuedCount)}</span>
+            <span className="jobs-budget-counts">{t.activeQueued(budget.activeCount, budget.queuedCount, waitingOf(budget))}</span>
           )}
         </div>
         <div className="jobs-budget-side">

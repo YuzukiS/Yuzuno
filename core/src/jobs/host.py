@@ -51,6 +51,16 @@ MANIFEST_LIMIT = 1024 * 1024
 CHECKPOINT_FILES = 1000
 # Written when the command of an attempt with a checkpoint has exited.
 CHECKPOINT_EXIT = 'checkpoint-exit.json'
+# A command that exits and leaves processes in its worker's cgroup (YN-6 S4),
+# as the SSH and Windows runners treat it: its output is read for at most this
+# long after it exited, and whatever is still in the cgroup this long after the
+# worker exited is recorded (LEFTOVER) and stopped, so the attempt ends and its
+# reservation is released. The wrapper writes WORKER_EXIT as its last act.
+LEFTOVER_GRACE = 5
+LEFTOVER = 'leftover.json'
+WORKER_EXIT = 'worker-exit.json'
+# The processes a leftover record names, at most (by pid and name only).
+LEFTOVER_NAMES = 20
 
 def command(args, timeout=8, check=True):
     # All manager commands have small output; never capture the job's stdout.
@@ -124,6 +134,15 @@ def pids_evidence(spec, folder, state, previous=None):
     return previous
 
 def terminal_reason(spec, folder, status, state, pids):
+    reason = command_reason(spec, folder, status, state, pids)
+    leftover = own_leftover(spec, folder)
+    if not leftover:
+        return reason
+    names = ', '.join(p.get('comm') or str(p.get('pid')) for p in leftover.get('processes') or [])
+    return (f"{reason or status}; {leftover.get('count')} process(es) still in its cgroup {leftover.get('graceSeconds')} s "
+            f"after it exited were stopped" + (f" ({names})" if names else ''))
+
+def command_reason(spec, folder, status, state, pids):
     changed = read(folder / 'input-changed.json')
     reason = (changed or {}).get('reason') or state.get('Result')
     if status == 'cancelled' and (read(folder / 'checkpoint.json') or {}).get('ok') is True:
@@ -893,8 +912,27 @@ def launch(spec, folder, stage):
         atomic(folder / 'command.json', command_record)
         if forward:
             forward.started(child)
+        # Read until the output ends, or for LEFTOVER_GRACE after the command
+        # exited when a process it left holds the output open (YN-6 S4). The
+        # exit is seen without reaping the command (WNOWAIT), so its PID stays
+        # its own until it is waited for below.
+        fd = child.stdout.fileno()
+        exited = None
+        held_open = False
+        poll = selectors.DefaultSelector()
+        poll.register(fd, selectors.EVENT_READ)
         while True:
-            chunk = os.read(child.stdout.fileno(), 16384)
+            if exited is None and os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                exited = time.monotonic()
+                if forward:
+                    # From here no stop is forwarded to it.
+                    forward.exited = True
+            if exited is not None and time.monotonic() - exited >= LEFTOVER_GRACE:
+                held_open = True
+                break
+            if not poll.select(0.2 if exited is None else max(0.05, LEFTOVER_GRACE - (time.monotonic() - exited))):
+                continue
+            chunk = os.read(fd, 16384)
             if not chunk:
                 break
             while chunk:
@@ -913,8 +951,13 @@ def launch(spec, folder, stage):
                 part, chunk = chunk[:SEGMENT - at], chunk[SEGMENT - at:]
                 log.write(part)
                 total += len(part)
+        poll.close()
+        if held_open:
+            # Its writes now fail; the collector stops what is left.
+            child.stdout.close()
         code = forward.wait(child) if forward else child.wait()
-        atomic(folder / 'command.json', {**command_record, 'exitCode': code, 'endedAt': time.time()})
+        atomic(folder / 'command.json', {**command_record, 'exitCode': code, 'endedAt': time.time(),
+                                         **({'outputHeldOpen': True} if held_open else {})})
     finally:
         if log:
             os.fsync(log.fileno())
@@ -946,6 +989,11 @@ def launch(spec, folder, stage):
                                                'artifacts': [check_artifact(spec['cwd'], a) for a in spec['artifacts']]})
         except Exception:
             pass
+    # Last: the collector looks for what the command left only after this.
+    try:
+        atomic(folder / WORKER_EXIT, {'attempt': spec['attempt'], 'exitCode': code, 'at': time.time()})
+    except OSError:
+        pass
     if code < 0:
         if forward:
             signal.signal(signal.SIGUSR1, signal.SIG_DFL)
@@ -1000,10 +1048,24 @@ def result(spec, folder, status, evidence, reason=None):
         atomic(folder / 'result.json', value)
         return value
 
+def own_leftover(spec, folder):
+    """This attempt's leftover record (YN-6 S4), or None."""
+    record = read(folder / LEFTOVER)
+    return record if isinstance(record, dict) and record.get('attempt') == spec['attempt'] else None
+
+def ended_state(spec, folder, state):
+    """The worker unit as its ending is read from: as the worker left it when
+    the collector then stopped what it left (LEFTOVER), since the stop unloads
+    a cleanly stopped unit (InvocationID and ExecMainCode read empty) or makes
+    Result `timeout` when SIGKILL was needed (YN-6 S4 probe 1); else `state`."""
+    leftover = own_leftover(spec, folder)
+    return leftover['unitAtExit'] if leftover and isinstance(leftover.get('unitAtExit'), dict) else state
+
 def classify(spec, folder, state):
     proof = read(folder / 'started.json')
     if proof and (proof['bootId'] != boot_id() or proof['attempt'] != spec['attempt']):
         return None
+    state = ended_state(spec, folder, state)
     if not proof or not state.get('InvocationID') or state['InvocationID'] != proof['invocationId']:
         return None
     if state.get('MainPID') != '0' or not group_empty(proof['controlGroup']):
@@ -1354,6 +1416,50 @@ def past_end(spec, now=None):
     end = spec.get('deadlineAtUnix')
     return end is not None and (time.time() if now is None else now) >= end
 
+def worker_exited(spec, folder):
+    """Whether this attempt's wrapper wrote its last record (WORKER_EXIT)."""
+    record = read(folder / WORKER_EXIT)
+    return isinstance(record, dict) and record.get('attempt') == spec['attempt']
+
+def cgroup_procs(group):
+    """The PIDs in a cgroup now, or [] when it can't be read."""
+    try:
+        return [int(p) for p in (Path('/sys/fs/cgroup') / group.lstrip('/') / 'cgroup.procs').read_text().split()]
+    except (OSError, ValueError):
+        return []
+
+def process_name(pid):
+    """A process's name (comm), never its command line; None once it is gone."""
+    try:
+        return Path(f'/proc/{pid}/comm').read_text().strip()
+    except OSError:
+        return None
+
+def stop_leftovers(spec, folder):
+    """The worker exited LEFTOVER_GRACE ago and its cgroup still holds
+    processes the command left (YN-6 S4). Record the unit as the worker left
+    it and those processes (pid and name, never their command line), then stop
+    the unit: KillMode=control-group sends SIGTERM to all, SIGKILL after
+    TimeoutStopSec. Returns the unit's state after the stop, or None when it is
+    not this attempt's exited worker with something left (nothing is done)."""
+    state = show(spec['unit'])
+    proof = read(folder / 'started.json') or {}
+    group = state.get('ControlGroup')
+    if (state.get('MainPID') != '0' or state.get('SubState') != 'exited' or group_empty(group)
+            or not state.get('InvocationID') or state.get('InvocationID') != proof.get('invocationId')):
+        return None
+    pids = cgroup_procs(group)
+    processes = [{'pid': pid, 'comm': process_name(pid)} for pid in pids[:LEFTOVER_NAMES]]
+    atomic(folder / LEFTOVER, {'attempt': spec['attempt'], 'at': time.time(), 'graceSeconds': LEFTOVER_GRACE,
+                               'count': len(pids), 'processes': processes, 'unitAtExit': state})
+    command(['systemctl', '--user', 'stop', spec['unit']], timeout=15, check=False)
+    return show(spec['unit'])
+
+def leftover_evidence(spec, folder, state):
+    """With a leftover record: it, and the unit as the stop left it."""
+    leftover = own_leftover(spec, folder)
+    return {'leftover': leftover, 'systemdAfterStop': state} if leftover else {}
+
 def supervise(spec, folder):
     # Unique transient unit plus a durable start intent: no automatic process retry.
     if read(folder / 'launch.json'):
@@ -1393,8 +1499,16 @@ def supervise(spec, folder):
     last = show(spec['unit'])
     pids = None
     asked, wait = None, 0
+    # When the worker wrote its last record, while its cgroup still held
+    # processes (YN-6 S4).
+    exited = None
     while time.monotonic() < deadline:
         pids = pids_evidence(spec, folder, last, pids)
+        populated = not launch.returncode and not group_empty(last.get('ControlGroup'))
+        if populated and exited is None and worker_exited(spec, folder):
+            exited = time.monotonic()
+        if populated and exited is not None and time.monotonic() - exited >= LEFTOVER_GRACE and not own_leftover(spec, folder):
+            last = stop_leftovers(spec, folder) or last
         if (launch.returncode or group_empty(last.get('ControlGroup'))) and (asked is None or time.monotonic() - asked >= wait):
             if asked is not None:
                 wait = min(2, wait * 2 or .5)
@@ -1403,9 +1517,9 @@ def supervise(spec, folder):
             pids = pids_evidence(spec, folder, last, pids)
             status = classify(spec, folder, last)
             if status:
-                outcome = result(spec, folder, status, {'launch': launch_evidence, 'systemd': last, 'pids': pids,
-                                                        'deadline': read(folder / 'deadline.json')},
-                                 terminal_reason(spec, folder, status, last, pids))
+                outcome = result(spec, folder, status, {'launch': launch_evidence, 'systemd': ended_state(spec, folder, last), 'pids': pids,
+                                                        'deadline': read(folder / 'deadline.json'), **leftover_evidence(spec, folder, last)},
+                                 terminal_reason(spec, folder, status, ended_state(spec, folder, last), pids))
                 command(['systemctl', '--user', 'stop', spec['unit']], check=False)
                 command(['systemctl', '--user', 'reset-failed', spec['unit']], check=False)
                 return outcome
@@ -1437,8 +1551,9 @@ def reconcile(spec, folder):
     status = classify(spec, folder, state)
     if status:
         pids = pids_evidence(spec, folder, state)
-        return settled(spec, folder, result(spec, folder, status, {'systemd': state, 'pids': pids},
-                                           terminal_reason(spec, folder, status, state, pids)))
+        return settled(spec, folder, result(spec, folder, status, {'systemd': ended_state(spec, folder, state), 'pids': pids,
+                                                                   **leftover_evidence(spec, folder, state)},
+                                           terminal_reason(spec, folder, status, ended_state(spec, folder, state), pids)))
     proof = read(folder / 'started.json')
     # A frozen worker still reads active/running; its cgroup tells paused apart.
     paused = freezer(proof) if proof and proof.get('invocationId') == state.get('InvocationID') else None
