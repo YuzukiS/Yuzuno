@@ -2,7 +2,7 @@
  * Home's reads and writes (interfaces.md §3). Core owns every fact here; the
  * client only sends what the user explicitly did, with the versions it showed.
  */
-import { api, HttpError, post } from "../api";
+import { api, errorText, HttpError, post } from "../api";
 import type { MessageReceipt } from "../types";
 import type { HomeData, MachineLoad } from "./types";
 
@@ -121,6 +121,20 @@ export function dropPendingReply(slot: string) {
   const outbox = loadOutbox();
   delete outbox[slot];
   saveOutbox(outbox);
+}
+
+/** Why a send failed: Core's reason, or that this Core is too old, worded
+ * when shown so it follows the interface language (T-189). */
+export const OLDER_CORE = Symbol("older Core");
+
+/** A Core from before card replies refuses the reply's version: nothing was sent. */
+export const olderCore = (error: unknown) =>
+  error instanceof HttpError && /unknown field `(version|title)`/.test(errorText(error));
+
+/** Core's reason without its code, or that an older Core refused the reply. */
+export function explain(error: unknown) {
+  if (olderCore(error)) return OLDER_CORE;
+  return errorText(error).replace(/^(section_changed|section_removed):\s*/, "");
 }
 
 export const sentStatus = (receipt: MessageReceipt) =>

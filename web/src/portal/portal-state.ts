@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { HttpError, post } from "../api";
 import type { ProjectService } from "../ProjectServices";
+import type { PageReplyTo } from "../home/PageSend";
 
 /**
  * What the Portal shows (T-5): a project's web service, or a single HTML file
@@ -18,6 +19,8 @@ export type PortalTarget =
       name: string;
       /** Where the file comes from, as the user knows it ("Mori's conversation file"). */
       from: string;
+      /** A Brief section's page: who its messages may go to (YN-16 S6). Absent elsewhere: a page's message is not offered. */
+      replyTo?: PageReplyTo;
     }
   | {
       kind: "service";

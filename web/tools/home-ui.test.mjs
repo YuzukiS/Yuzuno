@@ -3400,6 +3400,150 @@ test("YN-3 a card's HTML page works on its card once in view: one card preview, 
   }
 });
 
+// YN-16 S6: the page's frame, as the bridge reads and answers it. A message
+// event as the browser delivers one: from the frame's own window, origin "null".
+const fromPage = (p, data, source, origin = "null") => p.w.dispatchEvent(new p.w.MessageEvent("message", { data, source, origin }));
+// What Home posts to the frame's window, kept instead of delivered.
+function givenTo(frame) {
+  const given = [];
+  Object.defineProperty(frame.contentWindow, "postMessage", { configurable: true, value: (message, origin) => given.push([message, origin]) });
+  return given;
+}
+
+test("YN-16 S6 a card's page talks to Home only through the bridge: the theme on its first load and on a change, its height within 120-1600 px, a message sent to the section's author only on Send", async () => {
+  let show;
+  const p = await mount({ home: pageFixture(), before: (w) => (show = watchedViews(w)) });
+  try {
+    cardPreviews(p);
+    const ring = () => card(p, "p-app", "ring");
+    await waitFor(() => ring()?.querySelector(".home-card-page"), "the ring card's page frame");
+    show();
+    await waitFor(() => ring().querySelector("iframe.home-card-page-frame"), "the page is shown");
+    const frame = ring().querySelector("iframe.home-card-page-frame");
+    const page = frame.contentWindow;
+    const given = givenTo(frame);
+    frame.dispatchEvent(new p.w.Event("load"));
+    assert.equal(given.length, 1, "the theme, on its first load");
+    const [[theme, origin]] = given;
+    assert.equal(origin, "*", "an opaque origin is named *");
+    assert.equal(theme.type, "yuzuno:theme");
+    assert.deepEqual(Object.keys(theme.vars), ["--paper", "--ink", "--line", "--accent-ink", "--green", "--font"]);
+    assert.equal(theme.scheme, "light");
+    // Its height: kept within 120-1600 px, the newest once per frame. The bridge
+    // starts listening in an effect after the frame is drawn: the first height is
+    // sent until it is taken, and from then on the bridge is known to listen.
+    await waitFor(() => {
+      fromPage(p, { type: "yuzuno:height", px: 5000 }, page);
+      return frame.style.height === "1600px";
+    }, "at most 1600 px");
+    fromPage(p, { type: "yuzuno:height", px: 40 }, page);
+    fromPage(p, { type: "yuzuno:height", px: 300.4 }, page);
+    await waitFor(() => frame.style.height === "300px", "the newest");
+    assert.ok(ring().querySelector(".home-card-page").classList.contains("is-sized"));
+    fromPage(p, { type: "yuzuno:height", px: 40 }, page);
+    await waitFor(() => frame.style.height === "120px", "at least 120 px");
+    // The bridge listens now (a height was taken, by the effect that also watches the theme): the theme changes.
+    p.doc.documentElement.dataset.theme = "dark";
+    await waitFor(() => given.length === 2, "the theme given again when it changes");
+    assert.equal(given[1][0].scheme, "dark");
+    p.doc.documentElement.dataset.agentList = "compact";
+    await pause(30);
+    assert.equal(given.length, 2, "nothing else is given");
+    // Not this page's, or not a message the bridge takes: nothing.
+    fromPage(p, { type: "yuzuno:send", text: "from Home's own window" }, p.w);
+    fromPage(p, { type: "yuzuno:send", text: "from a page with an origin" }, page, "http://127.0.0.1:47390");
+    fromPage(p, { type: "yuzuno:send", text: "x".repeat(2001) }, page);
+    fromPage(p, { type: "yuzuno:send", text: "   " }, page);
+    fromPage(p, { type: "yuzuno:send", text: 42 }, page);
+    fromPage(p, { type: "yuzuno:height", px: 900 }, p.w);
+    await pause(30);
+    const bar = () => ring().querySelector(".home-page-send");
+    assert.equal(bar(), null, "nothing offered");
+    assert.equal(frame.style.height, "120px", "another window's height is not taken");
+    // Offered: the newest replaces the one before; Don't send sends nothing.
+    fromPage(p, { type: "yuzuno:send", text: "First idea" }, page);
+    await waitFor(() => bar(), "the page's message offered under it");
+    fromPage(p, { type: "yuzuno:send", text: "  Ring size 7, gold  " }, page);
+    await waitFor(() => /Ring size 7, gold/.test(bar().textContent), "a newer one replaces it");
+    assert.doesNotMatch(bar().textContent, /First idea/);
+    assert.equal(bar().querySelector(".home-page-send-head").textContent, "ring.html asks to send this to Mori, as your reply:");
+    assert.equal(bar().querySelector(".home-page-send-text").textContent, "Ring size 7, gold");
+    p.button("Don't send", bar()).click();
+    await waitFor(() => !bar(), "gone, not sent");
+    assert.deepEqual(p.posts(/\/brief\/reply$/), [], "nothing is sent without Send");
+    // Send: the user's own reply from Home, to the section's author, at the version shown.
+    fromPage(p, { type: "yuzuno:send", text: "Ring size 7, gold" }, page);
+    await waitFor(() => bar(), "offered again");
+    // Send takes a message only once it has been shown a second (S6 R1 P2).
+    const sendButton = () => p.button("Send", bar());
+    assert.equal(sendButton().disabled, true, "not yet: just shown");
+    const shownAt = Date.now();
+    await waitFor(() => !sendButton().disabled, "armed once read");
+    assert.ok(Date.now() - shownAt >= 900, `armed after about a second, not ${Date.now() - shownAt} ms`);
+    // The page swaps its text as the pointer reaches Send, and the click lands
+    // before the bar is drawn again: the text the user read is not the newest,
+    // so nothing is sent; the new text is shown, and Send waits for it to be read.
+    const read = sendButton();
+    fromPage(p, { type: "yuzuno:send", text: "Ring size 9, silver" }, page);
+    read.click();
+    await waitFor(() => /Ring size 9, silver/.test(bar().textContent), "the new text shown");
+    assert.equal(sendButton().disabled, true, "the new text is not read yet");
+    await pause(60);
+    assert.deepEqual(p.posts(/\/brief\/reply$/), [], "neither the text read nor the one swapped in is sent");
+    // The page offers the first again: a new text to read, then Send sends what it shows.
+    fromPage(p, { type: "yuzuno:send", text: "Ring size 7, gold" }, page);
+    await waitFor(() => bar().querySelector(".home-page-send-text").textContent === "Ring size 7, gold" && sendButton().disabled, "shown again, not armed");
+    await waitFor(() => !sendButton().disabled, "armed again");
+    sendButton().click();
+    await waitFor(() => /Sent to Mori\./.test(bar()?.textContent ?? ""), "sent");
+    const sent = p.posts(/\/brief\/reply$/);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].url, /\/api\/projects\/p-app\/brief\/reply$/);
+    const { key, agentId, text, version, title, clientMessageId } = sent[0].body;
+    assert.deepEqual({ key, agentId, text, version, title }, { key: "ring", agentId: "a", text: "From the page “ring.html”:\n\nRing size 7, gold", version: 3, title: "Ring design" });
+    assert.equal(typeof clientMessageId, "string");
+    assert.ok(!("shown" in sent[0].body) && !("sentAt" in sent[0].body), "what is kept here only stays here");
+    // A page that went elsewhere is not listened to.
+    frame.dispatchEvent(new p.w.Event("load"));
+    await waitFor(() => /loaded something else/.test(ring().querySelector(".home-card-page").textContent), "moved");
+    fromPage(p, { type: "yuzuno:send", text: "from where it went" }, page);
+    await pause(30);
+    assert.equal(bar(), null);
+    assert.equal(given.length, 2, "no theme for the page it went to");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("YN-16 S6 a card's page whose author is not open in the Project: its message is shown, and can't be sent from here", async () => {
+  let show;
+  const home = pageFixture();
+  home.projects.find((entry) => entry.project.id === "p-app").brief.sections.find((s) => s.key === "ring").owner.state = "closed";
+  const p = await mount({ home, before: (w) => (show = watchedViews(w)) });
+  try {
+    cardPreviews(p);
+    const ring = () => card(p, "p-app", "ring");
+    await waitFor(() => ring()?.querySelector(".home-card-page"), "the ring card's page frame");
+    show();
+    await waitFor(() => ring().querySelector("iframe.home-card-page-frame"), "the page is shown");
+    const frame = ring().querySelector("iframe.home-card-page-frame");
+    givenTo(frame);
+    frame.dispatchEvent(new p.w.Event("load"));
+    const bar = () => ring().querySelector(".home-page-send");
+    // Sent until the bridge, listening from an effect after the frame is drawn, takes it.
+    await waitFor(() => bar() || (fromPage(p, { type: "yuzuno:send", text: "Ring size 7" }, frame.contentWindow), false), "offered");
+    assert.match(bar().textContent, /ring\.html asks to send this to Mori, who isn't open in this Project, so it can't be sent from here:/);
+    assert.deepEqual([...bar().querySelectorAll("button")].map((b) => b.textContent.trim()), ["Don't send"]);
+    p.button("Don't send", bar()).click();
+    await waitFor(() => !bar(), "gone");
+    assert.deepEqual(p.posts(/\/brief\/reply$/), []);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 test("YN-3 a card's page shown when its author writes a new version: the new version's page, not loaded something else (PR C2's review)", async () => {
   let show;
   const p = await mount({ home: pageFixture(), before: (w) => (show = watchedViews(w)) });

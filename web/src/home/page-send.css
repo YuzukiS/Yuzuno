@@ -1,0 +1,46 @@
+/* A page's message under its frame (YN-16 S6, PageSend.tsx): what it asks to
+   send, to whom, and Send or Don't send. Nothing is sent without Send. */
+.home-page-send {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.home-page-send > p {
+  margin: 0;
+}
+.home-page-send-text {
+  max-height: 9em;
+  overflow: auto;
+  padding: 6px 8px;
+  border-left: 3px solid var(--line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.home-page-send-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* 40 px targets everywhere, as the Brief's own controls (brief.css): a phone's
+   pointer is not always reported coarse. */
+.home-page-send-actions > button {
+  min-height: 40px;
+}
+/* In the Portal, under its page. */
+.portal-panel .home-page-send {
+  margin: 8px 12px 12px;
+}
+/* A page that gives its own height (frame-bridge.ts) is drawn at it, 120–1600 px. */
+.home-card-page.is-sized,
+.home-card-frame.kind-page:has(> .home-card-page.is-sized) {
+  min-height: 0;
+}
+.home-card-page.is-sized {
+  flex: 0 0 auto;
+}
