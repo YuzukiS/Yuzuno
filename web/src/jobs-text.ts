@@ -147,6 +147,12 @@ export const jobsText = strings({
   notLowered: (reason: string) => `Not lowered: ${reason}`,
   memoryLimit: "Memory limit",
   loweredLine: (from: string, to: string, by: string, at: string) => `Lowered from ${from} to ${to} by ${by}, ${at}`,
+  suggestedRam: "Suggested RAM",
+  keptSuggestion: (asked: string, memory: string, runs: number, peak: string, project: boolean, limit: boolean) =>
+    `Asked ${asked} · suggested ${memory} from ${runs === 1 ? "1 earlier run" : `${runs} earlier runs`}${project ? " of this command in this Project's other tasks" : ""} (peak ${peak}${limit ? "; one was stopped at its memory limit" : ""})`,
+  farAboveSuggestion:
+    "More than 1.5 × the suggestion: all of it is held in the shared budget while the job waits and runs. To ask less, cancel and submit again, or lower its memory limit once it runs.",
+  belowPeak: "Below the peak of those runs: it may be stopped at its memory limit.",
   notReserved: "; not reserved",
   onDevices: (devices: string) => ` on ${devices}`,
   currentRam: "Current RAM",
@@ -327,6 +333,11 @@ export const jobsText = strings({
   notLowered: (reason) => `未降低：${reason}`,
   memoryLimit: "内存上限",
   loweredLine: (from, to, by, at) => `${at} 由 ${by} 从 ${from} 降到 ${to}`,
+  suggestedRam: "建议内存",
+  keptSuggestion: (asked, memory, runs, peak, project, limit) =>
+    `申请 ${asked} · 按${project ? "本项目其他任务中同命令的" : ""}之前 ${runs} 次运行建议 ${memory}（峰值 ${peak}${limit ? "；其中一次在内存上限处被停止" : ""}）`,
+  farAboveSuggestion: "超过建议值的 1.5 倍：排队和运行期间，申请的全部内存都占着共享预算。要少申请，可取消后重新提交，或在它运行后降低内存上限。",
+  belowPeak: "低于这些运行的峰值：可能在内存上限处被停止。",
   notReserved: "；未预留",
   onDevices: (devices) => `，位于 ${devices}`,
   currentRam: "当前内存",
