@@ -576,6 +576,36 @@ test("a LiveRefs item and a ResearchDesk plan's link may name a run of stages, a
   assert.match(briefGuide("research"), /links name existing tasks, Jobs or runs of stages \(kind run, the runId job_run_submit returned\)/);
 });
 
+// YN-7 item 3: a number may be a CSV or TSV row's cell, the row named by the
+// text its key columns hold; each read form only from its own kind of file.
+test("a ResearchDesk number may be a CSV row's cell named by its key columns, and the guide says how it matches (YN-7)", () => {
+  const cell = { from: "table.csv", row: { sport: "alpha", d: "2" }, column: "auc" };
+  const withCsv = (number, path = "/home/me/study/table.csv") => {
+    const copy = structuredClone(doseStudy);
+    copy.attachments.push({ name: "table.csv", path });
+    copy.body.elements.desk.props.plots[0].rows[0].estimate.value = number;
+    return copy;
+  };
+  assert.doesNotThrow(() => checkBriefSection(withCsv(cell)), "a row's cell from a .csv");
+  assert.doesNotThrow(() => checkBriefSection(withCsv(cell, "/home/me/study/table.TSV")), "a row's cell from a .tsv");
+  assert.deepEqual(researchReads(checkBriefSection(withCsv(cell)).body.elements.desk.props)[0], { at: "low-v2.value", ...cell });
+  // table.csv then holds no read and is flagged too; the read's own problem is the one here.
+  const fromJson = problems(withCsv({ ...cell, from: "results.json" })).find((found) => found.code === "research_attachment");
+  assert.equal(fromJson.code, "research_attachment");
+  assert.match(fromJson.reason, /reads a row's cell from CSV or TSV files only/);
+  assert.equal(first(withCsv({ from: "table.csv", pointer: "/0/auc" })).code, "research_attachment", "a JSON Pointer is not a CSV read");
+  const wide = first(withCsv({ ...cell, row: { a: "1", b: "2", c: "3", d: "4", e: "5" } }));
+  assert.equal(wide.code, "invalid_field");
+  assert.match(wide.reason, /Name 1 to 4 columns/);
+  assert.equal(first(withCsv({ ...cell, row: {} })).code, "invalid_field", "a row names at least one column");
+  assert.equal(first(withCsv({ ...cell, column: " " })).code, "invalid_field", "a column has a name");
+  assert.equal(first(withCsv({ ...cell, pointer: "/0" })).code, "invalid_field", "a pointer or a row, not both");
+  assert.equal(BRIEF_PROBLEM_CODES.research_attachment, "A ResearchDesk number read from an attachment of the wrong kind: a JSON Pointer needs a .json file, a CSV row a .csv or .tsv file, each with a path.");
+  const guide = briefGuide("research");
+  assert.match(guide, /\{from, row, column\} for one whose path ends in \.csv or \.tsv/);
+  assert.match(guide, /Cells compare as text as written, without the spaces around them: "2" does not match "2\.0"\. No matching row shows as missing, two or more as ambiguous, never a guess/);
+});
+
 test("contract.json carries the brief, generated from this file", async () => {
   const committed = JSON.parse(await readFile(new URL("../../runtimes/result-validator/contract.json", import.meta.url), "utf8"));
   const brief = describeBrief();
@@ -651,7 +681,7 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   assert.equal(rejected((p) => { p.definitions[0].versions[1].version = 1; }).code, "duplicate_id");
   assert.equal(rejected((p) => { p.revisions[0].definition = { id: "recovery", from: 2, to: 1 }; }).code, "definition_order");
   assert.equal(rejected((p) => { p.revisions[0].claim = "nowhere"; }).code, "missing_reference");
-  // Numbers come only from this section's JSON attachments.
+  // Numbers come only from this section's attachments; a JSON Pointer only from a JSON file.
   const unregistered = rejected((p) => { p.plots[0].rows[0].estimate.value.from = "other.json"; });
   assert.equal(unregistered.code, "missing_attachment");
   assert.equal(unregistered.path, "body.elements.desk.props.plots.0.rows.0.estimate.value.from");

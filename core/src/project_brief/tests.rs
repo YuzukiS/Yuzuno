@@ -310,7 +310,7 @@ async fn a_closed_or_deleted_owners_sections_are_claimed_once_within_the_project
 }
 
 #[tokio::test]
-async fn topic_sub_topic_ask_and_attachment_limits_are_rejected_with_their_codes() {
+async fn topic_sub_topic_and_attachment_limits_are_rejected_with_their_codes() {
     let (_dir, ws, _project) = lab();
     let topics: Vec<Value> = (0..12).map(|n| put(&format!("t{n}"), "report")).collect();
     accept(&ws, "a", input("a1", 0, topics)).await;
@@ -319,20 +319,40 @@ async fn topic_sub_topic_ask_and_attachment_limits_are_rejected_with_their_codes
     let subs: Vec<Value> = (1..=4).map(|n| put(&format!("t0/s{n}"), "report")).collect();
     accept(&ws, "a", input("a3", 1, subs)).await;
     assert_eq!(codes(&reject(&ws, "a", input("a4", 2, vec![put("t0/s5", "report")])).await), ["topic_limit"]);
-    let asks: Vec<Value> = (1..=3).map(|n| put(&format!("t1/q{n}"), "ask")).collect();
-    accept(&ws, "a", input("a5", 2, asks)).await;
-    assert_eq!(codes(&reject(&ws, "a", input("a6", 3, vec![put("t1/q4", "ask")])).await), ["ask_limit"]);
-    assert_eq!(brief(&ws, "a")["you"]["openAsks"], 3);
-    // Another Agent has its own three.
-    accept(&ws, "b", input("b1", 3, vec![put("t2/q1", "ask")])).await;
-    // An ask the Agent claims counts too.
-    close(&ws, "b", true);
-    assert_eq!(codes(&reject(&ws, "a", input("a7", 4, vec![op("claim", "t2/q1")])).await), ["ask_limit"]);
     let mut many = put("t3", "report");
     many["attachments"] = json!((0..13).map(|n| json!({"name":format!("f{n}.txt"),"url":"https://example.com"})).collect::<Vec<_>>());
-    assert_eq!(codes(&reject(&ws, "a", input("a8", 4, vec![many])).await), ["attachment_limit"]);
+    assert_eq!(codes(&reject(&ws, "a", input("a8", 2, vec![many])).await), ["attachment_limit"]);
     let changes: Vec<Value> = (0..25).map(|n| put(&format!("t4/x{n}"), "report")).collect();
-    assert!(codes(&reject(&ws, "a", input("a9", 4, changes)).await).contains(&"invalid_input".to_owned()));
+    assert!(codes(&reject(&ws, "a", input("a9", 2, changes)).await).contains(&"invalid_input".to_owned()));
+}
+
+#[tokio::test]
+async fn an_agent_with_three_unresolved_asks_still_puts_a_fourth_and_a_fifth() {
+    // YN-11: the user wants no per-Agent cap on unresolved asks.
+    let (_dir, ws, project) = lab();
+    let asks: Vec<Value> = (1..=3).map(|n| put(&format!("q{n}"), "ask")).collect();
+    accept(&ws, "a", input("a1", 0, asks)).await;
+    // A replied ask is still unresolved.
+    assert!(sections::mark_replied_live(&ws.store, &project, "q1", "Left").unwrap());
+    assert_eq!(brief(&ws, "a")["you"]["openAsks"], 3);
+    let fourth = call(&ws, "a", input("a2", 1, vec![put("q4", "ask")])).await.unwrap();
+    assert!(fourth.is_ok(), "a fourth unresolved ask is accepted: {fourth:?}");
+    let fifth = call(&ws, "a", input("a3", 2, vec![put("q5", "ask")])).await.unwrap();
+    assert!(fifth.is_ok(), "a fifth unresolved ask is accepted: {fifth:?}");
+    // An ask claimed from a closed Agent is added the same way.
+    accept(&ws, "b", input("b1", 3, vec![put("theirs", "ask")])).await;
+    close(&ws, "b", true);
+    let claimed = call(&ws, "a", input("a4", 4, vec![op("claim", "theirs")])).await.unwrap();
+    assert!(claimed.is_ok(), "a claimed sixth unresolved ask is accepted: {claimed:?}");
+    // openAsks still counts them, as information; limits name no cap.
+    let read = brief(&ws, "a");
+    assert_eq!(read["you"]["openAsks"], 6);
+    assert!(read["limits"].get("openAsksPerAgent").is_none(), "{}", read["limits"]);
+    // Needs you lists every open one; the replied q1 waits for its owner.
+    let mut needs: Vec<Value> = home::build(&ws.store).unwrap()["needsYou"].as_array().unwrap().iter()
+        .filter(|n| n["kind"] == "ask").map(|n| n["sectionKey"].clone()).collect();
+    needs.sort_by_key(|key| key.to_string());
+    assert_eq!(needs, ["q2", "q3", "q4", "q5", "theirs"].map(|key| json!(key)));
 }
 
 #[tokio::test]
@@ -1547,7 +1567,8 @@ fn the_tools_come_from_the_contract_and_brief_get_and_update_load_without_search
     assert!(schema["properties"].as_object().unwrap().keys().all(|key| !key.contains("agent") && key != "turnId"));
     // Core enforces the numbers the contract tells Agents.
     let limits = &brief_contract().unwrap()["limits"];
-    for (key, value) in [("topics", MAX_TOPICS as u64), ("subtopicsPerTopic", MAX_SUBTOPICS as u64), ("openAsksPerAgent", MAX_OPEN_ASKS as u64),
+    assert!(limits.get("openAsksPerAgent").is_none(), "no per-Agent ask limit (YN-11)");
+    for (key, value) in [("topics", MAX_TOPICS as u64), ("subtopicsPerTopic", MAX_SUBTOPICS as u64),
         ("attachments", MAX_ATTACHMENTS as u64), ("snapshotFileBytes", SNAPSHOT_FILE_BYTES), ("snapshotBriefBytes", SNAPSHOT_BRIEF_BYTES),
         ("historyDays", HISTORY_DAYS as u64), ("recentlyLeft", sections::RECENTLY_LEFT as u64), ("chartSeries", attachments::CHART_SERIES as u64),
         ("chartPointsPerSeriesFromData", attachments::CHART_POINTS as u64)] {
@@ -2588,4 +2609,40 @@ async fn a_research_desk_reads_only_its_snapshots_and_keeps_each_definition_vers
     assert_eq!(read("body", None).err().unwrap().code, "element_not_found");
     let other = research::desk(&ws.store, &cache, "other-project", "study", "desk", None).unwrap().err().unwrap();
     assert_eq!(other.code, "section_not_found");
+}
+
+/// YN-7 item 3: a desk reads a CSV cell by the text its row's key columns
+/// hold, as written; no row, two rows or a column the file lacks is never a guess.
+#[tokio::test]
+async fn a_research_desk_reads_a_csv_cell_by_its_rows_text_and_never_guesses() {
+    let (dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    std::fs::write(dir.path().join("results.csv"),
+        "sport, d ,auc\nalpha,2,0.92\nalpha,2.0,0.50\nbeta,1,0.81\nbeta,1,0.83\ngamma,3,n/a\n\"  delta \",4, 0.7 \n").unwrap();
+    let cell = |sport: &str, d: &str, column: &str| json!({"from":"results.csv","row":{"sport":sport,"d":d},"column":column});
+    let part = |id: &str, value: Value| json!({"id":id,"label":id,"estimate":{"value":value}});
+    let put = json!({"op":"put","key":"study","kind":"report","title":"Study (synthetic)",
+        "attachments":[{"name":"results.csv","path":dir.path().join("results.csv")}],
+        "body":{"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{},"children":["desk"]},
+            "desk":{"type":"ResearchDesk","props":{"schema":"research/1",
+                "claims":[{"id":"c1","title":"Alpha ranks well","statement":"About 0.9 at d 2.","status":"conditional","primary":"r1"}],
+                "plots":[{"id":"p1","title":"AUC","digits":2,"rows":[
+                    {"id":"r1","label":"alpha d2","estimate":{"value":cell("alpha","2","auc"),"low":cell("beta","1","auc"),"high":cell("gamma","3","auc")},
+                     "parts":[part("a",cell("alpha","2","f1")),part("b",cell("omega","2","auc")),part("c",cell("delta","4","auc")),
+                        part("e",json!({"from":"results.csv","row":{"league":"x"},"column":"auc"}))]}]}],
+                "sources":[{"id":"res","label":"Results","kind":"data","snapshot":"results.csv"}]}}}}});
+    let accepted = update::update(&ws, &checker, "a", input("c1", 0, vec![put])).await.unwrap();
+    assert!(accepted.is_ok(), "{accepted:?}");
+
+    let cache = attachments::dir(&ws.data_dir);
+    let values = research::desk(&ws.store, &cache, &project, "study", "desk", None).unwrap().ok().unwrap()["values"].clone();
+    let status = |at: &str| values[at]["status"].clone();
+    // "2" matches the row holding "2", not the one holding "2.0".
+    assert_eq!(values["r1.value"], json!({"status":"read","value":0.92,"from":"results.csv"}));
+    assert_eq!((status("r1.low"), status("r1.high")), (json!("ambiguous"), json!("not_number")), "two rows match; n/a is no number");
+    assert_eq!((status("a.value"), status("b.value"), status("e.value")), (json!("missing"), json!("missing"), json!("missing")),
+        "a column, a row or a key column the file lacks");
+    // The spaces around a cell or a header name are not its text.
+    assert_eq!(values["c.value"]["value"], json!(0.7));
 }
