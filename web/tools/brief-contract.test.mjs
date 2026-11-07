@@ -562,6 +562,20 @@ test("a report the user marks seen leaves brief_get, and you.recentlyLeft says w
   assert.match(sections, /An edit, resolve, remove or claim naming one of them is refused with not_found, saying why it left; put writes it again\./);
 });
 
+test("a LiveRefs item and a ResearchDesk plan's link may name a run of stages, and the guide says what it shows (YN-7)", () => {
+  const refs = { key: "sweep", kind: "status", title: "Sweep", status: { asOf: "2026-11-07T00:00:00Z", validFor: 3600 },
+    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["refs"] },
+      refs: { type: "LiveRefs", props: { items: [{ kind: "run", id: "0c2b5486-e986-4a30-864d-d3b03e73e07b", label: "lr sweep" }] } } } } };
+  assert.doesNotThrow(() => checkBriefSection(refs), "a LiveRefs item may name a run of stages");
+  assert.equal(checkBriefSection(refs).body.elements.refs.props.items[0].kind, "run");
+  const desk = structuredClone(benchmark);
+  desk.body.elements.desk.props.plans[0].links = [{ kind: "run", id: "0c2b5486-e986-4a30-864d-d3b03e73e07b" }];
+  assert.doesNotThrow(() => checkBriefSection(desk), "a plan's link may name a run of stages");
+  assert.equal(checkBriefSection(desk).body.elements.desk.props.plans[0].links[0].kind, "run");
+  assert.match(BRIEF_COMPONENT_DESCRIPTIONS.LiveRefs, /run \(a run of stages: the runId job_run_submit returned; Yuzuno shows its status and how many stages are done\)/);
+  assert.match(briefGuide("research"), /links name existing tasks, Jobs or runs of stages \(kind run, the runId job_run_submit returned\)/);
+});
+
 test("contract.json carries the brief, generated from this file", async () => {
   const committed = JSON.parse(await readFile(new URL("../../runtimes/result-validator/contract.json", import.meta.url), "utf8"));
   const brief = describeBrief();

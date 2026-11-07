@@ -83,3 +83,47 @@ test("a chip says not found for an unknown item and couldn't read for one Core f
     window.close();
   }
 });
+
+// YN-7 item 4: a run of stages shows its state and how many stages are done, and opens Jobs on its newest Job,
+// where the run shows with every stage. A run Core does not know opens nothing.
+test("a run's chip says its state and stages done, and opens Jobs on its newest Job (YN-7)", async () => {
+  const errors = [];
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on("jsdomError", (error) => errors.push(error.message));
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+    url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole,
+  });
+  const { window } = dom;
+  try {
+    window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    const opened = [];
+    window.addEventListener("yuzuno:open-job", (event) => opened.push(event.detail));
+    window.eval(bundle);
+    const runs = { ...section,
+      body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["refs"] },
+        refs: { type: "LiveRefs", props: { items: [{ kind: "run", id: "run-1", label: "lr sweep" }, { kind: "run", id: "run-9" }] } } } },
+      refs: {
+        "run:run-1": { kind: "run", id: "run-1", found: true, title: "lr sweep", state: "running", tone: "active", taskId: "T-1",
+          stages: { done: 1, total: 2 }, jobId: "job-train" },
+        "run:run-9": { kind: "run", id: "run-9", found: false },
+      } };
+    window.renderSection(runs);
+    await tick();
+    const chips = [...window.document.querySelectorAll(".brief-ref")];
+    assert.deepEqual(chips.map((chip) => [chip.querySelector("span")?.textContent, chip.querySelector(".brief-ref-state")?.textContent, chip.dataset.tone]),
+      [["lr sweep", "running · 1/2 stages", "active"], ["run-9", "not found", "missing"]]);
+    assert.equal(chips[0].tagName, "BUTTON");
+    assert.match(chips[0].title, /^Open Job run run-1/);
+    chips[0].click();
+    assert.deepEqual(opened.map((detail) => detail.jobId), ["job-train"], "Jobs opens on the run's newest Job");
+    assert.notEqual(chips[1].tagName, "BUTTON", "a run Core does not know opens nothing");
+    window.chooseLanguage("zh-Hans");
+    window.renderSection(structuredClone(runs));
+    await tick();
+    assert.equal(window.document.querySelector(".brief-ref .brief-ref-state").textContent, "running · 1/2 个阶段");
+    assert.deepEqual(errors, []);
+  } finally {
+    window.close();
+  }
+});
+
