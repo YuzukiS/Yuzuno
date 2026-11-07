@@ -210,9 +210,13 @@ async function run({ width, height, theme, motion, lang = "en" }) {
     localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang === "zh" ? "zh-Hans" : "en" }));
     // The desktop rail at 240 px.
     localStorage.setItem("yuzuno.panel-widths", JSON.stringify({ rail: 240 }));
-    // Where a ring's task goes, as the app is told it.
+    // Where a ring's task goes, as the app is told it. Registered before the app's own
+    // listener, it keeps the task board closed: the board is its own check's.
     window.__tasks = [];
-    window.addEventListener("yuzuno:open-task-review", (event) => window.__tasks.push(event.detail?.taskId ?? null));
+    window.addEventListener("yuzuno:open-task-review", (event) => {
+      window.__tasks.push(event.detail?.taskId ?? null);
+      event.stopImmediatePropagation();
+    });
   }, { theme, lang });
   await context.route("**/*", route);
   const page = await context.newPage();
@@ -274,13 +278,8 @@ async function run({ width, height, theme, motion, lang = "en" }) {
       if (!goes || goes === "home" || (phone && goes === "conversation")) continue;
       const before = { reads: reads[id] ?? 0, tasks: (await tasks()).length };
       await press(ringOf(id));
-      if (goes === "task") {
-        await page.waitForFunction((n) => window.__tasks.length > n, before.tasks, { timeout: 5_000 });
-        const dialog = page.getByRole("dialog");
-        await dialog.first().waitFor({ timeout: 5_000 });
-        await page.keyboard.press("Escape");
-        await dialog.first().waitFor({ state: "detached", timeout: 5_000 });
-      } else for (let n = 0; n < 60 && (reads[id] ?? 0) <= before.reads; n++) await page.waitForTimeout(50);
+      if (goes === "task") await page.waitForFunction((n) => window.__tasks.length > n, before.tasks, { timeout: 5_000 });
+      else for (let n = 0; n < 60 && (reads[id] ?? 0) <= before.reads; n++) await page.waitForTimeout(50);
       went[id] = { task: (await tasks()).slice(before.tasks), reads: (reads[id] ?? 0) - before.reads };
       if (goes === "task") assert.deepEqual(went[id], { task: [id.toUpperCase().replace("YN", "YN-")], reads: 0 }, `${tag}: ${id}'s ring opens its task, not its conversation`);
       else assert.deepEqual(went[id], { task: [], reads: 1 }, `${tag}: ${id}'s ring opens its conversation, at its unread`);
@@ -338,8 +337,6 @@ async function run({ width, height, theme, motion, lang = "en" }) {
       const n = (await tasks()).length;
       await page.keyboard.press("Enter");
       await page.waitForFunction((n) => window.__tasks.length > n, n, { timeout: 5_000 });
-      await page.keyboard.press("Escape");
-      await page.getByRole("dialog").first().waitFor({ state: "detached", timeout: 5_000 });
       await rowOf("dev5").locator(".agent-select").focus();
       await page.keyboard.press("Tab");
       assert.equal(await page.evaluate(() => !!document.activeElement?.closest(".agent-island")), false, `${tag}: a ring that is no button isn't in the Tab order`);
