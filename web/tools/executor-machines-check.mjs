@@ -155,11 +155,18 @@ async function openSettingsCard(page, search, title) {
   const card = page.locator(".settings-catalog-card").filter({ has: page.locator("h4", { hasText: title }) }).first();
   await card.locator("button").last().click({ timeout: 10_000 });
 }
+// Settings › Machines (YN-8): the list first; a row opens a machine's page.
 async function openMachines(page) {
   await openSettingsCard(page, "SSH", "Execution machines & SSH");
-  const dialog = page.getByRole("dialog", { name: "Machines" });
-  await dialog.waitFor({ timeout: 10_000 });
+  const dialog = page.locator(".modal.settings-modal");
+  await dialog.locator(".settings-machines [data-machine-row]").first().waitFor({ timeout: 10_000 });
   return dialog;
+}
+async function openMachine(dialog, id) {
+  const back = dialog.locator(".settings-machines .settings-crumb");
+  if (await back.count()) await back.click();
+  await dialog.locator(`[data-machine-row="${id}"]`).click({ timeout: 10_000 });
+  await dialog.locator(`article[data-machine-id="${id}"]`).waitFor({ timeout: 10_000 });
 }
 async function openTemplates(page) {
   await openSettingsCard(page, "executor", "Executor templates");
@@ -188,6 +195,7 @@ try {
 
   // ---- 1. The Machines editor: Lab box's own limit, saved after the machine.
   let dialog = await openMachines(page);
+  await openMachine(dialog, "lab");
   await dialog.getByRole("button", { name: "Edit Lab box" }).click({ timeout: 10_000 });
   const editor = dialog.locator(".remote-machine-editor");
   const field = editor.locator('input[aria-label="Executors at once"]');
@@ -203,6 +211,7 @@ try {
   check("1 the Machines editor: Lab box's limit 3 read, 5 saved after the machine against version 2", { body: lab[1].body });
 
   // ---- 2. The Core host's card: its own limit, through the route for local.
+  await openMachine(dialog, "local");
   const host = dialog.locator('[data-machine-id="local"] .machine-executor-limit');
   await host.waitFor({ timeout: 10_000 });
   await host.getByText("1 on this machine now.").waitFor({ timeout: 10_000 });
@@ -254,6 +263,7 @@ try {
     const at = `${width}-${scheme}`;
     assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), scheme, `${at}: the page is in the ${scheme} theme`);
     dialog = await openMachines(page);
+    await openMachine(dialog, "lab");
     await dialog.getByRole("button", { name: "Edit Lab box" }).click({ timeout: 10_000 });
     const shownEditor = dialog.locator(".remote-machine-editor");
     await shownEditor.locator('input[aria-label="Executors at once"]').waitFor({ timeout: 10_000 });
@@ -261,6 +271,7 @@ try {
     // The editor is taller than a screen: the shot is the new field, with its help.
     await shownEditor.locator("label", { has: page.locator('input[aria-label="Executors at once"]') })
       .screenshot({ path: join(output, `1-machine-editor-${at}.png`) });
+    await openMachine(dialog, "local");
     const shownHost = dialog.locator('[data-machine-id="local"] .machine-executor-limit');
     await shownHost.waitFor({ timeout: 10_000 });
     assert.deepEqual(await fits(shownHost), { box: true, wider: [] }, `${at}: the Core host control fits`);

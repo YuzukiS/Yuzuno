@@ -6,9 +6,9 @@ New or replaced sections reject `unused_attachment` when a registered file is no
 
 Existing sections/history remain readable. Block edits check the final merged body and preserve already-unused legacy registrations, so an unrelated text update still works. Removing the last reference to a previously used attachment is rejected atomically; the old body, snapshots and Ask state remain. A full `put` checks all registrations. Read the connected Core's `brief_guide attachments`; an older Core may not enforce this rule.
 
-## Home content editors (source feature; requires a containing Core/UI release)
+## Home editors are a Project's leads (source feature, YN-2 S4; requires a containing Core/UI release)
 
-The user can select a project's content editors. `brief_get` reports the caller's current capabilities: `editContent:false` with `writeOwnAsk:true` means Ask-only, allowing own valid Asks and optional noChange without a per-turn obligation. `writeOwnAsk:false` means read-only, including no noChange writes (for example, another project, an archived project or a closed Agent). Regular content from revoked authors stays in team details/history without being marked Seen. Asks and native approvals remain available. Nothing requires an editor to update the Brief each Turn either; on Cores up to 2026.10.19-core.12, where it still does, running Claude Stop checks and Codex reminder dispatch re-read current permission. A missing capabilities field means the older Core's rules still apply; do not assume this source feature is deployed or that a particular project's editor list applies elsewhere.
+A Project's leads edit its Home; the user chooses them, and an Agent the user makes in a Project leads it. The separate Home content editors setting is gone. `brief_get` reports the caller's current capabilities: `editContent:false` with `writeOwnAsk:true` means Ask-only, allowing own valid Asks, removing its own older sections, and optional noChange without a per-turn obligation. `writeOwnAsk:false` means read-only, including no noChange writes (for example, another project, an archived project or a closed Agent). Regular content from revoked authors stays in team details/history without being marked Seen. Asks and native approvals remain available. Nothing requires an editor to update the Brief each Turn either; on Cores up to 2026.10.19-core.12, where it still does, running Claude Stop checks and Codex reminder dispatch re-read current permission. A missing capabilities field means the older Core's rules still apply; do not assume this source feature is deployed or that a particular project's editor list applies elsewhere.
 
 ## Codex account usage (source feature; requires a containing Core/UI release)
 
@@ -41,14 +41,19 @@ For people changing Yuzuno or this skill. Ordinary task work needs only [When ch
 
 ## When changes take effect
 
-Measured with `acceptance/t69/session_probe.py`, Claude Code 2.1.280 and Codex 0.162.1:
+Skills were measured with `acceptance/t69/session_probe.py`, Claude Code 2.1.280 and Codex 0.162.1. Tools and start text were measured in the YN-5 labs (lab Cores, stand-in models, no model runs) with Claude Code 2.1.318 and Codex 0.166.0.
 
 - **A skill added or removed:** a running session lists the change from its next turn. That held for a live Claude session, a live Codex app-server thread and a resumed Codex thread. New sessions always do.
 - **A skill's text changed:** it is read when the model opens the skill. A session that already read the old text may keep acting on it: Codex did, in a live and in a resumed thread. Claude read the new text when it used the skill again.
 - **Reaching running Agents:** when a change matters to running work, say so in the dispatch or message to the Agents concerned and ask them to re-read the skill, or to start a new session. Send a targeted note, not a broadcast.
 - **When a change exists for an Agent:** only once its checkout contains the commit. Merging to main does not update other worktrees.
-- **`yuzuno_guide`:** its answer is the running Core's guide, so after a Core upgrade the next call has the new release's text. A session started before its Core had the tool keeps the tool list and server instructions it loaded at start and does not see `yuzuno_guide` until it reconnects or a new session starts; the session notice is sent again on start and resume. This follows from how tool lists load and was not measured with the probe.
-- **Tool schemas:** they come from the connected Core, separately from skills. After a Core upgrade, a running session can keep the schema it loaded earlier. If a tool rejects or lacks a field your instructions mention, the session needs to reconnect or restart; do not guess.
+- **Yuzuno's tools:** they change only with a Core release, and Core lists the same tools to every Agent, whatever its role or Project. After Core restarts, every session reconnects and its client lists the new tools.
+  - Claude Code 2.1.318 keeps each Yuzuno tool definition it has loaded for the rest of the conversation. A resume, a reconnect, a new ToolSearch and `tools/list_changed` all leave the earlier copy in place. Compaction or a new conversation loads the current one. It doesn't check a call against the definition, so Core still accepts the current parameters.
+  - Claude Code also keeps the system prompt the conversation started with. That includes the session notice and Brief rules Core adds, and the yuzuno MCP server instructions; a resumed session doesn't see a change to them.
+  - Codex 0.166.0, run alone, listed the tools again at every start and resume. It sent no Yuzuno tool definition with its model requests. What its model sees through code mode or tool search was not measured. OpenCode was not measured.
+- **The changes notice** (source feature; requires a containing Core release): when Core attaches an existing session again and its tools or start text changed since that session was last attached, Core mails it one notice. The notice names the tools added, removed or changed, with the current description and parameters of what changed in up to four of them (6,000 UTF-16 units at most), and the current start text when that changed. A larger change shows only the tool's description and the names of what changed. The notice joins, it doesn't ring: it never starts a Turn by itself. It comes with the Agent's next mailbox notification, read before the other mail, or into the Turn it is running. Where it and an earlier definition differ, the notice is current.
+- **`yuzuno_guide`:** its answer is the running Core's guide, so after a Core upgrade the next call has the new release's text.
+- **A field your instructions mention is missing from a tool's schema:** the definition your session loaded may predate its Core. Check the changes notice, or ask whoever gave the instruction. Don't guess.
 
 ## What belongs here
 

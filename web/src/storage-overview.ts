@@ -43,6 +43,7 @@ export const entryLabels: Record<string, string> = {
   claudeRuntime: "Claude runtime cache",
   opencode: "OpenCode session databases",
   desktopDownloads: "Desktop app downloads",
+  previews: "Copies of conversation files being previewed",
   backupOperations: "Record of backups and restores",
   backupSchedule: "Daily backup schedule",
   earlierDatabaseCopy: "Earlier database copy, kept from a one-time conversion",

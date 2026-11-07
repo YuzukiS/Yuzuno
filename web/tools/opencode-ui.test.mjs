@@ -204,6 +204,55 @@ test("OpenCode 2.x's own request says why it can't be answered here yet, and sen
   }
 });
 
+// 2.x's own requests as Core keeps them (T-61 slice 2): its permission names `action` and `resources`.
+const permission2 = { id: "req-21", agentId: "oc", method: "opencode/permission", createdAt: "now",
+  params: { id: "per_1", sessionID: "s", action: "shell", resources: ["echo x"], save: ["echo *"],
+    source: { type: "tool", id: "call_1", messageID: "msg_1" } } };
+
+test("OpenCode 2.x's permission names its action and resources, and is allowed once or rejected", async () => {
+  for (const [label, decision] of [["Allow once", "once"], ["Reject", "reject"]]) {
+    const page = mount();
+    try {
+      page.window.renderPending({ request: permission2, refresh() {}, disabled: false }); await tick();
+      const text = page.document.body.textContent;
+      assert.equal(/OpenCode asks to use shell for:\s*echo x/.test(text), true, "the card names 2.x's action and its resources");
+      assert.equal(text.includes("Rejecting ends this turn, and OpenCode rejects this session’s other waiting requests along with this one."), true,
+        "the card says a reject ends this turn and the session's other waiting requests");
+      assert.deepEqual([...page.document.querySelectorAll("button")].map((b) => b.textContent.trim()), ["Allow once", "Reject"],
+        "only Allow once and Reject are offered");
+      button(page, label).click(); button(page, label).click(); await tick();
+      assert.equal(page.calls.length, 1, `${label}: two clicks answer once`);
+      assert.equal(/requests\/req-21\/respond$/.test(page.calls[0].url), true, `${label}: the answer goes to this request`);
+      assert.deepEqual(page.calls[0].body, { response: { decision } }, `${label}: sends its decision`);
+    } finally { page.close(); }
+  }
+  // A plugin's explanation is shown as it came.
+  const explained = mount();
+  try {
+    explained.window.renderPending({ request: { ...permission2, params: { ...permission2.params, message: "A plugin explains this call" } }, refresh() {}, disabled: false }); await tick();
+    assert.equal(explained.document.body.textContent.includes("A plugin explains this call"), true, "the card shows 2.x's message");
+  } finally { explained.close(); }
+});
+
+test("a 2.x form Yuzuno can't fill says why and offers only Decline", async () => {
+  const request = { id: "req-22", agentId: "oc", method: "opencode/question", createdAt: "now",
+    params: { id: "frm_1", sessionID: "s", title: "Questions", metadata: { kind: "mcp" }, fields: [{ key: "token", type: "string" }],
+      _opencodeUnfillable: "not a question Yuzuno asks for OpenCode" } };
+  const page = mount();
+  try {
+    page.window.renderPending({ request, refresh() {}, disabled: false }); await tick();
+    const text = page.document.body.textContent;
+    assert.equal(text.includes("Yuzuno can’t answer this question: not a question Yuzuno asks for OpenCode."), true, "the card says why Yuzuno can't fill the form");
+    assert.equal(text.includes("Declining ends this turn."), true, "the card says a decline ends this turn");
+    assert.deepEqual([...page.document.querySelectorAll("button")].map((b) => b.textContent.trim()), ["Decline"], "Decline is the only control");
+    assert.equal(page.document.querySelectorAll("input, textarea, select").length, 0, "no answer input is offered");
+    button(page, "Decline").click(); button(page, "Decline").click(); await tick();
+    assert.equal(page.calls.length, 1, "two clicks decline once");
+    assert.equal(/requests\/req-22\/respond$/.test(page.calls[0].url), true, "the decline goes to this request");
+    assert.deepEqual(page.calls[0].body, { response: { decision: "reject" } }, "Decline sends a reject");
+  } finally { page.close(); }
+});
+
 test("a sub-agent's request names the sub-agent that asks, and is answered as any other (T-10)", async () => {
   const child = { ...permission, id: "req-2", params: { ...permission.params, id: "per_2", sessionID: "ses_child",
     _opencodeSession: "ses_child", _opencodeChild: { title: "Find the files (@explore subagent)", agent: "explore" } } };
@@ -407,6 +456,46 @@ test("an OpenCode turn names OpenCode, shows its tool calls and offers its own r
     assert.match(tool.textContent, /a\.txt\s*b\.txt/);
     assert.deepEqual(page.errors, []);
   } finally { codex.close(); page.close(); }
+});
+
+test("an OpenCode command that ran with no turn of its own says why under that turn, in the language shown (T-61 slice 3)", async () => {
+  const turn = (notice) => ({ id: "msg_c", status: "completed", notice, items: [
+    { id: "msg_c:input", type: "userMessage", content: [{ type: "text", text: "/explain x" }] },
+  ] });
+  const agent = { id: "a", name: "Ocean", status: "idle", color: "sage", harness: "opencode" };
+  const shown = (notice, language) => {
+    const page = mount();
+    if (language) page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    page.window.renderTurn({ turn: turn(notice), index: 0, agent, onFile() {}, onRewindDraft() {} });
+    return page;
+  };
+  const pages = [
+    shown({ kind: "command_no_turn", detail: "explain" }),
+    shown({ kind: "command_subagent", detail: "reviewer" }),
+    shown({ kind: "command_subagent", detail: "reviewer" }, "zh-Hans"),
+    shown({ kind: "command_no_turn", detail: "explain" }, "zh-Hans"),
+    shown({ kind: "a_newer_kind", detail: "x" }),
+    shown(null),
+  ];
+  try {
+    await tick(); await tick();
+    // Text and booleans only: a failing assertion on a jsdom element can take the whole test's memory to print it.
+    const note = (page) => page.document.querySelector(".turn-notice");
+    assert.equal(note(pages[0])?.textContent, "OpenCode ran /explain; it started no turn.", "the no-turn notice, in English");
+    assert.equal(note(pages[1])?.textContent,
+      "OpenCode runs this command in a background sub-agent (reviewer). Its result comes back to the session later, in a run of OpenCode’s own, not in this turn.",
+      "the sub-agent notice, in English");
+    assert.equal(note(pages[2])?.textContent, "OpenCode 在后台的子 Agent（reviewer）中执行这条命令；它的结果之后由 OpenCode 自己交回会话，不属于这一轮。",
+      "the sub-agent notice, in Chinese");
+    assert.equal(note(pages[3])?.textContent, "OpenCode 执行了 /explain；它没有开始新的一轮。", "the no-turn notice, in Chinese");
+    for (const page of pages.slice(0, 4)) {
+      assert.equal(note(page).closest('[role="alert"]') === null, true, "plain text under the turn, not an alert");
+      assert.equal(page.document.querySelector(".inline-error") === null, true, "nothing failed");
+    }
+    assert.equal(note(pages[4]) === null, true, "a kind this version doesn't know shows nothing");
+    assert.equal(note(pages[5]) === null, true, "no notice, no line");
+    for (const page of pages) assert.deepEqual(page.errors, []);
+  } finally { for (const page of pages) page.close(); }
 });
 
 // OpenCode's revert (T-10): previewed with its files, asked once, the

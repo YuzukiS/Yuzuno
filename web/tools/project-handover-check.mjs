@@ -1,11 +1,12 @@
-// T-34 S3a: a Project's handover document in its settings, in Chromium, with
-// every API answered here (no Core, no CLI, no daily configuration). Through
-// the real Manage projects dialog: a reason over its limit in bytes not sent;
-// an empty document written and saved as version 1 against version 0, its
-// past version shown; a save after another window saved refused as a
-// conflict, the typed text kept, then reloaded; the section in Chinese after
-// a language change in another window, unsaved text kept; on a phone, the
-// section and its fields fit their width.
+// T-34 S3a, YN-2 S3: a Project's handover document in its settings, in
+// Chromium, with every API answered here (no Core, no CLI, no daily
+// configuration). Through the real Manage projects dialog: a note over its
+// limit in characters not sent; an empty document written and saved against
+// revision 0, who changed it last and the note shown, and no history; a save
+// after a lead wrote meanwhile refused as a conflict, the typed text kept,
+// then reloaded with the lead named; the section in Chinese after a language
+// change in another window, unsaved text kept; on a phone, the section and
+// its fields fit their width.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/project-handover-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -29,17 +30,20 @@ const HOST = "yuzuno-project-handover.test";
 const agent = { id: "a", name: "Mori", status: "idle", harness: "codex", cwd: "/fixture/lab", model: "gpt-6", projectId: "p1", color: "sage",
   createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, goal: "", connectionState: "connected", closedAt: null };
 const projects = [{ id: "p1", name: "Lab", defaultDirs: { local: "/fixture/lab" }, archivedAt: null, createdAt: "", updatedAt: "" }];
-// What Core keeps and answers (handover::read_in).
+// What Core keeps and answers (handover::read_in): the latest save, its revision, and who made it.
 const versions = [];
-const answer = () => ({
-  projectId: "p1",
-  version: versions.length,
-  markdown: versions.at(-1)?.markdown ?? "",
-  history: [...versions].reverse().map(({ markdown, ...v }) => ({ ...v, bytes: Buffer.byteLength(markdown) })),
-  limit: 32 * 1024,
-});
-const write = (markdown, reason) => versions.push({ version: versions.length + 1, markdown, writtenBy: { id: "user", name: "You" },
-  approvedBy: null, reason: reason ?? null, at: new Date(Date.UTC(2026, 10, 5, 8, versions.length)).toISOString() });
+const answer = () => {
+  const last = versions.at(-1);
+  return {
+    projectId: "p1",
+    version: versions.length,
+    markdown: last?.markdown ?? "",
+    lastModified: last ? { by: last.by, at: last.at, note: last.note } : null,
+    limit: 32 * 1024,
+  };
+};
+const write = (markdown, note, by = { id: "user", name: "You" }) =>
+  versions.push({ markdown, by, note: note ?? null, at: new Date(Date.UTC(2026, 10, 5, 8, versions.length)).toISOString() });
 const templates = { workspace: { version: 0, templates: [] }, project: { id: "p1", version: 0, templates: [] }, available: [],
   defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false };
 // Well-formed answers for what the selected Agent's panels read: `{}` there
@@ -68,13 +72,8 @@ async function serve(route) {
       const body = JSON.parse(request.postData() || "{}");
       report.writes.push({ method, path, body });
       if (body.expectedVersion !== versions.length) return route.fulfill({ status: 400, json: { error: "version_conflict: this Project's handover changed; reload before saving" } });
-      write(body.markdown, body.reason);
+      write(body.markdown, body.note);
       return route.fulfill({ json: answer() });
-    }
-    const asked = url.searchParams.get("version");
-    if (asked) {
-      const past = versions[Number(asked) - 1];
-      return route.fulfill({ json: { projectId: "p1", past: { ...past, bytes: Buffer.byteLength(past.markdown) } } });
     }
     return route.fulfill({ json: answer() });
   }
@@ -149,36 +148,34 @@ try {
   await page.locator(".workspace-scope").first().waitFor({ timeout: 10_000 });
   await other.goto(`https://${HOST}/other.html`);
 
-  // ---- An empty document, written and saved as version 1.
+  // ---- An empty document, written and saved against revision 0.
   let section = await openSection(page);
-  await section.getByText("No version yet.").waitFor({ timeout: 10_000 });
+  await section.getByText("Not written yet.").waitFor({ timeout: 10_000 });
   assert.equal(await section.getByRole("button", { name: "Save handover" }).isDisabled(), true, "nothing to save yet");
   const first = "# Lab\n\nBuild with `make`; test with `make check`.\nThe fixtures live in tests/fixtures.";
   await section.locator('textarea[aria-label="Handover document"]').fill(first);
-  // A reason is counted in bytes, as Core counts it (#605 R2): 400 characters, 1,200 bytes.
-  await section.locator('input[aria-label="Why this change"]').fill("说".repeat(400));
-  await section.getByText("1200 of 1000 bytes.").waitFor({ timeout: 10_000 });
-  await section.getByText("At most 1000 bytes.").waitFor({ timeout: 10_000 });
-  assert.equal(await section.getByRole("button", { name: "Save handover" }).isDisabled(), true, "a reason over its limit in bytes is not sent");
-  check("a 400-character Chinese reason, 1,200 bytes, is shown in bytes and not sent");
-  await section.locator('input[aria-label="Why this change"]').fill("First notes");
+  // A note is counted in characters, as Core counts it (handover::MAX_NOTE).
+  await section.locator('input[aria-label="Note"]').fill("说".repeat(201));
+  await section.getByText("201 of 200 characters.").waitFor({ timeout: 10_000 });
+  await section.getByText("At most 200 characters.").waitFor({ timeout: 10_000 });
+  assert.equal(await section.getByRole("button", { name: "Save handover" }).isDisabled(), true, "a note over its limit is not sent");
+  check("a 201-character Chinese note is shown in characters and not sent");
+  await section.locator('input[aria-label="Note"]').fill("First notes");
   await section.getByText("Unsaved changes").waitFor({ timeout: 10_000 });
   await section.getByText(`${Buffer.byteLength(first)} of 32768 bytes.`).waitFor({ timeout: 10_000 });
   await section.screenshot({ path: join(output, "1-unsaved.png") });
   await section.getByRole("button", { name: "Save handover" }).click();
   await section.getByText("Saved.").waitFor({ timeout: 10_000 });
-  assert.deepEqual(saves()[0]?.body, { expectedVersion: 0, markdown: first, reason: "First notes" }, "a save names the version it was read at");
-  await section.getByText("Version 1", { exact: true }).waitFor({ timeout: 10_000 });
-  await section.getByText("First notes", { exact: true }).waitFor({ timeout: 10_000 });
-  assert.equal(await section.locator('input[aria-label="Why this change"]').inputValue(), "", "the reason goes with the version saved");
-  await section.getByRole("button", { name: "Show version 1" }).click();
-  assert.equal(await section.locator(".project-handover-past").textContent({ timeout: 10_000 }), first, "a past version is readable");
+  assert.deepEqual(saves()[0]?.body, { expectedVersion: 0, markdown: first, note: "First notes" }, "a save names the revision it was read at");
+  await section.locator(".project-handover-modified", { hasText: /^Last changed by you, .* · First notes$/ }).waitFor({ timeout: 10_000 });
+  assert.equal(await section.locator('input[aria-label="Note"]').inputValue(), "", "the note goes with the save");
+  assert.doesNotMatch(await section.textContent(), /Version \d|Show version|Restore/, "no history is shown");
   assert.deepEqual(await fits(section), { box: true, wider: [] }, "the section fits its width");
   await section.screenshot({ path: join(output, "2-saved.png") });
-  check("an empty document written and saved as version 1 against version 0, its reason kept and the version readable", { body: saves()[0].body });
+  check("an empty document written and saved against revision 0, who changed it last and the note shown, no history", { body: saves()[0].body });
 
-  // ---- Another window saved meanwhile: refused as a conflict, the typed text kept, then reloaded.
-  write("# Lab\n\nSaved in another window.", null);
+  // ---- A lead wrote meanwhile: refused as a conflict, the typed text kept, then reloaded with the lead named.
+  write("# Lab\n\nWritten by the lead.", "Say where the fixtures are", { id: "lead", name: "Dev Lead" });
   await section.locator('textarea[aria-label="Handover document"]').fill("Overwritten");
   await section.getByRole("button", { name: "Save handover" }).click();
   await section.locator('[role="alert"]', { hasText: "version_conflict: this Project" }).waitFor({ timeout: 10_000 });
@@ -186,10 +183,10 @@ try {
   assert.equal(await section.locator('textarea[aria-label="Handover document"]').inputValue(), "Overwritten", "a refused save keeps what was typed");
   await section.screenshot({ path: join(output, "3-conflict.png") });
   await section.getByRole("button", { name: "Reload the saved handover" }).click();
-  await section.getByText("Version 2", { exact: true }).waitFor({ timeout: 10_000 });
-  assert.equal(await section.locator('textarea[aria-label="Handover document"]').inputValue(), "# Lab\n\nSaved in another window.");
+  await section.locator(".project-handover-modified", { hasText: /^Last changed by Dev Lead, .* · Say where the fixtures are$/ }).waitFor({ timeout: 10_000 });
+  assert.equal(await section.locator('textarea[aria-label="Handover document"]').inputValue(), "# Lab\n\nWritten by the lead.");
   assert.equal(await section.locator('[role="alert"]').count(), 0);
-  check("a save after another window's refused as a conflict with the typed text kept, then the saved version reloaded");
+  check("a save after a lead's write refused as a conflict with the typed text kept, then reloaded naming the lead");
 
   // ---- In Chinese after a language change elsewhere; unsaved text kept.
   await section.locator('textarea[aria-label="Handover document"]').fill("Unsaved notes");
@@ -198,6 +195,7 @@ try {
   assert.equal(await section.getAttribute("lang"), "zh-Hans");
   assert.equal(await section.locator('textarea[aria-label="交接文档"]').inputValue(), "Unsaved notes", "the unsaved text stays");
   await section.getByText("有未保存的更改").waitFor({ timeout: 10_000 });
+  await section.locator(".project-handover-modified", { hasText: /^最后由Dev Lead修改，/ }).waitFor({ timeout: 10_000 });
   await section.screenshot({ path: join(output, "4-zh.png") });
   check("in Chinese after a language change in another window, the unsaved text kept");
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" })));

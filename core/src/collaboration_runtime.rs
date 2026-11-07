@@ -77,7 +77,7 @@ impl Workspace {
                 .await.context("Service operation ended unexpectedly")?;
         }
         if operation.starts_with("handover_") {
-            return tokio::spawn(crate::handover_proposals::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
+            return tokio::spawn(crate::handover_tools::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Handover operation ended unexpectedly")?;
         }
         if operation == "executor_release" {
@@ -353,10 +353,12 @@ impl Workspace {
         let through = batch["throughSeq"]
             .as_i64()
             .context("Mailbox sequence missing")?;
+        // Only Core's session notices: they join, never ring (YN-5).
+        let join_only = batch["joinOnly"] == true;
         // The listed view rules most wake-ups out (normal mail for a working
         // Agent) without copying or parsing its record.
         let agent = id.to_owned();
-        if !self.stored(move |store| store.agent(&agent)).await.is_ok_and(|agent| peer_delivery_possible(&agent, priority)) {
+        if !self.stored(move |store| store.agent(&agent)).await.is_ok_and(|agent| peer_delivery_possible(&agent, priority, join_only)) {
             return Ok(());
         }
         // What delivery checks (the Agent, receipts, pending requests and Turn
@@ -367,7 +369,7 @@ impl Workspace {
         };
         let agent = id.to_owned();
         if self.stored(move |store| store.codex_handoff_pending(&agent)).await? { return Ok(()); }
-        let Some(target) = peer_delivery_target(&detail, priority) else {
+        let Some(target) = peer_delivery_target(&detail, priority, join_only) else {
             return Ok(());
         };
         if self.require_collaboration(id).await.is_err() {
@@ -540,7 +542,7 @@ impl Workspace {
     /// Called with the Agent's gate held.
     pub(crate) async fn brief_reminder_ready(&self, id: &str) -> Result<bool> {
         let agent = id.to_owned();
-        if !self.stored(move |store| store.agent(&agent)).await.is_ok_and(|agent| peer_delivery_possible(&agent, "normal")) {
+        if !self.stored(move |store| store.agent(&agent)).await.is_ok_and(|agent| peer_delivery_possible(&agent, "normal", false)) {
             return Ok(false);
         }
         let Ok(detail) = self.send_view(id).await else { return Ok(false) };
@@ -548,7 +550,7 @@ impl Workspace {
         if self.stored(move |store| store.codex_handoff_pending(&agent)).await? {
             return Ok(false);
         }
-        if !matches!(peer_delivery_target(&detail, "normal"), Some(PeerDeliveryTarget::Start)) {
+        if !matches!(peer_delivery_target(&detail, "normal", false), Some(PeerDeliveryTarget::Start)) {
             return Ok(false);
         }
         Ok(self.require_collaboration(id).await.is_ok())
@@ -652,17 +654,21 @@ enum PeerDeliveryTarget {
 
 /// What peer_delivery_target requires of the listed Agent alone: false only
 /// when it would surely find no target.
-fn peer_delivery_possible(a: &Agent, priority: &str) -> bool {
+fn peer_delivery_possible(a: &Agent, priority: &str, join_only: bool) -> bool {
     a.closed_at.is_none()
         && a.connection_state == "connected"
         && match a.status.as_str() {
-            "idle" => a.native_requests() == 0,
-            "working" | "waiting" => priority == "urgent" && matches!(a.harness.as_str(), "codex" | "claude"),
+            "idle" => !join_only && a.native_requests() == 0,
+            "working" | "waiting" => (priority == "urgent" || join_only) && matches!(a.harness.as_str(), "codex" | "claude"),
             _ => false,
         }
 }
 
-fn peer_delivery_target(d: &AgentDetail, priority: &str) -> Option<PeerDeliveryTarget> {
+/// Where a mailbox doorbell goes: a new Turn for an idle Agent, or into the
+/// running Turn for urgent mail. A batch of Core's session notices alone
+/// (`join_only`, YN-5) never starts a Turn: it goes into a running one, or
+/// waits for the next doorbell, whose batch then holds it.
+fn peer_delivery_target(d: &AgentDetail, priority: &str, join_only: bool) -> Option<PeerDeliveryTarget> {
     if d.agent.closed_at.is_some()
         || d.agent.connection_state != "connected"
         || d.message_receipts
@@ -672,17 +678,18 @@ fn peer_delivery_target(d: &AgentDetail, priority: &str) -> Option<PeerDeliveryT
         return None;
     }
     let active = d.turns.iter().find(|t| t["status"] == "inProgress");
+    let into_turn = priority == "urgent" || join_only;
     match (d.agent.status.as_str(), active) {
-        ("idle", None) if d.pending.is_empty() => Some(PeerDeliveryTarget::Start),
+        ("idle", None) if d.pending.is_empty() && !join_only => Some(PeerDeliveryTarget::Start),
         ("working" | "waiting", Some(turn))
-            if priority == "urgent" && d.agent.harness == "codex" =>
+            if into_turn && d.agent.harness == "codex" =>
         {
             turn["id"]
                 .as_str()
                 .map(|id| PeerDeliveryTarget::Steer(id.into()))
         }
         ("working" | "waiting", Some(turn))
-            if priority == "urgent" && d.agent.harness == "claude" =>
+            if into_turn && d.agent.harness == "claude" =>
         {
             turn["id"]
                 .as_str()
@@ -1164,6 +1171,58 @@ for line in sys.stdin:
         drop(db);
         // Three in the hour: none until the oldest leaves it.
         assert!(!ws.reserve_brief_reminder("a").unwrap());
+        ws.close_agent("a").await.unwrap();
+    }
+
+    /// A notice from Core that what a session was given changed (YN-5),
+    /// as session_baseline sends it: it joins doorbells, never rings one.
+    fn session_notice(ws: &Workspace) {
+        crate::collaboration_store::insert_message(&ws.store.db.write().unwrap(), json!({"id":"notice-1","seq":0,
+            "sender":{"kind":"system","id":"core","name":"Yuzuno Core"},"recipient":{"kind":"agent","id":"a","name":"A"},
+            "body":"What this conversation was given has changed.","taskId":null,"replyTo":null,"threadId":"notice-1",
+            "createdAt":crate::model::now(),"priority":"normal","metadata":{"kind":"session_changed","status":"changed"}})).unwrap();
+    }
+
+    async fn deliver_pending(ws: &Arc<Workspace>) {
+        for batch in ws.store.pending_peer_deliveries().unwrap() {
+            ws.deliver_peer_batch(&batch).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_notice_alone_starts_no_turn_but_goes_into_a_running_one() {
+        let (dir, ws) = fixture().await;
+        session_notice(&ws);
+        deliver_pending(&ws).await;
+        assert!(!dir.path().join("starts.jsonl").exists(), "an idle Agent is not woken for it");
+        assert_eq!(ws.store.pending_peer_deliveries().unwrap().len(), 1, "it waits");
+        working(&ws);
+        deliver_pending(&ws).await;
+        let client = steered_client(dir.path());
+        steered_item(&ws, "original-turn", &client).await;
+        assert!(ws.store.pending_peer_deliveries().unwrap().is_empty());
+        finish(&ws, "original-turn");
+        ws.close_agent("a").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_session_notice_joins_the_next_doorbell_and_is_read_first() {
+        let (dir, ws) = fixture().await;
+        ws.store.update("a", "test/busy", &json!({}), |d| d.agent.status = "working".into()).unwrap();
+        ws.collaboration_call(None, "peer_send", json!({"requestId":"m","toAgentId":"a","body":"Please inspect the result"})).await.unwrap();
+        session_notice(&ws);
+        deliver_pending(&ws).await;
+        assert!(!dir.path().join("starts.jsonl").exists(), "ordinary mail waits for the Turn to end");
+        ws.store.update("a", "test/idle", &json!({}), |d| d.agent.status = "idle".into()).unwrap();
+        deliver_pending(&ws).await;
+        let starts = std::fs::read_to_string(dir.path().join("starts.jsonl")).unwrap();
+        assert_eq!(starts.lines().count(), 1, "one doorbell for both: {starts}");
+        assert!(ws.store.pending_peer_deliveries().unwrap().is_empty(), "the notice went with it");
+        let read = ws.collaboration_call(Some("a"), "peer_read", json!({})).await.unwrap();
+        let kinds: Vec<_> = read["messages"].as_array().unwrap().iter().map(|m| m["metadata"]["kind"].clone()).collect();
+        assert_eq!(kinds, [json!("session_changed"), Value::Null], "Core's notice first, though newer: {read:#}");
+        assert_eq!(read["nextAfterSeq"], read["messages"][0]["seq"], "the cursor still follows the sequence");
+        finish(&ws, "native-turn");
         ws.close_agent("a").await.unwrap();
     }
 

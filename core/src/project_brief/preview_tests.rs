@@ -155,7 +155,7 @@ async fn a_stale_write_previews_as_a_conflict_with_the_latest_brief() {
 #[tokio::test]
 async fn an_ask_only_member_previews_only_what_it_may_write() {
     let (_dir, ws, project) = lab();
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    super::tests::set_leads(&ws, &project, &["a"]);
     let rejected = same_problems(&ws, &project, "b", input("b1", 0, vec![put("notes")])).await;
     assert!(!codes(&rejected).is_empty());
     // Its own ask is still fine to check.

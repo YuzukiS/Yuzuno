@@ -67,7 +67,16 @@ pub(super) fn lab() -> (tempfile::TempDir, Arc<Workspace>, String) {
         }
         running(&ws, id, "t1");
     }
+    // Its members lead it, as the user's own Agents do (YN-2 S4): they edit Home.
+    set_leads(&ws, &project, &["a", "b", "c"]);
     (dir, ws, project)
+}
+
+/// The user's choice of `project`'s leads (its Home editors, YN-2 S4),
+/// saved against the version it has now.
+pub(super) fn set_leads(ws: &Workspace, project: &str, ids: &[&str]) {
+    let version = crate::agent_roles::get(&ws.store, project).unwrap().version;
+    crate::agent_roles::save(&ws.store, project, version, ids.iter().map(|id| id.to_string()).collect()).unwrap();
 }
 
 fn body(text: &str) -> Value {
@@ -254,7 +263,7 @@ async fn only_the_owner_changes_a_section_and_others_add_sub_topics() {
     assert_eq!(read["version"], 2);
     assert_eq!(section(&read, "round-12")["owner"]["agentId"], "a");
     assert_eq!(section(&read, "round-12/review")["owner"]["agentId"], "b");
-    assert_eq!(read["you"], json!({"agentId":"b","ownsKeys":["round-12/review"],"openAsks":0,"repliedAsks":[],"staleStatus":[],
+    assert_eq!(read["you"], json!({"agentId":"b","ownsKeys":["round-12/review"],"openAsks":0,"repliedAsks":[],"staleStatus":[],"recentlyLeft":[],"recentlyLeftMore":0,
         "capabilities":{"editContent":true,"requiresTurnUpdate":false,"writeOwnAsk":true},"homeHint":outcome_hint()}));
     for change in [op("remove", "round-12"), op("claim", "round-12")] {
         let codes = codes(&reject(&ws, "b", input("b3", 2, vec![change])).await);
@@ -310,7 +319,7 @@ async fn a_closed_or_deleted_owners_sections_are_claimed_once_within_the_project
 }
 
 #[tokio::test]
-async fn topic_sub_topic_ask_and_attachment_limits_are_rejected_with_their_codes() {
+async fn topic_sub_topic_and_attachment_limits_are_rejected_with_their_codes() {
     let (_dir, ws, _project) = lab();
     let topics: Vec<Value> = (0..12).map(|n| put(&format!("t{n}"), "report")).collect();
     accept(&ws, "a", input("a1", 0, topics)).await;
@@ -319,20 +328,40 @@ async fn topic_sub_topic_ask_and_attachment_limits_are_rejected_with_their_codes
     let subs: Vec<Value> = (1..=4).map(|n| put(&format!("t0/s{n}"), "report")).collect();
     accept(&ws, "a", input("a3", 1, subs)).await;
     assert_eq!(codes(&reject(&ws, "a", input("a4", 2, vec![put("t0/s5", "report")])).await), ["topic_limit"]);
-    let asks: Vec<Value> = (1..=3).map(|n| put(&format!("t1/q{n}"), "ask")).collect();
-    accept(&ws, "a", input("a5", 2, asks)).await;
-    assert_eq!(codes(&reject(&ws, "a", input("a6", 3, vec![put("t1/q4", "ask")])).await), ["ask_limit"]);
-    assert_eq!(brief(&ws, "a")["you"]["openAsks"], 3);
-    // Another Agent has its own three.
-    accept(&ws, "b", input("b1", 3, vec![put("t2/q1", "ask")])).await;
-    // An ask the Agent claims counts too.
-    close(&ws, "b", true);
-    assert_eq!(codes(&reject(&ws, "a", input("a7", 4, vec![op("claim", "t2/q1")])).await), ["ask_limit"]);
     let mut many = put("t3", "report");
     many["attachments"] = json!((0..13).map(|n| json!({"name":format!("f{n}.txt"),"url":"https://example.com"})).collect::<Vec<_>>());
-    assert_eq!(codes(&reject(&ws, "a", input("a8", 4, vec![many])).await), ["attachment_limit"]);
+    assert_eq!(codes(&reject(&ws, "a", input("a8", 2, vec![many])).await), ["attachment_limit"]);
     let changes: Vec<Value> = (0..25).map(|n| put(&format!("t4/x{n}"), "report")).collect();
-    assert!(codes(&reject(&ws, "a", input("a9", 4, changes)).await).contains(&"invalid_input".to_owned()));
+    assert!(codes(&reject(&ws, "a", input("a9", 2, changes)).await).contains(&"invalid_input".to_owned()));
+}
+
+#[tokio::test]
+async fn an_agent_with_three_unresolved_asks_still_puts_a_fourth_and_a_fifth() {
+    // YN-11: the user wants no per-Agent cap on unresolved asks.
+    let (_dir, ws, project) = lab();
+    let asks: Vec<Value> = (1..=3).map(|n| put(&format!("q{n}"), "ask")).collect();
+    accept(&ws, "a", input("a1", 0, asks)).await;
+    // A replied ask is still unresolved.
+    assert!(sections::mark_replied_live(&ws.store, &project, "q1", "Left").unwrap());
+    assert_eq!(brief(&ws, "a")["you"]["openAsks"], 3);
+    let fourth = call(&ws, "a", input("a2", 1, vec![put("q4", "ask")])).await.unwrap();
+    assert!(fourth.is_ok(), "a fourth unresolved ask is accepted: {fourth:?}");
+    let fifth = call(&ws, "a", input("a3", 2, vec![put("q5", "ask")])).await.unwrap();
+    assert!(fifth.is_ok(), "a fifth unresolved ask is accepted: {fifth:?}");
+    // An ask claimed from a closed Agent is added the same way.
+    accept(&ws, "b", input("b1", 3, vec![put("theirs", "ask")])).await;
+    close(&ws, "b", true);
+    let claimed = call(&ws, "a", input("a4", 4, vec![op("claim", "theirs")])).await.unwrap();
+    assert!(claimed.is_ok(), "a claimed sixth unresolved ask is accepted: {claimed:?}");
+    // openAsks still counts them, as information; limits name no cap.
+    let read = brief(&ws, "a");
+    assert_eq!(read["you"]["openAsks"], 6);
+    assert!(read["limits"].get("openAsksPerAgent").is_none(), "{}", read["limits"]);
+    // Needs you lists every open one; the replied q1 waits for its owner.
+    let mut needs: Vec<Value> = home::build(&ws.store).unwrap()["needsYou"].as_array().unwrap().iter()
+        .filter(|n| n["kind"] == "ask").map(|n| n["sectionKey"].clone()).collect();
+    needs.sort_by_key(|key| key.to_string());
+    assert_eq!(needs, ["q2", "q3", "q4", "q5", "theirs"].map(|key| json!(key)));
 }
 
 #[tokio::test]
@@ -410,7 +439,7 @@ async fn brief_get_lists_your_own_replied_asks_until_you_resolve_them() {
     accept(&ws, "a", input("a3", 3, vec![op("resolve", "release")])).await;
     assert_eq!((you(&ws, "a")["repliedAsks"].clone(), you(&ws, "a")["openAsks"].clone()), (json!([]), json!(1)));
     // An Ask-only member reads and resolves its own the same way.
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     let only = you(&ws, "b");
     assert_eq!((only["capabilities"]["editContent"].clone(), keys(&only)), (json!(false), vec![json!("other")]));
     accept(&ws, "b", input("b2", 4, vec![op("resolve", "other")])).await;
@@ -639,46 +668,9 @@ async fn a_kept_image_has_the_size_core_read_from_its_header_and_nothing_else_ha
     assert!(history.as_array().unwrap().iter().all(|shown| shown.get("width").is_none() && shown.get("height").is_none()), "{history}");
 }
 
-/// Refuses, once armed, any one allocation past ARMED_LIMIT, and keeps the
-/// largest asked for. Only a test process of its own arms it (`kept_apart`):
-/// it shows what Core asks of memory to keep an image whose header lies,
-/// without the machine being asked for it (T-19 HM:B14).
-mod watched {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
-
-    pub(super) static ARMED: AtomicBool = AtomicBool::new(false);
-    pub(super) static LARGEST: AtomicUsize = AtomicUsize::new(0);
-    pub(super) const ARMED_LIMIT: usize = 16 << 20;
-
-    fn refused(size: usize) -> bool {
-        if !ARMED.load(Relaxed) {
-            return false;
-        }
-        LARGEST.fetch_max(size, Relaxed);
-        size > ARMED_LIMIT
-    }
-
-    struct Watched;
-    unsafe impl GlobalAlloc for Watched {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            if refused(layout.size()) { std::ptr::null_mut() } else { System.alloc(layout) }
-        }
-        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-            if refused(layout.size()) { std::ptr::null_mut() } else { System.alloc_zeroed(layout) }
-        }
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-            if refused(size) { std::ptr::null_mut() } else { System.realloc(ptr, layout, size) }
-        }
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            System.dealloc(ptr, layout)
-        }
-    }
-
-    #[global_allocator]
-    static WATCHED: Watched = Watched;
-}
-use watched::{ARMED, ARMED_LIMIT, LARGEST};
+/// The test binary's allocator, armed only in a test process of its own
+/// (`kept_apart`).
+use crate::test_alloc::{ARMED, ARMED_LIMIT, LARGEST};
 
 const APART: &str = "YUZUNO_TEST_KEPT_APART";
 
@@ -1012,6 +1004,35 @@ async fn live_references_show_core_state_or_not_found() {
     let home = home::build(&ws.store).unwrap();
     assert_eq!(home["projects"][0]["brief"]["sections"][0]["refs"]["agent:b"]["title"], "Agent b");
     let _ = project;
+}
+
+/// YN-7 item 4: a section may name a run of stages. It shows the run's status
+/// as Jobs derives it, how many stages are done, its task's key and the Job of
+/// its newest attempt, where Jobs shows the run; an id no run has is not found.
+#[tokio::test]
+async fn a_live_reference_to_a_run_shows_its_status_stages_task_and_newest_job() {
+    let (_dir, ws, _project) = lab();
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Sweep"})).unwrap();
+    let task_id: String = ws.store.db.read().unwrap().query_row("SELECT id FROM collaboration_tasks", [], |r| r.get(0)).unwrap();
+    {
+        let db = ws.store.db.write().unwrap();
+        db.execute("INSERT INTO local_job_runs(id,task_id,agent_id,data) VALUES('run-1',?1,'a',?2)", rusqlite::params![task_id,
+            json!({"id":"run-1","taskId":task_id,"taskRef":"T-1","name":"lr sweep","cancelRequestedAt":null,
+                "stages":[{"key":"prep","needs":[]},{"key":"train","needs":["prep"]}]}).to_string()]).unwrap();
+        for (job, stage, status) in [("job-prep", "prep", "succeeded"), ("job-train", "train", "running")] {
+            db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'a',?3,?4)", rusqlite::params![job, task_id, status,
+                json!({"id":job,"name":stage,"status":status,"run":{"id":"run-1","stage":stage,"attempt":1}}).to_string()]).unwrap();
+            db.execute("INSERT INTO local_job_run_attempts(run_id,stage,attempt,job_id) VALUES('run-1',?1,1,?2)", [stage, job]).unwrap();
+        }
+    }
+    let mut change = put("refs", "report");
+    change["body"] = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["refs"]},
+        "refs":{"type":"LiveRefs","props":{"items":[{"kind":"run","id":"run-1"},{"kind":"run","id":"nope"}]}}}});
+    accept(&ws, "a", input("a1", 0, vec![change])).await;
+    let refs = section(&brief(&ws, "a"), "refs")["refs"].clone();
+    assert_eq!(refs["run:run-1"], json!({"kind":"run","id":"run-1","found":true,"title":"lr sweep","state":"running","tone":"active",
+        "taskId":"T-1","stages":{"done":1,"total":2},"jobId":"job-train"}), "the run as Jobs has it, its newest Job to open it by");
+    assert_eq!(refs["run:nope"], json!({"kind":"run","id":"nope","found":false}));
 }
 
 /// T-56: a section may name a task by any key it has or had; it shows with
@@ -1555,9 +1576,10 @@ fn the_tools_come_from_the_contract_and_brief_get_and_update_load_without_search
     assert!(schema["properties"].as_object().unwrap().keys().all(|key| !key.contains("agent") && key != "turnId"));
     // Core enforces the numbers the contract tells Agents.
     let limits = &brief_contract().unwrap()["limits"];
-    for (key, value) in [("topics", MAX_TOPICS as u64), ("subtopicsPerTopic", MAX_SUBTOPICS as u64), ("openAsksPerAgent", MAX_OPEN_ASKS as u64),
+    assert!(limits.get("openAsksPerAgent").is_none(), "no per-Agent ask limit (YN-11)");
+    for (key, value) in [("topics", MAX_TOPICS as u64), ("subtopicsPerTopic", MAX_SUBTOPICS as u64),
         ("attachments", MAX_ATTACHMENTS as u64), ("snapshotFileBytes", SNAPSHOT_FILE_BYTES), ("snapshotBriefBytes", SNAPSHOT_BRIEF_BYTES),
-        ("historyDays", HISTORY_DAYS as u64), ("chartSeries", attachments::CHART_SERIES as u64),
+        ("historyDays", HISTORY_DAYS as u64), ("recentlyLeft", sections::RECENTLY_LEFT as u64), ("chartSeries", attachments::CHART_SERIES as u64),
         ("chartPointsPerSeriesFromData", attachments::CHART_POINTS as u64)] {
         assert_eq!(limits[key].as_u64(), Some(value), "{key}");
     }
@@ -1606,7 +1628,8 @@ async fn an_html_attachment_is_found_for_a_preview_as_its_kept_snapshot() {
     // The source file changes; the preview reads the snapshot kept with the section.
     std::fs::write(&file, "changed").unwrap();
     let kept = crate::project_brief::attachment_file(&ws, &project, "design", "proto.html", None).await.unwrap();
-    assert_eq!(std::fs::read_to_string(kept).unwrap(), "<button>Try</button>");
+    assert_eq!(std::fs::read_to_string(&kept.path).unwrap(), "<button>Try</button>");
+    assert_eq!(kept.path.file_name().and_then(|n| n.to_str()), Some(kept.sha256.as_str()), "named by its SHA-256");
     assert!(crate::project_brief::attachment_file(&ws, &project, "design", "other.html", None).await.is_err());
     assert!(crate::project_brief::attachment_file(&ws, &project, "nope", "proto.html", None).await.is_err());
 }
@@ -1679,7 +1702,7 @@ async fn over_mcp_brief_update_answers_with_structured_receipts_and_rejections()
     // No Agent-facing operation changes the list; only the user HTTP route.
     assert!(!tools.iter().any(|tool| tool.name.contains("editor")));
     assert!(ws.collaboration_call(Some("a"), "home_editors_set", json!({"editorAgentIds":["a"]})).await.is_err());
-    editors::save(&ws.store, &project, 0, Some(vec![])).unwrap();
+    set_leads(&ws, &project, &[]);
     let refused = client.call_tool(update(input("m4", 1, vec![put("plan", "report")]))).await.unwrap();
     assert_eq!(refused.structured_content.unwrap()["problems"][0]["code"], "ask_only");
     let ask = client.call_tool(update(input("m5", 1, vec![put("plan/question", "ask")]))).await.unwrap();
@@ -1700,7 +1723,10 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
     let read = brief(&ws, "b");
     assert_eq!(section(&read, "plan")["owner"], json!({"agentId":"a","name":"Agent a","state":"moved"}));
     assert_eq!(section(&read, "notes")["owner"]["state"], "moved");
-    assert_eq!(home::build(&ws.store).unwrap()["projects"][0]["brief"]["sections"][0]["owner"]["state"], "moved");
+    // On Home they leave the main view: moved away, their owners lead the Project no more (YN-2 S4).
+    let home = home::build(&ws.store).unwrap();
+    let team = home["projects"][0]["brief"]["teamSections"].as_array().unwrap().clone();
+    assert_eq!(team.iter().find(|s| s["key"] == "plan").unwrap()["owner"]["state"], "moved");
     // The moved owner can no longer write there.
     let left = reject(&ws, "a", json!({"requestId":"a2","projectId":project,"expectedVersion":2,"changes":[put("plan", "report")]})).await;
     assert_eq!(codes(&left), ["not_owner"]);
@@ -1710,11 +1736,11 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
     assert!(rejected["problems"][0]["reason"].as_str().unwrap().contains("left this Project"));
     accept(&ws, "b", input("b2", 2, vec![op("claim", "plan")])).await;
     assert_eq!(section(&brief(&ws, "b"), "plan")["owner"]["agentId"], "b");
-    // Moved back after the claim: the section stays the claimer's.
-    ws.store.set_agent_project("a", Some(&project)).unwrap();
+    // Moved back by the user after the claim (it leads again): the section stays the claimer's.
+    ws.store.user_moves_agent("a", Some(&project)).unwrap();
     assert_eq!(codes(&reject(&ws, "a", input("a3", 3, vec![put("plan", "report")])).await), ["not_owner"]);
-    // Moved back before anyone claims: c owns its section again.
-    ws.store.set_agent_project("c", Some(&project)).unwrap();
+    // Moved back by the user before anyone claims: c owns its section again.
+    ws.store.user_moves_agent("c", Some(&project)).unwrap();
     assert_eq!(section(&brief(&ws, "b"), "notes")["owner"]["state"], "active");
     assert_eq!(codes(&reject(&ws, "b", input("b3", 3, vec![op("claim", "notes")])).await), ["not_orphan"]);
     accept(&ws, "c", input("c2", 3, vec![put("notes", "status")])).await;
@@ -1729,6 +1755,8 @@ mod editors_tests;
 mod release_handover_tests;
 #[path = "executor_needs_tests.rs"]
 mod executor_needs_tests;
+#[path = "recently_left_tests.rs"]
+mod recently_left_tests;
 #[path = "cas_tests.rs"]
 mod cas_tests;
 
@@ -2078,7 +2106,7 @@ async fn an_ask_only_member_edits_only_its_own_ask_by_its_stored_kind() {
     let (_dir, ws, project) = lab();
     // b wrote a status and an ask while it could edit content; then only a may.
     accept(&ws, "b", input("b1", 0, vec![put("old", "status"), put("question", "ask")])).await;
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     // Its old status is regular content: the edit is refused and nothing changes.
     assert_eq!(codes(&reject(&ws, "b", input("b2", 1, vec![edit("old", json!({"note":markdown("Still mine?")}))])).await), ["ask_only"]);
     // A batch of an allowed ask edit and a refused status edit is refused whole.
@@ -2189,7 +2217,7 @@ async fn a_report_marked_seen_is_the_same_section_when_its_owner_writes_it_again
     accept(&ws, "c", input("c1", 6, vec![put("log", "report")])).await;
     sections::mark_seen(&ws.store, &project, &[("log".into(), 1)]).unwrap();
     assert_eq!(history(&ws, "log")[0]["currentSource"], true);
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into(), "b".into()])).unwrap();
+    set_leads(&ws, &project, &["a", "b"]);
     assert_eq!(history(&ws, "log")[0]["currentSource"], false);
 }
 
@@ -2317,7 +2345,7 @@ async fn editors_get_advice_never_a_duty_and_nothing_is_resolved_or_refreshed_fo
     assert_eq!(section(&read, "decide")["ask"]["state"], "replied");
     assert_eq!(section(&read, "state")["status"], json!({"asOf":"2026-01-01T00:00:00Z","validFor":60,"stale":true}));
     assert_eq!(version(&ws, &project), before, "reading changed nothing");
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     let ask_only = brief(&ws, "b")["you"].clone();
     assert_eq!(ask_only["capabilities"]["editContent"], false);
     assert!(ask_only.get("homeHint").is_none());
@@ -2344,7 +2372,7 @@ async fn a_task_result_carries_home_advice_only_for_editors_of_its_project() {
     let none = deliver("none", Value::Null);
     assert!(none.get("homeHint").is_none() && !mail(&none).contains(outcome_hint()));
     // The user made b Ask-only: its result has no advice; a still gets it.
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     let ask_only = deliver("ask-only", json!(project));
     assert!(ask_only.get("homeHint").is_none());
     assert!(mail(&ask_only).ends_with(outcome_hint()));
@@ -2359,9 +2387,9 @@ async fn a_failed_home_hint_lookup_never_fails_a_task_result() {
     let call = |actor: &str, op: &str, input: Value| ws.store.collaboration_call(Some(actor), op, input);
     let task = call("a", "task_create", json!({"requestId":"c","title":"Measure","projectId":project})).unwrap()["task"].clone();
     let sent = call("a", "task_dispatch", json!({"requestId":"d","taskId":task["id"],"expectedVersion":task["version"],"toAgentId":"b"})).unwrap();
-    // An editor policy Core cannot read: every hint lookup for this Project fails.
+    // A Home preference Core cannot read: every editor's hint lookup fails.
     ws.store.db.write().unwrap().execute(
-        "INSERT OR REPLACE INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'not json')", [&project]).unwrap();
+        "INSERT OR REPLACE INTO workspace_meta(key,value) VALUES('home.presentation',X'00')", []).unwrap();
     let id = task["id"].as_str().unwrap();
     // home_hint takes the task's own key, as task_submit_result passes it.
     let key: String = ws.store.db.read().unwrap()
@@ -2438,7 +2466,7 @@ async fn the_users_presentation_preference_reaches_editors_until_the_default_rem
     assert_eq!(presentation::view(&file).unwrap(), saved);
     drop(file);
 
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     assert!(brief(&ws, "b")["you"].get("homePreference").is_none(), "Ask-only: no advice");
     assert_eq!(brief(&ws, "a")["you"]["homePreference"], json!(text));
 
@@ -2593,4 +2621,40 @@ async fn a_research_desk_reads_only_its_snapshots_and_keeps_each_definition_vers
     assert_eq!(read("body", None).err().unwrap().code, "element_not_found");
     let other = research::desk(&ws.store, &cache, "other-project", "study", "desk", None).unwrap().err().unwrap();
     assert_eq!(other.code, "section_not_found");
+}
+
+/// YN-7 item 3: a desk reads a CSV cell by the text its row's key columns
+/// hold, as written; no row, two rows or a column the file lacks is never a guess.
+#[tokio::test]
+async fn a_research_desk_reads_a_csv_cell_by_its_rows_text_and_never_guesses() {
+    let (dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    std::fs::write(dir.path().join("results.csv"),
+        "sport, d ,auc\nalpha,2,0.92\nalpha,2.0,0.50\nbeta,1,0.81\nbeta,1,0.83\ngamma,3,n/a\n\"  delta \",4, 0.7 \n").unwrap();
+    let cell = |sport: &str, d: &str, column: &str| json!({"from":"results.csv","row":{"sport":sport,"d":d},"column":column});
+    let part = |id: &str, value: Value| json!({"id":id,"label":id,"estimate":{"value":value}});
+    let put = json!({"op":"put","key":"study","kind":"report","title":"Study (synthetic)",
+        "attachments":[{"name":"results.csv","path":dir.path().join("results.csv")}],
+        "body":{"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{},"children":["desk"]},
+            "desk":{"type":"ResearchDesk","props":{"schema":"research/1",
+                "claims":[{"id":"c1","title":"Alpha ranks well","statement":"About 0.9 at d 2.","status":"conditional","primary":"r1"}],
+                "plots":[{"id":"p1","title":"AUC","digits":2,"rows":[
+                    {"id":"r1","label":"alpha d2","estimate":{"value":cell("alpha","2","auc"),"low":cell("beta","1","auc"),"high":cell("gamma","3","auc")},
+                     "parts":[part("a",cell("alpha","2","f1")),part("b",cell("omega","2","auc")),part("c",cell("delta","4","auc")),
+                        part("e",json!({"from":"results.csv","row":{"league":"x"},"column":"auc"}))]}]}],
+                "sources":[{"id":"res","label":"Results","kind":"data","snapshot":"results.csv"}]}}}}});
+    let accepted = update::update(&ws, &checker, "a", input("c1", 0, vec![put])).await.unwrap();
+    assert!(accepted.is_ok(), "{accepted:?}");
+
+    let cache = attachments::dir(&ws.data_dir);
+    let values = research::desk(&ws.store, &cache, &project, "study", "desk", None).unwrap().ok().unwrap()["values"].clone();
+    let status = |at: &str| values[at]["status"].clone();
+    // "2" matches the row holding "2", not the one holding "2.0".
+    assert_eq!(values["r1.value"], json!({"status":"read","value":0.92,"from":"results.csv"}));
+    assert_eq!((status("r1.low"), status("r1.high")), (json!("ambiguous"), json!("not_number")), "two rows match; n/a is no number");
+    assert_eq!((status("a.value"), status("b.value"), status("e.value")), (json!("missing"), json!("missing"), json!("missing")),
+        "a column, a row or a key column the file lacks");
+    // The spaces around a cell or a header name are not its text.
+    assert_eq!(values["c.value"]["value"], json!(0.7));
 }

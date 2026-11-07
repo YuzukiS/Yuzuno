@@ -251,6 +251,8 @@ async fn explicit_fork_keeps_history_and_settings_and_continues_without_a_prompt
     assert_eq!(fork.settings.reasoning_effort.as_deref(), Some("ultra"));
     assert_eq!(fork.settings.permission_preset.as_deref(), Some("auto"));
     assert_eq!(lab.ws.store.agent_project(&fork.id).unwrap(), lab.ws.store.agent_project(&id).unwrap());
+    assert_eq!(lab.ws.store.agent_kind(&fork.id).unwrap().as_deref(), Some("lead"),
+        "the user's fork leads the source's Project (YN-2 S4)");
 
     let call = &lab.calls("thread/fork")[0]["params"];
     assert_eq!((call["threadId"].as_str(), call["lastTurnId"].as_str()), (Some(SOURCE), Some("t-11")));

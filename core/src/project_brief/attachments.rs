@@ -67,6 +67,15 @@ impl Drop for Hold {
     }
 }
 
+/// Holds the snapshot file at `path` until the Hold drops, so that
+/// `collect_garbage` leaves it meanwhile: an interactive preview of it
+/// (previews.rs) serves it for its hour, cache cleared or not.
+pub(crate) fn hold(path: &Path) -> Hold {
+    let mut hold = Hold::default();
+    hold.add(path.to_owned());
+    hold
+}
+
 /// Holds every snapshot file now in the cache until the Hold drops, so that
 /// `collect_garbage` removes none of them meanwhile. A Workspace backup
 /// (T-192) takes it before copying the database, then copies the files that
@@ -420,6 +429,16 @@ pub(super) fn snapshot_file(store: &Store, cache: &Path, project: &str, key: &st
     Ok(snapshot_of(cache, &row, name).map(|(path, attachment)| {
         (path, attachment["mime"].as_str().unwrap_or("application/octet-stream").to_owned())
     }))
+}
+
+/// A CSV or TSV file's header and rows, each cell's text as written (YN-7:
+/// a research desk reads one cell by its row's text and its column); an
+/// error for any other kind of file or one that is not UTF-8.
+pub(super) fn text_table(bytes: &[u8], name: &str) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
+    match Table::parse(bytes, name)? {
+        Table::Text { header, rows } => Ok((header, rows)),
+        Table::Objects(_) => Err("Not a CSV or TSV file".into()),
+    }
 }
 
 /// A data file's rows: a CSV (or TSV) with a header row, a JSON array of

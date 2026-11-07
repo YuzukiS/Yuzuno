@@ -71,9 +71,8 @@ export function agentNotices(before: AgentState[] | null, after: AgentState[], p
 }
 
 /**
- * Notices for Asks and handover proposals (T-34 S3b) that are new in Home's
- * Needs you. Approvals there are the Agents' requests, which the Agent list
- * already gives. A proposal's tag is the one Core's push gives it.
+ * Notices for Asks that are new in Home's Needs you. Approvals there are the
+ * Agents' requests, which the Agent list already gives.
  */
 export function askNotices(before: NeedsYouItem[] | null, after: NeedsYouItem[], preview: boolean): Notice[] {
   if (!before) return [];
@@ -88,18 +87,7 @@ export function askNotices(before: NeedsYouItem[] | null, after: NeedsYouItem[],
       body: preview && item.title ? clip(item.title) : "An Ask is waiting for your answer on Home.",
       home: true,
     }));
-  const proposed = new Set(before.filter((item) => item.kind === "handover").map((item) => item.proposalId));
-  const proposals = after
-    .filter((item) => item.kind === "handover" && item.proposalId && !proposed.has(item.proposalId))
-    .map((item) => ({
-      kind: "needsYou" as const,
-      // By Project and lead, as Core's push tags it: a lead's new proposal replaces its earlier notice (#612 R2).
-      tag: tag("needsYou", `handover:${item.projectId}:${item.agentId}`),
-      title: `${item.agentName} proposes a handover change`,
-      body: preview && item.title ? clip(item.title) : "A change to a Project's handover is waiting for your decision on Home.",
-      home: true,
-    }));
-  return [...asks, ...proposals];
+  return asks;
 }
 
 /** The daily backup's last run, as Core's Backup status reads it
