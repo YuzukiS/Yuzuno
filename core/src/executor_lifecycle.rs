@@ -92,6 +92,13 @@ pub(crate) fn all(db: &Connection) -> Result<HashMap<String, Value>> {
     Ok(out)
 }
 
+/// One executor's lifecycle, with its task (internal ID) and its dispatch;
+/// None when `agent` is no executor (T-43 S3: its Overview).
+pub(crate) fn of(db: &Connection, agent: &str) -> Result<Option<(Value, Option<String>, Option<String>)>> {
+    let role = db.query_row(&format!("{ROLE} AND agent_id=?1"), [agent], role).optional()?;
+    role.map(|role| Ok((lifecycle(db, &role)?, role.task.clone(), role.dispatch.clone()))).transpose()
+}
+
 /// The lifecycle of each listed task's executor, by task ID (a task view's
 /// `executor`): the executor its newest dispatch went to, when one did.
 pub(crate) fn for_tasks(db: &Connection, tasks: &[&str]) -> Result<HashMap<String, Value>> {

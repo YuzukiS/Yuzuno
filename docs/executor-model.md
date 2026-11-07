@@ -251,9 +251,10 @@ not a template's or a Project's.
 
 A template's delivery and steps say how its executors work. They are
 descriptive: Core passes them to the executor and to whoever chooses the
-template, but doesn't track which step an executor is on, and doesn't
-refuse a pull request, review or merge to a template whose delivery is
-`direct-commit` or `none`.
+template, but doesn't hold an executor to a step, and doesn't refuse a pull
+request, review or merge to a template whose delivery is `direct-commit` or
+`none`. An executor's Overview reads how far each step is from Core's
+records (see [An executor's session](#an-executors-session)).
 
 - **Steps.** Each step is `{kind, label?, rounds?, approver?}`:
 
@@ -781,6 +782,54 @@ announced as changed (`agent.changed`), and the task board is told with
 announced only when it changes, not on every check. A write to its task
 announces it only when it can change the state: a result, a dispatch, a
 claim, or a new status or blocker. A progress-only update doesn't.
+
+## An executor's session
+
+An executor's session has two tabs, 概览 · Overview and 会话 · Conversation:
+two readings of the same records. It opens on its Overview; each executor
+keeps the tab you chose last. A standing Agent or a lead has no tabs.
+
+- **The Overview** (`ExecutorOverview.tsx`) reads
+  `GET /api/agents/{id}/executor` (`executor_overview.rs`; another Agent is
+  `not_executor`, 404). It shows:
+  - its task's key and title, its template, who dispatched it, its state
+    and its time on the task, and a way to open the task;
+  - its starting materials as its dispatch kept them (acceptance, the
+    repository at its base, the worktree, what to return, the handover
+    version, the context summary), read-only;
+  - its template's steps (its delivery's default when it sets none, `pr`
+    for an executor made from no template), five shown and the rest on
+    request, each with a state read from its record: `result` is done once
+    that result is in (the n-th result step is the n-th result handed in on
+    this dispatch); `job` is the newest of its Jobs; `pr` is done once its
+    task links a PR; `review` is the newest round on the PR's head
+    (`changes_requested` fails it; a round of an earlier head doesn't count);
+    `ci` is the head's checks; `merge` its merge entry's, or done once the PR
+    is merged. Materials, work and a gate have no record of their own: each
+    is done once a step after it has begun (materials also once the dispatch
+    mail was read). A gate ends a stage: the stage after it begins only once
+    each result asked for before the gate is in, and only its own Jobs, made
+    after the newest of those results, count for it, so one stage's records
+    never pass a gate. The first step not begun is where the executor is:
+    under way while it runs (materials, work or a result), waiting for you
+    while it waits (those, or a gate);
+  - what it is doing now (its work summary);
+  - while it needs you, its requests' own cards, answered there (and not
+    also in its Conversation while the Overview shows);
+  - its PR's changes as GitHub counts them (`+additions −deletions · files`,
+    read with the PR), with a link to it;
+  - its evidence, each with its own conclusion: its own Jobs on the task
+    (newest twelve), the review of the PR's head, the PR's CI and its merge
+    entry;
+  - its result, when it has handed one in.
+
+  The read uses Core's records only and never asks GitHub; the web reads it
+  again on every collaboration, Jobs or merge queue change.
+- **The Conversation** is the conversation as for any Agent, with the
+  composer. Behind the Overview it stays open, hidden: choosing it again
+  puts it back where it was read. A jump into it (a source from Home or the
+  sidebar, a message link, a Turn from the index) shows it; a reading
+  position kept from earlier is taken when you choose it.
 
 ## Phases
 
