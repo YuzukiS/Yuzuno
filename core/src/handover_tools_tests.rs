@@ -148,7 +148,8 @@ async fn handover_propose_is_refused_naming_handover_update() {
     let (_dir, ws, p) = fixture();
     let refused = error_of(ws.collaboration_call(Some("lead"), "handover_propose",
         json!({"requestId":"p","expectedVersion":1,"markdown":"# Lab\nProposed.","reason":"Old way"})).await);
-    assert!(refused.starts_with("tool_replaced: handover_propose was replaced by handover_update"), "{refused}");
+    assert!(refused.starts_with("tool_replaced: handover_propose was replaced by handover_update"),
+        "handover_propose is refused, naming handover_update: {refused}");
     let proposals: i64 = ws.store.db.read().unwrap()
         .query_row("SELECT COUNT(*) FROM project_handover_proposals WHERE project_id=?1", [&p], |r| r.get(0)).unwrap();
     assert_eq!(proposals, 0);
