@@ -705,16 +705,23 @@ function repliedFixture() {
   return home;
 }
 
-test("a replied ask shows in short, waiting for its owner; the question and the owner's later update stay reachable", async () => {
+test("a replied ask is one line, waiting for its owner, its reply in short, never New; unfolded, the reply, Reply again, the question and the owner's later update (T-132, YN-3)", async () => {
   const p = await mount({ home: repliedFixture() });
   try {
     const budget = card(p, "p-app", "budget");
     assert.ok(budget.classList.contains("is-replied"), "marked replied");
+    // One line: whom it waits for, its title, the reply in short; the rest folded (YN-3).
+    assert.ok(budget.classList.contains("is-short"), "one line");
     const kind = budget.querySelector(".home-kind");
-    assert.equal(kind.textContent.trim(), "Replied");
+    assert.equal(kind.textContent.trim(), "Replied · waiting for Hana");
     assert.ok(kind.classList.contains("is-replied"), "no attention colour once answered");
-    // Compact: the answer and who acts next, no reply controls and no Defer.
-    assert.match(budget.querySelector(".home-ask-replied").textContent, /Replied · waiting for Hana\s*Plan B/);
+    assert.equal(budget.querySelector(".home-replied-short").textContent, "Plan B");
+    assert.ok(!budget.querySelector(".home-changed"), "answered, it is not New, though never marked seen");
+    assert.ok(budget.querySelector(":scope > .home-card-body").hidden, "the rest folded");
+    budget.querySelector(".home-fold").click();
+    await waitFor(() => !budget.querySelector(":scope > .home-card-body").hidden, "unfolded");
+    // Unfolded: the answer, no reply controls and no Defer.
+    assert.match(budget.querySelector(".home-ask-replied").textContent, /Your reply:\s*Plan B/);
     assert.equal(budget.querySelector(".home-ask-reply"), null);
     assert.equal(p.button("Defer", budget), undefined);
     assert.equal(budget.querySelector(":scope > .home-card-body > .home-question"), null, "the question is folded away");
@@ -727,13 +734,19 @@ test("a replied ask shows in short, waiting for its owner; the question and the 
     // Reply again brings the controls back.
     p.button("Reply again", budget).click();
     await waitFor(() => p.button("Choose B", budget), "the choice is offered again");
-    // Updated by its owner after the reply: that update stays in view, still replied.
+    // Updated by its owner after the reply: Updated, not New; that update in view once unfolded, still replied.
     const deploy = card(p, "p-app", "deploy");
-    assert.ok(deploy.classList.contains("is-replied"));
+    assert.ok(deploy.classList.contains("is-replied") && deploy.classList.contains("is-short"));
+    assert.equal(deploy.querySelector(".home-changed").textContent, "Updated");
+    assert.equal(deploy.querySelector(".home-replied-short").textContent, "Yes, deploy");
+    deploy.querySelector(".home-fold").click();
+    await waitFor(() => !deploy.querySelector(":scope > .home-card-body").hidden, "unfolded");
     assert.match(deploy.querySelector(":scope > .home-card-body > .home-section-body").textContent, /Deploy started; waiting for CI/);
     assert.match(deploy.querySelector(".home-ask-updated").textContent, /^Hana updated it .+, after your reply$/);
-    assert.match(deploy.querySelector(".home-ask-replied").textContent, /Replied · waiting for Hana\s*Yes, deploy/);
+    assert.match(deploy.querySelector(".home-ask-replied").textContent, /Your reply:\s*Yes, deploy/);
     assert.equal(deploy.querySelector(".home-replied-details summary").textContent.trim(), "Question");
+    // The panel's new count is Core's, less the answered Ask its owner has not changed since.
+    assert.match(p.panel("p-app").querySelector(".home-panel-chips").textContent, /^1 new/);
     // An open ask is unchanged: highlighted, question in view, Defer offered.
     const release = card(p, "p-app", "release");
     assert.ok(!release.classList.contains("is-replied"));
@@ -750,6 +763,33 @@ test("a replied ask shows in short, waiting for its owner; the question and the 
     assert.equal(migrate.querySelector(".home-question").textContent, "Run the migration now?");
     assert.equal(migrate.querySelector(".home-history-reply").textContent, "Your reply: Run it tonight");
     assert.match(migrate.textContent, /Migrated 12 tables/);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("an Ask answered here keeps its card until the next visit to Home, then is one line (YN-3)", async () => {
+  const p = await mount();
+  try {
+    const release = () => card(p, "p-app", "release");
+    await type(p, release().querySelector("textarea"), "Ship it after the docs fix");
+    p.button("Send", release()).click();
+    await waitFor(() => /Replied · waiting for Mori/.test(release().textContent), "replied here");
+    // Core now reads it replied; Home reads again in this visit.
+    const ask = p.state.home.projects.find((entry) => entry.project.id === "p-app").brief.sections.find((s) => s.key === "release");
+    ask.ask = { ...ask.ask, state: "replied", repliedAt: at(0), replyText: "Ship it after the docs fix" };
+    p.doc.querySelector('[aria-label="Refresh Home"]').click();
+    await waitFor(() => release().classList.contains("is-replied"), "read as replied");
+    assert.ok(!release().classList.contains("is-short"), "still its card in this visit");
+    assert.ok(!release().querySelector(":scope > .home-card-body").hidden, "nothing folded under the user's hand");
+    // The next visit to Home: one line.
+    p.doc.querySelector('.agent-row[data-agent-id="b"] .agent-select').click();
+    await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Hana", "away from Home");
+    p.button("Home").click();
+    await waitFor(() => release()?.classList.contains("is-short"), "one line at the next visit");
+    assert.ok(release().querySelector(":scope > .home-card-body").hidden, "the rest folded");
+    assert.equal(release().querySelector(".home-replied-short").textContent, "Ship it after the docs fix");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

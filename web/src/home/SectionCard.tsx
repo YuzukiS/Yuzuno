@@ -5,12 +5,13 @@ import { BookOpen, CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquar
 import { errorText } from "../api";
 import { CopyButton } from "../components";
 import type { Agent } from "../types";
-import { AskReply, repliedThenUpdated } from "./AskReply";
+import { AskReply } from "./AskReply";
 import { changedBlocks, rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { BriefMarkdown } from "./brief/Markdown";
-import { changedSinceSeen, sectionDomId } from "./brief-layout";
+import { changedSinceSeen, repliedThenUpdated, sectionDomId } from "./brief-layout";
+import { DeckSizes } from "./card-sizes";
 import { FoldButton, useCardFold } from "./card-fold";
 import { sectionConditions, sectionSummary, unmaintained } from "./card-summary";
 import { absolute, deferChoices, duration, relative } from "./format";
@@ -136,7 +137,15 @@ export const SectionCard = memo(function SectionCard({
   const reportWords = reportText(language);
   // Collapsing hides the body only: drafts, Defer and table state are kept,
   // and the header still says what changed and offers Seen (T-115).
-  const [collapsed, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
+  const [chosenFold, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
+  // Answered and waiting for its owner, as it was when first shown in this
+  // visit: one line, its reply in short, the rest one click away (YN-3). One
+  // answered here keeps its card until the next visit (card-sizes.ts).
+  const replied = section.ask?.state === "replied";
+  const sizes = useContext(DeckSizes);
+  const short = sizes ? sizes.short(projectId, section.key, section.version, replied) : replied;
+  const [rowOpen, setRowOpen] = useState(false);
+  const collapsed = short ? !rowOpen : chosenFold;
   const [ref, release] = useReservedHeight(`${section.version}:${section.ask?.state ?? ""}`, collapsed);
   const [seeing, setSeeing] = useState(false);
   const [deferOpen, setDeferOpen] = useState(false);
@@ -164,7 +173,6 @@ export const SectionCard = memo(function SectionCard({
   const gone = t.gone[section.owner.state as keyof typeof t.gone] ?? t.inactive;
   // Answered, waiting for its owner: no longer the user's to decide, so it
   // shows in short, with the question and details one click away.
-  const replied = section.ask?.state === "replied";
   const updatedSinceReply = replied && repliedThenUpdated(section);
   const deferred =
     !replied && section.ask?.deferredUntil && Date.parse(section.ask.deferredUntil) > Date.now()
@@ -204,7 +212,7 @@ export const SectionCard = memo(function SectionCard({
       data-section-key={section.key}
       data-section-version={section.version}
       tabIndex={-1}
-      className={`home-section kind-${section.kind}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}${deferred ? " is-deferred" : ""}${replied ? " is-replied" : ""}${collapsed ? " is-collapsed" : ""}`}
+      className={`home-section kind-${section.kind}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}${deferred ? " is-deferred" : ""}${replied ? " is-replied" : ""}${short ? " is-short" : ""}${collapsed ? " is-collapsed" : ""}`}
       onPointerDown={release}
       aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
     >
@@ -212,18 +220,19 @@ export const SectionCard = memo(function SectionCard({
       <header className="home-section-head">
         <FoldButton
           collapsed={collapsed}
-          onToggle={toggleFold}
+          onToggle={short ? () => setRowOpen((open) => !open) : toggleFold}
           label={section.title}
           controls={`${sectionDomId(projectId, section.key)}-body`}
         />
         {topic !== undefined && <span className="home-sub-of">{t.inTopic(topic)}</span>}
         <span className={`home-kind kind-${section.kind}${replied ? " is-replied" : ""}`}>
-          {replied ? t.replied : t.kind[section.kind]}
+          {short ? t.repliedWaiting(section.owner.name) : replied ? t.replied : t.kind[section.kind]}
         </span>
         <h3 id={`${sectionDomId(projectId, section.key)}-title`}>{section.title}</h3>
+        {/* Answered, it is never new to the user: only its owner's change since (YN-3). */}
         {changed && (
           <span className="home-changed" title={t.changedTitle}>
-            {section.seen ? t.updated : t.new}
+            {section.seen || replied ? t.updated : t.new}
           </span>
         )}
         {orphaned && (
@@ -231,13 +240,25 @@ export const SectionCard = memo(function SectionCard({
             {t.notMaintained}
           </span>
         )}
-        <span className="home-section-meta">
-          <span className="home-owner">
-            {sub ? t.by : ""}
-            {section.owner.name}
-            {section.owner.state !== "active" && t.ownerState(section.owner.state)}
+        {short && section.ask?.replyText && (
+          <span className="home-replied-short" title={section.ask.replyText}>
+            {section.ask.replyText.replace(/\s+/g, " ").trim()}
           </span>
-          <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
+        )}
+        <span className="home-section-meta">
+          {/* In short, its owner is named in the row's first words, and the time is the reply's. */}
+          {!short && (
+            <span className="home-owner">
+              {sub ? t.by : ""}
+              {section.owner.name}
+              {section.owner.state !== "active" && t.ownerState(section.owner.state)}
+            </span>
+          )}
+          {short && section.ask?.repliedAt ? (
+            <span title={absolute(section.ask.repliedAt, time)}>{relative(section.ask.repliedAt, language)}</span>
+          ) : (
+            <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
+          )}
         </span>
         {openReport && section.kind !== "ask" && (
           <button
@@ -334,6 +355,7 @@ export const SectionCard = memo(function SectionCard({
           <AskReply
             key={section.key}
             section={section}
+            inRow={short}
             projectId={projectId}
             workspaceId={workspaceId}
             agents={agents}

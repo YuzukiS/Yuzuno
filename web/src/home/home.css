@@ -1380,6 +1380,59 @@ ul.home-widget {
 .home-replied-details .home-question {
   margin-top: 6px;
 }
+/* A replied Ask waiting for its owner, as it was when first shown in this
+   visit (YN-3): one line, whom it waits for, its title and the reply in
+   short; the reply in full, Reply again and its question when unfolded.
+   Where the pane is narrow, the reply takes a line of its own. */
+.home-section.is-short {
+  padding-block: 8px;
+}
+.home-section.is-short > .home-section-head {
+  flex-wrap: nowrap;
+  align-items: center;
+  min-width: 0;
+}
+.home-section.is-short .home-kind {
+  flex: none;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.home-section.is-short > .home-section-head h3 {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-replied-short {
+  flex: 1 1 8em;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-replied-short::before {
+  content: "“";
+}
+.home-replied-short::after {
+  content: "”";
+}
+.home-section.is-short .home-section-meta {
+  flex: none;
+}
+@container home (max-width: 640px) {
+  .home-section.is-short > .home-section-head {
+    flex-wrap: wrap;
+  }
+  .home-replied-short {
+    flex-basis: 100%;
+    order: 1;
+    padding-left: 22px;
+  }
+}
 .home-history-reply {
   margin: 4px 0 0;
   color: var(--home-ink-2);

@@ -452,7 +452,7 @@ export const homeText = strings({
   keptNotSent: (title, version) => `你对“${title}”（版本 ${version}）的回复未发送：那张卡片已不在 Home 上。`,
   copyText: "复制文字",
   discard: "丢弃",
-  repliedWaiting: (agent) => `已回复 · 等待 ${agent}`,
+  repliedWaiting: (agent) => `已回复 · 等 ${agent} 处理`,
   updatedAfterReply: (owner, when) => `${owner} 在你回复后更新了它（${when}）`,
   replyAgain: "再次回复",
   replyOptions: "回复选项",
