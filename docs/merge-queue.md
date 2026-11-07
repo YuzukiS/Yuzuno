@@ -287,7 +287,9 @@ Stacks keep their order. Before an entry joins, Core compares its head with
 the head of every entry released before it that has not joined yet; if its
 head contains one of theirs, it waits for that entry to join first.
 
-Known limits: a rebuilt step runs all of its CI again; and the tree check
+Known limits: a rebuilt step runs all of its CI again; an entry whose batch
+build was interrupted can lose its place in the chain to a later release, so
+it lands after that release, and some CI runs again; and the tree check
 relies on GitHub's merge of the step's PR into the new main landing the
 batch's tree, which the post-check verifies afterwards: if it does not, the
 entry stops with `post_check_failed` and the queue pauses.
