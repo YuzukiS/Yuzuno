@@ -3076,7 +3076,8 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
   };
   const p = await mount({ home, before: fourColumns });
   try {
-    await waitFor(() => card(p, "p-app", "draft")?.dataset.deckCols, "the deck is laid out");
+    // Laid out once the status card has its span (packed in the same pass as every card).
+    await waitFor(() => card(p, "p-app", "train")?.dataset.deckCols, "the deck is laid out");
     const span = (key) => [card(p, "p-app", key).dataset.deckCols ?? null, card(p, "p-app", key).dataset.deckRows ?? null];
     assert.ok(["tokenizer", "draft"].every((key) => card(p, "p-app", key).classList.contains("is-answer")), "answer cards");
     // The status takes its row alone; the heading its row; the two answer cards share theirs.
@@ -3097,7 +3098,7 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
   home.projects.find((entry) => entry.project.id === "p-app").brief.sections.splice(2, 1);
   const q = await mount({ home, before: fourColumns });
   try {
-    await waitFor(() => card(q, "p-app", "tokenizer")?.dataset.deckCols, "the deck is laid out");
+    await waitFor(() => card(q, "p-app", "train")?.dataset.deckCols, "the deck is laid out");
     assert.equal(card(q, "p-app", "draft"), null);
     assert.equal(card(q, "p-app", "tokenizer").dataset.deckCols, "4", "a lone answer card spans its row");
     assert.deepEqual(q.errors, []);
