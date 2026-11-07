@@ -855,6 +855,7 @@ test("the contract's examples render without a failed part", async (t) => {
   const { document, window } = page;
   const examples = JSON.parse(JSON.stringify(window.examples));
   const expected = {
+    note: ["core.25", "fixed in core.26"],
     image: ["layout.png", "Screenshot of the updated layout"],
     status: ["Validation loss", "−0.025", "+35 samples/s", "18k of 40k", "Loss"],
     result: ["213 of 214", "not in a release yet", "FAIL brief limits", "A stale version is accepted after a restart."],
@@ -869,6 +870,7 @@ test("the contract's examples render without a failed part", async (t) => {
     timeline: ["the user installs it", "Nov 3, 2026", "Candidate cut", "Notes reviewed", "Week 46", "Planned", "Installing it", "Step 1 of 4", "Download the bundle"],
   };
   const reads = {
+    note: [],
     image: [attachment("layout.png", "image", "image/png")],
     status: [attachment("loss.csv", "data", "text/csv", { caption: "Loss per step" })],
     result: [],
@@ -2011,7 +2013,9 @@ test("YN-16 S4 R1 P3: walking Steps stays within a list a later version shortens
   window.renderSection(readSection(page, put, { attachments: [keptPng()] }), PROJECT);
   const steps = () => document.querySelector('.brief-steps[data-mode="walk"]');
   const next = () => steps().querySelectorAll(".brief-step-move")[1];
+  // One press at a time, as a reader's taps arrive: each is drawn before the next.
   next().click();
+  await until(() => /Step 2 of 3/.test(steps().textContent), "on the second of three");
   next().click();
   await until(() => /Step 3 of 3/.test(steps().textContent), "on the last of three");
   // A later version has two steps: the reader is on the last there is.

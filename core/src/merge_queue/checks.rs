@@ -427,6 +427,38 @@ pub(super) fn checkouts(jobs: &[Checkout], main: &str, head: &str, tree: &str) -
     Ok(proved)
 }
 
+/// The most steps one chain of batches holds (YN-18 S2e, decision 4): at
+/// most this many of Core's draft PRs per repository, one chain at a time.
+pub(super) const CHAIN_STEPS: usize = 4;
+
+/// Every CI job of a chain step's batch checked out a merge of that batch
+/// commit whose tree is the step's tree (tree-ci-check.sh's test). After the
+/// steps ahead landed, main is no longer the main the batch was built on, so
+/// the merge's first parent may be either; the tree is what CI tested and
+/// what the merge must land.
+pub(super) fn chain_checkouts(jobs: &[Checkout], commit: &str, tree: &str) -> Check<Vec<Value>> {
+    let mut proved = Vec::new();
+    for c in jobs.iter().filter(|c| c.job["conclusion"] != "skipped") {
+        let name = c.job["name"].as_str().unwrap_or("?");
+        let Some(checked) = c.commit.as_ref().filter(|_| c.line.is_some()) else {
+            return stop("checkout_unproven", format!("Job {} ({name}) shows no checkout of a merge commit in {} bytes of its log", c.job["id"], c.bytes));
+        };
+        if parents(checked).get(1) != Some(&commit) || tree_of(checked) != Some(tree) {
+            return stop(
+                "checkout_mismatch",
+                format!("Job {} ({name}) checked out {}, which is not a merge of the chain step {} with its tree {}",
+                    c.job["id"], short(&checked["sha"]), &commit[..12.min(commit.len())], &tree[..12.min(tree.len())]),
+            );
+        }
+        proved.push(json!({"id":c.job["id"],"name":name,"conclusion":c.job["conclusion"],"checkout":checked["sha"],
+            "checkoutTree":tree,"logSha256":c.sha256,"logBytes":c.bytes,"truncated":c.truncated}));
+    }
+    if proved.is_empty() {
+        return stop("checkout_unproven", "No CI job on the chain step ran, so nothing shows what was tested");
+    }
+    Ok(proved)
+}
+
 /// The repository's pause (design §5). While it holds, entries wait and none
 /// merges. A `main_red` pause clears itself once main has moved past the red
 /// commit and CI on the new main finished green: `Ok(Some(..))` says so, with

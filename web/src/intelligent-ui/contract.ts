@@ -534,8 +534,6 @@ export function guideParts() {
       `A result has at most one Continue, Clarification or TaskStatus. Every Table row has a cell for each column key and no others.`,
       `TaskStatus is available through ${RESULT_TOOL}, not a reply's JSON block. Its task must exist and have another status; read it with task_get. Publishing changes nothing: the user confirms or declines, and may change the status or reason first. Propose a change only when asked to or when your work calls for one; never propose done for work you have not finished.`,
       `Sources hrefs are http(s) URLs or local file paths (optionally :line); rows and bars cite them by id in sourceIds. Table and BarChart ids, row ids and column keys are unique.`,
-      // YN-16 S5: the reader's own inputs and figures are the Project Brief's alone.
-      `Inputs the reader sets (a number, a switch, a choice), Calc formulas, Diagram, Figure, Steps and Timeline exist only in Project Brief sections (brief_guide interactive), not in ${RESULT_TOOL}.`,
     ].join("\n"),
   };
 }
