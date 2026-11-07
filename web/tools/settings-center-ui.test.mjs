@@ -108,6 +108,9 @@ test("eighteen pages in four groups and bilingual search expose real scope, with
   p.type(query, "CONTEXT compaction");
   await until(() => p.doc.querySelectorAll('.settings-catalog-card').length === 1);
   assert.match(p.doc.querySelector('.settings-catalog-card').textContent, /Unknown native values stay unknown/);
+  // While searching, no tab names a panel that isn't there (review e0111214).
+  assert.equal(p.doc.querySelector("#settings-page"), null);
+  assert.ok([...p.doc.querySelectorAll('[role="tab"]')].every((tab) => !tab.hasAttribute("aria-controls")));
   // An Agent's own setting is on no page of Settings: listed under Elsewhere.
   assert.ok(p.doc.querySelector('.settings-elsewhere .settings-catalog-card'), "an Agent's setting is under Elsewhere");
   assert.equal(p.doc.querySelector('#settings-elsewhere-title').textContent, "Elsewhere");

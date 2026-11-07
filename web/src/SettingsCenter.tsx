@@ -210,8 +210,9 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
                 {inGroup.map((item) => {
                   const Icon = pageIcons[item.id];
                   const selected = page === item.id && !searching && !atRoot;
+                  // While searching, the pane is the results, not a page: no aria-controls.
                   return <button type="button" role="tab" key={item.id}
-                    id={`settings-tab-${item.id}`} aria-controls="settings-page" aria-selected={selected}
+                    id={`settings-tab-${item.id}`} aria-controls={searching ? undefined : "settings-page"} aria-selected={selected}
                     tabIndex={page === item.id ? 0 : -1} onClick={() => choose(item.id)}>
                     <Icon size={16} aria-hidden="true" />
                     <span className="settings-nav-label">{pageLabel(item.id, language)}</span>
