@@ -922,6 +922,118 @@
   color: var(--text-secondary);
   font-size: calc(9px + var(--font-adjust, 3px));
 }
+/* A row that opens its own page: a project, a machine, a template. */
+.settings-list-row.is-open {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--motion-micro) var(--ease-standard);
+}
+.settings-list li + li > .settings-list-row {
+  border-top: 1px solid var(--line);
+}
+.settings-list-row.is-open:hover {
+  background: color-mix(in srgb, currentColor 4%, transparent);
+}
+.settings-list-row.is-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.settings-list-icon {
+  flex: none;
+  color: var(--text-secondary);
+}
+.settings-list-main {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+  min-width: 0;
+}
+.settings-list-title,
+.settings-list-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-list-title {
+  color: var(--ink);
+  font-weight: 550;
+}
+.settings-list-sub {
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.settings-list-chev {
+  flex: none;
+  color: var(--text-quiet);
+}
+.settings-list-row.is-add,
+.settings-list-row.is-add .settings-list-title,
+.settings-list-row.is-add .settings-list-icon {
+  color: var(--accent-ink);
+}
+.settings-list-row.is-quiet .settings-list-title {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+/* A short fact beside a row: a project's task key. */
+.settings-tag {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.settings-tag.is-mono {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+/* A block's one or two lines under its legend. */
+.settings-block-help {
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+/* Back to the page a page was opened from: a project's to Projects. */
+.settings-crumb {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 2px;
+  margin: -4px 0 -6px -4px;
+  padding: 2px 8px 2px 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.settings-crumb:hover {
+  background: var(--accent-wash);
+}
+/* A card's title, when a page has more than one card. */
+.settings-group-title {
+  margin: 6px 0 -4px 2px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.settings-section-heading h3:focus {
+  outline: none;
+}
+.settings-section-heading h3:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 /* A labelled field at the settings row's size. */
 .settings-field {
   display: grid;

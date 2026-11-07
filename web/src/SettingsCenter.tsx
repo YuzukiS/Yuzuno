@@ -112,12 +112,17 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   // Opened at a page, Settings starts there; otherwise at Updates, as before.
   const [initial] = useState<SettingsPage>(() => (openAt?.editor ? pageOfEditor(openAt.editor) : openAt?.page) ?? "updates");
   const [page, setPage] = useState<SettingsPage>(initial);
-  const [requests, setRequests] = useState<Partial<Record<SettingsPage, SettingsRequest>>>({});
+  // A request Settings is opened with is its page's from the first render,
+  // so that page is built once, at what was asked for.
+  const [requests, setRequests] = useState<Partial<Record<SettingsPage, SettingsRequest>>>(() =>
+    openAt ? { [initial]: { sub: openAt.sub, n: 1 } } : {});
+  const applied = useRef(openAt?.nonce);
   // A phone starts at the list of pages; a page has Back to it.
   const [root, setRoot] = useState(phone && !openAt);
   const [query, setQuery] = useState("");
   const [visited, setVisited] = useState<PageEditor[]>(() => [...editorsOf(initial)]);
-  const [focusEditor, setFocusEditor] = useState<{ editor: PageEditor; n: number } | null>(null);
+  const [focusEditor, setFocusEditor] = useState<{ editor: PageEditor; n: number } | null>(() =>
+    openAt ? { editor: openAt.editor ?? editorsOf(initial)[0], n: 1 } : null);
   const content = useRef<HTMLDivElement>(null);
   const language = useLanguage();
   const t = text(language);
@@ -161,10 +166,12 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
     else if (target.kind === "machines") openEditor("machines");
   }
   useEffect(() => {
-    if (!openAt) return;
+    // Each request once: not again when the catalog re-renders, nor the one
+    // Settings was opened with.
+    if (!openAt || openAt.nonce === applied.current) return;
+    applied.current = openAt.nonce;
     const editor = openAt.editor ?? (openAt.page ? editorsOf(openAt.page)[0] : undefined);
     if (editor) openEditor(editor, openAt.sub);
-    // Each request once: not again when the catalog re-renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openAt?.nonce]);
   // Opened together with its dialog (openAt), this comes after the dialog's
@@ -210,8 +217,9 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
                 {inGroup.map((item) => {
                   const Icon = pageIcons[item.id];
                   const selected = page === item.id && !searching && !atRoot;
+                  // While searching, the pane is the results, not a page: no aria-controls.
                   return <button type="button" role="tab" key={item.id}
-                    id={`settings-tab-${item.id}`} aria-controls="settings-page" aria-selected={selected}
+                    id={`settings-tab-${item.id}`} aria-controls={searching ? undefined : "settings-page"} aria-selected={selected}
                     tabIndex={page === item.id ? 0 : -1} onClick={() => choose(item.id)}>
                     <Icon size={16} aria-hidden="true" />
                     <span className="settings-nav-label">{pageLabel(item.id, language)}</span>

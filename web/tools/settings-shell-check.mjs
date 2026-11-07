@@ -221,6 +221,51 @@ try {
     check("slider A: typed 18 applies; a key steps it to 19 and the field follows; 40 is kept to 24; 0 says Hidden");
   }
 
+  // ---- Settings › Projects (S2a): the list first, a project's page in four cards.
+  for (const [width, height, phone] of [[1440, 900, false], [951, 669, false], [390, 844, true]]) {
+    for (const [language, theme] of [["en", "light"], ["zh-Hans", "dark"]]) {
+      const label = `projects ${width}x${height} ${language} ${theme}`;
+      const { page, context } = await open({ width, height, language, theme, phone });
+      await page.locator(".workspace-scope").click();
+      await page.getByRole("menuitem", { name: language === "en" ? "Manage projects…" : "管理项目…" }).click();
+      const dialog = settings(page);
+      const title = dialog.locator("#settings-projects-title");
+      await dialog.locator(".settings-projects .settings-list").first().waitFor();
+      await page.waitForTimeout(300); // the dialog's entrance
+      assert.equal(await title.innerText(), language === "en" ? "Projects" : "项目", `${label}: the list, no project chosen`);
+      assert.deepEqual(await dialog.locator(".settings-projects .settings-list-title").allInnerTexts(),
+        ["Garden", "Orchard", language === "en" ? "New project" : "新建项目"]);
+      await noOverflow(page, `${label} list`);
+      await page.screenshot({ path: resolve(output, `projects-list-${width}x${height}-${language}-${theme}.png`) });
+      await dialog.locator(".settings-projects .settings-list-row", { hasText: "Orchard" }).click();
+      await page.waitForFunction(() => document.querySelector("#settings-projects-title")?.textContent === "Orchard");
+      assert.equal(await dialog.locator(".settings-projects > .settings-group").count(), 4, `${label}: four cards`);
+      await dialog.locator(".settings-projects .services-panel").waitFor();
+      await noOverflow(page, `${label} project`);
+      // Nothing inside a card is wider than the card.
+      const wide = await dialog.locator(".settings-projects > .settings-group").evaluateAll((cards) => cards.flatMap((card) => {
+        const right = card.getBoundingClientRect().right + 1;
+        return [...card.querySelectorAll("input, select, textarea, button")].filter((el) => el.getBoundingClientRect().width && el.getBoundingClientRect().right > right)
+          .map((el) => el.getAttribute("aria-label") || el.textContent.trim().slice(0, 40));
+      }));
+      assert.deepEqual(wide, [], `${label}: every control inside its card`);
+      await page.screenshot({ path: resolve(output, `projects-page-${width}x${height}-${language}-${theme}.png`) });
+      for (const [index, name] of [[0, "members"], [1, "defaults"]]) {
+        await dialog.locator(".settings-projects .settings-group-title").nth(index).evaluate((el) => el.scrollIntoView({ block: "start" }));
+        await page.waitForTimeout(100);
+        await page.screenshot({ path: resolve(output, `projects-${name}-${width}x${height}-${language}-${theme}.png`) });
+      }
+      await dialog.locator(".settings-projects > .settings-group").last().evaluate((el) => el.scrollIntoView({ block: "end" }));
+      await page.waitForTimeout(100);
+      await page.screenshot({ path: resolve(output, `projects-archive-${width}x${height}-${language}-${theme}.png`) });
+      await dialog.locator(".settings-crumb").click();
+      await dialog.locator(".settings-projects .settings-list").first().waitFor();
+      assert.equal(await title.innerText(), language === "en" ? "Projects" : "项目", `${label}: Back returns to the list`);
+      await context.close();
+      check(`${label}: the list first; Orchard's page in four cards, every control inside its card; Back to the list`);
+    }
+  }
+
   // ---- Deep links: the Workspace menu and the status bar open their pages.
   {
     const { page, context } = await open({ width: 1440, height: 900, scope: JSON.stringify("project:garden") });

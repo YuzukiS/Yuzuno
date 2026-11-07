@@ -152,7 +152,7 @@ import { CollaborationBoard } from "./CollaborationBoard";
 import { MachinesPage } from "./MachinesPage";
 import {
   AgentProjectPicker,
-  ProjectManager,
+  ProjectsPage,
   ProjectSwitcher,
 } from "./ProjectWorkspace";
 import {
@@ -4729,13 +4729,11 @@ export function App() {
         workspaceId={previewMode ? "" : workspaceId}
         preserveDrafts={() => { if (imageUploads.hasPending()) throw new Error("Wait for images to finish saving before updating."); preserveDrafts(); }}
         pages={{
-          // Settings › Projects and › Machines (YN-8): the managers as they
-          // were, now pages; each request (the rail, a search result) opens
-          // its project anew.
+          // Settings › Projects and › Machines (YN-8). Each request (the rail,
+          // a search result) opens the projects page anew, at what it names.
           projects: (open, request) => (
-            <ProjectManager
+            <ProjectsPage
               key={request?.n ?? 0}
-              inline
               open={open}
               onOpenChange={(open) => { if (!open) setUpdatesOpen(false); }}
               initialView={request?.sub === "new" ? "new" : "manage"}
