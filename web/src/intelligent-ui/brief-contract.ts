@@ -769,11 +769,48 @@ function isImage(file: { name: string; path?: string }) {
 }
 const ABSOLUTE = /^(\/|[A-Za-z]:[\\/])/;
 
-/** The section with display defaults filled in, and without its op. */
+/**
+ * A put with markdown instead of body (YN-14 A3): the body Core builds for
+ * it, one Markdown block "text" under the BriefBody, then "files", an
+ * Attachments block of every registered attachment in order; size names
+ * the card's size as summary {lead:"text", size}. Anything else is
+ * returned as it is; checkBriefSection refuses markdown with a body.
+ */
+export function withMarkdownBody(input: unknown): unknown {
+  if (!object(input) || typeof input.markdown !== "string" || input.body !== undefined) return input;
+  const { markdown, size, ...rest } = input;
+  const names = (Array.isArray(rest.attachments) ? rest.attachments : [])
+    .map((attachment) => (object(attachment) ? attachment.name : undefined))
+    .filter((name): name is string => typeof name === "string");
+  const elements: Record<string, unknown> = {
+    body: { type: "BriefBody", props: size === undefined ? {} : { summary: { lead: "text", size } }, children: ["text", ...(names.length ? ["files"] : [])] },
+    text: { type: "Markdown", props: { text: markdown } },
+  };
+  if (names.length) elements.files = { type: "Attachments", props: { items: names.map((name) => ({ name })) } };
+  return { ...rest, body: { root: "body", elements } };
+}
+
+/** What a markdown put gives wrong before its body is built (YN-14 A3). */
+function markdownProblems(input: unknown): BriefProblem[] {
+  if (!object(input)) return [];
+  const found: BriefProblem[] = [];
+  const { markdown, size, body } = input;
+  if (markdown !== undefined && body !== undefined)
+    found.push(problem("invalid_field", "markdown", "Give body or markdown, not both: markdown is the whole body as one Markdown block.", "sections"));
+  else if (markdown !== undefined && (typeof markdown !== "string" || !markdown.trim()))
+    found.push(problem("invalid_field", "markdown", "markdown is the section's text: a non-empty string of GitHub-flavoured Markdown.", "sections"));
+  if (size !== undefined && (markdown === undefined || body !== undefined))
+    found.push(problem("invalid_field", "size", "size goes with markdown; with a body, name the size in the BriefBody summary.", "sections"));
+  else if (size !== undefined && !(CARD_SIZES as readonly unknown[]).includes(size))
+    found.push(problem("invalid_field", "size", `size is ${CARD_SIZES.join(", ")}.`, "sections"));
+  return found;
+}
+
+/** The section with display defaults filled in, and without its op; a markdown put with its body built. */
 function prepared(input: unknown): unknown {
   if (!object(input)) return input;
   const { op, ...rest } = input;
-  const section: Record<string, unknown> = op === "put" ? rest : input;
+  const section = withMarkdownBody(op === "put" ? rest : input) as Record<string, unknown>;
   const body = section.body;
   if (!object(body) || !object(body.elements)) return section;
   const elements: Record<string, unknown> = { ...body.elements };
@@ -986,8 +1023,11 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
   };
   const fail = () => new BriefError(problems.slice(0, MAX_PROBLEMS));
 
-  // Measured as sent, before display defaults, like result_publish.
-  const body = object(envelope) ? envelope.body : undefined;
+  for (const found of markdownProblems(envelope)) add(found);
+  if (problems.length) throw fail();
+  // Measured as sent (a markdown put's as built), before display defaults, like result_publish.
+  const built = withMarkdownBody(envelope);
+  const body = object(built) ? built.body : undefined;
   if (body !== undefined) {
     const bytes = new TextEncoder().encode(JSON.stringify(body) ?? "").length;
     if (bytes > L.bodyBytes)
@@ -1574,6 +1614,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `- key: topic or topic/sub; each part 1-48 of a-z, 0-9 and -, starting with a letter or digit (round-12, round-12/review). A Brief has at most ${L.topics} topics with ${L.subtopicsPerTopic} subs each.`,
     `- kind: ask (a question for the user, see ask); report (a result the user reads and marks seen; a report the user marks seen at its latest version leaves brief_get's sections and your ownsKeys at once (a newer version stays, unseen) and stays in Home's history ${L.historyDays} days: put it again under its key to continue it on Home, as edit needs a live section); status (current state; needs status {asOf, validFor}, validFor ${L.validForMin}-${L.validForMax} seconds; greyed once asOf + validFor has passed). While a conclusion still moves, keep it in a status and refresh it with new facts; once a claim settles, write it as a report under its own key linked to its Task, which the user marks seen and history keeps, and let the status point to it or drop it. A status keeps only its current version: putting it again replaces the earlier wording.`,
     `- title: 1-${L.titleChars} characters. body: {root, elements}, see content. time: due, eta and nextUpdate, ISO 8601 with a time zone. attachments: see attachments.`,
+    `- markdown instead of body, for a section that is text: Core makes the body one Markdown block "text" under the BriefBody, then "files", an Attachments block of every registered attachment; size (${CARD_SIZES.join(", ")}) names the card's size, as summary {lead:"text", size}. Give body or markdown, not both. It works for every kind: an ask's explanation, a status's state. A later edit or patch reaches the text at /elements/text/props/text, e.g. {op:"put", key:"release", kind:"report", title:"core.25 is out", markdown:"**core.25** is installed; the two regressions are fixed in core.26.", size:"small"}.`,
     `edit {op:"edit", key, elements:{<id>: {type, props, children?}}, status?} replaces blocks of a section you own by id and keeps the rest as it was: the other blocks and their order, title, attachments, time and the ask's state. Each id is one the body already has, or a new block named as a child by a block you edit; the root is not edited (rearrange with put). Core checks the whole section again. status (kind status only) refreshes asOf. Day to day, edit the blocks that changed, e.g. {op:"edit", key:"overview", elements:{progress:{type:"Plan", props:{steps:[...]}}}}; put a section to create it or change its layout.`,
     `patch {op:"patch", key, patch:[...], status?} changes single values of a section you own by RFC 6902 operations (add, remove, replace, move, copy, test) on its body; each path (and from) is a JSON Pointer into body, e.g. {op:"patch", key:"work", patch:[{op:"replace", path:"/elements/tasks/props/items/1/note", value:"Merged."}]}. It keeps what edit keeps and Core checks the whole section again; it may also add a block and name it under the root (/elements/<id>, then /elements/<root>/children/-). Operations apply in order; a path or from that is not in the body, a from of "" (the whole body) for move or copy, or a test whose value differs, refuses the change (patch_path, patch_test), and so does a patch that would build a body far over the limit (too_large); nothing is changed then. Use it for one note, one state or one value; edit to replace whole blocks; put to create a section or change its title.`,
     `Other changes: {op:"resolve", key} resolves your ask; {op:"remove", key} removes your section (reports and status go to history); {op:"claim", key} takes an orphaned section of your Project; change it in a later brief_update, not in the one that claims it.`,
@@ -1707,8 +1748,8 @@ export const BRIEF_TOOL_DESCRIPTIONS = {
   brief_update:
     `Write Brief changes when something changed; nothing requires a call each turn. Ask-only members may write only their own Asks. Pass expectedVersion (from ` +
     `brief_get) and a new requestId (reuse it only to retry). Send changes:[...] (noChange:true ` +
-    `changes nothing). Changes: put {op:"put", key, kind, title, body, ask?, status?, time?, attachments?} ` +
-    `creates or replaces a section you own; edit {op:"edit", key, elements:{<id>: block}} replaces only those ` +
+    `changes nothing). Changes: put {op:"put", key, kind, title, body|markdown, ask?, status?, time?, attachments?} ` +
+    `creates or replaces a section you own (markdown: one Markdown block, attachments shown after it); edit {op:"edit", key, elements:{<id>: block}} replaces only those ` +
     `blocks; patch {op:"patch", key, patch:[RFC 6902 ops on the body, e.g. {op:"replace", path:"/elements/refs/props/items/3/note", value}]} ` +
     `changes single values; resolve {op:"resolve", key} resolves your ask; remove {op:"remove", key} ` +
     `removes your section; claim {op:"claim", key} takes an orphaned section (change it in a later call). ` +

@@ -206,3 +206,13 @@ test("no fix touches an element that carries visible, on, watch, state or repeat
   // The same fix applies without the field.
   assert.equal(fixReported(report({ t: table }), reported("row_mismatch", "body.elements.t.props.rows.0.cells")).fixed, true);
 });
+
+test("a markdown put is repaired as the body Core builds for it (YN-14 A3)", () => {
+  const ask = { key: "q", kind: "ask", title: "Q", markdown: "Why: it costs a day.", ask: { question: "Run it?", reply: { options: ["Yes", "No"] } } };
+  const { section, repairs } = acceptBriefSection(ask);
+  assert.deepEqual(repairs.map((repair) => repair.code), ["reply_options"]);
+  assert.deepEqual(section.ask.reply.options, [{ id: "o1", label: "Yes" }, { id: "o2", label: "No" }]);
+  assert.equal(section.body.elements.text.props.text, "Why: it costs a day.");
+  // A markdown with a body is refused as sent, never repaired into one of them.
+  assert.throws(() => acceptBriefSection({ ...ask, body: section.body }), (error) => error instanceof BriefError && error.problems[0].path === "markdown");
+});

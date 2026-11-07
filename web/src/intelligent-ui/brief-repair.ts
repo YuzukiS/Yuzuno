@@ -28,7 +28,7 @@
  */
 import { z } from "zod";
 import {
-  BRIEF_LIMITS, BRIEF_REPAIR_CODES, BriefError, briefComponentProps, checkBriefSection,
+  BRIEF_LIMITS, BRIEF_REPAIR_CODES, BriefError, briefComponentProps, checkBriefSection, withMarkdownBody,
   type BriefComponent, type BriefProblem, type BriefSection,
 } from "./brief-contract.ts";
 
@@ -529,8 +529,10 @@ export function acceptBriefSection(envelope: unknown, previousBody?: unknown): {
     if (!(error instanceof BriefError)) throw error;
     original = error;
   }
-  if (!object(envelope) || !object(envelope.body) || !object(envelope.body.elements)) throw original;
-  const section = structuredClone(envelope) as Json;
+  // A markdown put is repaired as the body Core builds for it (YN-14 A3).
+  const expanded = withMarkdownBody(envelope);
+  if (!object(expanded) || !object(expanded.body) || !object(expanded.body.elements)) throw original;
+  const section = structuredClone(expanded) as Json;
   const body = section.body as Json;
   const elements = body.elements as Json;
   const repairs = new Repairs();
