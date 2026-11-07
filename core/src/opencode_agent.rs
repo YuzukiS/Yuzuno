@@ -2061,9 +2061,6 @@ impl Workspace {
             Answer::Form(value) => c.server.reply_form(asked, native, value).await,
             Answer::Decline => c.server.cancel_form(asked, native).await,
         };
-        if sent.is_err() && answer.declines() {
-            c.cursor.lock().unwrap().declining(asked, false);
-        }
         let request = request_id.to_owned();
         // What 2.x refused: an answer it can't take leaves the request
         // pending and answerable (D-9 (a)); one it no longer holds is gone.
@@ -2072,6 +2069,12 @@ impl Workspace {
             opencode::RequestRefused::Gone { .. } => "gone",
             opencode::RequestRefused::Other { .. } => "other",
         });
+        // Unmarked only when 2.x refused the answer, as the run then goes on. With no answer to it (a timeout,
+        // a cut connection) 2.x may have taken it and ended the run as a shutdown: the mark stays, and the
+        // run's next end clears it (S2 R1 55c8cdcb).
+        if answer.declines() && matches!(refused, Some("invalid" | "gone")) {
+            c.cursor.lock().unwrap().declining(asked, false);
+        }
         if let (Err(error), Some(kind @ ("invalid" | "gone"))) = (&sent, refused) {
             let message = error.to_string();
             let journal = if kind == "invalid" { "opencode/requestAnswerRefused" } else { "opencode/requestGone" };

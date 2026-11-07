@@ -477,7 +477,7 @@ impl Cursor {
     /// it ends one shutting down, `execution.interrupted` with reason
     /// `shutdown` (probe p0 7d72ea4c), which, after this, ends Core's turn as
     /// declined. Not read from the events: 2.x rejects and cancels a pending
-    /// request on a real shutdown too. `false` undoes it (the answer failed).
+    /// request on a real shutdown too. `false` undoes it (2.x refused the answer).
     pub fn declining(&mut self, session: &str, declining: bool) {
         if let Some(open) = self.sessions.get_mut(session) {
             open.declined = declining;

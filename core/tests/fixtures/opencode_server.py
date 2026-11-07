@@ -129,7 +129,7 @@ modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbe
          'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
          'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'directory': None, 'fork': 'ok', 'history': 'ok',
          'replay': 'ok', 'html': [], 'activeShape': 'object', 'integrations': [], 'oauth': {}, 'loginRefuse': False,
-         'holdOauthStatus': False}
+         'holdOauthStatus': False, 'replyDrop': False}
 # 2.x's logins (T-32 slice 4b): its credentials, values included, as its database keeps them; its sign-in attempts;
 # and those cancelled.
 credentials, attempts, cancelled = {}, {}, []
@@ -2204,6 +2204,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {'_tag': 'PermissionNotFoundError', 'requestID': request_id, 'message': 'Permission request not found'})
         for request in gone:
             send('permission.replied', {'sessionID': session, 'requestID': request['id'], 'reply': decision})
+        if modes.get('replyDrop'):
+            # Taken, and its answer lost on the way back (T-61 S2 R1): the connection ends with no answer, and the
+            # run's end comes after Core has seen it end.
+            self.close_connection = True
+            if decision == 'reject':
+                threading.Timer(0.5, shut_down, [session]).start()
+            return None
         self.reply(204)
         if decision == 'reject':
             shut_down(session)
