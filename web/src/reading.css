@@ -67,9 +67,9 @@
 .agent-work-summary.kind-pending {
   color: var(--attention-ink, #987344);
 }
-/* Compact Agent list (Settings → Appearance): the name and the island only,
-   one line. The latest report or update stays in the conversation; "needs
-   you" still shows. */
+/* Compact Agent list (Settings → Appearance): line one and the ring only.
+   The latest report or update stays in the conversation; "needs you" and
+   "failed" still say their word. */
 :root[data-agent-list="compact"] .agent-row {
   padding-block: 9px;
   margin-bottom: 4px;
@@ -80,7 +80,8 @@
   padding-block: 8px;
 }
 :root[data-agent-list="compact"] .agent-work-summary,
-:root[data-agent-list="compact"] .agent-list .agent-row > .agent-row-state {
+:root[data-agent-list="compact"] .agent-row-said,
+:root[data-agent-list="compact"] .agent-list .agent-row > .agent-row-state:not(.is-alert) {
   display: none;
 }
 :root[data-agent-list="compact"] .agent-row .agent-row-bottom {
@@ -97,121 +98,184 @@
   min-width: 0;
   gap: 1px;
 }
-/* The name on line one and, when there is one, what the Agent is doing on
-   line two (T-15); at the row's right end, centred on both lines, its island
-   (T-43 v4-2, the user's review of 2026-11-07), then the "…" where the reader
-   is. No avatar. Anything else, the island's card first, opens under them,
-   in the row's place. */
+/* A row (T-43 灵动环 v10.1, the user's design): line one, a standing
+   Agent's name or an executor's activity; line two, what a standing Agent
+   last said or an executor's task key and clock; in the card, one detail
+   line and then its buttons across the row. At most four lines in every
+   form. The ring at the top right, then the "…" where the reader is. The
+   row's height follows what it says. */
 .agent-list .agent-row {
   display: grid;
-  /* The name keeps at least 5.5rem; the island takes what it needs up to its
-     whole self, and its chips give way first when it can't. */
-  grid-template-columns: minmax(5.5rem, 1fr) minmax(0, auto) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   column-gap: 0;
   row-gap: 0;
-  align-items: center;
+  align-items: start;
   position: relative;
-  padding: 8px 9px 8px 14px;
+  isolation: isolate;
+  padding: 7px 9px 7px 12px;
 }
 .agent-list .agent-row > .agent-select.agent-row-top {
   grid-column: 1;
   grid-row: 1;
-  align-items: center;
+  align-items: flex-start;
   gap: 0;
 }
-/* The "…" has a column of its own here, so the name keeps its width. */
+/* The "…" has a column of its own here, so line one keeps its width. */
 .agent-list .agent-row:is(.selected, :hover, :focus-within) > .agent-select.agent-row-top,
 .agent-list .agent-row > .agent-select.agent-row-top {
   padding-right: 0;
 }
-.agent-list .agent-row > .agent-row-state {
+.agent-list .agent-row > :is(.agent-row-state, .agent-row-meta) {
   grid-column: 1;
   grid-row: 2;
-  margin-top: 3px;
+  margin-top: 1px;
+}
+.agent-list .agent-row > .agent-row-more {
+  grid-column: 1;
+  grid-row: 3;
 }
 .agent-list .agent-row > .agent-island {
   grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: center;
+  grid-row: 1;
+  align-self: start;
   justify-self: end;
   margin: 0 0 0 8px;
 }
-.agent-list .agent-row > .agent-island[data-form="card"] {
-  margin: 0;
+.agent-list .agent-row > .island-actions {
+  grid-column: 1 / -1;
+  grid-row: 4;
 }
-/* A row with no line two is one line: the island and the "…" on it. */
-.agent-list .agent-row:not(:has(> .agent-row-state)) > :is(.agent-island, .agent-row-menu),
-:root[data-agent-list="compact"] .agent-list .agent-row > :is(.agent-island, .agent-row-menu) {
-  grid-row: 1;
-}
-/* Needs you or failed: on a wide rail the island's two lines say why, so the
-   row is one line and its why stays hidden. On a narrow rail -- the default
-   desktop rail, where a name and the whole island don't both fit -- the
-   island is one line and the why is line two, under the name, which keeps
-   its width (the user's choice of 2026-11-07: names first). */
-.agent-list {
-  container: agent-list / inline-size;
-}
-.agent-list .agent-row > .agent-row-state.is-explain {
-  display: none;
-}
-.agent-list .agent-row:has(> .agent-row-state.is-explain) > :is(.agent-island, .agent-row-menu) {
-  grid-row: 1;
-}
-.agent-row-explain {
-  min-width: 0;
+/* An executor's activity: two lines at most, never cut mid-word without
+   its ellipsis. */
+.agent-activity {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
+  min-width: 0;
+  color: var(--ink);
   font-size: calc(10.5px + var(--font-adjust, 3px));
   font-weight: 600;
   line-height: 1.5;
-  text-overflow: ellipsis;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.agent-row :is(.agent-activity, .is-alert) > .island-word {
+  color: var(--tone);
+  font-weight: 700;
+}
+/* Its task's key, small and grey, and its clock in the state's colour. */
+.agent-row-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  line-height: 1.5;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
-.agent-row-explain[data-state="waiting"] {
-  color: var(--island-attention);
+.agent-row-meta > .island-clock {
+  color: var(--tone);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
-.agent-row-explain[data-state="failed"] {
-  color: var(--island-error);
+:root[data-theme="dark"] .agent-row-meta > .island-clock,
+:root[data-theme="dark"] .agent-row :is(.agent-activity, .is-alert) > .island-word {
+  color: var(--tone);
 }
-@container agent-list (max-width: 319px) {
-  :root:not([data-agent-list="compact"]) .agent-list .agent-row > .agent-row-state.is-explain {
-    display: flex;
-  }
-  :root:not([data-agent-list="compact"]) .agent-list .agent-row:has(> .agent-row-state.is-explain) > :is(.agent-island, .agent-row-menu) {
-    grid-row: 1 / span 2;
-  }
+/* A standing Agent that needs you or failed: the word, then what it said. */
+.agent-row-state.is-alert > .island-word {
+  flex: none;
+  font-size: calc(10px + var(--font-adjust, 3px));
 }
-/* Where the reader is -- selected, under the pointer or holding focus -- the
-   "…" opens beside the island; elsewhere it takes no width, and is still
-   reached by keyboard (T-15). */
+.agent-row-state.is-alert > .agent-row-said {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+/* Hover darkens the row's background, and only that (the user, v9): no
+   border. On the ring the row stays as it is; the ring shows its own halo
+   (agent-island.css). A row island darkens its outline's fill instead. */
+.agent-list .agent-row:not(.selected):hover {
+  border-color: transparent;
+}
+.agent-list .agent-row:not(.selected):hover:has(> .agent-island:hover) {
+  background: transparent;
+}
+.agent-list .agent-row:hover:not(:has(> .agent-island:hover)) > .island-shell {
+  background: color-mix(in srgb, var(--tone) 20%, var(--paper));
+}
+:root[data-agent-list="compact"] .agent-list .agent-row > .agent-row-meta {
+  display: none;
+}
+/* Where the reader is -- the selected row, or the keyboard on its link or
+   on the "…" itself -- the "…" opens beside the ring; elsewhere it takes no
+   width, and is still reached by keyboard (T-15), a right-click or a
+   long-press. Not under the pointer or on the ring: hover only darkens the
+   row (the user, v9), and the ring stays where it was clicked. */
 .agent-list .agent-row > .agent-row-menu {
   position: relative;
   top: auto;
   right: auto;
   z-index: 1;
   grid-column: 3;
-  grid-row: 1 / span 2;
-  align-self: center;
+  grid-row: 1;
+  align-self: start;
   width: 0;
+  /* Centred on the ring, and no taller than it in the row's layout. */
+  height: 26px;
+  margin-block: -2px;
   margin-left: 0;
   overflow: hidden;
 }
-.agent-list .agent-row:is(.selected, :hover, :focus-within) > .agent-row-menu {
+.agent-list .agent-row:is(.selected, :has(> .agent-select:focus-visible), :has(> .agent-row-menu:is(:focus-visible, [aria-expanded="true"]))) > .agent-row-menu {
   width: 26px;
   margin-left: 3px;
 }
 @media (pointer: coarse) {
-  .agent-list .agent-row:is(.selected, :hover, :focus-within) > .agent-row-menu {
+  .agent-list .agent-row > .agent-row-menu {
+    height: 38px;
+    margin-block: -8px;
+  }
+  .agent-list .agent-row:is(.selected, :has(> .agent-select:focus-visible), :has(> .agent-row-menu:is(:focus-visible, [aria-expanded="true"]))) > .agent-row-menu {
     width: 38px;
   }
 }
+/* To a finger the whole row is the target, 44 px at least; its link
+   needn't be. */
+@media (pointer: coarse) {
+  .agent-list .agent-row {
+    min-height: 44px;
+  }
+}
+.app.phone .agent-list .agent-row {
+  min-height: 44px;
+}
+.app.phone .agent-list .agent-row > .agent-select {
+  min-height: 0;
+}
+/* A standing Agent's name, then its kind ("Lead") beside it. */
+.agent-list .agent-row .agent-line-one.agent-identity {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.agent-list .agent-row .agent-line-one.agent-identity > .agent-name {
+  flex: 0 1 auto;
+}
+.agent-list .agent-row .agent-line-one.agent-identity > .agent-kind-badge {
+  flex: none;
+  align-self: center;
+}
 .agent-list .agent-row > .handoff-hint,
-.agent-list .agent-row > .agent-row-bottom,
-.agent-list .agent-row > .agent-island-card {
+.agent-list .agent-row > .agent-row-bottom {
   grid-column: 1 / -1;
 }
-/* The whole row opens the Agent, while the actions button, the island and
-   its card stay reachable above it. */
+/* The whole row opens the conversation, the text of a row island included,
+   while the ring, the card's buttons and the "…" stay reachable above it. */
 .agent-list .agent-row > .agent-select.agent-row-top::after {
   content: "";
   position: absolute;

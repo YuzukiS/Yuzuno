@@ -110,7 +110,7 @@ const frame = () => page.evaluate(() => {
     heading: document.querySelector(".rail-heading > span").textContent,
     scope: texts(".agent-scope button"),
     groups: texts(".project-group-name"),
-    rows: Object.fromEntries([...document.querySelectorAll(".agent-row")].map((row) => [row.querySelector(".agent-name").textContent, [row.querySelector(".agent-island").dataset.status, row.querySelector(".agent-island .island-word").textContent, row.querySelector(".needs-you")?.textContent ?? null]])),
+    rows: Object.fromEntries([...document.querySelectorAll(".agent-row")].map((row) => [row.querySelector(".agent-name").textContent, [row.querySelector(".agent-island").dataset.status, row.querySelector(".agent-island").getAttribute("aria-label").split(" · ")[1], row.querySelector(".needs-you")?.textContent ?? null]])),
     selected: attr('.agent-select[aria-current="true"]', "aria-label"),
     search: document.querySelector(".agent-search input")?.value ?? null,
     searchPlaceholder: attr(".agent-search input", "placeholder"),

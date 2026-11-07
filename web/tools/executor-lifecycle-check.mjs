@@ -138,13 +138,13 @@ async function shot(locator, name) {
   report.screenshots.push(name);
 }
 const order = (page) => page.locator(".agent-list article[data-agent-id]").evaluateAll((rows) => rows.map((r) => r.dataset.agentId));
-// Each row's state: an executor's island (T-43 v4-2), what its line two says
-// and its PR chip; a lead's badge.
+// Each row's state: an executor's ring (T-43 v10.1) and what its line one
+// says; a lead's badge.
 const states = (page) => page.locator(".agent-list article[data-agent-id]").evaluateAll((rows, executors) =>
   Object.fromEntries(rows.map((r) => {
     const island = r.querySelector(".agent-island");
     return [r.dataset.agentId, executors.includes(r.dataset.agentId)
-      ? [island?.dataset.state ?? null, island?.querySelector(".island-line")?.textContent ?? null, r.querySelector(".executor-pr-chip")?.textContent ?? null]
+      ? [island?.dataset.state ?? null, r.querySelector(".agent-line-one")?.textContent ?? null]
       : r.querySelector(".agent-kind-badge")?.textContent ?? null];
   })), agents.filter((a) => a.executor).map((a) => a.id));
 // Nothing in the list wider than it: rows, their badges and the headings.
@@ -164,40 +164,43 @@ const english = {
     archived: "Archived", failed: "Failed", closed: "Closed" },
   queued: (n) => `Queued · ${n} in line`, executor: "Executor", lead: "Lead",
   executors: "Task executors", delivering: "Awaiting your release", failed: "Its start failed", blocked: "Its task is blocked",
-  // The island's words (AgentIsland.tsx, T-43 v4-2): its state's word, then line two.
-  word: { queued: "Queued", working: "Working", handed: "Handed in", failed: "Failed", archived: "Archived" }, colon: ": ",
-  position: (n) => `${n} in line`, starting: "Starting", leadsTurn: "the lead's turn", closing: "Closing",
+  // The row's words (AgentIsland.tsx, T-43 v10.1): its state's word, then what it is doing.
+  word: { queued: "Queued", working: "Working", handed: "Handed in", failed: "Failed", archived: "Archived" }, colon: ": ", gap: " · ",
+  handedIn: (pr) => (pr ? `Handed in #${pr}` : "Handed in"),
+  position: (n) => `${n} in line`, starting: "Starting", leadsTurn: "waiting for the lead", closing: "Closing",
   taskBlocked: (text) => `Task blocked: ${text}`, rounds: "Review 1/2", draft: "Draft", closed: "Closed",
 };
 const chinese = {
   states: { queued: "排队中", starting: "启动中", running: "运行中", delivering: "已交", archiving: "归档中", archived: "已归档", failed: "失败", closed: "已关闭" },
   queued: (n) => `排队中 · 第 ${n} 位`, executor: "执行者", lead: "负责人",
   executors: "任务执行者", delivering: "交付待你放行", failed: "启动失败", blocked: "任务受阻",
-  word: { queued: "排队", working: "在做", handed: "已交", failed: "出错", archived: "已归档" }, colon: "：",
+  word: { queued: "排队", working: "在做", handed: "已交", failed: "出错", archived: "已归档" }, colon: "：", gap: " · ",
+  handedIn: (pr) => (pr ? `已交 #${pr}` : "已交"),
   position: (n) => `第 ${n} 位`, starting: "启动中", leadsTurn: "等负责人", closing: "收尾中",
   taskBlocked: (text) => `任务受阻：${text}`, rounds: "审查 1/2", draft: "草稿", closed: "已关闭",
 };
 // What an executor's badge and chip say (executor-lifecycle.ts), from its state.
 const says = (words, lifecycle) =>
   `${words.executor} · ${lifecycle.state === "queued" && lifecycle.position ? words.queued(lifecycle.position) : words.states[lifecycle.state]}`;
-// What an executor's island says (agent-island.ts over executor-display.ts's
+// What an executor's row says (agent-island.ts over executor-display.ts's
 // rules), from Core's lifecycle in the fixture and this check's runtime
-// status and PRs: its state, and line two as "word: what it is at".
+// status and PRs: its ring's state, and line one as "word: what it is
+// doing" (working has no word; handed in names its PR; nothing said yet, its
+// task's title). Its PR's review is its card's, not the row's.
 const rowSays = (words, a) => {
   const l = a.executor;
-  // Its PR chip, in its island (the user's review of 2026-11-07).
-  const pr = live.executors[a.id]?.pr ? `#${live.executors[a.id].pr.number}` : null;
-  const prSays = a.id === delivered ? words.rounds : a.id === atWork ? words.draft : null;
-  const line = (state, text) => [state, text ? `${words.word[state]}${words.colon}${text}` : words.word[state], pr];
+  const pr = live.executors[a.id]?.pr?.number ?? null;
+  const line = (state, text) => [state,
+    state === "working" ? text : state === "handed" ? `${words.handedIn(pr)}${words.gap}${text}` : text ? `${words.word[state]}${words.colon}${text}` : words.word[state]];
   switch (l.state) {
-    case "archived": return line("archived", null);
+    case "archived": return line("archived", l.task.title);
     case "archiving": return line("archived", `${words.closing} · ${l.reason}`);
-    case "failed": return line("failed", l.reason ?? null);
+    case "failed": return line("failed", l.reason ?? l.task.title);
     case "closed": return line("archived", words.closed);
-    case "queued": return line("queued", l.position ? words.position(l.position) : null);
+    case "queued": return line("queued", l.position ? words.position(l.position) : l.task.title);
     case "starting": return line("queued", words.starting);
-    case "delivering": return line("handed", prSays ?? words.leadsTurn);
-    default: return line("working", l.blocked ? words.taskBlocked(l.blocked) : prSays);
+    case "delivering": return line("handed", words.leadsTurn);
+    default: return line("working", l.blocked ? words.taskBlocked(l.blocked) : l.task.title);
   }
 };
 // The sidebar's order with Attention order: the lead, the other Agent, then
@@ -232,24 +235,23 @@ async function run({ width, height, theme, language, density = "detailed" }) {
     }));
     // Its PRs come from their own read, after the list.
     // Attached, not visible: the compact list hides it, as its own assertion below says.
-    await list.locator(`article[data-agent-id="${delivered}"] .executor-pr-chip`).waitFor({ state: "attached", timeout: 10_000 });
+    await page.waitForFunction((id) => /#\d/.test(document.querySelector(`.agent-list article[data-agent-id="${id}"] .agent-line-one`)?.textContent ?? ""), delivered, { timeout: 10_000 });
     assert.deepEqual(await states(page), expected, `${tag}: each executor's row says its one state, and its PR`);
-    // No avatar on any row; each row's island is its own, at the row's right
-    // end, and holds the executor's chips (the user's review of 2026-11-07).
+    // No avatar on any row; each row has one ring of its own, and no chips
+    // (its template and PR are its ring's title and its card's).
     const marks = await list.locator("article[data-agent-id]").evaluateAll((rows) => rows.map((r) => [
       r.dataset.agentId, !!r.querySelector(".agent-rail-avatar, .agent-avatar"),
-      r.querySelector(":scope > .agent-island") !== null && !r.querySelector(".executor-row-facts:not(.agent-island .executor-row-facts)")]));
-    assert.deepEqual(marks.filter(([, avatar, own]) => avatar || !own), [], `${tag}: no avatar, and one island per row holding its chips`);
+      r.querySelectorAll(":scope > .agent-island").length === 1 && !r.querySelector(".executor-row-facts")]));
+    assert.deepEqual(marks.filter(([, avatar, own]) => avatar || !own), [], `${tag}: no avatar, one ring per row, no chips`);
     if (density === "compact") {
-      // The compact list keeps the island and hides line two; the island's
-      // chips show where they fit (it hides the ones that don't).
+      // The compact list keeps line one and the ring, and hides line two.
       const shownParts = await list.locator(`article[data-agent-id="${delivered}"]`).evaluate((row) =>
-        Object.fromEntries([".agent-island", ".agent-row-state"].map((part) => {
+        Object.fromEntries([".agent-island", ".agent-row-meta"].map((part) => {
           const el = row.querySelector(part);
           return [part, el ? getComputedStyle(el).display !== "none" : null];
         })));
-      assert.ok(shownParts[".agent-island"] && shownParts[".agent-row-state"] !== true,
-        `${tag}: compact, the island only: ${JSON.stringify(shownParts)}`);
+      assert.ok(shownParts[".agent-island"] && shownParts[".agent-row-meta"] === false,
+        `${tag}: compact, line one and the ring: ${JSON.stringify(shownParts)}`);
     }
     assert.equal(await list.locator('[data-rail-part="executors"] .rail-subgroup-head > span').first().textContent(), words.executors);
     // Its words keep one line beside how many run and wait (T-43 S2).

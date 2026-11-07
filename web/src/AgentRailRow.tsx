@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RequestSummary } from "./MessageContent";
 import { Bell } from "lucide-react";
 import type { AgentActionHandlers } from "./agent-actions";
@@ -10,10 +10,10 @@ import { useHandoffDrop } from "./SendToAgent";
 import { strings, useLanguage, type Language } from "./i18n";
 import { lifecycleText, stateDetail } from "./executor-lifecycle";
 import { executorView } from "./executor-display";
-import { ExecutorRowFacts, executorRowText, rowFactsLabel, stateText } from "./ExecutorRowState";
-import { AgentIsland, IslandCard, islandSentence, slide, type IslandForm } from "./AgentIsland";
-import { islandView, type IslandAction } from "./agent-island";
-import { useExecutorPR } from "./live-executors";
+import { executorRowText, rowFactsLabel, stateText } from "./ExecutorRowState";
+import { AgentIsland, IslandActions, clockShort, islandActivity, islandText, lineText, standingMore, useFitFour, useIslandShell, type IslandPill } from "./AgentIsland";
+import { islandView, nextForm, type IslandAction, type IslandForm } from "./agent-island";
+import { useExecutorPR, useMinute } from "./live-executors";
 import "./reading.css";
 
 export function workingFolder(cwd: string): string {
@@ -203,40 +203,86 @@ export function AgentRailRow({
         }
       : null;
   const description = t.description(shown, executor ? null : waiting?.detail ?? null, machine, agent.unreadCount);
-  // Its island (T-43, 灵动环 v4-2): at line two's right end, two lines by
-  // itself while it needs you or failed, a card in the row's place when
-  // pressed. The ring slides to the card's cover and back (320 ms).
+  // Its island (T-43, 灵动环 v10.1, the user's design): a ring at the row's
+  // top right that is the state itself. A click on the row opens the
+  // conversation; only the ring, or the pill grown out of it, steps the
+  // island: ring → the row as the island → the card, and the card closes
+  // again. Needs you and failed are row islands until handled.
   const island = islandView({ agent, executor, lifecycle, unseen, waiting: waiting?.label ?? null, statusLabel: label, compacting, waitingSince });
-  const [open, setOpen] = useState(false);
+  const words = islandText(language);
+  const now = useMinute();
+  const [opened, setOpened] = useState<IslandForm | null>(null);
+  const pill = usePassingEvent(agent.unreadCount, pr?.ci ?? null, language);
+  const rest: IslandForm = island.auto ? "row" : "ring";
+  const form: IslandForm = opened ?? (pill && rest === "ring" ? "pill" : rest);
+  const row = useRef<HTMLElement>(null);
   const islandButton = useRef<HTMLButtonElement>(null);
-  const cover = useRef<HTMLDivElement>(null);
-  const from = useRef<DOMRect | null>(null);
-  const refocus = useRef(false);
-  const form: IslandForm = open ? "card" : island.auto ? "two" : "ring";
-  // An executor's template and PR, held in its island; none, no chips.
-  const factsLabel = executor ? rowFactsLabel(executor, template, executorRowText(language)) : null;
-  const toggle = (next = !open) => {
-    from.current = (open ? cover.current : islandButton.current)?.getBoundingClientRect() ?? null;
-    setOpen(next);
+  const shell = useRef<HTMLSpanElement>(null);
+  const shrink = useIslandShell(row, shell, form);
+  const close = () => {
+    if (!opened) return;
+    // Back to its rest: into the ring first, or (needs you, failed) to the row island.
+    if (rest === "ring") shrink(() => setOpened(null));
+    else setOpened(null);
   };
-  useLayoutEffect(() => {
-    const was = from.current;
-    from.current = null;
-    slide(was, open ? cover.current : islandButton.current);
-    // Closed from the keyboard: focus goes back to the island, shown again.
-    if (!open && refocus.current) islandButton.current?.focus({ preventScroll: true });
-    refocus.current = false;
-  }, [open]);
+  const step = () => {
+    const next = nextForm(form);
+    if (!next || next === rest) close();
+    else setOpened(next);
+  };
+  // Escape, or a press anywhere else, closes it.
+  const closeRef = useRef(close);
+  closeRef.current = close;
+  useEffect(() => {
+    if (!opened) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") closeRef.current(); };
+    const onDown = (event: PointerEvent) => { if (!row.current?.contains(event.target as Node)) closeRef.current(); };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [opened]);
+  const card = form === "card";
+  const fit = useFitFour(row, card, `${language}:${island.state}:${island.actions.join()}`);
+  // An executor's template, PR and task, for its ring's title.
+  const factsLabel = executor ? rowFactsLabel(executor, template, executorRowText(language)) : null;
   const act = (action: IslandAction) => {
-    toggle(false);
-    if (action === "open") onSelect();
-    else if (action === "home") onOpenHome?.();
+    setOpened(null);
+    if (action === "home") onOpenHome?.();
     else if (island.task) onOpenTask?.(island.task);
   };
+  // Line one: a standing Agent's name, an executor's activity (the user,
+  // v7: what it is doing matters, not its name). Line two: what a standing
+  // Agent last said; an executor's task key and its clock.
+  const activity = executor ? islandActivity(island, language) : null;
+  const time = island.clock ? clockShort(island.clock, now, language) : null;
+  const more = card && fit < 1 ? (executor ? lineText(island.more, island.state, language, true) : standingMore(island, now, language)) : "";
+  const alert = !executor && (island.state === "waiting" || island.state === "failed");
+  // An executor's line two: its task's key, then its clock.
+  const taskKey = lifecycle?.task?.id ?? null;
+  const summaryLine = summary && (
+    <div
+      className={`agent-work-summary kind-${summary.kind}`}
+      data-source-kind={summary.kind}
+      title={summary.requestParts ? undefined : summary.text}
+    >
+      {summary.source === "agent" && (
+        <span className="agent-report-prefix">
+          {summary.kind === "result" ? t.reported : t.update}
+        </span>
+      )}
+      <RequestSummary agentId={agent.id} summary={summary} />
+    </div>
+  );
   return (
     <article
+      ref={row}
       className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}${press.holding ? " is-holding" : ""}`}
       data-agent-id={agent.id}
+      data-island={island.state}
+      data-form={form}
       {...drop.handlers}
       {...(actions && {
         ...press.handlers,
@@ -256,6 +302,10 @@ export function AgentRailRow({
         },
       })}
     >
+      {/* The island's outline: grown out of the ring and back into it. */}
+      <span ref={shell} className="island-shell" aria-hidden="true" />
+      {/* The row is the link to the conversation, its whole box (its ::after),
+          the text of a row island included. */}
       <button
         ref={select}
         className="agent-select agent-row-top"
@@ -265,54 +315,43 @@ export function AgentRailRow({
         aria-current={selected ? "true" : undefined}
         title={`${t.title(agent.name, shown, executor ? null : waiting?.detail ?? null, agent.unreadCount)}${kind ? ` · ${kind.name}` : ""}`}
       >
-        <span className="agent-identity">
-          <span className="agent-name">{agent.name}</span>
-          {kind && !executor && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
-        </span>
+        {activity ? (
+          <span className="agent-line-one agent-activity" data-state={island.state}>
+            {activity.word && <span className="island-word">{activity.word}</span>}
+            {activity.sep}
+            {activity.text}
+          </span>
+        ) : (
+          <span className="agent-line-one agent-identity">
+            <span className="agent-name">{agent.name}</span>
+            {kind && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
+          </span>
+        )}
       </button>
-      {/* Line two, under the name: what the Agent is doing, and only that; a
-          row with nothing to say there is one line. The state, its clock,
-          unread and an executor's template and PR are the island's, at the
-          row's right end, centred on both lines (T-43 v4-2, the user's review
-          of 2026-11-07). Beside two lines the island's second line says it,
-          so the summary gives way. The whole row opens the agent; the island
-          opens its card. */}
-      {summary && form !== "two" && (
-        <div className="agent-row-state">
-          <div
-            className={`agent-work-summary kind-${summary.kind}`}
-            data-source-kind={summary.kind}
-            title={summary.requestParts ? undefined : summary.text}
-          >
-            {summary.source === "agent" && (
-              <span className="agent-report-prefix">
-                {summary.kind === "result" ? t.reported : t.update}
-              </span>
-            )}
-            <RequestSummary agentId={agent.id} summary={summary} />
-          </div>
+      {executor ? (
+        <div className="agent-row-meta">
+          <span className="agent-task-key">{taskKey ?? agent.name}</span>
+          {time && <>{words.gap}<span className="island-clock">{time}</span></>}
         </div>
-      )}
-      {/* Needs you or failed: on a wide rail its two lines say why; on a
-          narrow one the island is one line and the why is line two, under the
-          name (reading.css, the user's choice of 2026-11-07: names first). */}
-      {form === "two" && (
-        <div className="agent-row-state is-explain" aria-hidden="true">
-          <div className="agent-row-explain" data-state={island.state}>{islandSentence(island, language)}</div>
+      ) : alert ? (
+        // A standing Agent that needs you or failed says so in words, then what it said.
+        <div className="agent-row-state is-alert">
+          <span className="island-word">{words.word[island.state]}</span>
+          {summaryLine ?? <span className="agent-row-said">{lineText(island.line, island.state, language)}</span>}
         </div>
+      ) : summary && (
+        <div className="agent-row-state">{summaryLine}</div>
       )}
-      <AgentIsland ref={islandButton} view={island} form={form} name={agent.name} onToggle={() => toggle()}
-        detail={executor ? kind?.title : undefined}
-        facts={executor && factsLabel ? <ExecutorRowFacts view={executor} template={template} title={kind?.title} /> : null}
-        factsLabel={factsLabel}
+      {more && <div className="agent-row-more">{more}</div>}
+      <AgentIsland ref={islandButton} view={island} form={form} pill={pill} name={agent.name} onStep={step}
+        detail={executor ? [kind?.title, factsLabel].filter(Boolean).join("\n") : undefined}
         data-status={label}
         data-jobs={waiting ? jobs?.active : undefined}
         data-ci={waiting && ci ? ci.running + ci.discovering + (ci.waitingForRun ?? 0) + ci.check : undefined}
         data-combined={combined || !!unseen || undefined} />
-      {/* After the island in focus order; beside it at the row's right end,
-          where the reader is (T-15). */}
+      {card && island.actions.length > 0 && <IslandActions actions={island.actions} short={fit >= 2} onAction={act} />}
+      {/* After the island in focus order; beside the ring, where the reader is (T-15). */}
       {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
-      {open && <IslandCard ref={cover} view={island} name={agent.name} onAction={act} onClose={() => { refocus.current = true; toggle(false); }} />}
       {drop.state && (
         <p className="handoff-hint" role="status">
           {drop.state === "accept" ? t.drop(agent.name) : drop.refusal}
@@ -329,3 +368,31 @@ export function AgentRailRow({
     </article>
   );
 }
+
+/** A passing event for the ring's pill (T-43 v10.1), said for three
+ * seconds: its PR's checks turned green or failed, or a new message came.
+ * Nothing on the row's first showing, or when its PR's checks are first
+ * read; the latest event replaces one shown. */
+function usePassingEvent(unread: number, ci: string | null, language: Language): IslandPill | null {
+  const [pill, setPill] = useState<{ kind: "ciGreen" | "ciFailed" | "message" } | null>(null);
+  const seen = useRef<{ unread: number; ci: string | null } | null>(null);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const was = seen.current;
+    seen.current = { unread, ci };
+    if (!was) return;
+    // Its checks' first reading is where they stand, not news.
+    const kind = was.ci != null && ci !== was.ci && (ci === "success" || ci === "failure") ? (ci === "success" ? "ciGreen" : "ciFailed")
+      : unread > was.unread ? "message" : null;
+    if (!kind) return;
+    setPill({ kind });
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setPill(null), PILL_MS);
+  }, [unread, ci]);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  if (!pill) return null;
+  const words = islandText(language).pill;
+  return { text: words[pill.kind], ring: pill.kind === "ciGreen" ? "green" : pill.kind === "ciFailed" ? "red" : null };
+}
+/** How long a passing event's pill stays before it shrinks into the ring. */
+export const PILL_MS = 3000;

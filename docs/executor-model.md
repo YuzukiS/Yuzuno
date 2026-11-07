@@ -24,8 +24,8 @@ Every Agent has one kind:
 | **lead** | You, by making it there | An Agent you created, imported, forked or moved into a Project leads it ([below](#leads)), unless you removed it. |
 | **executor** | Core | An Agent made for one task by a [dispatch to a new executor](#dispatching-to-a-new-executor). |
 
-- **Where it shows.** The sidebar shows a **Lead** label under a lead's
-  name, and an executor's row's island its state (see
+- **Where it shows.** The sidebar shows a **Lead** label beside a lead's
+  name, and an executor's row its state, in its ring (see
   [An executor's lifecycle](#an-executors-lifecycle)). Agents see each Agent's kind in `peers_list` (`lead`,
   `executor` or `standing`), and can list only one kind with its `kind`
   filter.
@@ -573,23 +573,29 @@ has the blocker (`blocked`); its state stays what it is.
   blocked on it; a released one, under Archived and in Closed. While some
   wait for a slot, the group's heading says how many are queued and how
   many run.
-- **Every Agent's row** has no avatar: its name on line one and, when there
-  is one, what it is doing on line two; a row with nothing to say there is
-  one line. At the row's right end, centred on its lines, is its island
-  (灵动环, `AgentIsland.tsx` over `agent-island.ts`), which says one state,
-  its clock and its unread count; then the "…" of its actions where you are
-  (the row selected, under the pointer or holding focus). The states are 空闲 Idle, 在做
-  Working, 已交 · 等负责人 Handed in, 等你 Needs you, 排队 Queued, 离线
-  Offline, 完成 Done, 出错 Failed and 已归档 Archived.
+- **Every Agent's row** has no avatar. Line one is a standing Agent's or a
+  lead's name, and an executor's activity: what it is doing, after its
+  state's word ("Needs you: approve the design note", "Handed in #688 ·
+  waiting for the lead"; Working has no word). Line two is what a standing
+  Agent last said, or an executor's task key and its clock, small and grey.
+  At the row's top right is its ring (灵动环, `AgentIsland.tsx` over
+  `agent-island.ts`), then the "…" of its actions where you are (the row
+  selected, or the keyboard on its link or on the "…"). The executor's name,
+  template and PR are in its ring's title and its card. A row is never more
+  than four lines, its card included, and its height follows what it says.
+  The states are 空闲 Idle, 在做 Working, 已交 · 等负责人 Handed in, 等你
+  Needs you, 排队 Queued, 离线 Offline, 完成 Done, 出错 Failed and 已归档
+  Archived.
   - An executor's comes from its one state, the first of these that holds:
     released or archiving (archived, with what an archiving one waits for);
     its start failed (failed, with why); closed (archived); queued or
     starting (queued, with its place); a request or question waiting for
     you (needs you: what it asks is its work summary); its Turn failed
-    (failed); offline or disconnected (offline); delivering (handed in, at
-    its PR's rounds, or working while a Turn runs: it is on its next slice);
-    otherwise working (with its task's blocker, a result to check, its PR,
-    or its unfinished Jobs and CI).
+    (failed); offline or disconnected (offline); delivering (handed in, or
+    working while a Turn runs: it is on its next slice); otherwise working.
+    Its activity is its task's blocker, else its work summary, else what
+    its state is at (a result to check, its unfinished Jobs and CI), else
+    its task's title.
   - A standing Agent's comes from its runtime: closed; offline; a request
     waiting; an error, or a Turn that failed and this device hasn't shown;
     working (compacting too, and an idle Agent's unfinished Jobs or CI); a
@@ -600,31 +606,39 @@ has the blocker (`blocked`); its state stays what it is.
   failed it says how long ago, and for an archived executor its whole time,
   which no longer runs. A standing Agent's runtime gives no start for its
   Turn, so its Working shows no clock.
-- **Its forms.**
-  - A small ring, at most 24 px, while it is calm (idle, offline, done,
-    archived), with the unread count as a notch on it.
-  - One line with the time, and the word except for Working's dot, while
-    something is going on.
-  - Two lines in its own box, the state with its clock and then one
-    sentence, by itself when the Agent needs you or failed. The row's work
-    summary gives way to them: what it asks is their sentence.
-  - Pressing the island opens its card in the row's place, under its two
-    lines: the ring becomes the card's cover, beside the state with its
-    clock and what the Agent is at; then the clock's line, the unread count
-    and its actions (Answer on Home for an executor's question, See result
-    for one handed in, Open, and Task for an executor's task). Opening scrolls it
-    into view and moves focus to its first action, and Escape closes it.
-  - Its size morphs in 280 ms and its cover slides in 320 ms; nothing moves
-    under reduced motion.
-  - An executor's island also holds its template, when its name doesn't say
-    it, and its PR, as "◐ · #681 · 1h12m"; they give way before the state
-    or its clock does, the template first. With the compact Agent list
-    (Settings → Appearance), every row is its name and its island, one line.
-  - **On a narrow rail** (an Agent list under 320 px, as the desktop rail is
-    by default) names come first: the island is one line, its state's glyph
-    and its time with the unread count, without its word or chips, and needs
-    you or failed don't open to two lines. Such a row says why on line two,
-    under its name, in place of its work summary.
+- **The ring is the state** (22 px, strokes only): Working is an arc that
+  turns, its length the progress (a fixed quarter until templates carry
+  their steps); Handed in, an outer arc of its review rounds (k of 2) round
+  an inner ring; Needs you, a bold ring that breathes; Queued, dots that
+  turn slowly; Offline, dashes; Idle, a thin ring; Done ✓, Failed ✕ and
+  Archived (a box) carry a mark inside. Unread updates are a count beside
+  its top left. Under reduced motion nothing turns or breathes.
+- **Its forms.** One outline grows out of the ring and shrinks back into it.
+  - At rest a ring, except needs you and failed, which are the row as the
+    island (the outline round the whole row) until handled.
+  - A passing event (its PR's checks turned green or failed, a new message)
+    grows a pill left out of the ring with a few words ("CI green") for
+    about three seconds; the ring's right edge stays put.
+  - A click on the row opens the Agent's conversation, the text of a row
+    island included, and changes no island. Only the ring, or the pill
+    grown out of it, steps the island: ring → the row as the island → its
+    card → back into the ring; Escape or a click elsewhere closes it. The
+    ring's button takes presses 28 px wide with a mouse and 40 px on touch,
+    with nothing drawn, and on hover or focus shows a halo of its own; hover
+    on the rest of the row only darkens its background, with no border.
+  - The card is the row one detail line and one line of buttons taller: an
+    executor's PR and its status, else its task's title; for a standing
+    Agent, its state, clock and unread count. Its buttons go only where the
+    row's click doesn't: Answer on Home and Task for an executor's
+    question, See result for one handed in, See why for one whose start
+    failed, Task otherwise; a standing Agent's card has none. Where the
+    lines and buttons would make a fifth line, the detail line goes, then
+    the buttons take their short words.
+  - Each change animates the outline from the ring's circle, or from where
+    it was, in 320 ms, and closing shrinks it into the ring in 300 ms;
+    nothing moves under reduced motion.
+  - With the compact Agent list (Settings → Appearance), every row is line
+    one and its ring; needs you and failed keep their word on line two.
 - **Its PR** comes from `GET /api/executors/live`: for each open executor
   (not archived, its Agent not closed) whose task links a PR, the open or
   draft one with the highest number, else the highest-numbered; its state;

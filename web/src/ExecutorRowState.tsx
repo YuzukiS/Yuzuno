@@ -1,6 +1,5 @@
 import { REVIEW_ROUNDS, type ExecutorDetail, type ExecutorShown, type ExecutorView, type PRStatus } from "./executor-display";
-import { strings, useLanguage, type Language } from "./i18n";
-import "./executor-row.css";
+import { strings, type Language } from "./i18n";
 
 // The executor row's words (T-43 S2): one state, then what it is at. The
 // reasons and blockers come from Core or the Agent as they are.
@@ -120,30 +119,9 @@ export function stateText(view: ExecutorView, language: Language): string {
   return detail ? `${t.shown[view.shown]} · ${detail}` : t.shown[view.shown];
 }
 
-/** What the chips say, for the island's label: the PR and its status, then
- * the template. Null when there are no chips. */
+/** An executor's PR and its status, then its template, for its ring's title.
+ * Null when it has neither. */
 export function rowFactsLabel(view: ExecutorView, template: string | null | undefined, t: Text): string | null {
   const parts = [view.pr ? `${t.pr(view.pr.number)} · ${prText(view.pr.status, t)}` : null, template || null].filter(Boolean);
   return parts.length ? parts.join(" · ") : null;
-}
-
-/**
- * What an executor's island holds beside its state (T-43 S2; inside the
- * island since the user's review of 2026-11-07): the template it was made
- * from when its name doesn't say it, and its PR, as "#688".
- */
-export function ExecutorRowFacts({ view, template, title }: { view: ExecutorView; template?: string | null; title?: string }) {
-  const language = useLanguage();
-  const t = executorRowText(language);
-  if (!template && !view.pr) return null;
-  const pr = view.pr ? `${t.pr(view.pr.number)} · ${prText(view.pr.status, t)}` : null;
-  return (
-    <span className="executor-row-facts" data-shown={view.shown} title={title}>
-      {/* The PR first: the template is the chip that gives way first. */}
-      {view.pr && (
-        <span className="executor-pr-chip" data-tone={view.pr.tone} title={pr ?? undefined}>#{view.pr.number}</span>
-      )}
-      {template && <span className="executor-template-chip" title={`${t.template}: ${template}`}>{template}</span>}
-    </span>
-  );
 }
