@@ -37,7 +37,7 @@ async fn a_handover_document_is_saved_against_the_revision_read_and_says_who_cha
 
     let mut events = ws.changes.subscribe(None);
     let (status, first) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":0,"markdown":"# Lab\nBuild with make.","note":"First notes"}))).await;
-    assert_eq!((status, first["version"].clone()), (StatusCode::OK, json!(1)), "{first}");
+    assert_eq!((status, first["version"].clone()), (StatusCode::OK, json!(1)), "a save with a note is saved: {first}");
     assert_eq!((first["lastModified"]["by"].clone(), first["lastModified"]["note"].clone()),
         (json!({"id":"user","name":"You"}), json!("First notes")), "who changed it last, with the note");
     let announced: Value = serde_json::from_str(&events.try_next().expect("a save is announced").data).unwrap();

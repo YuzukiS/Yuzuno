@@ -105,7 +105,8 @@ test("a project's handover is saved against the revision read, with an optional 
   });
   page.window.renderHandover("p1");
   const section = () => page.document.querySelector("#project-settings-handover");
-  await until(() => /Not written yet\./.test(section()?.textContent ?? ""), "the empty document");
+  await until(() => field(page, "Handover document"), "the document");
+  assert.match(section().textContent, /Not written yet\./, "a document never saved says so, with no version");
   assert.equal(button(page, "Save handover").disabled, true, "nothing to save after loading");
 
   await type(page, "Handover document", "# Lab\nBuild with make.");
@@ -160,7 +161,8 @@ test("a note is counted in characters, as Core counts it: one over 200 is not se
   });
   page.window.renderHandover("p1");
   const section = () => page.document.querySelector("#project-settings-handover");
-  await until(() => /Not written yet\./.test(section()?.textContent ?? ""), "the empty document");
+  await until(() => field(page, "Handover document"), "the document");
+  assert.ok(field(page, "Note"), "a save takes an optional note");
   await type(page, "Handover document", "# Lab");
   await type(page, "Note", "说".repeat(201));
   assert.match(section().textContent, /201 of 200 characters\./, "the note's size is shown in characters");
@@ -184,8 +186,8 @@ test("the settings page shows who changed the handover last after a lead's hando
   page.window.renderHandover("p1");
   const section = () => page.document.querySelector("#project-settings-handover");
   await until(() => field(page, "Handover document")?.value === "# Lab\nTest with make check.", "the lead's document");
-  assert.match(section().textContent, /The project's leads write it; you can change it here too\./);
   assert.match(section().textContent, /Last changed by Dev Lead, .* · Say how to test/, "the lead, when, and its note");
+  assert.match(section().textContent, /The project's leads write it; you can change it here too\./);
   assert.doesNotMatch(section().textContent, /Version \d|Show version|Restore/, "no history and no restore");
   assert.deepEqual(page.errors, []);
 });
