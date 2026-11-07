@@ -665,8 +665,13 @@ impl Store {
         let mut payload = input.as_requested()?;
         payload["taskId"] = json!(task);
         let identity = super::runs::job_identity(&input, &snapshot);
+        // What earlier runs of the same Job suggest, read before it is in the
+        // table and kept with it, its request beside it (YN-6 S2).
+        let query = super::suggestion::Query { task_id: input.task_id.clone(), name: input.name.clone(), argv: input.argv.clone() };
+        let suggestion = super::suggestion::for_job(&tx, &query, actor, input.resources.memory_mi_b)?;
         let mut value = new_job(self, &tx, actor, &input, snapshot, machine, capability)?;
         value["identity"] = identity;
+        value["suggestion"] = suggestion;
         let value = insert_job(&tx, value)?;
         if let Some(link) = &input.service_link {
             crate::service_jobs::insert(&tx, value["id"].as_str().context("Job identity missing")?, link)?;

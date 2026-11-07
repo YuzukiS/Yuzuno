@@ -1347,6 +1347,18 @@ impl Store {
             if prepared.reuse.is_some() {
                 continue;
             }
+            // What earlier runs of the same Job suggest for this stage, kept
+            // on the run and on its Job (YN-6 S2).
+            let query = super::suggestion::Query {
+                task_id: prepared.submit.task_id.clone(),
+                name: prepared.submit.name.clone(),
+                argv: prepared.submit.argv.clone(),
+            };
+            let suggestion = super::suggestion::for_job(&tx, &query, actor, prepared.submit.resources.memory_mi_b)?;
+            if let Some(entry) = list.last_mut() {
+                entry["suggestion"] = suggestion.clone();
+            }
+            job["suggestion"] = suggestion;
             job["status"] = json!("waiting");
             job["reason"] = json!("Waiting for its upstream stages");
             job["run"] = json!({"id":id,"stage":stage.key,"attempt":1,"needs":stage.needs,"retry":stage.retry});
