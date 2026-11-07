@@ -559,7 +559,7 @@ test("a report the user marks seen leaves brief_get, and you.recentlyLeft says w
   const sections = briefGuide("sections");
   assert.match(sections, /a report the user marks seen at its latest version leaves brief_get's sections and your ownsKeys at once \(a newer version stays, unseen\) .* put it again under its key to continue it on Home, as edit needs a live section/);
   assert.match(sections, /you\.recentlyLeft lists your sections that left the live Brief in the last 30 days and are not live again, newest first, at most 20: \{key, kind, title, version, reason, at\}, reason seen \(the user marked that version seen\), removed or resolved; recentlyLeftMore counts the rest\./);
-  assert.match(sections, /A change naming one of them is refused with not_found, saying why it left\./);
+  assert.match(sections, /An edit, resolve, remove or claim naming one of them is refused with not_found, saying why it left; put writes it again\./);
 });
 
 test("contract.json carries the brief, generated from this file", async () => {
