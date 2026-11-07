@@ -66,6 +66,13 @@ pub const LOGIN_MIN: &str = "2.0.20";
 const USERNAME: &str = "opencode";
 const START_LIMIT: Duration = Duration::from_secs(30);
 const REQUEST_LIMIT: Duration = Duration::from_secs(15);
+/// How long OpenCode may take to connect an MCP server Core adds and to list
+/// its tools, each (`timeout.startup`, `timeout.catalog`; 2.x's own are 30 s).
+pub const MCP_STARTUP: Duration = Duration::from_secs(10);
+/// An MCP add answers once OpenCode has tried to connect the server.
+const MCP_LIMIT: Duration = Duration::from_secs(25);
+/// The query that names the folder a 2.x request is for (protocol/src/groups/location.ts).
+const LOCATION: &str = "location[directory]";
 /// How long `shutdown` waits after SIGTERM before SIGKILL: longer than the
 /// 10 s 2.x gives its own teardown, which ends what its tools run, before it
 /// exits (cli/src/shutdown-deadline.ts). The watcher (`WATCHED`) waits as long.
@@ -173,6 +180,25 @@ impl std::fmt::Display for LoginRefused {
 
 impl std::error::Error for LoginRefused {}
 
+/// An MCP request OpenCode refused (T-61 slice 1): its status and kind,
+/// never its answer, which may quote the request and so its bearer.
+#[derive(Debug, PartialEq)]
+pub struct McpRefused {
+    pub code: u16,
+    pub kind: Option<String>,
+}
+
+impl std::fmt::Display for McpRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.kind {
+            Some(kind) => write!(f, "OpenCode refused the MCP server (HTTP {}, {kind})", self.code),
+            None => write!(f, "OpenCode refused the MCP server (HTTP {})", self.code),
+        }
+    }
+}
+
+impl std::error::Error for McpRefused {}
+
 /// What a prompt submission is known to have done.
 #[derive(Debug, PartialEq)]
 pub enum Submission {
@@ -251,12 +277,18 @@ pub enum Reply {
     Reject,
 }
 
-/// Whether OpenCode reached an MCP server.
+/// Whether OpenCode reached an MCP server, as it lists it for the Agent's
+/// folder (`GET /api/mcp`, T-61 slice 1).
 #[derive(Debug, PartialEq)]
 pub enum Mcp {
     Connected,
-    /// Any other status (`failed`, `needs_auth`, `disabled`, …) or none, as
-    /// OpenCode reported it.
+    /// Still connecting (`pending`): 2.x may answer the add of a folder's
+    /// first server before it has connected it.
+    Pending,
+    /// Not listed: never added to the folder, or gone with it.
+    Absent,
+    /// Any other status (`failed`, `needs_auth`, `disabled`), as OpenCode
+    /// reported it (`{status, error?}`).
     NotConnected(Value),
 }
 
@@ -1172,23 +1204,62 @@ impl Server {
             }
             return Ok(Some(response.json().await.context("OpenCode's answer to the login request is not JSON")?));
         }
-        let answered: Value = response.json().await.unwrap_or_default();
-        let kind = answered["kind"].as_str().or(answered["_tag"].as_str()).filter(|kind| kind.len() <= 64
-            && kind.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.'));
-        bail!(LoginRefused { code: code.as_u16(), kind: kind.map(str::to_owned) })
+        bail!(LoginRefused { code: code.as_u16(), kind: refusal_kind(response).await })
     }
 
-    /// Adds a remote MCP server to this instance, held in OpenCode's memory
-    /// only (no config file), with OAuth discovery off.
-    pub async fn add_mcp(&self, name: &str, url: &str, bearer: &str) -> Result<Mcp> {
-        let config = json!({"type": "remote", "url": url, "oauth": false,
-            "headers": {"Authorization": format!("Bearer {bearer}")}});
-        let statuses = self.json(Method::POST, "/mcp", Some(&json!({"name": name, "config": config}))).await?;
-        Ok(mcp_state(&statuses[name]))
+    /// Adds a remote MCP server to the Agent's folder (T-61 slice 1:
+    /// `PUT /api/experimental/mcp/:server`, 204), held in OpenCode's memory
+    /// only (no config file), with OAuth off and its tools offered to the
+    /// model as tools of their own (`codemode: false`; 2.x's default puts
+    /// them behind its single `execute` tool). The same configuration again
+    /// changes nothing while the server is there, a failed one included; a
+    /// server OpenCode dropped with the folder is added again. 2.x answers
+    /// once it has tried to connect it, except a folder's first, which may
+    /// still be `pending` (2.2.5 core/src/mcp/index.ts).
+    pub async fn add_mcp(&self, name: &str, url: &str, bearer: &str) -> Result<()> {
+        let config = json!({"type": "remote", "url": url, "oauth": false, "codemode": false,
+            "headers": {"Authorization": format!("Bearer {bearer}")},
+            "timeout": {"startup": MCP_STARTUP.as_millis() as u64, "catalog": MCP_STARTUP.as_millis() as u64}});
+        self.mcp_call(Method::PUT, &format!("/api/experimental/mcp/{}", segment(name)?), Some(&json!({"config": config}))).await
     }
 
+    /// Has OpenCode connect a server it holds again (`…/connect`, 204): a
+    /// failed one is not tried again by adding it unchanged.
+    pub async fn connect_mcp(&self, name: &str) -> Result<()> {
+        self.mcp_call(Method::POST, &format!("/api/experimental/mcp/{}/connect", segment(name)?), None).await
+    }
+
+    /// The server `name` as OpenCode lists it for the Agent's folder
+    /// (`GET /api/mcp`): its status only, as 2.x lists no configuration.
     pub async fn mcp(&self, name: &str) -> Result<Mcp> {
-        Ok(mcp_state(&self.json(Method::GET, "/mcp", None).await?[name]))
+        let listed = self.data(Method::GET, "/api/mcp", &[(LOCATION, &self.directory)], None).await?;
+        let listed = listed.as_array().context("OpenCode's /api/mcp is not a list")?;
+        Ok(match listed.iter().find(|server| server["name"] == name) {
+            None => Mcp::Absent,
+            Some(server) => match server["status"]["status"].as_str() {
+                Some("connected") => Mcp::Connected,
+                Some("pending") => Mcp::Pending,
+                _ => Mcp::NotConnected(server["status"].clone()),
+            },
+        })
+    }
+
+    /// An MCP request that answers 204, naming the Agent's folder as its
+    /// sessions do (`location[directory]`): 2.x keeps a server added at
+    /// runtime per folder, and takes its own working directory, resolved,
+    /// for a request that names none. A refusal says its status and kind
+    /// only (`McpRefused`).
+    async fn mcp_call(&self, method: Method, path: &str, body: Option<&Value>) -> Result<()> {
+        let mut request = self.request_with(method, path, &[(LOCATION, &self.directory)]).timeout(MCP_LIMIT);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.map_err(|error| anyhow!("OpenCode did not answer {path} ({})", error.without_url()))?;
+        let code = response.status();
+        if code.is_success() {
+            return Ok(());
+        }
+        bail!(McpRefused { code: code.as_u16(), kind: refusal_kind(response).await })
     }
 
     async fn pending(&self, path: &str, session: &str) -> Result<Vec<Value>> {
@@ -1228,7 +1299,8 @@ impl Server {
     /// A request of `path` with `query`. 1.19.3's routes, used until their
     /// slices move them (T-32), also name the instance by the query (a
     /// folder need not be a valid header value); 2.x's under `/api` name
-    /// none here: a session's folder is its own, given when it is made.
+    /// none here: a session's folder is its own, given when it is made. The
+    /// MCP ones name it in their `query` (`LOCATION`).
     fn request_with(&self, method: Method, path: &str, query: &[(&str, &str)]) -> reqwest::RequestBuilder {
         let mut url = Url::parse(&format!("{}{path}", self.base)).expect("an OpenCode path");
         url.query_pairs_mut().extend_pairs(query);
@@ -1576,8 +1648,12 @@ fn segment(id: &str) -> Result<&str> {
     Ok(id)
 }
 
-fn mcp_state(status: &Value) -> Mcp {
-    if status["status"] == "connected" { Mcp::Connected } else { Mcp::NotConnected(status.clone()) }
+/// The kind (`kind`, else `_tag`) of a refusal, when it is a plain name: the
+/// rest of OpenCode's answer is never kept.
+async fn refusal_kind(response: Response) -> Option<String> {
+    let answered: Value = response.json().await.unwrap_or_default();
+    answered["kind"].as_str().or(answered["_tag"].as_str()).filter(|kind| kind.len() <= 64
+        && kind.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')).map(str::to_owned)
 }
 
 async fn success(response: Response) -> Result<Response> {
