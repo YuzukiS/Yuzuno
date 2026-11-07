@@ -205,7 +205,7 @@ fn limits() -> Value {
     }
     json!({"topics":MAX_TOPICS,"subtopicsPerTopic":MAX_SUBTOPICS,"openAsksPerAgent":MAX_OPEN_ASKS,
         "attachments":MAX_ATTACHMENTS,"snapshotFileBytes":SNAPSHOT_FILE_BYTES,
-        "snapshotBriefBytes":SNAPSHOT_BRIEF_BYTES,"historyDays":HISTORY_DAYS})
+        "snapshotBriefBytes":SNAPSHOT_BRIEF_BYTES,"historyDays":HISTORY_DAYS,"recentlyLeft":sections::RECENTLY_LEFT})
 }
 
 /// `brief_guide`: the guide generated from the contract, whole or one part.
@@ -588,8 +588,14 @@ fn get(store: &Store, actor: Option<&str>, input: &Value) -> Result<Value> {
         let stale: Vec<&str> = rows.iter()
             .filter(|row| row.owner_id == actor && row.kind == "status" && sections::stale(&row.data["status"], at))
             .map(|row| row.key.as_str()).collect();
+        // Your sections that left the live Brief lately, and why (YN-7): a
+        // report the user marked seen is no longer among the sections.
+        let left = sections::recently_left(&db, &project, actor)?;
+        let left_more = left.len().saturating_sub(sections::RECENTLY_LEFT);
+        let left: Vec<Value> = left.iter().take(sections::RECENTLY_LEFT).map(sections::left_json).collect();
         let can_edit = editors::can_edit(store, &db, &project, actor)?;
         let mut you = json!({"agentId":actor,"ownsKeys":owned,"openAsks":open,"repliedAsks":replied,"staleStatus":stale,
+            "recentlyLeft":left,"recentlyLeftMore":left_more,
             "capabilities":{"editContent":can_edit,"requiresTurnUpdate":false,
                 "writeOwnAsk":own.as_deref() == Some(project.as_str()) && !crate::projects::is_archived(&db, &project)?
                     && store.brief_in(&db, actor)?.is_some_and(|a| a.agent.closed_at.is_none())}});
