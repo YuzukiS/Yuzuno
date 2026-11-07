@@ -10,7 +10,7 @@ import { useHandoffDrop } from "./SendToAgent";
 import { strings, useLanguage, type Language } from "./i18n";
 import { lifecycleText, stateDetail } from "./executor-lifecycle";
 import { executorView } from "./executor-display";
-import { ExecutorRowFacts, stateText } from "./ExecutorRowState";
+import { ExecutorRowFacts, executorRowText, rowFactsLabel, stateText } from "./ExecutorRowState";
 import { AgentIsland, IslandCard, slide, type IslandForm } from "./AgentIsland";
 import { islandView, type IslandAction } from "./agent-island";
 import { useExecutorPR } from "./live-executors";
@@ -213,6 +213,8 @@ export function AgentRailRow({
   const from = useRef<DOMRect | null>(null);
   const refocus = useRef(false);
   const form: IslandForm = open ? "card" : island.auto ? "two" : "ring";
+  // An executor's template and PR, held in its island; none, no chips.
+  const factsLabel = executor ? rowFactsLabel(executor, template, executorRowText(language)) : null;
   const toggle = (next = !open) => {
     from.current = (open ? cover.current : islandButton.current)?.getBoundingClientRect() ?? null;
     setOpen(next);
@@ -268,19 +270,15 @@ export function AgentRailRow({
           {kind && !executor && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
         </span>
       </button>
-      {/* After the card's own target in focus order; drawn at its top right. */}
-      {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
-      {/* Line two, under the whole name: what the Agent is, and then what it
-          is doing. The status word is never shortened -- it is how the list
-          is read -- and the activity after it is what gives way. The name has
-          line one to itself, since a rail this narrow cannot hold both (T-15).
-          The state, its clock and unread are the island's at its right end
-          (T-43 v4-2); an executor adds its template and PR before what it is
-          doing. The whole row opens the agent; the island opens its card. */}
-      <div className="agent-row-state">
-        {executor && <ExecutorRowFacts view={executor} template={template} title={kind?.title} />}
-        {/* Beside two lines the island's second line says it: the summary gives way. */}
-        {summary && form !== "two" && (
+      {/* Line two, under the name: what the Agent is doing, and only that; a
+          row with nothing to say there is one line. The state, its clock,
+          unread and an executor's template and PR are the island's, at the
+          row's right end, centred on both lines (T-43 v4-2, the user's review
+          of 2026-11-07). Beside two lines the island's second line says it,
+          so the summary gives way. The whole row opens the agent; the island
+          opens its card. */}
+      {summary && form !== "two" && (
+        <div className="agent-row-state">
           <div
             className={`agent-work-summary kind-${summary.kind}`}
             data-source-kind={summary.kind}
@@ -293,14 +291,19 @@ export function AgentRailRow({
             )}
             <RequestSummary agentId={agent.id} summary={summary} />
           </div>
-        )}
-        <AgentIsland ref={islandButton} view={island} form={form} name={agent.name} onToggle={() => toggle()}
-          detail={executor ? kind?.title : undefined}
-          data-status={label}
-          data-jobs={waiting ? jobs?.active : undefined}
-          data-ci={waiting && ci ? ci.running + ci.discovering + (ci.waitingForRun ?? 0) + ci.check : undefined}
-          data-combined={combined || !!unseen || undefined} />
-      </div>
+        </div>
+      )}
+      <AgentIsland ref={islandButton} view={island} form={form} name={agent.name} onToggle={() => toggle()}
+        detail={executor ? kind?.title : undefined}
+        facts={executor && factsLabel ? <ExecutorRowFacts view={executor} template={template} title={kind?.title} /> : null}
+        factsLabel={factsLabel}
+        data-status={label}
+        data-jobs={waiting ? jobs?.active : undefined}
+        data-ci={waiting && ci ? ci.running + ci.discovering + (ci.waitingForRun ?? 0) + ci.check : undefined}
+        data-combined={combined || !!unseen || undefined} />
+      {/* After the island in focus order; beside it at the row's right end,
+          where the reader is (T-15). */}
+      {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
       {open && <IslandCard ref={cover} view={island} name={agent.name} onAction={act} onClose={() => { refocus.current = true; toggle(false); }} />}
       {drop.state && (
         <p className="handoff-hint" role="status">

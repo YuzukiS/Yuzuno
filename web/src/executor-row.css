@@ -1,36 +1,35 @@
-/* What an executor's row adds on its second line (ExecutorRowFacts,
-   T-43 S2): the template it was made from and its PR, before what it is
-   doing. Its state, its wait and its time are its island's (v4-2,
-   agent-island.css). */
-.agent-row-state > .executor-row-facts {
-  display: flex;
-  /* It gives way to the island, the template first. */
+/* An executor's template and PR (ExecutorRowFacts, T-43 S2), held in its
+   island beside its state since the user's review of 2026-11-07: "◐ · #681 ·
+   1h12m". They give way before the state or its clock does, the template
+   first, and are dropped once there is no room for them at all. */
+.agent-island .executor-row-facts {
+  display: inline-flex;
   flex: 0 1 auto;
-  overflow: hidden;
   align-items: baseline;
-  gap: 5px;
+  gap: 4px;
   min-width: 0;
-  font-size: calc(9px + var(--font-adjust, 3px));
-  color: var(--muted);
-}
-.executor-template-chip,
-.executor-pr-chip {
   overflow: hidden;
-  max-width: 14ch;
-  padding: 0 5px;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  line-height: 1.4;
-  text-overflow: ellipsis;
+  color: var(--muted);
+  font-weight: 650;
+}
+.agent-island .executor-row-facts > span {
+  min-width: 0;
+  overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-island .executor-row-facts > span::before {
+  content: "·";
+  margin-right: 4px;
+  opacity: 0.7;
 }
 .executor-template-chip {
-  flex: 0 1 auto;
-  min-width: 0;
-  opacity: 0.8;
+  flex: 0 1000 auto;
+  max-width: 9ch;
+  opacity: 0.85;
 }
 .executor-pr-chip {
-  flex: none;
+  flex: 0 1 auto;
 }
 .executor-pr-chip[data-tone="ok"] {
   color: var(--state-working, #5f7f52);
@@ -38,7 +37,10 @@
 .executor-pr-chip[data-tone="bad"] {
   color: var(--error-ink, var(--coral));
 }
-/* Compact Agent list (Settings → Appearance): the island only. */
-:root[data-agent-list="compact"] .executor-row-facts {
-  display: none;
+/* The clock after them says it follows them. */
+.agent-island[data-facts] .island-clock::before {
+  content: "·";
+  margin-right: 4px;
+  color: var(--muted);
+  opacity: 0.7;
 }

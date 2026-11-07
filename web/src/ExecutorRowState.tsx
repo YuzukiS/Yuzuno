@@ -120,10 +120,17 @@ export function stateText(view: ExecutorView, language: Language): string {
   return detail ? `${t.shown[view.shown]} · ${detail}` : t.shown[view.shown];
 }
 
+/** What the chips say, for the island's label: the template, then the PR
+ * and its status. Null when there are no chips. */
+export function rowFactsLabel(view: ExecutorView, template: string | null | undefined, t: Text): string | null {
+  const parts = [template || null, view.pr ? `${t.pr(view.pr.number)} · ${prText(view.pr.status, t)}` : null].filter(Boolean);
+  return parts.length ? parts.join(" · ") : null;
+}
+
 /**
- * What an executor's row adds on its second line (T-43 S2), now that its
- * state, its wait and its time are its island's (v4-2): the template it was
- * made from when its name doesn't say it, and its PR.
+ * What an executor's island holds beside its state (T-43 S2; inside the
+ * island since the user's review of 2026-11-07): the template it was made
+ * from when its name doesn't say it, and its PR, as "#688".
  */
 export function ExecutorRowFacts({ view, template, title }: { view: ExecutorView; template?: string | null; title?: string }) {
   const language = useLanguage();
@@ -134,7 +141,7 @@ export function ExecutorRowFacts({ view, template, title }: { view: ExecutorView
     <span className="executor-row-facts" data-shown={view.shown} title={title}>
       {template && <span className="executor-template-chip" title={`${t.template}: ${template}`}>{template}</span>}
       {view.pr && (
-        <span className="executor-pr-chip" data-tone={view.pr.tone} title={pr ?? undefined}>{t.pr(view.pr.number)}</span>
+        <span className="executor-pr-chip" data-tone={view.pr.tone} title={pr ?? undefined}>#{view.pr.number}</span>
       )}
     </span>
   );

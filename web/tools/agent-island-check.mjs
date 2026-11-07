@@ -2,12 +2,14 @@
 // with every API answered here (no Core, no CLI, no daily configuration) and
 // synthetic Agents in the six states: working, handed in, needs you, queued,
 // done with three unread, failed (and idle). At 1440 (the rail) and 390 (a
-// phone), light and dark: no avatar on any row; each row's island is the
-// last thing on its line two; the ring stays within 24 px, needs you and
-// failed open to two lines by themselves; the time is the island's; pressing
-// the island opens its card in the row's place, leading with what the state
-// asks for, and Escape closes it. With motion, the ring slides to the card's
-// cover; under reduced motion nothing animates.
+// phone), light and dark: no avatar on any row; each row's island is its
+// own, at the row's right end and centred on its lines, and holds the
+// executor's template and PR (the user's review of 2026-11-07); line two is
+// only the summary, and a row without one is one line; the ring stays within
+// 24 px, needs you and failed open to two lines by themselves; the time is
+// the island's; pressing the island opens its card in the row's place,
+// leading with what the state asks for, and Escape closes it. With motion,
+// the ring slides to the card's cover; under reduced motion nothing animates.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/agent-island-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -56,6 +58,9 @@ const EXPECTED = {
   yn21: ["waiting", "two"], yn33: ["failed", "two"], yn30: ["queued", "ring"], dev5: ["idle", "ring"],
 };
 const SIX = ["working", "handed", "waiting", "queued", "done", "failed"];
+// The rows with a summary on line two: the lead's update. The rest are one
+// line; needs you and failed say theirs in the island's two lines.
+const LINE_TWO = ["lead"];
 const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture/app" }, createdAt: "", updatedAt: "" }];
 const home = { generatedAt: ago(0), order: ["p1"],
   needsYou: [{ kind: "approval", projectId: "p1", agentId: "yn21", agentName: "YN-21 · Design first", requestId: "q1", title: "Approve the design note", since: ago(12.5) }],
@@ -110,15 +115,23 @@ async function shot(locator, name) {
 // Every row: its island's state, form and size, what is on line two, and
 // whether a time is written anywhere on line two outside the island.
 const rows = (page) => page.locator(".agent-list article[data-agent-id]").evaluateAll((list) => list.map((r) => {
-  const island = r.querySelector(".agent-island");
+  const island = r.querySelector(":scope > .agent-island");
   const box = island?.getBoundingClientRect();
   const line = r.querySelector(".agent-row-state");
-  const outside = [...(line?.children ?? [])].filter((c) => !c.classList.contains("agent-island")).map((c) => c.textContent).join(" ");
+  const name = r.querySelector(".agent-name").getBoundingClientRect();
+  const lines = line ? line.getBoundingClientRect() : name;
+  const outside = line?.textContent ?? "";
   const shown = (el) => !!el && getComputedStyle(el).display !== "none";
+  const row = r.getBoundingClientRect();
   return {
     id: r.dataset.agentId,
     avatar: !!r.querySelector(".agent-rail-avatar, .agent-avatar"),
-    last: line?.lastElementChild === island,
+    // Centred on the name and line two together, at the row's right end.
+    centred: !!box && Math.abs((box.top + box.bottom) / 2 - (name.top + lines.bottom) / 2) <= 2.5,
+    rightEnd: !!box && row.right - box.right <= 48 && box.left > name.left,
+    lineTwo: !!line,
+    chipsOutside: !!r.querySelector(".executor-row-facts:not(.agent-island .executor-row-facts)"),
+    pr: island?.querySelector(".executor-pr-chip")?.textContent ?? null,
     state: island?.dataset.state, form: island?.dataset.form,
     width: Math.round(box?.width ?? 0), height: Math.round(box?.height ?? 0),
     lines: [shown(island?.querySelector(".island-head")), shown(island?.querySelector(".island-line"))],
@@ -151,7 +164,10 @@ async function run({ width, height, theme, motion }) {
     assert.deepEqual(seen.map((r) => r.id).sort(), Object.keys(EXPECTED).sort(), `${tag}: every Agent listed`);
     for (const r of seen) {
       assert.equal(r.avatar, false, `${tag}: ${r.id} has no avatar`);
-      assert.equal(r.last, true, `${tag}: ${r.id}'s island is the last thing on its line two`);
+      assert.ok(r.centred && r.rightEnd, `${tag}: ${r.id}'s island is at the row's right end, centred on its lines`);
+      assert.equal(r.chipsOutside, false, `${tag}: ${r.id}'s template and PR are in its island`);
+      // Line two is only the summary: a row without one (Dev 5, Dev 9, the queued one) is one line.
+      assert.equal(r.lineTwo, LINE_TWO.includes(r.id), `${tag}: ${r.id} ${LINE_TWO.includes(r.id) ? "has" : "has no"} line two`);
       assert.deepEqual([r.state, r.form], EXPECTED[r.id], `${tag}: ${r.id}'s state and form`);
       assert.equal(r.timeOutside, false, `${tag}: ${r.id} writes no time outside its island`);
       if (r.form === "ring") {
@@ -166,6 +182,7 @@ async function run({ width, height, theme, motion }) {
     assert.equal(seen.find((r) => r.id === "dev9").unread, "3", `${tag}: Dev 9's three unread on its ring`);
     assert.match(seen.find((r) => r.id === "yn21").label, /Needs you · waiting 12m · Approve the design note/, `${tag}: the wait is the island's`);
     assert.match(seen.find((r) => r.id === "yn24").label, /Working · for 1h12m · handed in #681; on the next slice/, `${tag}: handed in, on its next slice`);
+    assert.deepEqual(["yn24", "yn26"].map((id) => seen.find((r) => r.id === id).pr), ["#681", "#688"], `${tag}: each PR is in its island`);
     await shot(list, `${tag}-1-list`);
     check(`${tag}: no avatar; each island at line two's end; six states; ring ≤ 24 px; needs you and failed in two lines`);
 

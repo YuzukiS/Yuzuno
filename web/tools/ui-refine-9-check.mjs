@@ -265,6 +265,9 @@ async function open({ theme = "dark", width = 1440, height = 900, motion = "redu
       "/api/jobs/runs": { runs: [{ id: "run-demo", name: "SampleResearch experiment sweep" }], hasMore: false },
       "/api/ci/live": { agents: { "dev-4": { running: 1, discovering: 0, check: 0 } } },
       "/api/ci": noCiRuns, "/api/reviews": noReviews,
+      // The Machines page's executor limits read (T-35), answered empty as
+      // the catch-all did; the check was written before it existed.
+      "/api/executor-slots": {},
     }[path];
     if (json) return route.fulfill({ json });
     if (path.startsWith("/api/")) {
@@ -531,18 +534,18 @@ try {
       return { first };
     });
 
-    // T-43 v4-2: the wait is the island's, at the right end of line two, inside the row.
-    await step(`${theme}: a single wait, Job or CI, is the island's, under the Agent's name and inside its row`, async () => {
+    // T-43 v4-2: the wait is the island's, beside the name at the row's right end, inside the row.
+    await step(`${theme}: a single wait, Job or CI, is the island's, beside the Agent's name and inside its row`, async () => {
       const row = (id) => page.locator(`[data-agent-id="${id}"]`);
       await page.waitForFunction(() => document.querySelector('[data-agent-id="dev-4"] .agent-island')?.dataset.status === "Waiting · CI");
       const place = async (id) => row(id).evaluate((el) => {
         const name = el.querySelector(".agent-name").getBoundingClientRect();
         const island = el.querySelector(".agent-island");
         const state = island.getBoundingClientRect(), box = el.getBoundingClientRect();
-        return { label: island.dataset.status, under: state.top >= name.bottom - 1 && state.left >= box.left && state.right <= box.right };
+        return { label: island.dataset.status, beside: state.left >= name.right && state.left >= box.left && state.right <= box.right };
       });
-      assert.deepEqual(await place("dev-3"), { label: "Waiting · Job", under: true });
-      assert.deepEqual(await place("dev-4"), { label: "Waiting · CI", under: true });
+      assert.deepEqual(await place("dev-3"), { label: "Waiting · Job", beside: true });
+      assert.deepEqual(await place("dev-4"), { label: "Waiting · CI", beside: true });
       await shot(page.locator("aside.rail"), `rail-waiting-${theme}.png`);
     });
 

@@ -26,11 +26,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Line two of a row: what the Agent is doing, and at its right end the
-   island (T-43 v4-2, agent-island.css), which says the state, its clock and
-   unread and keeps its whole self; the activity is what gives way. Both are
-   always drawn -- a colour alone would be the same as saying nothing until
-   the pointer arrives (T-15). */
+/* Line two of a row: what the Agent is doing, and only that (T-43, the
+   user's review of 2026-11-07); a row with nothing to say there has no line
+   two. Its state, clock, unread, template and PR are its island's, at the
+   row's right end (agent-island.css). */
 .agent-row-state {
   display: flex;
   flex-wrap: nowrap;
@@ -68,14 +67,15 @@
 .agent-work-summary.kind-pending {
   color: var(--attention-ink, #987344);
 }
-/* Compact Agent list (Settings → Appearance): the name and status only.
-   The latest report or update stays in the conversation; "needs you"
-   still shows. */
+/* Compact Agent list (Settings → Appearance): the name and the island only,
+   one line. The latest report or update stays in the conversation; "needs
+   you" still shows. */
 :root[data-agent-list="compact"] .agent-row {
   padding-block: 9px;
   margin-bottom: 4px;
 }
-:root[data-agent-list="compact"] .agent-work-summary {
+:root[data-agent-list="compact"] .agent-work-summary,
+:root[data-agent-list="compact"] .agent-list .agent-row > .agent-row-state {
   display: none;
 }
 :root[data-agent-list="compact"] .agent-row .agent-row-bottom {
@@ -92,18 +92,21 @@
   min-width: 0;
   gap: 1px;
 }
-/* Two lines: the name on the first, what the Agent is doing and its island on
-   the second (T-15; no avatar since T-43 v4-2). The island's card opens under
-   them, in the row's place. */
+/* The name on line one and, when there is one, what the Agent is doing on
+   line two (T-15); at the row's right end, centred on both lines, its island
+   (T-43 v4-2, the user's review of 2026-11-07), then the "…" where the reader
+   is. No avatar. Anything else, the island's card first, opens under them,
+   in the row's place. */
 .agent-list .agent-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  column-gap: 9px;
-  row-gap: 2px;
+  /* The name keeps at least 5.5rem; the island takes what it needs up to its
+     whole self, and its chips give way first when it can't. */
+  grid-template-columns: minmax(5.5rem, 1fr) minmax(0, auto) auto;
+  column-gap: 0;
+  row-gap: 0;
   align-items: center;
   position: relative;
-  padding: 8px 14px;
+  padding: 8px 9px 8px 14px;
 }
 .agent-list .agent-row > .agent-select.agent-row-top {
   grid-column: 1;
@@ -111,12 +114,50 @@
   align-items: center;
   gap: 0;
 }
+/* The "…" has a column of its own here, so the name keeps its width. */
+.agent-list .agent-row:is(.selected, :hover, :focus-within) > .agent-select.agent-row-top,
+.agent-list .agent-row > .agent-select.agent-row-top {
+  padding-right: 0;
+}
 .agent-list .agent-row > .agent-row-state {
   grid-column: 1;
   grid-row: 2;
-  margin-top: 0;
+  margin-top: 3px;
 }
-/* Anything else the row says spans both columns, under the two lines. */
+.agent-list .agent-row > .agent-island {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  justify-self: end;
+  margin: 0 0 0 8px;
+}
+.agent-list .agent-row > .agent-island[data-form="card"] {
+  margin: 0;
+}
+/* Where the reader is -- selected, under the pointer or holding focus -- the
+   "…" opens beside the island; elsewhere it takes no width, and is still
+   reached by keyboard (T-15). */
+.agent-list .agent-row > .agent-row-menu {
+  position: relative;
+  top: auto;
+  right: auto;
+  z-index: 1;
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: center;
+  width: 0;
+  margin-left: 0;
+  overflow: hidden;
+}
+.agent-list .agent-row:is(.selected, :hover, :focus-within) > .agent-row-menu {
+  width: 26px;
+  margin-left: 3px;
+}
+@media (pointer: coarse) {
+  .agent-list .agent-row:is(.selected, :hover, :focus-within) > .agent-row-menu {
+    width: 38px;
+  }
+}
 .agent-list .agent-row > .handoff-hint,
 .agent-list .agent-row > .agent-row-bottom,
 .agent-list .agent-row > .agent-island-card {
@@ -129,9 +170,6 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
-}
-.agent-list .agent-row > .agent-row-menu {
-  z-index: 1;
 }
 .agent-identity > .agent-name {
   flex: none;

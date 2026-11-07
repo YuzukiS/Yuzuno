@@ -17,7 +17,7 @@
 // status is the row's island at the end of line two (its words in
 // `data-status`, the badge gone): each island stays inside its row, whole;
 // a combined wait is still marked `data-combined`; the executor's template
-// and PR chips stay inside the row, clear of the island; and the unseen
+// and PR chips are held in the island, inside the row; and the unseen
 // failed end is the island's failed state.
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-rail-combined.mjs
 // T15_LANG=zh-Hans reads the same rows in Chinese. That exact value: a
@@ -123,7 +123,7 @@ const seen = await page.evaluate(() => {
       island: rect(i),
       islandInside: inside(i),
       islandWhole: !!island && island.scrollWidth <= island.clientWidth + 1,
-      facts: f ? { box: rect(f), inside: inside(f), apart: !(i && f.right > i.left + 0.5) } : null,
+      facts: f ? { box: rect(f), inside: inside(f), inIsland: !!f.closest(".agent-island") } : null,
       summaryInside: summary ? inside(summary.getBoundingClientRect()) : null,
     };
   };
@@ -142,8 +142,8 @@ check(!!seen.u && seen.u.combined === true && seen.u.state === "failed" && seen.
 check(!!seen.x && seen.x.status === longWait && seen.x.islandInside && seen.x.islandWhole,
   `an executor with the same waits has them on its island, whole inside its row (${JSON.stringify(seen.x?.island)})`);
 check(!!seen.x && seen.x.state === "queued", `and its island says it is queued (${seen.x?.state})`);
-check(!seen.x?.facts || (seen.x.facts.inside && seen.x.facts.apart),
-  `its template chip stays inside the row, clear of the island (${JSON.stringify(seen.x?.facts)})`);
+check(!seen.x?.facts || (seen.x.facts.inside && seen.x.facts.inIsland),
+  `its template chip is held in its island, inside the row (${JSON.stringify(seen.x?.facts)})`);
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ""}`);
 await context.close();
 await browser.close();

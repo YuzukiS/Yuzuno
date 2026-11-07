@@ -185,7 +185,8 @@ const says = (words, lifecycle) =>
 // status and PRs: its state, and line two as "word: what it is at".
 const rowSays = (words, a) => {
   const l = a.executor;
-  const pr = live.executors[a.id]?.pr ? `PR #${live.executors[a.id].pr.number}` : null;
+  // Its PR chip, in its island (the user's review of 2026-11-07).
+  const pr = live.executors[a.id]?.pr ? `#${live.executors[a.id].pr.number}` : null;
   const prSays = a.id === delivered ? words.rounds : a.id === atWork ? words.draft : null;
   const line = (state, text) => [state, text ? `${words.word[state]}${words.colon}${text}` : words.word[state], pr];
   switch (l.state) {
@@ -233,19 +234,21 @@ async function run({ width, height, theme, language, density = "detailed" }) {
     // Attached, not visible: the compact list hides it, as its own assertion below says.
     await list.locator(`article[data-agent-id="${delivered}"] .executor-pr-chip`).waitFor({ state: "attached", timeout: 10_000 });
     assert.deepEqual(await states(page), expected, `${tag}: each executor's row says its one state, and its PR`);
-    // No avatar on any row; each row's island is the last thing on its line two (T-43 v4-2).
+    // No avatar on any row; each row's island is its own, at the row's right
+    // end, and holds the executor's chips (the user's review of 2026-11-07).
     const marks = await list.locator("article[data-agent-id]").evaluateAll((rows) => rows.map((r) => [
-      r.dataset.agentId, !!r.querySelector(".agent-rail-avatar, .agent-avatar"), r.querySelector(".agent-row-state")?.lastElementChild?.classList.contains("agent-island") ?? false]));
-    assert.deepEqual(marks.filter(([, avatar, last]) => avatar || !last), [], `${tag}: no avatar, and the island at line two's end`);
+      r.dataset.agentId, !!r.querySelector(".agent-rail-avatar, .agent-avatar"),
+      r.querySelector(":scope > .agent-island") !== null && !r.querySelector(".executor-row-facts:not(.agent-island .executor-row-facts)")]));
+    assert.deepEqual(marks.filter(([, avatar, own]) => avatar || !own), [], `${tag}: no avatar, and one island per row holding its chips`);
     if (density === "compact") {
-      // The compact list keeps the island and hides the rest.
+      // The compact list keeps the island, chips and all, and hides line two.
       const shownParts = await list.locator(`article[data-agent-id="${delivered}"]`).evaluate((row) =>
-        Object.fromEntries([".agent-island", ".executor-row-facts", ".agent-work-summary"].map((part) => {
+        Object.fromEntries([".agent-island", ".agent-island .executor-row-facts", ".agent-row-state"].map((part) => {
           const el = row.querySelector(part);
           return [part, el ? getComputedStyle(el).display !== "none" : null];
         })));
-      assert.deepEqual(shownParts, { ".agent-island": true, ".executor-row-facts": false, ".agent-work-summary": null },
-        `${tag}: compact, the island only`);
+      assert.ok(shownParts[".agent-island"] && shownParts[".agent-island .executor-row-facts"] && shownParts[".agent-row-state"] !== true,
+        `${tag}: compact, the island only: ${JSON.stringify(shownParts)}`);
     }
     assert.equal(await list.locator('[data-rail-part="executors"] .rail-subgroup-head > span').first().textContent(), words.executors);
     // Its words keep one line beside how many run and wait (T-43 S2).

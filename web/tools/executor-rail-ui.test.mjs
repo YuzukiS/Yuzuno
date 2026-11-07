@@ -173,7 +173,7 @@ test("an executor's question not yet in Home's Needs you shows no clock, not its
   }
 });
 
-test("its PR on line two and in its chip, its template when its name lacks it, and its clock, frozen once over", async () => {
+test("its PR on line two and in its island's chip, its template when its name lacks it, and its clock, frozen once over", async () => {
   const p = await mount();
   try {
     await waitFor(() => p.chip("v"), "the PR chip, from /api/executors/live");
@@ -181,7 +181,8 @@ test("its PR on line two and in its chip, its template when its name lacks it, a
     assert.deepEqual(p.state("v"), ["handed", "Handed in: Review 1/2"], "handed in, at its rounds");
     assert.equal(p.clock("v"), "5m", "handed in five minutes ago");
     assert.equal(p.island("v").dataset.form, "ring");
-    assert.equal(p.chip("v").textContent, "PR #688");
+    assert.equal(p.chip("v").textContent, "#688", "in its island, as #688");
+    assert.ok(p.chip("v").closest(".agent-island"), "the chip is the island's");
     assert.equal(p.chip("v").dataset.tone, "wait");
     assert.equal(p.chip("v").title, "PR #688 · Review 1/2");
     assert.deepEqual(p.state("k"), ["working", "Working: Draft"], "at work on a draft PR");

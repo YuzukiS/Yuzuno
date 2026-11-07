@@ -472,10 +472,12 @@ has the blocker (`blocked`); its state stays what it is.
   blocked on it; a released one, under Archived and in Closed. While some
   wait for a slot, the group's heading says how many are queued and how
   many run.
-- **Every Agent's row** has no avatar. At the right end of its second line
-  is its island (灵动环, `AgentIsland.tsx` over `agent-island.ts`), which
-  says one state, its clock and its unread count, and keeps its whole self
-  while what the Agent is doing gives way. The states are 空闲 Idle, 在做
+- **Every Agent's row** has no avatar: its name on line one and, when there
+  is one, what it is doing on line two; a row with nothing to say there is
+  one line. At the row's right end, centred on its lines, is its island
+  (灵动环, `AgentIsland.tsx` over `agent-island.ts`), which says one state,
+  its clock and its unread count; then the "…" of its actions where you are
+  (the row selected, under the pointer or holding focus). The states are 空闲 Idle, 在做
   Working, 已交 · 等负责人 Handed in, 等你 Needs you, 排队 Queued, 离线
   Offline, 完成 Done, 出错 Failed and 已归档 Archived.
   - An executor's comes from its one state, the first of these that holds:
@@ -502,9 +504,9 @@ has the blocker (`blocked`); its state stays what it is.
     archived), with the unread count as a notch on it.
   - One line with the time, and the word except for Working's dot, while
     something is going on.
-  - Two lines, the state with its clock and then one sentence, by itself
-    when the Agent needs you or failed. The row's work summary gives way to
-    them: what it asks is their sentence.
+  - Two lines in its own box, the state with its clock and then one
+    sentence, by itself when the Agent needs you or failed. The row's work
+    summary gives way to them: what it asks is their sentence.
   - Pressing the island opens its card in the row's place, under its two
     lines: the ring becomes the card's cover, beside the state with its
     clock and what the Agent is at; then the clock's line, the unread count
@@ -513,9 +515,10 @@ has the blocker (`blocked`); its state stays what it is.
     into view and moves focus to its first action, and Escape closes it.
   - Its size morphs in 280 ms and its cover slides in 320 ms; nothing moves
     under reduced motion.
-  - Beside what an executor is doing are its template, when its name doesn't
-    say it, and its PR; they give way to the island, the template first. With the compact Agent list (Settings → Appearance),
-    only the island shows on line two.
+  - An executor's island also holds its template, when its name doesn't say
+    it, and its PR, as "◐ · #681 · 1h12m"; they give way before the state
+    or its clock does, the template first. With the compact Agent list
+    (Settings → Appearance), every row is its name and its island, one line.
 - **Its PR** comes from `GET /api/executors/live`: for each open executor
   (not archived, its Agent not closed) whose task links a PR, the open or
   draft one with the highest number, else the highest-numbered; its state;

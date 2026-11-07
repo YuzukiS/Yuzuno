@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useLayoutEffect, useRef, type KeyboardEvent } from "react";
+import { forwardRef, useEffect, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { clockMs, islandTime, type IslandAction, type IslandClock, type IslandState, type IslandView } from "./agent-island";
 import { detailText, executorRowText } from "./ExecutorRowState";
 import { strings, useLanguage, type Language } from "./i18n";
@@ -99,6 +99,11 @@ type IslandProps = {
   onToggle: () => void;
   /** More for its title: an executor's task, what it waits for, who dispatched it. */
   detail?: string;
+  /** An executor's template and PR chips, held in the island before its
+   * clock (the user, 2026-11-07: one island per row), and their words for
+   * its label. */
+  facts?: ReactNode;
+  factsLabel?: string | null;
   /** The runtime's own hooks, as its status carried them: the app's status
    * words for it, and its live Jobs and CI. */
   "data-status"?: string;
@@ -108,7 +113,7 @@ type IslandProps = {
 };
 
 export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
-  function AgentIsland({ view, form, name, onToggle, detail, ...hooks }, ref) {
+  function AgentIsland({ view, form, name, onToggle, detail, facts, factsLabel, ...hooks }, ref) {
     const language = useLanguage();
     const t = islandText(language);
     const now = useMinute();
@@ -130,7 +135,7 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
       const anim = el.animate([{ width: `${prev.w}px`, height: `${prev.h}px` }, { width: `${r.width}px`, height: `${r.height}px` }], { duration: 280, easing: EASE });
       const done = () => { el.style.overflow = ""; };
       anim.finished.then(done, done);
-    }, [form, view.state, view.unread > 0]);
+    }, [form, view.state, view.unread > 0, !!facts]);
     return (
       <button
         ref={(el) => { own.current = el; if (typeof ref === "function") ref(el); else if (ref) ref.current = el; }}
@@ -141,7 +146,8 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
         data-form={form}
         data-clock={view.clock?.kind}
         data-unread={view.unread > 0 ? (view.unread > 1 ? "count" : "dot") : undefined}
-        aria-label={`${name} · ${label}`}
+        data-facts={facts ? "" : undefined}
+        aria-label={`${name} · ${label}${factsLabel ? ` · ${factsLabel}` : ""}`}
         aria-expanded={form === "card"}
         title={detail ? `${label}\n${detail}` : label}
         onClick={(event) => { event.stopPropagation(); onToggle(); }}
@@ -149,6 +155,7 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
         <span className="island-head">
           <span className="island-dot" aria-hidden="true" />
           <span className="island-word" aria-hidden="true">{t.word[view.state]}</span>
+          {facts}
           {clock && (
             <span className="island-clock" aria-hidden="true">
               {view.clock?.kind === "total" && <span className="island-pre">{t.pre}</span>}

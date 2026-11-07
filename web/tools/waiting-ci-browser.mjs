@@ -48,14 +48,15 @@ try{
   await wait('Waiting · CI');assert.equal(await label('b').getAttribute('data-status'),'Working');
   await page.screenshot({path:path.join(out,'waiting-ci.png')});
   jobs={agents:{a:{active:2,unknown:0}}};changed();await wait('Waiting · Job / CI');
-  const rowLayout=await page.locator('[data-agent-id="a"]').evaluate(row=>{
+  const rowLayout=await page.locator('.agent-row[data-agent-id="a"]').evaluate(row=>{
     const name=row.querySelector('.agent-name'), state=row.querySelector('.agent-island');
     const bounds=row.getBoundingClientRect(), status=state.getBoundingClientRect();
     // The card's ::after hit area extends one pixel beyond its border.
     // Check visible status geometry rather than that deliberate scroll overflow.
-    return {nameFits:name.scrollWidth<=name.clientWidth,statusBelowName:status.top>=name.getBoundingClientRect().bottom,rowFits:status.left>=bounds.left&&status.right<=bounds.right};
+    // The island is beside the name, at the row's right end (T-43 v4-2).
+    return {nameFits:name.scrollWidth<=name.clientWidth,statusBesideName:status.left>=name.getBoundingClientRect().right,rowFits:status.left>=bounds.left&&status.right<=bounds.right};
   });
-  assert.deepEqual(rowLayout,{nameFits:true,statusBelowName:true,rowFits:true});
+  assert.deepEqual(rowLayout,{nameFits:true,statusBesideName:true,rowFits:true});
   await page.screenshot({path:path.join(out,'waiting-both.png')});
   ci={agents:{a:{running:1,discovering:0,check:1}}};changed();await wait('Waiting · Job / CI · Check CI');
   assert.ok(await label('a').evaluate(el=>{const r=el.getBoundingClientRect(),b=el.closest('[data-agent-id]').getBoundingClientRect();return r.left>=b.left&&r.right<=b.right;}),'mixed check status stays within its row');
