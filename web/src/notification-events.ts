@@ -71,8 +71,10 @@ export function agentNotices(before: AgentState[] | null, after: AgentState[], p
 }
 
 /**
- * Notices for Asks that are new in Home's Needs you. Approvals there are the
- * Agents' requests, which the Agent list already gives.
+ * Notices for Asks that are new in Home's Needs you, and for executors you
+ * dispatched that are new there (T-43 S4a: a result waiting for your
+ * release, a start that failed, a task blocked). Approvals there are the
+ * Agents' requests, which the Agent list already gives. Each opens Home.
  */
 export function askNotices(before: NeedsYouItem[] | null, after: NeedsYouItem[], preview: boolean): Notice[] {
   if (!before) return [];
@@ -87,7 +89,24 @@ export function askNotices(before: NeedsYouItem[] | null, after: NeedsYouItem[],
       body: preview && item.title ? clip(item.title) : "An Ask is waiting for your answer on Home.",
       home: true,
     }));
-  return asks;
+  // An executor's need is its Agent and state: in that state again, it is the same need.
+  const need = (item: NeedsYouItem) => `${item.agentId}:${item.state ?? ""}`;
+  const waiting = new Set(before.filter((item) => item.kind === "executor").map(need));
+  const executors = after
+    .filter((item) => item.kind === "executor" && !waiting.has(need(item)))
+    .map((item) => {
+      const failed = item.state === "failed";
+      const said = item.state === "blocked" ? "Its task is blocked." : failed ? "Open Home to see why." : "Its result is in, waiting for your release.";
+      return {
+        kind: failed ? "failed" as const : "needsYou" as const,
+        tag: tag(failed ? "failed" : "needsYou", `executor:${item.agentId}`),
+        title: failed ? `${item.agentName}: its start failed` : `${item.agentName} needs you`,
+        // With previews on, what it waits for (its reason, or its task's blocker); otherwise words of our own.
+        body: preview && item.reason ? clip(item.reason) : said,
+        home: true,
+      };
+    });
+  return [...asks, ...executors];
 }
 
 /** The daily backup's last run, as Core's Backup status reads it

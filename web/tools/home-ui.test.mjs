@@ -3049,6 +3049,24 @@ test("the tab title, the app badge and Home's count are Needs you's rows, an exe
   }
 });
 
+test("an executor you dispatched says in Needs you why it waits: why its start failed, what blocks its task (T-43 S4a)", async () => {
+  const home = attentionHome();
+  home.needsYou.push({ kind: "executor", projectId: "p-app", agentId: "b", agentName: "Hana", state: "blocked", taskId: "T-7", title: "Release notes",
+    reason: "Waiting for the signing key", since: at(2) });
+  home.needsYou.push({ kind: "executor", projectId: "p-app", agentId: "c", agentName: "Yuki", state: "delivering", taskId: "T-8", title: "Changelog", reason: null, since: at(3) });
+  const p = await mount({ workspaceAgents: attentionAgents(), home, storage: startOnSora });
+  try {
+    const row = (key) => p.doc.querySelector(`[data-needs-you="${key}"]`);
+    await waitFor(() => row("executor:b:blocked"), "Hana's blocked task");
+    assert.equal(row("executor:b:blocked").querySelector(".home-needs-reason")?.textContent, "Waiting for the signing key");
+    assert.match(row("executor:b:blocked").title, /^Hana · Release notes · Waiting for the signing key · waiting since /);
+    assert.equal(row("executor:c:delivering").querySelector(".home-needs-reason"), null, "no reason, no line");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 // YN-3 PR B: a project's deck in its order, with no holes (deck-order.ts, deck-pack.ts).
 const deckBody = (text, size) => ({ root: "body", elements: {
   body: { type: "BriefBody", props: { summary: { lead: "lead", size } }, children: ["lead"] },

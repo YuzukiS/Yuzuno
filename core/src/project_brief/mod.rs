@@ -20,6 +20,8 @@ pub(crate) use attachments::{hold as hold_attachment, hold_all as hold_attachmen
 pub(crate) use attachments::{collect_garbage as collect_attachment_garbage, held as attachment_held};
 mod editors;
 mod home;
+/// The Needs you item of an executor the user dispatched (T-36 S3), for web push too (T-43 S4a).
+pub(crate) use home::executor_need;
 mod http;
 /// A kept image's size from its header alone, within a budget (T-19 HM:B14).
 mod image_header;

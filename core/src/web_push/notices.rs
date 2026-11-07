@@ -58,10 +58,23 @@ pub struct AskState {
     pub since: String,
 }
 
+/// An executor the user dispatched, in Home's Needs you (T-43 S4a): its
+/// result waits for release, its start failed, or its task is blocked.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutorNeed {
+    pub agent: String,
+    pub name: String,
+    /// delivering, failed or blocked.
+    pub state: String,
+    /// Since when: in that state again later, it is another need.
+    pub since: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Read {
     pub agents: Vec<AgentState>,
     pub asks: Vec<AskState>,
+    pub executors: Vec<ExecutorNeed>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -129,7 +142,10 @@ fn agent_notice(before: &AgentState, after: &AgentState) -> Option<Notice> {
 }
 
 /// The notices between two reads: at most one per Agent, none for an
-/// Agent new to the list, and one per Ask new in Needs you.
+/// Agent new to the list, one per Ask new in Needs you, and one per
+/// executor the user dispatched that is new there (T-43 S4a). Like an Ask,
+/// an executor's opens Home, where it is; its words are Core's own, never
+/// what the executor wrote.
 pub fn notices(before: &Read, after: &Read) -> Vec<Notice> {
     let earlier: HashMap<&str, &AgentState> = before.agents.iter().map(|a| (a.id.as_str(), a)).collect();
     let mut found: Vec<Notice> = after.agents.iter()
@@ -147,6 +163,24 @@ pub fn notices(before: &Read, after: &Read) -> Vec<Notice> {
             summary: false,
             covers: vec![Kind::NeedsYou],
             event: format!("ask:{key}:{}", ask.since),
+        });
+    }
+    let waiting: HashSet<(&str, &str)> = before.executors.iter().map(|e| (e.agent.as_str(), e.state.as_str())).collect();
+    for need in after.executors.iter().filter(|e| !waiting.contains(&(e.agent.as_str(), e.state.as_str()))) {
+        let (kind, title, body) = match need.state.as_str() {
+            "failed" => (Kind::Failed, format!("{}: its start failed", need.name), "Open Home to see why."),
+            "blocked" => (Kind::NeedsYou, format!("{} needs you", need.name), "Its task is blocked."),
+            _ => (Kind::NeedsYou, format!("{} needs you", need.name), "Its result is in, waiting for your release."),
+        };
+        found.push(Notice {
+            kind,
+            tag: tag(kind, &format!("executor:{}", need.agent)),
+            title,
+            body: body.into(),
+            agent: None,
+            summary: false,
+            covers: vec![kind],
+            event: format!("executor:{}:{}:{}", need.agent, need.state, need.since),
         });
     }
     found
@@ -233,7 +267,7 @@ mod tests {
         AgentState { id: id.into(), name: format!("Agent {id}"), status: status.into(), turn: Some("t1".into()), ..Default::default() }
     }
     fn read(agents: Vec<AgentState>) -> Read {
-        Read { agents, asks: vec![] }
+        Read { agents, ..Read::default() }
     }
     fn kinds(notices: &[Notice]) -> Vec<(Kind, &str)> {
         notices.iter().map(|n| (n.kind, n.title.as_str())).collect()
@@ -271,8 +305,8 @@ mod tests {
     #[test]
     fn a_new_ask_needs_you_and_opens_home() {
         let ask = |key: &str| AskState { project: "p1".into(), key: key.into(), agent_name: "Lead".into(), since: "2026-10-25T00:00:00Z".into() };
-        let before = Read { agents: vec![], asks: vec![ask("old")] };
-        let after = Read { agents: vec![], asks: vec![ask("old"), ask("new")] };
+        let before = Read { asks: vec![ask("old")], ..Read::default() };
+        let after = Read { asks: vec![ask("old"), ask("new")], ..Read::default() };
         let found = notices(&before, &after);
         assert_eq!(kinds(&found), vec![(Kind::NeedsYou, "Lead asks you")]);
         assert_eq!(found[0].tag, "yuzuno:needsYou:ask:p1/new");
@@ -280,6 +314,29 @@ mod tests {
         let sent = payload(&found[0], "w1");
         assert_eq!(sent, json!({"v":1,"kind":"needsYou","workspaceId":"w1","open":"home","title":"Lead asks you",
             "body":"An Ask is waiting for your answer on Home.","tag":"yuzuno:needsYou:ask:p1/new"}));
+    }
+
+    /// T-43 S4a: an executor the user dispatched, new in Home's Needs you,
+    /// is one notice that opens Home; the same need again is none, and the
+    /// same state from a later time is another.
+    #[test]
+    fn an_executor_new_in_needs_you_is_one_notice_that_opens_home() {
+        let need = |agent: &str, state: &str, since: &str| ExecutorNeed { agent: agent.into(), name: format!("YN-{agent} · Design first"), state: state.into(), since: since.into() };
+        let before = Read { executors: vec![need("1", "delivering", "t1")], ..Read::default() };
+        let after = Read { executors: vec![need("1", "delivering", "t1"), need("2", "delivering", "t2"), need("3", "failed", "t3"), need("4", "blocked", "t4")], ..Read::default() };
+        let found = notices(&before, &after);
+        assert_eq!(found.iter().map(|n| (n.kind, n.title.as_str(), n.body.as_str())).collect::<Vec<_>>(), [
+            (Kind::NeedsYou, "YN-2 · Design first needs you", "Its result is in, waiting for your release."),
+            (Kind::Failed, "YN-3 · Design first: its start failed", "Open Home to see why."),
+            (Kind::NeedsYou, "YN-4 · Design first needs you", "Its task is blocked."),
+        ]);
+        assert!(found.iter().all(|n| n.agent.is_none() && n.covers == vec![n.kind]), "each opens Home");
+        assert_eq!(found[0].tag, "yuzuno:needsYou:executor:2");
+        assert_eq!(found[0].event, "executor:2:delivering:t2");
+        // Its state changed: a need of its own; the one before is gone.
+        let later = Read { executors: vec![need("1", "blocked", "t5")], ..Read::default() };
+        assert_eq!(notices(&before, &later).len(), 1);
+        assert!(notices(&after, &after).is_empty(), "nothing new: nothing");
     }
 
     #[test]

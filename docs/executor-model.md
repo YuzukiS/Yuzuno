@@ -770,7 +770,14 @@ has the blocker (`blocked`); its state stays what it is.
 - **Home's Needs you** lists, for an executor you dispatched, a result
   waiting for your release, a failed start, and a task blocked while it
   runs. A lead's executors are that lead's to follow and never show there.
-  Its row opens the executor, where its result and Release are.
+  Its row opens the executor, where its result and Release are, and says
+  why under its task: why its start failed, or what blocks its task (T-43
+  S4a). Each counts in the tab's title, the app badge and the Home tab's
+  count, and a new one notifies once, as a new Ask does: in the browser
+  and by web push, opening Home. A failed start is a failure notice; the
+  others need you. A notification uses words of its own ("Its result is
+  in, waiting for your release."); with previews on, the browser's says the
+  reason instead. Web push never carries it.
 - **Release** says, while the executor is archiving, what it waits for.
   Asking again tries at once.
 

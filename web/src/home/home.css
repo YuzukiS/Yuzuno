@@ -474,6 +474,15 @@
 .home-needs-since {
   flex: none;
 }
+/* Why an executor you dispatched waits (T-43 S4a): one line, its end "…"; the item's title has the rest. */
+.home-needs-reason {
+  margin-top: 1px;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .home-needs-empty {
   margin: 0;
   color: var(--home-ink-2);

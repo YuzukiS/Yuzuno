@@ -142,7 +142,7 @@ fn missing(store: &Store, db: &Connection, project: &str, agents: &HashMap<Strin
 /// waits for the user's release (`delivering`), its start failed (`failed`),
 /// or its task is blocked while it runs (`blocked`): the lifecycle the Agent
 /// listing carries (executor_lifecycle.rs).
-fn executor_need(agent: &Agent) -> Option<Value> {
+pub(crate) fn executor_need(agent: &Agent) -> Option<Value> {
     let lifecycle = agent.executor.as_ref()?;
     if lifecycle["dispatcher"]["kind"] != "user" {
         return None;

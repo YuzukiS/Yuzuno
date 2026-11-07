@@ -328,6 +328,23 @@ test("a new Ask in Needs you notifies once; approvals there come from the Agent 
   assert.deepEqual(events.askNotices([ask], [ask, approval], true), []);
 });
 
+test("an executor you dispatched, new in Needs you, notifies once and opens Home (T-43 S4a)", () => {
+  const need = (agentId, state, reason = null) => ({ kind: "executor", projectId: "p1", agentId, agentName: `YN-${agentId}`, state, taskId: `YN-${agentId}`,
+    title: "Work", reason, since: "" });
+  const before = [need("1", "delivering")];
+  const after = [need("1", "delivering"), need("2", "delivering"), need("3", "failed", "Both starts failed"), need("4", "blocked", "Waiting for #12")];
+  assert.deepEqual(events.askNotices(before, after, false), [
+    { kind: "needsYou", tag: "yuzuno:needsYou:executor:2", title: "YN-2 needs you", body: "Its result is in, waiting for your release.", home: true },
+    { kind: "failed", tag: "yuzuno:failed:executor:3", title: "YN-3: its start failed", body: "Open Home to see why.", home: true },
+    { kind: "needsYou", tag: "yuzuno:needsYou:executor:4", title: "YN-4 needs you", body: "Its task is blocked.", home: true },
+  ]);
+  // With previews on, what it waits for.
+  assert.deepEqual(events.askNotices(before, after, true).map((n) => n.body), ["Its result is in, waiting for your release.", "Both starts failed", "Waiting for #12"]);
+  assert.deepEqual(events.askNotices(after, after, true), [], "nothing new: nothing");
+  assert.equal(events.askNotices(before, [need("1", "blocked")], false).length, 1, "a new state is a new need");
+  assert.deepEqual(events.askNotices(null, after, true), [], "the first read tells of nothing");
+});
+
 test("none of it talks to Core: muting this device changes nothing the Workspace delivers", async () => {
   const fetchBefore = globalThis.fetch;
   let requests = 0;
