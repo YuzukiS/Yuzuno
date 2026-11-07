@@ -262,8 +262,14 @@
 .agent-list .agent-row .agent-line-one.agent-identity > .agent-name {
   flex: 0 1 auto;
 }
-/* While a pill takes line one's width, a name wraps rather than being cut
-   (the user, v10.2); the row grows for those few seconds. */
+/* While a pill takes line one's width, line one wraps rather than being cut
+   (the user, v10.2): an activity past its two lines, a name past its one.
+   The row grows for those few seconds. */
+.agent-list .agent-row[data-form="pill"] .agent-activity {
+  display: block;
+  -webkit-line-clamp: none;
+  overflow: visible;
+}
 .agent-list .agent-row[data-form="pill"] .agent-line-one.agent-identity {
   flex-wrap: wrap;
 }
