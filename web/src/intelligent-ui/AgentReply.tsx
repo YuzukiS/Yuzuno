@@ -5,6 +5,7 @@ import { useFullItem } from "../item-payload";
 import type { NativeItem } from "../types";
 import { parseReply, type ReplySegment, type ResultProblem } from "./message";
 import type { ResultSpec } from "./spec";
+import { BlockStream } from "./stream";
 import { resultText } from "./result-text";
 import { reserveFor, type Reserve } from "./result-reserve";
 import { useStrings } from "../i18n";
@@ -21,6 +22,12 @@ type ResultProps = {
   /** Read as the renderer mounts: a placeholder stood in for this result, so
    * it comes in with a fade (T-19 HM:I5). */
   arrival?: { readonly current: boolean };
+  /** Its block is still being written: `spec` is what can be drawn so far
+   * (stream.ts), shown inert, and checked whole only once the block closes. */
+  live?: boolean;
+  /** It was drawn while its block was written (live now, or before): it stays
+   * mounted as the block grows and closes, rather than anew for each text. */
+  streamed?: boolean;
 };
 
 /** The renderer chunk could not be loaded (offline, or replaced by an update). */
@@ -80,6 +87,11 @@ function loadResult() {
   return loading;
 }
 let LazyResult = lazy(loadResult);
+/** Start loading the renderer before it is needed: a block has begun. A
+ * failure is the renderer's own to show, when it is drawn. */
+function preloadResult() {
+  loadResult().catch(() => {});
+}
 function retryResult() {
   if (!failed) return;
   failed = false;
@@ -92,12 +104,21 @@ function retryResult() {
  * reply readable too, not only a failure inside the renderer.
  */
 class ResultBoundary extends Component<
-  { children: ReactNode; fallback: (error: unknown, reset: () => void) => ReactNode },
+  {
+    children: ReactNode;
+    fallback: (error: unknown, reset: () => void) => ReactNode;
+    /** A failure is let go when this changes: a result drawn as its block was
+     * written gets a fresh try once the block is closed and checked whole. */
+    resetOn?: unknown;
+  },
   { error: unknown; failed: boolean }
 > {
   state = { error: null as unknown, failed: false };
   static getDerivedStateFromError(error: unknown) {
     return { error, failed: true };
+  }
+  componentDidUpdate(previous: { resetOn?: unknown }) {
+    if (this.state.failed && previous.resetOn !== this.props.resetOn) this.reset();
   }
   reset = () => this.setState({ error: null, failed: false });
   render() {
@@ -203,7 +224,8 @@ function stateOf(problem: ResultProblem): Unavailable {
   return "format";
 }
 
-/** One valid result, drawn by the lazily loaded renderer. */
+/** One valid result, drawn by the lazily loaded renderer; or, `live`, what
+ * can be drawn of one whose block is still being written. */
 export function ShownResult({ arrived = false, ...props }: Omit<ResultProps, "arrival"> & {
   /** A placeholder stood in for it until now: its read, or its block still being written. */
   arrived?: boolean;
@@ -219,7 +241,10 @@ export function ShownResult({ arrived = false, ...props }: Omit<ResultProps, "ar
   const reserve = useMemo(() => reserveFor(props.spec), [props.spec]);
   return (
     <ResultBoundary
-      key={props.identity + props.raw}
+      // A new text is a new result, except while its block is written and as
+      // it closes: that is one result arriving (YN-15).
+      key={props.identity + (props.streamed ? "" : props.raw)}
+      resetOn={props.live}
       fallback={(error, reset) =>
         error instanceof ResultChunkError ? (
           <ResultUnavailable
@@ -242,6 +267,9 @@ export function ShownResult({ arrived = false, ...props }: Omit<ResultProps, "ar
             }
             onReload={resultChunk.reloadPage}
           />
+        ) : props.live ? (
+          // Drawing it as it is written failed; the whole check decides once it closes.
+          <ResultPlaceholder what="generating" />
         ) : (
           <ResultUnavailable
             kind="render"
@@ -251,7 +279,11 @@ export function ShownResult({ arrived = false, ...props }: Omit<ResultProps, "ar
         )
       }
     >
-      <Suspense fallback={<ResultPlaceholder what="result" reserve={reserve} onShown={() => (waited.current = true)} />}>
+      <Suspense
+        fallback={
+          <ResultPlaceholder what={props.live ? "generating" : "result"} reserve={reserve} onShown={() => (waited.current = true)} />
+        }
+      >
         <LazyResult {...props} arrival={waited} />
       </Suspense>
     </ResultBoundary>
@@ -268,20 +300,43 @@ function Segment({
   arrived: boolean;
   props: Omit<ResultProps, "spec" | "raw" | "arrival">;
 }) {
-  // A block still being written showed a placeholder: once whole, it comes in.
+  // A block still being written showed a placeholder, or was drawn as it was
+  // written: once whole, it comes in, or stays as it is.
   const pending = useRef(false);
   useLayoutEffect(() => {
     if (segment.kind === "pending") pending.current = true;
+  }, [segment.kind]);
+  // What can be drawn of a block as it is written (YN-15): read from where
+  // the last text stopped. Not for a block that will not be shown.
+  const stream = useRef<BlockStream | null>(null);
+  const live = useMemo(
+    () =>
+      segment.kind === "pending" && !segment.extra
+        ? (stream.current ??= new BlockStream()).update(segment.raw).view()
+        : null,
+    [segment],
+  );
+  const drawn = useRef(false);
+  if (live) drawn.current = true;
+  useEffect(() => {
+    if (segment.kind === "pending") preloadResult();
   }, [segment.kind]);
   switch (segment.kind) {
     case "text":
       return <Prose text={segment.text} onFile={props.onFile} />;
     case "pending":
-      return <ResultPlaceholder what="generating" />;
+      return live ? (
+        // Only checked elements and placeholders are in it (stream.ts).
+        <ShownResult {...props} spec={live as ResultSpec} raw={segment.raw} live streamed arrived={arrived || pending.current} />
+      ) : (
+        <ResultPlaceholder what="generating" />
+      );
     case "invalid":
       return <ResultUnavailable kind={stateOf(segment.problem)} raw={segment.raw} problem={segment.problem} />;
     case "result":
-      return <ShownResult {...props} spec={segment.spec} raw={segment.raw} arrived={arrived || pending.current} />;
+      return (
+        <ShownResult {...props} spec={segment.spec} raw={segment.raw} streamed={drawn.current} arrived={arrived || pending.current} />
+      );
   }
 }
 
