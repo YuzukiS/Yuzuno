@@ -270,6 +270,9 @@ async function serve(route) {
     "/api/models": () => ({ models: [] }),
   }[path];
   if (json) return route.fulfill({ json: json() });
+  // The linked repository's merge queue, as Repository details read it (T-37): off, as a fixture repository's is.
+  const queue = path.match(/^\/api\/merge-queue\/repositories\/(\d+)$/);
+  if (queue && request.method() === "GET") return route.fulfill({ json: { repositoryId: Number(queue[1]), enabled: false, paused: null, landing: "core-merge" } });
   if (path.startsWith("/api/")) {
     report.unexpected.push(path);
     return route.fulfill({ json: {} });
