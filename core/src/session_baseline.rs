@@ -244,9 +244,10 @@ fn notice(changes: &Changes, start_text: Option<&str>) -> Option<String> {
     let mut text = format!(
         "[Yuzuno Core: what this conversation was given has changed]\nThis Core ({}) attached this conversation again. \
          Since it was last attached here, the following changed. Your client may keep what it loaded earlier for the rest \
-         of this conversation (Claude Code keeps tool definitions until the conversation is compacted, and its start text \
-         for good): where this notice and an earlier definition differ, this notice is current. Core accepts the current \
-         parameters, even ones an earlier definition lacks. Nothing needs doing now; no reply is needed.",
+         of this conversation (Claude Code keeps the tool definitions it loaded until the conversation is compacted, and \
+         the text it started with across a resume): where this notice and an earlier definition differ, this notice \
+         is current. Core accepts the current parameters, even ones an earlier definition lacks. Nothing needs doing \
+         now; no reply is needed.",
         release["releaseId"].as_str().unwrap_or("development"),
     );
     if !changes.is_empty() {
