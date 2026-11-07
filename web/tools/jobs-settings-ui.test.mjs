@@ -517,7 +517,7 @@ test("a Jobs dialog closed by Edit in Settings gives no focus back to its trigge
   } finally { p.close(); }
 });
 
-test("Settings opens Jobs and resources at the Core host budget; both entries open their own editors, and an unsaved field survives switching", async () => {
+test("the Machines page of Settings shows both budgets' own editors, and an unsaved field survives switching pages", async () => {
   const { settingsCatalog, translatedEditors } = (() => {
     const p = mount(fixtureCore());
     try { return JSON.parse(JSON.stringify(p.window.catalog)); } finally { p.close(); }
@@ -532,19 +532,20 @@ test("Settings opens Jobs and resources at the Core host budget; both entries op
     p.window.renderSettings({});
     const tab = (id) => p.doc.getElementById(`settings-tab-${id}`);
     const shown = () => [...p.doc.querySelectorAll(".settings-editor")].filter((el) => !el.hidden).map((el) => el.id);
-    await until(() => tab("jobs"), "Settings shows");
-    tab("jobs").click();
+    // Until each machine's page carries its own (YN-8 S3), both budgets
+    // follow the machines on the Machines page.
+    await until(() => tab("machines"), "Settings shows");
+    tab("machines").click();
     await until(() => p.doc.querySelector('#settings-editor-jobs-budget input[name="maxActive"]'), "the Core host editor reads the budget");
-    assert.deepEqual(shown(), ["settings-editor-jobs-budget"], "the category opens at the Core host budget");
-    assert.deepEqual([...p.doc.querySelectorAll(".settings-entries button")].map((b) => [b.textContent, b.getAttribute("aria-current")]), [["Core host budget", "true"], ["Remote budgets", null]], "its two entries are in one row");
+    await until(() => p.doc.querySelector('#settings-editor-jobs-remote select[name="machine"]'), "the remote editor reads the machines");
+    assert.deepEqual(shown(), ["settings-editor-machines", "settings-editor-jobs-budget", "settings-editor-jobs-remote"], "the Machines page shows both budgets after the machines");
     assert.equal(p.doc.querySelectorAll(".settings-catalog-card").length, 0, "no card that opens something elsewhere");
     await type(p, p.doc.querySelector('#settings-editor-jobs-budget input[name="maxActive"]'), "7");
-    button(p.doc.querySelector(".settings-entries"), "Remote budgets").click();
-    await until(() => p.doc.querySelector('#settings-editor-jobs-remote select[name="machine"]'), "the remote editor reads the machines");
-    assert.deepEqual(shown(), ["settings-editor-jobs-remote"], "the remote entry shows its own editor");
-    button(p.doc.querySelector(".settings-entries"), "Core host budget").click();
-    await until(() => shown().join() === "settings-editor-jobs-budget", "back at the Core host budget");
-    assert.equal(p.doc.querySelector('#settings-editor-jobs-budget input[name="maxActive"]').value, "7", "an unsaved Jobs at once survives switching entries");
+    tab("updates").click();
+    await until(() => shown().join() === "settings-editor-updates", "another page");
+    tab("machines").click();
+    await until(() => shown().includes("settings-editor-jobs-budget"), "back at the Machines page");
+    assert.equal(p.doc.querySelector('#settings-editor-jobs-budget input[name="maxActive"]').value, "7", "an unsaved Jobs at once survives switching pages");
     assert.equal(p.posts().length, 0, "browsing writes nothing");
     assert.deepEqual(p.errors, [], "no page errors");
   } finally { p.close(); }

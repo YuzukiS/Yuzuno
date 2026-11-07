@@ -79,7 +79,7 @@ async function closeDialog() { await page.getByRole('dialog').getByRole('button'
 try {
   await page.goto(origin);
   await open();
-  assert.equal(await page.getByRole('tab').count(), 8);
+  assert.equal(await page.getByRole('tab').count(), 18);
   await search('上下文');
   const contextSelect = page.getByLabel('Context window & compaction agent');
   assert.equal(await contextSelect.inputValue(), '');
@@ -94,10 +94,13 @@ try {
   await open(); await search('默认目录');
   await page.getByLabel('Project directories, repositories & services project').selectOption('orchard');
   await page.getByRole('button', { name: 'Open Project directories, repositories & services' }).click();
-  await page.getByRole('dialog', { name: 'Projects', exact: true }).waitFor();
-  assert.equal(await page.getByLabel('Project name', { exact: true }).inputValue(), 'Orchard');
-  assert.equal(await page.getByLabel('Default folder on Fixture Core').inputValue(), '/fixture/orchard');
-  check('default-directory search opens the chosen project and its actual per-machine value');
+  // Settings › Projects (YN-8), in the same dialog.
+  const projectsPage = page.locator('#settings-editor-projects:not([hidden])');
+  await projectsPage.waitFor();
+  assert.equal(await page.locator('#settings-tab-projects').getAttribute('aria-selected'), 'true');
+  assert.equal(await projectsPage.getByLabel('Project name', { exact: true }).inputValue(), 'Orchard');
+  assert.equal(await projectsPage.getByLabel('Default folder on Fixture Core').inputValue(), '/fixture/orchard');
+  check('default-directory search opens Settings › Projects at the chosen project and its actual per-machine value');
   await closeDialog();
   // T-55: the Core host budget is an editor of Settings' own; the Jobs card only shows it.
   await open(); await search('预算');
@@ -107,7 +110,7 @@ try {
   await page.waitForFunction(() => document.activeElement?.id === 'settings-editor-jobs-budget');
   assert.equal(await hostEditor.getByLabel('Jobs at once', { exact: true }).inputValue(), '4', 'Jobs at once shows the number in effect');
   assert.equal(await hostEditor.getByLabel('CPU quota', { exact: true }).inputValue(), '2', 'the budget editor shows the saved budget');
-  assert.equal(await page.getByRole('tab', { name: 'Jobs & resources', exact: true }).getAttribute('aria-selected'), 'true');
+  assert.equal(await page.locator('#settings-tab-machines').getAttribute('aria-selected'), 'true', 'the budgets follow the machines (YN-8)');
   check('budget search opens the Core host budget editor in Settings, focused, with Jobs at once');
   await closeDialog();
   await page.getByRole('button', { name: 'Jobs', exact: true }).click();
@@ -143,23 +146,20 @@ try {
     await page.setViewportSize({ width, height: 900 });
     await open();
     if (width > 720) {
-      await page.getByRole('tab', { name: 'Updates & about' }).focus();
+      await page.getByRole('tab', { name: 'Updates', exact: true }).focus();
       await page.keyboard.press('Home');
-      assert.equal(await page.getByRole('tab', { name: 'Appearance & interaction' }).getAttribute('aria-selected'), 'true');
+      assert.equal(await page.getByRole('tab', { name: 'Appearance', exact: true }).getAttribute('aria-selected'), 'true');
       await page.keyboard.press('ArrowDown');
-      assert.equal(await page.getByRole('tab', { name: 'Notifications & attention' }).getAttribute('aria-selected'), 'true');
+      assert.equal(await page.getByRole('tab', { name: 'Typing & time', exact: true }).getAttribute('aria-selected'), 'true');
     } else {
-      // A phone: the categories are the picker (T-189), from the keyboard too.
-      assert.equal(await page.getByRole('tab', { name: 'Updates & about' }).isVisible(), false);
-      const picker = page.getByRole('combobox', { name: 'Settings category', exact: true });
-      await picker.focus();
-      await page.keyboard.press('ArrowUp');
-      assert.equal(await picker.inputValue(), 'data');
-      // Data opens at its first entry's editor (T-187).
-      assert.equal(await page.locator('.settings-entries [aria-current="true"]').innerText(), 'Storage');
+      // A phone: the list of pages first, a page with Back to it (YN-8).
+      await page.locator('.settings-center.is-root').waitFor();
+      assert.equal(await page.locator('.settings-editor:not([hidden])').count(), 0);
+      await page.getByRole('tab', { name: 'Storage', exact: true }).click();
       await page.locator('#settings-editor-storage:not([hidden])').waitFor();
-      await page.keyboard.press('ArrowUp');
-      assert.equal(await picker.inputValue(), 'jobs');
+      assert.equal(await page.getByRole('tab', { name: 'Storage', exact: true }).isVisible(), false, 'the page takes the list\'s place');
+      await page.locator('.settings-back').click();
+      await page.locator('.settings-center.is-root').waitFor();
     }
     await search('手机访问');
     // Phone access has its own editor (T-185); finding it opens nothing yet.
@@ -169,11 +169,11 @@ try {
     assert.ok(overflow.left >= 0 && overflow.right <= width + 1 && overflow.scroll <= overflow.client + 1, JSON.stringify(overflow));
     await page.screenshot({ path: resolve(output, `settings-${width}.png`) });
     await closeDialog();
-    check(`${width}px: keyboard category navigation, phone access found with its editor and no dialog overflow`);
+    check(`${width}px: ${width > 720 ? 'keyboard page navigation' : 'the list of pages, a page and Back'}, phone access found with its editor and no dialog overflow`);
   }
   await page.setViewportSize({ width: 320, height: 300 });
   await open();
-  await page.getByRole('combobox', { name: 'Settings category', exact: true }).selectOption('agents');
+  // Searched from the list of pages (YN-8).
   await search('上下文');
   const shortSelect = page.getByLabel('Context window & compaction agent');
   await shortSelect.scrollIntoViewIfNeeded();
@@ -185,12 +185,12 @@ try {
   assert.equal(await shortAction.evaluate((el) => { const r = el.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!hit && (hit === el || el.contains(hit)); }), true);
   assert.ok(await page.locator('.settings-pane').evaluate((el) => el.clientHeight >= 100), 'Short viewport retains at least 100px of scrollable content');
   await page.screenshot({ path: resolve(output, 'settings-320x300.png') });
-  check('320x300 software-keyboard viewport: all categories in picker, editable object choice, focused control and hit-tested action');
+  check('320x300 software-keyboard viewport: search from the list of pages, editable object choice, focused control and hit-tested action');
   await closeDialog();
   await page.setViewportSize({ width: 320, height: 900 });
   await open();
-  // A phone's categories are the picker (T-189).
-  await page.getByRole('combobox', { name: 'Settings category', exact: true }).selectOption('appearance');
+  // A phone's pages are its first list (YN-8).
+  await page.locator('#settings-tab-appearance').click();
   const appearance = page.locator('.appearance-settings');
   assert.match(await appearance.getByRole('status').innerText(), /Using the defaults/);
   const protectedKeys = await page.evaluate(() => ({
@@ -214,7 +214,7 @@ try {
   assert.equal(await page.evaluate(() => localStorage.getItem('yuzuno.appearance')), null);
   await closeDialog();
   await open();
-  await page.getByRole('combobox', { name: 'Settings category', exact: true }).selectOption('appearance');
+  await page.locator('#settings-tab-appearance').click();
   assert.equal(await appearance.getByRole('radio', { name: 'Dark Low light' }).isChecked(), true);
   await appearance.getByRole('alert').scrollIntoViewIfNeeded();
   await page.screenshot({ path: resolve(output, 'appearance-save-refused-320.png') });
