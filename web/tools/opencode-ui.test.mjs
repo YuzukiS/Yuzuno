@@ -458,6 +458,46 @@ test("an OpenCode turn names OpenCode, shows its tool calls and offers its own r
   } finally { codex.close(); page.close(); }
 });
 
+test("an OpenCode command that ran with no turn of its own says why under that turn, in the language shown (T-61 slice 3)", async () => {
+  const turn = (notice) => ({ id: "msg_c", status: "completed", notice, items: [
+    { id: "msg_c:input", type: "userMessage", content: [{ type: "text", text: "/explain x" }] },
+  ] });
+  const agent = { id: "a", name: "Ocean", status: "idle", color: "sage", harness: "opencode" };
+  const shown = (notice, language) => {
+    const page = mount();
+    if (language) page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    page.window.renderTurn({ turn: turn(notice), index: 0, agent, onFile() {}, onRewindDraft() {} });
+    return page;
+  };
+  const pages = [
+    shown({ kind: "command_no_turn", detail: "explain" }),
+    shown({ kind: "command_subagent", detail: "reviewer" }),
+    shown({ kind: "command_subagent", detail: "reviewer" }, "zh-Hans"),
+    shown({ kind: "command_no_turn", detail: "explain" }, "zh-Hans"),
+    shown({ kind: "a_newer_kind", detail: "x" }),
+    shown(null),
+  ];
+  try {
+    await tick(); await tick();
+    // Text and booleans only: a failing assertion on a jsdom element can take the whole test's memory to print it.
+    const note = (page) => page.document.querySelector(".turn-notice");
+    assert.equal(note(pages[0])?.textContent, "OpenCode ran /explain; it started no turn.", "the no-turn notice, in English");
+    assert.equal(note(pages[1])?.textContent,
+      "OpenCode runs this command in a background sub-agent (reviewer). Its result comes back to the session later, in a run of OpenCode’s own, not in this turn.",
+      "the sub-agent notice, in English");
+    assert.equal(note(pages[2])?.textContent, "OpenCode 在后台的子 Agent（reviewer）中执行这条命令；它的结果之后由 OpenCode 自己交回会话，不属于这一轮。",
+      "the sub-agent notice, in Chinese");
+    assert.equal(note(pages[3])?.textContent, "OpenCode 执行了 /explain；它没有开始新的一轮。", "the no-turn notice, in Chinese");
+    for (const page of pages.slice(0, 4)) {
+      assert.equal(note(page).closest('[role="alert"]') === null, true, "plain text under the turn, not an alert");
+      assert.equal(page.document.querySelector(".inline-error") === null, true, "nothing failed");
+    }
+    assert.equal(note(pages[4]) === null, true, "a kind this version doesn't know shows nothing");
+    assert.equal(note(pages[5]) === null, true, "no notice, no line");
+    for (const page of pages) assert.deepEqual(page.errors, []);
+  } finally { for (const page of pages) page.close(); }
+});
+
 // OpenCode's revert (T-10): previewed with its files, asked once, the
 // original text given back only once OpenCode keeps the revert; an outcome
 // not confirmed is only checked, never kept by choice or asked again.
