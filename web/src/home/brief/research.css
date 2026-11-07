@@ -342,7 +342,7 @@
   background: transparent;
   border: 1.5px solid var(--text-secondary, var(--muted));
 }
-.research-origin:is([data-origin="missing"], [data-origin="not_number"], [data-origin="unavailable"]) .research-origin-dot {
+.research-origin:is([data-origin="missing"], [data-origin="not_number"], [data-origin="ambiguous"], [data-origin="unavailable"]) .research-origin-dot {
   background: var(--research-attention);
   border-radius: 1px;
 }
@@ -354,7 +354,7 @@
   color: var(--text-secondary, var(--muted));
   font-size: 0.78rem;
 }
-.research-origin-text:is([data-origin="missing"], [data-origin="not_number"], [data-origin="unavailable"]) {
+.research-origin-text:is([data-origin="missing"], [data-origin="not_number"], [data-origin="ambiguous"], [data-origin="unavailable"]) {
   color: var(--research-attention);
 }
 

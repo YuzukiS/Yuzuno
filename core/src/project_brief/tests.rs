@@ -2589,3 +2589,39 @@ async fn a_research_desk_reads_only_its_snapshots_and_keeps_each_definition_vers
     let other = research::desk(&ws.store, &cache, "other-project", "study", "desk", None).unwrap().err().unwrap();
     assert_eq!(other.code, "section_not_found");
 }
+
+/// YN-7 item 3: a desk reads a CSV cell by the text its row's key columns
+/// hold, as written; no row, two rows or a column the file lacks is never a guess.
+#[tokio::test]
+async fn a_research_desk_reads_a_csv_cell_by_its_rows_text_and_never_guesses() {
+    let (dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    std::fs::write(dir.path().join("results.csv"),
+        "sport, d ,auc\nalpha,2,0.92\nalpha,2.0,0.50\nbeta,1,0.81\nbeta,1,0.83\ngamma,3,n/a\n\"  delta \",4, 0.7 \n").unwrap();
+    let cell = |sport: &str, d: &str, column: &str| json!({"from":"results.csv","row":{"sport":sport,"d":d},"column":column});
+    let part = |id: &str, value: Value| json!({"id":id,"label":id,"estimate":{"value":value}});
+    let put = json!({"op":"put","key":"study","kind":"report","title":"Study (synthetic)",
+        "attachments":[{"name":"results.csv","path":dir.path().join("results.csv")}],
+        "body":{"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{},"children":["desk"]},
+            "desk":{"type":"ResearchDesk","props":{"schema":"research/1",
+                "claims":[{"id":"c1","title":"Alpha ranks well","statement":"About 0.9 at d 2.","status":"conditional","primary":"r1"}],
+                "plots":[{"id":"p1","title":"AUC","digits":2,"rows":[
+                    {"id":"r1","label":"alpha d2","estimate":{"value":cell("alpha","2","auc"),"low":cell("beta","1","auc"),"high":cell("gamma","3","auc")},
+                     "parts":[part("a",cell("alpha","2","f1")),part("b",cell("omega","2","auc")),part("c",cell("delta","4","auc")),
+                        part("e",json!({"from":"results.csv","row":{"league":"x"},"column":"auc"}))]}]}],
+                "sources":[{"id":"res","label":"Results","kind":"data","snapshot":"results.csv"}]}}}}});
+    let accepted = update::update(&ws, &checker, "a", input("c1", 0, vec![put])).await.unwrap();
+    assert!(accepted.is_ok(), "{accepted:?}");
+
+    let cache = attachments::dir(&ws.data_dir);
+    let values = research::desk(&ws.store, &cache, &project, "study", "desk", None).unwrap().ok().unwrap()["values"].clone();
+    let status = |at: &str| values[at]["status"].clone();
+    // "2" matches the row holding "2", not the one holding "2.0".
+    assert_eq!(values["r1.value"], json!({"status":"read","value":0.92,"from":"results.csv"}));
+    assert_eq!((status("r1.low"), status("r1.high")), (json!("ambiguous"), json!("not_number")), "two rows match; n/a is no number");
+    assert_eq!((status("a.value"), status("b.value"), status("e.value")), (json!("missing"), json!("missing"), json!("missing")),
+        "a column, a row or a key column the file lacks");
+    // The spaces around a cell or a header name are not its text.
+    assert_eq!(values["c.value"]["value"], json!(0.7));
+}
