@@ -476,13 +476,17 @@ const COMMAND_START: Duration = Duration::from_secs(15);
 /// can follow such runs (T-61 slice 3, D-16 (a), D-5 (a)).
 pub(crate) const STARTS_WORK: [&str; 2] = ["goal", "schedule"];
 const COMMAND_STARTS_WORK: &str = "OpenCode 的这条命令会在之后自行开始新的工作，Yuzuno 还不能跟踪；这条消息没有发送，草稿保留";
-/// A command 2.x ran that admitted nothing and left the session idle
-/// (`/goal pause`, a plugin's own command; D-14 (a)).
-const COMMAND_RAN_NOTHING: &str = "OpenCode 执行了这条命令；它没有开始新的一轮";
+/// The notice a command Turn ends with when 2.x ran it without a run of its
+/// own to follow (Lead 7125): `turn.notice {kind, detail?}`, which the web
+/// words in the language it shows. A command 2.x ran that admitted nothing
+/// and left the session idle (`/goal pause`, a plugin's own command; D-14 (a)),
+/// its detail the command's name.
+const COMMAND_NO_TURN: &str = "command_no_turn";
 /// A sub-agent's command (D-15 (a)): 2.x runs it in a session of its own, in
 /// the background, and later gives its result to the Agent's session in a
-/// run no message of Yuzuno's starts.
-const COMMAND_IN_BACKGROUND: &str = "OpenCode 在后台的子 Agent 中执行这条命令；它的结果之后由 OpenCode 自己交回会话，不属于这一轮";
+/// run no message of Yuzuno's starts. Its detail: the sub-agent's agent as
+/// 2.x lists that session, else the command's name.
+const COMMAND_SUBAGENT: &str = "command_subagent";
 
 /// The command a message names as `/<name> [arguments]`, if OpenCode
 /// offers `<name>` now (T-10, `Server::commands`); None for any other text,
@@ -1625,6 +1629,7 @@ impl Workspace {
     ///   before it fails, so a whole read decides: the Turn follows what it
     ///   admitted, else it is refused with 2.x's words; unknown if unread;
     /// - no answer: unknown, unless what it admitted is found.
+    ///
     /// It is never sent again.
     #[allow(clippy::too_many_arguments)]
     async fn opencode_run_command(&self, id: &str, c: &Connection, message: &MessageId, name: &str, text: &str,
@@ -1658,8 +1663,11 @@ impl Workspace {
                     return Ok(followed);
                 }
                 // A sub-agent's command admits nothing here: 2.x made its session before it answered.
-                if sub_agents(&c.server, &c.session).await.is_ok_and(|now| now.keys().any(|child| !before.contains(child))) {
-                    return self.opencode_command_ended(id, &turn, "opencode/commandInBackground", COMMAND_IN_BACKGROUND).await;
+                let made = sub_agents(&c.server, &c.session).await.ok()
+                    .and_then(|now| now.into_iter().find(|(child, _)| !before.contains(child)));
+                if let Some((_, child)) = made {
+                    let detail = child["agent"].as_str().filter(|a| !a.is_empty()).unwrap_or(name).to_owned();
+                    return self.opencode_command_ended(id, &turn, "opencode/commandInBackground", COMMAND_SUBAGENT, detail).await;
                 }
                 let found = self.opencode_command_found(id, c, &turn, true).await;
                 if found == Some(true) {
@@ -1668,7 +1676,7 @@ impl Workspace {
                 // Nothing of it admitted, and nothing running.
                 let idle = found == Some(false) && c.server.session_status(&c.session).await.is_ok_and(|status| status["type"] == "idle");
                 if idle {
-                    return self.opencode_command_ended(id, &turn, "opencode/commandRanNothing", COMMAND_RAN_NOTHING).await;
+                    return self.opencode_command_ended(id, &turn, "opencode/commandRanNothing", COMMAND_NO_TURN, name.to_owned()).await;
                 }
                 let (detail, message) = unknown("HTTP 204".into());
                 Err(self.opencode_unconfirmed(id, &turn, &detail, message).await)
@@ -1721,15 +1729,17 @@ impl Workspace {
     }
 
     /// A command Turn that ends as OpenCode answered it, with nothing of
-    /// its own to follow (D-14 (a), D-15 (a)): completed, saying why. What
-    /// 2.x admits after this is not its.
-    async fn opencode_command_ended(&self, id: &str, turn: &str, kind: &str, notice: &str) -> Result<Value> {
-        let (ended, notice) = (turn.to_owned(), notice.to_owned());
-        self.record_update(id, kind, json!({"turnId":turn,"notice":notice}), Sel::Turns(vec![turn.to_owned()]), move |d| {
+    /// its own to follow (D-14 (a), D-15 (a)): completed, with the notice of
+    /// why (`kind`, `detail`). What 2.x admits after this is not its.
+    async fn opencode_command_ended(&self, id: &str, turn: &str, journal: &str, kind: &str, detail: String) -> Result<Value> {
+        let ended = turn.to_owned();
+        let notice = json!({"kind":kind,"detail":detail});
+        let kept = notice.clone();
+        self.record_update(id, journal, json!({"turnId":turn,"notice":notice}), Sel::Turns(vec![turn.to_owned()]), move |d| {
             let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == ended.as_str() && t["status"] == "inProgress") else { return };
             entry["_opencodeCommand"]["awaiting"] = false.into();
             entry["status"] = "completed".into();
-            entry["notice"] = json!({"message":notice});
+            entry["notice"] = kept;
             // Delivered: its receipt is bound to it, as a prompt's is once stored.
             confirm(d, &ended);
             refresh_status(d);

@@ -1264,7 +1264,8 @@ p {
   border-top: 1px solid #e7ecdf;
   margin: 22px 0;
 }
-.turn-interrupted {
+.turn-interrupted,
+.turn-notice {
   margin: 14px 0 5px 30px;
   color: #a29175;
   font-size: calc(10px + var(--font-adjust, 3px));

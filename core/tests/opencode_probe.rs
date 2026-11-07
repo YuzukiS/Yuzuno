@@ -10,12 +10,17 @@
 //! there. Slice 4b (Lead 5656): a login through Core's own calls, and the
 //! scrub after, against the stub provider. T-61 slice 1 (Lead 6884): the
 //! Workspace MCP through the Workspace's own send path, against Yuzuno's own
-//! Workspace MCP endpoint on loopback and the stub provider.
+//! Workspace MCP endpoint on loopback and the stub provider. T-61 slice 2:
+//! its requests answered. T-61 slice 3: its commands, as Core's transport
+//! reads them and through the Workspace's own send path.
 #![cfg(target_os = "linux")]
 
 use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
-use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Reply, RequestRefused, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
+use yuzuno_workspace::opencode::{
+    session_of, supported, CommandAnswer, Events, FilePart, Launch, MessageId, Reply, RequestRefused, Server, Submission, EVENT_IDLE_LIMIT,
+    TEARDOWN,
+};
 use yuzuno_workspace::opencode_v2::{admitted, is_v2, read_messages, Cursor};
 use yuzuno_workspace::store::whole::WholeRecord;
 
@@ -1071,6 +1076,248 @@ async fn a_real_opencode_2x_asks_and_yuzuno_answers_through_the_workspace() {
     let t = ended(fifth).await;
     println!("probe: F the turn after a decline: {} {}", t["status"], t["error"]);
     assert!(t["status"] == "interrupted" && t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"), "ended declined");
+
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
+}
+
+/// What the commands probes give a real OpenCode 2.x (T-61 slice 3): the stub
+/// provider with two models, and three commands of its configuration
+/// (2.2.5 schema/src/config/command.ts): one of the session's model, one
+/// naming a model of its own, one run as a sub-agent.
+fn commands_config(port: u16) -> String {
+    let model = json!({"name": "Fake", "capabilities": {"tools": true}});
+    json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"},
+        "models": {"fake": model, "fake2": model}}},
+        "commands": {
+            "probe61": {"template": "probe-61 command $ARGUMENTS", "description": "Probe 61"},
+            "probe61m": {"template": "probe-61 command $ARGUMENTS", "model": "stub/fake2"},
+            "probe61s": {"template": "probe-61 command $ARGUMENTS", "subagent": true},
+        }}).to_string()
+}
+
+/// The model each stub request after the first `seen` asked for, and whether its newest user message holds `text`.
+fn models_after(log: &Path, seen: usize, text: &str) -> Vec<(String, bool)> {
+    std::fs::read_to_string(log).unwrap_or_default().lines().skip(seen).map(|l| {
+        let request: Value = serde_json::from_str(l).unwrap();
+        let user = request["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "user").cloned().unwrap_or_default();
+        (request["model"].as_str().unwrap_or_default().to_owned(), user["content"].to_string().contains(text))
+    }).collect()
+}
+
+/// A real OpenCode 2.x runs commands as Core's transport reads them (T-61
+/// slice 3), against the stub provider: its list names and describes each,
+/// its configuration's among its own; a command is done at 2.x's 204, its
+/// message admitted under an ID of 2.x's own, newer than the one Core kept
+/// for it; an unknown name is a 404 and a command whose definition fails
+/// (`/goal` with no objective) a 500, each admitting nothing; a sub-agent's
+/// command admits nothing in the session, has a session made for it before
+/// the answer, and comes back later in a run of 2.x's own (timings printed).
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_runs_commands_as_cores_transport_reads_them() {
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    std::fs::write(directory.join("opencode.json"), commands_config(port)).unwrap();
+    let launch = Launch::new(program, directory.canonicalize().unwrap(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let model = server.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let held = || {
+        let (server, session) = (&server, session.clone());
+        async move {
+            let s = server.snapshot(&session, &[]).await.unwrap();
+            (s.inbox.as_array().unwrap().len(), s.messages.as_array().unwrap().len())
+        }
+    };
+
+    // 1. The list.
+    let listed = server.commands().await.unwrap();
+    println!("probe: 1 commands {:?}", listed.iter().map(|c| (&c.name, &c.description)).collect::<Vec<_>>());
+    let names: Vec<&str> = listed.iter().map(|c| c.name.as_str()).collect();
+    for name in ["probe61", "probe61m", "probe61s", "init", "review", "goal"] {
+        assert!(names.contains(&name), "{name} is listed: {names:?}");
+    }
+    assert!(!names.contains(&"schedule"), "schedule only with experimental.schedules: {names:?}");
+    assert_eq!(listed.iter().find(|c| c.name == "probe61").unwrap().description, "Probe 61");
+
+    // 4. An unknown name: a 404, in 2.x's words, and nothing admitted.
+    let before = held().await;
+    let unknown = server.command(&session, &MessageId::new(), "probe61nope", "x").unwrap().await;
+    println!("probe: 4 an unknown name: {unknown:?}");
+    assert!(matches!(unknown, CommandAnswer::Refused { code: 404, .. }), "{unknown:?}");
+    assert_eq!(held().await, before, "nothing admitted");
+
+    // 5. /goal with no objective: a 500 of what it does, and nothing admitted.
+    let goal = server.command(&session, &MessageId::new(), "goal", "").unwrap().await;
+    println!("probe: 5 /goal with no text: {goal:?}");
+    assert!(matches!(goal, CommandAnswer::Refused { code: 500, .. }), "{goal:?}");
+    assert_eq!(held().await, before, "nothing admitted");
+
+    // 2. probe61: done, its message admitted under 2.x's own ID, newer than Core's, and run.
+    let kept = MessageId::new();
+    let asked = Instant::now();
+    let done = server.command(&session, &kept, "probe61", "x y").unwrap().await;
+    println!("probe: 2 probe61 answered {done:?} after {:?}", asked.elapsed());
+    assert_eq!(done, CommandAnswer::Done);
+    let run = one_run(&mut events, &session).await;
+    println!("probe: 2 its run {:?}", types(&run));
+    let admitted = run.iter().find(|e| e["type"] == "session.inbox.enqueued").expect("its message admitted");
+    println!("probe: 2 admitted {}", admitted["data"]);
+    let native = admitted["data"]["inboxID"].as_str().unwrap();
+    assert_eq!(admitted["data"]["item"]["type"], "user", "a user's message");
+    assert!(native > kept.as_str(), "2.x's own ID, newer than Core's: {native} vs {}", kept.as_str());
+    assert!(admitted["data"]["item"]["payload"].to_string().contains("probe-61 command x y"), "the template, expanded");
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded");
+    assert!(models_after(&log, 0, "probe-61 command x y").iter().any(|(m, has)| *has && m == "fake"), "the stub saw it, on the session's model");
+
+    // 6. probe61s: a sub-agent's command.
+    let children = server.children(&session).await.unwrap().len();
+    let before = held().await;
+    let asked = Instant::now();
+    let sub = server.command(&session, &MessageId::new(), "probe61s", "w").unwrap().await;
+    println!("probe: 6 probe61s answered {sub:?} after {:?}", asked.elapsed());
+    assert_eq!(sub, CommandAnswer::Done);
+    let made = server.children(&session).await.unwrap();
+    println!("probe: 6 sub-agent sessions {}", made.len());
+    assert_eq!(made.len(), children + 1, "a session made for it before the answer");
+    assert_eq!(held().await, before, "nothing admitted in the session at the answer");
+    let (seen, back) = until_kind(&mut events, &session, &["session.execution.started"], 90).await;
+    println!("probe: 6 a run of 2.x's own started {back} after {:?}; seen {:?}", asked.elapsed(), types(&seen));
+    if let Some(item) = seen.iter().find(|e| e["type"] == "session.inbox.enqueued") {
+        println!("probe: 6 what came back {}", item["data"]);
+        assert_eq!(item["data"]["item"]["type"], "synthetic", "the sub-agent's result comes back as a synthetic message");
+    }
+    if back {
+        let run = one_run(&mut events, &session).await;
+        println!("probe: 6 that run {:?}, ended after {:?}", types(&run), asked.elapsed());
+    }
+
+    server.shutdown().await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// A real OpenCode 2.x runs Yuzuno's commands through the Workspace (T-61
+/// slice 3, D-2 (c)), against the stub provider: a command's Turn follows
+/// the message 2.x admitted for it and completes with the stub's answer; a
+/// command's own model is the session's for it, and Core makes the Agent's
+/// chosen one the session's again before the next message; a sub-agent's
+/// command ends its Turn at 2.x's answer, saying so, and what 2.x runs of it
+/// later makes no Turn; `/goal` is refused before anything is sent (D-16).
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_runs_yuzunos_commands_through_the_workspace() {
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61commands";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let work = work.canonicalize().unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    std::fs::write(work.join("opencode.json"), commands_config(port)).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port);
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":work, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let send = |client: &str, text: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":text})).unwrap());
+        async move { ws.send_message(ID, input).await }
+    };
+    let ended = |turn: String| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..600 {
+                let d = ws.store.detail(ID).unwrap();
+                if let Some(t) = d.turns.iter().find(|t| t["id"] == turn.as_str()).filter(|t| t["status"] != "inProgress") {
+                    return t.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 60 s");
+        }
+    };
+    let requests = || std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+    let d = ws.reconnect(ID).await.unwrap();
+    assert!(ws.collaboration_status(ID).await.unwrap().ready, "connected and ready: {}", d.agent.connection_state);
+    let listed = ws.opencode_commands(ID).await.unwrap();
+    let listed = serde_json::to_value(listed).unwrap();
+    println!("probe: the menu's commands {}", listed["commands"].as_array().unwrap().iter().map(|c| c["name"].clone()).collect::<Vec<_>>().len());
+    assert!(listed["commands"].as_array().unwrap().iter().all(|c| c["name"] != "goal"), "goal is not offered");
+
+    // 2. /probe61: the Turn follows 2.x's message and completes with the stub's answer.
+    let seen = requests();
+    let first = send("c1", "/probe61 x y").await.expect("sent").turn_id.unwrap();
+    let t = ended(first.clone()).await;
+    println!("probe: 2 the command's Turn {} {}", t["status"], t["_opencodeCommand"]);
+    assert_eq!(t["status"], "completed");
+    let native = t["_opencodeCommand"]["native"].as_str().expect("followed 2.x's message");
+    assert!(native > first.as_str(), "2.x's own ID, newer than the Turn's: {native}");
+    assert!(t["items"].as_array().unwrap().iter().any(|i| i["type"] == "agentMessage" && i["text"] == "Seen."), "the stub's answer: {t:#}");
+    assert!(models_after(&log, seen, "probe-61 command x y").iter().any(|(m, has)| *has && m == "fake"), "on the Agent's model");
+
+    // 3. /probe61m: its own model for it; the next message goes on the Agent's again.
+    let seen = requests();
+    let own = send("c2", "/probe61m z").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(own).await["status"], "completed");
+    let models = models_after(&log, seen, "probe-61 command z");
+    println!("probe: 3 the command's requests {models:?}");
+    assert!(models.iter().any(|(m, has)| *has && m == "fake2"), "the command's own model");
+    let seen = requests();
+    let next = send("c3", "hello").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(next).await["status"], "completed");
+    let models = models_after(&log, seen, "hello");
+    println!("probe: 3 the next message's requests {models:?}");
+    assert!(models.iter().all(|(m, _)| m == "fake") && !models.is_empty(), "the Agent's model again");
+
+    // 6. /probe61s: ended at 2.x's answer, saying so; what 2.x runs of it later makes no Turn.
+    let asked = Instant::now();
+    let sub = send("c4", "/probe61s w").await.expect("sent").turn_id.unwrap();
+    let t = ended(sub.clone()).await;
+    println!("probe: 6 the sub-agent command's Turn {} after {:?}: {}", t["status"], asked.elapsed(), t["notice"]);
+    assert_eq!(t["status"], "completed");
+    assert_eq!(t["notice"]["kind"], "command_subagent", "{t:#}");
+    let turns = ws.store.detail(ID).unwrap().turns.len();
+    let mut came = false;
+    for _ in 0..900 {
+        came = models_after(&log, 0, "<subagent").iter().any(|(_, has)| *has);
+        if came {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    println!("probe: 6 2.x gave the sub-agent's result to the session {came} after {:?}", asked.elapsed());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let d = ws.store.detail(ID).unwrap();
+    println!("probe: 6 then: {} Turns, the Agent {}", d.turns.len(), d.agent.status);
+    assert_eq!(d.turns.len(), turns, "no Turn of Yuzuno's for what 2.x ran on its own");
+
+    // 8. /goal: refused before anything is sent (D-16).
+    let seen = requests();
+    let refused = send("c5", "/goal ship it").await.expect_err("refused").to_string();
+    println!("probe: 8 /goal: {refused}");
+    assert!(refused.contains("会在之后自行开始新的工作"));
+    assert_eq!(requests(), seen, "nothing reached the model");
 
     ws.close_agent(ID).await.unwrap();
     stub.kill().ok();

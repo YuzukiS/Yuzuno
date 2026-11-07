@@ -456,6 +456,14 @@ export function messageHandoff(
 export function isBriefReminder(turn: NativeTurn, item: NativeItem, firstUser?: NativeItem) {
   return item._yuzunoSource === "brief-reminder" || (turn._yuzunoSource === "brief-reminder" && item === firstUser);
 }
+/** Why a Turn ended with no run of its own, as Core noted it (T-61 slice 3), in
+ * the language shown; null for none, or a kind this version doesn't know. */
+export function turnNotice(turn: NativeTurn, t: TurnWords = turnWords("en")): string | null {
+  const notice = turn.notice;
+  if (notice?.kind === "command_no_turn") return t.commandNoTurn(notice.detail);
+  if (notice?.kind === "command_subagent") return t.commandSubagent(notice.detail);
+  return null;
+}
 /** What started a Claude turn that is not shown as a reply to your message. */
 export function nativeTurnLabel(turn: NativeTurn, t: TurnWords = turnWords("en")) {
   if (turn._yuzunoUnmatched) return t.unmatched;
@@ -919,6 +927,7 @@ export function Turn({
   const timeOf = (item: NativeItem) => timeMarks?.get(timeMarkKey(turn.id, item.id));
   const language = useLanguage();
   const t = turnWords(language);
+  const notice = turnNotice(turn, t);
   // Reading by your inputs (T-6): each input of yours, or one no record
   // attributes, opens a part of the Turn; mail, reminders, automatic
   // continues and Claude's own inputs fold with the tools around them.
@@ -1276,6 +1285,7 @@ export function Turn({
               : errorText(turn.error)}
           </div>
         )}
+        {notice && <p className="turn-notice">{notice}</p>}
         {agent.harness === "opencode" && <CompactionGiveUp key={`${agent.id}:${turn.id}`} agentId={agent.id} turn={turn} />}
         {turn.status === "interrupted" && (
           <div className="turn-interrupted">

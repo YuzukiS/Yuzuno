@@ -455,7 +455,7 @@ async fn a_command_that_starts_nothing_ends_its_turn_saying_so() {
     let ran = receipt.turn_id.unwrap();
     let d = lab.detail();
     assert_eq!(turn(&d, &ran)["status"], "completed");
-    assert_eq!(turn(&d, &ran)["notice"]["message"], "OpenCode 执行了这条命令；它没有开始新的一轮");
+    assert_eq!(turn(&d, &ran)["notice"], json!({"kind":"command_no_turn","detail":"explain"}), "a notice the web words");
     assert_eq!(turn(&d, &ran)["error"], Value::Null, "nothing failed");
     assert_eq!(d.agent.status, "idle");
     assert_eq!(lab.journaled("opencode/commandRanNothing").len(), 1);
@@ -481,7 +481,8 @@ async fn a_sub_agent_command_ends_its_turn_at_once_and_its_requests_still_come_t
     assert_eq!(lab.sent().pop().unwrap()["body"], json!({"name":"delegate","text":"the  failing test"}));
     let d = lab.detail();
     assert_eq!(turn(&d, &ran)["status"], "completed");
-    assert!(turn(&d, &ran)["notice"]["message"].as_str().unwrap().contains("在后台的子 Agent 中执行这条命令"), "{:#}", turn(&d, &ran));
+    assert_eq!(turn(&d, &ran)["notice"], json!({"kind":"command_subagent","detail":"reviewer"}), "named by its sub-agent: {:#}", turn(&d, &ran));
+    assert_eq!(turn(&d, &ran)["error"], Value::Null, "nothing failed");
     assert_eq!(lab.journaled("opencode/commandInBackground").len(), 1);
     assert_eq!(d.agent.status, "idle");
 

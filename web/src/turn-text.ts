@@ -92,6 +92,10 @@ export const turnWords = strings({
   givingUpCompaction: "Giving up…",
   compactionRecordAwaited: "Waiting for Core's record…",
   endedAfter: ": Codex never saved this turn, so its result is unknown. Anything it already did wasn’t undone.",
+  // An OpenCode command that ended its turn with no run of its own (T-61 slice 3).
+  commandNoTurn: (command?: string) => `OpenCode ran ${command ? `/${command}` : "the command"}; it started no turn.`,
+  commandSubagent: (agent?: string) =>
+    `OpenCode runs this command in a background sub-agent${agent ? ` (${agent})` : ""}. Its result comes back to the session later, in a run of OpenCode’s own, not in this turn.`,
   unmatched: "Claude output not matched to a message",
   outside: "Sent outside Yuzuno · from Claude's saved history",
   afterTask: "Claude continued after a background task finished",
@@ -187,6 +191,8 @@ export const turnWords = strings({
   givingUpCompaction: "正在放弃…",
   compactionRecordAwaited: "等待 Core 的记录…",
   endedAfter: " 结束了它：Codex 从未保存这个 Turn，因此结果未知。它已经做过的事都没有撤销。",
+  commandNoTurn: (command) => `OpenCode 执行了${command ? ` /${command}` : "这条命令"}；它没有开始新的一轮。`,
+  commandSubagent: (agent) => `OpenCode 在后台的子 Agent${agent ? `（${agent}）` : ""}中执行这条命令；它的结果之后由 OpenCode 自己交回会话，不属于这一轮。`,
   unmatched: "未与任何消息对应的 Claude 输出",
   outside: "在 Yuzuno 之外发送 · 来自 Claude 已保存的历史",
   afterTask: "后台任务结束后，Claude 继续了",
