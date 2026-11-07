@@ -1,0 +1,425 @@
+/* The Agent row's island (AgentIsland.tsx, T-43 灵动环 v4-2): at line two's
+   right end, a ring of at most 24 px while nothing needs you (v3 D3: a small
+   ring when calm, one line with the time while something is going on), two
+   lines while it needs you or failed, and its card in the row's place. Each
+   state has a shape of its own, so its colour is never the only signal. */
+:root {
+  --island-quiet: #858d7e;
+  --island-working: #5c8550;
+  --island-ok: #587552;
+  --island-attention: #8a6a2e;
+  --island-error: #9a4a36;
+  --island-unread: #2f4a6b;
+}
+:root[data-theme="dark"] {
+  --island-quiet: #8f9c86;
+  --island-working: #a9c993;
+  --island-ok: #b1ca96;
+  --island-attention: #e2c77f;
+  --island-error: #eaa18e;
+  --island-unread: #9cc3ee;
+}
+:is(.agent-island, .agent-island-card) {
+  --tone: var(--island-quiet);
+  --words: color-mix(in srgb, var(--tone) 60%, var(--ink));
+}
+:root[data-theme="dark"] :is(.agent-island, .agent-island-card) {
+  --words: var(--tone);
+}
+:is(.agent-island, .agent-island-card)[data-state="working"] { --tone: var(--island-working); }
+:is(.agent-island, .agent-island-card):is([data-state="handed"], [data-state="done"]) { --tone: var(--island-ok); }
+:is(.agent-island, .agent-island-card)[data-state="waiting"] { --tone: var(--island-attention); }
+:is(.agent-island, .agent-island-card)[data-state="failed"] { --tone: var(--island-error); }
+
+.agent-island {
+  --h: 22px;
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  box-sizing: border-box;
+  height: var(--h);
+  min-width: var(--h);
+  max-width: 100%;
+  margin: 0 0 0 auto;
+  padding: 0;
+  border: 1.5px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--tone);
+  font: inherit;
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.app.phone .agent-island {
+  --h: 20px;
+}
+.agent-island:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 2px;
+}
+.island-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.island-word {
+  display: none;
+  color: var(--words);
+}
+.island-clock {
+  color: var(--ink);
+}
+.island-pre,
+.island-ago,
+.island-line {
+  display: none;
+}
+.agent-island[data-clock="since"] .island-clock,
+.agent-island[data-clock="total"] .island-clock {
+  color: var(--muted);
+  font-weight: 600;
+}
+/* Unread: a notch on the ring that grows a count (99+ past 99). */
+.island-unread {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 9px;
+  height: 9px;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--island-unread);
+  color: var(--paper);
+  box-shadow: 0 0 0 2px var(--cream, var(--paper));
+  font-size: 9px;
+  font-weight: 800;
+}
+.agent-island[data-unread="count"] .island-unread {
+  top: -5px;
+  right: -6px;
+  height: 13px;
+  padding: 0 3px;
+}
+/* Glyphs: working's pulsing dot, waiting's dot, handed in's double ring,
+   queued's dotted ring, offline's dashed one, idle's hollow one, a check
+   when done and a cross when failed. */
+.island-dot {
+  position: relative;
+  display: none;
+  flex: none;
+  width: 8px;
+  height: 8px;
+}
+.island-dot::before,
+.island-dot::after {
+  position: absolute;
+  box-sizing: border-box;
+}
+[data-state="working"] .island-dot::before {
+  content: "";
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  animation: island-pulse 1.2s ease-in-out infinite;
+}
+[data-state="waiting"] .island-dot::before {
+  content: "";
+  inset: 10%;
+  border-radius: 50%;
+  background: currentColor;
+}
+[data-state="handed"] .island-dot::before {
+  content: "";
+  inset: 0;
+  border-radius: 50%;
+  border: 3px double currentColor;
+}
+:is([data-state="queued"], [data-state="offline"], [data-state="idle"]) .island-dot::before {
+  content: "";
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+}
+[data-state="queued"] .island-dot::before { border-style: dotted; }
+[data-state="offline"] .island-dot::before { border-style: dashed; }
+:is([data-state="done"], [data-state="archived"]) .island-dot::after {
+  content: "";
+  top: 0;
+  left: 30%;
+  width: 38%;
+  height: 75%;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+[data-state="failed"] .island-dot::before,
+[data-state="failed"] .island-dot::after {
+  content: "";
+  top: 50%;
+  left: 50%;
+  width: 110%;
+  height: 2px;
+  background: currentColor;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+[data-state="failed"] .island-dot::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+@keyframes island-pulse {
+  50% { opacity: 0.45; }
+}
+
+/* The ring: calm states are a small ring without a time; the rest a one-line
+   island with it (and the word, except Working's dot). */
+.agent-island[data-form="ring"]:is([data-state="idle"], [data-state="offline"], [data-state="done"], [data-state="archived"]) {
+  width: var(--h);
+}
+.agent-island[data-form="ring"]:is([data-state="idle"], [data-state="offline"], [data-state="done"], [data-state="archived"]) .island-clock {
+  display: none;
+}
+.agent-island[data-form="ring"][data-state="idle"] {
+  border-color: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+.agent-island[data-form="ring"][data-state="offline"] {
+  border-style: dashed;
+}
+.agent-island[data-form="ring"]:is([data-state="done"], [data-state="archived"]) .island-dot {
+  display: block;
+}
+.agent-island[data-form="ring"][data-state="archived"] {
+  opacity: 0.75;
+}
+.agent-island[data-form="ring"]:is([data-state="working"], [data-state="handed"], [data-state="waiting"], [data-state="queued"], [data-state="failed"]) {
+  padding: 0 8px;
+  background: color-mix(in srgb, currentColor 11%, transparent);
+}
+.agent-island[data-form="ring"]:is([data-state="handed"], [data-state="waiting"], [data-state="queued"], [data-state="failed"]) .island-word {
+  display: inline;
+}
+.agent-island[data-form="ring"][data-state="working"] .island-dot {
+  display: block;
+  width: 7px;
+  height: 7px;
+}
+.agent-island[data-form="ring"][data-state="handed"] {
+  border: 3.5px double currentColor;
+  background: transparent;
+}
+.agent-island[data-form="ring"][data-state="queued"] {
+  border-style: dotted;
+  background: transparent;
+}
+
+/* Two lines: the state and its clock, then one sentence. */
+.agent-island[data-form="two"] {
+  width: 178px;
+  height: 42px;
+  padding: 4px 10px 5px;
+  border-radius: 13px;
+  align-items: stretch;
+  gap: 4px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.app.phone .agent-island[data-form="two"] {
+  width: 186px;
+  height: 40px;
+}
+.agent-island[data-form="two"] .island-head {
+  display: flex;
+  width: 100%;
+}
+.agent-island[data-form="two"] :is(.island-word, .island-dot) {
+  display: inline-block;
+}
+.agent-island[data-form="two"][data-clock="since"] .island-ago,
+.agent-island[data-form="two"][data-clock="total"] .island-pre {
+  display: inline;
+}
+.agent-island[data-form="two"] .island-line {
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-weight: 600;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+.agent-island[data-form="two"] .island-unread {
+  position: static;
+  margin-left: auto;
+  box-shadow: none;
+}
+.agent-island[data-form="two"][data-state="handed"] {
+  border: 3.5px double currentColor;
+  padding: 2px 8px 3px;
+}
+/* The card holds the island now: its cover is where the ring went. */
+.agent-island[data-form="card"] {
+  visibility: hidden;
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  border-width: 0;
+}
+
+/* The card (the Dynamic Island's music player): in the row's place, under
+   its two lines, pushing the rows below down. */
+.agent-island-card {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 10px 10px 9px;
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--ink) 4%, var(--paper));
+  color: var(--ink);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  cursor: default;
+  animation: island-card-in var(--motion-medium, 240ms) var(--ease-standard, ease) both;
+}
+@keyframes island-card-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+.island-player {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 3px 10px;
+  align-items: center;
+}
+.island-cover {
+  position: relative;
+  grid-row: span 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  border: 2px solid var(--tone);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--tone) 14%, transparent);
+  color: var(--tone);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.island-cover > .island-dot {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+.agent-island-card[data-state="working"] .island-cover::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-radius: 10px;
+  animation: island-turn 1.6s linear infinite;
+}
+@keyframes island-turn {
+  to { transform: rotate(360deg); }
+}
+.island-title,
+.island-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.island-title {
+  font-weight: 700;
+}
+.island-sub {
+  color: var(--words);
+  font-weight: 600;
+}
+.island-scrub {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  color: var(--muted);
+  font-size: calc(7.5px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+}
+.island-track {
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--tone) 22%, transparent);
+}
+.island-card-unread {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.island-card-unread > b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--island-unread);
+  color: var(--paper);
+  font-size: 9px;
+}
+.island-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+.island-actions > button {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+.island-actions > button.primary {
+  border-color: var(--tone);
+  background: var(--tone);
+  color: var(--paper);
+}
+.island-actions > button:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+
+/* Reduced motion: nothing moves; Working's dot is a still half-filled one, a
+   shape no other state uses, and the cover's arc stands still. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-island *,
+  .agent-island *::before,
+  .agent-island-card,
+  .agent-island-card *,
+  .agent-island-card *::before,
+  .agent-island-card *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  [data-state="working"] .island-dot::before {
+    background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+    border: 1.5px solid currentColor;
+  }
+}

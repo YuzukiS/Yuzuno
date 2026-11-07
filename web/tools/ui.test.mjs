@@ -5860,7 +5860,7 @@ test("an idle Agent with unfinished jobs shows Waiting · Job in the Agent list 
   let live = { agents: { a: { active: 1, unknown: 0 }, b: { active: 2, unknown: 0 } } };
   const page = await mount({ status: "working", liveJobs: () => live });
   const runtime = (id) =>
-    page.document.querySelector(`[data-agent-id="${id}"] .agent-runtime`)?.textContent;
+    page.document.querySelector(`[data-agent-id="${id}"] .agent-island`)?.getAttribute("data-status");
   const liveReads = () => page.calls.filter((c) => c.url.endsWith("/api/jobs/live")).length;
   const title = (id) => page.document.querySelector(`[data-agent-id="${id}"] .agent-select`)?.title || "";
   // A jobs change makes the app read live jobs again; wait for that read,
@@ -5902,7 +5902,7 @@ test("an idle Agent with unfinished jobs shows Waiting · Job in the Agent list 
 test("CI rail refreshes on Jobs, collaboration closure and reconnect, without reloading conversations", async () => {
   let ci={agents:{b:{running:1,discovering:0,check:0}}};
   const page=await mount({status:"working",liveCI:()=>ci});
-  const runtime=id=>page.document.querySelector(`[data-agent-id="${id}"] .agent-runtime`)?.textContent;
+  const runtime=id=>page.document.querySelector(`[data-agent-id="${id}"] .agent-island`)?.getAttribute("data-status");
   const reads=()=>page.calls.filter(c=>c.url.endsWith("/api/ci/live")).length;
   const stream=()=>page.eventSources.at(-1);
   // Core answers an opened stream with `resumed` first. Without it the

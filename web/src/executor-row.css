@@ -1,0 +1,44 @@
+/* What an executor's row adds on its second line (ExecutorRowFacts,
+   T-43 S2): the template it was made from and its PR, before what it is
+   doing. Its state, its wait and its time are its island's (v4-2,
+   agent-island.css). */
+.agent-row-state > .executor-row-facts {
+  display: flex;
+  /* It gives way to the island, the template first. */
+  flex: 0 1 auto;
+  overflow: hidden;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  color: var(--muted);
+}
+.executor-template-chip,
+.executor-pr-chip {
+  overflow: hidden;
+  max-width: 14ch;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.executor-template-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  opacity: 0.8;
+}
+.executor-pr-chip {
+  flex: none;
+}
+.executor-pr-chip[data-tone="ok"] {
+  color: var(--state-working, #5f7f52);
+}
+.executor-pr-chip[data-tone="bad"] {
+  color: var(--error-ink, var(--coral));
+}
+/* Compact Agent list (Settings → Appearance): the island only. */
+:root[data-agent-list="compact"] .executor-row-facts {
+  display: none;
+}

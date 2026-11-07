@@ -20,58 +20,24 @@
   outline: 2px solid var(--focus, #9caa76);
   outline-offset: 1px;
 }
-.agent-rail-avatar {
-  position: relative;
-  display: inline-flex;
-  flex-shrink: 0;
-}
-/* Unread updates: a thin ring around the avatar, apart from it by a small
-   gap. Drawn behind the avatar so its leaf stays on top; no dot, so it
-   never reads as one of the status dots. */
-.agent-rail-avatar.has-unread::before {
-  content: "";
-  position: absolute;
-  inset: -3.5px;
-  border: 1.5px solid color-mix(in srgb, var(--ink) 72%, transparent);
-  border-radius: 13px;
-  pointer-events: none;
-}
 .agent-select .agent-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Line two of a row: the status word leads it and keeps its whole self, the
-   activity follows after a separator and is the one that gives way. Both are
+/* Line two of a row: what the Agent is doing, and at its right end the
+   island (T-43 v4-2, agent-island.css), which says the state, its clock and
+   unread and keeps its whole self; the activity is what gives way. Both are
    always drawn -- a colour alone would be the same as saying nothing until
    the pointer arrives (T-15). */
 .agent-row-state {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 2px 6px;
   min-width: 0;
   margin-top: 5px;
-}
-.agent-row-state > .agent-runtime {
-  flex: none;
-  white-space: nowrap;
-}
-/* CI beside a Job or a check hint ("Waiting · Job / CI"), or a Turn end not
-   yet seen: that longer status takes the whole line and wraps inside it,
-   and whatever follows starts the next. Kept to one line it ran past the
-   row's edge on a 220px rail and pushed the executor badge and the activity
-   out of sight; its rules still styled it inside the name's button, which
-   it left when the row got its second line (#459 R8, P3). */
-.agent-row-state > .agent-runtime[data-combined] {
-  flex: 1 1 100%;
-  min-width: 0;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.agent-row-state > .agent-runtime[data-combined] + .agent-work-summary::before {
-  content: none;
 }
 .agent-row-state > .agent-work-summary {
   flex: 1;
@@ -82,11 +48,6 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-.agent-row-state > .agent-work-summary::before {
-  content: "·";
-  flex: none;
-  opacity: 0.55;
 }
 .agent-row-state > .agent-work-summary > * {
   overflow: hidden;
@@ -131,12 +92,12 @@
   min-width: 0;
   gap: 1px;
 }
-/* Two lines beside one avatar: the name on the first, what the Agent is and
-   is doing on the second. The avatar stands beside both rather than setting
-   the height of the first, which is what kept a row at 89px (T-15). */
+/* Two lines: the name on the first, what the Agent is doing and its island on
+   the second (T-15; no avatar since T-43 v4-2). The island's card opens under
+   them, in the row's place. */
 .agent-list .agent-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto;
   column-gap: 9px;
   row-gap: 2px;
@@ -144,29 +105,25 @@
   position: relative;
   padding: 8px 14px;
 }
-.agent-list .agent-row > .agent-rail-avatar {
-  grid-column: 1;
-  grid-row: 1 / span 2;
-  align-self: center;
-}
 .agent-list .agent-row > .agent-select.agent-row-top {
-  grid-column: 2;
+  grid-column: 1;
   grid-row: 1;
   align-items: center;
   gap: 0;
 }
 .agent-list .agent-row > .agent-row-state {
-  grid-column: 2;
+  grid-column: 1;
   grid-row: 2;
   margin-top: 0;
 }
 /* Anything else the row says spans both columns, under the two lines. */
 .agent-list .agent-row > .handoff-hint,
-.agent-list .agent-row > .agent-row-bottom {
+.agent-list .agent-row > .agent-row-bottom,
+.agent-list .agent-row > .agent-island-card {
   grid-column: 1 / -1;
 }
-/* The whole row opens the Agent, the avatar included, while the actions
-   button and the words on the second line stay reachable above it. */
+/* The whole row opens the Agent, while the actions button, the island and
+   its card stay reachable above it. */
 .agent-list .agent-row > .agent-select.agent-row-top::after {
   content: "";
   position: absolute;
@@ -265,18 +222,7 @@
   text-decoration: underline;
 }
 
-/* A Turn end this device has not shown yet (T-42), and the list's way to
-   the next thing that needs you while something does. On the row's second
-   line, where the status is now; under the name's button these matched
-   nothing once it moved (#459 R8). */
-.agent-row-state > .agent-runtime.unseen-finished {
-  color: #6f8a5c;
-  font-weight: 600;
-}
-.agent-row-state > .agent-runtime.unseen-failed {
-  color: #a96a5b;
-  font-weight: 600;
-}
+/* The list's way to the next thing that needs you while something does (T-42). */
 .next-needs-you {
   display: flex;
   align-items: center;

@@ -24,8 +24,9 @@ Every Agent has one kind:
 | **lead** | You mark it | A standing Agent you chose as a lead of its Project. |
 | **executor** | Core | An Agent made for one task by a [dispatch to a new executor](#dispatching-to-a-new-executor). |
 
-- **Where it shows.** The sidebar shows a **Lead** or **Executor** label under
-  the Agent's name. Agents see each Agent's kind in `peers_list` (`lead`,
+- **Where it shows.** The sidebar shows a **Lead** label under a lead's
+  name, and an executor's row's island its state (see
+  [An executor's lifecycle](#an-executors-lifecycle)). Agents see each Agent's kind in `peers_list` (`lead`,
   `executor` or `standing`), and can list only one kind with its `kind`
   filter.
 - **How it is stored.** Core keeps the kind in a table of its own,
@@ -454,20 +455,79 @@ first that holds names the state:
 | 4 | `closed` | 已关闭 · Closed | It is closed for another reason: closed by hand, or a failed start that Core rebuilt as a new executor. |
 | 5 | `queued` | 排队中 · Queued | It waits for an executor slot; `position` is its place, 1 first. |
 | 6 | `starting` | 启动中 · Starting | It holds a slot and its runtime is starting. |
-| 7 | `delivering` | 交付待放行 · Awaiting release | Its result is in, on its own dispatch, and its task is in review. |
+| 7 | `delivering` | 已交 · Handed in | Its result is in, on its own dispatch, and its task is in review. |
 | 8 | `running` | 运行中 · Running | Anything else: it is at work. |
 
-Each also names its task (`task.id`, `task.title`), who dispatched it
-(`dispatcher`: `user`, or an Agent with its ID and name), and since when
-(`since`). An executor at work whose task is blocked also has the blocker
-(`blocked`); its state stays what it is.
+Each also names its task (`task.id`, the key the task has now, such as
+`YN-3`, or `T-<n>` while it has none; `task.title`), who dispatched it
+(`dispatcher`: `user`, or an Agent with its ID and name), the template it
+was made from (`template`: its `id`, and its `label` as its dispatch's
+materials give it), when it was dispatched (`dispatchedAt`), and since when
+it is in its state (`since`). An executor at work whose task is blocked also
+has the blocker (`blocked`); its state stays what it is.
 
 - **The sidebar.** In each Project's list, leads come first, then the
   other Agents, then a 任务执行者 · Executors group and, folded by default,
   已归档 · Archived. With attention order, executors are ordered by: waiting
-  on you, or failed; delivered, awaiting release; running; archiving;
+  on you, or failed; handed in; running; archiving;
   queued or starting. A failed executor shows there only while its task is
-  blocked on it; a released one, under Archived and in Closed.
+  blocked on it; a released one, under Archived and in Closed. While some
+  wait for a slot, the group's heading says how many are queued and how
+  many run.
+- **Every Agent's row** has no avatar. At the right end of its second line
+  is its island (灵动环, `AgentIsland.tsx` over `agent-island.ts`), which
+  says one state, its clock and its unread count, and keeps its whole self
+  while what the Agent is doing gives way. The states are 空闲 Idle, 在做
+  Working, 已交 · 等负责人 Handed in, 等你 Needs you, 排队 Queued, 离线
+  Offline, 完成 Done, 出错 Failed and 已归档 Archived.
+  - An executor's comes from its one state, the first of these that holds:
+    released or archiving (archived, with what an archiving one waits for);
+    its start failed (failed, with why); closed (archived); queued or
+    starting (queued, with its place); a request or question waiting for
+    you (needs you: what it asks is its work summary); its Turn failed
+    (failed); offline or disconnected (offline); delivering (handed in, at
+    its PR's rounds, or working while a Turn runs: it is on its next slice);
+    otherwise working (with its task's blocker, a result to check, its PR,
+    or its unfinished Jobs and CI).
+  - A standing Agent's comes from its runtime: closed; offline; a request
+    waiting; an error, or a Turn that failed and this device hasn't shown;
+    working (compacting too, and an idle Agent's unfinished Jobs or CI); a
+    Turn ended with updates unread (done); otherwise idle.
+- **Its clock** runs while it works (an executor's time on its task since
+  its dispatch), needs you (since its oldest wait in Home's Needs you), is
+  handed in (since it handed in) and is queued. For idle, offline, done and
+  failed it says how long ago, and for an archived executor its whole time,
+  which no longer runs. A standing Agent's runtime gives no start for its
+  Turn, so its Working shows no clock.
+- **Its forms.**
+  - A small ring, at most 24 px, while it is calm (idle, offline, done,
+    archived), with the unread count as a notch on it.
+  - One line with the time, and the word except for Working's dot, while
+    something is going on.
+  - Two lines, the state with its clock and then one sentence, by itself
+    when the Agent needs you or failed. The row's work summary gives way to
+    them: what it asks is their sentence.
+  - Pressing the island opens its card in the row's place, under its two
+    lines: the ring becomes the card's cover, beside the state with its
+    clock and what the Agent is at; then the clock's line, the unread count
+    and its actions (Answer on Home for an executor's question, See result
+    for one handed in, Open, and Task for an executor's task). Opening scrolls it
+    into view and moves focus to its first action, and Escape closes it.
+  - Its size morphs in 280 ms and its cover slides in 320 ms; nothing moves
+    under reduced motion.
+  - Beside what an executor is doing are its template, when its name doesn't
+    say it, and its PR; they give way to the island, the template first. With the compact Agent list (Settings → Appearance),
+    only the island shows on line two.
+- **Its PR** comes from `GET /api/executors/live`: for each open executor
+  (not archived, its Agent not closed) whose task links a PR, the open or
+  draft one with the highest number, else the highest-numbered; its state;
+  the checks on its head as Core last read them (`unknown` when Core last
+  saw them for another commit); and the review rounds on that head, the
+  approvals since the newest that asked for changes, and whether one is
+  under way. A review whose reviewer never started is no round. The read
+  uses Core's records only and never asks GitHub; the web reads it again on
+  every collaboration change, which a GitHub refresh, a link and a review
+  each announce. Two rounds count as approved, the standard flow.
 - **The task's card** shows its executor and its state, with its place
   while it is queued.
 - **Home's Needs you** lists, for an executor you dispatched, a result

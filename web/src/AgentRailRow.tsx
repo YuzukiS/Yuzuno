@@ -1,15 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { RequestSummary } from "./MessageContent";
 import { Bell } from "lucide-react";
 import type { AgentActionHandlers } from "./agent-actions";
 import { AgentActionsMenu, type AgentActionsMenuHandle, type MenuPoint } from "./AgentActionsMenu";
-import { Avatar } from "./components";
 import type { Agent, WorkSummary } from "./types";
 import { useAgentJobs } from "./live-jobs";
 import { useAgentCI, waitingSummary } from "./live-ci";
 import { useHandoffDrop } from "./SendToAgent";
 import { strings, useLanguage, type Language } from "./i18n";
-import { lifecycleText, stateDetail, stateLabel } from "./executor-lifecycle";
+import { lifecycleText, stateDetail } from "./executor-lifecycle";
+import { executorView } from "./executor-display";
+import { ExecutorRowFacts, stateText } from "./ExecutorRowState";
+import { AgentIsland, IslandCard, slide, type IslandForm } from "./AgentIsland";
+import { islandView, type IslandAction } from "./agent-island";
+import { useExecutorPR } from "./live-executors";
 import "./reading.css";
 
 export function workingFolder(cwd: string): string {
@@ -134,7 +138,11 @@ export function AgentRailRow({
   statusLabel,
   idle = false,
   unseen = null,
+  waitingSince = null,
+  compacting = false,
   onSelect,
+  onOpenHome,
+  onOpenTask,
   actions,
 }: {
   agent: Agent;
@@ -145,7 +153,14 @@ export function AgentRailRow({
   /** Only an Agent shown as plainly idle can show its unfinished Job/CI work; any
    * other state (working, waiting for you, compacting, closed…) comes first. */
   idle?: boolean;
+  /** Its oldest wait in Home's Needs you (ms): how long it has waited for you. */
+  waitingSince?: number | null;
+  /** It is the open Agent and it is compacting. */
+  compacting?: boolean;
   onSelect: () => void;
+  /** The island card's ways out (T-43 v4-2): Home, to answer what it asks there; its task. */
+  onOpenHome?: () => void;
+  onOpenTask?: (taskId: string) => void;
   /** Its actions (T-184): a "…" button, a right-click or a long-press. */
   actions?: AgentActionHandlers;
 }) {
@@ -170,13 +185,52 @@ export function AgentRailRow({
   // (T-36 S3); the button's label is its name only.
   const lifecycle = agent.kind === "executor" && agent.executor ? agent.executor : null;
   const states = lifecycleText(language);
+  // An executor's one state (T-43 S2): its row's second line says it, in
+  // place of a runtime status and a lifecycle badge, and says it once.
+  const pr = useExecutorPR(agent.id);
+  const executor = lifecycle ? executorView({ agent, lifecycle, unseen, waiting: waiting?.label ?? null, pr, waitingSince }) : null;
+  const shown = executor ? stateText(executor, language) : label;
+  // Its template beside its state when its name doesn't already say it; one
+  // made from no template (an empty id) says Executor there.
+  const made = lifecycle?.template ? (lifecycle.template.id === "" ? t.executor : lifecycle.template.label || null) : null;
+  const template = made && !agent.name.includes(made) ? made : null;
   const kind = agent.kind === "lead" ? { name: t.lead, title: t.leadTitle }
     : agent.kind === "executor"
-      ? lifecycle
-        ? { name: `${t.executor} · ${stateLabel(lifecycle, states)}`, title: [t.executorTitle, ...stateDetail(lifecycle, states)].join("\n") }
-        : { name: t.executor, title: t.executorTitle }
+      ? {
+          name: t.executor,
+          title: [t.executorTitle, ...(lifecycle?.task ? [`${lifecycle.task.id} · ${lifecycle.task.title}`] : []),
+            ...(lifecycle ? stateDetail(lifecycle, states) : [])].join("\n"),
+        }
       : null;
-  const description = t.description(label, waiting?.detail ?? null, machine, agent.unreadCount);
+  const description = t.description(shown, executor ? null : waiting?.detail ?? null, machine, agent.unreadCount);
+  // Its island (T-43, 灵动环 v4-2): at line two's right end, two lines by
+  // itself while it needs you or failed, a card in the row's place when
+  // pressed. The ring slides to the card's cover and back (320 ms).
+  const island = islandView({ agent, executor, lifecycle, unseen, waiting: waiting?.label ?? null, statusLabel: label, compacting, waitingSince });
+  const [open, setOpen] = useState(false);
+  const islandButton = useRef<HTMLButtonElement>(null);
+  const cover = useRef<HTMLDivElement>(null);
+  const from = useRef<DOMRect | null>(null);
+  const refocus = useRef(false);
+  const form: IslandForm = open ? "card" : island.auto ? "two" : "ring";
+  const toggle = (next = !open) => {
+    from.current = (open ? cover.current : islandButton.current)?.getBoundingClientRect() ?? null;
+    setOpen(next);
+  };
+  useLayoutEffect(() => {
+    const was = from.current;
+    from.current = null;
+    slide(was, open ? cover.current : islandButton.current);
+    // Closed from the keyboard: focus goes back to the island, shown again.
+    if (!open && refocus.current) islandButton.current?.focus({ preventScroll: true });
+    refocus.current = false;
+  }, [open]);
+  const act = (action: IslandAction) => {
+    toggle(false);
+    if (action === "open") onSelect();
+    else if (action === "home") onOpenHome?.();
+    else if (island.task) onOpenTask?.(island.task);
+  };
   return (
     <article
       className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}${press.holding ? " is-holding" : ""}`}
@@ -200,16 +254,6 @@ export function AgentRailRow({
         },
       })}
     >
-      {/* Beside both lines, so it is the row's own child rather than the
-          name's. Unread updates ring it, never a dot: dots beside the status
-          say what the Agent is doing. The button below covers the whole row,
-          so pressing the avatar still opens the Agent. */}
-      <span
-        className={`agent-rail-avatar${agent.unreadCount > 0 ? " has-unread" : ""}`}
-        aria-hidden="true"
-      >
-        <Avatar agent={agent} />
-      </span>
       <button
         ref={select}
         className="agent-select agent-row-top"
@@ -217,11 +261,11 @@ export function AgentRailRow({
         aria-label={t.open(agent.name)}
         aria-description={kind ? `${kind.name} · ${description}` : description}
         aria-current={selected ? "true" : undefined}
-        title={`${t.title(agent.name, label, waiting?.detail ?? null, agent.unreadCount)}${kind ? ` · ${kind.name}` : ""}`}
+        title={`${t.title(agent.name, shown, executor ? null : waiting?.detail ?? null, agent.unreadCount)}${kind ? ` · ${kind.name}` : ""}`}
       >
         <span className="agent-identity">
           <span className="agent-name">{agent.name}</span>
-          {kind && !lifecycle && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
+          {kind && !executor && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
         </span>
       </button>
       {/* After the card's own target in focus order; drawn at its top right. */}
@@ -230,31 +274,13 @@ export function AgentRailRow({
           is doing. The status word is never shortened -- it is how the list
           is read -- and the activity after it is what gives way. The name has
           line one to itself, since a rail this narrow cannot hold both (T-15).
-          The whole card opens the agent; nothing inside is a separate link. */}
+          The state, its clock and unread are the island's at its right end
+          (T-43 v4-2); an executor adds its template and PR before what it is
+          doing. The whole row opens the agent; the island opens its card. */}
       <div className="agent-row-state">
-        <span
-          className={`agent-runtime runtime-${agent.status}${unseen ? ` unseen-${unseen}` : ""}`}
-          data-jobs={waiting ? jobs?.active : undefined}
-          data-ci={
-            waiting && ci
-              ? ci.running + ci.discovering + (ci.waitingForRun ?? 0) + ci.check
-              : undefined
-          }
-          data-combined={combined || !!unseen || undefined}
-        >
-          <span className={`status-dot ${agent.status}`} aria-hidden="true" />
-          {label}
-        </span>
-        {/* An executor's kind and state take their own line under its name
-            and status (T-36 S3): beside them the rail is too narrow. This row
-            already has a second line of its own (T-15), so the badge joins it
-            here rather than adding a third. */}
-        {kind && lifecycle && (
-          <span className="agent-kind-badge agent-state-badge" data-kind={agent.kind} data-state={lifecycle.state} title={kind.title}>
-            {kind.name}
-          </span>
-        )}
-        {summary && (
+        {executor && <ExecutorRowFacts view={executor} template={template} title={kind?.title} />}
+        {/* Beside two lines the island's second line says it: the summary gives way. */}
+        {summary && form !== "two" && (
           <div
             className={`agent-work-summary kind-${summary.kind}`}
             data-source-kind={summary.kind}
@@ -268,13 +294,20 @@ export function AgentRailRow({
             <RequestSummary agentId={agent.id} summary={summary} />
           </div>
         )}
+        <AgentIsland ref={islandButton} view={island} form={form} name={agent.name} onToggle={() => toggle()}
+          detail={executor ? kind?.title : undefined}
+          data-status={label}
+          data-jobs={waiting ? jobs?.active : undefined}
+          data-ci={waiting && ci ? ci.running + ci.discovering + (ci.waitingForRun ?? 0) + ci.check : undefined}
+          data-combined={combined || !!unseen || undefined} />
       </div>
+      {open && <IslandCard ref={cover} view={island} name={agent.name} onAction={act} onClose={() => { refocus.current = true; toggle(false); }} />}
       {drop.state && (
         <p className="handoff-hint" role="status">
           {drop.state === "accept" ? t.drop(agent.name) : drop.refusal}
         </p>
       )}
-      {agent.pendingCount > 0 && (
+      {agent.pendingCount > 0 && island.state !== "waiting" && (
         <div className="agent-row-bottom">
           <span className="needs-you">
             <Bell size={10} />
