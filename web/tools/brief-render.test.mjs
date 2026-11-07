@@ -88,6 +88,8 @@ function mount(respond) {
   const { window } = dom;
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+  // dagre (YN-16 S3) clones with structuredClone, which every browser Yuzuno supports has and a jsdom window lacks.
+  window.structuredClone ??= (value) => structuredClone(value);
   window.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), method: init.method || "GET", headers: init.headers || {} });
     const { status = 200, body = {}, text } = (await respond?.(String(url))) ?? {};

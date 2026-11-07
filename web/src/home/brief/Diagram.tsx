@@ -71,9 +71,14 @@ export function BriefDiagram({ title, caption, direction = "down", select, nodes
   }, [dagre]);
   const laid = useMemo(() => {
     if (!dagre) return null;
-    const first = layoutDiagram(dagre, { nodes, edges }, direction);
-    // Left to right where it fits; where the window is too narrow, top to bottom.
-    return direction === "right" && room > 0 && first.width > room ? layoutDiagram(dagre, { nodes, edges }, "down") : first;
+    try {
+      const first = layoutDiagram(dagre, { nodes, edges }, direction);
+      // Left to right where it fits; where the window is too narrow, top to bottom.
+      return direction === "right" && room > 0 && first.width > room ? layoutDiagram(dagre, { nodes, edges }, "down") : first;
+    } catch {
+      // Said in its place; the connections stay readable in words below.
+      return "failed" as const;
+    }
   }, [dagre, nodes, edges, direction, room]);
 
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -93,9 +98,9 @@ export function BriefDiagram({ title, caption, direction = "down", select, nodes
         </h4>
       )}
       <div className="brief-diagram-frame" ref={frame}>
-        {!laid ? (
+        {!laid || laid === "failed" ? (
           <p className="brief-diagram-loading" role="status">
-            {failed ? t.diagramFailed : t.diagramLoading}
+            {failed || laid === "failed" ? t.diagramFailed : t.diagramLoading}
           </p>
         ) : (
           <svg
