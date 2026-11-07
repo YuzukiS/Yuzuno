@@ -1244,6 +1244,32 @@ async fn a_message_to_a_2x_agent_goes_once_its_opencode_lists_the_workspace_mcp_
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// A message adds and checks the Workspace MCP with OpenCode once (S1 R1
+/// fec92b0a): its admission adds it and lists it, and its send stands on
+/// what that admission confirmed on the same connection, so a server still
+/// connecting is never waited for twice. A message added to the running Turn
+/// too.
+#[tokio::test]
+async fn a_message_adds_and_checks_the_workspace_mcp_once() {
+    let lab = lab(&[], true).await;
+    let session = lab.session();
+    let lists = || lab.calls().iter().filter(|c| c["path"] == "/api/mcp").count();
+    let (added, listed) = (lab.mcp_adds().len(), lists());
+    let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.mcp_adds().len() - added, 1, "one add-and-check per message");
+    assert_eq!(lists() - listed, 2, "listed once before the add and once after it");
+    lab.until("the run", |d| d.agent.status == "working").await;
+
+    let (added, listed) = (lab.mcp_adds().len(), lists());
+    let joined = lab.add("c2", "and this", &first).await.unwrap();
+    assert_eq!((joined.status.as_str(), joined.turn_id.as_deref()), ("accepted", Some(first.as_str())), "{joined:?}");
+    assert_eq!(lab.mcp_adds().len() - added, 1, "one add-and-check for a message added to the running Turn");
+    assert_eq!(lists() - listed, 2);
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("the end", |d| d.agent.status == "idle").await;
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 /// A Workspace MCP server OpenCode lists as still connecting is waited for
 /// (2.x may answer the add of a folder's first server before it has
 /// connected it), and counts only once listed connected; one that does not

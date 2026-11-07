@@ -129,6 +129,22 @@ const MCP_SETTLE: Duration = Duration::from_secs(opencode::MCP_STARTUP.as_secs()
 /// them (probe diag 4523e39b: "No tool named yuzuno_peers_list"). 2.x has no
 /// route to ask whether it has; five times that is waited instead.
 const MCP_TOOLS_SETTLE: Duration = Duration::from_millis(500);
+/// How long a message's admission finding the Workspace MCP ready stands for
+/// its send (S1 R1 fec92b0a): the two run one after the other, and 2.x drops
+/// a folder's servers only after an hour idle.
+const MCP_FRESH: Duration = Duration::from_secs(10);
+
+/// Why the Workspace MCP is checked (`opencode_mcp`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum McpCheck {
+    /// Before a message's receipt: always asked of OpenCode.
+    Admit,
+    /// Before the message goes: what its admission confirmed on this
+    /// connection within MCP_FRESH stands; else asked.
+    Send,
+    /// A reconnect of a live connection: asked, with a failed server tried again.
+    Retry,
+}
 
 /// An Agent's OpenCode process, started but not yet attached (T-10 Fork),
 /// with where its snapshots are known to be kept, or why not.
@@ -162,6 +178,9 @@ pub(crate) struct Connection {
     /// (T-32 slice 4b, R3 b2b46a5f of #621): 2.x keeps its attempts in
     /// memory, so an attempt is this process's alone.
     pub logins: Arc<std::sync::Mutex<HashSet<String>>>,
+    /// When a message's admission last found the Workspace MCP ready on this
+    /// connection (`opencode_mcp`): its send stands on that within MCP_FRESH.
+    mcp_confirmed: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -208,7 +227,7 @@ impl Connection {
     fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>,
         files: std::result::Result<crate::opencode_revert_files::Started, String>) -> Self {
         Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default(),
-            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default() }
+            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default(), mcp_confirmed: Arc::default() }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.
@@ -691,7 +710,7 @@ impl Workspace {
             // again on the same process and a failed one tried again (T-61
             // slice 1); one just started reported it as it attached. Its
             // readiness shows on the record; a reconnect is not refused for it.
-            Ok(c) if live => { let _ = self.opencode_mcp(id, &agent, &c, true).await; }
+            Ok(c) if live => { let _ = self.opencode_mcp(id, &agent, &c, McpCheck::Retry).await; }
             Ok(_) => {}
             Err(error) => {
                 self.failed(id, &error).await;
@@ -871,20 +890,32 @@ impl Workspace {
         Ok(c)
     }
 
-    /// The connection's event stream, read until its generation is gone. It
-    /// holds neither the Workspace nor the server, so dropping the Workspace
-    /// ends OpenCode and then this.
-    /// Before a message, and on a reconnect (`retry`), with Workspace MCP on:
+    /// Before a message (`check`), and on a reconnect, with Workspace MCP on:
     /// the Agent's Workspace MCP handed to its OpenCode again
     /// (`workspace_mcp`), so that one OpenCode dropped with the Agent's folder
     /// is back before the message goes (T-61 slice 1); readiness as OpenCode
-    /// then reports it; and the message refused unless it is ready.
-    async fn opencode_mcp(&self, id: &str, agent: &crate::model::Agent, c: &Connection, retry: bool) -> Result<()> {
-        if let Some(config) = self.collaboration_http_config(agent).await? {
-            let state = workspace_mcp(&c.server, &config, retry).await;
-            self.opencode_mcp_reported(id, c.generation, state).await;
+    /// then reports it; and the message refused unless it is ready. A
+    /// message's admission asks OpenCode; its send then does not ask again
+    /// when that admission confirmed it on this connection within MCP_FRESH
+    /// (S1 R1 fec92b0a), which a new connection never inherits.
+    async fn opencode_mcp(&self, id: &str, agent: &crate::model::Agent, c: &Connection, check: McpCheck) -> Result<()> {
+        let fresh = c.mcp_confirmed.lock().unwrap().is_some_and(|at| at.elapsed() < MCP_FRESH);
+        if check != McpCheck::Send || !fresh {
+            if let Some(config) = self.collaboration_http_config(agent).await? {
+                let state = workspace_mcp(&c.server, &config, check == McpCheck::Retry).await;
+                self.opencode_mcp_reported(id, c.generation, state).await;
+            }
         }
-        self.require_collaboration(id).await
+        let ready = self.require_collaboration(id).await;
+        {
+            let mut confirmed = c.mcp_confirmed.lock().unwrap();
+            match (&ready, check) {
+                (Ok(()), McpCheck::Admit) => *confirmed = Some(Instant::now()),
+                (Ok(()), _) => {}
+                (Err(_), _) => *confirmed = None,
+            }
+        }
+        ready
     }
 
     /// Readiness of connection `generation`, as its OpenCode reported the
@@ -898,6 +929,9 @@ impl Workspace {
         }
     }
 
+    /// The connection's event stream, read until its generation is gone. It
+    /// holds neither the Workspace nor the server, so dropping the Workspace
+    /// ends OpenCode and then this.
     fn opencode_watch(self: &Arc<Self>, id: &str, generation: u64, mut events: Events, server: Weak<Server>) {
         let (ws, id) = (Arc::downgrade(self), id.to_owned());
         tokio::spawn(async move {
@@ -1182,7 +1216,7 @@ impl Workspace {
             takes_images(model.as_ref())?;
             ensure!(listed_command(&c.server, &input.text).await?.is_none(), IMAGES_WITH_COMMAND);
         }
-        self.opencode_mcp(id, &detail.agent, &c, false).await
+        self.opencode_mcp(id, &detail.agent, &c, McpCheck::Admit).await
     }
 
     /// Before the receipt of a message added to the running Turn `expected`
@@ -1199,7 +1233,7 @@ impl Workspace {
             takes_images(model.as_ref())?;
         }
         ensure!(listed_command(&c.server, &input.text).await?.is_none(), COMMAND_WHILE_RUNNING);
-        self.opencode_mcp(id, &detail.agent, &c, false).await
+        self.opencode_mcp(id, &detail.agent, &c, McpCheck::Admit).await
     }
 
     /// Under the Agent gate, before a message: what a restart of Core leaves
@@ -1282,7 +1316,7 @@ impl Workspace {
         }
         joinable(&d, expected)?;
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 连接已断开；补充消息未发送，草稿保留")?;
-        self.opencode_mcp(id, &d.agent, &c, false).await?;
+        self.opencode_mcp(id, &d.agent, &c, McpCheck::Send).await?;
         let model = chosen(&c.server, &d.agent.model).await?;
         let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
         ensure!(listed_command(&c.server, text).await?.is_none(), COMMAND_WHILE_RUNNING);
@@ -1433,7 +1467,7 @@ impl Workspace {
         }
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；这条消息没有发送");
         let c = self.opencode_ensure(id).await?;
-        self.opencode_mcp(id, &d.agent, &c, false).await?;
+        self.opencode_mcp(id, &d.agent, &c, McpCheck::Send).await?;
         // The model and variant it goes with, as OpenCode lists them now (or its own).
         let model = chosen(&c.server, &d.agent.model).await?;
         let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
