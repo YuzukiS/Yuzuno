@@ -25,11 +25,14 @@ const runs = [
   { name: "zh-Hans-390", locale: "zh-CN", viewport: { width: 390, height: 844 } },
 ];
 
+/** The run in progress, for a screenshot of where it stopped. */
+let current = null;
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 try {
   for (const run of runs) {
     const context = await browser.newContext({ viewport: run.viewport, locale: run.locale, reducedMotion: "reduce" });
     const page = await context.newPage();
+    current = { page, name: run.name };
     const minted = [];
     page.on("response", async (response) => {
       if (response.url().endsWith("/api/previews") && response.request().method() === "POST") {
@@ -42,8 +45,12 @@ try {
     const card = page.locator(`[id="home-section-${lab.projectId}-${lab.section}"]`);
     await card.waitFor({ timeout: 20_000 });
     await card.scrollIntoViewIfNeeded();
+    // A card on Home is its summary; its report page shows the section whole.
+    await card.locator(".home-report-open").first().click();
+    const report = page.locator(".home-report");
+    await report.waitFor({ timeout: 20_000 });
     // The attachment's main open button; its ▾ beside it shares the class.
-    await card.locator(".brief-attachment .open-choice-split .primary-button").first().click();
+    await report.locator(".brief-attachment .open-choice-split .primary-button").first().click({ timeout: 20_000 });
     // The page's last script, at the very end of the file, ran.
     const end = page.frameLocator("iframe.portal-frame").locator("#end");
     await end.filter({ hasText: "ran to the end" }).waitFor({ timeout: 60_000 });
@@ -68,6 +75,10 @@ try {
   report.failed = String(error?.stack || error);
   console.error(report.failed);
   process.exitCode = 1;
+  if (current) {
+    const shot = `failed-${current.name}.png`;
+    await current.page.screenshot({ path: join(out, shot), fullPage: true }).then(() => report.screenshots.push(shot), () => {});
+  }
 } finally {
   await browser.close();
   await writeFile(join(out, "report.json"), JSON.stringify(report, null, 1));
