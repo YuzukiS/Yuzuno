@@ -233,12 +233,12 @@ fn a_whole_read_ends_a_compaction_2x_has_no_record_of_and_one_1193_was_asked_for
     settle_compactions(&mut moved, &[], [&then, &first], true, 200);
     assert_eq!(moved.turns[2]["_opencodeCompact"]["state"], "pending", "in the inbox as read after the messages too");
     settle_compactions(&mut d, &[], [&first, &then], true, 200);
-    let (old, lost, waiting) = (&d.turns[0], &d.turns[1], &d.turns[2]);
     for (n, why) in [(3, "a read begun before 2.x's answer to it"), (4, "no answer to it yet")] {
         let t = &d.turns[n];
         assert_eq!((&t["status"], &t["_opencodeCompact"]["state"]), (&json!("inProgress"), &json!("pending")), "{why}: {t:#}");
     }
     d.turns.truncate(3);
+    let (old, lost, waiting) = (&d.turns[0], &d.turns[1], &d.turns[2]);
     assert_eq!((&old["status"], &old["_opencodeCompact"]["state"]), (&json!("outcomeUnknown"), &json!("lost")), "1.19.3's: {old:#}");
     assert!(lost["status"] == "failed" && lost["_opencodeCompact"]["state"] == "absent"
         && lost["error"]["message"].as_str().unwrap_or_default().contains("它没有执行"), "no record at idle: it did not run: {lost:#}");
