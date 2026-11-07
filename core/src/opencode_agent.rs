@@ -129,6 +129,22 @@ const MCP_SETTLE: Duration = Duration::from_secs(opencode::MCP_STARTUP.as_secs()
 /// them (probe diag 4523e39b: "No tool named yuzuno_peers_list"). 2.x has no
 /// route to ask whether it has; five times that is waited instead.
 const MCP_TOOLS_SETTLE: Duration = Duration::from_millis(500);
+/// How long a message's admission finding the Workspace MCP ready stands for
+/// its send (S1 R1 fec92b0a): the two run one after the other, and 2.x drops
+/// a folder's servers only after an hour idle.
+const MCP_FRESH: Duration = Duration::from_secs(10);
+
+/// Why the Workspace MCP is checked (`opencode_mcp`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum McpCheck {
+    /// Before a message's receipt: always asked of OpenCode.
+    Admit,
+    /// Before the message goes: what its admission confirmed on this
+    /// connection within MCP_FRESH stands; else asked.
+    Send,
+    /// A reconnect of a live connection: asked, with a failed server tried again.
+    Retry,
+}
 
 /// An Agent's OpenCode process, started but not yet attached (T-10 Fork),
 /// with where its snapshots are known to be kept, or why not.
@@ -162,6 +178,9 @@ pub(crate) struct Connection {
     /// (T-32 slice 4b, R3 b2b46a5f of #621): 2.x keeps its attempts in
     /// memory, so an attempt is this process's alone.
     pub logins: Arc<std::sync::Mutex<HashSet<String>>>,
+    /// When a message's admission last found the Workspace MCP ready on this
+    /// connection (`opencode_mcp`): its send stands on that within MCP_FRESH.
+    mcp_confirmed: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -208,7 +227,7 @@ impl Connection {
     fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>,
         files: std::result::Result<crate::opencode_revert_files::Started, String>) -> Self {
         Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default(),
-            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default() }
+            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default(), mcp_confirmed: Arc::default() }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.
@@ -691,7 +710,7 @@ impl Workspace {
             // again on the same process and a failed one tried again (T-61
             // slice 1); one just started reported it as it attached. Its
             // readiness shows on the record; a reconnect is not refused for it.
-            Ok(c) if live => { let _ = self.opencode_mcp(id, &agent, &c, true).await; }
+            Ok(c) if live => { let _ = self.opencode_mcp(id, &agent, &c, McpCheck::Retry).await; }
             Ok(_) => {}
             Err(error) => {
                 self.failed(id, &error).await;
@@ -871,20 +890,32 @@ impl Workspace {
         Ok(c)
     }
 
-    /// The connection's event stream, read until its generation is gone. It
-    /// holds neither the Workspace nor the server, so dropping the Workspace
-    /// ends OpenCode and then this.
-    /// Before a message, and on a reconnect (`retry`), with Workspace MCP on:
+    /// Before a message (`check`), and on a reconnect, with Workspace MCP on:
     /// the Agent's Workspace MCP handed to its OpenCode again
     /// (`workspace_mcp`), so that one OpenCode dropped with the Agent's folder
     /// is back before the message goes (T-61 slice 1); readiness as OpenCode
-    /// then reports it; and the message refused unless it is ready.
-    async fn opencode_mcp(&self, id: &str, agent: &crate::model::Agent, c: &Connection, retry: bool) -> Result<()> {
-        if let Some(config) = self.collaboration_http_config(agent).await? {
-            let state = workspace_mcp(&c.server, &config, retry).await;
-            self.opencode_mcp_reported(id, c.generation, state).await;
+    /// then reports it; and the message refused unless it is ready. A
+    /// message's admission asks OpenCode; its send then does not ask again
+    /// when that admission confirmed it on this connection within MCP_FRESH
+    /// (S1 R1 fec92b0a), which a new connection never inherits.
+    async fn opencode_mcp(&self, id: &str, agent: &crate::model::Agent, c: &Connection, check: McpCheck) -> Result<()> {
+        let fresh = c.mcp_confirmed.lock().unwrap().is_some_and(|at| at.elapsed() < MCP_FRESH);
+        if check != McpCheck::Send || !fresh {
+            if let Some(config) = self.collaboration_http_config(agent).await? {
+                let state = workspace_mcp(&c.server, &config, check == McpCheck::Retry).await;
+                self.opencode_mcp_reported(id, c.generation, state).await;
+            }
         }
-        self.require_collaboration(id).await
+        let ready = self.require_collaboration(id).await;
+        {
+            let mut confirmed = c.mcp_confirmed.lock().unwrap();
+            match (&ready, check) {
+                (Ok(()), McpCheck::Admit) => *confirmed = Some(Instant::now()),
+                (Ok(()), _) => {}
+                (Err(_), _) => *confirmed = None,
+            }
+        }
+        ready
     }
 
     /// Readiness of connection `generation`, as its OpenCode reported the
@@ -898,6 +929,9 @@ impl Workspace {
         }
     }
 
+    /// The connection's event stream, read until its generation is gone. It
+    /// holds neither the Workspace nor the server, so dropping the Workspace
+    /// ends OpenCode and then this.
     fn opencode_watch(self: &Arc<Self>, id: &str, generation: u64, mut events: Events, server: Weak<Server>) {
         let (ws, id) = (Arc::downgrade(self), id.to_owned());
         tokio::spawn(async move {
@@ -1070,10 +1104,16 @@ impl Workspace {
             return;
         }
         let journal = format!("opencode/{kind}");
-        let kept = match &read[..] {
+        let mut kept = match &read[..] {
             [gathered] if streamed => journaled(gathered),
             _ => journaled(event),
         };
+        // What a form other than a question was answered with is not kept (T-61 slice 2, D-11 (a)).
+        if kind == "form.replied" && !read.iter().any(|one| one["data"]["question"] == true) {
+            if let Some(data) = kept.to_mut()["data"].as_object_mut() {
+                data.remove("answer");
+            }
+        }
         if session != c.session {
             // A sub-agent's requests are the Agent's to answer; nothing else
             // of it changes the record. Any other session's is not the Agent's.
@@ -1176,7 +1216,7 @@ impl Workspace {
             takes_images(model.as_ref())?;
             ensure!(listed_command(&c.server, &input.text).await?.is_none(), IMAGES_WITH_COMMAND);
         }
-        self.opencode_mcp(id, &detail.agent, &c, false).await
+        self.opencode_mcp(id, &detail.agent, &c, McpCheck::Admit).await
     }
 
     /// Before the receipt of a message added to the running Turn `expected`
@@ -1193,7 +1233,7 @@ impl Workspace {
             takes_images(model.as_ref())?;
         }
         ensure!(listed_command(&c.server, &input.text).await?.is_none(), COMMAND_WHILE_RUNNING);
-        self.opencode_mcp(id, &detail.agent, &c, false).await
+        self.opencode_mcp(id, &detail.agent, &c, McpCheck::Admit).await
     }
 
     /// Under the Agent gate, before a message: what a restart of Core leaves
@@ -1276,7 +1316,7 @@ impl Workspace {
         }
         joinable(&d, expected)?;
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 连接已断开；补充消息未发送，草稿保留")?;
-        self.opencode_mcp(id, &d.agent, &c, false).await?;
+        self.opencode_mcp(id, &d.agent, &c, McpCheck::Send).await?;
         let model = chosen(&c.server, &d.agent.model).await?;
         let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
         ensure!(listed_command(&c.server, text).await?.is_none(), COMMAND_WHILE_RUNNING);
@@ -1427,7 +1467,7 @@ impl Workspace {
         }
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；这条消息没有发送");
         let c = self.opencode_ensure(id).await?;
-        self.opencode_mcp(id, &d.agent, &c, false).await?;
+        self.opencode_mcp(id, &d.agent, &c, McpCheck::Send).await?;
         // The model and variant it goes with, as OpenCode lists them now (or its own).
         let model = chosen(&c.server, &d.agent.model).await?;
         let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
@@ -1862,9 +1902,6 @@ impl Workspace {
             let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
             ensure!(p.params["_runtimeGeneration"] == c.generation && c.owns(asked),
                 "这个请求属于已经结束的 OpenCode 连接；不会把回答发给新的进程");
-            if let Some(not_yet) = p.params["_opencodeNotYet"].as_str() {
-                bail!("{not_yet}");
-            }
             let answer = answer(&p, &reply)?;
             store.update_meta(&agent, "request/replied", &json!({"requestId":request}), |m| {
                 if let Some(p) = m.pending.iter_mut().find(|p| p.id == request) {
@@ -1875,13 +1912,44 @@ impl Workspace {
         }).await?;
         let Some((p, c, answer)) = checked else { return Ok(false) };
         let native = p.params["id"].as_str().unwrap_or_default();
-        // OpenCode checks it is pending in that same session before answering.
+        // 2.x answers only a request pending in the session named (404 otherwise, answering nothing).
         let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
+        // A refusal ends the run as a shutdown does (D-7): marked first, as the end can come before the answer to it.
+        if answer.declines() {
+            c.cursor.lock().unwrap().declining(asked, true);
+        }
         let sent = match &answer {
             Answer::Permission(reply) => c.server.reply_permission(asked, native, *reply).await,
-            Answer::Question(answers) => c.server.reply_question(asked, native, answers).await,
-            Answer::RejectQuestion => c.server.reject_question(asked, native).await,
+            Answer::Form(value) => c.server.reply_form(asked, native, value).await,
+            Answer::Decline => c.server.cancel_form(asked, native).await,
         };
+        if sent.is_err() && answer.declines() {
+            c.cursor.lock().unwrap().declining(asked, false);
+        }
+        let request = request_id.to_owned();
+        // What 2.x refused: an answer it can't take leaves the request
+        // pending and answerable (D-9 (a)); one it no longer holds is gone.
+        let refused = sent.as_ref().err().and_then(|e| e.downcast_ref::<opencode::RequestRefused>()).map(|r| match r {
+            opencode::RequestRefused::Invalid { .. } => "invalid",
+            opencode::RequestRefused::Gone { .. } => "gone",
+            opencode::RequestRefused::Other { .. } => "other",
+        });
+        if let (Err(error), Some(kind @ ("invalid" | "gone"))) = (&sent, refused) {
+            let message = error.to_string();
+            let journal = if kind == "invalid" { "opencode/requestAnswerRefused" } else { "opencode/requestGone" };
+            self.record_update(id, journal, json!({"requestId":request_id,"error":message}), Sel::Open, move |d| {
+                if kind == "invalid" {
+                    if let Some(p) = d.pending.iter_mut().find(|p| p.id == request) {
+                        p.params["_responseSent"] = false.into();
+                    }
+                } else {
+                    d.pending.retain(|p| p.id != request);
+                }
+                refresh_status(d);
+            }).await?;
+            self.changed(id);
+            return Err(sent.unwrap_err());
+        }
         let request = request_id.to_owned();
         match sent {
             Ok(()) => {
@@ -1978,9 +2046,6 @@ async fn stop(server: Arc<Server>) -> Result<()> {
     }
 }
 
-/// The remote MCP server OpenCode is given for this Agent, and whether it
-/// reached it. A failed request is reported, not raised: readiness is
-/// separate from the connection, which still serves reading and stopping.
 /// The Agent's Workspace MCP handed to its OpenCode, and how OpenCode then
 /// lists it (T-61 slice 1). It is added each time with the same
 /// configuration: 2.x changes nothing for a server it holds, and adds back
@@ -1990,7 +2055,9 @@ async fn stop(server: Arc<Server>) -> Result<()> {
 /// server it lists as failed again, which the same configuration does not.
 /// One still connecting is waited for, at most MCP_SETTLE; one this call
 /// connected, MCP_TOOLS_SETTLE more, until 2.x offers its tools. Nothing
-/// OpenCode answers is kept with the bearer in it.
+/// OpenCode answers is kept with the bearer in it. A failed request is
+/// reported in what it returns, never raised: readiness is separate from the
+/// connection, which still serves reading and stopping.
 async fn workspace_mcp(server: &Server, config: &Value, retry: bool) -> Mcp {
     let url = config["url"].as_str().unwrap_or_default();
     let Some(bearer) = config["headers"]["Authorization"].as_str().and_then(|h| h.strip_prefix("Bearer ")) else {
@@ -2767,7 +2834,13 @@ fn settle(turn: &mut Value) {
             return;
         }
     }
-    if let Some(error) = answers.iter().map(|a| &a["error"]).find(|e| e.is_object()) {
+    // A run 2.x stopped as Core refused one of its requests (T-61 slice 2,
+    // D-7 (a)): declined, whatever its answer's own error says ("Step interrupted").
+    let declined = turn["_opencodeSessionError"]["data"]["message"] == crate::opencode_v2::DECLINED;
+    if declined {
+        turn["status"] = "interrupted".into();
+        turn["error"] = json!({"message": crate::opencode_v2::DECLINED, "native": turn["_opencodeSessionError"].clone()});
+    } else if let Some(error) = answers.iter().map(|a| &a["error"]).find(|e| e.is_object()) {
         let interrupted = error["name"] == "MessageAbortedError";
         turn["status"] = if interrupted { "interrupted" } else { "failed" }.into();
         turn["error"] = json!({"message":error_text(error),"native":error});
@@ -2866,7 +2939,7 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
     if d.pending.iter().any(|p| !p.stale && p.params["id"] == native && p.params["_runtimeGeneration"] == generation) {
         return;
     }
-    let mut params = request.clone();
+    let mut params = crate::opencode_v2::request_of(request);
     params["_runtimeGeneration"] = generation.into();
     params["_opencodeSession"] = session.into();
     if let Some(child) = child {
@@ -2874,11 +2947,6 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
         params["_opencodeChild"] = child.clone();
     }
     params["_responseSent"] = false.into();
-    // 2.x's own request: shown with why it can't be answered here yet, so its
-    // run is seen to wait on it (T-32 slice 4a, until slice 5).
-    if crate::opencode_v2::is_v2_request(request) {
-        params["_opencodeNotYet"] = format!("{}；这个请求还不能在 Yuzuno 里回答，只能中断这一轮", crate::opencode_v2::NOT_YET).into();
-    }
     if let Some(turn) = d.turns.iter().rev().find(|t| t["status"] == "inProgress").and_then(|t| t["id"].as_str()) {
         params["turnId"] = turn.into();
     }
@@ -2894,24 +2962,38 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
 
 enum Answer {
     Permission(Reply),
-    Question(Vec<Vec<String>>),
-    RejectQuestion,
+    /// A form's answer as 2.x takes it, by field key (`form_answer`).
+    Form(Value),
+    /// The form declined: its tool fails, and its run ends (D-7).
+    Decline,
+}
+
+impl Answer {
+    /// Whether it ends the run that asked (D-7 (a)): a rejected permission
+    /// request (2.x rejects the session's others with it) or a declined form.
+    fn declines(&self) -> bool {
+        matches!(self, Answer::Permission(Reply::Reject) | Answer::Decline)
+    }
 }
 
 /// `{"decision":"once"|"reject"}` for a permission; `{"answers":[[label…]…]}`
-/// (one list per question) or `{"decision":"reject"}` for a question.
+/// (one list per question) or `{"decision":"reject"}` for a question (T-61
+/// slice 2: 2.x's form). A form Yuzuno can't fill takes only the decline.
 fn answer(p: &PendingRequest, response: &Value) -> Result<Answer> {
     match (p.method.as_str(), response["decision"].as_str()) {
         (PERMISSION, Some("once")) => Ok(Answer::Permission(Reply::Once)),
         (PERMISSION, Some("reject")) => Ok(Answer::Permission(Reply::Reject)),
         (PERMISSION, _) => bail!("OpenCode 权限请求只接受 once 或 reject"),
-        (QUESTION, Some("reject")) => Ok(Answer::RejectQuestion),
+        (QUESTION, Some("reject")) => Ok(Answer::Decline),
         (QUESTION, None) => {
+            if let Some(why) = p.params["_opencodeUnfillable"].as_str() {
+                bail!("Yuzuno 填不了这个 OpenCode 表单（{why}）；只能拒绝，或中断这一轮");
+            }
             let answers: Vec<Vec<String>> = serde_json::from_value(response["answers"].clone())
                 .map_err(|_| anyhow!("回答应为每个问题一组选项文字"))?;
             let asked = p.params["questions"].as_array().map_or(0, Vec::len);
             ensure!(answers.len() == asked, "这个请求有 {asked} 个问题，回答了 {} 个", answers.len());
-            Ok(Answer::Question(answers))
+            Ok(Answer::Form(crate::opencode_v2::form_answer(&p.params, &answers)?))
         }
         _ => bail!("不是可以回答的 OpenCode 请求"),
     }

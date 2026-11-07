@@ -87,6 +87,15 @@ impl Lab {
             .filter(|c| c["method"] == "POST" && c["path"].as_str().unwrap().starts_with(prefix)).collect()
     }
 
+    /// Each answer Core sent to one of 2.x's requests (T-61 slice 2), in order:
+    /// a permission's or form's reply, or a form declined.
+    fn replies(&self) -> Vec<Value> {
+        self.calls().into_iter().filter(|c| {
+            let path = c["path"].as_str().unwrap_or_default();
+            path.starts_with("/api/session/") && (path.ends_with("/reply") || (c["method"] == "DELETE" && path.contains("/form/")))
+        }).collect()
+    }
+
     /// Each Workspace MCP add OpenCode was sent (`PUT /api/experimental/mcp/yuzuno`, T-61 slice 1), in order.
     fn mcp_adds(&self) -> Vec<Value> {
         self.calls().into_iter().filter(|c| c["method"] == "PUT" && c["path"] == "/api/experimental/mcp/yuzuno").collect()
@@ -454,22 +463,25 @@ async fn answers_go_only_to_the_session_and_process_that_asked() {
     assert_eq!(d.agent.status, "waiting");
     let p = d.pending[0].clone();
     assert_eq!((p.method.as_str(), &p.params["id"]), ("opencode/permission", &asked["id"]));
-    assert_eq!(p.params["patterns"], json!(["ls"]), "kept as OpenCode sent it");
+    assert_eq!((&p.params["action"], &p.params["resources"]), (&json!("shell"), &json!(["ls"])), "kept as OpenCode sent it");
 
-    // `always` is not offered; once is, and goes to that request only.
+    // `always` is not offered; once is, and goes to that request only, in the session that asked (T-61 slice 2).
     assert!(lab.ws.respond(&p.id, json!({"decision":"always"})).await.is_err());
-    assert!(lab.posts("/permission/").is_empty());
-    lab.ws.respond(&p.id, json!({"decision":"once"})).await.unwrap();
-    let answered = lab.posts("/permission/");
+    assert!(lab.replies().is_empty());
+    lab.ws.respond(&p.id, json!({"decision":"once"})).await.expect("a 2.x permission request is answered");
+    let answered = lab.replies();
     assert_eq!((answered[0]["path"].as_str().unwrap(), &answered[0]["body"]),
-        (format!("/permission/{}/reply", asked["id"].as_str().unwrap()).as_str(), &json!({"reply":"once"})));
+        (format!("/api/session/{session}/permission/{}/reply", asked["id"].as_str().unwrap()).as_str(), &json!({"decision":"once"})));
     lab.until("the answered request", |d| d.pending.is_empty()).await;
 
     let question = lab.control("question", json!({"sessionID":session})).await;
     let d = lab.until("the question", |d| !d.pending.is_empty()).await;
     assert!(lab.ws.respond(&d.pending[0].id, json!({"answers":[]})).await.is_err(), "one answer per question");
-    lab.ws.respond(&d.pending[0].id, json!({"answers":[["A"]]})).await.unwrap();
-    assert_eq!(lab.posts("/question/").last().unwrap()["path"], format!("/question/{}/reply", question["id"].as_str().unwrap()));
+    lab.ws.respond(&d.pending[0].id, json!({"answers":[["A"]]})).await.expect("a 2.x question is answered");
+    let answered = lab.replies().last().cloned().unwrap();
+    assert_eq!((answered["path"].as_str().unwrap(), &answered["body"]),
+        (format!("/api/session/{session}/form/{}/reply", question["id"].as_str().unwrap()).as_str(), &json!({"answer":{"q0":"A"}})),
+        "by the field's key and the option's value");
 
     // A request of a process that has ended is never answered to the next one.
     lab.control("ask", json!({"sessionID":session})).await;
@@ -483,7 +495,7 @@ async fn answers_go_only_to_the_session_and_process_that_asked() {
     lab.ws.reconnect(ID).await.unwrap();
     assert_ne!(lab.seen()["pid"].as_u64().unwrap(), old);
     assert!(lab.ws.respond(&stale.id, json!({"decision":"once"})).await.is_err());
-    assert_eq!(lab.posts("/permission/").len(), 1, "only the first answer was sent");
+    assert_eq!(lab.replies().iter().filter(|c| c["path"].as_str().unwrap().contains("/permission/")).count(), 1, "only the first answer was sent");
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -816,32 +828,39 @@ async fn a_sub_agents_requests_are_shown_with_it_and_answered_in_its_own_session
     assert_eq!(p.params["turnId"], running, "the Agent's running Turn asked it");
     assert_eq!(d.agent.status, "waiting");
 
-    // The same event again adds nothing, and the sub-agent's idle ends no Turn.
+    // The same event again adds nothing.
     lab.control("event", json!({"type":"permission.asked","properties":asked})).await;
-    lab.control("idle", json!({"sessionID":child})).await;
     let question = lab.control("question", json!({"sessionID":child})).await;
     let d = lab.until("the sub-agent's question", |d| d.pending.iter().any(|p| p.params["id"] == question["id"])).await;
     assert_eq!(d.pending.iter().filter(|p| p.params["id"] == asked["id"]).count(), 1);
     assert_eq!(turn(&d, &running)["status"], "inProgress");
 
     // Answered in the session that asked, once.
-    lab.ws.respond(&p.id, json!({"decision":"once"})).await.unwrap();
-    let answered = lab.posts("/permission/");
+    lab.ws.respond(&p.id, json!({"decision":"once"})).await.expect("a sub-agent's 2.x permission request is answered");
+    let answered = lab.replies();
     assert_eq!((answered[0]["path"].as_str().unwrap(), &answered[0]["body"]),
-        (format!("/permission/{}/reply", asked["id"].as_str().unwrap()).as_str(), &json!({"reply":"once"})));
+        (format!("/api/session/{child}/permission/{}/reply", asked["id"].as_str().unwrap()).as_str(), &json!({"decision":"once"})));
     assert!(lab.ws.respond(&p.id, json!({"decision":"once"})).await.is_err(), "answered already");
     let q = d.pending.iter().find(|p| p.params["id"] == question["id"]).unwrap();
     assert_eq!(q.params["_opencodeSession"], child);
-    lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.unwrap();
-    assert_eq!(lab.posts("/question/").last().unwrap()["path"], format!("/question/{}/reply", question["id"].as_str().unwrap()));
+    lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.expect("a sub-agent's 2.x question is answered");
+    assert_eq!(lab.replies().last().unwrap()["path"], format!("/api/session/{child}/form/{}/reply", question["id"].as_str().unwrap()));
     lab.until("the answered requests", |d| d.pending.is_empty()).await;
+    // The sub-agent's run ending ends no Turn of the Agent's (2.x: a run's end ends its requests, so it ends after
+    // they are answered, T-61 slice 2).
+    lab.control("idle", json!({"sessionID":child})).await;
 
-    // A request of a sub-agent whose run ended is not answered.
+    // A request of a sub-agent whose session ended is not answered: 2.x no longer holds it and says so (404; Core
+    // reads no list first, D-10 (a)), and Core removes it.
     lab.control("ask", json!({"sessionID":child})).await;
     let gone = lab.until("the next request", |d| !d.pending.is_empty()).await.pending[0].clone();
     lab.control("close", json!({"sessionID":child})).await;
-    assert!(lab.ws.respond(&gone.id, json!({"decision":"once"})).await.is_err());
-    assert_eq!(lab.posts("/permission/").len(), 1, "only the first permission answer was sent");
+    let refused = lab.ws.respond(&gone.id, json!({"decision":"once"})).await.map_err(|e| e.to_string());
+    assert!(refused.as_ref().is_err_and(|e| e.contains("no longer holds")), "refused as gone: {refused:?}");
+    assert!(lab.detail().pending.iter().all(|r| r.id != gone.id), "and removed");
+    let first = asked["id"].as_str().unwrap();
+    assert_eq!(lab.replies().iter().filter(|c| c["path"].as_str().unwrap().contains(first)).count(), 1,
+        "the first permission request answered once");
 
     // The Agent's own session ends its Turn.
     assert_eq!(turn(&lab.detail(), &running)["status"], "inProgress");
@@ -868,8 +887,10 @@ async fn a_sub_agent_that_asked_while_no_stream_was_open_is_found_again() {
     assert_eq!(p.params["id"], asked["id"]);
     assert_eq!(p.params["_opencodeSession"], child["id"]);
     assert_eq!(p.params["_opencodeChild"], json!({"title":"Check (@general subagent)","agent":"general"}));
-    lab.ws.respond(&p.id, json!({"decision":"reject"})).await.unwrap();
-    assert_eq!(lab.posts("/permission/")[0]["body"], json!({"reply":"reject"}));
+    lab.ws.respond(&p.id, json!({"decision":"reject"})).await.expect("a sub-agent's request read again is answered");
+    let answered = lab.replies();
+    assert_eq!((answered[0]["path"].as_str().unwrap(), &answered[0]["body"]),
+        (format!("/api/session/{}/permission/{}/reply", child["id"].as_str().unwrap(), asked["id"].as_str().unwrap()).as_str(), &json!({"decision":"reject"})));
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -1220,6 +1241,32 @@ async fn a_message_to_a_2x_agent_goes_once_its_opencode_lists_the_workspace_mcp_
     assert_eq!(lab.prompts().len(), 1);
     assert!(lab.ws.collaboration_status(ID).await.unwrap().ready);
     assert!(lab.calls().iter().all(|c| c["path"] != "/mcp"), "nothing to 1.19.3's route");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A message adds and checks the Workspace MCP with OpenCode once (S1 R1
+/// fec92b0a): its admission adds it and lists it, and its send stands on
+/// what that admission confirmed on the same connection, so a server still
+/// connecting is never waited for twice. A message added to the running Turn
+/// too.
+#[tokio::test]
+async fn a_message_adds_and_checks_the_workspace_mcp_once() {
+    let lab = lab(&[], true).await;
+    let session = lab.session();
+    let lists = || lab.calls().iter().filter(|c| c["path"] == "/api/mcp").count();
+    let (added, listed) = (lab.mcp_adds().len(), lists());
+    let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    assert_eq!(lab.mcp_adds().len() - added, 1, "one add-and-check per message");
+    assert_eq!(lists() - listed, 2, "listed once before the add and once after it");
+    lab.until("the run", |d| d.agent.status == "working").await;
+
+    let (added, listed) = (lab.mcp_adds().len(), lists());
+    let joined = lab.add("c2", "and this", &first).await.unwrap();
+    assert_eq!((joined.status.as_str(), joined.turn_id.as_deref()), ("accepted", Some(first.as_str())), "{joined:?}");
+    assert_eq!(lab.mcp_adds().len() - added, 1, "one add-and-check for a message added to the running Turn");
+    assert_eq!(lists() - listed, 2);
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    lab.until("the end", |d| d.agent.status == "idle").await;
     lab.ws.close_agent(ID).await.unwrap();
 }
 
@@ -2572,33 +2619,146 @@ async fn a_whole_read_in_mid_step_keeps_the_text_streamed_so_far() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
-/// OpenCode 2.x's own permission request and form (T-32 slice 4a): shown at
-/// once with why Yuzuno can't answer them yet, so their run is seen to wait
-/// on them, and an answer is refused before anything is sent.
+/// A rejected permission request ends its turn as declined (T-61 slice 2,
+/// D-7 (a)): 2.x rejects it, and the session's other requests with it, and
+/// ends the run as a shutdown, which for this run Core reads as declined;
+/// the next message goes.
 #[tokio::test]
-async fn a_2x_request_is_shown_waiting_for_an_answer_yuzuno_cannot_give_yet() {
+async fn a_rejected_permission_ends_its_turn_as_declined_and_the_next_message_goes() {
     let lab = lab(&[], false).await;
     let session = lab.session();
     let running = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
-    lab.control("event", json!({"type":"permission.asked","properties":{"id":"per_v2","sessionID":session,"action":"bash","resources":["ls"]}})).await;
-    lab.control("event", json!({"type":"form.created","properties":{"form":{"id":"frm_v2","sessionID":session,"title":"Pick one",
-        "fields":[{"key":"a","type":"string"}]}}})).await;
+    lab.control("ask", json!({"sessionID":session})).await;
+    lab.control("ask", json!({"sessionID":session})).await;
     let d = lab.until("both requests", |d| d.pending.len() == 2).await;
-    assert_eq!(d.agent.status, "waiting");
-    for p in &d.pending {
-        let note = p.params["_opencodeNotYet"].as_str().unwrap_or_default();
-        assert!(note.contains("not yet on OpenCode 2.x") && note.contains("只能中断这一轮"), "shown waiting for an answer Yuzuno can't give yet: {p:?}");
-        assert_eq!(p.params["turnId"], running.as_str());
-        let answered = lab.ws.respond(&p.id, json!({"decision":"reject"})).await.map_err(|e| e.to_string());
-        assert!(answered.as_ref().is_err_and(|e| e.contains("not yet on OpenCode 2.x")), "an answer refused as not yet: {answered:?}");
+    lab.ws.respond(&d.pending[0].id, json!({"decision":"reject"})).await.expect("a 2.x permission request is rejected");
+    assert_eq!(lab.replies().last().unwrap()["body"], json!({"decision":"reject"}));
+    let d = lab.until("the declined turn", |d| turn(d, &running)["status"] != "inProgress").await;
+    let t = turn(&d, &running);
+    assert_eq!(t["status"], "interrupted", "the turn ended: {t:#}");
+    assert!(t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"), "as declined: {t:#}");
+    assert!(d.pending.is_empty(), "2.x rejected the session's other request with it");
+    assert_ne!(d.agent.status, "waiting");
+    let next = lab.send("c2", "again").await.expect("the next message goes");
+    assert_eq!(next.status, "accepted");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A declined question cancels its form, and its turn ends declined
+/// (T-61 slice 2, D-7 (a)).
+#[tokio::test]
+async fn a_declined_question_cancels_its_form_and_ends_its_turn_as_declined() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let running = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
+    let form = lab.control("question", json!({"sessionID":session})).await;
+    let q = lab.until("the question", |d| !d.pending.is_empty()).await.pending[0].clone();
+    lab.ws.respond(&q.id, json!({"decision":"reject"})).await.expect("a 2.x question is declined");
+    let declined = lab.replies();
+    assert_eq!(declined.len(), 1, "one answer sent");
+    assert_eq!((declined[0]["method"].as_str(), declined[0]["path"].as_str()),
+        (Some("DELETE"), Some(format!("/api/session/{session}/form/{}", form["id"].as_str().unwrap()).as_str())), "its form cancelled");
+    let d = lab.until("the declined turn", |d| turn(d, &running)["status"] != "inProgress").await;
+    let t = turn(&d, &running);
+    assert!(t["status"] == "interrupted" && t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"),
+        "the turn ended declined: {t:#}");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A form Yuzuno can't fill (D-8 (a): here not a question's) says why and
+/// takes only a decline: an answer is refused before anything is sent.
+#[tokio::test]
+async fn a_form_yuzuno_cannot_fill_takes_only_a_decline() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.send("c1", "work").await.unwrap();
+    lab.control("question", json!({"sessionID":session,"kind":"mcp"})).await;
+    let q = lab.until("the form", |d| !d.pending.is_empty()).await.pending[0].clone();
+    let why = q.params["_opencodeUnfillable"].as_str().unwrap_or_default().to_owned();
+    assert!(why.contains("not a question"), "it says why Yuzuno can't fill it: {why:?}");
+    let refused = lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.map_err(|e| e.to_string());
+    assert!(refused.as_ref().is_err_and(|e| e.contains("填不了")), "an answer is refused: {refused:?}");
+    assert!(lab.replies().is_empty(), "nothing was sent");
+    lab.ws.respond(&q.id, json!({"decision":"reject"})).await.expect("a form Yuzuno can't fill is declined");
+    assert_eq!(lab.replies()[0]["method"], "DELETE", "declined");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// A request 2.x no longer holds (404) is gone: removed, never offered again
+/// nor answered twice (T-61 slice 2, D-10 (a): 2.x's own refusal, no read first).
+#[tokio::test]
+async fn a_request_opencode_no_longer_holds_is_removed_and_not_offered_again() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.send("c1", "work").await.unwrap();
+    let asked = lab.control("ask", json!({"sessionID":session})).await;
+    let p = lab.until("the request", |d| !d.pending.is_empty()).await.pending[0].clone();
+    assert_eq!(lab.control("forget", json!({"id":asked["id"]})).await["forgotten"], true);
+    let gone = lab.ws.respond(&p.id, json!({"decision":"once"})).await.map_err(|e| e.to_string());
+    assert!(gone.as_ref().is_err_and(|e| e.contains("no longer holds")), "refused as gone: {gone:?}");
+    let d = lab.detail();
+    assert!(d.pending.iter().all(|r| r.id != p.id), "the request is removed, not left stale: {:?}", d.pending);
+    assert!(journal(&lab).iter().any(|k| k == "opencode/requestGone"), "the record says it went");
+    assert_eq!(lab.replies().len(), 1, "answered once, never again");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// An answer 2.x can't take (400) leaves the question pending and answerable
+/// (T-61 slice 2, D-9 (a)): nothing was applied, so it can be answered again.
+#[tokio::test]
+async fn an_answer_opencode_cannot_take_leaves_the_question_answerable() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.send("c1", "work").await.unwrap();
+    lab.control("question", json!({"sessionID":session,"fields":[{"key":"q0","type":"string","required":true,"title":"Pick",
+        "description":"Which one?","options":[{"value":"A","label":"A"}]}]})).await;
+    let q = lab.until("the question", |d| !d.pending.is_empty()).await.pending[0].clone();
+    let refused = lab.ws.respond(&q.id, json!({"answers":[[]]})).await.map_err(|e| e.to_string());
+    assert!(refused.as_ref().is_err_and(|e| e.contains("Missing required form field: q0")), "2.x's own reason: {refused:?}");
+    let d = lab.detail();
+    let kept = d.pending.iter().find(|r| r.id == q.id).expect("the question stays pending");
+    assert!(!kept.stale && kept.params["_responseSent"] == false, "and answerable: {kept:?}");
+    lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.expect("answered again, it goes");
+    assert_eq!(lab.replies().last().unwrap()["body"], json!({"answer":{"q0":"A"}}));
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
+/// Only a question's answer is kept in Core's journal (T-61 slice 2, D-11
+/// (a)): what another form was answered with is not.
+#[tokio::test]
+async fn only_a_questions_answer_is_kept_in_the_journal() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    lab.send("c1", "work").await.unwrap();
+    lab.control("question", json!({"sessionID":session,"kind":"websearch.provider","fields":[{"key":"provider","type":"string",
+        "custom":false,"title":"Provider","options":[{"value":"allow","label":"Allow searches"}]}]})).await;
+    let q = lab.until("the provider form", |d| !d.pending.is_empty()).await.pending[0].clone();
+    lab.ws.respond(&q.id, json!({"answers":[["Allow searches"]]})).await.expect("a web search provider's form is answered");
+    lab.until("its end", |d| d.pending.is_empty()).await;
+    lab.control("question", json!({"sessionID":session})).await;
+    let q = lab.until("the question", |d| !d.pending.is_empty()).await.pending[0].clone();
+    lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.unwrap();
+    lab.until("its end", |d| d.pending.is_empty()).await;
+    // Answered is not yet journaled: OpenCode's `form.replied` comes on its stream after the answer.
+    let journaled = || -> Vec<Value> {
+        let db = rusqlite::Connection::open(lab.dir.path().join("data/workspace.sqlite")).unwrap();
+        let mut query = db.prepare("SELECT data FROM journal WHERE agent_id=?1 AND kind='opencode/form.replied' ORDER BY seq").unwrap();
+        let rows: Vec<Value> = query.query_map([ID], |r| r.get::<_, String>(0)).unwrap()
+            .map(|data| serde_json::from_str(&data.unwrap()).unwrap()).collect();
+        rows
+    };
+    let mut kept = journaled();
+    for _ in 0..400 {
+        if kept.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        kept = journaled();
     }
-    assert!(lab.posts("/permission/").is_empty() && lab.posts("/question/").is_empty(), "no answer was sent");
-    // 2.x's form ends as Core's question does: no longer waiting.
-    lab.control("event", json!({"type":"form.cancelled","properties":{"id":"frm_v2","sessionID":session}})).await;
-    lab.until("the form's end", |d| d.pending.iter().all(|p| p.params["id"] != "frm_v2")).await;
-    // Interrupting is the way on: the run's end ends the permission request, which 2.x answers with no event.
-    lab.control("event", json!({"type":"session.execution.interrupted","properties":{"sessionID":session,"reason":"user"}})).await;
-    lab.until("the run's end ending its request", |d| d.pending.is_empty() && d.agent.status != "waiting").await;
+    assert_eq!(kept.len(), 2, "both replies journaled: {kept:?}");
+    let answer_of = |row: &Value| row.pointer("/data/answer").cloned().or_else(|| row.pointer("/properties/answer").cloned());
+    assert_eq!(answer_of(&kept[0]), None, "the provider form's answer is not kept: {}", kept[0]);
+    assert_eq!(answer_of(&kept[1]), Some(json!({"q0":"A"})), "the question's is: {}", kept[1]);
     lab.ws.close_agent(ID).await.unwrap();
 }
 

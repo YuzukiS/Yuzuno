@@ -199,6 +199,31 @@ impl std::fmt::Display for McpRefused {
 
 impl std::error::Error for McpRefused {}
 
+/// One of 2.x's requests (a permission or a form) whose answer OpenCode
+/// refused (T-61 slice 2).
+#[derive(Debug, PartialEq)]
+pub enum RequestRefused {
+    /// 400: it can't take this answer (a form's, checked as 2.x checks it);
+    /// the request is still pending. 2.x's own message, which names fields.
+    Invalid { message: String },
+    /// 404 or 409: it no longer holds the request pending for this session
+    /// (answered, ended, or another session's); nothing was answered.
+    Gone { code: u16, kind: Option<String> },
+    Other { code: u16, kind: Option<String> },
+}
+
+impl std::fmt::Display for RequestRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid { message } => write!(f, "OpenCode can't take this answer: {message}"),
+            Self::Gone { code, kind } => write!(f, "OpenCode no longer holds this request (HTTP {code}{})", kind.as_ref().map(|k| format!(", {k}")).unwrap_or_default()),
+            Self::Other { code, kind } => write!(f, "OpenCode refused the answer (HTTP {code}{})", kind.as_ref().map(|k| format!(", {k}")).unwrap_or_default()),
+        }
+    }
+}
+
+impl std::error::Error for RequestRefused {}
+
 /// What a prompt submission is known to have done.
 #[derive(Debug, PartialEq)]
 pub enum Submission {
@@ -269,8 +294,9 @@ const HISTORY_LIMIT: Duration = Duration::from_secs(60);
 const REPLAY_LIMIT: Duration = Duration::from_secs(120);
 
 /// An answer to a permission request. OpenCode's third answer, `always`,
-/// is not offered: it would allow later requests of this process by patterns
-/// the tool chooses.
+/// is not offered (T-61 D-12): 2.x would keep it as a saved rule of the
+/// Agent's database, allowing later requests of the project by patterns the
+/// tool chooses.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Reply {
     Once,
@@ -1084,29 +1110,53 @@ impl Server {
         self.all("/api/session", &[("parentID", segment(session)?), ("order", "asc")]).await
     }
 
-    /// Answers a permission request pending in `session`. A request of
-    /// another session, or no longer pending, is refused without an answer.
-    /// OpenCode's rule: rejecting one rejects every other request then
-    /// pending in the same session (`permission/index.ts`).
+    /// Answers a permission request pending in `session` (T-61 slice 2:
+    /// `POST /api/session/:id/permission/:request/reply`, 204). 2.x refuses
+    /// one no longer pending, or of another session, with 404, having
+    /// answered nothing (`RequestRefused::Gone`). Its rule: rejecting one
+    /// rejects every other request then pending in the same session
+    /// (2.2.5 core/src/permission.ts).
     pub async fn reply_permission(&self, session: &str, request: &str, reply: Reply) -> Result<()> {
-        self.ensure_pending("/permission", session, request).await?;
-        let reply = match reply { Reply::Once => "once", Reply::Reject => "reject" };
-        self.json(Method::POST, &format!("/permission/{}/reply", segment(request)?), Some(&json!({"reply": reply}))).await?;
-        Ok(())
+        let decision = match reply { Reply::Once => "once", Reply::Reject => "reject" };
+        let path = format!("/api/session/{}/permission/{}/reply", segment(session)?, segment(request)?);
+        self.request_call(Method::POST, &path, Some(&json!({"decision": decision}))).await
     }
 
-    /// Answers a question pending in `session`: for each of its questions,
-    /// the labels chosen (or typed).
-    pub async fn reply_question(&self, session: &str, request: &str, answers: &[Vec<String>]) -> Result<()> {
-        self.ensure_pending("/question", session, request).await?;
-        self.json(Method::POST, &format!("/question/{}/reply", segment(request)?), Some(&json!({"answers": answers}))).await?;
-        Ok(())
+    /// Answers a form pending in `session` (T-61 slice 2: `POST
+    /// /api/session/:id/form/:form/reply`, 204): each field's value by its
+    /// key. 2.x checks the answer first and refuses one it can't take with
+    /// 400, leaving the form pending (`RequestRefused::Invalid`).
+    pub async fn reply_form(&self, session: &str, form: &str, answer: &Value) -> Result<()> {
+        let path = format!("/api/session/{}/form/{}/reply", segment(session)?, segment(form)?);
+        self.request_call(Method::POST, &path, Some(&json!({"answer": answer}))).await
     }
 
-    pub async fn reject_question(&self, session: &str, request: &str) -> Result<()> {
-        self.ensure_pending("/question", session, request).await?;
-        self.json(Method::POST, &format!("/question/{}/reject", segment(request)?), None).await?;
-        Ok(())
+    /// Declines a form pending in `session` (`DELETE
+    /// /api/session/:id/form/:form`, 204), with no message: the tool that
+    /// asked fails as a declined one does.
+    pub async fn cancel_form(&self, session: &str, form: &str) -> Result<()> {
+        let path = format!("/api/session/{}/form/{}", segment(session)?, segment(form)?);
+        self.request_call(Method::DELETE, &path, None).await
+    }
+
+    /// An answer to one of 2.x's requests: 204, or what it refused it as.
+    async fn request_call(&self, method: Method, path: &str, body: Option<&Value>) -> Result<()> {
+        let mut request = self.request(method, path).timeout(REQUEST_LIMIT);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.with_context(|| format!("OpenCode did not answer {path}"))?;
+        let code = response.status().as_u16();
+        if response.status().is_success() {
+            return Ok(());
+        }
+        let answered: Value = response.json().await.unwrap_or_default();
+        let kind = answered["_tag"].as_str().or(answered["name"].as_str()).map(str::to_owned);
+        bail!(match code {
+            400 => RequestRefused::Invalid { message: answered["message"].as_str().unwrap_or_default().chars().take(300).collect() },
+            404 | 409 => RequestRefused::Gone { code, kind },
+            _ => RequestRefused::Other { code, kind },
+        })
     }
 
     /// Asks OpenCode to interrupt the session's run (`POST
@@ -1262,10 +1312,6 @@ impl Server {
         bail!(McpRefused { code: code.as_u16(), kind: refusal_kind(response).await })
     }
 
-    async fn pending(&self, path: &str, session: &str) -> Result<Vec<Value>> {
-        self.pending_in(path, &[session]).await
-    }
-
     /// What waits in each of `sessions`: its permission requests
     /// (`permission`) or forms (`form`), from 2.x's own list of each session
     /// (`GET /api/session/:id/<kind>`).
@@ -1277,19 +1323,6 @@ impl Server {
             all.extend(listed.as_array().with_context(|| format!("OpenCode's {path} is not a list"))?.iter().cloned());
         }
         Ok(all)
-    }
-
-    async fn pending_in(&self, path: &str, sessions: &[&str]) -> Result<Vec<Value>> {
-        let all = self.json(Method::GET, path, None).await?;
-        let all = all.as_array().with_context(|| format!("OpenCode's {path} is not a list"))?;
-        Ok(all.iter().filter(|r| r["sessionID"].as_str().is_some_and(|s| sessions.contains(&s))).cloned().collect())
-    }
-
-    async fn ensure_pending(&self, path: &str, session: &str, request: &str) -> Result<()> {
-        let pending = self.pending(path, session).await?;
-        ensure!(pending.iter().any(|r| r["id"] == request),
-            "Request {request} is not pending in session {session}; it was not answered");
-        Ok(())
     }
 
     fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
