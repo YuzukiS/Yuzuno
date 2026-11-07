@@ -60,6 +60,24 @@ new OpenCode holds first and never writes the copy twice. One the new OpenCode
 answers with an error, or doesn't answer a second time, fails, and the turn
 can be forked again. A fork that failed leaves the new Agent's folder in place.
 
+Import takes a session exported with OpenCode 2.x (`opencode session export`)
+as a new Agent. You upload the file (up to 64 MiB); Yuzuno never reads your own
+OpenCode database or runs its command line. It checks the file first and
+refuses one from OpenCode 1.x (export it again with 2.x), one exported with
+`--sanitize`, a sub-agent's session, a session holding a revert, and one whose
+last run had not ended. You confirm the folder the new Agent works in; Yuzuno
+writes the session into the new Agent's own OpenCode, on an empty database,
+under a new session ID, reads it back and compares it, and only then adds the
+Agent. Its turns are the session's prompts, as Yuzuno would have shown them;
+they can't be rewound, since their snapshots are in the OpenCode that made
+them. The session's own permissions and metadata are left out, and its agent
+is kept only if this OpenCode has it as an agent one can choose. The new Agent
+keeps the session's model, and its variant, if this OpenCode lists them;
+otherwise it starts on OpenCode's default model and says so, and you can
+choose one in its settings. No login is in the file. The same file again is the Agent it made; the same session exported
+again after more work is a new copy, and Yuzuno names the earlier one. An
+upload you don't confirm is removed after a day.
+
 **Rewind** is 2.x's own revert, staged then committed: see
 [Rewind](rewind.md#opencode). Turns a fork copied in can't be rewound in the
 new Agent: their snapshots are in the source Agent's store.

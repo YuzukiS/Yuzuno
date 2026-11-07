@@ -661,3 +661,22 @@ async fn on_2x_fork_rewind_and_compaction_go_by_2xs_own_routes() {
     ws.close_agent(&target).await.unwrap();
     ws.close_agent("oc").await.unwrap();
 }
+
+/// D-37 (T-61 slice 8): a fork's own Turn is forked again. Its session holds
+/// only Core's marker as metadata, which the new copy replaces with its own.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_forks_turn_is_forked_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, _data, _, [first, _, _]) = three(&root).await;
+    let forked = ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &first, "F1")).await.unwrap();
+    let target = forked["agent"]["id"].as_str().unwrap().to_owned();
+    let again = ws.opencode_fork(&target, request(&uuid::Uuid::new_v4().to_string(), &first, "F2")).await.unwrap();
+    assert_eq!(again["state"], "completed", "{again}");
+    let second = again["agent"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(ws.store.stored_turns(&second).unwrap()[0]["_yuzunoCopiedFrom"]["agentId"], json!(target), "copied from the fork");
+    ws.close_agent(&second).await.unwrap();
+    ws.close_agent(&target).await.unwrap();
+    ws.close_agent("oc").await.unwrap();
+}

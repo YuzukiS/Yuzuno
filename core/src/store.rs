@@ -1222,6 +1222,7 @@ impl Store {
         crate::machines::migrate(&db)?;
         crate::codex_sessions::migrate(&db)?;
         crate::opencode_agent::fork_migrate(&db)?;
+        crate::opencode_agent::import_migrate(&db)?;
         crate::rewind::migrate(&db)?;
         crate::claude_quota::migrate(&db)?;
         crate::results::migrate(&db)?;

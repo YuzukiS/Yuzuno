@@ -966,6 +966,17 @@ impl Server {
         self.json_with(Method::GET, "/api/location", &[(LOCATION, directory)], None).await
     }
 
+    /// The agents 2.x has for `directory` (T-61 slice 8: `GET /api/agent`,
+    /// protocol/src/groups/agent.ts), each as `(id, mode, hidden)`: only
+    /// those fields are read, since an agent's `request` may hold its
+    /// provider's headers.
+    pub async fn agents(&self, directory: &str) -> Result<Vec<(String, String, bool)>> {
+        let listed = self.data(Method::GET, "/api/agent", &[(LOCATION, directory)], None).await?;
+        let listed = listed.as_array().context("OpenCode's /api/agent is not a list")?;
+        Ok(listed.iter().filter_map(|agent| Some((agent["id"].as_str()?.to_owned(), agent["mode"].as_str()?.to_owned(),
+            agent["hidden"].as_bool().unwrap_or(false)))).collect())
+    }
+
     /// The session's messages now, `[{info, parts}]`, as a snapshot reads them.
     /// Every page of them, oldest first: 2.x gives 50 at most, newest first,
     /// unless asked (server/src/handlers/message.ts).

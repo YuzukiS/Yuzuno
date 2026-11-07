@@ -1673,6 +1673,17 @@ class Handler(BaseHTTPRequestHandler):
             if time.time() < modes['refuseEventsUntil']:
                 return self.reply(503, {'name': 'UnknownError', 'data': {'message': 'fixture: not now'}})
             return self.stream()
+        if key == ('GET', 'api', 'agent'):
+            # 2.x's agents for a folder (protocol/src/groups/agent.ts, schema/src/agent.ts Info; T-61 slice 8): `build` and
+            # `plan` primary, `general` a sub-agent, `title` hidden; mode `agents`: another list.
+            asked = parse_qs(url.query).get('location[directory]', [None])[0]
+            listed = modes['agents'] if modes.get('agents') is not None else [
+                {'id': name, 'name': name, 'mode': mode, 'hidden': hidden, 'permissions': [],
+                 'request': {'settings': {}, 'headers': {}, 'body': {}}}
+                for name, mode, hidden in (('build', 'primary', False), ('plan', 'primary', False), ('general', 'subagent', False),
+                                           ('title', 'primary', True))]
+            return self.reply(200, {'location': {'directory': modes['directory'] or (str(Path(asked).resolve()) if asked else str(WORK))},
+                                    'data': listed})
         if key == ('GET', 'api', 'location'):
             # 2.x's location (server/src/handlers/location.ts, T-61 slice 5): the folder asked for
             # (`location[directory]`), resolved, and the project held for it now (control `project`), whose directory
