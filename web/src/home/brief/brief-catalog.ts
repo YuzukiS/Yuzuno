@@ -44,6 +44,8 @@ export type ResearchDeskProps = Props<"ResearchDesk">;
 export type NumberInputProps = Props<"NumberInput">;
 export type SwitchProps = Props<"Switch">;
 export type SegmentedProps = Props<"Segmented">;
+export type CalcProps = Props<"Calc">;
+export type ButtonProps = Props<"Button">;
 
 export type BriefElement = {
   type: string;
@@ -51,6 +53,8 @@ export type BriefElement = {
   children?: string[];
   /** A condition on the section's variables (YN-16), as the contract checked it. */
   visible?: VisibilityCondition;
+  /** A Button's press (YN-16 S2): setState actions, as the contract checked them. */
+  on?: unknown;
 };
 export type BriefSpec = { root: string; elements: Record<string, BriefElement> };
 
@@ -76,6 +80,8 @@ export const BRIEF_COMPONENTS = [
   "NumberInput",
   "Switch",
   "Segmented",
+  "Calc",
+  "Button",
 ] as const satisfies readonly BriefComponent[];
 export const CHART_TYPES = new Set(["LineChart", "BarChart", "ScatterChart"]);
 

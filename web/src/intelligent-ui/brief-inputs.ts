@@ -42,14 +42,14 @@ export function startingValues(elements: Record<string, Node | undefined> | unde
 }
 
 /** What an interactive figure may hold besides its inputs, and how many blocks of its own. */
-export const CARD_PART_TYPES: ReadonlySet<string> = new Set<string>([...INPUT_TYPES, "Markdown", "Metrics"]);
+export const CARD_PART_TYPES: ReadonlySet<string> = new Set<string>([...INPUT_TYPES, "Button", "Calc", "Markdown", "Metrics"]);
 export const CARD_PARTS = 6;
 
 /**
  * Whether a block is an interactive figure, one a summary may name as its
  * visual so the reader adjusts it on the card itself: a Group of 1 to
- * CARD_PARTS blocks of its own, each an input, a Markdown or Metrics, at
- * least one of them an input.
+ * CARD_PARTS blocks of its own, each an input, a Button, a Calc, a Markdown
+ * or Metrics, at least one of them an input.
  */
 export function interactiveGroup(elements: Record<string, Node | undefined> | undefined, id: string): boolean {
   const node = elements && Object.hasOwn(elements, id) ? elements[id] : undefined;

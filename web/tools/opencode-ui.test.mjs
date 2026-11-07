@@ -527,7 +527,7 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
     "/rewind/confirm": { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [{ path: "/work/a.txt", outcome: "verified" }] } });
   try {
     const text = kept.page.document.body.textContent;
-    assert.match(text, /This turn and 1 later turns leave the conversation; 1 earlier turns stay/);
+    assert.match(text, /This turn and 1 later turns leave the conversation; 1 earlier turns stay\. OpenCode removes them from its session as soon as the files are back/);
     assert.match(text, /\/work\/a\.txt: now 3 bytes, becomes no file/);
     assert.match(text, /Any change made since, by you or another Agent, is overwritten; Core keeps a copy of each first/);
     assert.ok(!button(kept.page, "Keep current history"), "no way to keep the current history");
@@ -546,7 +546,8 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
   // Not confirmed: only checked, held back meanwhile; kept on check with a file that drifted: the text once, the file named.
   let checks = 0;
   const unsure = await open({ "/rewind/preview": preview,
-    "/rewind/confirm": { attemptId: "revert_1", status: "unknown", draft: "", message: "这次回退的结果无法确认" },
+    "/rewind/confirm": { attemptId: "revert_1", status: "unknown", draft: "", message: "这次回退的结果无法确认",
+      files: [{ path: "/work/a.txt", outcome: "notRestored" }] },
     "/rewind/check": () => (++checks === 1
       ? { attemptId: "revert_1", status: "unknown", draft: "", message: "这次回退的结果无法确认" }
       : { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退，但有 1 个文件不是快照里的内容",
@@ -555,6 +556,9 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
     button(unsure.page, "Revert").click(); await tick(); await tick();
     let text = unsure.page.document.body.textContent;
     assert.match(text, /The revert is not yet confirmed/);
+    // T-61 slice 6 (D-27 (a)): each file as it is now, and nothing put back on its own.
+    assert.match(text, /\/work\/a\.txt: still as before: OpenCode did not send it back/);
+    assert.match(text, /OpenCode may have sent some of these files back before it stopped: each is shown as it is now\. Core kept a copy of each first and puts nothing back on its own/);
     assert.match(text, /New messages to this Agent wait until the outcome is confirmed\. The revert is never asked for again/);
     assert.ok(!button(unsure.page, "Keep current history"), "an unknown outcome is never kept by choice");
     assert.deepEqual(unsure.drafts, [], "no text back while not confirmed");

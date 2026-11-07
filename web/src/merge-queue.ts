@@ -39,6 +39,9 @@ export const stopReasons = [
   "wait_timeout",
   "github_unreachable",
   "dry_run_ended",
+  "revert_conflict",
+  "revert_not_allowed",
+  "revert_outdated",
 ] as const;
 export type StopReason = (typeof stopReasons)[number];
 /** Reasons of the dry-run queue (T-37 S1) that entries stopped then still carry. */
@@ -118,6 +121,10 @@ export interface MergeEntry {
   number: number;
   url?: string;
   headSha: string;
+  /** YN-18 S2d-2: "revert" for Core's own revert of a merge that turned main red. */
+  kind?: string;
+  revert?: { of?: string; pr?: number; bad?: string; run?: number | null } | null;
+  revertedBy?: string | null;
   baseBranch?: string;
   mainAtRelease?: string | null;
   mainAnchoredAt?: string | null;
@@ -151,6 +158,11 @@ export interface MergePause {
 export interface MergeRepository {
   repositoryId: number;
   enabled: boolean;
+  /** YN-18 S2d-2: the user allows one-step reverts here; Core reverts on its own too. */
+  revert?: boolean;
+  autoRevert?: boolean;
+  /** YN-18 S2d: "strict" or "relaxed". */
+  policy?: string;
   /** How a merge lands: "core-merge" (Core merges) from T-37 S2b, or a later Core's "github-auto-merge" or "github-merge-queue"; absent before. */
   landing?: string;
   paused: MergePause | null;
@@ -199,7 +211,7 @@ export const readEntry = (id: string, signal?: AbortSignal) =>
 export const readRepository = (id: number, signal?: AbortSignal) =>
   api<MergeRepository>(`/merge-queue/repositories/${id}`, { signal });
 
-export type MergeAction = "unpause" | "retry" | "cancel";
+export type MergeAction = "unpause" | "retry" | "cancel" | "revert";
 /** The route of an action; each takes a requestId and an optional reason. */
 export const actionPath = (action: MergeAction, target: string | number) =>
   action === "unpause"
@@ -289,6 +301,9 @@ export const mergeWords = strings(
       wait_timeout: "Waited too long",
       github_unreachable: "GitHub unreachable",
       dry_run_ended: "Dry run ended",
+      revert_conflict: "Revert does not apply",
+      revert_not_allowed: "Reverts off",
+      revert_outdated: "Revert outdated",
     } as Record<StopReason, string>,
     unknownState: (state: string) => `Unknown state (${state})`,
     dryRunReasons: { needs_batch: "Needs a batch (dry run)" } as Record<string, string>,
@@ -336,6 +351,9 @@ export const mergeWords = strings(
       wait_timeout: "等待超时",
       github_unreachable: "无法连接 GitHub",
       dry_run_ended: "试运行已结束",
+      revert_conflict: "回退无法应用",
+      revert_not_allowed: "回退已关闭",
+      revert_outdated: "回退已过时",
     },
     unknownState: (state) => `未知状态（${state}）`,
     dryRunReasons: { needs_batch: "需要批次（试运行）" },
@@ -354,6 +372,8 @@ export const refusalsZh: Record<string, string> = {
   merge_not_active: "此条目已不再占用它的 PR，无法取消。",
   merge_not_stopped: "只有已停止的条目才能重试。",
   merge_dry_run_ended: "此条目是在 Core 真正合并之前放行合并的；请重新将该 PR 放行合并。",
+  merge_revert_not_allowed: "不能回退：只有合并后主分支 CI 变红的条目才能回退，且需由用户在「项目 → 仓库」中允许回退，并由该仓库所属项目的负责人或你发起。",
+  merge_revert_running: "这个合并的回退已经在进行中。",
   merge_cleanup_pending: "Core 仍在移除此条目的批次；完成后再试。",
   merge_already_queued: "另一条目已占用此 PR。",
   idempotency_conflict: "此请求已以另一个原因发送过。",

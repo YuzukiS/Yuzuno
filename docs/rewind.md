@@ -24,7 +24,7 @@ native history and Core's prior view, linked by the rewind attempt ID.
 | Codex files | No file restore through conversation rewind | Unavailable |
 | Claude conversation | Unavailable in the current integration (CLI 2.1.280 / SDK 0.3.296) | Unavailable |
 | Claude files | Existing native checkpoint preview and restore | Not supported by the current file-checkpoint integration |
-| OpenCode conversation and files | OpenCode's own revert (`POST /session/:id/revert`, 1.19.3), together; see [OpenCode](#opencode). Checked against a stand-in only | Unavailable |
+| OpenCode conversation and files | OpenCode 2.x's own revert (`POST /api/session/:id/revert/stage`, then `…/revert/commit`), together; see [OpenCode](#opencode) | Unavailable |
 
 Claude's file option opens the existing file-checkpoint preview. It restores
 only files covered by Claude Code's checkpoint and leaves conversation history
@@ -55,23 +55,27 @@ footers does not scan native histories or file checkpoints.
 ## OpenCode
 
 On an OpenCode Agent, **Rewind** is OpenCode's own revert. The selected turn and
-later turns leave the conversation; OpenCode removes them from its session with
-the next message it gets. Each file that a later change of OpenCode's touched
-goes back as OpenCode's snapshot holds it. It is not a conversation-only
-rewind.
+later turns leave the conversation; OpenCode deletes them from its session as
+soon as the files are back. Each file that a later step of OpenCode's changed
+goes back as that step's snapshot holds it, from the first step after the turn.
+It is not a conversation-only rewind.
 
 The preview lists each such file: what it is now and what it becomes. A change
-made to it since, by you or another Agent, is overwritten. Before it asks
-OpenCode, Core keeps a copy of each file in its own data folder, under
-`opencode/<agent>/revert/<attempt>`, not in the Agent's folder. It keeps the
-copies of the newest three reverts whose outcome is known, removing older ones
-when it makes a new copy; a revert not yet confirmed keeps its copy. Files can be
-sent back only when Core can tell exactly what OpenCode will write:
+made to it since, by you or another Agent, is overwritten. OpenCode keeps its
+snapshots in Core's own data folder for the Agent; Core reads each file from
+there. Before it asks OpenCode, Core keeps a copy of each file in its own data
+folder, under `opencode/<agent>/revert/<attempt>`, not in the Agent's folder.
+It keeps the copies of the newest three reverts whose outcome is known,
+removing older ones when it makes a new copy; a revert not yet confirmed keeps
+its copy. Files can be sent back only when Core can tell exactly what OpenCode
+will write:
 
 - OpenCode was started by Core from its native executable, not a script or
   wrapper, and Core's environment sets no Git variables;
 - each path is plain, not `.gitattributes`, and Git would not convert the file
   on checkout;
+- every step after the turn has a snapshot and a list of its files (OpenCode
+  would pass over a step without one in silence);
 - at most 200 files, 8 MiB each and 32 MiB in all.
 
 Otherwise a revert with files is refused before anything is asked. A turn with
@@ -79,36 +83,43 @@ no file to send back needs none of this.
 
 A revert is refused while anything runs or waits for an answer, while an
 earlier rewind, compaction or message is unconfirmed, or while the session
-already holds a revert. Confirming reads everything again and refuses on any
-change; then OpenCode is asked once.
+already holds a revert (one another client staged included). Confirming reads
+everything again and refuses on any change; then OpenCode is asked once to
+stage the revert.
 
-- **Reverted:** the session holds the revert. Each file is reported on its own:
-  as the snapshot holds it, still as before (OpenCode only logs a checkout that
-  fails), or neither. Nothing is overwritten to fix it. The original text is
-  added to the draft. Until the next message, `/compact` is refused: OpenCode
-  would apply the revert first. Send a message, then compact.
-- **Not reverted:** OpenCode refused before it began (busy, no such session, a
-  request it could not read), or its request ended without keeping the revert
-  and a new read finds the messages and every file as before. No turn leaves
-  and no text is added.
+- **Reverted:** OpenCode staged the revert. Each file is reported on its own:
+  as the snapshot holds it, still as before, or neither. Nothing is overwritten
+  to fix it. Then Core asks OpenCode to commit it, which deletes the messages;
+  if that answer is lost, OpenCode commits it itself before its next prompt or
+  compaction. The original text is added to the draft.
+- **Not reverted:** OpenCode refused before it changed any file (busy, no such
+  session, folder or message, a request it could not read), or its request
+  ended without a revert and a new read finds the messages and every file as
+  before. No turn leaves and no text is added.
 - **Not yet confirmed:** new messages, commands, `/compact` and another revert
-  wait. **Check outcome** settles what can be told:
-  - a revert OpenCode confirmed but Core could not record is recorded;
-  - a request OpenCode answered without keeping the revert is read again, and
-    is not reverted only if the messages and every file are as before;
+  wait. A restore OpenCode could not finish (it answers an error) may have sent
+  some files back: each file is listed as it is now, Core's copy is named, and
+  nothing is put back on its own. **Check outcome** settles what can be told:
+  - a revert OpenCode staged but Core could not record is recorded;
   - if Core stopped before the request went out, nothing was asked, and it is
     not reverted (the copies stay where they were kept);
   - a request with no answer kept is reverted if OpenCode's session now holds
-    the revert, which OpenCode keeps only once its files are sent back.
+    the revert, which OpenCode keeps only once its files are sent back, or if
+    its messages from the turn on are gone, committed already;
+  - one whose session holds none and still has those messages is read again,
+    and is not reverted only if the messages and every file are as before,
+    and never while its request is still waiting for OpenCode's answer.
     Otherwise it stays unconfirmed: OpenCode may have changed files before it
-    stopped, and its own Git processes may still be changing them.
+    stopped.
 
   There is no **Keep current history** for OpenCode, and the revert is never
   asked for again.
 
-OpenCode's restore (unrevert) is not offered: it writes back every file of the
-snapshot. This has been checked against Core's stand-in of OpenCode 1.19.3, not
-yet against OpenCode itself.
+A revert another client of the same OpenCode commits deletes those messages
+too: their turns leave this Agent's conversation as well.
+
+OpenCode's undo of a staged revert is not offered: Core commits each revert
+once its files are checked.
 
 ## Protocol evidence
 
@@ -118,6 +129,15 @@ The response contains metadata, not the retained turns. Core verifies paginated
 history afterwards, drains queued native events, persists the new projection
 and preserves the archive before allowing more input. See the official
 [app-server documentation](https://learn.chatgpt.com/docs/app-server).
+
+For OpenCode, a probe of the real 2.2.5 binary, offline against a stub model,
+confirms what Core relies on. A stage sends back only the files of the Agent's
+folder, keeps the messages and keeps the revert in the session. A commit
+deletes the messages from the turn on and touches no file. A prompt or a
+compaction commits a held revert before it is admitted. A message the session
+does not hold (404) and a running session (409) are refused before anything
+changes. A restore it cannot finish (a folder it cannot remove from) answers
+500, with the files it checked out first already back.
 
 For Claude, the installed SDK's `Query` methods and `SDKControlRequestInner`
 provide `rewindFiles` / `rewind_files`, but no conversation-rewind control.
