@@ -56,8 +56,11 @@ pub(super) fn pull(entry: &Value, pr: &Value) -> Check<()> {
 
 /// Releasing is the lead's statement that the review pair is complete; Core
 /// checks that the last completed round of this PR reviewed exactly this head
-/// and passes under the project's review policy.
-pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool) -> Check<Value> {
+/// and passes under the project's review policy, and that no completed round
+/// at this head found a P0–P2 issue (YN-12 item 1, YN-18 S2d): such a finding
+/// is fixed only by a new head, never by another round of the same head.
+/// `at_head` is every completed round of the PR at the released head.
+pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_head: &[Value]) -> Check<Value> {
     if running {
         return wait("A review round of this PR is still running; the last completed round decides");
     }
@@ -78,8 +81,55 @@ pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool) -> Ch
                 r["id"].as_str().unwrap_or("?"), r["conclusion"].as_str().unwrap_or("unknown")),
         );
     }
+    let blocking = |round: &Value| {
+        round["findings"].as_array().into_iter().flatten().filter(|f| f["priority"].as_u64().is_some_and(|p| p <= 2)).count()
+    };
+    if let Some(earlier) = at_head.iter().filter(|o| o["headSha"] == entry["headSha"]).find(|o| blocking(o) > 0) {
+        return stop(
+            "review_not_passing",
+            format!("Review round {} ({}) at this head found {} P0–P2 issue(s); a later round of the same head does not clear them, so a new head needs a passing round of its own",
+                earlier["round"], earlier["id"].as_str().unwrap_or("?"), blocking(earlier)),
+        );
+    }
     Ok(json!({"id":r["id"],"round":r["round"],"conclusion":r["conclusion"],"headSha":r["headSha"],
         "coverage":format!("{}/{}", r["coverage"]["coveredFileCount"], r["coverage"]["fileCount"]),"passes":true}))
+}
+
+/// The repository's landing policy (YN-18 S2d), set by the user: `strict`,
+/// the default, or `relaxed`.
+pub(super) const STRICT: &str = "strict";
+pub(super) const RELAXED: &str = "relaxed";
+pub(super) fn relaxed(repository: &Value) -> bool {
+    repository["policy"] == RELAXED
+}
+
+/// Main is not red, as the relaxed policy reads it (the user's rule of
+/// 2026-11-07): the newest finished push run of CI on the base branch (not
+/// superseded) succeeded, and no newer one is red. A run waiting to start
+/// (held by its concurrency group) waits, so each merge keeps a main run of
+/// its own. A red main waits, never stops: the entry merges once main is green
+/// again. A run an unpause accepted (`accepted`, by id) is listed and skipped.
+/// `runs` are newest first.
+pub(super) fn main_not_red(runs: &[Value], accepted: &[Value]) -> Check<Value> {
+    let mut seen = Vec::new();
+    for run in runs.iter().filter(|r| r["name"] == CI) {
+        let conclusion = run["conclusion"].as_str().unwrap_or("");
+        let skipped = accepted.contains(&run["id"]);
+        seen.push(json!({"run":run["id"],"headSha":run["head_sha"],"status":run["status"],"conclusion":run["conclusion"],"accepted":skipped}));
+        if skipped {
+            continue;
+        }
+        if matches!(run["status"].as_str(), Some("pending" | "waiting")) {
+            return wait(format!("Main CI run {} on {} waits to start; Core merges once it has, so each merge keeps a main run of its own", run["id"], short(&run["head_sha"])));
+        }
+        if matches!(conclusion, "failure" | "timed_out" | "startup_failure" | "action_required") {
+            return wait(format!("Main CI run {} on {} concluded {conclusion}; under the relaxed policy the entry waits until main CI is green again", run["id"], short(&run["head_sha"])));
+        }
+        if run["status"] == "completed" && conclusion != "cancelled" {
+            return Ok(json!(seen));
+        }
+    }
+    wait("No finished main CI run among the newest ones yet")
 }
 
 /// Two reads of the base branch (its ref and the branch API) name one commit.

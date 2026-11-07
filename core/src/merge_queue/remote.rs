@@ -96,8 +96,9 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
     hold!(checks::pull(entry, &pr));
     hold!(checks::conflicting(&pr));
-    let (latest, running) = ws.stored(move |s| s.merge_review(&link)).await?;
-    evidence["review"] = hold!(checks::review(entry, latest.as_ref(), running));
+    let released = head.clone();
+    let (latest, running, at_head) = ws.stored(move |s| s.merge_review(&link, &released)).await?;
+    evidence["review"] = hold!(checks::review(entry, latest.as_ref(), running, &at_head));
 
     let by_ref = read(ws, format!("repos/{repo}/git/ref/heads/{}", t.base)).await?;
     let by_branch = read(ws, format!("repos/{repo}/branches/{}", segment(&t.base))).await?;
@@ -120,12 +121,20 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
         evidence["pauseCleared"] = cleared;
     }
     evidence["main"] = json!({"atRelease":since,"anchoredAt":anchored,"before":main,"beforeTree":checks::tree_of(&main_commit)});
+    let relaxed = checks::relaxed(&queue);
+    evidence["policy"] = json!(if relaxed { checks::RELAXED } else { checks::STRICT });
     let accepted = checks::accepted_runs(&queue, &since);
-    let (seen, red) = checks::main_runs_since(&main_runs, &since, &anchored, &accepted);
-    evidence["main"]["ci"] = json!(seen);
-    if let Some(red) = red {
-        evidence["mainRed"] = red.clone();
-        hold!(checks::main_health(&main_runs, &since, &anchored, &accepted));
+    if relaxed {
+        // The relaxed policy (YN-18 S2d): main CI not red now; a red main waits.
+        let current = checks::accepted_runs(&queue, &main);
+        evidence["main"]["ci"] = hold!(checks::main_not_red(&main_runs, &[accepted, current].concat()));
+    } else {
+        let (seen, red) = checks::main_runs_since(&main_runs, &since, &anchored, &accepted);
+        evidence["main"]["ci"] = json!(seen);
+        if let Some(red) = red {
+            evidence["mainRed"] = red.clone();
+            hold!(checks::main_health(&main_runs, &since, &anchored, &accepted));
+        }
     }
 
     let required: Vec<String> = serde_json::from_value(entry["requireWorkflows"].clone()).unwrap_or_default();
@@ -144,6 +153,10 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
         None
     };
     hold!(checks::mergeable(&pr, pending.as_deref()));
+
+    if relaxed {
+        return relaxed_gate(ws, &t, entry, &main, &newest, evidence).await;
+    }
 
     // A batch built on this main is the gate; one on an older main is retired.
     let batch = &entry["batch"];
@@ -216,10 +229,30 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     Ok((evidence, Ok(())))
 }
 
+/// The relaxed policy's gate (YN-18 S2d): the PR's own CI is green at the
+/// head (checked before), on whatever main it tested, and Core's own merge of
+/// the head into the current main is clean. That merge is the probe: Core's
+/// branch at main with the head merged in and no PR, so no CI; its tree is the
+/// tree the merge must land, which the post-check compares. A probe or batch
+/// already on this main is reused; one on an older main is retired first.
+async fn relaxed_gate(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str, newest: &[Value], mut evidence: Value) -> Result<(Value, Check<()>)> {
+    let (probe, made) = build_batch(ws, t, entry, main, false).await?;
+    evidence["batch"] = probe.clone();
+    if let Err(hold) = made {
+        return Ok((evidence, Err(hold)));
+    }
+    let tree = probe["tree"].as_str().context("The probe has no tree")?;
+    evidence["gate"] = json!({"kind":"relaxed","tree":tree,
+        "probe":{"branch":probe["branch"],"commit":probe["commit"],"tree":tree,"main":main},
+        "runs":newest.iter().map(|r| json!({"workflow":r["name"],"run":r["id"],"attempt":r["run_attempt"],"conclusion":r["conclusion"],"headSha":r["head_sha"]})).collect::<Vec<_>>()});
+    evidence["wouldMerge"] = json!({"method":"merge","sha":t.head,"endpoint":format!("repos/{}/pulls/{}/merge", t.repo, t.number)});
+    Ok((evidence, Ok(())))
+}
+
 /// Build the entry's batch on `main` and wait for CI on it (design §3,
 /// batching). `why` says why CI on the PR itself does not count.
 async fn open_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str, mut evidence: Value, why: String) -> Result<(Value, Check<()>)> {
-    let (batch, made) = build_batch(ws, t, entry, main).await?;
+    let (batch, made) = build_batch(ws, t, entry, main, true).await?;
     evidence["batch"] = batch.clone();
     if let Err(hold) = made {
         return Ok((evidence, Err(hold)));
@@ -318,7 +351,10 @@ async fn batch_gate(ws: &Arc<Workspace>, t: &Target, main: &str, b: &Value, requ
 /// Build the entry's batch on `main` (design §3, batching), resuming whatever
 /// an earlier, interrupted check of it already wrote. Each step is recorded on
 /// the entry before the next write, so nothing Core made is ever forgotten.
-async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str) -> Result<(Value, Check<()>)> {
+/// Without `pull` it stops before the draft PR: the relaxed policy's probe,
+/// Core's own merge of the head into main that runs no CI (YN-18 S2d). A probe
+/// becomes a batch if the policy turns strict on the same main.
+async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str, pull: bool) -> Result<(Value, Check<()>)> {
     let old = &entry["batch"];
     if old.is_object() && old["main"] != main {
         let retired = cleanup(ws, entry).await?;
@@ -327,7 +363,7 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str)
     }
     let branch = writes::branch(&t.id);
     let mut b = if old["main"] == main { old.clone() } else {
-        json!({"branch":branch,"main":main,"createdAt":crate::model::now(),"ref":false,"commit":null,"tree":null,"pr":null,"closed":false,"deleted":false})
+        json!({"kind":"probe","branch":branch,"main":main,"createdAt":crate::model::now(),"ref":false,"commit":null,"tree":null,"pr":null,"closed":false,"deleted":false})
     };
     let save = |b: Value| {
         let (id, attempt) = (t.id.clone(), t.attempt);
@@ -361,7 +397,11 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str)
             // An interrupted earlier check already merged the head here.
             read(ws, format!("repos/{repo}/git/commits/{at}")).await?
         } else {
-            let message = format!("{branch}: main {} + #{} at {} (CI only, do not merge)", short(main), t.number, short(&t.head));
+            let message = if pull {
+                format!("{branch}: main {} + #{} at {} (CI only, do not merge)", short(main), t.number, short(&t.head))
+            } else {
+                format!("{branch}: main {} + #{} at {} (merge check only, no PR; do not merge)", short(main), t.number, short(&t.head))
+            };
             let (code, answer) = writes::write(ws, repository, repo, Write::MergeIntoBranch { branch: &branch, head: &t.head, message }).await?;
             match code {
                 201 => answer,
@@ -389,6 +429,9 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str)
         b["tree"] = json!(checks::tree_of(&commit));
         save(b.clone()).await?;
     }
+    if !pull {
+        return Ok((b, Ok(())));
+    }
     if !b["pr"].is_u64() {
         let title = format!("queue: #{} at {} on main {} (CI only, do not merge)", t.number, short(&t.head), short(main));
         let body = format!(
@@ -406,6 +449,7 @@ async fn build_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str)
             _ => None,
         };
         b["pr"] = json!(number.with_context(|| format!("GitHub answered {code} opening the batch PR: {}", answer["message"]))?);
+        b["kind"] = json!("batch");
         save(b.clone()).await?;
     }
     Ok((b, Ok(())))
@@ -418,7 +462,8 @@ pub(super) enum MergeOutcome {
     Refused(String),
     /// The one request got no certain answer: it may have merged.
     Unknown(String),
-    /// Main moved since the check, so nothing was sent: check again.
+    /// Main moved, or the landing policy changed, since the check, so nothing
+    /// was sent: check again.
     Moved(String),
     /// Nothing was sent (the switch is off): check again later.
     Held(String),
@@ -454,6 +499,7 @@ pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<MergeOut
         super::store::Journal::Journaled => {}
         super::store::Journal::NotMerging => bail!("merge_moved_on: the entry is no longer merging"),
         super::store::Journal::Paused(detail) => return Ok(MergeOutcome::Paused(detail)),
+        super::store::Journal::PolicyChanged(detail) => return Ok(MergeOutcome::Moved(detail)),
     }
     match writes::write(ws, t.repository, &t.repo, Write::Merge { number: t.number, head: &t.head }).await {
         Ok((code, body)) => {
