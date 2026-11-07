@@ -306,11 +306,12 @@ try {
   assert.equal((await machines.innerText()).trim(), "1 machine · 1 unreachable");
   assert.match(await machines.getAttribute("title"), /devbox: reachable at its last check.*1 Agent disconnected/s);
   await machines.click();
-  const machinesPage = page.getByRole("dialog", { name: "Machines" });
-  await machinesPage.waitFor();
+  // Settings › Machines (YN-8): a page of Settings, its list first.
+  const machinesPage = page.locator(".modal.settings-modal");
+  await machinesPage.locator("#settings-editor-machines:not([hidden]) .settings-machines").waitFor();
   await page.keyboard.press("Escape");
   await machinesPage.waitFor({ state: "detached" });
-  check("remote machines, with one unreachable through its disconnected Agent; opens Machines");
+  check("remote machines, with one unreachable through its disconnected Agent; opens Settings › Machines");
   await shot("statusbar-light-1440.png");
 
   // Ends while the page is open, each told once.
