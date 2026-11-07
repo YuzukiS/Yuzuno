@@ -315,6 +315,48 @@ pub fn targets(messages: &[Value], boundary: &str, worktree: &str, folder: &str)
     Ok(found)
 }
 
+/// The files a 2.x revert to the user message `boundary` sends back, in
+/// 2.x's order (T-61 slice 5; 2.2.5 core/src/session/revert.ts `plan`): each
+/// assistant message after it, in the session's order, that has a snapshot
+/// `start`, each of its `files` once, with the first such message's `start`.
+/// The files are relative to the Git `toplevel` (`Snapshot.files`); each
+/// must be a plain path inside `folder`, the Agent's own, itself inside
+/// `toplevel`. Refused (D-24 (a): every file known or nothing asked) when a
+/// step after the boundary is one 2.x passes over in silence: a `start` with
+/// no list of its files, or no snapshot at all beside steps that had one.
+/// With no step snapshotted (snapshots off), 2.x sends nothing back.
+pub fn targets_v2(messages: &[Value], boundary: &str, toplevel: &str, folder: &str) -> Result<Vec<Target>> {
+    ensure!(toplevel != "/" && join(toplevel, &[]) == toplevel, "OpenCode's Git top level is not a plain absolute path ({toplevel})");
+    ensure!(folder == toplevel || folder.starts_with(&format!("{toplevel}/")), "The Agent's folder is not inside OpenCode's Git top level");
+    let at = messages.iter().position(|m| m["id"] == boundary)
+        .with_context(|| format!("OpenCode would revert nothing: {boundary} is not a message of this session"))?;
+    ensure!(messages[at]["type"] == "user", "A revert goes back to a user message, not to {boundary}");
+    let (mut found, mut with, mut without): (Vec<Target>, bool, bool) = (Vec::new(), false, false);
+    for message in messages[at + 1..].iter().filter(|m| m["type"] == "assistant") {
+        let Some(start) = message["snapshot"]["start"].as_str() else {
+            without = true;
+            continue;
+        };
+        with = true;
+        ensure!(matches!(start.len(), 40 | 64) && start.bytes().all(|b| b.is_ascii_hexdigit()),
+            "A step's snapshot is not an object ID ({start})");
+        let files = message["snapshot"]["files"].as_array()
+            .context("A step after the Turn has a snapshot but no list of its files: OpenCode would send none of them back")?;
+        for file in files {
+            let rel = file.as_str().context("A step's file is not a path")?;
+            ensure!(!rel.is_empty() && !rel.starts_with('/') && join(toplevel, &[rel]) == format!("{toplevel}/{rel}"),
+                "{rel} is not a plain path inside OpenCode's Git top level");
+            if found.iter().any(|t| t.rel == rel) {
+                continue;
+            }
+            let absolute = format!("{toplevel}/{rel}");
+            found.push(Target { rel: inside(&absolute, toplevel, folder)?, file: absolute, hash: start.into() });
+        }
+    }
+    ensure!(!(with && without), "A step after the Turn has no snapshot though others have: OpenCode would leave its changes as they are");
+    Ok(found)
+}
+
 /// `file` relative to `worktree`, as OpenCode works it out (`path.relative`),
 /// when it is a plain path inside `folder`.
 fn inside(file: &str, worktree: &str, folder: &str) -> Result<String> {

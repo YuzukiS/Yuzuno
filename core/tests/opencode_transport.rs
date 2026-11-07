@@ -434,6 +434,27 @@ async fn a_message_delivered_between_the_two_reads_of_it_is_found() {
     server.shutdown().await.unwrap();
 }
 
+/// A whole read takes the session's inbox first, then its messages and
+/// status, then its inbox again (#699 R2 f4dafc6c, P3-d): an item 2.x moves
+/// from the inbox into the messages while it reads is in one of them. It
+/// begins on this process's own clock, after any earlier tick.
+#[tokio::test]
+async fn a_whole_read_takes_the_inbox_before_and_after_the_messages() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    let earlier = server.tick();
+    let snapshot = server.snapshot(&session, &[]).await.unwrap();
+    assert!(snapshot.began > earlier, "begun after an earlier tick: {} vs {earlier}", snapshot.began);
+    let (inbox, messages) = (format!("/api/session/{session}/inbox"), format!("/api/session/{session}/message"));
+    let reads: Vec<String> = lab.calls().iter().filter(|c| c["method"] == "GET").filter_map(|c| c["path"].as_str())
+        .filter(|path| *path == inbox || *path == messages).map(str::to_owned).collect();
+    let (first, last) = (reads.iter().position(|p| *p == inbox), reads.iter().rposition(|p| *p == inbox));
+    let message = reads.iter().position(|p| *p == messages);
+    assert!(first < message && message < last && first.is_some(), "the inbox, then the messages, then the inbox again: {reads:?}");
+    server.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn a_lost_answer_stays_unknown_is_never_sent_again_and_is_found_by_its_id() {
     let lab = lab();

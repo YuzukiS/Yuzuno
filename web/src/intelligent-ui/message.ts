@@ -11,8 +11,10 @@ export type { ResultProblem };
 export type ReplySegment =
   | { kind: "text"; text: string }
   | { kind: "result"; raw: string; spec: ResultSpec; defaults: string[] }
-  /** Not closed yet while the reply is still being written. */
-  | { kind: "pending"; raw: string }
+  /** Not closed yet while the reply is still being written. `extra`: an
+   * earlier block is shown, so this one will not be (it is not drawn as it
+   * is written either). */
+  | { kind: "pending"; raw: string; extra?: true }
   | { kind: "invalid"; raw: string; problem: ResultProblem };
 
 const MULTIPLE: ResultProblem = {
@@ -84,7 +86,9 @@ export function parseReply(text: string, complete: boolean): ReplySegment[] | nu
     textStart = cursor;
     const raw = token.text;
     if (!closed(token.raw)) {
-      segments.push(complete ? { kind: "invalid", raw, problem: UNFINISHED } : { kind: "pending", raw });
+      segments.push(
+        complete ? { kind: "invalid", raw, problem: UNFINISHED } : { kind: "pending", raw, ...(shown ? { extra: true as const } : {}) },
+      );
       continue;
     }
     if (shown) {

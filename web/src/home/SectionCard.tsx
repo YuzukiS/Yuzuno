@@ -226,6 +226,11 @@ export const SectionCard = memo(function SectionCard({
           {t.notMaintained}
         </span>
       )}
+      {!!section.repairs?.length && (
+        <span className="home-repaired" title={t.repairedTitle(section.owner.name)}>
+          {t.repaired}
+        </span>
+      )}
     </>
   );
   const seenButton = changed && !readOnly && (

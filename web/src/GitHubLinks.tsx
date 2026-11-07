@@ -267,7 +267,7 @@ const queueText = strings({
   unpause: "Unpause",
   landing: (name: string) =>
     name === "core-merge"
-      ? "Lands with core-merge: Core sends the merge itself. GitHub auto-merge and GitHub's merge queue come in core.25."
+      ? "Lands with core-merge: Core sends the merge itself. This Core has no GitHub auto-merge or GitHub merge queue landing."
       : `Lands with ${name}, which this Core does not have: nothing merges here.`,
 }, {
   label: (name) => `${name} 的合并队列`,
@@ -289,7 +289,7 @@ const queueText = strings({
   unpause: "解除暂停",
   landing: (name) =>
     name === "core-merge"
-      ? "落地方式 core-merge：由 Core 自己发出合并。GitHub 自动合并与 GitHub 合并队列将在 core.25 提供。"
+      ? "落地方式 core-merge：由 Core 自己发出合并。这个 Core 没有 GitHub 自动合并或 GitHub 合并队列这两种落地方式。"
       : `落地方式 ${name}：此 Core 没有这种方式，这里不会合并任何 PR。`,
 });
 

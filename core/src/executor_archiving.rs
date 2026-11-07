@@ -204,16 +204,8 @@ pub(crate) fn follow_archive(db: &Connection, agent: &Agent) -> Result<()> {
         .flatten();
     let Some(name) = name else { return Ok(()) };
     let at = now();
-    db.execute(
-        "INSERT INTO project_briefs(project_id,version,updated_at)
-         SELECT DISTINCT project_id,1,?2 FROM project_brief_sections WHERE owner_id=?1 AND live=1
-         ON CONFLICT(project_id) DO UPDATE SET version=version+1,updated_at=excluded.updated_at",
-        params![agent.id, at],
-    )?;
-    db.execute(
-        "UPDATE project_brief_sections SET owner_id=?2,owner_name=?3 WHERE owner_id=?1 AND live=1",
-        params![agent.id, dispatcher, name],
-    )?;
+    // Recorded as a write of the handed-over keys (YN-14 follow-up).
+    crate::project_brief::hand_over(db, &agent.id, dispatcher, &name)?;
     let task = task.as_deref().and_then(|t| task_key(db, t).ok()).map(|(id, _)| crate::collaboration_store::task_shown(db, &id));
     for proposal in crate::task_proposals::undecided(db, &agent.id)? {
         let id = uuid::Uuid::new_v4().to_string();

@@ -67,6 +67,8 @@ export const BRIEF_LIMITS = {
   problems: MAX_PROBLEMS,
   // One brief_update's rejection, across its sections; Core enforces it.
   callProblems: 10,
+  // Repairs Core makes on one section before it refuses it as sent (YN-14 A1).
+  repairsPerSection: 8,
   keyPattern: BRIEF_KEY_PATTERN.source,
   // Advice only (T-176, brief-advice.ts): adjustable hints in characters
   // (Unicode code points) and references, never a limit; Core sends at most
@@ -520,7 +522,7 @@ export const BRIEF_PROBLEM_CODES = {
   missing_source: "A sourceIds entry with no matching source.",
   chart_data: "A chart without exactly one of series or data.",
   missing_attachment: "A name not in the section's attachments.",
-  unused_attachment: "An attachment not used by a reachable Attachments block or chart data; add a reference or remove its registration with put.",
+  unused_attachment: "An attachment an edit leaves unused by a reachable Attachments block or chart data (a put's unused one is shown instead, see Repairs); add a reference or remove its registration with put.",
   chart_attachment: "A chart attachment that is not a CSV, JSON or JSONL file with a path.",
   attachment_location: "An attachment without exactly one of path or url, or with a path that is not absolute or a url that is not https.",
   duplicate_attachment: "Two attachments share a name.",
@@ -539,6 +541,24 @@ export const BRIEF_ADVICE_CODES = {
   summary_may_be_missing: "A Table or chart and no non-empty Markdown, Findings or Metrics block.",
   duplicate_ref: "One LiveRefs or Sources block that names the same target twice.",
   many_refs: `Over ${L.advice.refs} LiveRefs and Sources entries in one section, each target counted once per block.`,
+} as const;
+
+/**
+ * What Core may repair in a section the strict check refuses (YN-14 A1,
+ * brief-repair.ts): it then accepts the repaired section and lists each repair.
+ */
+export const BRIEF_REPAIR_CODES = {
+  component_to_markdown: "An unknown component without children became a Markdown block of its text, HTML-escaped; one with no text was removed.",
+  component_to_group: "An unknown component with children, or a BriefBody below the root, became a Group.",
+  renamed_field: "A field given another name, or put outside props, was moved to the name the component uses (e.g. Findings file to source).",
+  dropped_field: "A field the component does not have was removed.",
+  filled_id: "A missing id was filled in, or one used twice was made unique.",
+  normalized_value: "A value in another letter case, or a listed synonym (Plan in_progress, completed, pending), became the value the component uses.",
+  filled_default: "A Finding without severity got info; a Table row's missing cell became empty.",
+  reply_options: "Ask reply options given as text, or with other field names, became {id, label}.",
+  fixed_tree: "A child naming no element was removed; an element nothing showed was added at the end of the root (removed, for an edit that unlinked it); or the root was set to the body's BriefBody.",
+  dropped_layout: "Columns widths, a BriefBody summary slot or a details entry that did not fit was removed.",
+  showed_attachment: "A put's registered attachment that nothing showed was added to an Attachments block under the root.",
 } as const;
 
 export const BRIEF_GUIDE_PARTS = ["sections", "ask", "content", "charts", "research", "attachments", "limits", "errors", "examples"] as const;
@@ -1609,8 +1629,8 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `- path: an absolute path on the machine where Core runs. Files up to 25 MB are kept as a snapshot when you write the section; larger files and directories are only referenced and marked "may have changed".`,
     `- url: an https link, shown as a link only, never embedded.`,
     `Images, data files (CSV, JSON, JSONL), PDF, logs and text (the last 200 lines are previewed) and links. Show them in the body with Attachments; charts read data files (see charts).`,
-    `Registration alone saves/references a file; it does not show it. Every attachment in a put must be used by a reachable Attachments.items entry with the exact name, or by LineChart/BarChart/ScatterChart data.attachment. Markdown/Sources mentions and disconnected blocks do not count. Multiple components may use the same name. Chart data use does not also display a file preview; add Attachments if that is wanted.`,
-    `An unused_attachment rejection leaves the old content, snapshots and ask state unchanged. Add a reachable Attachments block, reference a supported data file from a chart, or put the section without the unused registration. Checks use the final merged body, not just an edit's blocks. Existing sections/history remain readable. An unrelated edit keeps already-unused old registrations; removing a previously used attachment's last reference is rejected. A put checks every registration, including old ones.`,
+    `Registration alone saves/references a file; it does not show it. Show every attachment of a put where it belongs: in a reachable Attachments.items entry with the exact name, or as LineChart/BarChart/ScatterChart data.attachment. Markdown/Sources mentions and disconnected blocks do not count; a put's registration nothing uses is added to an Attachments block at the end of the root and listed in repairs (showed_attachment), never refused. Multiple components may use the same name. Chart data use does not also display a file preview; add Attachments if that is wanted.`,
+    `An edit is never repaired that way: one that removes a previously used attachment's last reference is refused with unused_attachment, which leaves the old content, snapshots and ask state unchanged. Add a reachable Attachments block, reference a supported data file from a chart, or put the section without that registration. Checks use the final merged body, not just an edit's blocks. Existing sections/history remain readable. An unrelated edit keeps already-unused old registrations. A put checks every registration again, old ones included, and shows an unused one.`,
     `Image preview example: ${JSON.stringify(BRIEF_EXAMPLES.image)}`,
     `Chart-only data example: ${JSON.stringify(BRIEF_EXAMPLES.status)}`,
     `Attach what the user should look at: a screenshot or a sketch (its caption says which) and the data file a chart reads. Logs, raw data, full tables and test output are execution evidence: leave them on their Task and link it with LiveRefs instead of attaching them here.`,
@@ -1630,6 +1650,8 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `A rejected brief_update lists problems {code, path, reason, guide}: at most ${MAX_PROBLEMS} for each section's format and at most ${L.callProblems} in all. moreProblems says how many more Core found past ${L.callProblems}; problems past a section's ${MAX_PROBLEMS} are not found or counted. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `- ask_only: Your current Project permission allows only your own valid asks, removing your own older sections, and optional noChange. A Project's leads edit Home; the user chooses them. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
+    `Repairs: when a section fails these checks for a slip Core can fix without guessing, Core repairs it and accepts the update instead: the answer (and a validateOnly check that passes) lists repairs {code, path, reason, guide}, at most ${L.callProblems} in all (moreRepairs counts the rest), a section that needs more than ${L.repairsPerSection} is refused as sent, and Home marks the section while a repair stays: a put replaces them all; an edit removes those of the blocks it replaces, and those of the section as a whole (its tree, the root's layout, an ask's options) stay until a put. Send it right next time: the repairs say what Core changed. Outside the body Core repairs only an ask's reply options (reply_options), and a put's unused registration is shown in the body, never changed or removed: it never repairs key, kind, title, the ask's question or its other replies, status, time or an attachment's registration, nor an ask without a usable reply, anything over a limit, a reference to a file, source or research record, a ResearchDesk or Sources block, or content a component needs and you did not give (a Finding's source). When the repaired section still fails, the rejection lists the problems of the section as you sent it. Codes:`,
+    ...Object.entries(BRIEF_REPAIR_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `Core also rejects version_conflict (a section you change was written after the version you read, or expectedVersion is ahead of the Brief; other sections' writes don't count; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), definition_changed (a ResearchDesk definition version whose text, citation or cited file or record differs from the section's previous version; see research), unsaved_definition also when Core kept no snapshot of a definition's cited file or the cited Task record is not a method record it can read, and changes that break owner, topic or open-ask rules.`,
   ],
   examples: [
@@ -1683,16 +1705,16 @@ export const BRIEF_TOOL_DESCRIPTIONS = {
     `Pass its version to brief_update as expectedVersion. projectId defaults to your own Project. Nothing requires reading or updating the Brief each turn. Formats: brief_guide.`,
   brief_update:
     `Write Brief changes when something changed; nothing requires a call each turn. Ask-only members may write only their own Asks. Pass expectedVersion (from ` +
-    `brief_get) and a new requestId (reuse it only to retry the same call). Send changes:[...] (noChange:true ` +
+    `brief_get) and a new requestId (reuse it only to retry). Send changes:[...] (noChange:true ` +
     `changes nothing). Changes: put {op:"put", key, kind, title, body, ask?, status?, time?, attachments?} ` +
     `creates or replaces a section you own; edit {op:"edit", key, elements:{<id>: block}} replaces only those ` +
     `blocks; resolve {op:"resolve", key} resolves your ask; remove {op:"remove", key} ` +
-    `removes your section; claim {op:"claim", key} takes an orphaned section of your Project (change it in a later call). ` +
+    `removes your section; claim {op:"claim", key} takes an orphaned section (change it in a later call). ` +
     `key is topic or topic/sub ` +
-    `(a-z, 0-9, -); add to another Agent's section with a topic/sub key of your own. kind ask needs ask {question, reply} ` +
-    `with reply options, freeText, form or choice; kind status needs status {asOf, validFor}. body is {root, elements} ` +
-    `with a BriefBody root. A rejection lists problems {code, path, reason, guide}: fix them and retry with a new ` +
-    `requestId; on version_conflict merge with the latest it returns. validateOnly:true pre-checks without writing. ` +
+    `(a-z, 0-9, -); add to another Agent's section with a topic/sub key of your own. kind ask needs ask {question, reply: ` +
+    `options, freeText, form or choice}; kind status needs status {asOf, validFor}. body is {root, elements} ` +
+    `with a BriefBody root. Small slips are repaired and listed in repairs. A rejection lists problems {code, path, reason, guide}: fix them and retry with a new ` +
+    `requestId; on version_conflict merge the latest it returns. validateOnly:true pre-checks without writing. ` +
     `Content never executes actions. Formats: brief_guide.`,
   brief_guide:
     `The Project Brief format guide, generated from the contract: sections and their kinds, ask replies, body components ` +

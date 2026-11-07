@@ -124,8 +124,9 @@ a dispatch can ask for. Without one, a dispatch makes a
 for every Project: you keep them in Settings, under **Executor templates**.
 A new template needs only a **Label** and a **Harness**; the other fields
 are under **More settings**, and left unset each inherits as described
-below. A Project's page has no templates of its own, only its own
-[Executors at once](#executors-at-once).
+below. A Project's page has no templates of its own. How many executors run
+at once is each machine's number ([Executors at once](#executors-at-once)),
+not a template's or a Project's.
 
 | Field | What it is |
 | --- | --- |
@@ -237,7 +238,7 @@ and is chosen unless you pick a template. Core then:
   where the task has a folder: its Project's there, or on this Core host a
   worktree. A dispatch that carries a worktree, a path on this Core host,
   runs on this Core host. Of those, in order:
-  1. one with a free executor slot (its own limit not reached);
+  1. one with a free executor slot (its number not reached: its own, else 3);
   2. the most spare memory of its Jobs budget (the budget less what Jobs
      reserve now); one with no budget comes after every one with one;
   3. the most spare CPU;
@@ -280,29 +281,38 @@ makes a general executor: an executor with no template.
 
 ## Executors at once
 
-At most this many executors run at the same time in the Workspace: 3 unless
-you change it, a whole number from 1 to 64, in Settings under **Executor
-templates**. A Project can have a limit of its own, on its page, and so can
-a machine: in **Machines**, a
-registered machine's in its editor and this Core host's on its card
-(`PUT /api/machines/{id}/executor-slots`, `local` for this Core host); left
-empty, only the Workspace's applies. Only you change them. Lowering a limit
-under the executors running there stops none of them: no more start there
-until fewer hold a slot.
+Each machine has a number of executors that run on it at once: this Core
+host, and each registered machine. It is 3 unless you change it, a whole
+number from 1 to 64, in **Machines**: a registered machine's in its editor,
+this Core host's on its card (`PUT /api/machines/{id}/executor-slots`, `local`
+for this Core host; null for the default). There is no other limit: the
+Workspace runs at most the machines' numbers added up, and a Project or a
+template has none of its own. Settings, under **Executor templates**, lists
+each machine's number and the total. Only you change them. Lowering a number
+under the executors running on that machine stops none of them: no more start
+there until fewer hold a slot.
 
-- **A template has no limit of its own** (T-43: the user's decision of
-  2026-11-07 leaves one limit per machine). The editor shows none, and the
-  next save of the templates drops an **At most at once** saved before.
-  Until then Core still holds that template's executors to it.
+- **From before (YN-2 S5).** The Workspace's number, a Project's and a
+  template's **At most at once** applied too. When this Core first opens a
+  Workspace, the Workspace's number, if you saved one, becomes this Core
+  host's own if it had none; a machine's saved number stays as it is, also
+  above the old total, and a registered machine with none runs the default.
+  What it did is kept in `workspace_meta` (`executors.slots.machines`). The
+  old numbers stay stored, unused, so an older Core opened again applies
+  them. A save of the Workspace's or a Project's number is refused with
+  `setting_removed`; a template's `maxConcurrent` from an older page is taken
+  and dropped for one release.
+
 - **The queue.** An executor dispatched while every slot is taken waits.
   Core starts the next one as soon as a slot is free, in the Jobs queue's
   order: any waiting more than 30 minutes first, then Projects in turn, each
   Project's in the order they were dispatched. Executors in no Project take
-  their turn together. One whose Project or template is at its own limit is
-  passed by the next that has room. A template's limit counts its executors
-  in every Project together; a general executor has no template limit.
+  their turn together. One whose machine is full is passed by the next that
+  has room on its own machine, so a full machine holds back none bound for
+  another.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
-  whether its executor is queued, with its place (`position`, 1 first),
+  whether its executor is queued, with its place (`position`, 1 first) and
+  the machine it waits for (`waitsFor`: `{machine, name, running, limit}`),
   starting (with `reason` when its start did not finish), or running. On a
   machine `auto` chose, the card's executor chip names it, with every
   candidate's numbers, or why it was left out, in its title: the lifecycle
@@ -312,12 +322,14 @@ until fewer hold a slot.
   it is closed, by anyone and in any way. A disconnect keeps it, so
   reconnecting never passes the limit. Closing one frees its slot for the
   next.
-- **Connect on a queued executor** is refused, with its place in the queue,
-  and changes nothing about it. To run more at once, raise the limit: the next
-  ones start right away.
+- **Connect on a queued executor** is refused, naming the machine it waits
+  for, how many of how many run there, and its place in the queue, and
+  changes nothing about it. To run more at once, raise that machine's number:
+  the next ones start right away.
 - **A start that fails.** A start fails when the runtime refuses it, or
   when it doesn't finish within the **start time limit**: 300 seconds unless
-  you change it, 30 to 3600, set beside Executors at once. Core then closes
+  you change it, 30 to 3600, the Workspace's, in Settings under **Executor
+  templates**. Core then closes
   the executor, keeps it, and rebuilds it once. The rebuild is a new dispatch
   of the same request by the same dispatcher. Its executor keeps the first
   one's place in the queue and works in the same folder. If that one fails

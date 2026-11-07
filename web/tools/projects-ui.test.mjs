@@ -849,6 +849,21 @@ test("Machines opens from the Workspace menu, reads nothing while open, and open
 });
 
 
+test("a project's settings have no executors block: how many run at once is each machine's (YN-2 S5)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    await openProject(page, "App"); // its own page (YN-8)
+    await waitFor(() => page.document.querySelector(".project-leads"), "the project's settings load");
+    await pause();
+    // A boolean, never the element: a failing assert would inspect a whole jsdom node.
+    assert.equal(Boolean(page.document.querySelector('[role="group"][aria-label="How many executors run at once"]')), false,
+      "a project's settings have no executors block");
+    assert.doesNotMatch(dialogOf(page).textContent, /how many of this project’s executors run at once/);
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally { page.close(); }
+});
+
 test("a Project's leads are the user's to set, from its open members that are not executors, and the rail marks them (T-33)", async () => {
   const page = await mount({
     storage: { "yuzuno.selected.ws-1": "a" },
@@ -1183,7 +1198,7 @@ test("the merge queue switch names every write before it turns on, and turns off
     const toggle = () => row.querySelector("input[role='switch']");
     assert.equal(row.getAttribute("aria-label"), "Merge queue for owner/repo");
     assert.ok(row.textContent.includes("Off: Core writes nothing to GitHub here."), "off says Core writes nothing");
-    assert.ok(row.textContent.includes("Lands with core-merge: Core sends the merge itself. GitHub auto-merge and GitHub's merge queue come in core.25."), "the landing and the tiers to come");
+    assert.ok(row.textContent.includes("Lands with core-merge: Core sends the merge itself. This Core has no GitHub auto-merge or GitHub merge queue landing."), "the landing, with no release promised for the others");
     toggle().click(); await pause();
     const confirm = row.querySelector(".merge-queue-confirm");
     assert.ok(confirm, "turning it on asks first");

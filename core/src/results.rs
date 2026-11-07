@@ -424,8 +424,11 @@ impl Validator {
     /// A validator without advice (before T-176) gives none.
     /// Only block edits supply previous_body, read from the stored row at
     /// the guarded Brief version; attachment registrations cannot change.
+    /// One Brief section: Ok((normalized, advice, repairs)) when the
+    /// validator accepted it, repairs being what it changed to accept it
+    /// (YN-14; none from a bundle that predates them), or the problems.
     pub(crate) async fn check_brief_section(self: &Arc<Self>, section: &Value, previous_body: Option<&Value>)
-        -> Result<Result<(Value, Vec<Value>), Value>, String> {
+        -> Result<Result<(Value, Vec<Value>, Vec<Value>), Value>, String> {
         let deadline = Instant::now() + DEADLINE;
         let queued = Waiting(&self.waiting);
         if self.waiting.fetch_add(1, Ordering::SeqCst) >= MAX_WAITING {
@@ -446,7 +449,8 @@ impl Validator {
                 }
                 Some(true) if answer["normalized"].is_object() => {
                     let advice = answer["advice"].as_array().cloned().unwrap_or_default();
-                    Ok(Ok((answer["normalized"].take(), advice)))
+                    let repairs = answer["repairs"].as_array().cloned().unwrap_or_default();
+                    Ok(Ok((answer["normalized"].take(), advice, repairs)))
                 }
                 Some(false) if answer["problems"].as_array().is_some_and(|p| !p.is_empty()) => Ok(Err(answer["problems"].take())),
                 _ => Err("unreadable validator answer".to_owned()),
