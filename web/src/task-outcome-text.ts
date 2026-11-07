@@ -44,6 +44,7 @@ export const outcomeText = strings(
       "This is an earlier submission. Its report and evidence are retained for that version.",
     workingWarning:
       "Work has continued since this report. See the task's current progress and owner.",
+    stepContinues: "An intermediate result; the work continues.",
     updates:
       "A newer outcome is available. This view is keeping the version you opened.",
     latest: "View latest outcome",
@@ -173,6 +174,7 @@ export const outcomeText = strings(
     historical: "历史提交",
     oldWarning: "正在查看历史提交。报告与证据保留在它们对应的版本。",
     workingWarning: "这份报告之后任务仍在推进，请同时查看当前进展与负责人。",
+    stepContinues: "这是阶段结果，工作仍在继续。",
     updates: "已有更新的成果。这里保留你打开的版本。",
     latest: "查看最新成果",
     refresh: "刷新已记录证据",

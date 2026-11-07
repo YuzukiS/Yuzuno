@@ -32,6 +32,18 @@ export type ExecutorTemplatesView = {
   defaultNamePattern: string;
   limits: { templates: number; instructionsBytes: number; maxConcurrent: number };
   opencodeEnabled: boolean;
+  /** What a general executor (`executor: {}`, YN-2) of the read Project would be made with now; absent from an older Core. */
+  general?: GeneralExecutor;
+};
+
+/** A general executor: no template, the harness of a new Agent there, and where that came from. */
+export type GeneralExecutor = { label: string; harness: string; harnessSource: "project" | "workspace" | "builtin" };
+
+const generalOf = (value: unknown): GeneralExecutor | undefined => {
+  const g = value as Partial<GeneralExecutor> | null | undefined;
+  return g && typeof g.harness === "string" && typeof g.label === "string"
+    ? { label: g.label, harness: g.harness, harnessSource: g.harnessSource === "project" || g.harnessSource === "workspace" ? g.harnessSource : "builtin" }
+    : undefined;
 };
 
 /** The view as this client reads it: lists, even from an answer without them. */
@@ -48,6 +60,7 @@ export const templatesView = (value: Partial<ExecutorTemplatesView>): ExecutorTe
     defaultNamePattern: value.defaultNamePattern || "{task} · {label}",
     limits: value.limits ?? { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 },
     opencodeEnabled: value.opencodeEnabled === true,
+    ...(generalOf(value.general) ? { general: generalOf(value.general) } : {}),
   };
 };
 

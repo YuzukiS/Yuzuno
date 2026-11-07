@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Check, GitPullRequest, Server, Sparkles, Workflow, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Bot, Check, ChevronDown, GitPullRequest, Server, Sparkles, Workflow, X } from "lucide-react";
 import { api } from "./api";
 import { CoreBacklog } from "./CoreBacklog";
 import { limitWindows } from "./ClaudeControls";
@@ -57,6 +58,14 @@ const words = strings({
   unchecked: "not checked yet",
   machine: (name: string, check: string, off: number) => `${name}: ${check}${off ? `; ${off} Agent${off === 1 ? "" : "s"} disconnected` : ""}`,
   openMachines: "Open Machines",
+  // The way into all of this from the toolbar, where the bar itself has no
+  // room to stand (T-15 V5).
+  details: "Core and background work",
+  detailsNeed: (count: number) => `${count} need${count === 1 ? "s" : ""} a look`,
+  detailsQuiet: "nothing needs a look",
+  // Core's own state, said in words: in the entry's name always, beside the
+  // dot whenever it is not simply connected, and in the panel (T-15 V5).
+  detailsCore: (core: string, work: string) => `${core} · ${work}`,
 }, {
   specimen: "视觉样本",
   reconnecting: "实时更新正在重新连接",
@@ -97,6 +106,10 @@ const words = strings({
   unchecked: "尚未检查",
   machine: (name, check, off) => `${name}：${check}${off ? `；${off} 个 Agent 已断开` : ""}`,
   openMachines: "打开“机器”",
+  details: "Core 与后台工作",
+  detailsNeed: (count) => `${count} 个待查看`,
+  detailsQuiet: "没有待查看的",
+  detailsCore: (core, work) => `${core} · ${work}`,
 });
 type Words = ReturnType<typeof words>;
 
@@ -116,6 +129,8 @@ export function StatusBar({
   machinesRevision,
   claudeRuntime,
   codexAgent,
+  coreLabel,
+  coreHealthy,
   onMachines,
 }: {
   previewMode: boolean;
@@ -130,6 +145,9 @@ export function StatusBar({
   claudeRuntime?: ClaudeRuntime | null;
   /** The selected Agent when it is a Codex one: its plan usage shows. */
   codexAgent?: Agent | null;
+  /** How Core is, in the words the toolbar says it in (coreConnection). */
+  coreLabel: string;
+  coreHealthy: boolean;
   onMachines: () => void;
 }) {
   const language = useLanguage();
@@ -138,9 +156,103 @@ export function StatusBar({
   const plan = usePlan(claudeRuntime, language);
   const codex = useCodex(previewMode ? null : codexAgent ?? null, eventConnection === "open", language);
   const machines = useMachines(machinesRevision, !previewMode, agents, language);
+  // On a middle-sized workbench this bar costs 27px of a 669px-tall screen to
+  // hold what is quiet most of the time, so there it stops being a bar and
+  // becomes a panel under the toolbar, opened from the Core status entry
+  // (T-15 V5). Which of the two applies is decided in CSS — statusbar.css,
+  // by the same screen it is a rule about — and this subtree is mounted once
+  // either way: as two copies, everything in it that reads from Core (its
+  // backlog among them) would have asked Core twice.
+  const [open, setOpen] = useState(false);
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  const entry = useRef<HTMLButtonElement | null>(null);
+  const panel = useRef<HTMLElement | null>(null);
+  useEffect(() => setSlot(document.getElementById("core-status-slot")), []);
+  // Escape and a press outside close it, and Escape hands focus back, which
+  // a press does not: the press has already chosen where it is going.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      entry.current?.focus();
+    };
+    const onDown = (event: PointerEvent) => {
+      const at = event.target as Node | null;
+      if (!at || panel.current?.contains(at) || entry.current?.contains(at)) return;
+      setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [open]);
+  // The live updates, said in words when they are not simply open. Core can
+  // answer while its stream is reconnecting, and the bar shows that on its
+  // own line; folded into the entry it was neither counted nor announced,
+  // because the entry read `coreHealthy` only (#459 new pair, P3).
+  const stream =
+    previewMode || eventConnection === "open"
+      ? ""
+      : eventConnection === "reconnecting"
+        ? t.reconnecting
+        : t.connecting;
+  // What the entry says while it is closed, so that folding the bar away
+  // hides nothing that was asking for attention. Counts of work in progress
+  // (reviews, CI runs) are not in it: those are going on, not waiting.
+  const needsLook =
+    (background.notice && !background.notice.ok ? 1 : 0) +
+    (machines?.unreachable || 0) +
+    (plan?.limited ? 1 : 0) +
+    (codex?.limited ? 1 : 0) +
+    (stream ? 1 : 0);
+  // "Simply connected" is Core answering *and* its updates open: either one
+  // short of that is written out, not left to the dot's colour (row 6).
+  const settled = coreHealthy && !stream;
+  // Both states in the words it is read by, each said once.
+  const said = [coreLabel, stream].filter(Boolean).join(" · ");
   return (
-    <footer className="statusbar">
+    <footer className="statusbar" id="core-status-details" ref={panel} data-open={open ? "" : undefined}>
+      {slot &&
+        createPortal(
+          <button
+            type="button"
+            ref={entry}
+            className={`core-status-entry${needsLook ? " needs-look" : ""}`}
+            aria-expanded={open}
+            aria-controls="core-status-details"
+            onClick={() => setOpen((was) => !was)}
+          >
+            {/* The dot and the chevron are one target. The toolbar's own
+                `.connection` keeps data-core-status and is the one indicator
+                in the page; on this screen it is not shown, and this says the
+                same thing in its place rather than beside it.
+                The name is read, not seen — Core's state and the count are
+                both in it, and no aria-label stands in front of either. */}
+            <span className="core-status-mark" data-healthy={settled ? "" : undefined} aria-hidden="true" />
+            <span className="sr-only">{t.detailsCore(said, needsLook > 0 ? t.detailsNeed(needsLook) : t.detailsQuiet)}</span>
+            {/* Core not answering is written out: that is not a colour a
+                reader can be asked to tell apart. The stream's own state is
+                not — the words are in the name above and in the panel, and
+                the count below stands for it here. Measured on the screen
+                this entry exists for, "Live updates reconnecting" takes the
+                entry to 289px of a 413px actions area and lies over the
+                toolbar's Jobs and Tasks buttons; ellipsised it still eats
+                the room and says less (t15-touch, t15-status-stream). */}
+            {!coreHealthy && (
+              <span className="core-status-state" aria-hidden="true">{coreLabel}</span>
+            )}
+            {needsLook > 0 && (
+              <span className="core-status-count" aria-hidden="true">{t.detailsNeed(needsLook)}</span>
+            )}
+            <ChevronDown className="core-status-chevron" size={14} aria-hidden="true" />
+          </button>,
+          slot,
+        )}
       <div className="statusbar-start">
+        <span className="statusbar-item statusbar-core">{coreLabel}</span>
         {previewMode && <span className="statusbar-item">{t.specimen}</span>}
         {!previewMode && eventConnection !== "open" && (
           <span className="statusbar-item event-connection-status" role="status">

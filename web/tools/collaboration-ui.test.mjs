@@ -446,20 +446,21 @@ test("task delegation defaults to normal and only requests urgent delivery when 
   }
 });
 
-test("a task goes to a new executor from a template of its project, then the workspace, sent as the template (T-34)", async () => {
+test("a task goes to a new executor: a general one unless a template of its project, then the workspace, is chosen (T-34, YN-2)", async () => {
   let current = task({ projectId: "p-app" });
   const available = [
     { template: { id: "reviewer", label: "Reviewer", harness: "claude" }, source: "project" },
     { template: { id: "builder", label: "Builder", harness: "codex" }, source: "workspace" },
   ];
-  const view = (list) => ({ workspace: { version: 1, templates: [] }, available: list, defaultNamePattern: "{task} · {label}",
-    limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false });
+  const view = (list, general) => ({ workspace: { version: 1, templates: [] }, available: list, defaultNamePattern: "{task} · {label}",
+    limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false, general });
   const page = mount((operation) => {
     if (operation === "task_list") return { tasks: [current], hasMore: false };
     if (operation === "task_get")
       return { task: current, activities: [], executions: [], hasMore: false };
-    if (operation === "executor-templates?projectId=p-app") return view(available);
-    if (operation === "executor-templates") return view([]);
+    if (operation === "executor-templates?projectId=p-app")
+      return view(available, { label: "Executor", harness: "claude", harnessSource: "project" });
+    if (operation === "executor-templates") return view([], { label: "Executor", harness: "codex", harnessSource: "builtin" });
     if (operation === "task_dispatch") {
       current = { ...current, version: current.version + 1, assigneeAgentId: "executor-1", projectId: null };
       return { task: current, agentId: "executor-1" };
@@ -477,12 +478,17 @@ test("a task goes to a new executor from a template of its project, then the wor
     assert.ok(field(page, "Send to"), "with its agent picker");
     choices()[1].click();
     await tick();
-    const picker = await waitFor(() => !field(page, "Template")?.disabled && field(page, "Template"), "templates read");
+    // The form's last select is what a new executor is made as, under any label.
+    const picker = await waitFor(() => {
+      const select = [...page.document.querySelectorAll(".collab-inset select")].at(-1);
+      return select?.options.length === 3 && !select.disabled && select;
+    }, "templates read");
     assert.deepEqual([...picker.options].map((option) => option.textContent),
-      ["Choose a template", "Reviewer · this project’s", "Builder"], "the task project templates first, then the workspace ones");
-    assert.equal(field(page, "Send to"), undefined, "no agent picker for a template");
-    assert.match(page.document.querySelector(".collab-inset").textContent, /Core creates an agent for this task from the template/);
-    assert.equal(button(page, "Create and send").disabled, true, "nothing to send before a template is chosen");
+      ["General executor · Claude Code (this project’s default)", "Reviewer · this project’s", "Builder"],
+      "a general executor first, with the harness it would get, then the task project templates, then the workspace ones");
+    assert.equal(picker.value, "", "the general executor is chosen unless a template is");
+    assert.equal(field(page, "Send to"), undefined, "no agent picker for a new executor");
+    assert.match(page.document.querySelector(".collab-inset").textContent, /Core creates an agent for this task, a general one or from the template you choose/);
     await value(page, picker, "reviewer");
     click(page, "Create and send");
     await tick();
@@ -492,16 +498,22 @@ test("a task goes to a new executor from a template of its project, then the wor
     assert.equal(request.body.expectedVersion, 1);
     assert.equal(request.body.priority, "normal");
 
-    // A task in no project reads the workspace templates; with none, the
-    // form says where to add them, and sends nothing.
+    // A task in no project reads the workspace templates. With none, the
+    // form still sends a general executor, and says where templates are added.
     await waitFor(() => !page.document.querySelector(".collab-dispatch-from"), "form closed");
     click(page, "Give to agent");
     await tick();
     choices()[1].click();
     await waitFor(() => page.calls.some((call) => call.operation === "executor-templates"), "workspace templates read");
-    await waitFor(() => page.document.querySelector(".collab-inset").textContent.includes("No executor templates yet"), "empty hint");
-    assert.equal(field(page, "Template").disabled, true);
-    assert.equal(button(page, "Create and send").disabled, true);
+    await waitFor(() => page.document.querySelector(".collab-inset").textContent.includes("No executor templates yet: a general executor takes the defaults for new agents"), "empty hint");
+    assert.deepEqual([...field(page, "Made as").options].map((option) => option.textContent), ["General executor · Codex (built-in default)"]);
+    assert.equal(field(page, "Made as").disabled, false, "no template is needed");
+    assert.equal(button(page, "Create and send").disabled, false);
+    click(page, "Create and send");
+    await tick();
+    const general = page.calls.filter((call) => call.operation === "task_dispatch").at(-1);
+    assert.deepEqual(general.body.executor, {}, "a general executor names no template");
+    assert.equal(general.body.expectedVersion, 2);
     assert.equal(page.errors.length, 0, page.errors.join("\n"));
   } finally {
     page.close();

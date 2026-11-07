@@ -12,11 +12,22 @@ const menuText = strings({
   actionsFor: (name: string) => `Actions for ${name}`,
   actions: "Actions",
   menu: (name: string) => `${name} actions`,
+  // Where the Agent runs, which the list no longer keeps a line for (T-15).
+  runsOn: (machine: string, harness: string) => `Runs on ${machine} · ${harness}`,
+  /** This Core's own host, where an Agent with no remote machine runs. The
+   * rail's rows name it too (AgentRailRow). */
+  host: "Core host",
 }, {
   actionsFor: (name) => `${name} 的操作`,
   actions: "操作",
   menu: (name) => `${name} 的操作`,
+  runsOn: (machine, harness) => `运行位置：${machine} · ${harness}`,
+  host: "Core 主机",
 });
+/** The harness as it is written, not as it is keyed. */
+const harnessName: Record<string, string> = {
+  claude: "Claude Code", codex: "Codex", opencode: "OpenCode",
+};
 
 /** Where the menu opens, in viewport pixels. */
 export interface MenuPoint {
@@ -300,6 +311,7 @@ export function AgentActionsMenu({
             id={menuId}
             role="menu"
             aria-label={t.menu(menu.name)}
+            aria-describedby={`${menuId}-where`}
             lang={langTag(language)}
             className="agent-actions-menu"
             data-placed={!!placed}
@@ -310,6 +322,14 @@ export function AgentActionsMenu({
               event.stopPropagation();
             }}
           >
+            {/* Where this Agent runs, as words at the top of the menu: the row
+                itself no longer spends a line on it, and a title would only
+                answer a pointer. Named by the menu as well, so it is spoken
+                when the menu opens however it was opened (T-15). */}
+            <p className="agent-actions-where" id={`${menuId}-where`} role="note">
+              {t.runsOn(agent.remote?.machine.name || t.host,
+                harnessName[agent.harness ?? ""] ?? agent.harness ?? "Codex")}
+            </p>
             {menu.items.map((item) => {
               const Icon = icons[item.action];
               return (

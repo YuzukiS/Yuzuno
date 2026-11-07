@@ -12,9 +12,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { errorText } from "../../api";
-import { ImagePreview } from "../../ImageAttachments";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
-import { usePointFix, type PointFixSource } from "../../point-fix";
 import { useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
 import type { SectionAttachment } from "../types";
@@ -24,6 +22,7 @@ import { attachmentUrl, formatTime, type AttachmentsProps } from "./brief-catalo
 import { OpenChoice } from "../../portal/OpenChoice";
 import { htmlFile } from "../../portal/html-file";
 import { keptSnapshot, useKeptImage } from "./kept-image";
+import { useKeptImagePreview } from "./image-preview";
 import { CardFoldWorkspace } from "../card-fold";
 
 /** Rows of a data file shown inline; the file itself opens in full. */
@@ -312,10 +311,6 @@ function Path({ path }: { path: string }) {
   );
 }
 
-/** An image as it was when the preview opened: a later update of the card
- * never changes the image being looked at or marked (T-177). */
-type Shown = { url: string; version: number; takenAt: string; title: string; ownerId: string };
-
 /** The longest side Core gives a kept image a size for. */
 const IMAGE_SIDE = 65_535;
 
@@ -395,9 +390,12 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   const time = useTimeDisplay();
   const t = useStrings(briefText);
   const { projectId, section } = useBrief();
-  const markUp = usePointFix();
-  const [shown, setShown] = useState<Shown | null>(null);
   const attachment = section.attachments.find((item) => item.name === name);
+  const label = caption || attachment?.caption;
+  // A kept image opens whole in the app, as a conversation's images do,
+  // rather than in a browser tab (T-177), as from its card on Home (YN-3).
+  const image = !!attachment?.snapshot && attachment.kind === "image";
+  const viewer = useKeptImagePreview(projectId, section, image ? attachment : undefined, label);
   if (!attachment)
     return (
       <div className="brief-attachment">
@@ -412,44 +410,10 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
   const url = attachmentUrl(projectId, section.key, attachment.name, section.version);
   const link = attachment.kind === "link" && attachment.url ? sourceTarget(attachment.url) : null;
   const kept = attachment.snapshot && attachment.kind !== "link";
-  const label = caption || attachment.caption;
-  // A kept image opens whole in the app, as a conversation's images do,
-  // rather than in a browser tab (T-177).
-  const image = kept && attachment.kind === "image";
   // A kept HTML page opens working (T-5): its source only when asked for.
   const page = kept && attachment.kind !== "image" && htmlFile(attachment.name);
-  const preview = () =>
-    setShown({ url, version: section.version, takenAt: attachment.takenAt, title: section.title, ownerId: section.owner.agentId });
-  // Point & Fix on the image as shown, its source named for the Agent told.
-  // The card's author is offered first; without one, the user chooses.
-  const source = (at: Shown): PointFixSource => ({
-    name: attachment.name,
-    ownerId: at.ownerId,
-    chooseWithoutOwner: true,
-    provenance: `the image “${attachment.name}” on the Home card “${at.title}” (project ${projectId}, section ${section.key}, version ${at.version}; snapshot taken ${at.takenAt})`,
-    load: async (signal) => {
-      const response = await fetch(at.url, { signal });
-      if (!response.ok) throw new Error(`the snapshot cannot be read (HTTP ${response.status})`);
-      return response.blob();
-    },
-  });
-  const imagePreview = image ? (
-    <ImagePreview
-      open={!!shown}
-      src={shown?.url ?? ""}
-      name={attachment.name}
-      // Its caption is the title; the file, its size and when it was taken follow (T-20).
-      caption={label || undefined}
-      description={t.imageSnapshot("", formatTime(shown?.takenAt ?? attachment.takenAt, time))}
-      unavailable={t.imageUnavailable}
-      onClose={() => setShown(null)}
-      onAnnotate={markUp && shown ? () => {
-        const at = shown;
-        setShown(null);
-        markUp(source(at));
-      } : undefined}
-    />
-  ) : null;
+  const preview = viewer.open;
+  const imagePreview = viewer.dialog;
   // A kept image (T-9): the picture whole, then what it shows; the file's
   // details are there when asked for. What the user must know (it may have
   // changed, it could not be loaded) stays in view.

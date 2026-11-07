@@ -4,6 +4,8 @@ import { errorText, HttpError, shortcutModifier } from "../api";
 import { CopyButton } from "../components";
 import { useStrings } from "../i18n";
 import { useSurfaceIn } from "../surface";
+import { returnKey, returnSends, useDevicePreferences } from "../device-preferences";
+import { touchKeyboard } from "../touch-input";
 import type { Agent } from "../types";
 import { TargetPicker } from "./AskReply";
 import { dropPendingReply, outboxKey, pendingReply, sendReply } from "./home-api";
@@ -148,6 +150,7 @@ export function CardReply({
   onClose?: () => void;
 }) {
   const t = useStrings(homeText);
+  const { sendKey } = useDevicePreferences();
   const slot = cardReplySlot(workspaceId, projectId, section.key);
   const { draft, busy, error, sent } = useReplyState(slot);
   const ownerOpen = section.owner.state === "active" && agents.some((a) => a.id === section.owner.agentId);
@@ -279,7 +282,8 @@ export function CardReply({
           onChange={(event) => change({ text: event.target.value })}
           onKeyDown={(event) => {
             if (event.nativeEvent.isComposing) return;
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            // Return sends as it does from the conversation's composer (YN-3, device-preferences.ts returnKey).
+            if (returnKey(event.nativeEvent, sendKey, touchKeyboard)) {
               event.preventDefault();
               void send();
             } else if (event.key === "Escape" && onClose) {
@@ -288,7 +292,7 @@ export function CardReply({
             }
           }}
         />
-        <button type="submit" className="primary-button" disabled={busy || !target || !draft.text.trim()} title={t.sendTitle(shortcutModifier)}>
+        <button type="submit" className="primary-button" disabled={busy || !target || !draft.text.trim()} title={returnSends(sendKey, touchKeyboard()) ? t.sendTitleReturn : t.sendTitle(shortcutModifier)}>
           {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
           {t.send}
         </button>

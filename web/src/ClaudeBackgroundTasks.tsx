@@ -206,5 +206,17 @@ export function ConversationBackgroundTaskDock({ agent, turns: loaded, running, 
     return () => clearTimeout(timer);
   }, [nextExpiry]);
   if (!entries.length) return null;
-  return <SubAgentDock agentId={agent.id} turns={NO_TURNS} entries={entries} onNavigate={onNavigate} group={groupOf(language)} />;
+  // Its own kind: the same component also draws the conversation's
+  // sub-agents, and sharing "subAgent" made the two overwrite each other's
+  // work and clear it on unmount (#459 round 1, P1).
+  return (
+    <SubAgentDock
+      agentId={agent.id}
+      turns={NO_TURNS}
+      entries={entries}
+      onNavigate={onNavigate}
+      group={groupOf(language)}
+      kind="backgroundTask"
+    />
+  );
 }

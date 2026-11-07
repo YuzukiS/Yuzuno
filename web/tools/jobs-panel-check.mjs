@@ -342,8 +342,22 @@ try {
     assert.deepEqual(report.errors, []);
     report.status = "passed";
   } else {
-    // The conversation's column is centred in the whole pane between the
-    // jobs dock and the turn dock, and clear of both.
+    // The conversation's column is clear of the jobs dock and the turn dock,
+    // and placed by whichever rule its pane is wide enough for.
+    //
+    // A wide pane mirrors the gutters and centres the column in the whole
+    // pane. A pane of 760px or less does not: there, keeping a dock's width
+    // on the side that has no dock comes straight out of the text, so the
+    // column takes all the room between the two docks instead and sits
+    // against whichever gutter is larger (T-15 V6, turn-dock.css). Measured
+    // with the Jobs panel open and both docks present, that is 530 -> 555px
+    // of column at a 1180px window (a 664px pane) and 444 -> 535px at 980
+    // (a 760px pane), with clearLeft and clearRight true throughout; the
+    // column's centre then sits 12.5px and 45.5px off the pane's, which is
+    // the mirrored gutter it gave up, not a column out of place. So the
+    // measurement here is the room it fills, and centring is asked only
+    // where centring is still the rule (T-15, #459, deviation row 15).
+    const BAND = 760;
     const column = () =>
       page.evaluate(() => {
         const r = (s) => document.querySelector(s)?.getBoundingClientRect();
@@ -351,11 +365,18 @@ try {
         const inner = r(".conversation-inner");
         const left = r(".work-dock");
         const right = r(".turn-dock");
+        // The container the query is on, which is what decides the rule.
+        const container = r(".main-panel") || pane;
         return {
+          container: Math.round(container.width),
           offset: Math.round((inner.left + inner.width / 2 - (pane.left + pane.width / 2)) * 10) / 10,
           width: Math.round(inner.width),
           clearLeft: !left || inner.left >= left.right - 0.5,
           clearRight: !right || inner.right <= right.left + 0.5,
+          // What is left between the column and each dock: the room it did
+          // not take. Nothing, when the column is the room.
+          slackLeft: left ? Math.round((inner.left - left.right) * 10) / 10 : null,
+          slackRight: right ? Math.round((right.left - inner.right) * 10) / 10 : null,
           docks: [!!left, !!right],
         };
       });
@@ -366,11 +387,14 @@ try {
       const c = await column();
       centred.push({ viewport: width, ...c });
       assert.deepEqual(c.docks, [true, true], `both docks at ${width}`);
-      assert.ok(Math.abs(c.offset) <= 4, `centred at ${width}: ${JSON.stringify(c)}`);
       assert.ok(c.clearLeft && c.clearRight, `clear of both docks at ${width}: ${JSON.stringify(c)}`);
+      if (c.container <= BAND)
+        assert.ok(c.slackLeft <= 2 && c.slackRight <= 2,
+          `the column fills the room between the docks at ${width}: ${JSON.stringify(c)}`);
+      else assert.ok(Math.abs(c.offset) <= 4, `centred at ${width}: ${JSON.stringify(c)}`);
     }
     await page.setViewportSize({ width: 1440, height: 900 });
-    check("the conversation stays centred in the pane between the jobs and turn docks", { centred });
+    check("the conversation's column is clear of both docks, centred in a wide pane and the room itself in a middling one", { centred });
 
     // The dock shows how long a running job has run so far, as it shows a
     // finished one's time, and keeps counting.

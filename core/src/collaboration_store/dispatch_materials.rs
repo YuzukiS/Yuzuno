@@ -462,8 +462,17 @@ pub(super) fn body(snapshot: &Value) -> String {
         "supplement",
         2_000,
     );
-    // A template dispatch's executor gets its template's instructions (T-34).
-    if snapshot["template"].is_object() {
+    // A general executor (YN-2) has no template: its instructions are the
+    // handover and this task's materials.
+    if snapshot["template"]["source"] == "builtin" {
+        field(
+            "Executor",
+            &json!("General executor, made from the defaults for new Agents; no template, so its instructions are the Project handover and this task's materials"),
+            "template",
+            200,
+        );
+    } else if snapshot["template"].is_object() {
+        // A template dispatch's executor gets its template's instructions (T-34).
         let template = &snapshot["template"];
         field(
             "Executor template",

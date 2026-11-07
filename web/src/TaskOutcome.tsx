@@ -23,6 +23,7 @@ import { openJobs } from "./Jobs";
 import { useStrings } from "./i18n";
 import { outcomeText } from "./task-outcome-text";
 import {
+  isStepResult,
   outcomeLink,
   reportCounts,
   resultVersion,
@@ -576,6 +577,7 @@ export function TaskOutcome({
     !!task.result?.id &&
     task.result.id !== page.currentResultId;
   const working = !!result && !["review", "done"].includes(task.status);
+  const step = isStepResult(task);
   const selectedCounts = reportCounts(selected?.outcome);
 
   return (
@@ -603,7 +605,7 @@ export function TaskOutcome({
             ))}
           </div>
         </div>
-        {working && <p className="outcome-context">{t.workingWarning}</p>}
+        {working && <p className="outcome-context">{step ? t.stepContinues : t.workingWarning}</p>}
         {result ? (
           <div className="outcome-preview">
             <Prose text={result.summary} />

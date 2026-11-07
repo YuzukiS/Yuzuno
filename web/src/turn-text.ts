@@ -76,6 +76,8 @@ export const turnWords = strings({
   mails: (n: number) => `${n} ${n === 1 ? "message" : "messages"} from Agents`,
   automatic: (n: number) => `${n} automatic`,
   toolSteps: (n: number) => `${n} tool ${n === 1 ? "step" : "steps"}`,
+  // Only beside calls that did not return (T-15); not a word on how it went.
+  toolReturned: (n: number) => `${n} returned`,
   failedStep: "Failed",
   view: "View",
   agentPlan: "Agent plan",
@@ -171,6 +173,7 @@ export const turnWords = strings({
   mails: (n) => `${n} 封邮件`,
   automatic: (n) => `${n} 条自动消息`,
   toolSteps: (n) => `${n} 个工具步骤`,
+  toolReturned: (n) => `已返回 ${n} 次`,
   failedStep: "失败",
   view: "查看",
   agentPlan: "Agent 计划",

@@ -553,6 +553,15 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(guide, /^- Columns \{widths\?\[2-4\]\(integer\)\}: Lays out its children side by side.* Children: 2-4, one per column\.$/m);
 });
 
+test("a report the user marks seen leaves brief_get, and you.recentlyLeft says which, why and when (YN-7)", () => {
+  assert.equal(BRIEF_LIMITS.recentlyLeft, 20);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /recentlyLeft \(your sections that left lately and why: a report the user marked seen is no longer among the sections\), recentlyLeftMore/);
+  const sections = briefGuide("sections");
+  assert.match(sections, /a report the user marks seen at its latest version leaves brief_get's sections and your ownsKeys at once \(a newer version stays, unseen\) .* put it again under its key to continue it on Home, as edit needs a live section/);
+  assert.match(sections, /you\.recentlyLeft lists your sections that left the live Brief in the last 30 days and are not live again, newest first, at most 20: \{key, kind, title, version, reason, at\}, reason seen \(the user marked that version seen\), removed or resolved; recentlyLeftMore counts the rest\./);
+  assert.match(sections, /An edit, resolve, remove or claim naming one of them is refused with not_found, saying why it left; put writes it again\./);
+});
+
 test("contract.json carries the brief, generated from this file", async () => {
   const committed = JSON.parse(await readFile(new URL("../../runtimes/result-validator/contract.json", import.meta.url), "utf8"));
   const brief = describeBrief();
@@ -658,6 +667,28 @@ test("a ResearchDesk: two different desks render from one contract, and every re
 // T-29: two rules a desk is refused for are stated in the guide an Agent reads
 // before writing one, as the check applies them: a source's revision is a
 // commit hash, and row and part ids are one namespace across the whole desk.
+test("the guide says when to pre-check, how a settled claim leaves a status for a report, and what a claim's primary names (YN-7 S1)", () => {
+  // Item 2: the write makes the same checks, so a section sent now needs no pre-check.
+  const sections = briefGuide("sections");
+  assert.match(sections, /brief_update itself makes the same checks and writes nothing when it refuses, so a section you mean to send now needs no pre-check: send it, fix what the rejection lists and send again with a new requestId\. Use validateOnly to check without writing, e\.g\. a draft you will not send in this Turn\./);
+  assert.doesNotMatch(briefGuide(), /Use it for a complex section/);
+  // Item 5: a moving conclusion in a status, a settled claim in a report.
+  assert.match(sections, /While a conclusion still moves, keep it in a status and refresh it with new facts; once a claim settles, write it as a report under its own key linked to its Task, which the user marks seen and history keeps, and let the status point to it or drop it\. A status keeps only its current version: putting it again replaces the earlier wording\./);
+  // Item 6: primary is a row id, and the rejection says so, naming a plot or part id given instead.
+  assert.match(briefGuide("research"), /Claims: primary is the id of one row of the desk's plots \(plots\[\]\.rows\[\]\.id\), the row the claim leads with; not a plot or part id\. plots lists plot ids\./);
+  const primary = (id) => {
+    const copy = structuredClone(doseStudy);
+    copy.body.elements.desk.props.claims[0].primary = id;
+    return first(copy);
+  };
+  for (const [id, said] of [["recovery-v2", `; "recovery-v2" is a plot id.`], ["low-v2-arm", `; "low-v2-arm" is a part id.`], ["nowhere", "."]]) {
+    const found = primary(id);
+    assert.equal(found.code, "missing_reference", id);
+    assert.equal(found.path, "body.elements.desk.props.claims.0.primary", id);
+    assert.ok(found.reason.includes(`primary "${id}" is not a row of its plots: primary is a row id (plots[].rows[].id)${said}`), found.reason);
+  }
+});
+
 test("the research guide states the revision form and the desk-wide row and part ids, as checked (T-29)", () => {
   const guide = briefGuide("research");
   assert.match(guide, /revision is a commit hash, 7 to 64 lowercase hexadecimal characters \(not a branch, tag or other name\)/);

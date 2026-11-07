@@ -98,10 +98,21 @@ test("the dock gives each job its latest moment: finished, started or queued", a
   try {
     await until(() => dockItem(p, 'prepare') && dockItem(p, 'train') && dockItem(p, 'evaluate'));
     const when = name => [...dockItem(p, name).querySelectorAll('.work-dock-when')].map(e => e.textContent);
-    // Beside the node (wide conversations) and in its tip (narrow ones).
-    assert.deepEqual(when('prepare'), [`Finished ${clock(failed.finishedAt)}`, `Finished ${clock(failed.finishedAt)}`]);
-    assert.deepEqual(when('train'), [`Started ${clock(running.startedAt)}`, `Started ${clock(running.startedAt)}`]);
-    assert.deepEqual(when('evaluate'), [`Queued ${clock(queued.createdAt)}`, `Queued ${clock(queued.createdAt)}`]);
-    assert.match(dockItem(p, 'train').getAttribute('aria-label'), /Started /);
+    const said = name => dockItem(p, name).getAttribute('aria-label');
+    // Beside the node, where a wide conversation shows it, and in the name
+    // the item is read by. The tip that shows it on a narrow conversation
+    // used to be a second copy inside the item; it is drawn into the page
+    // now, and only while a pointer or the focus is on the item, because the
+    // dock scrolls within itself and nothing inside that box can escape it —
+    // `.main-panel` carries `container-type: inline-size`, which makes even
+    // `position: fixed` local to it (T-15, #459). Both copies are
+    // aria-hidden either way, so the name is what a reader is told, and it
+    // is asserted here rather than counted twice in the markup.
+    assert.deepEqual(when('prepare'), [`Finished ${clock(failed.finishedAt)}`]);
+    assert.deepEqual(when('train'), [`Started ${clock(running.startedAt)}`]);
+    assert.deepEqual(when('evaluate'), [`Queued ${clock(queued.createdAt)}`]);
+    assert.ok(said('prepare').endsWith(`Finished ${clock(failed.finishedAt)}`), said('prepare'));
+    assert.ok(said('train').endsWith(`Started ${clock(running.startedAt)}`), said('train'));
+    assert.ok(said('evaluate').endsWith(`Queued ${clock(queued.createdAt)}`), said('evaluate'));
   } finally { p.close(); }
 });

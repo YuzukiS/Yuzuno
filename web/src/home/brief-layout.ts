@@ -28,9 +28,20 @@ export function groupSections(sections: Section[]): TopicGroup[] {
   return [...groups.values()];
 }
 
-/** Changed since the user last marked it seen (never inferred from reading). */
+/** Its owner changed the section after the user's reply (an edit keeps it replied). */
+export function repliedThenUpdated(section: Section) {
+  const at = section.ask?.repliedAt;
+  return !!at && Date.parse(section.updatedAt) > Date.parse(at);
+}
+
+/**
+ * Changed since the user last marked it seen (never inferred from reading).
+ * An Ask the user answered counts as seen at the version answered (YN-3):
+ * only its owner's change after the reply is new to them.
+ */
 export const changedSinceSeen = (section: Section) =>
-  !section.seen || section.seen.version < section.version;
+  (!section.seen || section.seen.version < section.version) &&
+  (section.ask?.state !== "replied" || repliedThenUpdated(section));
 
 /**
  * The next read with every section that did not change kept as the same
