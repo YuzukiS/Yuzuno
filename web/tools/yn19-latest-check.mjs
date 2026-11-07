@@ -220,12 +220,14 @@ const placement = (page, latestText) => page.evaluate((latestText) => {
   };
 }, latestText);
 
-/** The message at the top of the view and where it is on screen. */
+/** The message at the top of the view and where it is on screen: the
+ * first whose top is in view, else the one filling it (as the app picks). */
 const reading = (page) => pane(page).evaluate((el) => {
   const box = el.getBoundingClientRect();
-  const first = [...el.querySelectorAll("[data-item-id]")]
+  const visible = [...el.querySelectorAll("[data-item-id]")]
     .map((item) => ({ id: item.dataset.itemId, rect: item.getBoundingClientRect() }))
-    .find(({ rect }) => rect.height > 0 && rect.top >= box.top && rect.top < box.bottom);
+    .filter(({ rect }) => rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom);
+  const first = visible.find(({ rect }) => rect.top >= box.top) || visible[0];
   return first ? { id: first.id, top: Math.round((first.rect.top - box.top) * 10) / 10 } : null;
 });
 /** Every drawn frame for `ms`: where `id` is, how far the end is, and
@@ -281,6 +283,12 @@ async function scrollTowardEnd(page, cdp, viewport, fixture, run) {
       for (let i = 1; i <= 11; i++) {
         await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - i * 20 }] });
         await page.waitForTimeout(16);
+      }
+      // The finger rests before it lifts, so no fling carries the pane on
+      // after the step: what moves after this is the app's doing.
+      for (let i = 0; i < 3; i++) {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - 220 }] });
+        await page.waitForTimeout(50);
       }
       await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     } else {
@@ -388,7 +396,9 @@ for (const viewport of VIEWPORTS) for (const lang of LANGS) for (const theme of 
         const continued = await placement(page, t.latest);
         const continuedGap = Math.round(await gap(page));
         const presses = [];
-        for (let press = 0; press < 3 && (await gap(page)) > 2; press++) {
+        // The user pressed it because it showed: at least once, then again
+        // while it still shows or the end is not reached.
+        for (let press = 0; press < 3 && (press === 0 || (await gap(page)) > 2 || (await placement(page, t.latest)).pill); press++) {
           const from = await placement(page, t.latest);
           if (from.pill) await page.locator(".main-panel button.jump-latest").click();
           else if (from.ways.includes("reading-bar")) await page.locator(".main-panel .source-navigation button", { hasText: t.latest }).first().click();
