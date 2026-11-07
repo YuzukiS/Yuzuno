@@ -184,6 +184,23 @@ export function useRevealIn(ref: RefObject<HTMLElement | null>, key: unknown) {
 }
 
 /**
+ * A box that just became shorter because of what the user did (YN-21, a card
+ * turning into its answer card) collapses from the height it had, `from`, to
+ * its own, over small: its bottom edge rises and what is below follows. Call
+ * it with the new layout in place, before it is painted. Under reduced
+ * motion, without the Web Animations API, or if the box did not get shorter,
+ * it is at its height at once.
+ */
+export function collapseFrom(element: HTMLElement, from: number): Animation | null {
+  if (typeof element.animate !== "function" || window.matchMedia?.(REDUCED).matches) return null;
+  const to = element.getBoundingClientRect().height;
+  const ms = tokenMs("--motion-small");
+  if (!ms || !(from > to + 1)) return null;
+  const easing = getComputedStyle(document.documentElement).getPropertyValue("--ease-standard").trim() || "ease";
+  return element.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: ms, easing });
+}
+
+/**
  * A banner that a brief flap should not flash (T-19 M15: SH:M04, SH:M06): `shown` once `want` has held
  * for `delay` ms. Once shown and no longer wanted, it is `leaving` for exit-small (the banner's own CSS
  * plays its exit meanwhile), then gone; under reduced motion it goes at once. Wanted again while

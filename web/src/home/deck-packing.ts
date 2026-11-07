@@ -23,6 +23,21 @@ function pack(el: HTMLElement, items: (grid: HTMLElement) => HTMLElement[], desc
   });
 }
 
+/** Each grid useDeckPacking lays out, with how it packs it now. */
+const packers = new WeakMap<HTMLElement, () => void>();
+
+/**
+ * Packs the deck a card is on now, as its next render or resize would
+ * (YN-21): for a card that changed size by its own state, so that what it
+ * measures next is where the deck puts it. A card on no deck is left alone.
+ */
+export function packDeckOf(card: HTMLElement) {
+  for (let el = card.parentElement; el; el = el.parentElement) {
+    const repack = packers.get(el);
+    if (repack) return repack();
+  }
+}
+
 /**
  * Lays out a grid of cards with no holes, in order (deck-pack.ts, YN-3).
  *
@@ -50,7 +65,10 @@ export function useDeckPacking(
   const watched = useRef<{ el: HTMLElement | null; observer: ResizeObserver | null; frame: number }>({ el: null, observer: null, frame: 0 });
   useLayoutEffect(() => {
     const el = grid.current;
-    if (el) pack(el, latest.current.items, latest.current.describe);
+    if (el) {
+      pack(el, latest.current.items, latest.current.describe);
+      packers.set(el, () => pack(el, latest.current.items, latest.current.describe));
+    }
     const w = watched.current;
     if (w.el === el) return;
     // Another grid element (or none): its own observer, the earlier one's gone.
