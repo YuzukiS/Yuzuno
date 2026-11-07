@@ -210,7 +210,7 @@ function McpServices({ agents }: { agents: Agent[] }) {
   const where = (item: Agent) => (item.remote ? item.remote.machine.name : t.coreHost);
   const label = (item: Agent) => `${item.name} · ${item.harness === "claude" ? "Claude Code" : "Codex"} · ${where(item)}`;
   return (
-    <section className="runtime-group runtime-mcp" aria-labelledby="runtime-mcp">
+    <section className="runtime-group appearance-field runtime-mcp" aria-labelledby="runtime-mcp">
       <h4 id="runtime-mcp">{t.mcp}</h4>
       <p className="runtime-note">{t.mcpNote}</p>
       {agent ? (
@@ -313,9 +313,10 @@ export function RuntimeSection({
           </button>
         </div>
       </header>
+      {/* Appearance's card (YN-8 S6): a block per source. */}
       {view && (
-        <>
-          <section className="runtime-group" aria-labelledby="runtime-core">
+        <div className="settings-group appearance-group runtime-groups">
+          <section className="runtime-group appearance-field" aria-labelledby="runtime-core">
             <h4 id="runtime-core">{t.service}</h4>
             <dl>
               <FactRow label={t.version} fact={view.core.version} />
@@ -326,7 +327,7 @@ export function RuntimeSection({
             </dl>
             <p className="runtime-note">{t.serviceNote}</p>
           </section>
-          <section className="runtime-group" aria-labelledby="runtime-client">
+          <section className="runtime-group appearance-field" aria-labelledby="runtime-client">
             <h4 id="runtime-client">{t.device}</h4>
             <dl>
               <FactRow label={t.page} fact={view.client.page} />
@@ -334,7 +335,7 @@ export function RuntimeSection({
               <FactRow label={t.iphone} fact={view.client.iphone} />
             </dl>
           </section>
-          <section className="runtime-group" aria-labelledby="runtime-machines">
+          <section className="runtime-group appearance-field" aria-labelledby="runtime-machines">
             <h4 id="runtime-machines">{t.machines}</h4>
             <p className="runtime-note">
               {t.machinesNote}
@@ -355,10 +356,10 @@ export function RuntimeSection({
             ))}
           </section>
           {read?.agents && <McpServices agents={read.agents} />}
-          <dl className="runtime-group">
+          <dl className="runtime-group appearance-field">
             <FactRow label={t.compatibility} fact={{ state: "unknown", text: t.notDefined, detail: t.compatibilityHelp }} />
           </dl>
-        </>
+        </div>
       )}
     </section>
   );

@@ -235,95 +235,101 @@ export function DraftExport({ active, agents, workspaceId }: { active: boolean; 
           <p>{t.intro}</p>
         </div>
       </header>
-      {!agents && <p className="diagnostics-note">{t.connect}</p>}
-      {listing && !listing.available && (
-        <p className="updates-error" role="alert">
-          {t.unlisted(problemText(listing.why, t))}
-        </p>
-      )}
-      {listing?.available && (
-        <>
-          {listing.rows.length === 0 && <p className="diagnostics-note">{t.noMatch}</p>}
-          <ul className="draft-export-rows">
-            {listing.rows.map((row) => (
-              <li key={row.identity} data-agent={row.agentId} data-unattributed={row.attributed ? undefined : "true"}>
-                <span className="draft-export-name">
-                  {row.summary.state !== "damaged" && (
-                    <input
-                      type="checkbox"
-                      checked={selected.has(row.identity)}
-                      onChange={() => toggle(row.identity)}
-                      aria-label={t.choose(row.name)}
-                    />
-                  )}
-                  {row.name}
-                  {row.closed ? t.closed : ""}
-                </span>
-                <span className="draft-export-detail">{describe(row, t)}</span>
-                {row.summary.state !== "damaged" && (
-                  <button type="button" className="secondary-button" onClick={() => open(row)} aria-label={t.showDraft(row.name)}>
-                    <Eye size={14} aria-hidden="true" /> {t.show}
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-          {listing.rows.some((row) => row.summary.state !== "damaged") && (
-            <div className="draft-export-many">
-              <button type="button" className="secondary-button" disabled={selected.size === 0} onClick={downloadSelected}>
-                <Download size={14} aria-hidden="true" /> {t.downloadSelected}
-              </button>
-              <p className="diagnostics-note" role="status">
-                {many?.state === "saving" ? t.savingMany(many.name, many.count) : selected.size === 0 ? t.noneTicked : t.ticked(selected.size)}
-              </p>
-              {many?.state === "failed" && (
-                <p className="updates-error" role="alert">
-                  {t.failedMany(many.failed.length, many.of, many.failed.map((f) => t.failedOne(f.name, problemText(f.why, t))).join(t.failedJoin))}
-                </p>
-              )}
-              {many?.state === "notSaved" && (
-                <p className="updates-error" role="alert">
-                  {t.notStartedMany(problemText(many.why, t))}
-                </p>
-              )}
-            </div>
-          )}
-          {listing.unattributed > 0 && (
-            <p className="diagnostics-note">{t.unattributed(listing.unattributed)}</p>
-          )}
-          {listing.otherAgents > 0 && (
-            <p className="diagnostics-note">{t.others(listing.otherAgents)}</p>
-          )}
-        </>
-      )}
-      {shown && "why" in shown && (
-        <p className="updates-error" role="alert">
-          {t.unopened(shown.name, problemText(shown.why, t))}
-        </p>
-      )}
-      {shown && "text" in shown && (
-        <div className="draft-export-shown">
-          <p className="diagnostics-note" role="status">
-            {save?.state === "saving" ? t.saving(save.name) : t.whole(shown.name)}
-          </p>
-          {save?.state === "notSaved" && (
+      {/* Appearance's card (YN-8 S6): the drafts as one block, a draft
+          shown whole as the next. */}
+      <div className="settings-group appearance-group">
+        <div className="appearance-field draft-export-block">
+          {!agents && <p className="diagnostics-note">{t.connect}</p>}
+          {listing && !listing.available && (
             <p className="updates-error" role="alert">
-              {t.notStarted(problemText(save.why, t))}
+              {t.unlisted(problemText(listing.why, t))}
             </p>
           )}
-          <textarea
-            className="diagnostics-text"
-            aria-label={t.saved(shown.name)}
-            readOnly
-            rows={10}
-            value={shown.text}
-            onFocus={(event) => event.currentTarget.select()}
-          />
-          <button type="button" className="secondary-button" onClick={download}>
-            <Download size={14} aria-hidden="true" /> {t.downloadText}
-          </button>
+          {listing?.available && (
+            <>
+              {listing.rows.length === 0 && <p className="diagnostics-note">{t.noMatch}</p>}
+              <ul className="draft-export-rows">
+                {listing.rows.map((row) => (
+                  <li key={row.identity} data-agent={row.agentId} data-unattributed={row.attributed ? undefined : "true"}>
+                    <span className="draft-export-name">
+                      {row.summary.state !== "damaged" && (
+                        <input
+                          type="checkbox"
+                          checked={selected.has(row.identity)}
+                          onChange={() => toggle(row.identity)}
+                          aria-label={t.choose(row.name)}
+                        />
+                      )}
+                      {row.name}
+                      {row.closed ? t.closed : ""}
+                    </span>
+                    <span className="draft-export-detail">{describe(row, t)}</span>
+                    {row.summary.state !== "damaged" && (
+                      <button type="button" className="secondary-button" onClick={() => open(row)} aria-label={t.showDraft(row.name)}>
+                        <Eye size={14} aria-hidden="true" /> {t.show}
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {listing.rows.some((row) => row.summary.state !== "damaged") && (
+                <div className="draft-export-many">
+                  <button type="button" className="secondary-button" disabled={selected.size === 0} onClick={downloadSelected}>
+                    <Download size={14} aria-hidden="true" /> {t.downloadSelected}
+                  </button>
+                  <p className="diagnostics-note" role="status">
+                    {many?.state === "saving" ? t.savingMany(many.name, many.count) : selected.size === 0 ? t.noneTicked : t.ticked(selected.size)}
+                  </p>
+                  {many?.state === "failed" && (
+                    <p className="updates-error" role="alert">
+                      {t.failedMany(many.failed.length, many.of, many.failed.map((f) => t.failedOne(f.name, problemText(f.why, t))).join(t.failedJoin))}
+                    </p>
+                  )}
+                  {many?.state === "notSaved" && (
+                    <p className="updates-error" role="alert">
+                      {t.notStartedMany(problemText(many.why, t))}
+                    </p>
+                  )}
+                </div>
+              )}
+              {listing.unattributed > 0 && (
+                <p className="diagnostics-note">{t.unattributed(listing.unattributed)}</p>
+              )}
+              {listing.otherAgents > 0 && (
+                <p className="diagnostics-note">{t.others(listing.otherAgents)}</p>
+              )}
+            </>
+          )}
         </div>
-      )}
+        {shown && "why" in shown && (
+          <p className="appearance-field updates-error" role="alert">
+            {t.unopened(shown.name, problemText(shown.why, t))}
+          </p>
+        )}
+        {shown && "text" in shown && (
+          <div className="appearance-field draft-export-shown">
+            <p className="diagnostics-note" role="status">
+              {save?.state === "saving" ? t.saving(save.name) : t.whole(shown.name)}
+            </p>
+            {save?.state === "notSaved" && (
+              <p className="updates-error" role="alert">
+                {t.notStarted(problemText(save.why, t))}
+              </p>
+            )}
+            <textarea
+              className="diagnostics-text"
+              aria-label={t.saved(shown.name)}
+              readOnly
+              rows={10}
+              value={shown.text}
+              onFocus={(event) => event.currentTarget.select()}
+            />
+            <button type="button" className="secondary-button" onClick={download}>
+              <Download size={14} aria-hidden="true" /> {t.downloadText}
+            </button>
+          </div>
+        )}
+      </div>
     </section>
   );
 }

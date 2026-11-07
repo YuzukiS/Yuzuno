@@ -187,70 +187,77 @@ export function HistoryComposition() {
           {state.kind === "reading" ? t.measuring : t.measure}
         </button>
       </header>
-      {state.kind === "failed" && <p className="diagnostics-note" role="status">{t.failed(failureText(state.why, t))}</p>}
-      {report && !report.available && <p className="diagnostics-note" role="status">{t.notMeasured(report.reason)}</p>}
-      {report?.available && report.held === 0 && <p className="diagnostics-note" role="status">{t.noneHeld}</p>}
-      {report?.available && report.held > 0 && (
-        <>
-          {stored.length > 0 && (
-            <div className="history-chart" aria-label={t.chart}>
-              <ResponsiveContainer width="100%" height={Math.max(120, stored.length * 40 + 40)}>
-                <BarChart
-                  data={stored.map((a) => ({ label: label(a), ...Object.fromEntries(RECORD.map((key) => [key, a.parts[key].bytes / scale.bytes])) }))}
-                  layout="vertical"
-                  margin={{ top: 4, right: 18, bottom: 4, left: 0 }}
-                  accessibilityLayer
-                >
-                  <CartesianGrid horizontal={false} stroke="var(--line)" />
-                  <XAxis type="number" tickFormatter={(value) => `${value} ${scale.name}`} tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={false} tickLine={false} />
-                  <YAxis type="category" dataKey="label" width={110} tick={{ fill: "var(--ink)", fontSize: 12 }} axisLine={false} tickLine={false} />
-                  <Tooltip
-                    contentStyle={{ background: "var(--paper)", borderColor: "var(--line)", color: "var(--ink)", borderRadius: 8 }}
-                    cursor={{ fill: "var(--cream)" }}
-                    formatter={(value, name) => [size(Number(value) * scale.bytes), PARTS.includes(name as Key) ? t.parts[name as Key] : String(name)]}
-                  />
-                  {RECORD.map((key) => (
-                    <Bar key={key} dataKey={key} stackId="stored" fill={`var(--history-${key})`} maxBarSize={20} isAnimationActive={false} />
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
-              <ul className="history-legend">
-                {RECORD.map((key) => (
-                  <li key={key}><span className={`history-swatch history-swatch-${key}`} aria-hidden="true" />{t.parts[key]}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {/* Seven columns: on a narrow screen the table scrolls, not the page. */}
-          <div className="history-table-scroll" tabIndex={0} role="region" aria-label={t.table}>
-            <table className="history-table">
-              <caption>{t.caption}<time dateTime={report.readAt}>{readTime(report.readAt)}</time></caption>
-              <thead>
-                <tr>
-                  <th scope="col">{t.agent}</th>
-                  {RECORD.map((key) => <th key={key} scope="col">{t.parts[key]}</th>)}
-                  <th scope="col">{t.record}</th>
-                  <th scope="col">{t.parts.previews}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {report.agents.map((a) => (
-                  <tr key={a.id}>
-                    <th scope="row">{label(a)}{a.unwritten ? " *" : ""}{a.whole ? " †" : ""}</th>
-                    {a.parts ? <Cells parts={a.parts} /> : <td colSpan={PARTS.length + 1}>{t.noRows}</td>}
-                  </tr>
-                ))}
-                <tr className="history-total">
-                  <th scope="row">{t.allHeld}</th>
-                  <Cells parts={report.total} />
-                </tr>
-              </tbody>
-            </table>
+      {/* Appearance's card (YN-8 S6), once there is something measured to show. */}
+      {(state.kind === "failed" || report) && (
+        <div className="settings-group appearance-group">
+          <div className="appearance-field history-body">
+            {state.kind === "failed" && <p className="diagnostics-note" role="status">{t.failed(failureText(state.why, t))}</p>}
+            {report && !report.available && <p className="diagnostics-note" role="status">{t.notMeasured(report.reason)}</p>}
+            {report?.available && report.held === 0 && <p className="diagnostics-note" role="status">{t.noneHeld}</p>}
+            {report?.available && report.held > 0 && (
+              <>
+                {stored.length > 0 && (
+                  <div className="history-chart" aria-label={t.chart}>
+                    <ResponsiveContainer width="100%" height={Math.max(120, stored.length * 40 + 40)}>
+                      <BarChart
+                        data={stored.map((a) => ({ label: label(a), ...Object.fromEntries(RECORD.map((key) => [key, a.parts[key].bytes / scale.bytes])) }))}
+                        layout="vertical"
+                        margin={{ top: 4, right: 18, bottom: 4, left: 0 }}
+                        accessibilityLayer
+                      >
+                        <CartesianGrid horizontal={false} stroke="var(--line)" />
+                        <XAxis type="number" tickFormatter={(value) => `${value} ${scale.name}`} tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={false} tickLine={false} />
+                        <YAxis type="category" dataKey="label" width={110} tick={{ fill: "var(--ink)", fontSize: 12 }} axisLine={false} tickLine={false} />
+                        <Tooltip
+                          contentStyle={{ background: "var(--paper)", borderColor: "var(--line)", color: "var(--ink)", borderRadius: 8 }}
+                          cursor={{ fill: "var(--cream)" }}
+                          formatter={(value, name) => [size(Number(value) * scale.bytes), PARTS.includes(name as Key) ? t.parts[name as Key] : String(name)]}
+                        />
+                        {RECORD.map((key) => (
+                          <Bar key={key} dataKey={key} stackId="stored" fill={`var(--history-${key})`} maxBarSize={20} isAnimationActive={false} />
+                        ))}
+                      </BarChart>
+                    </ResponsiveContainer>
+                    <ul className="history-legend">
+                      {RECORD.map((key) => (
+                        <li key={key}><span className={`history-swatch history-swatch-${key}`} aria-hidden="true" />{t.parts[key]}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {/* Seven columns: on a narrow screen the table scrolls, not the page. */}
+                <div className="history-table-scroll" tabIndex={0} role="region" aria-label={t.table}>
+                  <table className="history-table">
+                    <caption>{t.caption}<time dateTime={report.readAt}>{readTime(report.readAt)}</time></caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">{t.agent}</th>
+                        {RECORD.map((key) => <th key={key} scope="col">{t.parts[key]}</th>)}
+                        <th scope="col">{t.record}</th>
+                        <th scope="col">{t.parts.previews}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {report.agents.map((a) => (
+                        <tr key={a.id}>
+                          <th scope="row">{label(a)}{a.unwritten ? " *" : ""}{a.whole ? " †" : ""}</th>
+                          {a.parts ? <Cells parts={a.parts} /> : <td colSpan={PARTS.length + 1}>{t.noRows}</td>}
+                        </tr>
+                      ))}
+                      <tr className="history-total">
+                        <th scope="row">{t.allHeld}</th>
+                        <Cells parts={report.total} />
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p className="diagnostics-note">{t.recordNote}</p>
+                {report.agents.some((a) => a.unwritten) && <p className="diagnostics-note">{t.unwrittenNote}</p>}
+                {report.agents.some((a) => a.whole) && <p className="diagnostics-note">{t.wholeNote}</p>}
+              </>
+            )}
           </div>
-          <p className="diagnostics-note">{t.recordNote}</p>
-          {report.agents.some((a) => a.unwritten) && <p className="diagnostics-note">{t.unwrittenNote}</p>}
-          {report.agents.some((a) => a.whole) && <p className="diagnostics-note">{t.wholeNote}</p>}
-        </>
+        </div>
       )}
     </section>
   );

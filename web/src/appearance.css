@@ -892,3 +892,11 @@
     background-color var(--motion-micro) var(--ease-standard),
     box-shadow var(--motion-micro) var(--ease-standard);
 }
+/* A block titled by a heading, not a legend: one that shows what is there
+   rather than a choice (Data and About, YN-8 S6). */
+.appearance-field > h4:first-child {
+  margin: 0 0 10px;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
