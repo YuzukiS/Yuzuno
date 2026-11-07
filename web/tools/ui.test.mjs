@@ -1217,11 +1217,24 @@ test("native async questions add a referenced answer to the existing draft witho
 });
 
 test("Continue appends CRLF/CR result text at the actual normalized document end", async () => {
+  // A stored result's Continue (published before YN-14 A5): a reply's block no longer takes one.
   const spec = structuredClone(comparisonExample);
   spec.elements.result.props.title = "Result\r\nwith\rnewlines";
-  spec.elements.continue.props.instruction = "Continue\r\nfrom here\rplease";
-  spec.elements.continue.props.requiresSelection = false;
-  const page = await mount({ message: "```yuzuno-ui\n" + JSON.stringify(spec) + "\n```" });
+  spec.elements.next = { type: "Continue", props: { label: "Continue with selection", instruction: "Continue\r\nfrom here\rplease" } };
+  spec.elements.result.children.push("next");
+  const stored = { id: "r1", agentId: "a", chainId: "r1", version: 1, turnId: "t-result", schemaVersion: 1, spec, defaults: [] };
+  const page = await mount({
+    extraTurns: [{ id: "t-result", status: "completed",
+      _yuzunoResults: [{ id: "r1", chainId: "r1", version: 1, createdAt: "2026-10-14T00:00:00Z" }],
+      items: [{ id: "t-result-u", type: "userMessage", content: [{ type: "text", text: "Compare" }] },
+        { id: "t-result-m", type: "agentMessage", text: "Here is the comparison." }] }],
+    beforeLoad(window) {
+      const fixture = window.fetch;
+      window.fetch = async (url, init) => String(url).endsWith("/api/agents/a/results/r1")
+        ? { ok: true, status: 200, json: async () => stored, text: async () => JSON.stringify(stored) }
+        : fixture(url, init);
+    },
+  });
   try {
     const field = page.document.querySelector("[data-composer-input]");
     setValue(page.window, field, "existing");

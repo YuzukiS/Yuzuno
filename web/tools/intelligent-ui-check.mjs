@@ -1,3 +1,6 @@
+// Its Continue checks predate YN-14 A5: a reply's yuzuno-ui block no longer
+// takes Continue, Clarification or TaskStatus, so those checks fail against a
+// current build. Kept as history.
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";

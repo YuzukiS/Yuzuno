@@ -2,6 +2,9 @@
 """T-39 acceptance: a real Agent proposes a task status change; the user
 edits, confirms or declines it in the browser; Core changes the task.
 
+Retired (YN-14 A5): Core no longer offers the result_publish MCP tool, so
+the propose step no longer runs against a current Core. Kept as history.
+
   YUZUNO_LAB_CORE=<candidate Core> YUZUNO_LAB_WEB=<candidate web/dist> \\
     python3 acceptance/t39-task-status/live.py <empty lab folder>
 

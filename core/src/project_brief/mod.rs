@@ -186,7 +186,7 @@ pub fn outcome_hint() -> &'static str {
 }
 
 const FALLBACK_HINT: &str = "Home: a lasting finding, decision or stage result goes in a short report linked to its Task and sources; \
-a current state in a status; a choice for the user in an ask. result_publish shows only in this turn.";
+a current state in a status; a choice for the user in an ask. A yuzuno-ui block in your reply shows only in the conversation.";
 
 /// The hard rules, at most 1500 characters, in the MCP server instructions.
 pub fn hard_rules() -> &'static str {

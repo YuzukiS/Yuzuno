@@ -95,8 +95,8 @@ pub(crate) fn refuse_mail(db: &Connection, to: &str) -> Result<()> {
     )
 }
 
-/// Who decides a released executor's task-status proposal (result_publish's
-/// TaskStatus, task_proposals.rs), or `None` unless `agent` is one: the Agent
+/// Who decides a released executor's task-status proposal (a stored
+/// TaskStatus result, task_proposals.rs), or `None` unless `agent` is one: the Agent
 /// that dispatched it, named, or `Some(None)` for the user, when the user
 /// dispatched it or its dispatcher is closed or no longer exists.
 pub(crate) fn proposal_decider(db: &Connection, agent: &str) -> Result<Option<Option<String>>> {
