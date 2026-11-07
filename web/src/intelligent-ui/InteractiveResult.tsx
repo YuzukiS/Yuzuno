@@ -6,7 +6,7 @@ import {
   StateProvider,
   VisibilityProvider,
 } from "@json-render/react";
-import { ArrowDownToLine, Check, ChevronRight } from "lucide-react";
+import { ArrowDownToLine, Check, ChevronRight, LoaderCircle } from "lucide-react";
 import { CopyButton, Yuzu } from "../components";
 import { catalog, type ResultSpec } from "./spec";
 import { ResultProvider, useResult } from "./ResultContext";
@@ -16,6 +16,8 @@ import { SourceLinks } from "./SourceLinks";
 import { PublishedClarification } from "./ClarificationHost";
 import { PublishedTaskStatus } from "./TaskStatusProposal";
 import { resultText } from "./result-text";
+import { RESERVE_HEIGHT } from "./result-reserve";
+import { PENDING, type PendingKind } from "./stream";
 import { useStrings } from "../i18n";
 import { useSurfaceIn } from "../surface";
 import "./intelligent-ui.css";
@@ -148,6 +150,22 @@ const { registry } = defineRegistry(catalog, {
 });
 const noActions = Object.freeze({});
 
+/** A part still being written (YN-15): the room its kind keeps, nothing of
+ * what it will hold. Never from the Agent: see stream.ts, PENDING. */
+function PendingPart({ element }: { element: { props: { kind?: PendingKind } } }) {
+  const kind = element.props.kind ?? "line";
+  return (
+    <div
+      className="result-pending"
+      data-kind={kind}
+      aria-hidden="true"
+      style={kind === "line" ? undefined : { minHeight: RESERVE_HEIGHT[kind] }}
+    />
+  );
+}
+/** The parts, and placeholders for what is still being written. */
+const liveRegistry = { ...registry, [PENDING]: PendingPart };
+
 export default function InteractiveResult({
   spec,
   raw,
@@ -157,6 +175,8 @@ export default function InteractiveResult({
   onDraft,
   onInteract,
   arrival,
+  live = false,
+  streamed = false,
 }: {
   spec: ResultSpec;
   raw: string;
@@ -166,6 +186,10 @@ export default function InteractiveResult({
   onDraft?: (text: string) => void;
   onInteract?: () => void;
   arrival?: { readonly current: boolean };
+  /** Its block is still being written: drawn as far as it is, and inert. */
+  live?: boolean;
+  /** Drawn while its block was written: kept as it grows and closes. */
+  streamed?: boolean;
 }) {
   const t = useStrings(resultText);
   // Taking the place of a placeholder, it fades in over small, opacity only,
@@ -178,6 +202,10 @@ export default function InteractiveResult({
       ref={root}
       className="interactive-result"
       data-result-id={identity}
+      // Nothing in it can be used before the whole of it is checked (YN-15).
+      data-live={live ? "" : undefined}
+      aria-busy={live || undefined}
+      inert={live}
       onFocusCapture={onInteract}
       onPointerDownCapture={onInteract}
       onKeyDown={(event) => {
@@ -191,10 +219,16 @@ export default function InteractiveResult({
         <summary>
           <Yuzu size={19} />
           <span>{t.title}</span>
+          {live && (
+            <span className="result-live" role="status">
+              <LoaderCircle size={13} className="spin" aria-hidden="true" />
+              {t.placeholder.generating}
+            </span>
+          )}
           <ChevronRight size={14} />
         </summary>
         <ResultProvider
-          key={identity + raw}
+          key={identity + (streamed ? "" : raw)}
           spec={spec}
           raw={raw}
           identity={identity}
@@ -205,16 +239,18 @@ export default function InteractiveResult({
           <StateProvider initialState={{}}>
             <VisibilityProvider>
               <ActionProvider handlers={noActions}>
-                <Renderer spec={spec} registry={registry} />
+                <Renderer spec={spec} registry={live ? liveRegistry : registry} loading={live} />
               </ActionProvider>
             </VisibilityProvider>
           </StateProvider>
         </ResultProvider>
-        <details className="result-original">
-          <summary>{t.viewJson}</summary>
-          <CopyButton text={raw} label={t.copy} />
-          <pre>{raw}</pre>
-        </details>
+        {!live && (
+          <details className="result-original">
+            <summary>{t.viewJson}</summary>
+            <CopyButton text={raw} label={t.copy} />
+            <pre>{raw}</pre>
+          </details>
+        )}
       </details>
     </div>
   );

@@ -25,17 +25,17 @@ try {
     entry,
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {JobsBudgetEditor, RemoteJobsEditor} from ${src("JobsSettings.tsx")};
+import {JobsBudgetEditor} from ${src("JobsSettings.tsx")};
 import {Jobs} from ${src("Jobs.tsx")};
 import {SettingsCenter} from ${src("SettingsCenter.tsx")};
 import {settingsCatalog, translatedEditors} from ${src("settings-catalog.ts")};
 const root = createRoot(document.getElementById('root'));
 window.catalog = {settingsCatalog, translatedEditors};
 window.renderHost = props => root.render(<JobsBudgetEditor active {...props}/>);
-window.renderRemote = props => root.render(<RemoteJobsEditor active {...props}/>);
 window.renderJobs = props => root.render(<Jobs workspaceId="w" revision="1" disabled={false} agent={{id:'a',name:'Mori',cwd:'/fixture',status:'idle'}} agents={[]} {...props}/>);
-window.renderSettings = props => root.render(<SettingsCenter attention={false} {...props} renderEditor={(id, visible) =>
-  id === 'jobs-budget' ? <JobsBudgetEditor active={visible}/> : id === 'jobs-remote' ? <RemoteJobsEditor active={visible}/> : <div>Existing {id} editor</div>}/>);`,
+// Settings › Machines (YN-8 S3): the Core host's page has its budget.
+window.renderSettings = props => root.render(<SettingsCenter attention={false} {...props} renderEditor={(id, visible, open, request) =>
+  id === 'machines' && request?.sub === 'local' ? <JobsBudgetEditor active={visible}/> : <div>Existing {id} editor</div>}/>);`,
   );
   const result = await build({
     root,
@@ -364,64 +364,6 @@ test("the disk reserve, the Windows ceiling and each GPU admission and sharing a
   } finally { p.close(); }
 });
 
-test("the remote tab lists only SSH machines, opens none by default, and saves the chosen one through its editor", async () => {
-  const core = fixtureCore();
-  const p = mount(core);
-  let opened = 0;
-  try {
-    p.window.renderRemote({ onOpenMachines: () => opened++ });
-    await until(() => p.doc.querySelector('select[name="machine"]'), "the machines are read");
-    const section = p.doc.querySelector("#settings-jobs-remote");
-    const picker = section.querySelector('select[name="machine"]');
-    assert.deepEqual([...picker.options].map((o) => o.value), ["", "mini", "studio"], "only SSH machines are listed; the Core host is in the other tab");
-    assert.deepEqual([...picker.options].map((o) => o.textContent), ["Choose a machine…", "Mac mini · mac-mini", "Studio · me@studio.local"], "each machine shows its name and destination as written");
-    assert.equal(picker.value, "", "no machine is chosen by default");
-    // Named by its label alone, so its name is not followed by its options.
-    assert.equal(section.querySelector(`label[for="${picker.id}"]`)?.textContent, "Machine", "the picker is named Machine by its label");
-    assert.equal(!!picker.closest("label"), false, "no label wraps the picker");
-    assert.equal(!!section.querySelector(".remote-machine-editor"), false, "no editor before a machine is chosen");
-    picker.focus();
-    await type(p, picker, "mini");
-    await until(() => section.querySelector(".remote-machine-editor"), "the chosen machine opens");
-    assert.equal(p.doc.activeElement === picker, true, "choosing keeps focus on the picker");
-    const editor = () => section.querySelector(".remote-machine-editor");
-    const field = (label) => [...editor().querySelectorAll("label")].find((l) => l.textContent.trim().startsWith(label))?.querySelector("input,select");
-    assert.equal(editor().querySelector(".remote-editor-heading strong").textContent, "Edit Mac mini", "the editor is for the chosen machine");
-    assert.deepEqual([field("Jobs at once").value, field("Jobs CPU budget").value, field("Jobs RAM budget").value, field("A limit this machine").value], ["3", "4", "8192", "limited"], "the editor starts from what is saved");
-    await type(p, field("Jobs at once"), "5");
-    await pause();
-    button(editor(), "Save changes").click();
-    await until(() => section.querySelector(".jobs-settings-saved")?.textContent === "Saved Mac mini.", "Core saves the machine");
-    assert.deepEqual(p.posts("/api/machines/mini").map((c) => [c.method, c.body]), [["PUT", { name: "Mac mini", target: "mac-mini", codex: "codex", defaultCwd: "/Users/me/projects", maxJobs: 5 }]], "only the changed Jobs setting is sent, through the machine PUT");
-    // The editor starts again from what Core saved: the next save sends only its own change.
-    await until(() => field("Jobs at once")?.value === "5", "the editor shows what Core saved");
-    await type(p, field("Default working folder"), "/Users/me/work/");
-    await pause();
-    button(editor(), "Save changes").click();
-    await until(() => field("Default working folder")?.value === "/Users/me/work", "the editor shows the folder as Core saved it");
-    assert.deepEqual(p.posts("/api/machines/mini")[1].body, { name: "Mac mini", target: "mac-mini", codex: "codex", defaultCwd: "/Users/me/work/" }, "a saved Jobs at once is not sent again");
-    button(editor(), "Cancel").click();
-    await until(() => !section.querySelector(".remote-machine-editor"), "cancel closes the editor");
-    assert.equal(picker.value, "", "no machine is chosen after cancel");
-    assert.equal(p.doc.activeElement === picker, true, "focus returns to the picker");
-    assert.equal(p.posts().every((c) => c.method === "PUT" && c.url === "/api/machines/mini"), true, "nothing else is written");
-    assert.equal(opened, 0, "the Machines page is not opened");
-    assert.deepEqual(p.errors, [], "no page errors");
-  } finally { p.close(); }
-  // No SSH machine: the way to add one.
-  const lone = fixtureCore();
-  lone.state.machines = lone.state.machines.filter((m) => m.kind === "local");
-  const q = mount(lone);
-  try {
-    q.window.renderRemote({ onOpenMachines: () => opened++ });
-    await until(() => q.doc.querySelector(".jobs-settings-empty"), "the machines are read");
-    assert.match(text(q.doc.querySelector(".jobs-settings-empty")), /No SSH machine is registered yet/, "an empty list says so");
-    assert.equal(!!q.doc.querySelector('select[name="machine"]'), false, "no picker without SSH machines");
-    button(q.doc, "Open Machines").click();
-    assert.equal(opened, 1, "Open Machines asks for the Machines page");
-  } finally { q.close(); }
-});
-
 test("the Jobs card shows no editor, shows active against maxActive, keeps GPU pause and resume, and Edit in Settings asks for the Core host budget", async () => {
   const core = fixtureCore({ activeCount: 3 });
   const p = mount(core);
@@ -517,41 +459,39 @@ test("a Jobs dialog closed by Edit in Settings gives no focus back to its trigge
   } finally { p.close(); }
 });
 
-test("the Machines page of Settings shows both budgets' own editors, and an unsaved field survives switching pages", async () => {
+test("Settings opens the Core host's page of Machines at its budget, and an unsaved field survives switching pages", async () => {
   const { settingsCatalog, translatedEditors } = (() => {
     const p = mount(fixtureCore());
     try { return JSON.parse(JSON.stringify(p.window.catalog)); } finally { p.close(); }
   })();
   const entry = (id) => settingsCatalog.find((e) => e.id === id);
   assert.deepEqual(entry("budget").target, { kind: "editor", editor: "jobs-budget" }, "the Core host budget entry opens its editor");
-  assert.deepEqual(entry("remote-budget").target, { kind: "editor", editor: "jobs-remote" }, "the remote budgets entry opens its editor");
+  assert.deepEqual(entry("remote-budget").target, { kind: "editor", editor: "jobs-remote" }, "the remote budgets entry opens Machines");
   assert.equal(settingsCatalog.some((e) => e.target.kind === "jobs"), false, "no entry jumps to the Jobs panel");
-  assert.equal(translatedEditors.includes("jobs-budget") && translatedEditors.includes("jobs-remote"), true, "both editors follow the interface language");
+  assert.equal(translatedEditors.includes("jobs-budget"), true, "the Core host editor follows the interface language");
   const p = mount(fixtureCore());
   try {
-    p.window.renderSettings({});
+    // The Jobs card's Edit in Settings names the budget editor: the Core host's page (YN-8 S3).
+    p.window.renderSettings({ openAt: { editor: "jobs-budget", nonce: 1 } });
     const tab = (id) => p.doc.getElementById(`settings-tab-${id}`);
     const shown = () => [...p.doc.querySelectorAll(".settings-editor")].filter((el) => !el.hidden).map((el) => el.id);
-    // Until each machine's page carries its own (YN-8 S3), both budgets
-    // follow the machines on the Machines page.
-    await until(() => tab("machines"), "Settings shows");
-    tab("machines").click();
-    await until(() => p.doc.querySelector('#settings-editor-jobs-budget input[name="maxActive"]'), "the Core host editor reads the budget");
-    await until(() => p.doc.querySelector('#settings-editor-jobs-remote select[name="machine"]'), "the remote editor reads the machines");
-    assert.deepEqual(shown(), ["settings-editor-machines", "settings-editor-jobs-budget", "settings-editor-jobs-remote"], "the Machines page shows both budgets after the machines");
+    const field = () => p.doc.querySelector('#settings-editor-machines input[name="maxActive"]');
+    await until(field, "the Core host editor reads the budget");
+    assert.deepEqual(shown(), ["settings-editor-machines"], "the Machines page");
+    assert.equal(tab("machines").getAttribute("aria-selected"), "true");
     assert.equal(p.doc.querySelectorAll(".settings-catalog-card").length, 0, "no card that opens something elsewhere");
-    await type(p, p.doc.querySelector('#settings-editor-jobs-budget input[name="maxActive"]'), "7");
+    await type(p, field(), "7");
     tab("updates").click();
     await until(() => shown().join() === "settings-editor-updates", "another page");
     tab("machines").click();
-    await until(() => shown().includes("settings-editor-jobs-budget"), "back at the Machines page");
-    assert.equal(p.doc.querySelector('#settings-editor-jobs-budget input[name="maxActive"]').value, "7", "an unsaved Jobs at once survives switching pages");
+    await until(() => shown().includes("settings-editor-machines"), "back at the Machines page");
+    assert.equal(field().value, "7", "an unsaved Jobs at once survives switching pages");
     assert.equal(p.posts().length, 0, "browsing writes nothing");
     assert.deepEqual(p.errors, [], "no page errors");
   } finally { p.close(); }
 });
 
-test("in Chinese both editors read in Chinese, with names and Core words as they came", async () => {
+test("in Chinese the Core host editor reads in Chinese, with names and Core words as they came", async () => {
   const p = mount(fixtureCore(), { language: "zh-Hans" });
   try {
     p.window.renderHost();
@@ -565,14 +505,4 @@ test("in Chinese both editors read in Chinese, with names and Core words as they
     assert.match(text(section), /WSL/, "the machine name stays as it came");
     assert.match(text(p.group("磁盘保留")), /10 GiB, or a tenth of a filesystem smaller than 100 GiB/, "Core rule stays as it came");
   } finally { p.close(); }
-  const q = mount(fixtureCore(), { language: "zh-Hans" });
-  try {
-    q.window.renderRemote({});
-    await until(() => q.doc.querySelector('select[name="machine"]'), "the machines are read");
-    const picker = q.doc.querySelector('select[name="machine"]');
-    assert.equal(picker.options[0].textContent, "选择一台机器…", "the picker is Chinese");
-    await type(q, picker, "studio");
-    await until(() => q.doc.querySelector(".remote-machine-editor"), "the chosen machine opens");
-    assert.equal(q.doc.querySelector(".remote-editor-heading strong").textContent, "编辑 Studio", "the machine editor is Chinese, the name as written");
-  } finally { q.close(); }
 });

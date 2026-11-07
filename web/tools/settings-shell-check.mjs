@@ -266,6 +266,47 @@ try {
     }
   }
 
+  // ---- Settings › Machines (S3a): the list first, a page per machine; the
+  // Core host's has its Job budget.
+  for (const [width, height, phone] of [[1440, 900, false], [951, 669, false], [390, 844, true]]) {
+    for (const [language, theme] of [["en", "light"], ["zh-Hans", "dark"]]) {
+      const label = `machines ${width}x${height} ${language} ${theme}`;
+      const { page, context } = await open({ width, height, language, theme, phone });
+      await page.locator(".workspace-scope").click();
+      await page.getByRole("menuitem", { name: language === "en" ? "Machines…" : "机器…" }).click();
+      const dialog = settings(page);
+      const title = dialog.locator("#settings-machines-title");
+      await dialog.locator('[data-machine-row="lab"]').waitFor();
+      await page.waitForTimeout(300); // the dialog's entrance
+      assert.equal(await title.innerText(), language === "en" ? "Machines" : "机器", `${label}: the list, no machine chosen`);
+      await noOverflow(page, `${label} list`);
+      await page.screenshot({ path: resolve(output, `machines-list-${width}x${height}-${language}-${theme}.png`) });
+      const inCards = (name) => dialog.locator(".settings-machines > .settings-group").evaluateAll((cards) => cards.flatMap((card) => {
+        const right = card.getBoundingClientRect().right + 1;
+        return [...card.querySelectorAll("input, select, textarea, button")].filter((el) => el.getBoundingClientRect().width && el.getBoundingClientRect().right > right)
+          .map((el) => el.getAttribute("aria-label") || el.textContent.trim().slice(0, 40));
+      })).then((wide) => assert.deepEqual(wide, [], `${label} ${name}: every control inside its card`));
+      await dialog.locator('[data-machine-row="local"]').click();
+      await dialog.locator('article[data-machine-id="local"]').waitFor();
+      await dialog.locator("#settings-block-jobs #settings-jobs-budget").waitFor();
+      await noOverflow(page, `${label} Core host`);
+      await inCards("Core host");
+      await page.screenshot({ path: resolve(output, `machines-host-${width}x${height}-${language}-${theme}.png`) });
+      await dialog.locator("#settings-block-jobs").evaluate((el) => el.scrollIntoView({ block: "start" }));
+      await page.waitForTimeout(100);
+      await page.screenshot({ path: resolve(output, `machines-host-jobs-${width}x${height}-${language}-${theme}.png`) });
+      await dialog.locator(".settings-crumb").click();
+      await dialog.locator('[data-machine-row="lab"]').click();
+      await dialog.locator('article[data-machine-id="lab"]').waitFor();
+      assert.equal(await dialog.locator("#settings-block-jobs").count(), 0, `${label}: an SSH machine's Jobs are in its editor`);
+      await noOverflow(page, `${label} Lab box`);
+      await inCards("Lab box");
+      await page.screenshot({ path: resolve(output, `machines-ssh-${width}x${height}-${language}-${theme}.png`) });
+      await context.close();
+      check(`${label}: the list first; the Core host's page with its Job budget and Lab box's page, every control inside its card`);
+    }
+  }
+
   // ---- Deep links: the Workspace menu and the status bar open their pages.
   {
     const { page, context } = await open({ width: 1440, height: 900, scope: JSON.stringify("project:garden") });

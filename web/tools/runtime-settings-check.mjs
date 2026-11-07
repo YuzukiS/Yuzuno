@@ -186,7 +186,7 @@ try {
       await section.getByRole("button", { name: "Read again" }).click();
       await page.waitForTimeout(300);
       await section.getByRole("button", { name: "Check machines" }).click();
-      await page.locator(".machines-page").waitFor();
+      await page.locator(".settings-machines").waitFor();
       await shot(page, `${label}-machines`);
       // Every request of this window, kept before anything is asserted. The
       // app's own views (an open conversation's inspector, for one) read too;

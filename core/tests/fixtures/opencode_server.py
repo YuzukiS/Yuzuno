@@ -34,6 +34,12 @@ session's permission requests with nothing said and cancels its forms. Control `
 if OpenCode no longer held it. 1.19.3's request routes (`/permission`, `/question`) are gone.
 Commands are 2.x's (T-61 slice 3): listed by name and description (`GET /api/command`) and run by `POST
 /api/session/:id/command` (mode `command`); 1.19.3's `POST /session/:id/command` is gone.
+Compaction is 2.x's (T-61 slice 4): `POST /api/session/:id/compact` admits one into the session's inbox and answers at
+once; it then runs as 2.x's does (`session.compaction.*`), its message under the ID it was admitted under (`compact_v2`).
+Mode `compact`: `run`, `hold` (until control `finishCompaction` or an interrupt), `fail`, `unavailable`, `late`, `drop`,
+`drop-unadmitted`, `refuse-404`, `invalid-400`, `conflict-409`, `500`, `500-admitted`, `other-pending`. Control
+`autoCompact` runs one of 2.x's own; `compacts` lists what the route was sent. 1.19.3's `POST /session/:id/summarize`
+and its part removal (`DELETE /session/:id/message/:id/part/:id`) are gone.
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
@@ -124,9 +130,12 @@ mcp_servers, mcp_connects = {}, []
 # Each command request 2.x's route took (T-61 slice 3), in order: its session, `name`, `text` and the body's keys (control
 # `commands`).
 commands_seen = []
+# Each compaction request 2.x's route took (T-61 slice 4), in order: its session, the body's `id`, `delivery` and keys
+# (control `compacts`).
+compacts_seen = []
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
-         'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
+         'command': 'run', 'compact': 'run', 'defaultModel': None, 'failListOnce': False,
          'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'directory': None, 'fork': 'ok', 'history': 'ok',
          'replay': 'ok', 'html': [], 'activeShape': 'object', 'integrations': [], 'oauth': {}, 'loginRefuse': False,
          'holdOauthStatus': False, 'replyLost': None}
@@ -135,10 +144,9 @@ modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbe
 credentials, attempts, cancelled = {}, {}, []
 # Reads of the permission list held (mode `holdPermission`, once): what lets them answer.
 held_reads = []
-# Compactions whose run ended but whose answer waits (`summarize` mode `late`), by session.
-late = {}
-# Compactions held open (`summarize` mode `hold`), by session: what ends one.
-held = {}
+# Compactions held running (`compact` mode `hold`), by session: their message's ID, until `finishCompaction` or an
+# interrupt ends one.
+compacting = {}
 # Reverts or unreverts held (mode `hold`) or answered late (mode `late`), by session: what lets them go on.
 reverting = {}
 # OpenCode's durable events (T-10 Fork), as its database keeps them (`core/src/event.ts`): every v1
@@ -180,8 +188,8 @@ def v2_message_id():
 
 def publish(kind, properties):
     """An event of the stand-in's own store, kept in 1.19.3's shape: sent as 2.x sends its own (T-32 slice 3b), or as it
-    is in the 1.19.3 mode (switch or mode `v1Messages`), which only the tests of compaction, rewind and fork use until
-    their slices move them. Durable ones are kept for `/sync/history` as they are."""
+    is in the 1.19.3 mode (switch or mode `v1Messages`), which only the tests of rewind and fork use until their slices
+    move them. Durable ones are kept for `/sync/history` as they are."""
     if v1():
         sent = send(kind, properties)
     else:
@@ -222,10 +230,11 @@ v2_state = {}
 
 
 def v2_of(session):
-    # `shutdown`: the execution ending now ends as one shutting down (`shut_down`).
+    # `shutdown`: the execution ending now ends as one shutting down (`shut_down`). `compacts`: the compactions waiting
+    # in the inbox (their IDs are in `pending`, in order), each's `delivery` and `created`.
     return v2_state.setdefault(session, {'delivered': set(), 'started': set(), 'ended': set(), 'parts': set(),
                                          'error': None, 'idles': [], 'pending': [], 'steer': set(), 'shells': [],
-                                         'shutdown': False})
+                                         'shutdown': False, 'compacts': {}})
 
 
 def v2_models():
@@ -343,12 +352,13 @@ def add_credential(integration, method, label, value):
 
 def v2_deliver(session, upto=None):
     # 2.x delivers a message steered into a busy session at its next step's start (core/src/session/projector.ts):
-    # those enqueued up to `upto`, or all of them.
+    # those enqueued up to `upto`, or all of them. A compaction waiting there is delivered only as it runs (`compact_run`).
     state = v2_of(session)
     if upto is not None and upto not in state['pending']:
         return []
     count = state['pending'].index(upto) + 1 if upto is not None else len(state['pending'])
-    delivered, state['pending'] = state['pending'][:count], state['pending'][count:]
+    delivered = [mid for mid in state['pending'][:count] if mid not in state['compacts']]
+    state['pending'] = [mid for mid in state['pending'] if mid not in delivered]
     return [('session.inbox.delivered', {'sessionID': session, 'inboxID': mid}) for mid in delivered]
 
 
@@ -414,11 +424,35 @@ def v2_payload(session, mid):
 
 
 def v2_inbox(session):
-    """What 2.x's `/api/session/:id/inbox` lists: the messages steered in and not yet delivered, oldest first."""
+    """What 2.x's `/api/session/:id/inbox` lists: the messages steered in and not yet delivered, and the compactions
+    admitted and not yet started (`v2_compact_item`), oldest first."""
     state = v2_of(session)
-    return [{'id': mid, 'sessionID': session, 'type': 'user', 'delivery': 'steer', 'payload': v2_payload(session, mid),
+    return [v2_compact_item(session, mid) if mid in state['compacts'] else
+            {'id': mid, 'sessionID': session, 'type': 'user', 'delivery': 'steer', 'payload': v2_payload(session, mid),
              'time': {'created': ((messages.get(session, {}).get(mid) or {}).get('info') or {}).get('time', {}).get('created', 0)}}
             for mid in state['pending']]
+
+
+def v2_compact_item(session, mid):
+    """A compaction waiting in the inbox, as 2.x lists one and answers its admission with (schema/src/session-inbox.ts)."""
+    item = v2_of(session)['compacts'][mid]
+    return {'id': mid, 'sessionID': session, 'time': {'created': item['created']}, 'type': 'compaction', 'payload': {},
+            'delivery': item['delivery']}
+
+
+def v2_event_of(mid):
+    # The event ID whose message ID is `mid` (SessionMessage.ID.fromEvent: `evt_…` → `msg_…`).
+    return 'evt_' + mid[len('msg_'):] if mid.startswith('msg_') else mid
+
+
+def v2_reason(session, info):
+    """Why a stored compaction ran, as 2.x says (schema/src/session-event.ts Compaction): `manual` for one asked for,
+    `auto` for 2.x's own. One the 2.x route ran says so itself; a 1.19.3-shaped summary is manual when the compaction
+    part it answers (its `parentID`) was asked for (`auto` false), else auto."""
+    if info.get('reason'):
+        return info['reason']
+    asked = (messages.get(session, {}).get(info.get('parentID')) or {}).get('parts') or []
+    return 'manual' if any(q.get('type') == 'compaction' and q.get('auto') is False for q in asked) else 'auto'
 
 
 def v2_events(kind, p):
@@ -442,17 +476,21 @@ def v2_events(kind, p):
                 return [enqueued]
             return [enqueued, ('session.inbox.delivered', {'sessionID': session, 'inboxID': mid})]
         if info.get('summary'):
-            # A compaction's summary is 2.x's compaction (session-event.ts Compaction).
+            # A compaction's summary is 2.x's compaction (session-event.ts Compaction), manual or 2.x's own (`v2_reason`).
             done = (info.get('time') or {}).get('completed')
+            reason = v2_reason(session, info)
             out = []
             if mid not in state['started']:
                 state['started'].add(mid)
-                # 2.x names the compaction's message by its input's ID (core/src/session/message-updater.ts), as here.
-                out.append(('session.compaction.started', {'sessionID': session, 'reason': 'auto', 'inputID': mid}))
+                # 2.x names the compaction's message by its input's ID (core/src/session/message-updater.ts), as here; its
+                # own has no input, and its message is named by this event's ID (SessionMessage.ID.fromEvent).
+                if reason == 'manual':
+                    out.append(('session.compaction.started', {'sessionID': session, 'reason': 'manual', 'inputID': mid}))
+                else:
+                    out.append(('session.compaction.started', {'sessionID': session, 'reason': 'auto'}, None, v2_event_of(mid)))
             if done and mid not in state['ended']:
                 state['ended'].add(mid)
-                out.append(('session.compaction.ended', {'sessionID': session, 'reason': 'manual' if info.get('mode') == 'manual' else 'auto',
-                                                         'text': '', 'tokens': info.get('tokens')}))
+                out.append(('session.compaction.ended', {'sessionID': session, 'reason': reason, 'text': '', 'tokens': info.get('tokens')}))
             return out
         out = []
         if mid not in state['started']:
@@ -595,12 +633,16 @@ def v2_view(session):
                 text = ''.join(q.get('text', '') for q in stored.get('parts', []) if q.get('type') == 'text')
                 out.append({'id': mid, 'type': 'user', 'text': text, 'time': {'created': created}})
         elif info.get('summary'):
+            # 2.x's compaction message (schema/src/session-message.ts Compaction): its summary and model once completed.
             text = ''.join(q.get('text', '') for q in stored.get('parts', []) if q.get('type') == 'text')
             done = (info.get('time') or {}).get('completed')
-            entry = {'id': mid, 'type': 'compaction', 'status': 'completed' if done else 'running', 'reason': 'auto', 'summary': text,
-                     'time': {'created': created}}
+            entry = {'id': mid, 'type': 'compaction', 'status': 'completed' if done else 'running', 'reason': v2_reason(session, info),
+                     'summary': text, 'time': {'created': created}}
             if info.get('error'):
                 entry.update(status='failed', error=v2_error(info['error']))
+            elif done and info.get('providerID') and info.get('modelID'):
+                entry['model'] = {'id': info['modelID'], 'providerID': info['providerID'],
+                                  **({'variant': info['variant']} if info.get('variant') else {})}
             out.append(entry)
         else:
             content = [e for e in (v2_entry(q) for q in stored.get('parts', [])) if e is not None]
@@ -694,7 +736,7 @@ def save():
                            # 2.x stores its idle messages with the session's others,
                            # and its inbox.
                            'idles': {s: v['idles'] for s, v in v2_state.items()},
-                           'inbox': {s: {'pending': v['pending'], 'steer': sorted(v['steer'])}
+                           'inbox': {s: {'pending': v['pending'], 'steer': sorted(v['steer']), 'compacts': v['compacts']}
                                      for s, v in v2_state.items()},
                            'shells': {s: v['shells'] for s, v in v2_state.items()}})
         written = ROOT / f'state.json.{os.getpid()}.tmp'
@@ -716,9 +758,16 @@ def load():
         for s, idles in state.get('idles', {}).items():
             v2_of(s)['idles'] = idles
         for s, inbox in state.get('inbox', {}).items():
-            v2_of(s).update(pending=inbox['pending'], steer=set(inbox['steer']))
+            v2_of(s).update(pending=inbox['pending'], steer=set(inbox['steer']), compacts=inbox.get('compacts', {}))
         for s, shells in state.get('shells', {}).items():
             v2_of(s)['shells'] = shells
+        # A compaction its process ended in the middle of is failed when it starts again, with nothing said (no stream
+        # is open yet), as 2.x's `compaction.interrupted` (core/src/session/compaction.ts).
+        for s, stored in messages.items():
+            for message in stored.values():
+                info = message.get('info') or {}
+                if info.get('reason') and info.get('summary') and not info.get('error') and not (info.get('time') or {}).get('completed'):
+                    info['error'] = {'name': 'compaction.interrupted', 'data': {'message': 'fixture: the process ended'}}
 
 
 def store(session, message_id, text, files=(), announce=True, model=None):
@@ -971,8 +1020,8 @@ def project(event):
 
 def cleanup(session):
     """As OpenCode 1.19.3 applies a revert waiting in the session at its next prompt, command or summarize
-    (`session/revert.ts` cleanup): the messages from its boundary on are deleted, each announced, and the
-    revert is cleared; files are left as they are."""
+    (`session/revert.ts` cleanup), and 2.x at a compaction it admits: the messages from its boundary on are deleted,
+    each announced, and the revert is cleared; files are left as they are."""
     revert = sessions[session].get('revert')
     if not revert:
         return
@@ -1090,6 +1139,34 @@ def control(name, body):
         # What 2.x's command route was sent (T-61 slice 3), read only.
         with lock:
             return {'seen': list(commands_seen)}
+    if name == 'compacts':
+        # What 2.x's compaction route was sent (T-61 slice 4), read only.
+        with lock:
+            return {'seen': list(compacts_seen)}
+    if name == 'finishCompaction':
+        # A held compaction ends as one that runs through (`compact_run`); its message as 2.x lists it, or None.
+        with lock:
+            mid = compacting.pop(body['sessionID'], None)
+        if mid is None:
+            return None
+        compaction_ended(body['sessionID'], mid, body.get('text', COMPACTION_SUMMARY))
+        go_idle(body['sessionID'])
+        return v2_listed(body['sessionID'], mid)
+    if name == 'autoCompact':
+        # A compaction of 2.x's own (core/src/session/runner/llm.ts, on an overflowing context): no inbox item and no
+        # input, its message named by its start event's ID; run in the execution going on, else in one of its own.
+        session = body['sessionID']
+        own = session not in statuses
+        if own:
+            statuses[session] = {'type': 'busy'}
+            publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
+        started = new_id('evt')
+        mid = 'msg_' + started[len('evt_'):]
+        compaction_started(session, mid, 'auto', event_id=started)
+        compaction_ended(session, mid, body.get('text', COMPACTION_SUMMARY))
+        if own:
+            go_idle(session)
+        return v2_listed(session, mid)
     if name == 'ask':
         # A permission request as 2.2.5 makes one (core/src/permission.ts), sent as 2.x sends it in every mode, the
         # 1.19.3 mode too: Core reads only 2.x's requests.
@@ -1246,10 +1323,6 @@ def control(name, body):
         # The folder held for another project from now on (T-10 Revert), as when its repository changed.
         current_project[0] = body['id']
         return True
-    if name == 'compaction':
-        # A compaction message in the session (T-10): one asked for, or OpenCode's own (`auto`).
-        return compaction(body['sessionID'], body.get('model', {'providerID': 'deepseek', 'modelID': 'deepseek-flash'}),
-                          body.get('auto', True))
     if name == 'held':
         # How many reads wait at the permission list now: ready to be released.
         with lock:
@@ -1272,56 +1345,122 @@ def control(name, body):
         # A held revert or unrevert goes on, or a late one is answered.
         reverting.pop(body['sessionID']).set()
         return True
-    if name == 'answerLate':
-        late.pop(body['sessionID']).set()
-        return True
-    if name == 'finishSummary':
-        # A held compaction's run ends with its summary.
-        summary = held.pop(body['sessionID'])
-        finish(body['sessionID'], summary['info'], body.get('text', 'The conversation so far, in short.'), body.get('completed', True))
-        summary['ended'].set()
-        return summary['info']
     raise ValueError(name)
 
 
-def compaction(session, model, auto):
-    """A compaction's user message under an ID of OpenCode's own, with its
-    `compaction` part (`session/compaction.ts` create), announced as stored."""
-    info = {'id': new_id('msg'), 'sessionID': session, 'role': 'user', 'agent': 'build', 'model': model,
-            'time': {'created': int(time.time() * 1000)}}
-    part = {'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'compaction', 'auto': auto}
-    with lock:
-        messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': [part]}
-    save()
-    publish('message.updated', {'sessionID': session, 'info': info})
-    publish('message.part.updated', {'sessionID': session, 'part': part, 'time': info['time']['created']})
-    return info
+# The summary a compaction writes here (2.x's starts with `## Objective`, core/src/session/compaction.ts).
+COMPACTION_SUMMARY = '## Objective\nfixture summary'
+# The modes of `compact` (`compact_v2`).
+COMPACT_MODES = ('run', 'hold', 'fail', 'unavailable', 'late', 'drop', 'drop-unadmitted', 'refuse-404', 'invalid-400',
+                 'conflict-409', '500', '500-admitted', 'other-pending', 'forget')
+# What the modes of `compact` that fail fail with (core/src/session/compaction.ts): its error's type and message.
+COMPACT_FAILURES = {'fail': ('compaction.failed', 'fixture: the summary failed'),
+                    'unavailable': ('compaction.unavailable', 'fixture: nothing to compact')}
+# What an interrupt leaves a held compaction's run with: it ends as interrupted (`v2_events`, an idle session.status).
+ABORTED = {'name': 'MessageAbortedError', 'data': {'message': 'The operation was aborted.'}}
 
 
-def summary_for(session, parent):
-    """The compaction's summary, as OpenCode writes it before the run: `summary`, no completion, no finish."""
-    info = {'id': new_id('msg'), 'sessionID': session, 'role': 'assistant', 'parentID': parent, 'mode': 'compaction',
-            'agent': 'compaction', 'summary': True, 'time': {'created': int(time.time() * 1000)}}
-    with lock:
-        messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': []}
-    save()
-    publish('message.updated', {'sessionID': session, 'info': info})
-    return info
+def compaction_model(session):
+    """The model a compaction runs on: the session's, as `POST …/model` set it (its variant too), else mode
+    `defaultModel`'s."""
+    current = sessions.get(session, {}).get('model') or {}
+    if current.get('id') and current.get('providerID'):
+        return {k: current[k] for k in ('id', 'providerID', 'variant') if current.get(k)}
+    default = modes['defaultModel'] or {}
+    return {'id': default.get('modelID') or 'fixture', 'providerID': default.get('providerID') or 'fixture'}
 
 
-def finish(session, info, text, completed=True):
-    """A compaction's run ending well: its summary's text, finish (and completion), then idle."""
-    part = {'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'text', 'text': text}
+def v2_listed(session, mid):
+    # A message as 2.x's `/api/session/:id/message` lists it, or None.
+    return next((m for m in v2_view(session) if m['id'] == mid), None)
+
+
+def compaction_started(session, mid, reason, input_id=None, event_id=None, delta=True):
+    """A compaction's start (core/src/session/compaction.ts): its message stored under `mid`, running, after the
+    session's others; `session.compaction.started`, with an `inputID` only for one asked for; then one
+    `session.compaction.delta` (`delta`)."""
     now = int(time.time() * 1000)
-    if completed:
-        info['time']['completed'] = now
-    info['finish'] = 'stop'
+    info = {'id': mid, 'sessionID': session, 'role': 'assistant', 'mode': 'compaction', 'agent': 'compaction', 'summary': True,
+            'reason': reason, 'time': {'created': now}}
     with lock:
-        messages[session][info['id']] = {'info': info, 'parts': [part]}
+        messages.setdefault(session, {})[mid] = {'info': info, 'parts': []}
     save()
-    publish('message.part.updated', {'sessionID': session, 'part': part, 'time': now})
-    publish('message.updated', {'sessionID': session, 'info': info})
+    send('session.compaction.started', {'sessionID': session, 'reason': reason, **({'inputID': input_id} if input_id else {})},
+         now, event_id)
+    if delta:
+        send('session.compaction.delta', {'sessionID': session, 'text': COMPACTION_SUMMARY.split('\n')[0] + '\n'})
+
+
+def compaction_ended(session, mid, text):
+    """A compaction ending well: its message completed with its summary and model, and `session.compaction.ended`
+    (no `inputID`), the model the session's."""
+    model = compaction_model(session)
+    part = {'id': new_id('prt'), 'sessionID': session, 'messageID': mid, 'type': 'text', 'text': text}
+    with lock:
+        stored = messages.get(session, {}).get(mid)
+        reason = stored['info'].get('reason', 'manual') if stored else 'manual'
+        if stored:
+            stored['info'].update(providerID=model['providerID'], modelID=model['id'], finish='stop')
+            if model.get('variant'):
+                stored['info']['variant'] = model['variant']
+            stored['info']['time']['completed'] = int(time.time() * 1000)
+            stored['parts'] = [part]
+    save()
+    send('session.compaction.ended', {'sessionID': session, 'reason': reason, 'model': model, 'text': text})
+
+
+def compaction_failed(session, mid, kind, message):
+    """A compaction failing (core/src/session/compaction.ts): its message failed with 2.x's error, and
+    `session.compaction.failed` with its `inputID`. Its run still ends as succeeded, unless an interrupt ended it."""
+    with lock:
+        stored = messages.get(session, {}).get(mid)
+        reason = stored['info'].get('reason', 'manual') if stored else 'manual'
+        if stored:
+            stored['info']['error'] = {'name': kind, 'data': {'message': message}}
+    save()
+    send('session.compaction.failed', {'sessionID': session, 'reason': reason, 'error': {'type': kind, 'message': message},
+                                       **({'inputID': mid} if reason == 'manual' else {})})
+
+
+def compact_run(session, mid, mode):
+    """A compaction admitted under `mid` runs (core/src/session/compaction.ts): `session.inbox.delivered`, the
+    execution's start, `session.compaction.started` (its message running); then by mode held (`hold`, until
+    `finishCompaction` or an interrupt), failed (`fail`, `unavailable`: and the run still ends as succeeded) or ended
+    with its summary; and the session idle, its idle message after the compaction's."""
+    with lock:
+        state = v2_of(session)
+        if state['compacts'].pop(mid, None) is None:
+            return
+        state['pending'] = [m for m in state['pending'] if m != mid]
+    save()
+    send('session.inbox.delivered', {'sessionID': session, 'inboxID': mid})
+    statuses[session] = {'type': 'busy'}
+    publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
+    compaction_started(session, mid, 'manual', input_id=mid, delta=mode not in COMPACT_FAILURES)
+    if mode == 'hold':
+        with lock:
+            compacting[session] = mid
+        return
+    if mode in COMPACT_FAILURES:
+        compaction_failed(session, mid, *COMPACT_FAILURES[mode])
+    else:
+        compaction_ended(session, mid, COMPACTION_SUMMARY)
     go_idle(session)
+
+
+def compact_later(session, mid, mode, delay):
+    """`compact_run` in a thread of its own, after `delay` seconds and once no run goes on in the session: one admitted
+    while a run goes on runs after it (2.x takes it up at that run's next step, core/src/session/runner/llm.ts). A run
+    still going on 120 s later leaves it in the inbox."""
+    def run():
+        time.sleep(delay)
+        deadline = time.monotonic() + 120
+        while session in statuses:
+            if time.monotonic() > deadline:
+                return
+            time.sleep(0.05)
+        compact_run(session, mid, mode)
+    threading.Thread(target=run, daemon=True).start()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1531,6 +1670,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.prompt_v2(session, body or {})
         if (method, *rest) == ('POST', 'command'):
             return self.command_v2(session, body)
+        if (method, *rest) == ('POST', 'compact'):
+            return self.compact_v2(session, body)
         if (method, *rest) == ('POST', 'model'):
             # 2.x's switchModel (T-32 slice 4a): the session's model for its next steps; 204.
             with lock:
@@ -1588,16 +1729,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.missing(f'Session {session}')
         if (method, *rest) == ('POST', 'prompt_async'):
             return self.prompt(session, body)
-        if (method, *rest) == ('POST', 'summarize'):
-            return self.summarize(session, body)
         if (method, *rest) == ('POST', 'revert'):
             return self.revert(session, body)
         if (method, *rest) == ('POST', 'unrevert'):
             return self.unrevert(session)
         if (method, *rest) == ('POST', 'fork'):
             return self.fork(session, body)
-        if method == 'DELETE' and len(rest) == 4 and rest[0] == 'message' and rest[2] == 'part':
-            return self.delete_part(session, rest[1], rest[3])
         if method == 'GET' and len(rest) == 2 and rest[0] == 'message':
             if modes.get('failMessageReads'):
                 return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: message read failed'}})
@@ -1609,20 +1746,17 @@ class Handler(BaseHTTPRequestHandler):
             running = session in statuses
             end_requests(session)
             self.reply(200, {'interrupted': running} if interrupt else True)
-            aborted = {'name': 'MessageAbortedError', 'data': {'message': 'The operation was aborted.'}}
-            if session in held:
-                # As OpenCode 1.19.3 halts an aborted compaction: the session
-                # error and idle first, then its summary with the error and no
-                # finish, then the runner's own idle.
-                summary = held.pop(session)
-                publish('session.error', {'sessionID': session, 'error': aborted})
+            aborted = ABORTED
+            with lock:
+                held = compacting.pop(session, None)
+            if held:
+                # As 2.x interrupts a compaction (core/src/session/compaction.ts): it fails as `aborted`, and its run
+                # ends as interrupted (`session.execution.interrupted`), with no aborted answer.
+                compaction_failed(session, held, 'aborted', 'fixture: interrupted')
+                if not v1():
+                    with lock:
+                        v2_of(session)['error'] = aborted
                 go_idle(session)
-                summary['info']['error'] = aborted
-                summary['info']['time']['completed'] = int(time.time() * 1000)
-                save()
-                publish('message.updated', {'sessionID': session, 'info': summary['info']})
-                go_idle(session)
-                summary['ended'].set()
                 return None
             if running and modes['abortEvidence'] and modes['abortOrder'] == 'native':
                 # As OpenCode 1.19.3's processor halts an aborted run: the
@@ -1836,97 +1970,92 @@ class Handler(BaseHTTPRequestHandler):
               answered=None if mode == 'fail-after' else (lambda: self.reply(204)))
         return failed() if mode == 'fail-after' else None
 
-    def summarize(self, session, body):
-        """As OpenCode 1.19.3's summarize (`handlers/session.ts`): a body
-        without a provider and model is refused (400) before the handler; the
-        compaction's message is written, the run goes on, and the answer
-        (`true`) comes only once it ends. Mode `summarize`: `run`, `hold`
-        (written, its summary too, then held until `finishSummary` or an
-        abort), `drop` (run, then the connection ends with no answer),
-        `refuse` / `refuse-404` (refused, nothing written), `refuse-late` (written,
-        then refused), `silent` (nothing written, no answer for 30 s), `auto`
-        (only a compaction of OpenCode's own is written, then idle, answered),
-        `double` (two compactions asked for are written, then idle, answered), `proxy500` (written, its
-        summary too, then idle and a 500, as OpenCode's proxy answers a broken upstream)."""
-        if not isinstance(body, dict) or not isinstance(body.get('providerID'), str) or not isinstance(body.get('modelID'), str):
-            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: providerID and modelID are required'}})
-        mode = modes['summarize']
-        model = {'providerID': body['providerID'], 'modelID': body['modelID']}
-        # The handler applies a revert waiting in the session first (`handlers/session.ts` summarize).
-        if mode not in ('refuse', 'refuse-404'):
-            cleanup(session)
-        if mode == 'refuse':
-            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: refused'}})
+    def compact_v2(self, session, body):
+        """As 2.x's compaction (2.2.5 protocol/src/groups/session.ts session.compact, core/src/session/inbox.ts; T-61 slice
+        4): `{id?, delivery?}` and no model (it runs on the session's, `compaction_model`); each request is kept in
+        `compacts_seen`. A revert waiting in the session is applied (`cleanup`), then it is admitted into the inbox at
+        once under its `id` (else a 2.x ID, `v2_message_id`), `delivery` by default `steer` while a run goes on, else
+        `queue`: `session.inbox.enqueued`, answered 200 with the item, then run (`compact_run`), or once the run going
+        on ends (`compact_later`). Its `id` again: the same item while it waits in the inbox, a ConflictError (409) once
+        it is a message; another compaction waiting there answers in place of it, nothing admitted. A body 2.x can't
+        read: InvalidRequestError (400, kind `Payload`). Mode `compact`: `run`; `hold` (run, then held until control
+        `finishCompaction`, or an interrupt: failed `aborted`, the run interrupted); `fail`, `unavailable` (run, then
+        failed, the run succeeded); `late` (run `compactDelay` seconds later, 2 by default); `drop`, `500-admitted`
+        (admitted and run, then no answer, or a 500); `drop-unadmitted`, `refuse-404`, `invalid-400`, `conflict-409`,
+        `500` (no answer, or that status, nothing admitted); `other-pending` (another compaction, made up and never
+        run, waits in the inbox and answers in place of it); `forget` (answered as admitted, then no record of it is
+        kept: nothing in the inbox, no message, nothing run)."""
+        given = body if isinstance(body, dict) else {}
+        with lock:
+            compacts_seen.append({'sessionID': session, 'id': given.get('id'), 'delivery': given.get('delivery'), 'keys': sorted(given)})
+        mode, mid, delivery = modes['compact'], given.get('id'), given.get('delivery')
+        invalid = lambda why: self.reply(400, {'_tag': 'InvalidRequestError', 'kind': 'Payload', 'message': f'fixture: {why}'})
+        conflict = lambda: self.reply(409, {'_tag': 'ConflictError', 'message': f'Message already exists: {mid}'})
+        if mode not in COMPACT_MODES:
+            return self.reply(500, {'_tag': 'UnknownError', 'message': f'fixture: no compact mode {mode}'})
+        if mode == 'drop-unadmitted':
+            self.close_connection = True
+            return None
         if mode == 'refuse-404':
-            return self.reply(404, {'name': 'NotFoundError', 'data': {'message': 'fixture: not found'}})
-        if mode == 'silent':
-            time.sleep(30)
-            self.close_connection = True
-            return None
-        statuses[session] = {'type': 'busy'}
-        publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
-        if mode == 'auto':
-            compaction(session, model, True)
-            go_idle(session)
-            return self.reply(200, True)
-        if mode == 'double':
-            compaction(session, model, False)
-            compaction(session, model, False)
-            go_idle(session)
-            return self.reply(200, True)
-        user = compaction(session, model, body.get('auto', False))
-        if mode == 'refuse-late':
-            go_idle(session)
-            return self.reply(400, {'name': 'BadRequest', 'data': {'message': 'fixture: refused after writing'}})
-        if mode == 'proxy500':
-            # Written, its summary too, then the upstream broke: OpenCode's
-            # proxy answers 500 (`middleware/proxy.ts`), and the session is idle.
-            summary_for(session, user['id'])
-            go_idle(session)
-            return self.reply(500, {'name': 'UnknownError', 'data': {'message': 'fixture: upstream broke'}})
-        info = summary_for(session, user['id'])
-        if mode == 'hold':
-            ended = threading.Event()
-            held[session] = {'info': info, 'ended': ended}
-            ended.wait(60)
-            # Aborted or not, the run ended and the waiting request is
-            # answered (`effect/runner.ts`: a cancelled run's waiters get
-            # its onInterrupt), so the handler returns true.
-            return self.reply(200, True)
-        time.sleep(0.05)
-        finish(session, info, 'The conversation so far, in short.')
-        if mode == 'late':
-            # The run ended, as its events say; its answer comes only on `answerLate`.
-            ended = threading.Event()
-            late[session] = ended
-            ended.wait(60)
-            return self.reply(200, True)
-        if mode == 'drop':
-            self.close_connection = True
-            return None
-        return self.reply(200, True)
-
-    def delete_part(self, session, message_id, part_id):
-        """As OpenCode 1.19.3's part removal (`session.ts` removePart and
-        `core/src/session/projector.ts`): announced, then deleted by its ID
-        and session alone, with no check that it exists or is that
-        message's, and answered true. Mode `deletePart`: `ok`, `drop`
-        (removed, then the connection ends with no answer) or `lie`
-        (answered true, nothing removed)."""
-        mode = modes['deletePart']
-        if mode == 'read-fails':
-            # Removed and answered; the next read of the session's messages fails.
-            modes['failListOnce'] = True
-        if mode != 'lie':
+            return self.reply(404, {'_tag': 'SessionNotFoundError', 'message': f'Session not found: {session}'})
+        if mode == 'invalid-400':
+            return invalid('refused')
+        if mode == 'conflict-409':
+            return conflict()
+        if mode == '500':
+            return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: the compaction was not admitted'})
+        if not isinstance(body, dict) or (mid is not None and not (isinstance(mid, str) and mid.startswith('msg'))):
+            return invalid('a compaction takes an object, its id a message ID')
+        if delivery not in (None, 'steer', 'queue'):
+            return invalid(f'Invalid delivery: {delivery}')
+        state = v2_of(session)
+        if mode == 'other-pending' and not any(m in state['compacts'] for m in state['pending']):
+            made = v2_message_id()
             with lock:
-                for m in messages.get(session, {}).values():
-                    m['parts'] = [p for p in m['parts'] if p['id'] != part_id]
+                state['compacts'][made] = {'delivery': 'queue', 'created': int(time.time() * 1000)}
+                state['pending'].append(made)
             save()
-            publish('message.part.removed', {'sessionID': session, 'messageID': message_id, 'partID': part_id})
+            send('session.inbox.enqueued', {'sessionID': session, 'inboxID': made, 'item': {'type': 'compaction', 'delivery': 'queue',
+                                                                                         'payload': {}}})
+        with lock:
+            same = mid in state['compacts']
+            other = next((m for m in state['pending'] if m in state['compacts']), None)
+        if same:
+            return self.reply(200, {'data': v2_compact_item(session, mid)})
+        if mid in messages.get(session, {}):
+            return conflict()
+        if other:
+            return self.reply(200, {'data': v2_compact_item(session, other)})
+        if mode == 'forget':
+            mid = mid or v2_message_id()
+            return self.reply(200, {'data': {'id': mid, 'sessionID': session, 'time': {'created': int(time.time() * 1000)},
+                                             'type': 'compaction', 'payload': {}, 'delivery': delivery or 'queue'}})
+        cleanup(session)
+        mid, running = mid or v2_message_id(), session in statuses
+        delivery = delivery or ('steer' if running else 'queue')
+        with lock:
+            state['compacts'][mid] = {'delivery': delivery, 'created': int(time.time() * 1000)}
+            state['pending'].append(mid)
+        save()
+        send('session.inbox.enqueued', {'sessionID': session, 'inboxID': mid, 'item': {'type': 'compaction', 'delivery': delivery,
+                                                                                    'payload': {}}})
+        item = v2_compact_item(session, mid)
+        runs = 'run' if mode in ('late', 'drop', '500-admitted') else mode
+        later = mode == 'late' or running
+        if later:
+            compact_later(session, mid, runs, float(modes.get('compactDelay', 2)) if mode == 'late' else 0)
+        elif mode in ('drop', '500-admitted'):
+            # Run through before the answer is lost: what became of it is its message's.
+            compact_run(session, mid, runs)
         if mode == 'drop':
             self.close_connection = True
             return None
-        return self.reply(200, True)
+        if mode == '500-admitted':
+            return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: admitted, then the answer failed'})
+        self.reply(200, {'data': item})
+        if not later:
+            compact_run(session, mid, runs)
+        return None
 
     def revert(self, session, body):
         """As OpenCode 1.19.3's revert (`session/revert.ts`), refused while the session runs (409): the

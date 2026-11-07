@@ -1,8 +1,37 @@
-/* Machines page and the shared last-check summary. */
-.machines-page {
-  display: grid;
-  gap: 14px;
-  margin-top: 18px;
+/* Settings › Machines (YN-8 S3) and the shared last-check summary. A
+   machine's card, the Core host's Job budget and the SSH editor are one
+   block of a card each, without the frame they had alone. */
+.machine-block > :is(.machine-card, .remote-machine-editor) {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.machine-block > .settings-section {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.machine-block > .settings-section > .settings-section-heading h3 {
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
+#settings-block-jobs:focus {
+  outline: none;
+}
+#settings-block-jobs:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* A machine's state in the list, from its last check. */
+.machine-state.is-ok {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 35%, var(--line));
+}
+.machine-state.is-bad {
+  color: var(--coral);
+  border-color: color-mix(in srgb, var(--coral) 35%, var(--line));
 }
 .machines-loading {
   display: flex;
@@ -39,12 +68,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Adding an SSH machine, and editing or removing one; the Core host is
-   only checked. */
-.machines-toolbar {
-  display: flex;
-  justify-content: flex-end;
-}
+/* Editing or removing an SSH machine; the Core host is only checked. */
 .machine-card-actions {
   display: flex;
   align-items: center;
@@ -54,7 +78,7 @@
   background: var(--surface-soft);
   color: var(--accent-ink);
 }
-.machines-page .remote-machine-editor {
+.machine-card .remote-machine-editor {
   margin: 0;
 }
 .machine-remove {

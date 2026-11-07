@@ -1617,6 +1617,56 @@ async fn the_generated_validator_checks_sections_for_core() {
     assert_eq!(version(&ws, &project), 1);
 }
 
+/// YN-14 A1: a section Core can repair is accepted with its repairs; they
+/// stay with it until a put replaces it or an edit replaces the repaired block.
+#[tokio::test]
+async fn a_repaired_section_is_accepted_and_keeps_its_repairs_until_written_again() {
+    let (_dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    let mut change = put("review", "report");
+    change["body"] = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["note","log"]},
+        "note":markdown("Hello"),"log":{"type":"Code","props":{"code":"FAIL x"}}}});
+    let sent = input("r1", 0, vec![change]);
+
+    // validateOnly says what Core would repair, and writes nothing.
+    let mut only = sent.clone();
+    only["validateOnly"] = json!(true);
+    let previewed = update::update(&ws, &checker, "a", only).await.unwrap().unwrap();
+    assert_eq!((previewed["valid"].clone(), previewed["repairs"][0]["code"].clone()), (json!(true), json!("component_to_markdown")));
+    assert_eq!(version(&ws, &project), 0);
+
+    let accepted = update::update(&ws, &checker, "a", sent.clone()).await.unwrap().unwrap();
+    assert_eq!(accepted["repairs"][0]["code"], "component_to_markdown", "{accepted}");
+    assert_eq!(accepted["repairs"][0]["path"], "changes[0].body.elements.log");
+    assert!(accepted["repairs"][0]["reason"].as_str().unwrap().contains("\"Code\" became Markdown"));
+    let shown = section(&brief(&ws, "a"), "review").clone();
+    assert_eq!(shown["body"]["elements"]["log"], json!({"type":"Markdown","props":{"text":"```\nFAIL x\n```"}}));
+    assert_eq!(shown["repairs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(shown["repairs"][0]["path"], "body.elements.log");
+    // Home reads the same repairs.
+    let home = home::build(&ws.store).unwrap();
+    let on_home = home["projects"][0]["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "review").unwrap().clone();
+    assert_eq!(on_home["repairs"], shown["repairs"]);
+    // The same requestId replays the first answer, repairs and all.
+    assert_eq!(update::update(&ws, &checker, "a", sent).await.unwrap().unwrap(), accepted);
+
+    // An edit of another block keeps them; its answer has none of its own.
+    let kept = update::update(&ws, &checker, "a", input("r2", 1, vec![edit("review", json!({"note":markdown("Hi")}))])).await.unwrap().unwrap();
+    assert_eq!(kept["repairs"], Value::Null);
+    assert_eq!(section(&brief(&ws, "a"), "review")["repairs"], shown["repairs"]);
+    // An edit that replaces the repaired block as it should be ends them.
+    update::update(&ws, &checker, "a", input("r3", 2, vec![edit("review", json!({"log":markdown("Fixed.")}))])).await.unwrap().unwrap();
+    assert_eq!(section(&brief(&ws, "a"), "review")["repairs"], Value::Null);
+    // A section that needs none is stored with none.
+    let mut again = put("review", "report");
+    again["body"]["elements"]["note"] = json!({"type":"Markdown","props":{"text":"Hello","format":"gfm"}});
+    let repaired = update::update(&ws, &checker, "a", input("r4", 3, vec![again])).await.unwrap().unwrap();
+    assert_eq!(repaired["repairs"][0]["code"], "dropped_field");
+    update::update(&ws, &checker, "a", input("r5", 4, vec![put("review", "report")])).await.unwrap().unwrap();
+    assert_eq!(section(&brief(&ws, "a"), "review")["repairs"], Value::Null);
+    assert_eq!(version(&ws, &project), 5);
+}
+
 #[tokio::test]
 async fn an_html_attachment_is_found_for_a_preview_as_its_kept_snapshot() {
     let (dir, ws, project) = lab();
@@ -1909,15 +1959,23 @@ async fn an_authors_card_size_is_kept_with_its_summary_and_read_as_written() {
     let v = version(&ws, &project);
     update::update(&ws, &checker, "a", input("s2", v, vec![edit("eval", json!({"answer":markdown("B lowers loss by 4%.")}))])).await.unwrap().unwrap();
     assert_eq!(size_of(section(&brief(&ws, "a"), "eval")), "wide");
-    // A size outside the three is refused where it stands, and nothing changes.
+    // A size outside the three is refused where it stands, and nothing
+    // changes; one in another letter case is repaired (YN-14).
     let v = version(&ws, &project);
-    for bad in [json!("huge"), json!("Wide"), json!(2)] {
+    for bad in [json!("huge"), json!(2)] {
         let mut wrong = card.clone();
         wrong["body"]["elements"]["body"]["props"]["summary"]["size"] = bad.clone();
         let rejected = update::update(&ws, &checker, "a", input("s3", v, vec![wrong])).await.unwrap().unwrap_err();
         assert_eq!((rejected["problems"][0]["code"].clone(), rejected["problems"][0]["path"].clone()),
             (json!("invalid_field"), json!("changes[0].body.elements.body.props.summary.size")), "{bad}: {rejected}");
     }
+    assert_eq!(version(&ws, &project), v);
+    let mut cased = card.clone();
+    cased["body"]["elements"]["body"]["props"]["summary"]["size"] = json!("Wide");
+    let mut check = input("s3", v, vec![cased]);
+    check["validateOnly"] = json!(true);
+    let validated = update::update(&ws, &checker, "a", check).await.unwrap().unwrap();
+    assert_eq!((validated["valid"].clone(), validated["repairs"][0]["code"].clone()), (json!(true), json!("normalized_value")), "{validated}");
     assert_eq!(version(&ws, &project), v);
     // The author's next size, in the next version; seen, it goes to History with it.
     card["body"] = sized(Some("large"));
@@ -1955,27 +2013,30 @@ async fn the_generated_validator_checks_layout_and_edits_whole() {
     let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
     let accepted = update::update(&ws, &checker, "a", input("a1", 0, vec![overview()])).await.unwrap();
     assert!(accepted.is_ok(), "{accepted:?}");
-    // An edit that leaves a block out of the tree is checked whole, and the
-    // problem names the edit's own path.
+    // An edit is checked whole. One that leaves a block out of the tree has
+    // it removed, as the edit unlinked it (YN-14), and the repair names the
+    // edit's own path.
     let orphaning = edit("overview", json!({"next":{"type":"Group","props":{"title":"Findings"},"children":[]}}));
-    let rejected = update::update(&ws, &checker, "a", input("a2", 1, vec![orphaning])).await.unwrap().unwrap_err();
-    assert_eq!(rejected["problems"][0]["code"], "unused_component", "{rejected}");
-    assert_eq!(rejected["problems"][0]["path"], "changes[0].elements");
-    // Columns need one width per child.
+    let repaired = update::update(&ws, &checker, "a", input("a2", 1, vec![orphaning])).await.unwrap().unwrap();
+    assert_eq!(repaired["repairs"][0]["code"], "fixed_tree", "{repaired}");
+    assert_eq!(repaired["repairs"][0]["path"], "changes[0].elements");
+    assert_eq!(section(&brief(&ws, "a"), "overview")["body"]["elements"]["findings"], Value::Null);
+    // Columns widths that do not match its children are dropped.
     let mismatched = edit("overview", json!({"split":{"type":"Columns","props":{"widths":[1,1,1]},"children":["work","next"]}}));
-    let rejected = update::update(&ws, &checker, "a", input("a3", 1, vec![mismatched])).await.unwrap().unwrap_err();
-    assert_eq!(rejected["problems"][0]["code"], "columns_widths", "{rejected}");
-    assert_eq!(rejected["problems"][0]["path"], "changes[0].elements.split.props.widths");
-    // status only on a status section, through the same check.
-    update::update(&ws, &checker, "a", input("a4", 1, vec![put("notes", "report")])).await.unwrap().unwrap();
+    let repaired = update::update(&ws, &checker, "a", input("a3", 2, vec![mismatched])).await.unwrap().unwrap();
+    assert_eq!(repaired["repairs"][0]["code"], "dropped_layout", "{repaired}");
+    assert_eq!(repaired["repairs"][0]["path"], "changes[0].elements.split.props");
+    assert_eq!(section(&brief(&ws, "a"), "overview")["body"]["elements"]["split"]["props"], json!({}));
+    // status only on a status section: the envelope is never repaired.
+    update::update(&ws, &checker, "a", input("a4", 3, vec![put("notes", "report")])).await.unwrap().unwrap();
     let mut misplaced = edit("notes", json!({"note":markdown("x")}));
     misplaced["status"] = json!({"asOf":"2026-10-18T06:00:00Z","validFor":600});
-    let rejected = update::update(&ws, &checker, "a", input("a5", 2, vec![misplaced])).await.unwrap().unwrap_err();
+    let rejected = update::update(&ws, &checker, "a", input("a5", 4, vec![misplaced])).await.unwrap().unwrap_err();
     assert_eq!(rejected["problems"][0]["code"], "misplaced_field", "{rejected}");
     assert_eq!(rejected["problems"][0]["path"], "changes[0].status");
-    let edited = update::update(&ws, &checker, "a", input("a6", 2, vec![edit("overview", json!({"progress":markdown("Step 2 of 3.")}))])).await.unwrap();
+    let edited = update::update(&ws, &checker, "a", input("a6", 4, vec![edit("overview", json!({"progress":markdown("Step 2 of 3.")}))])).await.unwrap();
     assert!(edited.is_ok(), "{edited:?}");
-    assert_eq!(version(&ws, &project), 3);
+    assert_eq!(version(&ws, &project), 5);
 }
 
 #[tokio::test]
@@ -2019,7 +2080,7 @@ async fn an_edit_keeps_the_snapshots_and_the_charts_that_read_them() {
 }
 
 #[tokio::test]
-async fn unused_attachments_are_rejected_before_staging_and_last_use_removal_is_atomic() {
+async fn a_puts_unused_attachment_is_shown_and_an_edit_removing_its_last_use_is_refused_atomically() {
     for key in ["tasks-board", "development"] {
         let (dir, ws, project) = lab();
         let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
@@ -2027,20 +2088,20 @@ async fn unused_attachments_are_rejected_before_staging_and_last_use_removal_is_
         std::fs::write(&file, b"fixture image bytes").unwrap();
         let mut change = put(key, "status");
         change["attachments"] = json!([{"name":"preview.png","path":file}]);
-        let rejected = update::update(&ws, &checker, "a", input("unused", 0, vec![change.clone()])).await.unwrap().unwrap_err();
-        assert_eq!(codes(&rejected), ["unused_attachment"]);
-        assert_eq!(rejected["problems"][0]["path"], "changes[0].attachments.0.name");
-        assert_eq!(rejected["problems"][0]["guide"], "brief_guide attachments");
-        assert!(rejected["problems"][0]["reason"].as_str().unwrap().contains("reachable Attachments block"));
-        assert_eq!(version(&ws, &project), 0);
-        assert_eq!(rows(&ws, "SELECT COUNT(*) FROM project_brief_receipts"), 0);
-        assert_eq!(rows(&ws, "SELECT COUNT(*) FROM project_brief_snapshots"), 0);
-
-        // The smallest repair is a displayed reference; no automatic layout rewrite.
-        change["body"]["elements"]["note"] = json!({"type":"Attachments","props":{"items":[{"name":"preview.png"}]}});
-        update::update(&ws, &checker, "a", input("repaired", 0, vec![change])).await.unwrap().unwrap();
+        // A put's registration nothing shows is repaired (YN-14): Core shows it
+        // in an Attachments block at the end of the root and says so.
+        let accepted = update::update(&ws, &checker, "a", input("unused", 0, vec![change])).await.unwrap().unwrap();
+        assert_eq!(accepted["repairs"][0]["code"], "showed_attachment", "{accepted}");
+        assert_eq!(accepted["repairs"][0]["path"], "changes[0].body.elements.files");
+        assert_eq!(accepted["repairs"][0]["guide"], "brief_guide attachments");
         let before = section(&brief(&ws, "a"), key).clone();
-        let remove_last = edit(key, json!({"note":markdown("Preview removed.")}));
+        assert_eq!(before["body"]["elements"]["body"]["children"], json!(["note", "files"]));
+        assert_eq!(before["body"]["elements"]["files"], json!({"type":"Attachments","props":{"items":[{"name":"preview.png"}]}}));
+        assert_eq!(before["repairs"][0]["path"], "body.elements.files");
+        assert_eq!(rows(&ws, "SELECT COUNT(*) FROM project_brief_snapshots"), 1);
+
+        // An edit that stops showing it is not repaired: refused, nothing changed.
+        let remove_last = edit(key, json!({"files":markdown("Preview removed.")}));
         let rejected = update::update(&ws, &checker, "a", input("remove-last", 1, vec![remove_last])).await.unwrap().unwrap_err();
         assert_eq!(codes(&rejected), ["unused_attachment"]);
         assert_eq!(section(&brief(&ws, "a"), key), &before);
@@ -2082,9 +2143,7 @@ async fn legacy_unused_attachments_stay_readable_and_unrelated_edits_keep_asks_a
     assert_eq!(historical["body"], report["body"]);
     assert_eq!(historical["attachments"][0]["snapshot"], true);
 
-    // Full replacements are strict, even for legacy content, and cannot forge context.
-    let rejected = update::update(&ws, &checker, "a", input("put", 2, vec![ask.clone()])).await.unwrap().unwrap_err();
-    assert_eq!(codes(&rejected), ["unused_attachment"]);
+    // An edit cannot forge context.
     let mut forged = edit("legacy", json!({"note":markdown("Spoofed.")}));
     forged["previousBody"] = body("fake");
     assert_eq!(codes(&reject(&ws, "a", input("forged", 2, vec![forged])).await), ["invalid_change"]);
@@ -2099,6 +2158,14 @@ async fn legacy_unused_attachments_stay_readable_and_unrelated_edits_keep_asks_a
     assert_eq!(repaired["ask"], before["ask"]);
     assert_eq!(repaired["attachments"], before["attachments"]);
     assert_eq!(version(&ws, &project), 3);
+
+    // A full replacement checks every registration again, legacy ones
+    // included: an unused one is shown (YN-14), and a put asks again.
+    let replaced = update::update(&ws, &checker, "a", input("put", 3, vec![ask.clone()])).await.unwrap().unwrap();
+    assert_eq!(replaced["repairs"][0]["code"], "showed_attachment", "{replaced}");
+    let after_put = section(&brief(&ws, "a"), "legacy").clone();
+    assert_eq!(after_put["body"]["elements"]["files"], json!({"type":"Attachments","props":{"items":[{"name":"old.png"}]}}));
+    assert_eq!(after_put["ask"]["state"], "open");
 }
 
 #[tokio::test]

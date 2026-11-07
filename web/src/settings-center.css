@@ -26,7 +26,6 @@
 .settings-editor:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 /* The Projects and Machines managers as pages (YN-8): their own grid, in
    the page's width. */
-.settings-manager .machines-page { margin-top: 0; }
 /* A phone: the dialog's description is left to assistive technology (it
    stays the dialog's description), so the list and a page get the height. */
 @media (max-width: 520px) {

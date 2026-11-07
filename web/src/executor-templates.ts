@@ -20,15 +20,20 @@ export type ExecutorTemplate = {
   instructions?: string;
   /** At most this many of its executors run at once (T-35); unset, no limit of its own. */
   maxConcurrent?: number;
+  /** Copied from a project's own list when templates became the Workspace's (YN-2 S2): which project, and its id there. */
+  origin?: { projectId: string; projectName: string; id: string };
 };
+/** A template the user can adopt in Settings: a template's fields, never stored until the user saves. */
+export type ExecutorPreset = ExecutorTemplate & { description?: string };
 /** `laterTemplates`: templates a newer Core saved that this one can't read or use; a save keeps them. */
 export type TemplateList = { version: number; templates: ExecutorTemplate[]; laterTemplates?: number };
 export type ExecutorTemplatesView = {
+  /** The Workspace's templates: the only list (YN-2 S2). */
   workspace: TemplateList;
-  /** Read for a project: its own list. */
-  project?: TemplateList & { id: string };
-  /** What a dispatch can use: in a project, its own, then the Workspace's it doesn't replace. */
+  /** What a dispatch can use: the Workspace's templates. `project` only from a Core before YN-2 S2. */
   available: { template: ExecutorTemplate; source: "project" | "workspace" }[];
+  /** Presets the user can adopt; empty until a Core ships some. */
+  presets: ExecutorPreset[];
   defaultNamePattern: string;
   limits: { templates: number; instructionsBytes: number; maxConcurrent: number };
   opencodeEnabled: boolean;
@@ -55,8 +60,8 @@ export const templatesView = (value: Partial<ExecutorTemplatesView>): ExecutorTe
   });
   return {
     workspace: list(value.workspace),
-    ...(value.project ? { project: { ...list(value.project), id: value.project.id } } : {}),
     available: Array.isArray(value.available) ? value.available : [],
+    presets: Array.isArray(value.presets) ? value.presets.filter((p) => p && typeof p.id === "string" && typeof p.label === "string") : [],
     defaultNamePattern: value.defaultNamePattern || "{task} · {label}",
     limits: value.limits ?? { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 },
     opencodeEnabled: value.opencodeEnabled === true,
@@ -67,8 +72,8 @@ export const templatesView = (value: Partial<ExecutorTemplatesView>): ExecutorTe
 export const readExecutorTemplates = (signal?: AbortSignal, projectId?: string) =>
   api<ExecutorTemplatesView>(projectId ? `/executor-templates?projectId=${encodeURIComponent(projectId)}` : "/executor-templates", { signal })
     .then(templatesView);
-/** Replaces the whole list, checked against the version it was read at. */
-export const saveExecutorTemplates = (expectedVersion: number, templates: ExecutorTemplate[], projectId?: string) =>
-  api<ExecutorTemplatesView>(projectId ? `/projects/${encodeURIComponent(projectId)}/executor-templates` : "/executor-templates", {
+/** Replaces the Workspace's whole list, checked against the version it was read at. */
+export const saveExecutorTemplates = (expectedVersion: number, templates: ExecutorTemplate[]) =>
+  api<ExecutorTemplatesView>("/executor-templates", {
     method: "PUT", body: JSON.stringify({ expectedVersion, templates }),
   }).then(templatesView);

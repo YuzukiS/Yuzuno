@@ -125,12 +125,13 @@ export const reportExample = {
 /**
  * What the request button adds to a draft: one editable line of intent. How
  * to build a result is the result_publish tool's own description; a draft
- * never carries the format.
+ * never carries the format. A sentence comes first, so the reply says
+ * something while the result is written (YN-15).
  */
 export function interactiveRequest(kind: "comparison" | "report") {
   return kind === "comparison"
-    ? "If it helps, show the options as an interactive result: a table I can sort and select from."
-    : "If it helps, show the data as an interactive result: key metrics and a chart.";
+    ? "If it helps, say it in a sentence, then show the options as an interactive table I can sort and select from."
+    : "If it helps, say it in a sentence, then show the data as an interactive result: key metrics and a chart.";
 }
 
 /** The long fenced-block template earlier versions put in drafts; kept only

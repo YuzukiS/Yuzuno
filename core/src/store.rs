@@ -1207,6 +1207,8 @@ impl Store {
         crate::session_baseline::migrate(&db)?;
         crate::executor_archiving::migrate(&db)?;
         crate::handover::migrate(&db)?;
+        // After projects: a Project's own templates are copied into the Workspace's (YN-2 S2).
+        crate::executor_templates::migrate(&db)?;
         crate::services::migrate(&db)?;
         crate::service_jobs::migrate(&db)?;
         crate::github::store::migrate(&db)?;
