@@ -14,6 +14,9 @@
 }
 .executor-templates-settings .executor-template > .executor-template-name + * { border-top: 0; }
 .executor-templates-settings .executor-template-basics { padding: 4px 0 6px; }
+/* Who changed it last (YN-24), a quiet line under its name. */
+.executor-templates-settings .executor-template-changed { margin: 2px 16px 0; overflow-wrap: anywhere; }
+.executor-templates-settings .executor-template-changed + .executor-template-basics { border-top: 0; }
 .executor-templates-settings .executor-template-basics > .settings-row { padding-block: 8px; }
 .executor-templates-settings .executor-template-when { width: min(28rem, 100%); }
 .executor-templates-settings .executor-template-footer { padding: 4px 16px 12px; }
@@ -32,8 +35,8 @@
   align-items: center;
   gap: 6px 8px;
 }
-.executor-step > .settings-select,
-.executor-step > .settings-input { width: 100%; min-width: 0; }
+.executor-templates-settings .executor-step > .settings-select,
+.executor-templates-settings .executor-step > .settings-input { width: 100%; min-width: 0; }
 .executor-step-number {
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;

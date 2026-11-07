@@ -75,6 +75,19 @@ export type ExecutorTemplatesView = {
   opencodeEnabled: boolean;
   /** What a general executor (`executor: {}`, YN-2) of the read Project would be made with now; absent from an older Core. */
   general?: GeneralExecutor;
+  /** Who last changed each template, when and why, by its id (YN-24); absent from a Core without it. */
+  lastModified?: Record<string, TemplateChange>;
+};
+/** A template's last change: by you or a lead, the reason a lead gave. */
+export type TemplateChange = { version?: number; at: string; reason?: string | null; by: { kind: string; id?: string | null; name: string } };
+
+const changesOf = (value: unknown): Record<string, TemplateChange> | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, TemplateChange> = {};
+  for (const [id, change] of Object.entries(value as Record<string, Partial<TemplateChange>>)) {
+    if (change && typeof change.at === "string" && change.by && typeof change.by.name === "string") out[id] = change as TemplateChange;
+  }
+  return out;
 };
 
 /** A general executor: no template, the harness of a new Agent there, and where that came from. */
@@ -102,6 +115,7 @@ export const templatesView = (value: Partial<ExecutorTemplatesView>): ExecutorTe
     limits: value.limits ?? { templates: 50, instructionsBytes: 8192 },
     opencodeEnabled: value.opencodeEnabled === true,
     ...(generalOf(value.general) ? { general: generalOf(value.general) } : {}),
+    ...(changesOf(value.lastModified) ? { lastModified: changesOf(value.lastModified) } : {}),
   };
 };
 

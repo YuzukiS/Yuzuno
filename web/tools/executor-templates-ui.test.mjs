@@ -329,6 +329,26 @@ test("delivery and steps (YN-23): chosen on the card, a step its delivery can't 
   assert.deepEqual(page.errors, []);
 });
 
+test("each saved template says who changed it last, when and why (YN-24's lastModified); a new one says nothing", async () => {
+  const workspace = { version: 4, templates: [{ id: "dev", label: "Dev", harness: "codex" }, { id: "plain", label: "Plain", harness: "claude" }] };
+  const lastModified = {
+    dev: { version: 4, at: "2026-11-07T20:30:00Z", reason: "Say how to test", by: { kind: "agent", id: "lead", name: "Agent lead" } },
+    plain: { version: 3, at: "2026-11-07T19:00:00Z", reason: null, by: { kind: "user", id: null, name: "You" } },
+  };
+  const page = mount(() => [200, { ...view(workspace), lastModified }]);
+  page.window.renderTemplates();
+  await until(() => page.document.querySelectorAll(".executor-template-changed").length === 2, "the two lines");
+  const lines = [...page.document.querySelectorAll(".executor-template-changed")].map((p) => p.textContent);
+  assert.match(lines[0], /^Last changed: Agent lead · .*2026.* · Say how to test$/, lines[0]);
+  assert.match(lines[1], /^Last changed: You · .*2026[^·]*$/, "your save: no reason");
+  assert.equal(page.document.querySelectorAll(".executor-template-changed time")[0].getAttribute("datetime"), "2026-11-07T20:30:00.000Z");
+  button(page, "Add template").click();
+  await tick();
+  assert.equal(page.document.querySelectorAll(".executor-template").length, 3);
+  assert.equal(page.document.querySelectorAll(".executor-template-changed").length, 2, "a new template has no last change");
+  assert.deepEqual(page.errors, []);
+});
+
 test("OpenCode is offered only where this Core creates OpenCode Agents, with no model or permissions of its own", async () => {
   for (const enabled of [false, true]) {
     const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex" }], laterTemplates: 1 }, enabled)]);

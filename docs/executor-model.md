@@ -176,7 +176,10 @@ not a template's or a Project's.
   each (kind, label, a review's rounds or a gate's approver, moved up or
   down, removed). A step the delivery can't have is marked at its row, and
   nothing is saved until it's fixed. **Use the default steps** sets them
-  back to unset. The other settings stay under **More settings**.
+  back to unset. The other settings stay under **More settings**. Where
+  Core's answer says who last changed a template (`lastModified`), its
+  card shows it as one line under its name: "Last changed: who · when ·
+  why", "You" for your own save.
 - **Templates a Project had.** Before this version, a Project could keep
   templates of its own, used before the Workspace's of the same id. When this
   Core first opens a Workspace, it copies each Project's own templates into

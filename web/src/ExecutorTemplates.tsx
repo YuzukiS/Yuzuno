@@ -5,13 +5,15 @@ import { CLAUDE_MODES, CODEX_PRESETS, claudeModeText, codexPermissionText } from
 import {
   MAX_STEPS, PR_STEP_KINDS, STEP_KINDS, defaultSteps, presetsIn, readExecutorTemplates, saveExecutorTemplates,
   type DeliveryMode, type ExecutorHarness, type ExecutorPreset, type ExecutorTemplate, type ExecutorTemplatesView,
-  type StepKind, type TemplateStep,
+  type StepKind, type TemplateChange, type TemplateStep,
 } from "./executor-templates";
 import { ExecutorSlots } from "./ExecutorSlots";
+import { moment } from "./conversation-time";
 import { langTag, strings, useLanguage, type Language } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import { ChoiceCards } from "./SettingsChoices";
+import { timeFormatter, useTimeDisplay } from "./time-preferences";
 import "./executor-templates.css";
 
 const text = strings({
@@ -29,6 +31,8 @@ const text = strings({
   more: "More settings",
   moreSet: (n: number) => `More settings (${n} set)`,
   origin: (project: string, id: string) => `Copied from the project ${project}, where its id was ${id}.`,
+  lastChanged: "Last changed:",
+  you: "You",
   labelNeeded: "A template needs a label.",
   projectTitle: "Executors",
   projectIntro: "Executor templates are kept for the whole Workspace, in Settings under Executor templates. Here: how many of this project’s executors run at once.",
@@ -112,6 +116,8 @@ const text = strings({
   more: "更多设置",
   moreSet: (n) => `更多设置（已设 ${n} 项）`,
   origin: (project, id) => `从项目 ${project} 复制而来，原 id 是 ${id}。`,
+  lastChanged: "上次修改：",
+  you: "你",
   labelNeeded: "模板需要一个标签。",
   projectTitle: "执行者",
   projectIntro: "执行者模板对整个 Workspace 通用，在设置的“执行者模板”中。这里设置此项目的执行者同时最多运行几个。",
@@ -202,6 +208,8 @@ type Draft = {
   machine: string;
   /** Kept as saved: where a copied template came from (YN-2 S2). */
   origin?: ExecutorTemplate["origin"];
+  /** The id it was saved under, whose last change it shows (YN-24's `lastModified`); none for a new one. */
+  savedId?: string;
   /** YN-23: "" is unset, which is "pr". */
   deliveryMode: "" | DeliveryMode;
   /** null: its delivery's default steps. */
@@ -473,7 +481,7 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   };
   const adopt = (next: ExecutorTemplatesView) => {
     setView(next);
-    setDrafts(own(next).templates.map(draftOf));
+    setDrafts(own(next).templates.map(saved => ({ ...draftOf(saved), savedId: saved.id })));
   };
   useEffect(() => {
     if (!active) return;
@@ -607,6 +615,23 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   );
 }
 
+const changedAt = timeFormatter({ year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+/** Who last changed a template, when and why (YN-24): leads change templates
+ * directly, so this line is where you see their changes. */
+function LastChange({ change, t }: { change: TemplateChange; t: Text }) {
+  const time = useTimeDisplay();
+  const ms = Date.parse(change.at);
+  const who = change.by.kind === "user" ? t.you : change.by.name;
+  const reason = change.reason?.trim();
+  return (
+    <p className="settings-row-help executor-template-changed">
+      {t.lastChanged} {who}
+      {Number.isFinite(ms) && <> · <time dateTime={moment(ms, time).dateTime} title={moment(ms, time).title}>{changedAt(time).format(ms)}</time></>}
+      {reason && <> · {reason}</>}
+    </p>
+  );
+}
+
 /** One template, in Settings' card style (YN-8): what it is, how its work is
  * delivered, its steps, then the rest folded. */
 function TemplateCard({ d, t, language, view, locked, machines, savedMachine, edit, remove }: {
@@ -615,12 +640,14 @@ function TemplateCard({ d, t, language, view, locked, machines, savedMachine, ed
 }) {
   const name = d.label.trim() || t.newTemplate;
   const noLabel = !d.label.trim();
+  const change = d.savedId ? view.lastModified?.[d.savedId] : undefined;
   const deliveries = (["pr", "direct-commit", "none"] as const).map((value) => ({
     value, label: t.deliveries[value][0], note: t.deliveries[value][1],
   }));
   return (
     <fieldset className="settings-group appearance-group executor-template" aria-label={name} disabled={locked}>
       <legend className="executor-template-name">{name}</legend>
+      {change && <LastChange change={change} t={t} />}
       <div className="appearance-field executor-template-basics">
         <label className="settings-row">
           <span className="settings-row-main">
@@ -632,7 +659,9 @@ function TemplateCard({ d, t, language, view, locked, machines, savedMachine, ed
             onChange={e => edit({ label: e.target.value })} />
         </label>
         <label className="settings-row">
-          <span className="settings-row-title">{t.harness}</span>
+          <span className="settings-row-main">
+            <span className="settings-row-title">{t.harness}</span>
+          </span>
           <select className="settings-select" aria-label={t.harness} value={d.harness}
             onChange={e => edit({ harness: e.target.value as ExecutorHarness })}>
             <option value="codex">Codex</option>

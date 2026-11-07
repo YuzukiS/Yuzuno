@@ -47,6 +47,9 @@ let saved = initial;
 const view = () => ({ workspace: saved, available: saved.templates.map((template) => ({ template, source: "workspace" })), presets,
   defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false,
   general: { label: "Executor", harness: "codex", harnessSource: "builtin" },
+  // YN-24: who last changed each template, when and why.
+  lastModified: Object.fromEntries(saved.templates.filter((t) => t.id === "dev").map((t) => [t.id,
+    { version: 3, at: "2026-11-07T20:30:00Z", reason: "Say how to test before review", by: { kind: "agent", id: "lead", name: "Dev Lead" } }])),
   appliesTo: "Dispatches from a template from now on; executors already created keep their own settings." });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
@@ -164,6 +167,8 @@ try {
         assert.deepEqual(await fits(box), { box: true, wider: [] }, `${tag}: the template cards fit`);
         await shot(page, design, `${tag}-2-design-first`);
         const dev = box.locator(".executor-template").first();
+        assert.match(await dev.locator(".executor-template-changed").textContent(), language === "en"
+          ? /^Last changed: Dev Lead · .+ · Say how to test before review$/ : /^上次修改：\s?Dev Lead · .+ · Say how to test before review$/, `${tag}: its last change`);
         await shot(page, dev, `${tag}-3-saved-template`);
         check(`${tag}: the ten presets in the page's language, two added as unsaved templates, each card fitting its width`);
 
