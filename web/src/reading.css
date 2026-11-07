@@ -77,7 +77,7 @@
 /* In the list a compact row is one line already: no more padding than a
    detailed one. */
 :root[data-agent-list="compact"] .agent-list .agent-row {
-  padding-block: 8px;
+  padding-block: 7px;
 }
 :root[data-agent-list="compact"] .agent-work-summary,
 :root[data-agent-list="compact"] .agent-row-said,
@@ -98,12 +98,11 @@
   min-width: 0;
   gap: 1px;
 }
-/* A row (T-43 灵动环 v10.1, the user's design): line one, a standing
+/* A row (T-43 灵动环 v10.2, the user's design): line one, a standing
    Agent's name or an executor's activity; line two, what a standing Agent
-   last said or an executor's task key and clock; in the card, one detail
-   line and then its buttons across the row. At most four lines in every
-   form. The ring at the top right, then the "…" where the reader is. The
-   row's height follows what it says. */
+   last said or an executor's task key and clock. Three lines at most. The
+   ring at the top right, then the "…" where the reader is. The row's height
+   follows what it says. */
 .agent-list .agent-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -130,20 +129,12 @@
   grid-row: 2;
   margin-top: 1px;
 }
-.agent-list .agent-row > .agent-row-more {
-  grid-column: 1;
-  grid-row: 3;
-}
 .agent-list .agent-row > .agent-island {
   grid-column: 2;
   grid-row: 1;
   align-self: start;
   justify-self: end;
   margin: 0 0 0 8px;
-}
-.agent-list .agent-row > .island-actions {
-  grid-column: 1 / -1;
-  grid-row: 4;
 }
 /* An executor's activity: two lines at most, never cut mid-word without
    its ellipsis. */
@@ -197,15 +188,16 @@
   font-size: calc(10px + var(--font-adjust, 3px));
 }
 /* Hover darkens the row's background, and only that (the user, v9): no
-   border. On the ring the row stays as it is; the ring shows its own halo
-   (agent-island.css). A row island darkens its outline's fill instead. */
+   border. On a ring that is a button the row stays as it is and the ring
+   grows a little (agent-island.css). A row island darkens its outline's
+   fill instead. */
 .agent-list .agent-row:not(.selected):hover {
   border-color: transparent;
 }
-.agent-list .agent-row:not(.selected):hover:has(> .agent-island:hover) {
+.agent-list .agent-row:not(.selected):hover:has(> button.agent-island:hover) {
   background: transparent;
 }
-.agent-list .agent-row:hover:not(:has(> .agent-island:hover)) > .island-shell {
+.agent-list .agent-row:hover:not(:has(> button.agent-island:hover)) > .island-shell {
   background: color-mix(in srgb, var(--tone) 20%, var(--paper));
 }
 :root[data-agent-list="compact"] .agent-list .agent-row > .agent-row-meta {
@@ -266,6 +258,10 @@
 .agent-list .agent-row .agent-line-one.agent-identity > .agent-name {
   flex: 0 1 auto;
 }
+/* Alone on line one, the name has its whole width (T-15). */
+.agent-list .agent-row .agent-line-one.agent-identity > .agent-name:last-child {
+  flex: 1 1 auto;
+}
 .agent-list .agent-row .agent-line-one.agent-identity > .agent-kind-badge {
   flex: none;
   align-self: center;
@@ -275,7 +271,7 @@
   grid-column: 1 / -1;
 }
 /* The whole row opens the conversation, the text of a row island included,
-   while the ring, the card's buttons and the "…" stay reachable above it. */
+   while the ring and the "…" stay reachable above it. */
 .agent-list .agent-row > .agent-select.agent-row-top::after {
   content: "";
   position: absolute;

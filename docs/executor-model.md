@@ -581,8 +581,8 @@ has the blocker (`blocked`); its state stays what it is.
   At the row's top right is its ring (灵动环, `AgentIsland.tsx` over
   `agent-island.ts`), then the "…" of its actions where you are (the row
   selected, or the keyboard on its link or on the "…"). The executor's name,
-  template and PR are in its ring's title and its card. A row is never more
-  than four lines, its card included, and its height follows what it says.
+  template and PR are in its ring's title. A row is never more than three
+  lines, and its height follows what it says.
   The states are 空闲 Idle, 在做 Working, 已交 · 等负责人 Handed in, 等你
   Needs you, 排队 Queued, 离线 Offline, 完成 Done, 出错 Failed and 已归档
   Archived.
@@ -615,30 +615,31 @@ has the blocker (`blocked`); its state stays what it is.
   its top left. Under reduced motion nothing turns or breathes.
 - **Its forms.** One outline grows out of the ring and shrinks back into it.
   - At rest a ring, except needs you and failed, which are the row as the
-    island (the outline round the whole row) until handled.
-  - A passing event (its PR's checks turned green or failed, a new message)
-    grows a pill left out of the ring with a few words ("CI green") for
-    about three seconds; the ring's right edge stays put.
-  - A click on the row opens the Agent's conversation, the text of a row
-    island included, and changes no island. Only the ring, or the pill
-    grown out of it, steps the island: ring → the row as the island → its
-    card → back into the ring; Escape or a click elsewhere closes it. The
-    ring's button takes presses 28 px wide with a mouse and 40 px on touch,
-    with nothing drawn, and on hover or focus shows a halo of its own; hover
-    on the rest of the row only darkens its background, with no border.
-  - The card is the row one detail line and one line of buttons taller: an
-    executor's PR and its status, else its task's title; for a standing
-    Agent, its state, clock and unread count. Its buttons go only where the
-    row's click doesn't: Answer on Home and Task for an executor's
-    question, See result for one handed in, See why for one whose start
-    failed, Task otherwise; a standing Agent's card has none. Where the
-    lines and buttons would make a fifth line, the detail line goes, then
-    the buttons take their short words.
+    island (the outline round the whole row) until handled. A row is three
+    lines at most.
+  - A passing event grows a pill left out of the ring, over the end of line
+    one, for about three seconds (five for bad news); the row keeps its
+    height and the ring its place: its PR merged, a review asked for changes
+    or passed, its checks failed or turned green, it handed in, it started
+    after queuing, new messages came. Nothing on the row's first showing or
+    its PR's first reading, and nothing while the row is the island.
   - Each change animates the outline from the ring's circle, or from where
-    it was, in 320 ms, and closing shrinks it into the ring in 300 ms;
-    nothing moves under reduced motion.
-  - With the compact Agent list (Settings → Appearance), every row is line
-    one and its ring; needs you and failed keep their word on line two.
+    it was, in 320 ms, and back into the ring in 300 ms; nothing moves under
+    reduced motion.
+- **A click on the row** opens the Agent's conversation, the text of a row
+  island included, and changes no island. **A click on the ring** goes
+  straight to its state's place: needs you, to its item in Home's Needs you,
+  scrolled to and highlighted; an executor's, to its task (why its start
+  failed, its result, its place in the queue, or the task); a Turn that
+  failed, or updates unread, to the conversation. Its label says where
+  ("Answer its question on Home"). A ring with nowhere of its own (idle,
+  offline, a standing Agent at work) is no button: the row's click is its.
+  The ring's button takes presses 28 px wide with a mouse and 40 px on
+  touch, with nothing drawn; on hover or focus the ring grows a little (its
+  strokes thicken under reduced motion), and hover on the rest of the row
+  only darkens its background, with no border. There are no cards.
+- With the compact Agent list (Settings → Appearance), every row is line
+  one and its ring; needs you and failed keep their word on line two.
 - **Its PR** comes from `GET /api/executors/live`: for each open executor
   (not archived, its Agent not closed) whose task links a PR, the open or
   draft one with the highest number, else the highest-numbered; its state;

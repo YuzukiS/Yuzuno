@@ -9,10 +9,10 @@ import { useAgentCI, waitingSummary } from "./live-ci";
 import { useHandoffDrop } from "./SendToAgent";
 import { strings, useLanguage, type Language } from "./i18n";
 import { lifecycleText, stateDetail } from "./executor-lifecycle";
-import { executorView } from "./executor-display";
+import { REVIEW_ROUNDS, executorView, type ExecutorPR } from "./executor-display";
 import { executorRowText, rowFactsLabel, stateText } from "./ExecutorRowState";
-import { AgentIsland, IslandActions, clockShort, islandActivity, islandText, lineText, standingMore, useFitFour, useIslandShell, type IslandPill } from "./AgentIsland";
-import { islandView, nextForm, type IslandAction, type IslandForm } from "./agent-island";
+import { AgentIsland, clockShort, islandActivity, islandText, lineText, useIslandShell, type IslandPill } from "./AgentIsland";
+import { islandView, type IslandAction, type IslandForm, type IslandState } from "./agent-island";
 import { useExecutorPR, useMinute } from "./live-executors";
 import "./reading.css";
 
@@ -158,8 +158,8 @@ export function AgentRailRow({
   /** It is the open Agent and it is compacting. */
   compacting?: boolean;
   onSelect: () => void;
-  /** The island card's ways out (T-43 v4-2): Home, to answer what it asks there; its task. */
-  onOpenHome?: () => void;
+  /** Where its ring goes (T-43 v10.2): Home's Needs you, at its item; its task. */
+  onOpenHome?: (agentId: string) => void;
   onOpenTask?: (taskId: string) => void;
   /** Its actions (T-184): a "…" button, a right-click or a long-press. */
   actions?: AgentActionHandlers;
@@ -203,54 +203,25 @@ export function AgentRailRow({
         }
       : null;
   const description = t.description(shown, executor ? null : waiting?.detail ?? null, machine, agent.unreadCount);
-  // Its island (T-43, 灵动环 v10.1, the user's design): a ring at the row's
+  // Its island (T-43, 灵动环 v10.2, the user's design): a ring at the row's
   // top right that is the state itself. A click on the row opens the
-  // conversation; only the ring, or the pill grown out of it, steps the
-  // island: ring → the row as the island → the card, and the card closes
-  // again. Needs you and failed are row islands until handled.
+  // conversation; a click on the ring goes straight to its state's place
+  // (Home for what it asks, its task, or the conversation). Needs you and
+  // failed are row islands until handled; a passing event grows a pill.
   const island = islandView({ agent, executor, lifecycle, unseen, waiting: waiting?.label ?? null, statusLabel: label, compacting, waitingSince });
   const words = islandText(language);
   const now = useMinute();
-  const [opened, setOpened] = useState<IslandForm | null>(null);
-  const pill = usePassingEvent(agent.unreadCount, pr?.ci ?? null, language);
   const rest: IslandForm = island.auto ? "row" : "ring";
-  const form: IslandForm = opened ?? (pill && rest === "ring" ? "pill" : rest);
+  const pill = usePassingEvent({ unread: agent.unreadCount, state: island.state, pr: pr ?? null, language, quiet: rest !== "ring" });
+  const form: IslandForm = pill ? "pill" : rest;
   const row = useRef<HTMLElement>(null);
-  const islandButton = useRef<HTMLButtonElement>(null);
   const shell = useRef<HTMLSpanElement>(null);
-  const shrink = useIslandShell(row, shell, form);
-  const close = () => {
-    if (!opened) return;
-    // Back to its rest: into the ring first, or (needs you, failed) to the row island.
-    if (rest === "ring") shrink(() => setOpened(null));
-    else setOpened(null);
-  };
-  const step = () => {
-    const next = nextForm(form);
-    if (!next || next === rest) close();
-    else setOpened(next);
-  };
-  // Escape, or a press anywhere else, closes it.
-  const closeRef = useRef(close);
-  closeRef.current = close;
-  useEffect(() => {
-    if (!opened) return;
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") closeRef.current(); };
-    const onDown = (event: PointerEvent) => { if (!row.current?.contains(event.target as Node)) closeRef.current(); };
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("pointerdown", onDown);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("pointerdown", onDown);
-    };
-  }, [opened]);
-  const card = form === "card";
-  const fit = useFitFour(row, card, `${language}:${island.state}:${island.actions.join()}`);
+  useIslandShell(row, shell, form);
   // An executor's template, PR and task, for its ring's title.
   const factsLabel = executor ? rowFactsLabel(executor, template, executorRowText(language)) : null;
-  const act = (action: IslandAction) => {
-    setOpened(null);
-    if (action === "home") onOpenHome?.();
+  const go = (action: IslandAction) => {
+    if (action === "answer") onOpenHome?.(agent.id);
+    else if (action === "turn" || action === "unread") onSelect();
     else if (island.task) onOpenTask?.(island.task);
   };
   // Line one: a standing Agent's name, an executor's activity (the user,
@@ -258,7 +229,6 @@ export function AgentRailRow({
   // Agent last said; an executor's task key and its clock.
   const activity = executor ? islandActivity(island, language) : null;
   const time = island.clock ? clockShort(island.clock, now, language) : null;
-  const more = card && fit < 1 ? (executor ? lineText(island.more, island.state, language, true) : standingMore(island, now, language)) : "";
   const alert = !executor && (island.state === "waiting" || island.state === "failed");
   // An executor's line two: its task's key, then its clock.
   const taskKey = lifecycle?.task?.id ?? null;
@@ -305,7 +275,7 @@ export function AgentRailRow({
       {/* The island's outline: grown out of the ring and back into it. */}
       <span ref={shell} className="island-shell" aria-hidden="true" />
       {/* The row is the link to the conversation, its whole box (its ::after),
-          the text of a row island included. */}
+          the text of a row island included; the ring has its own place. */}
       <button
         ref={select}
         className="agent-select agent-row-top"
@@ -342,14 +312,12 @@ export function AgentRailRow({
       ) : summary && (
         <div className="agent-row-state">{summaryLine}</div>
       )}
-      {more && <div className="agent-row-more">{more}</div>}
-      <AgentIsland ref={islandButton} view={island} form={form} pill={pill} name={agent.name} onStep={step}
+      <AgentIsland view={island} form={form} pill={pill} name={agent.name} onGo={go}
         detail={executor ? [kind?.title, factsLabel].filter(Boolean).join("\n") : undefined}
         data-status={label}
         data-jobs={waiting ? jobs?.active : undefined}
         data-ci={waiting && ci ? ci.running + ci.discovering + (ci.waitingForRun ?? 0) + ci.check : undefined}
         data-combined={combined || !!unseen || undefined} />
-      {card && island.actions.length > 0 && <IslandActions actions={island.actions} short={fit >= 2} onAction={act} />}
       {/* After the island in focus order; beside the ring, where the reader is (T-15). */}
       {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
       {drop.state && (
@@ -369,30 +337,52 @@ export function AgentRailRow({
   );
 }
 
-/** A passing event for the ring's pill (T-43 v10.1), said for three
- * seconds: its PR's checks turned green or failed, or a new message came.
- * Nothing on the row's first showing, or when its PR's checks are first
- * read; the latest event replaces one shown. */
-function usePassingEvent(unread: number, ci: string | null, language: Language): IslandPill | null {
-  const [pill, setPill] = useState<{ kind: "ciGreen" | "ciFailed" | "message" } | null>(null);
-  const seen = useRef<{ unread: number; ci: string | null } | null>(null);
+/** A passing event for the ring's pill (T-43 v10.2): what changed since the
+ * row last showed, said for a few seconds in a pill grown left out of the
+ * ring, the latest replacing one shown. Its PR merged, a review asked for
+ * changes or passed, its checks failed or turned green; it handed in, or
+ * started after queuing; new messages came. Nothing on the row's first
+ * showing or a PR's first reading (where things stand is not news), and
+ * nothing while the row is the island (needs you, failed): it says more. */
+type Passing = "merged" | "reviewChanges" | "reviewOk" | "ciFailed" | "ciGreen" | "handedIn" | "started" | "messages";
+function usePassingEvent({ unread, state, pr, language, quiet }: { unread: number; state: IslandState; pr: ExecutorPR | null; language: Language; quiet: boolean }): IslandPill | null {
+  const [pill, setPill] = useState<{ kind: Passing; n: number; pr: number | null } | null>(null);
+  const seen = useRef<{ unread: number; state: IslandState; pr: ExecutorPR | null } | null>(null);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => {
     const was = seen.current;
-    seen.current = { unread, ci };
-    if (!was) return;
-    // Its checks' first reading is where they stand, not news.
-    const kind = was.ci != null && ci !== was.ci && (ci === "success" || ci === "failure") ? (ci === "success" ? "ciGreen" : "ciFailed")
-      : unread > was.unread ? "message" : null;
+    seen.current = { unread, state, pr };
+    if (!was || quiet) return;
+    const before = was.pr && pr && was.pr.number === pr.number ? was.pr : null;
+    const reviews = (p: ExecutorPR | null) => p?.reviews ?? { approved: 0, changesRequested: false, running: false };
+    const kind: Passing | null =
+      before && pr!.state === "merged" && before.state !== "merged" ? "merged"
+        : before && reviews(pr).changesRequested && !reviews(before).changesRequested ? "reviewChanges"
+          : before && reviews(pr).approved >= REVIEW_ROUNDS && reviews(before).approved < REVIEW_ROUNDS ? "reviewOk"
+            : before && before.ci != null && pr!.ci !== before.ci && (pr!.ci === "failure" || pr!.ci === "success") ? (pr!.ci === "failure" ? "ciFailed" : "ciGreen")
+              : state === "handed" && was.state === "working" ? "handedIn"
+                : state === "working" && was.state === "queued" ? "started"
+                  : unread > was.unread ? "messages" : null;
     if (!kind) return;
-    setPill({ kind });
+    setPill({ kind, n: unread - was.unread, pr: pr?.number ?? null });
     window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => setPill(null), PILL_MS);
-  }, [unread, ci]);
+    timer.current = window.setTimeout(() => setPill(null), kind === "reviewChanges" || kind === "ciFailed" ? BAD_PILL_MS : PILL_MS);
+  }, [unread, state, pr, quiet]);
   useEffect(() => () => window.clearTimeout(timer.current), []);
-  if (!pill) return null;
-  const words = islandText(language).pill;
-  return { text: words[pill.kind], ring: pill.kind === "ciGreen" ? "green" : pill.kind === "ciFailed" ? "red" : null };
+  if (!pill || quiet) return null;
+  const t = islandText(language).pill;
+  switch (pill.kind) {
+    case "merged": return { text: t.merged(pill.pr), ring: "green", tone: "ok" };
+    case "reviewChanges": return { text: t.reviewChanges, ring: null, tone: "bad" };
+    case "reviewOk": return { text: t.reviewOk, ring: "green", tone: "ok" };
+    case "ciFailed": return { text: t.ciFailed, ring: "red", tone: "bad" };
+    case "ciGreen": return { text: t.ciGreen, ring: "green", tone: "ok" };
+    case "handedIn": return { text: t.handedIn(pill.pr), ring: null, tone: "ok" };
+    case "started": return { text: t.started, ring: null, tone: "working" };
+    case "messages": return { text: t.messages(Math.max(1, pill.n)), ring: null, tone: "info" };
+  }
 }
-/** How long a passing event's pill stays before it shrinks into the ring. */
+/** How long a passing event's pill stays before it shrinks into the ring;
+ * bad news a little longer. */
 export const PILL_MS = 3000;
+export const BAD_PILL_MS = 5000;

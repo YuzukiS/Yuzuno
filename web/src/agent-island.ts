@@ -3,14 +3,14 @@ import type { ExecutorLifecycle } from "./executor-lifecycle";
 import type { Agent } from "./types";
 
 /**
- * The Agent row's island (T-43, 灵动环 v10.1, the user's design of
+ * The Agent row's island (T-43, 灵动环 v10.2, the user's design of
  * 2026-11-07): a ring at the row's top right that is the state itself (its
- * turning, fill, colour, stroke and a mark for done, failed and archived),
- * which grows into the row and back into itself. A click on the row opens
- * the conversation; only the ring steps the island (ring → row island →
- * card). Needs you and failed are row islands until handled. Pure: the
- * words are AgentIsland.tsx's, the facts the Agent listing's and, for an
- * executor, executorView's.
+ * turning, fill, colour, stroke and a mark for done, failed and archived).
+ * Needs you and failed make the row the island until handled; a passing
+ * event grows a pill left out of the ring. A click on the row opens the
+ * conversation; a click on the ring goes straight to its state's place.
+ * Pure: the words are AgentIsland.tsx's, the facts the Agent listing's and,
+ * for an executor, executorView's.
  */
 export type IslandState = "idle" | "working" | "handed" | "waiting" | "queued" | "offline" | "done" | "failed" | "archived";
 
@@ -18,8 +18,8 @@ export type IslandState = "idle" | "working" | "handed" | "waiting" | "queued" |
  * ended executor's whole time on its task, which no longer runs. */
 export type IslandClock = { kind: "live" | "since" | "total"; from: number; to: number | null };
 
-/** What a line says. An executor's line one is what it is doing, after the
- * state's word; the card's detail line says one fact more. */
+/** What a line says: an executor's line one is what it is doing, after the
+ * state's word. */
 export type IslandLine =
   | { kind: "detail"; detail: ExecutorDetail }
   | { kind: "text"; text: string }
@@ -27,14 +27,13 @@ export type IslandLine =
   | { kind: "handed"; pr: number | null }
   /** Its task's title. */
   | { kind: "task"; title: string }
-  /** Its PR and what the PR is at. */
-  | { kind: "pr"; number: number; detail: ExecutorDetail | null }
   | { kind: "none" };
 
-/** The card's buttons, each to a place the row's own click doesn't go:
- * Home, to answer what it asks; its result or why it failed, on its task;
- * its task. The conversation is the row's (the user, v10.1). */
-export type IslandAction = "home" | "result" | "why" | "task";
+/** Where a click on the ring goes (the user, v10.2: the state's action, at
+ * once): Home's Needs you, to answer what it asks; its task, for why its
+ * start failed, its result, its place in the queue or the task itself; the
+ * conversation, for a Turn that failed or updates unread. */
+export type IslandAction = "answer" | "why" | "result" | "queue" | "task" | "turn" | "unread";
 
 export type IslandView = {
   state: IslandState;
@@ -42,15 +41,14 @@ export type IslandView = {
   unread: number;
   /** An executor's line one, after the state's word. */
   line: IslandLine;
-  /** The card's detail line. */
-  more: IslandLine;
   /** The ring's fill: working's arc (null: a fixed quarter until templates
    * carry their steps), handed in's review rounds. */
   progress: number | null;
   /** A row island by itself: it needs you, or it failed, until handled. */
   auto: boolean;
-  actions: IslandAction[];
-  /** Its task's key, for the task's buttons. */
+  /** Where its ring goes; null: nowhere of its own, and the ring is no button. */
+  go: IslandAction | null;
+  /** Its task's key, where its ring goes to its task. */
   task: string | null;
   /** The PR it handed in, for the word "Handed in #688". */
   pr: number | null;
@@ -100,21 +98,17 @@ function standing(facts: IslandFacts): Standing {
   return { state: "idle", clock: since(ended), line: text(summary) };
 }
 
-/** An executor's state, clock, line one and detail line. Line one is what
- * it is doing: its blocker, else what it last said (its work summary), else
- * what its state is at, else its task's title. The detail line is its PR,
- * else its task's title, whichever line one doesn't say. */
-function executor(facts: IslandFacts, view: ExecutorView): Standing & { more: IslandLine } {
+/** An executor's state, clock and line one: what it is doing, its blocker,
+ * else what it last said (its work summary), else what its state is at,
+ * else its task's title. */
+function executor(facts: IslandFacts, view: ExecutorView): Standing {
   const { agent, lifecycle } = facts;
   const summary = agent.workSummary?.text?.trim() || null;
   const title = lifecycle?.task?.title?.trim() || null;
   const task: IslandLine = title ? { kind: "task", title } : NONE;
   const said = (d: ExecutorDetail | null): IslandLine => (d ? { kind: "detail", detail: d } : NONE);
   const first = (...lines: IslandLine[]) => lines.find((l) => l.kind !== "none") ?? NONE;
-  const pr: IslandLine = view.pr ? { kind: "pr", number: view.pr.number, detail: view.detail?.kind === "pr" ? view.detail : { kind: "pr", status: view.pr.status } } : NONE;
-  // The detail line: its PR, else its task, else nothing; never what line one says.
-  const more = (line: IslandLine) => first(...[pr, task].filter((l) => l.kind !== line.kind));
-  const out = (state: IslandState, clock: IslandClock | null, line: IslandLine) => ({ state, clock, line, more: more(line) });
+  const out = (state: IslandState, clock: IslandClock | null, line: IslandLine) => ({ state, clock, line });
   const ended = view.ended ?? time(lifecycle?.since);
   switch (view.shown) {
     case "queued":
@@ -161,22 +155,33 @@ function rounds(view: ExecutorView | null): number | null {
  * Working has no clock; an executor's clock is its time on the task. */
 export function islandView(facts: IslandFacts): IslandView {
   const view = facts.executor ?? null;
-  const { state, clock, line, more } = view ? executor(facts, view) : { ...standing(facts), more: NONE };
+  const { state, clock, line } = view ? executor(facts, view) : standing(facts);
   const task = facts.lifecycle?.task?.id ?? null;
-  // Each button goes where the row doesn't: the row opens the conversation.
-  const actions: IslandAction[] = !view || !task ? []
-    : state === "waiting" ? ["home", "task"]
-      : state === "handed" ? ["result"]
-        : state === "failed" && view.shown === "failed" && view.detail?.kind !== "turnFailed" ? ["why"]
-          : ["task"];
+  const unread = Math.max(0, facts.agent.unreadCount || 0);
   return {
-    state, clock, line, more,
-    unread: Math.max(0, facts.agent.unreadCount || 0),
+    state, clock, line, unread,
     progress: state === "handed" ? rounds(view) : null,
     auto: state === "waiting" || state === "failed",
-    actions, task,
+    go: goOf(state, view, task, unread),
+    task,
     pr: view?.pr?.number ?? null,
   };
+}
+
+/** Where the ring goes, by state (the user, v10.2). Needs you: Home's Needs
+ * you. An executor's: its task (why its start failed, its result, its place
+ * in the queue, or the task), and for a Turn that failed, the conversation.
+ * A standing Agent's: the conversation, for a failed Turn or updates unread.
+ * Idle, offline and a standing Agent at work have nowhere of their own. */
+function goOf(state: IslandState, view: ExecutorView | null, task: string | null, unread: number): IslandAction | null {
+  if (state === "waiting") return "answer";
+  if (state === "failed") return view && task && view.detail?.kind !== "turnFailed" ? "why" : "turn";
+  if (state === "done") return unread > 0 ? "unread" : null;
+  if (!view || !task) return null;
+  if (state === "handed") return "result";
+  if (state === "queued") return "queue";
+  if (state === "working" || state === "archived") return "task";
+  return null;
 }
 
 /** A clock as the island writes it: "<1分", "12分", "1时20分", "2天"; in
@@ -200,11 +205,5 @@ export function islandTime(ms: number, language: "en" | "zh-Hans", short = false
 export const clockMs = (clock: IslandClock, now: number) => Math.max(0, (clock.to ?? now) - clock.from);
 
 /** The forms an island takes: its ring; a short pill grown left out of it
- * for a passing event; the row as the island; the card, the row island one
- * detail line and its buttons taller. */
-export type IslandForm = "ring" | "pill" | "row" | "card";
-
-/** Where a click on the ring goes from each form; null: back to rest. */
-export function nextForm(form: IslandForm): IslandForm | null {
-  return form === "ring" || form === "pill" ? "row" : form === "row" ? "card" : null;
-}
+ * for a passing event; the row as the island (needs you, failed). */
+export type IslandForm = "ring" | "pill" | "row";

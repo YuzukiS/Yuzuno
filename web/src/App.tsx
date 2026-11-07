@@ -1791,7 +1791,7 @@ export function App() {
     [needsYouItems, activeAgents],
   );
   const lastNeedsJump = useRef<NeedsJump | null>(null);
-  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; n: number } | null>(null);
+  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; agentId?: string; n: number } | null>(null);
   const goNextNeedsYou = () => {
     const shown: NeedsTarget | null = homeOpen
       ? lastNeedsJump.current && lastNeedsJump.current.target.kind !== "agent" ? lastNeedsJump.current.target : null
@@ -3662,7 +3662,11 @@ export function App() {
               waitingSince={waited.get(a.id) ?? null}
               compacting={a.id === selected && compacting}
               onSelect={() => openFromList(a.id)}
-              onOpenHome={goHome}
+              onOpenHome={(agentId) => {
+                // Its ring (T-43 v10.2): Home, at what it asks in Needs you.
+                goHome();
+                setHomeJump((last) => ({ projectId: null, agentId, n: (last?.n ?? 0) + 1 }));
+              }}
               onOpenTask={(taskId) => window.dispatchEvent(new CustomEvent("yuzuno:open-task-review", { detail: { taskId } }))}
               actions={agentActions}
             />

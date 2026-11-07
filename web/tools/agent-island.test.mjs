@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clockMs, islandTime, islandView, nextForm } from "../src/agent-island.ts";
+import { clockMs, islandTime, islandView } from "../src/agent-island.ts";
 import { executorView } from "../src/executor-display.ts";
 
-// T-43, 灵动环 v10.1 (the user's design): the ring at an Agent row's top
-// right is its state; an executor's line one is what it is doing and its
-// card one detail more; needs you and failed are row islands by themselves;
-// the card's buttons only go where the row's click doesn't.
+// T-43, 灵动环 v10.2 (the user's design): the ring at an Agent row's top
+// right is its state; an executor's line one is what it is doing; needs you
+// and failed are row islands by themselves; a click on the ring goes
+// straight to its state's place, and a ring with nowhere of its own is none.
 const at = (iso) => Date.parse(iso);
 const agent = (extra = {}) => ({ status: "idle", pendingCount: 0, unreadCount: 0, closedAt: null, disconnectedAt: null, lastTurnEnd: null, workSummary: null, ...extra });
 const ended = { seq: 9, outcome: "finished", at: "2026-11-07T03:00:00Z" };
@@ -63,31 +63,27 @@ test("an executor's island follows its one state; delivering splits into working
   assert.deepEqual(exec(life("queued", { position: 2 }), agent({ status: "offline" })).line, { kind: "detail", detail: { kind: "position", position: 2 } });
 });
 
-test("an executor's line one is what it is doing; its card's detail line is its PR, else its task", () => {
+test("an executor's line one is what it is doing", () => {
   const said = { workSummary: { text: "Slice 2: evidence Job running" } };
   const text = { kind: "text", text: "Slice 2: evidence Job running" };
   const task = { kind: "task", title: "Design first" };
   const rows = [
-    // [lifecycle, agent, more, line one, detail line]
-    [life("running"), agent({ status: "working", ...said }), {}, text, task],
-    // Its PR is the detail line's, not line one's.
-    [life("running"), agent({ status: "working", ...said }), { pr: { number: 690, state: "draft" } }, text, { kind: "pr", number: 690, detail: { kind: "pr", status: { kind: "draft" } } }],
-    // Nothing said yet: its task's title, and no detail line repeating it.
-    [life("running"), agent({ status: "working" }), {}, task, { kind: "none" }],
+    // [lifecycle, agent, more, line one]
+    [life("running"), agent({ status: "working", ...said }), {}, text],
+    // Its PR is not line one's.
+    [life("running"), agent({ status: "working", ...said }), { pr: { number: 690, state: "draft" } }, text],
+    // Nothing said yet: its task's title.
+    [life("running"), agent({ status: "working" }), {}, task],
     // A blocker comes before what it said.
-    [life("running", { blocked: "Waiting for #12" }), agent({ status: "working", ...said }), {}, { kind: "detail", detail: { kind: "blocked", text: "Waiting for #12" } }, task],
+    [life("running", { blocked: "Waiting for #12" }), agent({ status: "working", ...said }), {}, { kind: "detail", detail: { kind: "blocked", text: "Waiting for #12" } }],
     // Handed in and on its next slice: what it says now.
-    [life("delivering"), agent({ status: "working", ...said }), { pr: { number: 681, state: "open" } }, text, { kind: "pr", number: 681, detail: { kind: "pr", status: { kind: "rounds", approved: 0, of: 2, running: false } } }],
-    [life("delivering"), agent(), { pr: { number: 688, state: "open" } }, { kind: "handed", pr: 688 }, { kind: "pr", number: 688, detail: { kind: "pr", status: { kind: "rounds", approved: 0, of: 2, running: false } } }],
-    [life("running"), agent({ pendingCount: 1, status: "waiting", workSummary: { text: "Approve the design note" } }), {}, { kind: "text", text: "Approve the design note" }, task],
-    [life("failed", { reason: "Both starts failed" }), agent({ closedAt: "2026-11-07T03:31:00Z" }), {}, { kind: "detail", detail: { kind: "reason", text: "Both starts failed" } }, task],
-    [life("archived"), agent({ closedAt: "2026-11-07T03:12:00Z" }), {}, task, { kind: "none" }],
+    [life("delivering"), agent({ status: "working", ...said }), { pr: { number: 681, state: "open" } }, text],
+    [life("delivering"), agent(), { pr: { number: 688, state: "open" } }, { kind: "handed", pr: 688 }],
+    [life("running"), agent({ pendingCount: 1, status: "waiting", workSummary: { text: "Approve the design note" } }), {}, { kind: "text", text: "Approve the design note" }],
+    [life("failed", { reason: "Both starts failed" }), agent({ closedAt: "2026-11-07T03:31:00Z" }), {}, { kind: "detail", detail: { kind: "reason", text: "Both starts failed" } }],
+    [life("archived"), agent({ closedAt: "2026-11-07T03:12:00Z" }), {}, task],
   ];
-  for (const [lifecycle, a, more, line, detail] of rows) {
-    const view = exec(lifecycle, a, more);
-    assert.deepEqual(view.line, line, `${lifecycle.state} / ${a.status}: line one`);
-    assert.deepEqual(view.more, detail, `${lifecycle.state} / ${a.status}: detail line`);
-  }
+  for (const [lifecycle, a, more, line] of rows) assert.deepEqual(exec(lifecycle, a, more).line, line, `${lifecycle.state} / ${a.status}: line one`);
   assert.equal(exec(life("delivering"), agent(), { pr: { number: 688, state: "open" } }).pr, 688, "handed in names its PR");
 });
 
@@ -101,10 +97,6 @@ test("the ring's fill: handed in's review rounds; working's arc until templates 
   assert.equal(standing(agent()).progress, null);
 });
 
-test("only the ring steps the island: ring or pill → row island → card → back", () => {
-  assert.deepEqual(["ring", "pill", "row", "card"].map(nextForm), ["row", "row", "card", null]);
-});
-
 test("only needs you and failed are row islands by themselves", () => {
   const auto = (view) => [view.state, view.auto];
   assert.deepEqual(auto(standing(agent({ pendingCount: 1, status: "waiting" }))), ["waiting", true]);
@@ -113,16 +105,25 @@ test("only needs you and failed are row islands by themselves", () => {
     assert.equal(view.auto, false, view.state);
 });
 
-test("the card's buttons go only where the row's click doesn't, each somewhere else", () => {
-  assert.deepEqual(exec(life("running"), agent({ pendingCount: 1, status: "waiting" })).actions, ["home", "task"], "an executor's question is answered on Home");
-  assert.deepEqual(exec(life("delivering"), agent()).actions, ["result"], "handed in: its result, on its task");
-  assert.deepEqual(exec(life("failed", { reason: "Both starts failed" }), agent({ closedAt: "2026-11-07T03:31:00Z" })).actions, ["why"], "failed to start: why, on its task");
-  assert.deepEqual(exec(life("running"), agent({ status: "error" })).actions, ["task"], "its Turn failed: why is in the conversation, the row's");
-  assert.deepEqual(exec(life("running"), agent({ status: "working" })).actions, ["task"]);
-  assert.deepEqual(exec(life("queued", { position: 2 }), agent()).actions, ["task"]);
-  assert.deepEqual(standing(agent({ pendingCount: 1, status: "waiting" })).actions, [], "a standing Agent's request is answered in its conversation: the row");
-  for (const view of [standing(agent()), exec(life("running"), agent({ status: "working" })), exec(life("delivering"), agent())])
-    assert.ok(!view.actions.includes("open"), "the conversation is the row's");
+test("a click on the ring goes straight to its state's place; with nowhere of its own it is no button", () => {
+  const go = (view) => [view.state, view.go];
+  // Needs you: Home's Needs you, an executor's or a standing Agent's.
+  assert.deepEqual(go(exec(life("running"), agent({ pendingCount: 1, status: "waiting" }))), ["waiting", "answer"]);
+  assert.deepEqual(go(standing(agent({ pendingCount: 1, status: "waiting" }))), ["waiting", "answer"]);
+  // An executor's: its task, for why its start failed, its result, its place in line, or itself.
+  assert.deepEqual(go(exec(life("failed", { reason: "Both starts failed" }), agent({ closedAt: "2026-11-07T03:31:00Z" }))), ["failed", "why"]);
+  assert.deepEqual(go(exec(life("delivering"), agent())), ["handed", "result"]);
+  assert.deepEqual(go(exec(life("queued", { position: 2 }), agent())), ["queued", "queue"]);
+  assert.deepEqual(go(exec(life("running"), agent({ status: "working" }))), ["working", "task"]);
+  assert.deepEqual(go(exec(life("archived"), agent({ closedAt: "2026-11-07T03:12:00Z" }))), ["archived", "task"]);
+  // A Turn that failed, or updates unread: the conversation, where they are.
+  assert.deepEqual(go(exec(life("running"), agent({ status: "error" }))), ["failed", "turn"]);
+  assert.deepEqual(go(standing(agent({ status: "error" }))), ["failed", "turn"]);
+  assert.deepEqual(go(standing(agent({ unreadCount: 3, lastTurnEnd: ended }))), ["done", "unread"]);
+  // Nowhere of its own: idle, offline, a standing Agent at work, a done one with nothing unread.
+  for (const view of [standing(agent()), standing(agent({ status: "working" })), standing(agent({ status: "offline", disconnectedAt: "2026-11-07T00:30:00Z" })),
+    standing(agent({ lastTurnEnd: ended }), { unseen: "finished" }), exec(life("running"), agent({ status: "offline", disconnectedAt: "2026-11-07T03:00:00Z" }))])
+    assert.equal(view.go, null, view.state);
   assert.equal(exec(life("running"), agent()).task, "YN-24");
   assert.equal(standing(agent()).task, null);
 });

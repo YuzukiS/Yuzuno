@@ -7,15 +7,15 @@ import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 
-// T-43 S2, 灵动环 v10.1: an executor's row in the built app, against a
+// T-43 S2, 灵动环 v10.2: an executor's row in the built app, against a
 // fixture Core. Line one is what it is doing after its state's word; line two
 // its task key and its clock, which freezes once it is over; its ring is its
-// state. Needs you and failed are row islands by themselves; waiting for you
-// is said once, with how long. A click on the row opens the conversation;
-// the ring steps the island to its card, whose buttons go elsewhere: its PR
-// (GET /api/executors/live) is the card's detail line. Presence is asserted
-// as booleans: a failing assertion on an element would inspect the whole
-// window.
+// state, and its PR (GET /api/executors/live) is in its word and its ring's
+// title. Needs you and failed are row islands by themselves; waiting for you
+// is said once, with how long. A click on the row opens the conversation; a
+// click on the ring goes straight to its state's place (Home's Needs you, its
+// task), never the conversation; there are no cards. Presence is asserted as
+// booleans: a failing assertion on an element would inspect the whole window.
 const distUrl = process.env.YUZUNO_UI_DIST
   ? pathToFileURL(resolve(process.env.YUZUNO_UI_DIST) + "/")
   : new URL("../dist/", import.meta.url);
@@ -132,8 +132,6 @@ async function mount({ storage = {}, needsYou = (items) => items } = {}) {
     },
     meta: (id) => part(id, ":scope > .agent-row-meta"),
     clock: (id) => part(id, ":scope > .agent-row-meta .island-clock"),
-    more: (id) => part(id, ":scope > .agent-row-more"),
-    actions: (id) => [...(row(id)?.querySelectorAll(":scope > .island-actions button") ?? [])].map((b) => b.textContent),
     bell: (id) => !!row(id)?.querySelector(".agent-row-bottom .needs-you"),
     close: () => w.close(),
   };
@@ -146,8 +144,8 @@ test("needs you is a row island by itself, with how long; the bell under the row
     assert.deepEqual(p.state("w"), ["waiting", "Needs you: Approve the design note"], "what it asks is its line one");
     assert.equal(p.meta("w"), "YN-w · 12m", "its task key and its wait");
     assert.equal(p.form("w"), "row");
-    assert.equal(p.island("w").getAttribute("aria-expanded"), "true");
-    assert.match(p.island("w").title, /^Needs you · waiting 12m · Approve the design note\n/);
+    assert.equal(p.island("w").getAttribute("aria-label"), "YN-w · Design first · Answer its question on Home", "its ring says where it goes");
+    assert.match(p.island("w").title, /^Needs you · waiting 12m · Approve the design note\nAnswer its question on Home\n/);
     assert.equal(p.bell("w"), false, "no second \"needs you\" under it");
     assert.equal(p.row("w").querySelector(".agent-work-summary"), null, "what it asks is said once");
     assert.match(p.row("w").querySelector(".agent-select").getAttribute("aria-description"), /^Executor · Needs you, on /);
@@ -207,52 +205,36 @@ test("line one says what it is doing, line two its key and clock, frozen once ov
   }
 });
 
-test("a click on the row opens the conversation; the ring steps the island to its card, which goes elsewhere", async () => {
+test("a click on the row opens the conversation; a click on the ring goes to its state's place; no cards", async () => {
   const p = await mount();
   try {
     await waitFor(() => p.form("w") === "row" && /#688/.test(p.state("v")?.[1] ?? ""), "the rows");
     const reads = (id) => p.calls.filter((c) => c.url.endsWith(`/api/agents/${id}`)).length;
+    const tasks = [];
+    p.w.addEventListener("yuzuno:open-task-review", (event) => tasks.push(event.detail.taskId));
     // The row, the text of a row island included: the conversation, the island as it was.
     const before = reads("w");
     p.row("w").querySelector(".agent-select").click();
     await waitFor(() => reads("w") > before, "w's conversation opens");
     assert.equal(p.form("w"), "row");
-    // The ring: row island → card → back, never the conversation.
-    const opened = reads("v");
-    p.island("v").click();
-    await waitFor(() => p.form("v") === "row", "v's row island");
-    assert.equal(p.island("v").getAttribute("aria-expanded"), "true");
-    p.island("v").click();
-    await waitFor(() => p.form("v") === "card", "v's card");
-    assert.deepEqual(p.actions("v"), ["See result"], "handed in: its result");
-    assert.equal(p.more("v"), "#688 · Review 1/2", "its PR is the card's detail line");
-    assert.equal(p.row("v").querySelector(".island-actions button").className, "primary");
-    p.island("v").click();
-    await waitFor(() => p.form("v") === "ring", "closed into its ring");
-    assert.equal(p.island("v").getAttribute("aria-expanded"), "false");
-    assert.equal(reads("v"), opened, "the ring never opened the conversation");
-    // Needs you: its card answers on Home, or opens its task; Escape closes it.
-    p.island("w").click();
-    await waitFor(() => p.form("w") === "card", "w's card");
-    assert.deepEqual(p.actions("w"), ["Answer on Home", "Task"]);
-    assert.equal(p.more("w"), "Task: Work w");
-    p.doc.dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await waitFor(() => p.form("w") === "row", "back to its row island");
-    // No card offers the conversation: it is the row's.
-    for (const id of ["k", "a", "g"]) {
+    // Each executor's ring: its task, never the conversation.
+    const opened = Object.fromEntries(["v", "k", "a", "g"].map((id) => [id, reads(id)]));
+    for (const [id, label] of [["v", "YN-v · Design first · See the result of #688"], ["k", "YN-k · Design first · Open task YN-k"], ["a", "YN-a · Design first · Open task YN-a"], ["g", "Agent g · Open task YN-g"]]) {
+      assert.equal(p.island(id).tagName, "BUTTON", `${id}'s ring goes somewhere`);
+      assert.equal(p.island(id).getAttribute("aria-label"), label);
       p.island(id).click();
-      p.island(id).click();
-      await waitFor(() => p.form(id) === "card", `${id}'s card`);
-      assert.ok(!p.actions(id).some((a) => /Open|conversation/i.test(a)), `${id}: ${p.actions(id)}`);
-      p.doc.dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-      await waitFor(() => p.form(id) === "ring", `${id} closed`);
+      await waitFor(() => tasks.at(-1) === `YN-${id}`, `${id}'s ring opens its task`);
+      assert.equal(reads(id), opened[id], `${id}'s ring never opened the conversation`);
+      assert.equal(p.form(id), "ring", `${id}'s ring stays a ring`);
     }
-    // A button leads somewhere and the card closes.
-    p.island("v").click();
-    p.island("v").click();
-    await waitFor(() => p.form("v") === "card", "v's card again");
-    p.row("v").querySelector(".island-actions button").click();
-    await waitFor(() => p.form("v") === "ring", "the card closes once it has led somewhere");
+    // Needs you: Home, at its item in Needs you, an executor's and a standing Agent's alike.
+    for (const [id, key] of [["w", "approval:q1"], ["s", "approval:q2"]]) {
+      p.island(id).click();
+      await waitFor(() => p.doc.activeElement?.dataset?.needsYou === key, `${id}'s ring goes to its item in Home's Needs you`);
+      assert.ok(!!p.doc.querySelector(".home-view"), "Home is open");
+    }
+    // No card, no card buttons, anywhere.
+    assert.equal(p.doc.querySelectorAll(".agent-list .island-actions, .agent-list .agent-row-more, .agent-list [data-form=card]").length, 0);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -269,9 +251,8 @@ test("in Chinese the row reads in Chinese", async () => {
     assert.equal(p.meta("k"), "YN-k · 1时5分");
     assert.deepEqual(p.state("a"), ["archived", "已归档：Work a"]);
     assert.equal(p.meta("a"), "YN-a · 共 1时30分");
-    p.island("w").click();
-    await waitFor(() => p.form("w") === "card", "w's card");
-    assert.deepEqual(p.actions("w"), ["去 Home 回答", "看任务"]);
+    assert.equal(p.island("w").getAttribute("aria-label"), "YN-w · Design first · 去 Home 回答提问");
+    assert.equal(p.island("v").getAttribute("aria-label"), "YN-v · Design first · 看结果 #688");
     for (const id of ["w", "v", "k", "a"]) assert.doesNotMatch(p.island(id).title, /放行/, `${id}: no 放行`);
     assert.deepEqual(p.errors, []);
   } finally {

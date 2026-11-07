@@ -1,4 +1,4 @@
-// T-43, 灵动环 v10.1 (the user's design of 2026-11-07): the Agent row's
+// T-43, 灵动环 v10.2 (the user's design of 2026-11-07): the Agent row's
 // island in Chromium, with every API answered here (no Core, no CLI, no
 // daily configuration) and synthetic Agents in the states a rail shows:
 // working, handed in, needs you, queued, done with three unread, failed and
@@ -8,18 +8,19 @@
 //   mark inside for done and failed, nothing for the rest;
 // - at rest needs you and failed are row islands, everything else a ring;
 // - an executor's line one is what it is doing, line two its task key and
-//   clock; a standing Agent's line one its name; nothing cut; every row, card
-//   included, four lines at most;
+//   clock; a standing Agent's line one its name; nothing cut; three lines;
 // - a click on the row opens the conversation (a row island's text
-//   included) and changes no island; only the ring steps it, ring → row
-//   island → card → ring, and never opens the conversation; no card offers
-//   to open it; each card's buttons lead elsewhere;
+//   included) and changes no island; a click on the ring goes straight to
+//   its state's place: needs you to its item in Home's Needs you, an
+//   executor's to its task, unread updates to the conversation, never
+//   anything else; a ring with nowhere of its own is no button (no pointer,
+//   not in the Tab order); there are no cards;
 // - the ring's hit area is 28 px with a mouse and 40 px on touch, nothing
-//   drawn; hover darkens the row only, with no border; on the ring the row
-//   stays and the ring shows its halo;
-// - Tab reaches the row's link, then the ring's button (aria-expanded);
-//   Enter steps, Escape closes;
-// - a new message grows the pill left out of the ring and it shrinks back;
+//   drawn; on hover it scales up a little in place (its strokes thicken
+//   under reduced motion), with no halo; hover on the row only darkens it;
+// - Tab reaches the row's link, then the ring, labelled with where it goes;
+// - a new message grows a pill left out of the ring, over line one's end
+//   (the words keep their width), and it shrinks back;
 // - with motion the outline starts as the ring's circle and ends in it;
 //   under reduced motion nothing in the list animates.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/agent-island-check.mjs
@@ -35,7 +36,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "T-43 v10.1", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], rows: {}, cards: {}, hits: {} };
+const report = { task: "T-43 v10.2", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], rows: {}, went: {}, hits: {} };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -67,6 +68,9 @@ const fixture = () => [
 ];
 let agents = fixture();
 // Each row at rest: its state, its form, its mark inside the ring.
+// Where each ring goes: home (its item in Needs you), task (its task),
+// conversation, or null (no button: the row's click is its).
+const GOES = { lead: null, dev9: "conversation", yn24: "task", yn26: "task", yn21: "home", yn33: "task", yn30: "task", dev5: null };
 const EXPECTED = {
   lead: ["working", "ring", 0], dev9: ["done", "ring", 1], yn24: ["working", "ring", 0], yn26: ["handed", "ring", 0],
   yn21: ["waiting", "row", 0], yn33: ["failed", "row", 1], yn30: ["queued", "ring", 0], dev5: ["idle", "ring", 0],
@@ -76,15 +80,15 @@ const TEXT = {
     one: { yn24: "Slice 2: evidence Job running", yn26: "Handed in #688 · waiting for the lead", yn21: "Needs you: Approve the design note",
       yn33: "Failed: Both starts failed", yn30: "Queued: 2 in line", lead: "Dev Lead 2Lead", dev9: "Dev 9", dev5: "Dev 5" },
     two: { yn24: /^YN-24 · 1h12m$/, yn26: /^YN-26 · 6m$/, yn21: /^YN-21 · 12m$/, yn33: /^YN-33 · 1m ago$/, yn30: /^YN-30 · 1h12m$/ },
-    acts: { yn24: ["Task"], yn26: ["See result"], yn21: ["Answer on Home", "Task"], yn33: ["See why"], yn30: ["Task"], lead: [], dev9: [], dev5: [] },
-    short: { Task: "Task", "See result": "Result", "Answer on Home": "Answer", "See why": "Why" },
+    go: { dev9: "Dev 9 · Read 3 unread", yn24: "YN-24 · Design first · Open task YN-24", yn26: "YN-26 · Small fix · See the result of #688",
+      yn21: "YN-21 · Design first · Answer its question on Home", yn33: "YN-33 · Design first · See why it failed", yn30: "YN-30 · Small fix · See its place in the queue" },
   },
   zh: {
     one: { yn24: "Slice 2: evidence Job running", yn26: "已交 #688 · 等负责人", yn21: "等你：Approve the design note",
       yn33: "出错：Both starts failed", yn30: "排队：第 2 位", lead: "Dev Lead 2负责人", dev9: "Dev 9", dev5: "Dev 5" },
     two: { yn24: /^YN-24 · 1时12分$/, yn26: /^YN-26 · 6分$/, yn21: /^YN-21 · 12分$/, yn33: /^YN-33 · 1分前$/, yn30: /^YN-30 · 1时12分$/ },
-    acts: { yn24: ["看任务"], yn26: ["看结果"], yn21: ["去 Home 回答", "看任务"], yn33: ["看出错原因"], yn30: ["看任务"], lead: [], dev9: [], dev5: [] },
-    short: { 看任务: "任务", 看结果: "结果", "去 Home 回答": "回答", 看出错原因: "原因" },
+    go: { dev9: "Dev 9 · 看 3 条未读", yn24: "YN-24 · Design first · 看任务 YN-24", yn26: "YN-26 · Small fix · 看结果 #688",
+      yn21: "YN-21 · Design first · 去 Home 回答提问", yn33: "YN-33 · Design first · 看出错原因", yn30: "YN-30 · Small fix · 看排队位置" },
   },
 };
 const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture/app" }, createdAt: "", updatedAt: "" }];
@@ -149,33 +153,34 @@ const rows = (page) => page.locator(".agent-list article[data-agent-id]").evalua
   const island = r.querySelector(":scope > .agent-island");
   const ring = island?.querySelector(".island-ringbox")?.getBoundingClientRect();
   const row = r.getBoundingClientRect();
+  // Lines as drawn: the text's boxes, one line per bottom (a badge's box sits a few px off its line's).
   const lines = (el) => {
     if (!el || getComputedStyle(el).display === "none") return 0;
-    const h = el.getBoundingClientRect().height, lh = parseFloat(getComputedStyle(el).lineHeight);
-    return h > 0 && lh > 0 ? Math.round(h / lh) : 0;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    let n = 0, last = -Infinity;
+    for (const b of [...range.getClientRects()].filter((x) => x.width > 0).map((x) => x.bottom).sort((x, y) => x - y)) if (b - last > 6) { n++; last = b; }
+    return n;
   };
   const one = r.querySelector(":scope > .agent-row-top .agent-line-one");
   const two = r.querySelector(":scope > .agent-row-meta, :scope > .agent-row-state");
-  const more = r.querySelector(":scope > .agent-row-more");
-  const buttons = [...r.querySelectorAll(":scope > .island-actions > button")];
   const cut = (el) => !!el && (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1);
   return {
     id: r.dataset.agentId,
     avatar: !!r.querySelector(".agent-rail-avatar, .agent-avatar"),
     state: island?.dataset.state, form: island?.dataset.form, rowForm: r.dataset.form,
-    expanded: island?.getAttribute("aria-expanded"),
+    tag: island?.tagName ?? null, label: island?.getAttribute("aria-label") ?? null, cursor: island ? getComputedStyle(island).cursor : null,
     ring: ring ? [Math.round(ring.width), Math.round(ring.height)] : null,
-    // At the top right: its right edge near the row's (the "…" folded), its top on line one.
-    // The "…" beside it takes its width only on the selected row.
+    // At the top right: its right edge near the row's (the "…" beside it takes its width only on the selected row), its top on line one.
     topRight: !!ring && row.right - ring.right - (r.querySelector(":scope > .agent-row-menu")?.getBoundingClientRect().width || -3) - 3 <= 14 && ring.top - row.top <= 12,
     marks: island?.querySelectorAll("svg path.r-mark").length ?? -1,
     strokesOnly: !!island && [...island.querySelectorAll("svg *")].every((n) => ["circle", "path", "g"].includes(n.localName)) && !island.querySelector(".island-dot"),
     one: one?.textContent ?? null, two: r.querySelector(":scope > .agent-row-meta")?.textContent ?? null,
-    lines: lines(one) + lines(two) + lines(more) + new Set(buttons.map((b) => Math.round(b.getBoundingClientRect().top))).size,
-    cut: [one, r.querySelector(":scope > .agent-row-meta"), r.querySelector(".agent-name"), more].some(cut),
+    lines: lines(one) + lines(two),
+    cut: [one, r.querySelector(":scope > .agent-row-meta"), r.querySelector(".agent-name")].some(cut),
     shell: (() => { const s = r.querySelector(":scope > .island-shell"); return s ? getComputedStyle(s).opacity : null; })(),
-    buttons: buttons.map((b) => b.textContent),
-    selected: r.querySelector(":scope > .agent-select")?.getAttribute("aria-current") === "true",
+    // No cards: nothing in a row but its link, its ring and its "…" is a button.
+    buttons: [...r.querySelectorAll("button")].map((b) => b.className.split(" ")[0]),
   };
 }));
 const byId = async (page) => Object.fromEntries((await rows(page)).map((r) => [r.id, r]));
@@ -193,6 +198,9 @@ async function run({ width, height, theme, motion, lang = "en" }) {
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, agentOrder: "list" }));
     localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang === "zh" ? "zh-Hans" : "en" }));
+    // Where a ring's task goes, as the app is told it.
+    window.__tasks = [];
+    window.addEventListener("yuzuno:open-task-review", (event) => window.__tasks.push(event.detail?.taskId ?? null));
   }, { theme, lang });
   await context.route("**/*", route);
   const page = await context.newPage();
@@ -200,9 +208,11 @@ async function run({ width, height, theme, motion, lang = "en" }) {
   page.on("console", (message) => message.type() === "error" && report.errors.push(`${tag} console: ${message.text()}`));
   const list = page.locator(".agent-list");
   const rowOf = (id) => list.locator(`article[data-agent-id="${id}"]`);
+  const ringOf = (id) => rowOf(id).locator(":scope > .agent-island");
   const formOf = (id) => rowOf(id).getAttribute("data-form");
-  const waitForm = (id, form) => page.waitForFunction(([id, form]) => document.querySelector(`.agent-list article[data-agent-id="${id}"]`)?.dataset.form === form, [id, form], { timeout: 5_000 });
   const listAnimations = () => page.evaluate(() => document.getAnimations().filter((a) => a.effect?.target?.closest?.(".agent-list")).length);
+  const tasks = () => page.evaluate(() => window.__tasks.slice());
+  const press = (locator) => (phone ? locator.tap() : locator.click());
   try {
     await page.goto(`https://${HOST}/`);
     await list.locator('article[data-agent-id="dev5"]').waitFor({ timeout: 15_000 });
@@ -221,47 +231,22 @@ async function run({ width, height, theme, motion, lang = "en" }) {
       assert.ok(r.topRight, `${tag}: ${id}'s ring at the row's top right`);
       assert.ok(r.strokesOnly, `${tag}: ${id}'s ring is strokes only`);
       assert.equal(r.marks, marks, `${tag}: ${id}'s ring ${marks ? "has its mark" : "is empty inside"}`);
-      assert.equal(r.expanded, form === "row" ? "true" : "false", `${tag}: ${id}'s ring says whether the island is open`);
       assert.equal(r.shell, form === "row" ? "1" : "0", `${tag}: ${id}'s outline ${form === "row" ? "is the row's" : "is hidden in its ring"}`);
       assert.equal(r.one, words.one[id], `${tag}: ${id}'s line one`);
       if (words.two[id]) assert.match(r.two, words.two[id], `${tag}: ${id}'s task key and clock`);
       assert.equal(r.cut, false, `${tag}: nothing of ${id}'s cut`);
-      assert.ok(r.lines >= 1 && r.lines <= 4, `${tag}: ${id} is ${r.lines} lines`);
+      assert.ok(r.lines >= 1 && r.lines <= 3, `${tag}: ${id} is ${r.lines} lines`);
+      // Its ring: a button labelled with where it goes, or part of the row.
+      assert.deepEqual([r.tag, r.label, r.cursor], GOES[id] ? ["BUTTON", words.go[id], "pointer"] : ["SPAN", null, "auto"], `${tag}: ${id}'s ring`);
+      assert.deepEqual(r.buttons.filter((b) => !b.startsWith("agent-actions")), GOES[id] ? ["agent-select", "agent-island"] : ["agent-select"], `${tag}: ${id} has no card buttons`);
     }
     assert.equal(await rowOf("dev9").locator(".island-notch").textContent(), "3", `${tag}: Dev 9's three unread beside its ring`);
     await shot(list, `${tag}-1-list`);
-    check(`${tag}: rings 22 px at the top right, strokes only, marks for done and failed; needs you and failed are row islands; line one the activity, line two the key and clock; nothing cut; four lines at most`);
-
-    // The ring steps the island and never opens the conversation; no card offers to.
-    const ringClick = (id) => (phone ? rowOf(id).locator(".agent-island").tap() : rowOf(id).locator(".agent-island").click());
-    for (const id of Object.keys(EXPECTED)) {
-      const before = reads[id] ?? 0;
-      const rest = EXPECTED[id][1];
-      if (rest === "ring") {
-        await ringClick(id);
-        await waitForm(id, "row");
-      }
-      await ringClick(id);
-      await waitForm(id, "card");
-      const r = (await byId(page))[id];
-      report.cards[`${tag}-${id}`] = r;
-      assert.equal(r.expanded, "true", `${tag}: ${id}'s ring says the card is open`);
-      // Their long words, or all their short ones when the long ones would make a fifth line.
-      const short = words.acts[id].map((w) => words.short[w]);
-      assert.ok([words.acts[id], short].some((want) => JSON.stringify(want) === JSON.stringify(r.buttons)), `${tag}: ${id}'s card buttons: ${r.buttons}`);
-      assert.ok(!r.buttons.some((b) => /Open|打开会话|会话/.test(b)), `${tag}: ${id}'s card offers no conversation`);
-      assert.ok(r.lines <= 4, `${tag}: ${id}'s card is ${r.lines} lines`);
-      assert.equal(r.cut, false, `${tag}: nothing of ${id}'s card cut`);
-      if (id === "yn21" || id === "yn26") await shot(phone ? page : list, `${tag}-2-card-${id}`);
-      await ringClick(id);
-      await waitForm(id, rest);
-      assert.equal(reads[id] ?? 0, before, `${tag}: ${id}'s ring never opened its conversation`);
-    }
-    check(`${tag}: the ring steps the island ring → row island → card → back and never opens the conversation; no card offers it; cards four lines at most`);
+    check(`${tag}: rings 22 px at the top right, strokes only, marks for done and failed; needs you and failed are row islands; line one the activity, line two the key and clock; nothing cut; three lines at most; a ring is a button only where it goes somewhere, labelled with where; no card buttons`);
 
     // Hit areas, measured from the ring's centre: 28 px with a mouse, 40 px on touch.
     const reach = phone ? 19.5 : 13.5;
-    const hits = await rowOf("yn30").locator(".agent-island .island-ringbox").evaluate((g, d) => {
+    const hits = await ringOf("yn30").locator(".island-ringbox").evaluate((g, d) => {
       const b = g.getBoundingClientRect(), cx = b.left + b.width / 2, cy = b.top + b.height / 2, island = g.closest(".agent-island");
       return { coarse: matchMedia("(pointer: coarse)").matches, at: [[-d, 0], [d, 0], [0, -d], [0, d]].map(([x, y]) => island.contains(document.elementFromPoint(cx + x, cy + y))),
         out: island.contains(document.elementFromPoint(cx - d - 6, cy)) };
@@ -271,91 +256,128 @@ async function run({ width, height, theme, motion, lang = "en" }) {
     assert.deepEqual(hits.at, [true, true, true, true], `${tag}: the ring takes presses ${reach} px from its centre`);
     assert.equal(hits.out, false, `${tag}: and not past its hit area`);
 
+    // A click on each ring goes to its state's place, never to the conversation unless that is its place; the island stays as it was.
+    const went = {};
+    for (const [id, goes] of Object.entries(GOES)) {
+      if (!goes || goes === "home" || (phone && goes === "conversation")) continue;
+      const before = { reads: reads[id] ?? 0, tasks: (await tasks()).length };
+      await press(ringOf(id));
+      if (goes === "task") {
+        await page.waitForFunction((n) => window.__tasks.length > n, before.tasks, { timeout: 5_000 });
+        const dialog = page.getByRole("dialog");
+        await dialog.first().waitFor({ timeout: 5_000 });
+        await page.keyboard.press("Escape");
+        await dialog.first().waitFor({ state: "detached", timeout: 5_000 });
+      } else for (let n = 0; n < 60 && (reads[id] ?? 0) <= before.reads; n++) await page.waitForTimeout(50);
+      went[id] = { task: (await tasks()).slice(before.tasks), reads: (reads[id] ?? 0) - before.reads };
+      if (goes === "task") assert.deepEqual(went[id], { task: [id.toUpperCase().replace("YN", "YN-")], reads: 0 }, `${tag}: ${id}'s ring opens its task, not its conversation`);
+      else assert.deepEqual(went[id], { task: [], reads: 1 }, `${tag}: ${id}'s ring opens its conversation, at its unread`);
+      assert.equal(await formOf(id), EXPECTED[id][1], `${tag}: ${id}'s island is as it was`);
+    }
+    report.went[tag] = went;
+
     if (!phone) {
-      // Hover: the row darkens, no border, no halo; on the ring, the halo and the row as at rest.
-      const look = () => rowOf("dev5").evaluate((r) => ({ bg: getComputedStyle(r).backgroundColor, border: getComputedStyle(r).borderTopColor,
-        halo: getComputedStyle(r.querySelector(".island-ringbox"), "::after").content }));
-      const restLook = await look();
-      await rowOf("dev5").locator(".agent-line-one").hover({ force: true });
-      const rowHover = await look();
-      await rowOf("dev5").locator(".agent-island").hover();
-      const ringHover = await look();
-      report.hover = { ...(report.hover ?? {}), [tag]: { rest: restLook, row: rowHover, ring: ringHover } };
-      assert.notEqual(rowHover.bg, restLook.bg, `${tag}: hover darkens the row`);
-      assert.equal(rowHover.border, restLook.border, `${tag}: and draws no border`);
-      assert.equal(rowHover.halo, "none", `${tag}: and no halo on the ring`);
-      assert.notEqual(ringHover.halo, "none", `${tag}: on the ring, its halo`);
-      assert.equal(ringHover.bg, restLook.bg, `${tag}: and the row as at rest`);
+      // Hover: on a ring that goes somewhere it grows a little in place (its strokes thicken under
+      // reduced motion), no halo, the row as at rest; on the row, the row darkens and the ring stays.
+      await rowOf("yn24").scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+      const look = (id) => rowOf(id).evaluate((r) => {
+        const g = r.querySelector(".island-ringbox"), b = g.getBoundingClientRect(), c = r.querySelector(".island-ring circle:not(.r-track)");
+        return { bg: getComputedStyle(r).backgroundColor, border: getComputedStyle(r).borderTopColor, transform: getComputedStyle(g).transform,
+          centre: [Math.round((b.left + b.right) * 5) / 10, Math.round((b.top + b.bottom) * 5) / 10], stroke: parseFloat(getComputedStyle(c).strokeWidth),
+          halo: getComputedStyle(g, "::after").content };
+      });
+      const scale = (t) => (t === "none" ? 1 : Number(/matrix\(([^,]+)/.exec(t)?.[1] ?? NaN));
+      const rest = await look("yn24"), rest5 = await look("dev5");
+      await ringOf("yn24").hover();
+      await page.waitForTimeout(motion ? 250 : 50);
+      const ring = await look("yn24");
+      await rowOf("yn24").locator(".agent-line-one").hover({ force: true });
+      const row = await look("yn24");
+      await rowOf("dev5").locator(".island-ringbox").hover({ force: true });
+      const plain = await look("dev5");
+      report.hover = { ...(report.hover ?? {}), [tag]: { rest, ring, row, rest5, plain } };
+      assert.equal(ring.halo, "none", `${tag}: no halo`);
+      assert.equal(ring.bg, rest.bg, `${tag}: on the ring the row stays as it was`);
+      assert.deepEqual(ring.centre, rest.centre, `${tag}: the ring stays in place`);
+      if (motion) assert.ok(scale(ring.transform) >= 1.1 && scale(ring.transform) <= 1.15 && ring.stroke === rest.stroke, `${tag}: the ring grows a little: ${ring.transform}`);
+      else assert.ok(scale(ring.transform) === 1 && ring.stroke > rest.stroke + 0.5, `${tag}: under reduced motion its strokes thicken instead: ${rest.stroke} → ${ring.stroke}`);
+      assert.ok(row.bg !== rest.bg && row.border === rest.border && scale(row.transform) === 1 && row.stroke === rest.stroke, `${tag}: on the row, the row darkens, no border, the ring stays: ${JSON.stringify(row)}`);
+      assert.ok(plain.bg !== rest5.bg && scale(plain.transform) === 1 && plain.stroke === rest5.stroke, `${tag}: a ring that is no button doesn't react; the row under it darkens: ${JSON.stringify([rest5, plain])}`);
       if (theme === "light") {
-        await rowOf("dev5").locator(".agent-island").hover();
+        await ringOf("yn24").hover();
+        await page.waitForTimeout(motion ? 250 : 50);
         await list.screenshot({ path: join(output, `${tag}-3-ring-hover.png`) });
-        await rowOf("dev5").locator(".agent-line-one").hover({ force: true });
+        await rowOf("yn24").locator(".agent-line-one").hover({ force: true });
         await list.screenshot({ path: join(output, `${tag}-3-row-hover.png`) });
         report.screenshots.push(`${tag}-3-ring-hover`, `${tag}-3-row-hover`);
       }
       await page.mouse.move(0, 0);
 
-      // The keyboard: the row's link, then the ring's button; Enter steps, Escape closes.
+      // The keyboard: the row's link, then the ring, labelled with where it goes; Enter goes there. A plain ring isn't reached.
       await rowOf("yn30").locator(".agent-select").focus();
       await page.keyboard.press("Tab");
-      const focused = await page.evaluate(() => [document.activeElement?.className, document.activeElement?.getAttribute("aria-expanded"), document.activeElement?.closest("article")?.dataset.agentId]);
-      assert.deepEqual(focused, ["agent-island", "false", "yn30"], `${tag}: Tab goes from the row's link to its ring`);
+      const focused = await page.evaluate(() => [document.activeElement?.className, document.activeElement?.getAttribute("aria-label"), document.activeElement?.closest("article")?.dataset.agentId]);
+      assert.deepEqual(focused, ["agent-island", words.go.yn30, "yn30"], `${tag}: Tab goes from the row's link to its ring`);
+      const n = (await tasks()).length;
       await page.keyboard.press("Enter");
-      await waitForm("yn30", "row");
+      await page.waitForFunction((n) => window.__tasks.length > n, n, { timeout: 5_000 });
       await page.keyboard.press("Escape");
-      await waitForm("yn30", "ring");
-      check(`${tag}: hover darkens the row only, the ring shows its halo; the ring's hit area is 28 px; Tab reaches the row and then the ring, Enter steps, Escape closes`);
+      await page.getByRole("dialog").first().waitFor({ state: "detached", timeout: 5_000 });
+      await rowOf("dev5").locator(".agent-select").focus();
+      await page.keyboard.press("Tab");
+      assert.equal(await page.evaluate(() => !!document.activeElement?.closest(".agent-island")), false, `${tag}: a ring that is no button isn't in the Tab order`);
+      check(`${tag}: each ring goes to its place (its task, its unread), never elsewhere; its hit area is 28 px; hover grows it a little in place${motion ? "" : " (thicker strokes under reduced motion)"}, no halo, and darkens only the row elsewhere; Tab reaches the row and then the ring, Enter goes`);
     } else {
-      check(`${tag}: on touch the ring's hit area is 40 px and a tap steps the island`);
+      check(`${tag}: on touch the ring's hit area is 40 px and a tap goes to its place`);
     }
 
-    if (motion) {
-      // Out of the ring and back into it: the outline's first and last frames are the ring's circle.
-      const frames = async () => page.evaluate(() => document.getAnimations()
-        .filter((a) => a.effect?.target?.classList?.contains("island-shell") && a.effect.target.closest('[data-agent-id="yn30"]'))
-        .map((a) => { const k = a.effect.getKeyframes(); return [k[0].width, k.at(-1).width]; }));
-      await rowOf("yn30").locator(".agent-island").click();
-      const opening = await frames();
-      await waitForm("yn30", "row");
-      await page.waitForTimeout(400);
-      await page.keyboard.press("Escape");
-      await page.waitForTimeout(60);
-      const closing = await frames();
-      await waitForm("yn30", "ring");
-      report.motion = { opening, closing };
-      assert.ok(opening.some(([from]) => from === "22px"), `${tag}: the outline grows out of the ring (${JSON.stringify(opening)})`);
-      assert.ok(closing.some(([, to]) => to === "22px"), `${tag}: and shrinks back into it (${JSON.stringify(closing)})`);
-      check(`${tag}: with motion the outline starts as the ring's circle and ends in it`);
-    } else {
-      assert.equal(await listAnimations(), 0, `${tag}: under reduced motion nothing in the list animates`);
-    }
-
-    // A new message: the pill grows left out of the ring, then shrinks back (the list is read again within 5 s).
+    // A new message: the pill grows left out of the ring over line one's end (the words keep their width), then shrinks back (the list is read again within 5 s).
     {
+      const width = await rowOf("dev5").locator(".agent-line-one").evaluate((el) => Math.round(el.getBoundingClientRect().width));
       agents = agents.map((a) => (a.id === "dev5" ? { ...a, unreadCount: 1 } : a));
-      await page.waitForFunction(() => document.querySelector('.agent-list article[data-agent-id="dev5"]')?.dataset.form === "pill", null, { timeout: 10_000 });
+      await page.waitForFunction(() => document.querySelector('.agent-list article[data-agent-id="dev5"]')?.dataset.form === "pill", null, { timeout: 10_000, polling: "raf" });
+      const opening = await rowOf("dev5").evaluate((r) => r.querySelector(".island-shell").getAnimations().map((a) => { const k = a.effect.getKeyframes(); return [k[0].width, k.at(-1).width]; }));
       const pill = await rowOf("dev5").evaluate((r) => {
         const p = r.querySelector(".island-pill").getBoundingClientRect(), g = r.querySelector(".island-ringbox").getBoundingClientRect(), s = r.querySelector(".island-shell").getBoundingClientRect();
-        return { text: r.querySelector(".island-pill").textContent, leftOfRing: p.right <= g.left + 0.5, shell: s.left < p.left && s.right >= g.right && s.height <= 30 };
+        return { text: r.querySelector(".island-pill").textContent, leftOfRing: p.right <= g.left + 0.5, shell: s.left < p.left && s.right >= g.right && s.height <= 30,
+          inRow: p.left >= r.getBoundingClientRect().left + 4, width: Math.round(r.querySelector(".agent-line-one").getBoundingClientRect().width) };
       });
-      assert.deepEqual(pill, { text: lang === "zh" ? "新消息" : "New message", leftOfRing: true, shell: true }, `${tag}: the pill left of the ring, in its outline`);
+      assert.deepEqual(pill, { text: lang === "zh" ? "1 条新消息" : "1 new message", leftOfRing: true, shell: true, inRow: true, width }, `${tag}: the pill left of the ring, in its outline, over line one's end`);
       if (theme === "light" && !phone) await shot(list, `${tag}-4-pill`);
-      await page.waitForFunction(() => document.querySelector('.agent-list article[data-agent-id="dev5"]')?.dataset.form === "ring", null, { timeout: 6_000 });
-      check(`${tag}: a new message grows the pill left out of the ring, and it goes back after about 3 s`);
+      await page.waitForFunction(() => document.querySelector('.agent-list article[data-agent-id="dev5"]')?.dataset.form === "ring", null, { timeout: 6_000, polling: "raf" });
+      const closing = await rowOf("dev5").evaluate((r) => r.querySelector(".island-shell").getAnimations().map((a) => { const k = a.effect.getKeyframes(); return [k[0].width, k.at(-1).width]; }));
+      report.motion = { ...(report.motion ?? {}), [tag]: { opening, closing } };
+      if (motion) {
+        assert.ok(opening.some(([from]) => from === "22px"), `${tag}: the outline grows out of the ring (${JSON.stringify(opening)})`);
+        assert.ok(closing.some(([, to]) => to === "22px"), `${tag}: and shrinks back into it (${JSON.stringify(closing)})`);
+      } else assert.equal(await listAnimations(), 0, `${tag}: under reduced motion nothing in the list animates`);
+      check(`${tag}: a new message grows the pill left out of the ring over line one's end, and it goes back after about 3 s${motion ? "; the outline starts as the ring's circle and ends in it" : ""}`);
     }
-    // A click on the row opens the conversation and changes no island: a
-    // standing Agent's name, and the text of a row island. Last, as a
-    // phone then shows the conversation in the list's place.
-    for (const [id, part] of [["dev5", ".agent-line-one"], ["yn21", ".agent-row-meta"]]) {
-      const before = reads[id] ?? 0;
-      if (phone) await rowOf(id).locator(part).tap({ force: true });
-      else await rowOf(id).locator(part).click({ force: true });
-      for (let n = 0; n < 60 && (reads[id] ?? 0) <= before; n++) await page.waitForTimeout(50);
-      assert.ok((reads[id] ?? 0) > before, `${tag}: a click on ${id}'s row (${part}) opens its conversation`);
-      if (phone) break;
-      assert.equal(await formOf(id), EXPECTED[id][1], `${tag}: ${id}'s island is as it was`);
+
+    if (!phone) {
+      // A click on the row opens the conversation and changes no island: a
+      // standing Agent's name, and the text of a row island.
+      for (const [id, part] of [["dev5", ".agent-line-one"], ["yn21", ".agent-row-meta"]]) {
+        const before = reads[id] ?? 0;
+        await rowOf(id).locator(part).click({ force: true });
+        for (let n = 0; n < 60 && (reads[id] ?? 0) <= before; n++) await page.waitForTimeout(50);
+        assert.ok((reads[id] ?? 0) > before, `${tag}: a click on ${id}'s row (${part}) opens its conversation`);
+        assert.equal(await formOf(id), EXPECTED[id][1], `${tag}: ${id}'s island is as it was`);
+      }
+      check(`${tag}: a click on the row opens the conversation, a row island's text included, and leaves the island as it was`);
     }
-    check(`${tag}: a click on the row opens the conversation, a row island's text included, and leaves the island as it was`);
+
+    // Needs you: its ring goes to its item in Home's Needs you, highlighted; never its conversation. Last, as a phone then shows Home.
+    {
+      const before = reads.yn21 ?? 0;
+      await press(ringOf("yn21"));
+      await page.waitForFunction(() => document.activeElement?.dataset?.needsYou === "approval:q1", null, { timeout: 8_000 });
+      await page.locator('[data-needs-you="approval:q1"][data-home-highlight]').waitFor({ timeout: 5_000 });
+      assert.equal(reads.yn21 ?? 0, before, `${tag}: the needs-you ring never opened the conversation`);
+      if (theme === "light") await page.screenshot({ path: join(output, `${tag}-5-home-needs-you.png`) }), report.screenshots.push(`${tag}-5-home-needs-you`);
+      check(`${tag}: the needs-you ring goes to its item in Home's Needs you, highlighted`);
+    }
   } catch (error) {
     await page.screenshot({ path: join(output, `${tag}-failure.png`) }).catch(() => {});
     throw error;

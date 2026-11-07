@@ -1,9 +1,8 @@
-/* The Agent row's island (AgentIsland.tsx, T-43 灵动环 v10.1): a ring at
+/* The Agent row's island (AgentIsland.tsx, T-43 灵动环 v10.2): a ring at
    the row's top right that is the state itself, drawn in strokes only; one
    outline that grows out of the ring into a pill or the whole row and
-   shrinks back into it; the card, the row island one detail line and its
-   buttons taller. Each state has a stroke of its own, so its colour is never
-   the only signal. */
+   shrinks back into it. Each state has a stroke of its own, so its colour is
+   never the only signal. */
 :root {
   --island-quiet: #858d7e;
   --island-working: #5c8550;
@@ -31,14 +30,14 @@
 .island-ringbox:is([data-ring="green"], [data-ring="done"], [data-ring="handed"]) { color: var(--island-ok); }
 .island-ringbox[data-ring="red"] { color: var(--island-error); }
 
-/* The ring's button: as big as the ring, its hit area wider. */
+/* The ring: a button where it goes somewhere of its own, else part of the
+   row (no pointer, no hover: the row's click is its). */
 .agent-island {
   position: relative;
   z-index: 1;
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   box-sizing: border-box;
   margin: 0;
   padding: 0;
@@ -47,42 +46,46 @@
   background: none;
   color: var(--tone);
   font: inherit;
+}
+span.agent-island {
+  pointer-events: none;
+}
+button.agent-island {
   cursor: pointer;
 }
-/* 28 px with a mouse, 40 px on touch; nothing drawn. */
-.agent-island::before {
+/* Its hit area: 28 px with a mouse, 40 px on touch; nothing drawn. */
+button.agent-island::before {
   content: "";
   position: absolute;
   inset: -3px;
   border-radius: 999px;
 }
 @media (pointer: coarse) {
-  .agent-island::before {
+  button.agent-island::before {
     inset: -9px;
   }
 }
-.agent-island:focus-visible {
-  outline: none;
+button.agent-island:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 3px;
 }
 .island-ringbox {
   position: relative;
   flex: none;
   width: 22px;
   height: 22px;
+  transition: transform 120ms ease-out;
 }
-/* The ring's own cue under the pointer or focus, apart from the row's
-   darker background. */
-.agent-island:is(:hover, :focus-visible) .island-ringbox::after {
-  content: "";
-  position: absolute;
-  inset: -5px;
-  z-index: -1;
-  border-radius: 50%;
-  background: color-mix(in srgb, currentColor 22%, transparent);
-  box-shadow: 0 0 0 1.5px color-mix(in srgb, currentColor 45%, transparent);
+/* Under the pointer or focus the ring grows a little, in place (the user,
+   v10.2: no halo); under reduced motion its strokes thicken instead. */
+button.agent-island:is(:hover, :focus-visible) .island-ringbox {
+  transform: scale(1.12);
 }
-.agent-island:focus-visible .island-ringbox::after {
-  box-shadow: 0 0 0 2px var(--focus, #9caa76);
+@media (prefers-reduced-motion: reduce) {
+  button.agent-island:is(:hover, :focus-visible) .island-ringbox {
+    transform: none;
+    --thick: 0.9px;
+  }
 }
 .island-ring {
   display: block;
@@ -96,24 +99,24 @@
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.island-ring .r-idle { stroke-width: 1.5; opacity: 0.55; }
-.island-ring .r-track { stroke-width: 1.5; opacity: 0.22; }
-.island-ring .r-arc { stroke-width: 2.4; }
-.island-ring .r-faint { stroke-width: 1.4; opacity: 0.35; }
-.island-ring :is(.r-rounds, .r-inner) { stroke-width: 1.6; }
-.island-ring .r-breathe { stroke-width: 2.6; animation: island-breathe 2.4s ease-in-out infinite; }
-.island-ring .r-dots { stroke-width: 2.4; }
-.island-ring .r-dashed { stroke-width: 1.6; opacity: 0.75; }
-.island-ring :is(.r-full, .r-mark) { stroke-width: 2.2; }
-.island-ring .r-archived { stroke-width: 1.2; }
-.island-ring .r-box { stroke-width: 1.5; opacity: 0.75; }
+.island-ring .r-idle { stroke-width: calc(1.5px + var(--thick, 0px)); opacity: 0.55; }
+.island-ring .r-track { stroke-width: calc(1.5px + var(--thick, 0px)); opacity: 0.22; }
+.island-ring .r-arc { stroke-width: calc(2.4px + var(--thick, 0px)); }
+.island-ring .r-faint { stroke-width: calc(1.4px + var(--thick, 0px)); opacity: 0.35; }
+.island-ring :is(.r-rounds, .r-inner) { stroke-width: calc(1.6px + var(--thick, 0px)); }
+.island-ring .r-breathe { stroke-width: calc(2.6px + var(--thick, 0px)); animation: island-breathe 2.4s ease-in-out infinite; }
+.island-ring .r-dots { stroke-width: calc(2.4px + var(--thick, 0px)); }
+.island-ring .r-dashed { stroke-width: calc(1.6px + var(--thick, 0px)); opacity: 0.75; }
+.island-ring :is(.r-full, .r-mark) { stroke-width: calc(2.2px + var(--thick, 0px)); }
+.island-ring .r-archived { stroke-width: calc(1.2px + var(--thick, 0px)); }
+.island-ring .r-box { stroke-width: calc(1.5px + var(--thick, 0px)); opacity: 0.75; }
 .island-ring .r-spin { transform-origin: 12px 12px; animation: island-turn 1.4s linear infinite; }
 .island-ring .r-march { transform-origin: 12px 12px; animation: island-turn 9s linear infinite; }
 @keyframes island-turn {
   to { transform: rotate(360deg); }
 }
 @keyframes island-breathe {
-  50% { stroke-width: 3.4; }
+  50% { stroke-width: 3.4px; }
 }
 /* Unread: a count outside the ring's top left, clear of its stroke. */
 .island-notch {
@@ -134,24 +137,30 @@
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
-/* A passing event: a few words, left of the ring, in the pill's outline. */
+/* A passing event: a few words left of the ring, floating over line one's
+   end in the pill's outline, so the row never changes height for them and
+   the ring's right edge stays. */
 .island-pill {
-  color: var(--tone);
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: calc(100% + 7px);
+  transform: translateY(-50%);
+  color: var(--pill-tone);
   font-size: calc(9px + var(--font-adjust, 3px));
   font-weight: 700;
+  line-height: 1;
   white-space: nowrap;
 }
-.island-ringbox:is([data-ring="green"], [data-ring="red"]) ~ .island-pill,
-.agent-island:has(.island-ringbox[data-ring="green"]) .island-pill {
-  color: var(--island-ok);
-}
-.agent-island:has(.island-ringbox[data-ring="red"]) .island-pill {
-  color: var(--island-error);
-}
+.agent-row { --pill-tone: var(--tone); }
+.agent-row:has(.island-pill[data-tone="ok"]) { --pill-tone: var(--island-ok); }
+.agent-row:has(.island-pill[data-tone="bad"]) { --pill-tone: var(--island-error); }
+.agent-row:has(.island-pill[data-tone="info"]) { --pill-tone: var(--island-unread); }
+.agent-row:has(.island-pill[data-tone="working"]) { --pill-tone: var(--island-working); }
 
 /* The outline: under the row's content, the row's own box while the row is
-   the island, a pill's box (set by the script) for a passing event, and
-   nothing at the ring, where it starts and ends. */
+   the island, a pill's box (set by the script) over line one's end for a
+   passing event, and nothing at the ring, where it starts and ends. */
 .island-shell {
   position: absolute;
   z-index: -1;
@@ -163,65 +172,29 @@
   pointer-events: none;
   opacity: 0;
 }
-.agent-row:is([data-form="pill"], [data-form="row"], [data-form="card"]) > .island-shell {
+.agent-row:is([data-form="pill"], [data-form="row"]) > .island-shell {
   opacity: 1;
 }
-.agent-row[data-form="pill"] > .island-shell[style] {
-  inset: auto;
-}
-.agent-row:is([data-form="pill"], [data-form="ring"]) > .island-shell:not([style]) {
-  opacity: 0;
-}
-
-/* The card: its detail line, then its buttons across the row. */
-.agent-row-more {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--ink);
-  font-size: calc(9px + var(--font-adjust, 3px));
-  line-height: 1.5;
-}
-.island-actions {
-  position: relative;
+.agent-row[data-form="pill"] > .island-shell {
   z-index: 1;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 4px;
+  border-color: var(--pill-tone);
+  background: color-mix(in srgb, var(--pill-tone) 12%, var(--paper));
 }
-.island-actions > button {
-  padding: 1px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--paper);
-  color: var(--ink);
-  font: inherit;
-  font-size: calc(8px + var(--font-adjust, 3px));
-  font-weight: 700;
-  line-height: 1.6;
-  cursor: pointer;
-}
-.island-actions > button.primary {
-  border-color: var(--tone);
-  background: var(--tone);
-  color: var(--paper);
-}
-.island-actions > button:focus-visible {
-  outline: 2px solid var(--focus, #9caa76);
-  outline-offset: 1px;
+.agent-row[data-form="pill"] > .island-shell:not([style]) {
+  opacity: 0;
 }
 
 /* Reduced motion: nothing turns or breathes; working's arc rests at 12
    o'clock at its length, needs you's stroke stays bold. */
 @media (prefers-reduced-motion: reduce) {
   .island-ring *,
+  .island-ringbox,
   .island-shell,
-  .agent-row-more,
-  .island-actions {
+  .island-pill {
     animation: none !important;
     transition: none !important;
   }
   .island-ring .r-breathe {
-    stroke-width: 3;
+    stroke-width: calc(3px + var(--thick, 0px));
   }
 }
