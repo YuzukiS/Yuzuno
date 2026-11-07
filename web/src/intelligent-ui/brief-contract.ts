@@ -554,7 +554,7 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   BriefBody: "The root of every section body. summary and details name some of its own children by id; see Layout below.",
   Group: "A group of components with an optional title. tone accent or muted tints its background, e.g. for a summary across the top.",
   Columns: "Lays out its children side by side, each child one column (usually a Group). widths gives their relative widths, e.g. [2, 1]; equal without it. A narrow window stacks the columns in the order given.",
-  Markdown: "GitHub-flavoured Markdown: paragraphs, lists, links, tables and fenced code or log excerpts. Raw HTML is not supported.",
+  Markdown: "GitHub-flavoured Markdown: paragraphs, lists, links, tables and fenced code or log excerpts. HTML written in it is sanitized: scripts, event handlers, images, forms, buttons, frames and styles are removed, so write Markdown, not HTML.",
   Math: "A KaTeX formula; display:true sets it on its own line.",
   Checklist: "Items with done flags.",
   Plan: "Ordered steps, each todo, doing, done or blocked.",
@@ -969,7 +969,7 @@ export function withMarkdownBody(input: unknown): unknown {
 }
 
 /** What a markdown put gives wrong before its body is built (YN-14 A3). */
-function markdownProblems(input: unknown): BriefProblem[] {
+export function markdownProblems(input: unknown): BriefProblem[] {
   if (!object(input)) return [];
   const found: BriefProblem[] = [];
   const { markdown, size, body } = input;
@@ -1835,8 +1835,45 @@ const componentLine = (type: BriefComponent) => {
   return formatComponentGuide(type, sentProps(type), BRIEF_COMPONENT_DESCRIPTIONS[type], spaced(notes));
 };
 
+/**
+ * The components brief_update's description names with their props (YN-14
+ * A4), so that an ordinary card needs no brief_guide read; the rest are in
+ * brief_guide content. A component added later is described there only.
+ */
+export const BRIEF_DESCRIBED_COMPONENTS = [
+  "Markdown", "Group", "Columns", "Plan", "Checklist", "Findings", "Metrics", "LiveRefs", "Table", "Attachments",
+] as const satisfies readonly BriefComponent[];
+/** Props the description's line leaves to brief_guide: rarely needed in a card. */
+const QUIET_PROPS = new Set(["sourceIds", "selectable"]);
+
+/** Props as the description shows them: `{a, b?, c: x|y, d[{…}]}`, two levels, no counts. */
+function compactProps(schema: Json, depth: number): string {
+  const properties = (schema.properties ?? {}) as Record<string, Json>;
+  const required = new Set((schema.required ?? []) as string[]);
+  const parts = Object.entries(properties).filter(([name]) => !QUIET_PROPS.has(name)).map(([name, value]) => {
+    const key = `${name}${required.has(name) || value.default !== undefined ? "" : "?"}`;
+    const options = Array.isArray(value.anyOf) ? (value.anyOf as Json[]).filter((option) => option.type !== "null") : [value];
+    const one = options.length === 1 ? options[0] : undefined;
+    if (!one) return key;
+    if (Array.isArray(one.enum)) return `${key}: ${(one.enum as unknown[]).join("|")}`;
+    const items = one.items as Json | undefined;
+    if (one.type === "array") return items?.type === "object" && items.properties && depth > 0 ? `${key}[${compactProps(items, depth - 1)}]` : `${key}[]`;
+    return one.type === "object" && one.properties && depth > 0 ? `${key}${compactProps(one, depth - 1)}` : key;
+  });
+  return `{${parts.join(", ")}}`;
+}
+
+/** The description's component line, generated so it never drifts from the catalog. */
+export const briefComponentHints = () =>
+  BRIEF_DESCRIBED_COMPONENTS.map((type) => `${type}${compactProps(jsonSchema(sentProps(type)), 2)}`).join(" ");
+
 /** Worked examples: each is a valid `put` change. */
 export const BRIEF_EXAMPLES = {
+  // The shortest card: text only (YN-14 A3), at the size its author names.
+  note: {
+    op: "put", key: "release", kind: "report", title: "core.25 is out", size: "small",
+    markdown: "**core.25** is installed. The two interface regressions you reported are fixed in core.26.",
+  },
   image: {
     op: "put", key: "preview", kind: "report", title: "Layout preview",
     attachments: [{ name: "layout.png", path: "/home/me/run/layout.png" }],
@@ -2348,18 +2385,18 @@ export const BRIEF_TOOL_DESCRIPTIONS = {
     `keys: omit for every section with its body; [] for an index of the sections without bodies; [key, ...] for those sections in full. ` +
     `Pass its version to brief_update as expectedVersion. projectId defaults to your own Project. Nothing requires reading or updating the Brief each turn. Formats: brief_guide.`,
   brief_update:
-    `Write Brief changes when something changed; nothing requires a call each turn. Ask-only members may write only their own Asks. Pass expectedVersion (from ` +
-    `brief_get) and a new requestId (reuse it only to retry). Send changes:[...] (noChange:true ` +
-    `changes nothing). Changes: put {op:"put", key, kind, title, body|markdown, ask?, status?, time?, attachments?} ` +
-    `creates or replaces a section you own (markdown: one Markdown block, attachments shown after it); edit {op:"edit", key, elements:{<id>: block}} replaces only those ` +
-    `blocks; patch {op:"patch", key, patch:[RFC 6902 ops on the body, e.g. {op:"replace", path:"/elements/refs/props/items/3/note", value}]} ` +
-    `changes single values; resolve {op:"resolve", key} resolves your ask; remove {op:"remove", key} ` +
-    `removes your section; claim {op:"claim", key} takes an orphaned section (change it in a later call). ` +
-    `key is topic or topic/sub ` +
-    `(a-z, 0-9, -); add to another Agent's section with a topic/sub key of your own. kind ask needs ask {question, reply: ` +
-    `options, freeText, form or choice}; kind status needs status {asOf, validFor}. body is {root, elements} ` +
-    `with a BriefBody root. Small slips are repaired and listed in repairs. A rejection lists problems {code, path, reason, guide}: fix them and retry with a new ` +
-    `requestId; on version_conflict merge the latest it returns. validateOnly:true pre-checks without writing. ` +
+    `Write Brief changes when something changed; nothing requires a call each turn. Ask-only members may write only their own Asks. ` +
+    `Pass expectedVersion from brief_get and a new requestId (reuse it only to retry); noChange:true changes nothing. ` +
+    `Changes: put {op:"put", key, kind, title, body|markdown, ask?, status?, time?, attachments?} creates or replaces your section ` +
+    `(markdown: its text as one block); edit {op:"edit", key, elements:{<id>: block}} replaces only those blocks; ` +
+    `patch {op:"patch", key, patch:[RFC 6902 ops on the body, e.g. {op:"replace", path:"/elements/refs/props/items/3/note", value}]} ` +
+    `changes single values; resolve {op:"resolve", key} resolves your ask; remove {op:"remove", key} removes your section; ` +
+    `claim {op:"claim", key} takes an orphaned one (change it in a later call). key is topic or topic/sub (a-z, 0-9, -); ` +
+    `add to another Agent's topic with a sub-key of your own. kind ask needs ask {question, reply: options[{id, label}], ` +
+    `freeText, form or choice}; kind status needs status {asOf, validFor}. body is {root, elements} with a BriefBody root; ` +
+    `elements are {type, props, children?}: ${/* @__PURE__ */ briefComponentHints()}; the rest in brief_guide content. ` +
+    `Small slips are repaired and listed in repairs. A rejection lists problems {code, path, reason, guide}: fix them and ` +
+    `retry with a new requestId; on version_conflict merge the latest it returns. validateOnly:true pre-checks without writing. ` +
     `Content never executes actions. Formats: brief_guide.`,
   brief_guide:
     `The Project Brief format guide, generated from the contract: sections and their kinds, ask replies, body components ` +

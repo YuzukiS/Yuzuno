@@ -335,7 +335,7 @@ export function NotificationSettings() {
           {current}
         </span>
       </header>
-      <div className="settings-group">
+      <div className="settings-group appearance-group">
         <div className="settings-row">
           <span className="settings-row-main">
             <span className="settings-row-title">
@@ -359,6 +359,8 @@ export function NotificationSettings() {
             </span>
             <input
               type="checkbox"
+              role="switch"
+              className="settings-toggle"
               checked={prefs.enabled && (reachesSystem(access) || offInMacos)}
               disabled={asking}
               onChange={(event) => void turn(event.target.checked)}
@@ -368,7 +370,7 @@ export function NotificationSettings() {
       </div>
       <PushSettings prefs={prefs} host={pushHost} />
       {(usable || offInMacos || pushes) && (
-        <div className="settings-group" aria-label={t.what}>
+        <div className="settings-group appearance-group" aria-label={t.what}>
           {notificationCategories.map((kind) => (
             <label className="settings-row" key={kind}>
               <span className="settings-row-main">
@@ -377,6 +379,8 @@ export function NotificationSettings() {
               </span>
               <input
                 type="checkbox"
+                role="switch"
+                className="settings-toggle"
                 checked={prefs.categories[kind]}
                 onChange={(event) => {
                   const on = event.target.checked;
@@ -390,19 +394,19 @@ export function NotificationSettings() {
               <span className="settings-row-title">{t.preview}</span>
               <span className="settings-row-help">{t.previewHelp}</span>
             </span>
-            <input type="checkbox" checked={prefs.preview} onChange={(event) => save({ preview: event.target.checked })} />
+            <input type="checkbox" role="switch" className="settings-toggle" checked={prefs.preview} onChange={(event) => save({ preview: event.target.checked })} />
           </label>
           <label className="settings-row">
             <span className="settings-row-main">
               <span className="settings-row-title">{t.mute}</span>
               <span className="settings-row-help">{t.muteHelp}</span>
             </span>
-            <input type="checkbox" checked={prefs.muted} onChange={(event) => save({ muted: event.target.checked })} />
+            <input type="checkbox" role="switch" className="settings-toggle" checked={prefs.muted} onChange={(event) => save({ muted: event.target.checked })} />
           </label>
         </div>
       )}
       {usable && (
-        <div className="settings-group">
+        <div className="settings-group appearance-group">
           <div className="settings-row">
             <span className="settings-row-main">
               <span className="settings-row-title">{t.test}</span>
@@ -430,7 +434,7 @@ export function NotificationSettings() {
         onRetry={() => retryNotificationPrefsWrite()}
         onRestoreDefaults={() => restoreDefaultNotificationPrefs()}
       />
-      <div className="settings-group">
+      <div className="settings-group appearance-group">
         <div className="settings-row">
           <span className="settings-row-main">
             <span className="settings-row-title">{t.inside}</span>
