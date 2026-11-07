@@ -462,6 +462,44 @@ button.home-card-image-open:focus-visible .brief-image-zoom {
   color: var(--home-ink-2);
   font-size: calc(8.5px + var(--font-adjust, 3px));
 }
+/* A desk drawn as its lead claim on a wide or large card (YN-7, DeskCardClaim):
+   its question, the claim with its status, the interval of the row it leads with,
+   then what else the page has. Rows take the narrow layout: label and value on a
+   line, the track under them. */
+.home-card-frame .research-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  text-align: start;
+}
+.home-card-frame .research-card-question,
+.home-card-frame .research-card-plot-title,
+.home-card-frame .research-card-more {
+  margin: 0;
+  color: var(--home-ink-2);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.home-card-frame .research-card-claim {
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  line-height: 1.35;
+}
+.home-card-frame .research-card-plot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.home-card-frame .research-card .research-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  padding: 2px 0;
+}
+.home-card-frame .research-card .research-track {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
 
 .home-summary-foot {
   display: flex;

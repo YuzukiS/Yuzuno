@@ -393,6 +393,10 @@
 .research-described {
   color: var(--text-secondary, var(--muted));
 }
+/* Said once above the desk's list of sources: whose locations and revisions they are (YN-7). */
+.research-described-note {
+  margin: 0 0 6px;
+}
 .research-tag,
 .research-chip,
 .research-lines {

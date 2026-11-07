@@ -21,14 +21,17 @@ export const LARGE_METRICS = 6;
  * - `image`: one image attachment, fitted whole: its snapshot when Core keeps
  *   one (`kept`, taken at `takenAt`), else only named, as referenced, with
  *   nothing to load.
- * - `desk`: a research desk's question and how many claims and plots it
- *   has; no claim, whose strength and conditions it would leave behind.
+ * - `desk`: a research desk's question, how many claims and plots it has,
+ *   and its lead claim (the first; YN-7). A wide or large card draws that
+ *   claim with its strength, the author's status, and the interval of the
+ *   row it leads with (DeskCardClaim); the conditions it holds under are the
+ *   summary's own, beside it. A small card names the desk in one line.
  */
 export type CardFigure =
   | { kind: "block"; id: string }
   | { kind: "table"; id: string; title: string; columns: { key: string; label: string }[]; rows: { id: string; cells: Record<string, unknown> }[]; totalRows: number; totalColumns: number }
   | { kind: "image"; id: string; name: string; caption: string | null; kept: boolean; takenAt: string | null }
-  | { kind: "desk"; id: string; title: string; claims: number; plots: number };
+  | { kind: "desk"; id: string; title: string; claims: number; plots: number; lead: { id: string; title: string; status: string } | null };
 
 /**
  * What a report or status card says on Home (T-18, Lead 2270): only a
@@ -80,7 +83,10 @@ export function figureOf(section: Section, id: string): CardFigure | null {
   }
   if (node.type === "ResearchDesk") {
     const count = (value: unknown) => (Array.isArray(value) ? value.length : 0);
-    return { kind: "desk", id, title: text(props.title), claims: count(props.claims), plots: count(props.plots) };
+    const claims = (Array.isArray(props.claims) ? props.claims : []) as { id?: unknown; title?: unknown; status?: unknown }[];
+    const first = claims[0];
+    const lead = first && typeof first.id === "string" ? { id: first.id, title: text(first.title), status: text(first.status) } : null;
+    return { kind: "desk", id, title: text(props.title), claims: claims.length, plots: count(props.plots), lead };
   }
   return null;
 }
