@@ -371,8 +371,6 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// A deleted Agent's turn records and receipts go with it. Its sections
-/// stay, owned by a deleted Agent, for another Agent of the Project to claim.
 /// A released executor's live sections become `to`'s, as a claim makes
 /// them (executor_archiving.rs, T-36 S2): in each Project the Brief moves on
 /// as a write of exactly those keys, recorded like any other (writes.rs), so
@@ -403,6 +401,8 @@ pub(crate) fn hand_over(db: &Connection, from: &str, to: &str, name: &str) -> Re
     Ok(())
 }
 
+/// A deleted Agent's turn records and receipts go with it. Its sections
+/// stay, owned by a deleted Agent, for another Agent of the Project to claim.
 pub(crate) fn delete_agent(db: &Connection, id: &str) -> Result<()> {
     db.execute("DELETE FROM project_brief_turns WHERE agent_id=?1", [id])?;
     db.execute("DELETE FROM project_brief_receipts WHERE agent_id=?1", [id])?;
