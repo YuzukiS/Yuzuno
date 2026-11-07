@@ -45,11 +45,11 @@ yet; 2.x keeps a note of each change in the session. The models come from
 2.x's list (`/api/model`), and interrupting is 2.x's interrupt. A session's
 status is read from the sessions 2.x lists as running (`/api/session/active`).
 
-Still to move: compaction, rewind and fork.
-- **Compaction, rewind and fork:** they still read 1.19.3's messages, so on a
-  session of 2.x's they refuse before doing anything ("not yet on OpenCode
-  2.x"). Core's tests of them use a 1.19.3 mode of its stand-in OpenCode,
-  removed once their parts land.
+Still to move: rewind and fork.
+- **Rewind and fork:** they still read 1.19.3's messages, so on a session of
+  2.x's they refuse before doing anything ("not yet on OpenCode 2.x"). Core's
+  tests of them use a 1.19.3 mode of its stand-in OpenCode, removed once
+  their parts land.
 
 So creating an OpenCode Agent stays behind the experimental switch.
 
@@ -171,6 +171,24 @@ a new one.
   - A command can't carry images: the message is refused and the draft keeps
     its text and images.
   - Any other text, an unlisted `/<name>` included, is sent as a message.
+- **Compaction:** `/compact` asks OpenCode to compact the session, as its
+  own `/compact` does, and only while the Agent and the session are idle and
+  no earlier message waits to be confirmed. OpenCode itself would take a
+  compaction while it works and run it at its next step.
+  - It runs on the Agent's chosen model and variant, made the session's
+    first as for a message; with none chosen, on the session's own model.
+    With neither, nothing is sent. OpenCode may still compact with its
+    `compaction` agent's own model; the Turn shows the summary it wrote.
+  - The Turn ends once OpenCode is idle again: completed with the summary,
+    stopped when interrupted, or failed with OpenCode's own words (nothing
+    to compact, say), though OpenCode's run itself ended well.
+  - OpenCode admits it under Yuzuno's own ID and answers at once. If that
+    answer is lost, Yuzuno looks for the compaction by its ID and never asks
+    again; one it can't find stays unknown until a reconnect reads the
+    session again.
+  - It is refused while the session holds a revert, as OpenCode would apply
+    the revert first. A compaction OpenCode starts by itself (automatic) is
+    no Turn; it only makes the context usage shown out of date.
 - **Adding to a running turn:** while OpenCode works, a message sent with
   the composer's "send while working" joins that turn. OpenCode stores it at
   once and answers it from its next step, in the same run, as its own TUI does
