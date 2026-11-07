@@ -187,15 +187,15 @@
 
 /* The ring: calm states are a small ring without a time; the rest a one-line
    island with it (and the word, except Working's dot). */
-.agent-island[data-form="ring"]:not([data-facts]):is([data-state="idle"], [data-state="offline"], [data-state="done"], [data-state="archived"]) {
+.agent-island[data-form="ring"]:not(:has(.executor-row-facts:not([hidden]))):is([data-state="idle"], [data-state="offline"], [data-state="done"], [data-state="archived"]) {
   width: var(--h);
 }
 /* A calm island that holds an executor's template or PR is a pill: its
    glyph, then them. */
-.agent-island[data-form="ring"][data-facts]:is([data-state="idle"], [data-state="offline"], [data-state="done"], [data-state="archived"]) {
+.agent-island[data-form="ring"]:has(.executor-row-facts:not([hidden])):is([data-state="idle"], [data-state="offline"], [data-state="done"], [data-state="archived"]) {
   padding: 0 8px;
 }
-.agent-island[data-form="ring"][data-facts]:is([data-state="idle"], [data-state="offline"], [data-state="done"], [data-state="archived"]) .island-dot {
+.agent-island[data-form="ring"]:has(.executor-row-facts:not([hidden])):is([data-state="idle"], [data-state="offline"], [data-state="done"], [data-state="archived"]) .island-dot {
   display: block;
 }
 .agent-island[data-form="ring"]:is([data-state="idle"], [data-state="offline"], [data-state="done"], [data-state="archived"]) .island-clock {

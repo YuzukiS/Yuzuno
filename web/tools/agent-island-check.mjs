@@ -132,11 +132,17 @@ const rows = (page) => page.locator(".agent-list article[data-agent-id]").evalua
     lineTwo: !!line,
     chipsOutside: !!r.querySelector(".executor-row-facts:not(.agent-island .executor-row-facts)"),
     pr: island?.querySelector(".executor-pr-chip")?.textContent ?? null,
-    // Which chips show: one with no room wraps onto the line the island hides.
+    // Which chips show, each whole: the island hides the ones with no room.
     chipsShown: [...(island?.querySelectorAll(".executor-row-facts > span") ?? [])].filter((c) => {
+      if (c.closest("[hidden]") || !c.getClientRects().length) return false;
       const f = c.parentElement.getBoundingClientRect(), b = c.getBoundingClientRect();
-      return b.top < f.bottom - 1 && b.right <= f.right + 0.5;
+      return b.left >= f.left - 0.5 && b.right <= f.right + 0.5;
     }).map((c) => c.textContent),
+    // A chip shown only in part would be a fragment.
+    chipCut: [...(island?.querySelectorAll(".executor-row-facts > span") ?? [])].some((c) => {
+      if (c.closest("[hidden]") || !c.getClientRects().length) return false;
+      return c.getBoundingClientRect().right > c.parentElement.getBoundingClientRect().right + 0.5;
+    }),
     state: island?.dataset.state, form: island?.dataset.form,
     width: Math.round(box?.width ?? 0), height: Math.round(box?.height ?? 0),
     lines: [shown(island?.querySelector(".island-head")), shown(island?.querySelector(".island-line"))],
@@ -188,6 +194,7 @@ async function run({ width, height, theme, motion }) {
     assert.match(seen.find((r) => r.id === "yn21").label, /Needs you · waiting 12m · Approve the design note/, `${tag}: the wait is the island's`);
     assert.match(seen.find((r) => r.id === "yn24").label, /Working · for 1h12m · handed in #681; on the next slice/, `${tag}: handed in, on its next slice`);
     assert.deepEqual(["yn24", "yn26"].map((id) => seen.find((r) => r.id === id).pr), ["#681", "#688"], `${tag}: each PR is in its island`);
+    assert.deepEqual(seen.filter((r) => r.chipCut).map((r) => r.id), [], `${tag}: no chip is shown cut`);
     // Chips show whole or not at all; a phone's full-width list has room for them.
     report.chips = { ...(report.chips ?? {}), [tag]: Object.fromEntries(seen.filter((r) => r.pr !== null || r.chipsShown.length).map((r) => [r.id, r.chipsShown])) };
     if (phone) assert.deepEqual(["yn24", "yn26"].map((id) => seen.find((r) => r.id === id).chipsShown), [["#681"], ["#688", "Design first"]], `${tag}: the chips show on a phone`);

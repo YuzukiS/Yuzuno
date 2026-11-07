@@ -1,31 +1,24 @@
 /* An executor's PR and template (ExecutorRowFacts, T-43 S2), held in its
    island beside its state since the user's review of 2026-11-07: "◐ · #681 ·
-   1h12m". They give way before the state or its clock does, each whole:
-   a chip with no room wraps onto a second line the island never shows, the
-   template before the PR. The empty first item lets even the first chip
-   wrap away. */
+   1h12m". They give way before the state or its clock does, each whole: the
+   island hides the last ones that don't fit (AgentIsland.tsx), the template
+   before the PR. */
 .agent-island .executor-row-facts {
   display: inline-flex;
   flex: 0 1 auto;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  align-items: center;
-  column-gap: 4px;
+  align-items: baseline;
+  gap: 4px;
   min-width: 0;
-  height: 1.3em;
   overflow: hidden;
   color: var(--muted);
   font-weight: 650;
-  line-height: 1.3em;
-}
-.agent-island .executor-row-facts::before {
-  content: "";
-  width: 0;
-  margin-right: -4px;
 }
 .agent-island .executor-row-facts > span {
   flex: none;
   white-space: nowrap;
+}
+.agent-island :is(.executor-row-facts, .executor-row-facts > span)[hidden] {
+  display: none;
 }
 .agent-island .executor-row-facts > span::before {
   content: "·";
@@ -42,7 +35,7 @@
   color: var(--error-ink, var(--coral));
 }
 /* The clock after them says it follows them. */
-.agent-island[data-facts] .island-clock::before {
+.agent-island .executor-row-facts:not([hidden]) ~ .island-clock::before {
   content: "·";
   margin-right: 4px;
   color: var(--muted);

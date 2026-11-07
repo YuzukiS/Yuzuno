@@ -136,6 +136,26 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
       const done = () => { el.style.overflow = ""; };
       anim.finished.then(done, done);
     }, [form, view.state, view.unread > 0, !!facts]);
+    // Its chips, each whole or not at all: after layout, the last ones that
+    // don't fit (the template before the PR) are hidden, and all are tried
+    // again when the row's width changes.
+    useLayoutEffect(() => {
+      const el = own.current;
+      const box = el?.querySelector<HTMLElement>(".executor-row-facts");
+      if (!el || !box) return;
+      const fit = () => {
+        const chips = [...box.children] as HTMLElement[];
+        box.hidden = false;
+        for (const chip of chips) chip.hidden = false;
+        for (let i = chips.length - 1; i >= 0 && box.scrollWidth > box.clientWidth + 0.5; i--) chips[i].hidden = true;
+        box.hidden = chips.every((chip) => chip.hidden);
+      };
+      fit();
+      if (typeof ResizeObserver !== "function" || !el.parentElement) return;
+      const watch = new ResizeObserver(fit);
+      watch.observe(el.parentElement);
+      return () => watch.disconnect();
+    }, [factsLabel, form, view.state, clock]);
     return (
       <button
         ref={(el) => { own.current = el; if (typeof ref === "function") ref(el); else if (ref) ref.current = el; }}
