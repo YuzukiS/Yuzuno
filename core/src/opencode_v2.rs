@@ -49,13 +49,21 @@ pub fn is_v2(messages: &Value) -> bool {
 /// hidden and required with no default, or named as a secret, and, as
 /// Yuzuno's card shows choices and text only, each a text or multiselect
 /// field. Of any other, why: it can only be declined here.
+/// Whether `text` (lowercased) names a secret as 2.x's own ACP client reads
+/// one (2.2.5 cli/src/acp/elicitation.ts `Credential`, S3 R1 e0c0291f):
+/// `password|passphrase|secret|token|api[_ -]?key|credential|private[_ -]?key`,
+/// anywhere in it. "private" alone is no secret's name.
+fn named_as_secret(text: &str) -> bool {
+    // `first`, then at most one of `_`, ` ` or `-`, then `key`.
+    let keyed = |first: &str| text.match_indices(first).any(|(at, _)| {
+        let rest = &text[at + first.len()..];
+        rest.starts_with("key") || rest.strip_prefix(['_', ' ', '-']).is_some_and(|r| r.starts_with("key"))
+    });
+    ["password", "passphrase", "secret", "token", "credential"].iter().any(|word| text.contains(word)) || keyed("api") || keyed("private")
+}
+
 fn unfillable(form: &Value) -> Option<&'static str> {
-    const SECRET: [&str; 6] = ["password", "passphrase", "secret", "token", "credential", "private"];
-    let secret = |text: &str| {
-        let text = text.to_lowercase();
-        let squeezed: String = text.chars().filter(|c| !matches!(c, '_' | '-' | ' ')).collect();
-        SECRET.iter().any(|word| text.contains(word)) || squeezed.contains("apikey") || squeezed.contains("privatekey")
-    };
+    let secret = |text: &str| named_as_secret(&text.to_lowercase());
     if !matches!(form["metadata"]["kind"].as_str(), Some("question" | "websearch.provider")) {
         return Some("not a question Yuzuno asks for OpenCode");
     }

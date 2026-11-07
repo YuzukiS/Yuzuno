@@ -454,6 +454,26 @@ fn a_form_yuzuno_cannot_fill_says_why() {
     assert!(provider.get("_opencodeUnfillable").is_none() && provider["questions"][0]["custom"] == false, "a web search provider's is filled");
 }
 
+/// A field names a secret only by 2.x's own words (2.2.5's ACP client,
+/// S3 R1 e0c0291f): "private" alone is an ordinary question's word, while
+/// a private or API key, written any of 2.x's ways, is a secret.
+#[test]
+fn a_question_asks_for_a_secret_only_in_2xs_own_words() {
+    let with = |change: &dyn Fn(&mut Value)| { let mut form = question_form("frm_1"); change(&mut form); request_of(&form) };
+    let ordinary = with(&|f: &mut Value| {
+        f["fields"][0]["title"] = "Should the repo be private?".into();
+        f["fields"][0]["description"] = "Private or public".into();
+    });
+    assert!(ordinary.get("_opencodeUnfillable").is_none(), "a question whether the repo is private asks for no secret: {ordinary}");
+    for title in ["Paste your private key", "private_key", "Private-Key", "privatekey", "Your api key", "API_KEY", "a password", "the token"] {
+        let read = with(&|f: &mut Value| f["fields"][0]["title"] = title.into());
+        let said = read["_opencodeUnfillable"].as_str().unwrap_or_default();
+        assert!(said.contains("a secret"), "{title:?} names a secret: {said:?}");
+    }
+    let spaced = with(&|f: &mut Value| f["fields"][0]["title"] = "private  key".into());
+    assert!(spaced.get("_opencodeUnfillable").is_none(), "two separators are not 2.x's `private[_ -]?key`: {spaced}");
+}
+
 /// Core's answers become 2.x's answer by field key and option value (T-61
 /// slice 2): a label is its option's value (a web search provider's differ),
 /// typed text only where the field takes it, one value for a text field, a
