@@ -85,3 +85,25 @@ test("YN-3 a whole report is decided as the card is shown: a chart a small card 
   const withImage = section({ lead: "lead" }, { lead: md("Done."), shown: files("ring.html", "ring.png") }, [kept("ring.html"), kept("ring.png", "image")]);
   assert.equal(selfContained(withImage), true, "a kept image opens in place");
 });
+
+test("YN-16 a Group of inputs named as the visual is the card's live figure, drawn whole at every size", () => {
+  const body = (visual, box, size) => ({
+    key: "scones", kind: "report", title: "Scones", version: 2, attachments: [],
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", visual, ...(size ? { size } : {}) } }, children: ["lead", "box"] },
+      lead: md("Scales with the guests."),
+      box,
+      guests: { type: "NumberInput", props: { name: "guests", label: "Guests", value: 4, min: 1, max: 12 } },
+      note: md("Two trays."),
+    } },
+  });
+  const group = (children) => ({ type: "Group", props: {}, children });
+  const live = body("box", group(["guests", "note"]));
+  assert.deepEqual(cardContent(live).figure, { kind: "interactive", id: "box" });
+  // Its author's size, or the size a figure needing width takes; it draws whole, so a card of only it and its lead is the report.
+  assert.equal(cardSize(live), "wide");
+  assert.equal(cardSize(body("box", group(["guests", "note"]), "small")), "small");
+  assert.equal(selfContained(live, cardContent(live), "small"), true);
+  // A Group without an input is not a figure: the card names none.
+  assert.equal(cardContent(body("box", group(["note"]))).figure, null);
+});

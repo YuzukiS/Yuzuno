@@ -165,7 +165,11 @@ test("what Core never repairs is refused exactly as sent", () => {
 
 test("ResearchDesk, Sources and element fields a later contract may use get no repairs", () => {
   assert.deepEqual(refused(report({ s: { type: "Sources", props: { items: [{ id: "a", label: "A", href: "https://example.com", note: "x" }] } } })), ["unknown_field"]);
-  assert.deepEqual(refused(report({ a: { type: "Markdown", props: { text: "A." }, visible: { $state: "/open" } } })), ["unknown_field"]);
+  // visible (YN-16 S1): a block's condition is checked strictly and never repaired; here it sits under the root, not in a
+  // Group, and reads a variable no input declares, so it is refused as sent.
+  assert.deepEqual(refused(report({ a: { type: "Markdown", props: { text: "A." }, visible: { $state: "/open" } } })), ["invalid_field"]);
+  assert.deepEqual(refused(report({ g: { type: "Group", props: {}, children: ["a"] }, a: { type: "Markdown", props: { text: "A.", extra: 1 }, visible: { $state: "/open" } } }, {}, ["g"])), ["unknown_field"]);
+  assert.deepEqual(refused(report({ g: { type: "Group", props: {}, children: ["a"] }, a: { type: "Markdown", props: { text: "A." }, visible: { $state: "/open" } } }, {}, ["g"])), ["invalid_field"]);
   assert.deepEqual(refused(report({ a: { type: "Widget", props: { text: "A." }, on: { press: "x" } } })), ["unknown_component"]);
 });
 

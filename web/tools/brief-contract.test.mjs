@@ -58,7 +58,13 @@ const everyComponent = {
   body: {
     root: "body",
     elements: {
-      body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources", "desk"] },
+      body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources", "desk", "inputs"] },
+      // YN-16: inputs, and a block they show only for some values.
+      inputs: { type: "Group", props: { title: "Try it" }, children: ["guests", "vegan", "view", "hint"] },
+      guests: { type: "NumberInput", props: { name: "guests", label: "Guests", value: 4, min: 1, max: 12, step: 1, unit: "people", control: "both", detail: "Scales every amount" } },
+      vegan: { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } },
+      view: { type: "Segmented", props: { name: "view", label: "View", value: 2, options: [{ value: 1, label: "One" }, { value: 2, label: "Two" }] } },
+      hint: { type: "Markdown", visible: { $and: [{ $state: "/vegan" }, { $state: "/guests", gte: 6 }] }, props: { text: "Use two trays." } },
       desk: doseStudy.body.elements.desk,
       intro: { type: "Markdown", props: { text: "# Round 12\n\n```sh\nnpm test\n```" } },
       split: { type: "Columns", props: { widths: [3, 1] }, children: ["group", "side"] },
@@ -768,4 +774,227 @@ test("YN-3 the guide says a card with no visual shows its first kept image or HT
   assert.match(content, /A card with no visual shows instead the first kept image or single HTML page \(\.html or \.htm\) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there\./);
   assert.match(content, /A report whose body holds only its lead \(one paragraph\), the card's picture and files, and its conditions is the whole report: its card has no Open report\./);
   assert.match(content, /large \(two columns, two rows: an image, a scatter chart, an HTML page\)/);
+});
+
+// YN-16 S1: inputs, the variables they declare and the visible conditions
+// that read them, as the contract checks them for Core.
+
+/** A report whose root holds one Group of these blocks. */
+const inGroup = (elements, extra = {}) => ({
+  key: "demo", kind: "report", title: "Demo", ...extra,
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: {}, children: ["box"] },
+    box: { type: "Group", props: {}, children: Object.keys(elements) },
+    ...elements,
+  } },
+});
+const guests = { type: "NumberInput", props: { name: "guests", label: "Guests", value: 4, min: 1, max: 12 } };
+const vegan = { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } };
+const view = { type: "Segmented", props: { name: "view", label: "View", value: "side", options: [{ value: "side", label: "Side" }, { value: "top", label: "Top" }] } };
+const shown = (visible) => ({ type: "Markdown", visible, props: { text: "Shown for some values." } });
+const withProps = (node, props) => ({ ...node, props: { ...node.props, ...props } });
+const codes = (found) => found.map((one) => [one.code, one.path]);
+
+test("YN-16 inputs declare variables of their own name, and visible reads them", () => {
+  for (const blocks of [
+    { guests }, { vegan }, { view },
+    { view: withProps(view, { value: 2, options: [{ value: 1, label: "1" }, { value: 2, label: "2" }, { value: 3.5, label: "3.5" }] }) },
+    { guests: withProps(guests, { step: 0.25, value: 1.75, digits: 2, prefix: "¥", control: "slider" }) },
+  ])
+    assert.ok(checkBriefSection(inGroup(blocks)), JSON.stringify(blocks));
+  for (const visible of [
+    { $state: "/vegan" }, { $state: "/vegan", not: true }, { $state: "/vegan", eq: true }, { $state: "/vegan", neq: false },
+    { $state: "/guests", eq: 4 }, { $state: "/guests", neq: 4 }, { $state: "/guests", gt: 2 }, { $state: "/guests", gte: 2 },
+    { $state: "/guests", lt: 2 }, { $state: "/guests", lte: 2, not: true }, { $state: "/view", eq: "top" }, { $state: "/view", neq: "side" },
+    [{ $state: "/vegan" }, { $state: "/guests", gte: 6 }],
+    { $and: [{ $state: "/vegan" }, { $or: [{ $state: "/view", eq: "top" }, { $state: "/guests", gt: 1 }] }] },
+    { $or: [[{ $state: "/vegan" }, { $state: "/guests", gt: 1 }], { $state: "/view", eq: "top" }] },
+    { $or: [{ $state: "/vegan" }, { $state: "/guests", lt: 3 }] },
+  ])
+    assert.ok(checkBriefSection(inGroup({ guests, vegan, view, note: shown(visible) })), JSON.stringify(visible));
+  // In a Group inside Columns, and on a Group or Columns inside a Group.
+  const nested = {
+    key: "demo", kind: "report", title: "Demo",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["cols"] },
+      cols: { type: "Columns", props: {}, children: ["left", "right"] },
+      left: { type: "Group", props: {}, children: ["vegan", "inner"] },
+      right: { type: "Group", props: {}, children: ["note"] },
+      vegan,
+      note: shown({ $state: "/vegan" }),
+      inner: { type: "Columns", visible: { $state: "/vegan", not: true }, props: {}, children: ["a", "b"] },
+      a: { type: "Markdown", props: { text: "a" } },
+      b: { type: "Group", props: {}, children: [] },
+    } },
+  };
+  assert.ok(checkBriefSection(nested));
+  // The interactive example of the guide is a valid section that uses all three kinds of condition.
+  assert.ok(checkBriefSection(BRIEF_EXAMPLES.interactive));
+});
+
+test("YN-16 a variable's name is a lower-case word, declared once, at most 16 in a section", () => {
+  for (const name of ["Guests", "1a", "a-b", "a".repeat(33), "constructor", "toString"]) {
+    const found = first(inGroup({ guests: withProps(guests, { name }) }));
+    assert.deepEqual([found.code, found.path, found.guide], ["invalid_field", "body.elements.guests.props.name", "brief_guide interactive"], name);
+  }
+  const twice = first(inGroup({ guests, again: withProps(vegan, { name: "guests" }) }));
+  assert.deepEqual([twice.code, twice.path], ["duplicate_id", "body.elements.again.props.name"]);
+  assert.match(twice.reason, /Switch "again" declares the variable "guests", which another input of this section declares too/);
+  const many = Object.fromEntries(items(17, (i) => [`v${i}`, withProps(vegan, { name: `v${i}` })]));
+  const over = first(inGroup(many));
+  assert.deepEqual([over.code, over.path], ["too_many", "body.elements"]);
+  assert.match(over.reason, /declare 17 variables; the limit is 16/);
+  assert.ok(checkBriefSection(inGroup(Object.fromEntries(items(16, (i) => [`v${i}`, withProps(vegan, { name: `v${i}` })])))));
+});
+
+test("YN-16 a NumberInput's range and a Segmented's options are checked, with the field to change", () => {
+  const number = (props) => problems(inGroup({ guests: withProps(guests, props) }));
+  assert.deepEqual(codes(number({ min: 12, max: 12 })), [["invalid_field", "body.elements.guests.props.max"]]);
+  assert.deepEqual(codes(number({ min: 5, value: 4 })), [["invalid_field", "body.elements.guests.props.value"]]);
+  assert.deepEqual(codes(number({ value: 13 })), [["invalid_field", "body.elements.guests.props.value"]]);
+  assert.deepEqual(codes(number({ step: 0 })), [["invalid_field", "body.elements.guests.props.step"]]);
+  assert.deepEqual(codes(number({ step: -1 })), [["invalid_field", "body.elements.guests.props.step"]]);
+  const steps = number({ min: 0, max: 1000, step: 0.001 });
+  assert.deepEqual(codes(steps), [["invalid_field", "body.elements.guests.props.step"]]);
+  assert.match(steps[0].reason, /takes 1000000 steps of 0.001 from min to max; the limit is 100000/);
+  assert.ok(checkBriefSection(inGroup({ guests: withProps(guests, { min: 0, max: 100, step: 0.001 }) })), "exactly 100000 steps");
+  assert.match(first(inGroup({ guests: withProps(guests, { control: "dial" }) })).reason, /control must be "stepper" or "slider" or "both"/);
+  assert.equal(first(inGroup({ guests: withProps(guests, { value: Number.NaN }) })).code, "invalid_field");
+  const segmented = (props) => problems(inGroup({ view: withProps(view, props) }));
+  const mixed = segmented({ options: [{ value: "side", label: "Side" }, { value: 2, label: "Two" }] });
+  assert.deepEqual(codes(mixed), [["invalid_field", "body.elements.view.props.options"]]);
+  assert.match(mixed[0].reason, /options mix numbers and texts/);
+  assert.deepEqual(codes(segmented({ options: [{ value: "side", label: "Side" }, { value: "side", label: "Again" }] })), [["duplicate_id", "body.elements.view.props.options"]]);
+  const missing = segmented({ value: "front" });
+  assert.deepEqual(codes(missing), [["invalid_field", "body.elements.view.props.value"]]);
+  assert.match(missing[0].reason, /value "front" is not one of its options' values: "side", "top"/);
+  assert.equal(segmented({ options: [{ value: "side", label: "Side" }] })[0].code, "invalid_field", "fewer than 2 options");
+  assert.equal(segmented({ options: items(7, (i) => ({ value: `o${i}`, label: `O${i}` })), value: "o0" })[0].code, "too_many", "more than 6 options");
+  for (const found of [...number({ min: 12, max: 12 }), ...mixed, ...missing]) assert.equal(found.guide, "brief_guide interactive");
+});
+
+test("YN-16 visible is refused unless it reads a declared variable with a value of its kind, inside a Group", () => {
+  const refused = (visible) => problems(inGroup({ guests, vegan, view, note: shown(visible) }));
+  for (const [visible, code, path, reason] of [
+    [{ $item: "x" }, "unknown_field", "body.elements.note.visible", /unknown field "\$item"; a condition is \{"\$state": "\/<variable>"/],
+    [{ $index: true }, "unknown_field", "body.elements.note.visible", /"\$index"/],
+    [{ $state: "/vegan", $bindState: "/vegan" }, "unknown_field", "body.elements.note.visible", /"\$bindState"/],
+    [{ $cond: { $state: "/vegan" } }, "unknown_field", "body.elements.note.visible", /"\$cond"/],
+    [{ $state: "vegan" }, "invalid_field", "body.elements.note.visible.$state", /"\$state": "\/" and a variable's name.*variables: \/guests, \/vegan, \/view/],
+    [{ $state: "/salt" }, "invalid_field", "body.elements.note.visible.$state", /reads "\/salt", which no input of this section declares/],
+    [{ $state: "/vegan", gt: 1 }, "invalid_field", "body.elements.note.visible.gt", /gt compares a number variable with a number; "\/vegan" is a boolean variable: use eq or neq/],
+    [{ $state: "/guests", gt: "2" }, "invalid_field", "body.elements.note.visible.gt", /"2" is not a number/],
+    [{ $state: "/guests", eq: "4" }, "invalid_field", "body.elements.note.visible.eq", /"\/guests" is a number variable; eq needs a number, not "4"/],
+    [{ $state: "/vegan", eq: "yes" }, "invalid_field", "body.elements.note.visible.eq", /boolean variable/],
+    [{ $state: "/view", eq: "front" }, "invalid_field", "body.elements.note.visible.eq", /"front" is none of its options' values: "side", "top"/],
+    [{ $state: "/view", eq: { $state: "/view" } }, "invalid_field", "body.elements.note.visible.eq", /text variable/],
+    [{ $state: "/guests" }, "invalid_field", "body.elements.note.visible", /"\/guests" is a number variable: compare it, e\.g\. \{"\$state": "\/guests", "gte": 2\}/],
+    [{ $state: "/view" }, "invalid_field", "body.elements.note.visible", /compare it, e\.g\. \{"\$state": "\/view", "eq": "side"\}/],
+    [{ $state: "/guests", gt: 1, lt: 9 }, "invalid_field", "body.elements.note.visible", /compares with gt and lt; one comparison per condition/],
+    [{ $state: "/vegan", not: false }, "invalid_field", "body.elements.note.visible.not", /not is true, to negate it, or left out/],
+    [true, "invalid_field", "body.elements.note.visible", /is a condition, e\.g\. \{"\$state": "\/vegan"\}.*not true/],
+    [[], "invalid_field", "body.elements.note.visible", /An array in "note" visible is empty/],
+    [[[{ $state: "/vegan" }]], "invalid_field", "body.elements.note.visible.0", /holds only conditions/],
+    [[{ $or: [{ $state: "/vegan" }] }], "invalid_field", "body.elements.note.visible.0", /holds only conditions/],
+    [{ $and: [] }, "invalid_field", "body.elements.note.visible.$and", /lists one or more conditions/],
+    [{ $and: [{ $state: "/vegan" }], $or: [] }, "unknown_field", "body.elements.note.visible", /has "\$or" beside it/],
+    [{ $and: [{ $or: [{ $and: [{ $state: "/vegan" }] }] }] }, "invalid_field", "body.elements.note.visible.$and.0.$or.0.$and.0", /nests deeper than 3 levels/],
+    [items(9, () => ({ $state: "/vegan" })), "too_many", "body.elements.note.visible", /has 9 conditions; the limit is 8/],
+  ]) {
+    const found = refused(visible);
+    assert.deepEqual([found[0].code, found[0].path, found[0].guide], [code, path, "brief_guide interactive"], JSON.stringify(visible));
+    assert.match(found[0].reason, reason, JSON.stringify(visible));
+  }
+  assert.ok(checkBriefSection(inGroup({ vegan, note: shown(items(8, () => ({ $state: "/vegan" }))) })), "8 conditions");
+  // Only a block inside a Group: never the root's own blocks, a Columns' columns or the root.
+  const top = section("Markdown", { text: "x" });
+  top.body.elements.it.visible = { $state: "/vegan" };
+  const onTop = first(top);
+  assert.deepEqual([onTop.code, onTop.path], ["invalid_field", "body.elements.it.visible"]);
+  assert.match(onTop.reason, /"it" has visible, which only a block inside a Group may have: the root's own blocks are always shown/);
+  const column = inGroup({ vegan });
+  column.body.elements.body.children.push("cols");
+  Object.assign(column.body.elements, {
+    cols: { type: "Columns", props: {}, children: ["a", "b"] },
+    a: shown({ $state: "/vegan" }),
+    b: { type: "Markdown", props: { text: "b" } },
+  });
+  assert.match(first(column).reason, /the root's own blocks and the columns of a Columns are always shown/);
+  const root = inGroup({ vegan });
+  root.body.elements.body.visible = { $state: "/vegan" };
+  assert.deepEqual(codes([first(root)]), [["unknown_field", "body.elements.body"]]);
+});
+
+test("YN-16 S1 still refuses events, watches, repeats, spec state and expressions in props", () => {
+  for (const extra of [
+    { on: { press: { action: "setState", params: { statePath: "/vegan", value: true } } } },
+    { watch: { "/vegan": { action: "setState", params: { statePath: "/guests", value: 2 } } } },
+    { repeat: { statePath: "/items" } },
+  ]) {
+    const found = first(inGroup({ vegan, note: { ...shown(undefined), ...extra } }));
+    assert.deepEqual([found.code, found.path], ["unknown_field", "body.elements.note"], JSON.stringify(extra));
+    assert.match(found.reason, /Elements are \{type, props, children\?, visible\?\}/);
+  }
+  const state = inGroup({ vegan });
+  state.body.state = { vegan: true };
+  assert.deepEqual(codes([first(state)]), [["unknown_field", "body"]]);
+  const expression = first(inGroup({ guests, m: { type: "Metrics", props: { items: [{ label: "Guests", value: { $state: "/guests" } }] } } }));
+  assert.equal(expression.code, "invalid_field");
+  assert.equal(expression.path, "body.elements.m.props.items.0.value");
+  assert.equal(first(inGroup({ guests: withProps(guests, { value: { $state: "/guests" } }) })).code, "invalid_field");
+});
+
+test("YN-16 a summary may name a Group of inputs as its visual, the card's own figure", () => {
+  const card = (box) => ({
+    key: "demo", kind: "report", title: "Demo",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "box", size: "wide" } }, children: ["lead", "box"] },
+      lead: { type: "Markdown", props: { text: "Try the amounts." } },
+      box,
+      guests, vegan, note: shown({ $state: "/vegan" }), m: { type: "Metrics", props: { items: [{ label: "a", value: 1 }] } },
+      inner: { type: "Group", props: {}, children: [] },
+    } },
+  });
+  const group = (children) => ({ type: "Group", props: {}, children });
+  const used = (box) => {
+    const value = card(box);
+    for (const key of ["guests", "vegan", "note", "m", "inner"]) if (!box.children.includes(key)) delete value.body.elements[key];
+    return value;
+  };
+  assert.ok(checkBriefSection(used(group(["guests", "vegan", "note", "m"]))));
+  assert.ok(checkBriefSection(used(group(["vegan"]))), "one input alone");
+  for (const [children, why] of [
+    [["note", "m"], "no input"],
+    [["guests", "inner"], "a Group inside"],
+  ]) {
+    const found = first(used(group(children)));
+    assert.deepEqual([found.code, found.path, found.guide], ["summary", "body.elements.body.props.summary.visual", "brief_guide interactive"], why);
+    assert.match(found.reason, /summary\.visual "box" is a Group, which is a figure only as a Group of inputs: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Markdown, Metrics, at least one an input/);
+  }
+  const seven = used(group(["guests", "vegan", "note", "m"]));
+  Object.assign(seven.body.elements, Object.fromEntries(items(3, (i) => [`x${i}`, { type: "Markdown", props: { text: `${i}` } }])));
+  seven.body.elements.box.children.push("x0", "x1", "x2");
+  assert.equal(first(seven).code, "summary", "7 blocks");
+  // A summary block is the root's own: it is always shown.
+  const hidden = used(group(["guests"]));
+  hidden.body.elements.box.visible = { $state: "/guests", gt: 1 };
+  assert.equal(first(hidden).path, "body.elements.box.visible");
+});
+
+test("YN-16 the guide's interactive part states what the checks check", () => {
+  const part = briefGuide("interactive");
+  for (const type of ["NumberInput", "Switch", "Segmented"]) assert.ok(part.includes(`- ${type} {name, `), type);
+  assert.match(part, /never saved, never sent to you and never runs anything/);
+  assert.match(part, /a letter a-z, then up to 31 letters or digits.*declared once per section, at most 16 in all/);
+  assert.match(part, /takes at most 100000 steps from min to max; digits is how many decimals are shown \(default: as many as step, min or max has\)/);
+  assert.match(part, /only a block inside a Group has one, as the root's own blocks are always shown/);
+  assert.match(part, /eq or neq a value of the variable's kind \(for a Segmented, one of its options' values\), or gt, gte, lt or lte a number/);
+  assert.match(part, /at most 8 conditions and 3 levels\. Nothing else is read: no \$item, \$index, \$cond, \$bindState or \$computed/);
+  assert.match(part, /name a Group of inputs as the summary's visual: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Markdown, Metrics, at least one an input/);
+  assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.interactive)));
+  assert.match(briefGuide("content"), /\{type, props, children\?, visible\?\} \(visible: see interactive\)/);
+  assert.match(briefGuide("content"), /^- NumberInput, Switch, Segmented: see interactive\.$/m);
+  assert.match(briefGuide("content"), /or a Group of inputs the reader sets on the card, see interactive\)/);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_guide, /research, interactive, attachments/);
+  assert.equal(BRIEF_LIMITS.variables, 16);
 });
