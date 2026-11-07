@@ -1429,8 +1429,12 @@ ul.home-widget {
 .home-replied-short::after {
   content: "”";
 }
+/* Beside whom it waits for, at the right, on a phone too (where a card's
+   meta otherwise takes a line of its own, below). */
 .home-section.is-short .home-section-meta {
   flex: none;
+  width: auto;
+  margin-left: auto;
 }
 /* Narrow, three lines: whom it waits for and when; the title and its marks;
    the reply in short, and Seen when there is something to mark. */
