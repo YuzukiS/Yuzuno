@@ -141,7 +141,7 @@ test("an unconfirmed fork goes on with the same request, after a reload too, nev
   const asked = [];
   const core = { calls: [], fork: (body) => {
     asked.push(body.requestId);
-    return asked.length < 3 ? { state: "uncertain", requestId: body.requestId, message: "fixture: no answer" } : { ...completed, requestId: body.requestId };
+    return asked.length < 3 ? { state: "uncertain", requestId: body.requestId, message: `fixture: no answer ${asked.length}` } : { ...completed, requestId: body.requestId };
   },
   // Nothing before it is asked; then that attempt, unconfirmed.
   seen: (params) => asked.length ? { state: "uncertain", requestId: params.get("requestId") ?? asked[0], message: "still unconfirmed" } : { state: "none" } };
@@ -161,8 +161,9 @@ test("an unconfirmed fork goes on with the same request, after a reload too, nev
     page.button("Fork", page.d.querySelector('[data-turn-id="t1"]')).click();
     await until(() => page.button("Continue this fork", page.dialog()), "the same attempt is shown again");
     page.button("Continue this fork", page.dialog()).click();
-    await until(() => asked.length === 2 && page.button("Continue this fork", page.dialog()) && !page.button("Continue this fork", page.dialog()).disabled,
-      "still unconfirmed, it can go on again");
+    // Its second answer shown, the dialog no longer busy: it can go on again.
+    await until(() => page.dialog().textContent.includes("fixture: no answer 2") && page.button("Continue this fork", page.dialog())
+      && !page.button("Continue this fork", page.dialog()).disabled, "still unconfirmed, it can go on again");
     page.button("Continue this fork", page.dialog()).click();
     await until(() => page.shown() === "c", "the new Agent opens");
     assert.deepEqual(asked, [asked[0], asked[0], asked[0]], "the same request each time");
