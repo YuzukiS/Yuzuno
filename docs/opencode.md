@@ -72,8 +72,9 @@ Agent. Its turns are the session's prompts, as Yuzuno would have shown them;
 they can't be rewound, since their snapshots are in the OpenCode that made
 them. The session's own permissions and metadata are left out, and its agent
 is kept only if this OpenCode has it as an agent one can choose. The new Agent
-starts on OpenCode's default model: choose one in its settings. No login is in
-the file. The same file again is the Agent it made; the same session exported
+keeps the session's model, and its variant, if this OpenCode lists them;
+otherwise it starts on OpenCode's default model and says so, and you can
+choose one in its settings. No login is in the file. The same file again is the Agent it made; the same session exported
 again after more work is a new copy, and Yuzuno names the earlier one. An
 upload you don't confirm is removed after a day.
 

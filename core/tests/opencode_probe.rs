@@ -2226,8 +2226,8 @@ async fn exported_session(program: &Path, dir: &Path, port: u16) -> (Server, Lau
 /// new ID and Core's marker, is imported into a second OpenCode on an empty
 /// database and reads back as written; the same again is refused (409).
 /// Facts for Core's own refusals, printed: a `?sanitize=true` export is
-/// imported too; a 1.x-shaped body is refused; an unsettled answer is
-/// silently left out; and how 2.x answers a body with a ~20 MiB inline image.
+/// imported too; a 1.x-shaped body is refused; and how 2.x answers a body
+/// with an unsettled answer, and one with a ~20 MiB inline image.
 #[tokio::test]
 #[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
 async fn a_real_opencode_2x_takes_an_export_as_cores_import_writes_it() {
@@ -2279,8 +2279,11 @@ async fn a_real_opencode_2x_takes_an_export_as_cores_import_writes_it() {
     unsettled.messages[open]["time"].as_object_mut().unwrap().remove("completed");
     let kept_id = unsettled.messages[open]["id"].clone();
     let answer = target.import(&unsettled, limit).await;
-    let read = target.messages(unsettled.id()).await.unwrap();
-    println!("probe: an unsettled answer: {answer:?}; in the copy: {}", read.as_array().unwrap().iter().any(|m| m["id"] == kept_id));
+    println!("probe: an unsettled answer: {answer:?}");
+    if matches!(answer, ImportAnswer::Imported(_)) {
+        let read = target.messages(unsettled.id()).await.unwrap();
+        println!("probe: the unsettled answer in the copy: {}", read.as_array().unwrap().iter().any(|m| m["id"] == kept_id));
+    }
     // Facts: a ~20 MiB inline image.
     let mut big = payload_of(&file, "probe-big");
     let first = big.messages.iter().position(|m| m["type"] == "user").unwrap();
@@ -2299,10 +2302,10 @@ async fn a_real_opencode_2x_takes_an_export_as_cores_import_writes_it() {
 
 /// An OpenCode 2.x session imported through the Workspace on a real OpenCode
 /// 2.x (T-61 slice 8, D-2), against the stub provider: its export uploaded,
-/// previewed and confirmed; the new Agent registered and connected, holding
-/// the session's prompts under their own IDs; a message sent to it through
-/// the Workspace runs with the imported conversation; the same file again is
-/// that Agent.
+/// previewed and confirmed; the new Agent registered and connected, on the
+/// file's model, holding the session's prompts under their own IDs; a
+/// message sent to it through the Workspace runs with the imported
+/// conversation; the same file again is that Agent.
 #[tokio::test]
 #[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
 async fn a_real_opencode_2x_session_is_imported_through_the_workspace() {
@@ -2331,6 +2334,7 @@ async fn a_real_opencode_2x_session_is_imported_through_the_workspace() {
     println!("probe: the import {outcome}");
     assert_eq!((&outcome["state"], &outcome["importOutcome"], &outcome["connected"]), (&json!("completed"), &json!("created"), &json!(true)), "{outcome}");
     let target = outcome["agent"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(outcome["agent"]["model"], "stub/fake", "the file's model, which this OpenCode lists, kept");
     let ids: Vec<String> = ws.store.detail(&target).unwrap().turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
     assert_eq!(ids, prompts.iter().map(|p| p.as_str().to_owned()).collect::<Vec<_>>(), "the session's prompts, under their own IDs");
     assert_eq!(std::fs::read_to_string(&log).unwrap_or_default().lines().count(), requests, "nothing asked of the model by the import");

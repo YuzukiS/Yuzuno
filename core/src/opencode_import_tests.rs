@@ -118,6 +118,29 @@ fn agent_rule_keeps_a_visible_primary_and_refuses_a_subagent() {
     }
 }
 
+/// U5: the file's model is kept when the new OpenCode lists it, as Fork
+/// keeps the source's, with its variant if that model lists it; one it
+/// doesn't list, or a variant it doesn't, gives way to OpenCode's own, saying
+/// so; a file naming none keeps none, silently.
+#[test]
+fn model_rule_keeps_a_listed_model_and_says_when_it_cannot() {
+    let choice = |provider: &str, model: &str, variants: &[&str]| crate::opencode::ModelChoice {
+        provider: provider.into(), provider_name: provider.into(), model: model.into(), name: model.into(), status: "active".into(),
+        variants: variants.iter().map(|v| (*v).to_owned()).collect(), image: false, context: 0 };
+    let listed = vec![choice("deepseek", "deepseek-flash", &["high", "max"]), choice("openrouter", "anthropic/claude-x", &[])];
+    let (sent, model, variant, notice) = kept_model(&json!({"providerID": "deepseek", "id": "deepseek-flash", "variant": "max"}), &listed);
+    assert_eq!((sent, model.as_str(), variant.as_deref(), notice), (json!({"providerID": "deepseek", "id": "deepseek-flash", "variant": "max"}), "deepseek/deepseek-flash", Some("max"), None));
+    let (sent, model, variant, notice) = kept_model(&json!({"providerID": "openrouter", "id": "anthropic/claude-x", "variant": "default"}), &listed);
+    assert_eq!((sent, model.as_str(), variant, notice), (json!({"providerID": "openrouter", "id": "anthropic/claude-x"}), "openrouter/anthropic/claude-x", None, None));
+    let (sent, model, variant, notice) = kept_model(&json!({"providerID": "deepseek", "id": "deepseek-flash", "variant": "turbo"}), &listed);
+    assert_eq!((sent, model.as_str(), variant), (json!({"providerID": "deepseek", "id": "deepseek-flash"}), "deepseek/deepseek-flash", None));
+    assert!(notice.as_deref().is_some_and(|n| n.contains("turbo")), "{notice:?}");
+    let (sent, model, variant, notice) = kept_model(&json!({"providerID": "gone", "id": "old"}), &listed);
+    assert_eq!((sent, model.as_str(), variant), (Value::Null, "", None));
+    assert!(notice.as_deref().is_some_and(|n| n.contains("gone/old") && n.contains("默认模型")), "{notice:?}");
+    assert_eq!(kept_model(&Value::Null, &listed), (Value::Null, String::new(), None, None));
+}
+
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 
 /// One `opencode` for the whole test process, as the Agent tests have it,
@@ -226,9 +249,13 @@ fn create(request: &Value, name: &str, cwd: &Path) -> Create {
 async fn an_uploaded_export_becomes_a_new_agent_with_a_new_session_id() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let (ws, data, cwd, turns, file) = source(&root).await;
+    let (ws, data, cwd, turns, mut file) = source(&root).await;
+    // A model the new OpenCode lists, with one of its variants.
+    let model = json!({"providerID": "deepseek", "id": "deepseek-flash", "variant": "max"});
+    file["info"]["model"] = model.clone();
     let preview = ws.opencode_import_upload(serde_json::to_vec(&file).unwrap()).await.unwrap();
     assert_eq!((&preview["turns"], &preview["sourceSession"], &preview["existing"]), (&json!(2), &file["info"]["id"], &Value::Null), "{preview}");
+    assert_eq!(preview["model"], "deepseek/deepseek-flash");
     let request = preview["requestId"].clone();
     assert!(data.join("opencode/imports").join(request.as_str().unwrap()).join("source.json").is_file(), "the file kept");
     let outcome = ws.opencode_import_create(create(&request, "Imported", &cwd)).await.unwrap();
@@ -237,8 +264,10 @@ async fn an_uploaded_export_becomes_a_new_agent_with_a_new_session_id() {
     let d = ws.store.detail(&target).unwrap();
     let session = d.agent.opencode_session_id.clone().unwrap();
     assert!(session.starts_with("ses_") && file["info"]["id"] != session.as_str(), "a new session ID: {session}");
-    assert_eq!((d.agent.cwd.as_str(), d.agent.name.as_str(), d.agent.model.as_str()), (cwd.to_str().unwrap(), "Imported", ""));
+    assert_eq!((d.agent.cwd.as_str(), d.agent.name.as_str(), d.agent.model.as_str()), (cwd.to_str().unwrap(), "Imported", "deepseek/deepseek-flash"));
+    assert_eq!((d.agent.settings.reasoning_effort.as_deref(), &outcome["warnings"]), (Some("max"), &json!([])), "the file's model and variant kept");
     let stored = held(&data, &target);
+    assert_eq!(stored["sessions"][&session]["model"], model, "the copy's own model, the file's");
     assert_eq!(stored["imported"][&session], file["messages"], "the file's messages, as they are");
     assert_eq!(stored["sessions"][&session]["metadata"], json!({"yuzuno": {"import": request}}));
     assert_eq!(ws.store.turn_ids(&target).unwrap(), turns, "the file's prompts, under their own IDs");

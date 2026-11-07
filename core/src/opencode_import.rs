@@ -74,6 +74,11 @@ struct Fixed {
     payload: Payload,
     project: String,
     source_session: String,
+    /// The new Agent's model (`provider/model`, empty for OpenCode's
+    /// default) and variant, as `kept_model` says, and its notice if any.
+    model: String,
+    variant: Option<String>,
+    notice: Option<String>,
 }
 
 /// A file read whole, and what it is (`classify`).
@@ -161,13 +166,41 @@ pub(crate) fn digest(file: &Value) -> String {
     Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The model a session ran with at its end, as `provider/model`: shown, not
-/// taken (the new Agent starts on OpenCode's default).
-fn model_of(info: &Value, messages: &[Value]) -> Option<String> {
-    let model = Some(&info["model"]).filter(|m| m.is_object()).cloned()
+/// The model a session ran with at its end: its own, else its last switch's,
+/// else its last answer's; `Null` if it names none.
+fn file_model(info: &Value, messages: &[Value]) -> Value {
+    Some(&info["model"]).filter(|m| m.is_object()).cloned()
         .or_else(|| messages.iter().rev().find(|m| m["type"] == "model-switched").map(|m| m["model"].clone()))
-        .or_else(|| messages.iter().rev().find(|m| m["type"] == "assistant").map(|m| m["model"].clone()))?;
+        .or_else(|| messages.iter().rev().find(|m| m["type"] == "assistant").map(|m| m["model"].clone()))
+        .unwrap_or(Value::Null)
+}
+
+/// `file_model` as `provider/model`, as the preview shows it.
+fn model_of(info: &Value, messages: &[Value]) -> Option<String> {
+    let model = file_model(info, messages);
     Some(format!("{}/{}", model["providerID"].as_str()?, model["id"].as_str()?))
+}
+
+/// The file's model, kept for the new Agent when its OpenCode lists it, as
+/// Fork keeps the source's: the session's model in the copy, the Agent's
+/// model, and its variant if that model lists it. Otherwise OpenCode's
+/// default, with a notice: (the copy's model or `Null`, the Agent's model,
+/// its variant, the notice).
+fn kept_model(model: &Value, listed: &[crate::opencode::ModelChoice]) -> (Value, String, Option<String>, Option<String>) {
+    let (Some(provider), Some(id)) = (model["providerID"].as_str(), model["id"].as_str()) else { return (Value::Null, String::new(), None, None) };
+    let Some(found) = listed.iter().find(|m| m.provider == provider && m.model == id) else {
+        let notice = format!("文件用的模型 {provider}/{id} 不在这台机器的 OpenCode 里；新 Agent 用 OpenCode 的默认模型，可以在设置里另选");
+        return (Value::Null, String::new(), None, Some(notice));
+    };
+    let named = model["variant"].as_str().filter(|v| !v.is_empty() && *v != "default");
+    let variant = named.filter(|v| found.variants.iter().any(|x| x == v)).map(str::to_owned);
+    let notice = named.filter(|_| variant.is_none())
+        .map(|v| format!("文件用的变体 {v} 不在这台机器的 OpenCode 为 {provider}/{id} 列出的变体里；新 Agent 用这个模型自己的"));
+    let mut kept = json!({"providerID": provider, "id": id});
+    if let Some(variant) = &variant {
+        kept["variant"] = json!(variant);
+    }
+    (kept, found.id(), variant, notice)
 }
 
 /// The file's agent, kept only if the new Agent's OpenCode lists it as a
@@ -185,9 +218,9 @@ fn kept_agent(agent: &Value, listed: &[(String, String, bool)]) -> Result<Option
 /// The session as it is written into the new Agent's OpenCode: its own
 /// messages and usage (D-34, import keeps them), under a new ID with this
 /// request's marker, titled as the Agent, in the chosen folder; without the
-/// file's permissions or metadata (D-40 (a)), and its agent as `kept_agent`
-/// says. No model: the new Agent starts on OpenCode's default.
-fn import_payload(file: &Classified, request: &str, name: &str, cwd: &str, project: &str, agent: Option<String>) -> Payload {
+/// file's permissions or metadata (D-40 (a)), and its agent and model as
+/// `kept_agent` and `kept_model` say.
+fn import_payload(file: &Classified, request: &str, name: &str, cwd: &str, project: &str, agent: Option<String>, model: Value) -> Payload {
     let info = &file.info;
     let created = &info["time"]["created"];
     let mut sent = json!({
@@ -197,7 +230,7 @@ fn import_payload(file: &Classified, request: &str, name: &str, cwd: &str, proje
         "tokens": if info["tokens"].is_object() { info["tokens"].clone() } else { transfer::no_tokens() },
         "time": {"created": created, "updated": if info["time"]["updated"].is_number() { &info["time"]["updated"] } else { created },
             "idle": info["time"]["idle"], "archived": info["time"]["archived"]},
-        "outcome": info["outcome"], "agent": agent,
+        "outcome": info["outcome"], "agent": agent, "model": model,
     });
     transfer::without_nulls(&mut sent);
     Payload { info: sent, messages: file.messages.clone(), directory: cwd.to_owned() }
@@ -452,9 +485,11 @@ impl Workspace {
                 return Ok(None);
             }
         };
+        let listed = server.models().await.context("读不到新 Agent 的 OpenCode 的模型；重试会接着进行，不会写第二次")?;
+        let (sent, model, variant, notice) = kept_model(&file_model(&classified.info, &classified.messages), &listed);
         let name = row.name.clone().unwrap_or_default();
-        let fixed = Fixed { payload: import_payload(&classified, &row.request_id, &name, &folder, &project, agent), project,
-            source_session: row.source_session.clone() };
+        let fixed = Fixed { payload: import_payload(&classified, &row.request_id, &name, &folder, &project, agent, sent), project,
+            source_session: row.source_session.clone(), model, variant, notice };
         write_private(&kept, &serde_json::to_vec(&fixed)?)?;
         Ok(Some(fixed))
     }
@@ -498,7 +533,8 @@ impl Workspace {
             agent: crate::model::Agent {
                 id: row.target_agent_id.clone(), name: row.name.clone().unwrap_or_default(), goal: String::new(), work_summary: None, project_id: None,
                 kind: None, released_at: None, released_by: None, executor: None,
-                cwd: row.cwd.clone().unwrap_or_default(), model: String::new(), settings: Default::default(), color: "sage".into(),
+                cwd: row.cwd.clone().unwrap_or_default(), model: fixed.model.clone(),
+                settings: crate::model::AgentSettings { reasoning_effort: fixed.variant.clone(), ..Default::default() }, color: "sage".into(),
                 harness: "opencode".into(), claude_session_id: None, opencode_session_id: Some(fixed.payload.id().to_owned()),
                 opencode_version: Some(version.clone()), opencode_major: crate::opencode::major(&version), thread_id: None,
                 status: "offline".into(), closed_at: None, disconnected_at: None, disconnect_unconfirmed: false,
@@ -511,6 +547,7 @@ impl Workspace {
         let (request, source) = (row.request_id.clone(), fixed.source_session.clone());
         let agent = self.stored(move |s| s.opencode_insert_import(&detail, &request, &source)).await?;
         row.state = "completed".into();
+        warnings.extend(fixed.notice.clone());
         self.changed(&agent.id);
         // Attached to the very process the copy was read back from. A failed
         // attach leaves the registered Agent offline; nothing is retried here.
