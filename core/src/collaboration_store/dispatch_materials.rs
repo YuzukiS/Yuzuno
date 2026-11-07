@@ -481,6 +481,14 @@ pub(super) fn body(snapshot: &Value) -> String {
             200,
         );
         field("Its instructions", &template["instructions"], "template.instructions", 2_000);
+        // How its work is delivered and its steps (YN-23); materials from
+        // before carry neither.
+        if let Some(mode) = template["deliveryMode"].as_str() {
+            field("Delivery", &json!(delivery_text(mode)), "template.deliveryMode", 200);
+        }
+        if let Some(steps) = template["steps"].as_array().filter(|steps| !steps.is_empty()) {
+            field("Steps (descriptive: Core does not track them)", &json!(steps_text(steps)), "template.steps", 3_000);
+        }
     }
     // Read whole from the materials, never in the mail (T-34).
     if snapshot["handover"].is_object() {
@@ -545,6 +553,35 @@ pub(super) fn body(snapshot: &Value) -> String {
     };
     out.push_str(&format!("Return to: {}\n{}\nSaved paths and references grant no additional permission. No chat history or private files were read to create these materials.\n", recipient, snapshot["returnRequirementsDefault"].as_str().unwrap()));
     out
+}
+
+
+/// What a template's delivery mode asks of its executor, said in its mail.
+fn delivery_text(mode: &str) -> String {
+    match mode {
+        "pr" => "pr: deliver the work as a pull request".into(),
+        "direct-commit" => "direct-commit: commit the work without a pull request".into(),
+        "none" => "none: no repository change to deliver; your result is the deliverable".into(),
+        other => other.into(),
+    }
+}
+
+/// A template's steps on one line: `materials → work: Write the note → gate
+/// (user): Approve it → review ×2`.
+fn steps_text(steps: &[Value]) -> String {
+    steps.iter().map(|step| {
+        let mut text = step["kind"].as_str().unwrap_or_default().to_owned();
+        if step["kind"] == "gate" {
+            text.push_str(&format!(" ({})", step["approver"].as_str().unwrap_or("user")));
+        }
+        if let Some(rounds) = step["rounds"].as_i64().filter(|n| *n > 1) {
+            text.push_str(&format!(" ×{rounds}"));
+        }
+        if let Some(label) = step["label"].as_str() {
+            text.push_str(&format!(": {label}"));
+        }
+        text
+    }).collect::<Vec<_>>().join(" → ")
 }
 
 #[cfg(test)]

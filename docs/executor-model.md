@@ -136,6 +136,9 @@ not a template's or a Project's.
 | **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
+| **When to choose** (`whenToChoose`) | One line, up to 200 characters: what work the template is for. A lead reads it with `executor_templates_list` to choose a template; it is in the dispatch's materials, not in the executor's mail. |
+| **Delivery** (`deliveryMode`) | How the work is delivered: `pr`, as a pull request; `direct-commit`, committed without one (for a results repository, say); or `none`, no repository change, the result itself being the deliverable (an investigation, a memo, a check). Unset is `pr`, so every template saved before keeps today's flow. See [Delivery and steps](#delivery-and-steps). |
+| **Steps** (`steps`) | 1 to 12 steps its executors follow, in order. Unset is its delivery's default steps. See [Delivery and steps](#delivery-and-steps). |
 
 - **Which template a dispatch gets.** The Workspace's template of the named
   id, whatever the task's Project. A dispatch naming an id the Workspace
@@ -173,10 +176,64 @@ not a template's or a Project's.
 - **Who changes them.** Only you. Saving replaces the whole list, and a save
   against a list changed meanwhile is refused, so the page reloads first.
   Removing a template, or a Project, changes no executor already made.
+- **What a lead reads.** `executor_templates_list` lists the Workspace's
+  templates for an Agent choosing one for `task_dispatch`. For each it gives
+  the id, label, when to choose it, delivery, steps (resolved: its delivery's
+  default when it sets none), harness, model, reasoning effort,
+  permissions, machine, and the size of its instructions in bytes, not
+  their text. It also gives the list's version, how many templates a newer
+  Core saved that this one can't offer, and `general`, what `executor: {}`
+  makes for the caller's Project. Reading changes nothing, and no Agent tool
+  saves templates.
 - **After a newer Core.** Templates and fields that a newer Core saved and
   this one can't read or use, such as another harness or machine, are not
   shown or offered to a dispatch, and a save here keeps them as they were.
   The page says how many such templates the list holds.
+
+### Delivery and steps
+
+A template's delivery and steps say how its executors work. They are
+descriptive: Core passes them to the executor and to whoever chooses the
+template, but doesn't track which step an executor is on, and doesn't
+refuse a pull request, review or merge to a template whose delivery is
+`direct-commit` or `none`.
+
+- **Steps.** Each step is `{kind, label?, rounds?, approver?}`:
+
+  | Kind | The step |
+  | --- | --- |
+  | `materials` | Read the dispatch's materials. |
+  | `work` | Do the work the label names. |
+  | `result` | Submit a result: the label says which (a design note, a memo). |
+  | `gate` | Wait for an answer before going on. `approver` says who answers: `user` (also when unset), `lead` or `either`. |
+  | `job` | Run a Job (a build, a test suite, a check). |
+  | `pr` | Open or update the pull request. |
+  | `review` | A review round at the frozen head; `rounds` is 1 (also when unset) or 2. |
+  | `ci` | CI at the pull request's head. |
+  | `merge` | The pull request is merged. |
+
+  A label is one line of up to 60 characters; without one a step is its
+  kind alone. Only a `pr` template has `pr`, `review`, `ci` and `merge`
+  steps, only a review has `rounds`, and only a gate has an `approver`. A
+  save that breaks one of these is refused, naming the step by its place
+  ("Step 3: …").
+- **Default steps.** A template that sets no steps has its delivery's:
+  - `pr`: materials → work → job → pr → review → ci → merge;
+  - `direct-commit`: materials → work → job → result;
+  - `none`: materials → work → result.
+- **What the executor gets.** A template dispatch's materials say, under
+  `template`, its `deliveryMode` and its `steps` as resolved (its own, else
+  the default), and `whenToChoose` when it has one. Its mail says the
+  delivery and the steps on one line each, such as `Delivery: none: no
+  repository change to deliver; your result is the deliverable` and `Steps
+  (descriptive: Core does not track them): materials → work: Write the memo
+  → gate (user): Your choice`. A general
+  executor's materials and mail have neither, as before.
+- **After a newer Core.** A template whose delivery, step kind or step field
+  this Core doesn't know is one this Core can't use: it isn't offered or
+  listed, and a save here keeps it as it is. An older Core reading a
+  template with these fields offers it as before, without them, and a save
+  there keeps them.
 
 ## Dispatching to a new executor
 
