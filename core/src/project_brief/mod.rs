@@ -28,6 +28,7 @@ mod refs;
 mod research;
 mod sections;
 mod update;
+mod patch;
 mod writes;
 #[cfg(test)]
 mod preview_tests;
@@ -164,11 +165,12 @@ Write conclusions, decisions and asks for the user, not a transcript; the Brief 
 Details and examples: brief_guide.";
 
 const FALLBACK_GUIDE: &str = "Project Brief guide.\n\
-Sections: brief_update changes take op put, edit, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
+Sections: brief_update changes take op put, edit, patch, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
 At most 12 topics with 4 sub-topics each. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
 put: {op:'put', key, kind:'ask'|'report'|'status', title, body, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root.\n\
 edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else.\n\
+patch: {op:'patch', key, patch:[RFC 6902 operations on the body], status?} changes single values and keeps what edit keeps; the whole section is checked again.\n\
 ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. \
 A user's reply marks it replied (out of Needs you, listed in brief_get you.repliedAsks); resolve it once handled: a preference when taken in, \
 an authorized action only after it is done, with its result on the Task or Brief. While it runs or after it fails, keep it replied and report progress.\n\
@@ -242,12 +244,14 @@ fn update_properties(project: Value) -> Value {
         "noChange":{"type":"boolean","description":"true, with no changes: nothing of yours changed in this Turn."},
         "validateOnly":{"type":"boolean","description":"true: only pre-check this update: the checks before its write, nothing written or reserved, not this Turn's update. The write itself checks again and can still refuse it."},
         "changes":{"type":"array","maxItems":update::MAX_CHANGES,"items":{"type":"object","required":["op","key"],"properties":{
-            "op":{"type":"string","enum":["put","edit","resolve","remove","claim"]},
+            "op":{"type":"string","enum":["put","edit","patch","resolve","remove","claim"]},
             "key":{"type":"string","description":"topic or topic/sub: lowercase letters, digits and -, each part up to 48 characters."},
             "kind":{"type":"string","enum":["ask","report","status"]},
             "title":{"type":"string","minLength":1,"maxLength":120},
             "body":{"type":"object","description":"A json-render spec {root, elements} with a BriefBody root; see brief_guide content."},
             "elements":{"type":"object","description":"For edit: block ids mapped to their new {type, props, children?}; the section's other blocks, title, attachments and ask state are kept. See brief_guide sections."},
+            "patch":{"type":"array","minItems":1,"maxItems":patch::MAX_OPS,"description":"For patch: RFC 6902 operations on the section's body, paths being JSON Pointers into it, e.g. [{op:\"replace\", path:\"/elements/refs/props/items/3/note\", value:\"Merged.\"}]. Kept as an edit keeps; the whole section is checked again. See brief_guide sections.",
+                "items":{"type":"object","required":["op","path"],"properties":{"op":{"type":"string","enum":patch::OPS},"path":{"type":"string"},"from":{"type":"string"},"value":{}}}},
             "ask":{"type":"object","description":"For kind ask: {question, reply:{options?, freeText?, form?, choice?}}."},
             "status":{"type":"object","description":"For kind status: {asOf: ISO time, validFor: seconds}."},
             "time":{"type":"object","description":"{due?, eta?, nextUpdate?} as ISO times."},
@@ -368,6 +372,36 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS project_brief_writes(
         project_id TEXT NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(project_id,key));",
     )?;
+    Ok(())
+}
+
+/// A released executor's live sections become `to`'s, as a claim makes
+/// them (executor_archiving.rs, T-36 S2): in each Project the Brief moves on
+/// as a write of exactly those keys, recorded like any other (writes.rs), so
+/// an update read before it to another section is no version conflict.
+/// Content, versions of the sections and seen state are unchanged.
+pub(crate) fn hand_over(db: &Connection, from: &str, to: &str, name: &str) -> Result<()> {
+    let mut handed: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    {
+        let mut query = db.prepare("SELECT project_id,key FROM project_brief_sections WHERE owner_id=?1 AND live=1")?;
+        for row in query.query_map([from], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (project, key) = row?;
+            handed.entry(project).or_default().push(key);
+        }
+    }
+    let at = now();
+    for (project, keys) in &handed {
+        let before = sections::brief_version(db, project)?;
+        db.execute(
+            "INSERT INTO project_briefs(project_id,version,updated_at) VALUES(?1,1,?2)
+             ON CONFLICT(project_id) DO UPDATE SET version=version+1,updated_at=excluded.updated_at",
+            params![project, at],
+        )?;
+        let version = sections::brief_version(db, project)?;
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        writes::record(db, project, before, version, &keys)?;
+    }
+    db.execute("UPDATE project_brief_sections SET owner_id=?2,owner_name=?3 WHERE owner_id=?1 AND live=1", params![from, to, name])?;
     Ok(())
 }
 

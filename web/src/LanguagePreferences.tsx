@@ -1,4 +1,5 @@
 import { SaveStatus } from "./SaveStatus";
+import { ChoiceCards } from "./SettingsChoices";
 import {
   languageStored,
   restoreDefaultLanguage,
@@ -89,36 +90,31 @@ export function LanguagePreferencesSection() {
           {names[language]}
         </span>
       </header>
-      <div className="settings-group">
-        <fieldset className="input-send-key">
+      {/* One card, as Appearance (YN-8): each language named in its own words. */}
+      <div className="settings-group appearance-group">
+        <fieldset className="appearance-field input-send-key">
           <legend>{t.legend}</legend>
-          {choices.map(({ value, label, lang, note }) => (
-            <label key={value} className="input-send-choice">
-              <input
-                type="radio"
-                name="interface-language"
-                value={value}
-                checked={choice === value}
-                onChange={() => saveLanguagePreferences({ language: value })}
-              />
-              <span>
-                <strong lang={lang}>{label}</strong>
-                <small>{note}</small>
-              </span>
-            </label>
-          ))}
+          <ChoiceCards
+            name="interface-language"
+            value={choice}
+            choices={choices}
+            onChange={(value) => saveLanguagePreferences({ language: value })}
+            className="input-send-choice"
+          />
+          <SaveStatus
+            outcome={save?.outcome ?? null}
+            action={save?.action}
+            attempt={save?.attempt}
+            stored={languageStored()}
+            scope="this device"
+            onRetry={retryLanguageWrite}
+            onRestoreDefaults={restoreDefaultLanguage}
+          />
         </fieldset>
-        <p className="input-preferences-fixed">{t.coverage(pages)}</p>
+        <div className="appearance-field">
+          <p className="appearance-help input-preferences-fixed">{t.coverage(pages)}</p>
+        </div>
       </div>
-      <SaveStatus
-        outcome={save?.outcome ?? null}
-        action={save?.action}
-        attempt={save?.attempt}
-        stored={languageStored()}
-        scope="this device"
-        onRetry={retryLanguageWrite}
-        onRestoreDefaults={restoreDefaultLanguage}
-      />
     </section>
   );
 }

@@ -243,7 +243,10 @@ type QueueRepository = {
   enabled: boolean;
   paused: { reason: string; detail?: string; main?: string } | null;
   landing?: string;
+  /** YN-18 S2d: how much CI a merge needs, "strict" (the default) or "relaxed". */
+  policy?: string;
 };
+type QueuePolicy = "strict" | "relaxed";
 // T-37: the repository's merge queue switch, the user's only (Agents have no
 // tool for it). Turning it on names every write Core may then make; turning
 // it off saves at once.
@@ -258,8 +261,17 @@ const queueText = strings({
     "The merge of a PR released for merge: a merge commit pinned to the released head. Never a squash, a rebase or an admin merge.",
     "When CI tested an older main: a branch queue/merge-… at the current main with the head merged in, and a draft PR from it so CI runs there.",
     "Afterwards: closing that draft PR and deleting its branch.",
+    "Under the relaxed policy, instead of that batch: the same branch with no PR, to check that the head merges cleanly into the current main, deleted after the merge.",
   ],
   never: "Core never force-pushes, and never starts, reruns or cancels a workflow. Turning it off takes effect at once.",
+  policyTitle: "Landing policy",
+  strict: "Strict, before a release cut",
+  strictHint: "CI must have tested the current main with the head. When the PR's own CI tested an older main, Core runs CI on a CI-only batch first.",
+  relaxed: "Relaxed, day to day",
+  relaxedHint: "The PR's own CI green at the head is enough, even on an older main, once Core's own merge of the head into the current main is clean and main CI is not red. Main CI after each merge is watched; red pauses the queue.",
+  confirmRelaxed: (name: string) => `Use the relaxed policy for ${name}? Merges no longer wait for CI on the current main. For each merge Core also writes:`,
+  relaxedWrite: "A branch queue/merge-… at the current main with the head merged in, to check that it merges cleanly. It opens no PR, so no CI runs on it, and Core deletes it after the merge.",
+  useRelaxed: "Use relaxed",
   turnOn: "Turn on",
   cancel: "Cancel",
   paused: (reason: string) => `Paused: ${reason}`,
@@ -267,7 +279,7 @@ const queueText = strings({
   unpause: "Unpause",
   landing: (name: string) =>
     name === "core-merge"
-      ? "Lands with core-merge: Core sends the merge itself. GitHub auto-merge and GitHub's merge queue come in core.25."
+      ? "Lands with core-merge: Core sends the merge itself. This Core has no GitHub auto-merge or GitHub merge queue landing."
       : `Lands with ${name}, which this Core does not have: nothing merges here.`,
 }, {
   label: (name) => `${name} 的合并队列`,
@@ -280,8 +292,17 @@ const queueText = strings({
     "合并已放行合并的 PR：一个固定在放行的头上的合并提交。从不压缩、变基或用管理员权限合并。",
     "CI 测的是较旧的 main 时：在当前 main 上建分支 queue/merge-…，把这个头合进去，并从它开一个草稿 PR，让 CI 在那里运行。",
     "之后：关闭这个草稿 PR 并删除它的分支。",
+    "放宽策略下，不开这个批次，而是建同样的分支但不开 PR，用来确认这个 head 能干净地合进当前 main，合并后删除。",
   ],
   never: "Core 从不强制推送，也从不启动、重跑或取消 workflow。关闭立即生效。",
+  policyTitle: "落地策略",
+  strict: "严格（发布切出前）",
+  strictHint: "CI 必须测过当前 main 加这个 head。PR 自己的 CI 测的是较旧的 main 时，Core 先在仅跑 CI 的批次上跑一遍 CI。",
+  relaxed: "放宽（平时）",
+  relaxedHint: "这个 head 上 PR 自己的 CI 是绿的就够了，即使测的是较旧的 main；前提是 Core 自己把它合进当前 main 没有冲突，而且 main 的 CI 不红。每次合并后都看 main 的 CI，红了就暂停队列。",
+  confirmRelaxed: (name) => `为 ${name} 使用放宽策略？合并不再等 CI 测过当前 main。每次合并前，Core 还会写入：`,
+  relaxedWrite: "一个分支 queue/merge-…：在当前 main 上合入这个 head，用来确认能干净合并。不开 PR，所以不跑 CI；合并后 Core 删除它。",
+  useRelaxed: "使用放宽策略",
   turnOn: "开启",
   cancel: "取消",
   paused: (reason) => `已暂停：${reason}`,
@@ -289,7 +310,7 @@ const queueText = strings({
   unpause: "解除暂停",
   landing: (name) =>
     name === "core-merge"
-      ? "落地方式 core-merge：由 Core 自己发出合并。GitHub 自动合并与 GitHub 合并队列将在 core.25 提供。"
+      ? "落地方式 core-merge：由 Core 自己发出合并。这个 Core 没有 GitHub 自动合并或 GitHub 合并队列这两种落地方式。"
       : `落地方式 ${name}：此 Core 没有这种方式，这里不会合并任何 PR。`,
 });
 
@@ -302,6 +323,7 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
   const t = queueText(language);
   const [state, setState] = useState<QueueRepository | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [confirmingPolicy, setConfirmingPolicy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const mounted = useRef(true);
@@ -327,6 +349,7 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
       if (mounted.current) {
         setState(value);
         setConfirming(false);
+        setConfirmingPolicy(false);
       }
       return true;
     } catch (e) {
@@ -338,6 +361,15 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
   };
   const save = (enabled: boolean) =>
     send(() => api<QueueRepository>(path, { method: "PUT", body: JSON.stringify({ enabled }) }));
+  const policy: QueuePolicy = state?.policy === "relaxed" ? "relaxed" : "strict";
+  // Strict asks for more CI, so it saves at once; relaxed names its write first.
+  const savePolicy = (next: QueuePolicy) =>
+    send(() => api<QueueRepository>(path, { method: "PUT", body: JSON.stringify({ policy: next }) }));
+  const choosePolicy = (next: QueuePolicy) => {
+    if (next === policy) return;
+    if (next === "relaxed") setConfirmingPolicy(true);
+    else void savePolicy("strict");
+  };
   const unpause = async () => {
     unpauseId.current ||= crypto.randomUUID();
     const requestId = unpauseId.current;
@@ -370,6 +402,42 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
         </label>
       )}
       {state?.landing && <small className="merge-queue-landing">{t.landing(state.landing)}</small>}
+      {state && (
+        <fieldset className="merge-queue-policy" disabled={disabled || busy}>
+          <legend>{t.policyTitle}</legend>
+          {(["strict", "relaxed"] as const).map((option) => (
+            <label key={option} className="merge-queue-policy-option">
+              <input
+                type="radio"
+                name={`merge-queue-policy-${repositoryId}`}
+                value={option}
+                checked={policy === option}
+                onChange={() => choosePolicy(option)}
+              />
+              <span>
+                <strong>{option === "strict" ? t.strict : t.relaxed}</strong>
+                <small>{option === "strict" ? t.strictHint : t.relaxedHint}</small>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {confirmingPolicy && state && policy !== "relaxed" && (
+        <div className="merge-queue-confirm merge-queue-policy-confirm">
+          <p>{t.confirmRelaxed(name)}</p>
+          <ul>
+            <li>{t.relaxedWrite}</li>
+          </ul>
+          <div className="merge-queue-actions">
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void savePolicy("relaxed")}>
+              {t.useRelaxed}
+            </button>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmingPolicy(false)}>
+              {t.cancel}
+            </button>
+          </div>
+        </div>
+      )}
       {confirming && state && !state.enabled && (
         <div className="merge-queue-confirm">
           <p>{t.confirm(name)}</p>

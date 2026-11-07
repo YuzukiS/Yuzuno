@@ -15,11 +15,13 @@
 //! the executor (`follow_agent`); a reopen queues it again. Every pass also
 //! marks `released` the rows of executors that are closed or gone.
 //!
-//! The limits: the Workspace's (`executors.slots`, 3 unless saved), and
-//! optionally a Project's (`executors.slots.project:<id>`), a machine's
-//! (`executors.slots.machine:<id>`) and a template's own (its
-//! `maxConcurrent`, executor_templates.rs); an unset one adds no limit of its
-//! own. They count executors only, apart from the Jobs' machine slots.
+//! The limit (YN-2 S5, the user's decision): each machine's own
+//! (`executors.slots.machine:<id>`), 3 unless saved. Every machine has one
+//! and none is unlimited, so the Workspace's total is their sum. The
+//! Workspace's record (`executors.slots`) keeps the start time limit, and the
+//! number older Cores read; a Project's and a template's limits from before
+//! stay stored for them, unused here. It counts executors only, apart from
+//! the Jobs' machine slots.
 //!
 //! A fresh executor's start the runtime refused closes it (kept, to see what
 //! happened) and frees its slot; that close carries the record of its
@@ -43,14 +45,17 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, sync::{Arc, Mutex, OnceLock}, time::Duration};
 
-/// Executors running at once in the Workspace, unless the user saved another number.
+/// Executors running at once on a machine, unless the user saved another number for it.
 pub(crate) const DEFAULT_SLOTS: i64 = 3;
 pub(crate) const MAX_SLOTS: i64 = 64;
 const KEY: &str = "executors.slots";
 
-fn project_key(project: &str) -> String {
-    format!("executors.slots.project:{project}")
-}
+/// What the first open of S5 did, once (`machines_only`).
+const MACHINES_ONLY: &str = "executors.slots.machines";
+
+/// What a save of a Project's or the Workspace's number gets now (S5).
+const SETTING_REMOVED: &str =
+    "setting_removed: executors at once is each machine's; set it in Settings → Machines";
 
 pub(crate) fn machine_key(machine: &str) -> String {
     format!("executors.slots.machine:{machine}")
@@ -85,6 +90,60 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     if !has {
         db.execute_batch("ALTER TABLE executor_slots ADD COLUMN rebuilt_from TEXT")?;
     }
+    machines_only(db)
+}
+
+/// YN-2 S5, once: the Workspace's number on executors at once, when the
+/// user saved one, becomes this Core host's limit if it has none of its own;
+/// a machine's saved limit stays as it is, also above the old total. The
+/// Project and template limits, and the Workspace record, stay stored for
+/// older Cores, unused here. The marker records what it did: a journal for
+/// no Agent, since none changed.
+fn machines_only(db: &Connection) -> Result<()> {
+    let done: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM workspace_meta WHERE key=?1)", [MACHINES_ONLY], |r| r.get(0))?;
+    if done {
+        return Ok(());
+    }
+    let workspace = limit_at(db, KEY)?.slots;
+    let local = limit_at(db, &machine_key("local"))?;
+    if let (Some(n), None) = (workspace, local.slots) {
+        save_limit(db, &machine_key("local"), local.version, Some(n), None)?;
+    }
+    let mut machines = serde_json::Map::new();
+    let mut defaulted = Vec::new();
+    for (id, _) in machine_names(db)? {
+        let (limit, saved) = machine_limit(db, &id)?;
+        machines.insert(id.clone(), json!(limit));
+        if !saved {
+            defaulted.push(id);
+        }
+    }
+    let stored = |like: &str| -> Result<Vec<(String, String)>> {
+        Ok(db.prepare("SELECT key, value FROM workspace_meta WHERE key LIKE ?1 ORDER BY key")?
+            .query_map([like], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
+    };
+    let mut projects = serde_json::Map::new();
+    for (key, raw) in stored("executors.slots.project:%")? {
+        if let Some(n) = serde_json::from_str::<Value>(&raw).ok().and_then(|v| v["slots"].as_i64()) {
+            projects.insert(key.trim_start_matches("executors.slots.project:").to_owned(), json!(n));
+        }
+    }
+    let mut templates = serde_json::Map::new();
+    for (key, raw) in stored("executors.templates%")? {
+        let Ok(list) = serde_json::from_str::<Value>(&raw) else { continue };
+        for template in list["templates"].as_array().into_iter().flatten() {
+            if let (Some(id), Some(n)) = (template["id"].as_str(), template["maxConcurrent"].as_i64()) {
+                let list = key.trim_start_matches("executors.templates").trim_start_matches(".project:");
+                templates.insert(if list.is_empty() { id.to_owned() } else { format!("{list}/{id}") }, json!(n));
+            }
+        }
+    }
+    let record = json!({"version": 1, "at": now(), "workspaceSlots": workspace,
+        "coreHost": {"before": local.slots, "after": machine_limit(db, "local")?.0},
+        "machines": machines, "defaulted": defaulted,
+        "ignoredProjectLimits": projects, "ignoredTemplateLimits": templates});
+    db.execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)", params![MACHINES_ONLY, record.to_string()])?;
+    eprintln!("YN-2 S5: executors at once is each machine's now: {record}");
     Ok(())
 }
 
@@ -143,8 +202,32 @@ pub(crate) fn start_limit(db: &Connection) -> Result<Duration> {
     Ok(Duration::from_secs(seconds as u64))
 }
 
-fn workspace_slots(db: &Connection) -> Result<i64> {
-    Ok(limit_at(db, KEY)?.slots.unwrap_or(DEFAULT_SLOTS))
+/// A machine's limit on executors at once: the one saved for it, else the
+/// default; and whether one is saved.
+pub(crate) fn machine_limit(db: &Connection, machine: &str) -> Result<(i64, bool)> {
+    let saved = limit_at(db, &machine_key(machine))?.slots;
+    Ok((saved.unwrap_or(DEFAULT_SLOTS), saved.is_some()))
+}
+
+/// This Core host and every registered machine, by id, with its name.
+fn machine_names(db: &Connection) -> Result<Vec<(String, String)>> {
+    let mut machines = vec![("local".to_owned(), "this Core host".to_owned())];
+    let mut q = db.prepare("SELECT data FROM machines ORDER BY id")?;
+    for raw in q.query_map([], |r| r.get::<_, String>(0))? {
+        let machine: crate::remote::RemoteMachine = serde_json::from_str(&raw?)?;
+        machines.push((machine.id, machine.name));
+    }
+    Ok(machines)
+}
+
+/// A machine's name as Core's texts say it: this Core host, a registered
+/// machine's name, or its id once it is gone.
+fn machine_name(db: &Connection, machine: &str) -> Result<String> {
+    if machine == "local" {
+        return Ok("this Core host".to_owned());
+    }
+    let raw: Option<String> = db.query_row("SELECT data FROM machines WHERE id=?1", [machine], |r| r.get(0)).optional()?;
+    Ok(raw.and_then(|raw| serde_json::from_str::<crate::remote::RemoteMachine>(&raw).ok()).map_or_else(|| machine.to_owned(), |m| m.name))
 }
 
 /// The refusal to start an executor waiting in the queue. Nothing started or
@@ -165,7 +248,6 @@ struct Waiting {
     agent: String,
     project: Option<String>,
     machine: String,
-    template: String,
 }
 
 /// The executor a pass takes: starting, and its Project the one served last.
@@ -188,17 +270,16 @@ fn take(tx: &Connection, agent: &str, key: &str) -> Result<()> {
 fn queue_order(db: &Connection) -> Result<Vec<(Waiting, String)>> {
     let now = chrono::Utc::now();
     let mut q = db.prepare(
-        "SELECT agent_id, seq, project_id, machine_id, queued_at, template_id FROM executor_slots WHERE state='waiting' ORDER BY seq",
+        "SELECT agent_id, seq, project_id, machine_id, queued_at FROM executor_slots WHERE state='waiting' ORDER BY seq",
     )?;
     let rows = q
         .query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?))
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let queued: Vec<Queued> = rows
         .iter()
-        .map(|(agent, seq, project, _, queued_at, _)| Queued {
+        .map(|(agent, seq, project, _, queued_at)| Queued {
             id: agent.clone(),
             seq: *seq,
             // Executors without a Project take their turn as one, in the
@@ -217,9 +298,8 @@ fn queue_order(db: &Connection) -> Result<Vec<(Waiting, String)>> {
     Ok(order
         .into_iter()
         .map(|i| {
-            let (agent, _, project, machine, _, template) = &rows[i];
-            (Waiting { agent: agent.clone(), project: project.clone(), machine: machine.clone(), template: template.clone() },
-                queued[i].project.clone())
+            let (agent, _, project, machine, _) = &rows[i];
+            (Waiting { agent: agent.clone(), project: project.clone(), machine: machine.clone() }, queued[i].project.clone())
         })
         .collect())
 }
@@ -264,65 +344,20 @@ fn pending(db: &Connection) -> Result<bool> {
     )?)
 }
 
-/// A template, for its own limit (T-35 S4): the Workspace's of an id (YN-2
-/// S2: there are no Project templates any more).
-type TemplateKey = String;
-
-/// The templates a pass has looked up, by their id.
-type Templates = HashMap<String, Option<(TemplateKey, Option<i64>)>>;
-
-/// The template an executor's row names, as a dispatch finds it now, with
-/// its limit (`maxConcurrent`); none once no such template exists, or for a
-/// general executor (its id is empty), which limits nothing.
-fn template_of(db: &Connection, cache: &mut Templates, id: &str) -> Result<Option<(TemplateKey, Option<i64>)>> {
-    if let Some(found) = cache.get(id) {
-        return Ok(found.clone());
-    }
-    let found = crate::executor_templates::template(db, id)?.map(|template| (id.to_owned(), template.max_concurrent.map(i64::from)));
-    cache.insert(id.to_owned(), found.clone());
-    Ok(found)
-}
-
-/// What holds a slot now (starting or running): in all, by Project, by
-/// machine and by template.
-#[derive(Default)]
-struct Holding {
-    total: i64,
-    projects: HashMap<String, i64>,
-    machines: HashMap<String, i64>,
-    templates: HashMap<TemplateKey, i64>,
-}
-
-/// The executors holding a slot on `machine`, as the scheduler counts them
-/// (`holding`), and that machine's own limit if one is saved: a dispatch
-/// choosing its machine reads them (collaboration_store/executor_choice.rs,
-/// T-35 S3b).
-pub(crate) fn machine_slots(db: &Connection, machine: &str) -> Result<(i64, Option<i64>)> {
+/// The executors holding a slot on `machine` (starting or running) and that
+/// machine's limit: a dispatch choosing its machine reads them
+/// (collaboration_store/executor_choice.rs, T-35 S3b).
+pub(crate) fn machine_slots(db: &Connection, machine: &str) -> Result<(i64, i64)> {
     let held: i64 = db.query_row(
         "SELECT COUNT(*) FROM executor_slots WHERE machine_id=?1 AND state IN ('starting','running')", [machine], |r| r.get(0))?;
-    Ok((held, limit_at(db, &machine_key(machine))?.slots))
+    Ok((held, machine_limit(db, machine)?.0))
 }
 
-fn holding(db: &Connection, cache: &mut Templates) -> Result<Holding> {
-    let mut q = db.prepare(
-        "SELECT project_id, machine_id, template_id, COUNT(*) FROM executor_slots WHERE state IN ('starting','running')
-         GROUP BY project_id, machine_id, template_id",
-    )?;
-    let rows = q
-        .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut held = Holding::default();
-    for (project, machine, template, n) in rows {
-        held.total += n;
-        if let Some((key, _)) = template_of(db, cache, &template)? {
-            *held.templates.entry(key).or_insert(0) += n;
-        }
-        if let Some(project) = project {
-            *held.projects.entry(project).or_insert(0) += n;
-        }
-        *held.machines.entry(machine).or_insert(0) += n;
-    }
-    Ok(held)
+/// What holds a slot now (starting or running), by machine.
+fn holding(db: &Connection) -> Result<HashMap<String, i64>> {
+    Ok(db.prepare("SELECT machine_id, COUNT(*) FROM executor_slots WHERE state IN ('starting','running') GROUP BY machine_id")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<_>>()?)
 }
 
 /// A slot row as a task shows it: its executor, state, machine and reason.
@@ -345,6 +380,9 @@ fn view_row(db: &Connection, task: &str, positions: &HashMap<String, usize>) -> 
     let mut view = json!({"agentId": agent, "state": state, "machine": machine});
     if state == "waiting" {
         view["position"] = json!(positions.get(&agent));
+        // What it waits for (S5): a slot on its machine, and how full that is.
+        let (running, limit) = machine_slots(db, &machine)?;
+        view["waitsFor"] = json!({"machine": machine, "name": machine_name(db, &machine)?, "running": running, "limit": limit});
     }
     if let Some(reason) = reason {
         view["reason"] = json!(reason);
@@ -438,8 +476,8 @@ type OlderExecutor = (String, Option<String>, Option<String>, Option<String>, St
 impl Store {
     /// The scheduler's one transaction: frees the slots of closed executors,
     /// marks connected ones running, then takes the first waiting executor in
-    /// queue order whose Project, machine and template have room, when the
-    /// Workspace has, and sets it starting. Returns it, for its runtime to start.
+    /// queue order whose machine has room under its limit (S5: the only one),
+    /// and sets it starting. Returns it, for its runtime to start.
     /// `in_flight`: the executors passes are starting or settling. The one
     /// taken joins them before its row reads starting, so no other pass
     /// settles a start this one is making (R2 de2313b7).
@@ -451,27 +489,21 @@ impl Store {
         let tx = writer.transaction()?;
         release_closed(&tx)?;
         settle_connected(&tx)?;
-        let mut templates = Templates::new();
-        let Holding { total, projects, machines, templates: by_template } = holding(&tx, &mut templates)?;
+        let held = holding(&tx)?;
+        let mut limits: HashMap<String, i64> = HashMap::new();
         let mut chosen = None;
-        if total < workspace_slots(&tx)? {
-            for (waiting, key) in queue_order(&tx)? {
-                let room = |used: Option<&i64>, cap: Option<i64>| cap.is_none_or(|cap| used.copied().unwrap_or(0) < cap);
-                let project_cap = match &waiting.project {
-                    Some(project) => limit_at(&tx, &project_key(project))?.slots,
-                    None => None,
-                };
-                let machine_cap = limit_at(&tx, &machine_key(&waiting.machine))?.slots;
-                let template = template_of(&tx, &mut templates, &waiting.template)?;
-                let template_room = template.as_ref().is_none_or(|(key, cap)| room(by_template.get(key), *cap));
-                if room(waiting.project.as_ref().and_then(|p| projects.get(p)), project_cap)
-                    && room(machines.get(&waiting.machine), machine_cap)
-                    && template_room
-                    && in_flight.lock().unwrap().insert(waiting.agent.clone())
-                {
-                    chosen = Some((waiting, key));
-                    break;
+        for (waiting, key) in queue_order(&tx)? {
+            let limit = match limits.get(&waiting.machine) {
+                Some(limit) => *limit,
+                None => {
+                    let limit = machine_limit(&tx, &waiting.machine)?.0;
+                    limits.insert(waiting.machine.clone(), limit);
+                    limit
                 }
+            };
+            if held.get(&waiting.machine).copied().unwrap_or(0) < limit && in_flight.lock().unwrap().insert(waiting.agent.clone()) {
+                chosen = Some((waiting, key));
+                break;
             }
         }
         let took = match &chosen {
@@ -545,12 +577,15 @@ impl Store {
     /// holding its slot, may start.
     pub(crate) fn executor_slot_gate(&self, agent: &str) -> Result<()> {
         let db = self.db.read()?;
-        let state: Option<String> =
-            db.query_row("SELECT state FROM executor_slots WHERE agent_id=?1", [agent], |r| r.get(0)).optional()?;
-        if state.as_deref() == Some("waiting") {
-            let place = positions(&db)?.get(agent).map(|n| format!(" (number {n} in the queue)")).unwrap_or_default();
+        let row: Option<(String, String)> = db
+            .query_row("SELECT state, machine_id FROM executor_slots WHERE agent_id=?1", [agent], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        if let Some((_, machine)) = row.filter(|(state, _)| state == "waiting") {
+            let place = positions(&db)?.get(agent).map(|n| format!("; number {n} in the queue")).unwrap_or_default();
+            let (running, limit) = machine_slots(&db, &machine)?;
+            let name = machine_name(&db, &machine)?;
             return Err(WaitsForSlot(format!(
-                "executor_queued: this executor waits for an executor slot{place}; it starts when one is free. To run more at once, raise Executors at once in Settings"
+                "executor_queued: this executor waits for a slot on {name} ({running} of {limit} running there{place}); it starts when one is free. To run more at once there, raise that machine's Executors at once in Settings → Machines"
             )).into());
         }
         Ok(())
@@ -590,52 +625,42 @@ impl Store {
         Ok(())
     }
 
-    /// The limits and what holds or waits for a slot, for Settings.
-    fn executor_slots_view(&self, project: Option<&str>) -> Result<Value> {
+    /// The limits and what holds or waits for a slot, for Settings: each
+    /// machine's limit (S5: the only one), this Core host's first, their sum,
+    /// and the Workspace's start time limit. A Project's id is ignored: a
+    /// Project has no limit of its own any more.
+    fn executor_slots_view(&self, _project: Option<&str>) -> Result<Value> {
         let db = self.db.read()?;
-        if let Some(project) = project {
-            crate::projects::ensure_exists(&db, project)?;
-        }
         let workspace = limit_at(&db, KEY)?;
         let counts: HashMap<String, i64> = db
             .prepare("SELECT state, COUNT(*) FROM executor_slots WHERE state!='released' GROUP BY state")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
         let count = |state: &str| counts.get(state).copied().unwrap_or(0);
-        let mut view = json!({
-            "workspace": {"version": workspace.version, "slots": workspace.slots.unwrap_or(DEFAULT_SLOTS),
-                "saved": workspace.slots.is_some(), "default": DEFAULT_SLOTS,
-                "startLimitSeconds": workspace.start_limit.unwrap_or(DEFAULT_START_LIMIT)},
-            "limits": {"min": 1, "max": MAX_SLOTS,
-                "startLimitSeconds": {"min": START_LIMITS.start(), "max": START_LIMITS.end(), "default": DEFAULT_START_LIMIT}},
-            "inUse": {"waiting": count("waiting"), "starting": count("starting"), "running": count("running")},
-        });
-        if let Some(project) = project {
-            let own = limit_at(&db, &project_key(project))?;
-            view["project"] = json!({"id": project, "version": own.version, "slots": own.slots});
-        }
-        // Each machine's own limit, this Core host's first, and the executors
-        // holding a slot there (T-35 S3b).
-        let mut machines = vec![("local".to_owned(), "this Core host".to_owned())];
-        let mut q = db.prepare("SELECT data FROM machines ORDER BY id")?;
-        for raw in q.query_map([], |r| r.get::<_, String>(0))? {
-            let machine: crate::remote::RemoteMachine = serde_json::from_str(&raw?)?;
-            machines.push((machine.id, machine.name));
-        }
         let mut listed = Vec::new();
-        for (id, name) in machines {
+        let mut total = 0;
+        for (id, name) in machine_names(&db)? {
             let own = limit_at(&db, &machine_key(&id))?;
-            let (held, _) = machine_slots(&db, &id)?;
-            listed.push(json!({"id": id, "name": name, "version": own.version, "slots": own.slots, "executors": held}));
+            let (held, slots) = machine_slots(&db, &id)?;
+            total += slots;
+            listed.push(json!({"id": id, "name": name, "version": own.version, "slots": slots, "saved": own.slots.is_some(),
+                "default": DEFAULT_SLOTS, "executors": held}));
         }
-        view["machines"] = json!(listed);
-        Ok(view)
+        Ok(json!({
+            "workspace": {"version": workspace.version,
+                "startLimitSeconds": workspace.start_limit.unwrap_or(DEFAULT_START_LIMIT)},
+            "limits": {"min": 1, "max": MAX_SLOTS, "default": DEFAULT_SLOTS,
+                "startLimitSeconds": {"min": START_LIMITS.start(), "max": START_LIMITS.end(), "default": DEFAULT_START_LIMIT}},
+            "machines": listed,
+            "total": total,
+            "inUse": {"waiting": count("waiting"), "starting": count("starting"), "running": count("running")},
+        }))
     }
 
-    /// A machine's own limit on executors at once, or none (T-35 S3b): this
-    /// Core host's (`local`) or a registered machine's. Lowering it under the
-    /// executors running there stops none: no more start there until fewer
-    /// hold a slot.
+    /// A machine's own limit on executors at once, or none for the default
+    /// (T-35 S3b, S5): this Core host's (`local`) or a registered machine's.
+    /// Lowering it under the executors running there stops none: no more
+    /// start there until fewer hold a slot.
     fn save_machine_slots(&self, machine: &str, expected: i64, slots: Option<i64>) -> Result<()> {
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
@@ -646,22 +671,17 @@ impl Store {
         Ok(())
     }
 
-    /// `start_limit`: the Workspace's only (S2); none keeps the one saved.
-    fn save_executor_slots(&self, project: Option<&str>, expected: i64, slots: Option<i64>, start_limit: Option<i64>) -> Result<()> {
+    /// The Workspace's start time limit (S2). Its number on executors at
+    /// once is no longer set (S5): a save naming one is refused, and the one
+    /// stored stays, for older Cores.
+    fn save_start_limit(&self, expected: i64, slots: Option<i64>, start_limit: Option<i64>) -> Result<()> {
+        ensure!(slots.is_none(), "{SETTING_REMOVED}");
+        let start_limit = start_limit
+            .context("invalid_input: a start's time limit is a whole number of seconds from 30 to 3600")?;
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
-        let key = match project {
-            Some(project) => {
-                crate::projects::ensure_assignable(&tx, project)?;
-                ensure!(start_limit.is_none(), "invalid_input: a start's time limit is the Workspace's, not a project's");
-                project_key(project)
-            }
-            None => {
-                ensure!(slots.is_some(), "invalid_input: the Workspace's executors at once is a whole number from 1 to {MAX_SLOTS}");
-                KEY.to_owned()
-            }
-        };
-        save_limit(&tx, &key, expected, slots, start_limit)?;
+        let kept = limit_at(&tx, KEY)?.slots;
+        save_limit(&tx, KEY, expected, kept, Some(start_limit))?;
         tx.commit()?;
         Ok(())
     }
@@ -977,7 +997,9 @@ struct ForProject {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Save {
     expected_version: i64,
-    /// Whole numbers 1 to 64; none for a Project's own limit to stop applying.
+    /// A machine's: whole numbers 1 to 64, or none for the default. Named
+    /// for the Workspace or a Project, it is refused (S5).
+    #[serde(default)]
     slots: Option<Value>,
     /// The Workspace's only: whole seconds, 30 to 3600; none keeps it.
     #[serde(default)]
@@ -1011,7 +1033,7 @@ async fn get_slots(AxumState(ws): AxumState<Arc<Workspace>>, Query(query): Query
 async fn put_slots(AxumState(ws): AxumState<Arc<Workspace>>, Json(input): Json<Save>) -> Result<Json<Value>, ApiError> {
     let (slots, start_limit) = (slots_of(&input)?, start_limit_of(&input)?);
     let view = ws.stored(move |s| {
-        s.save_executor_slots(None, input.expected_version, slots, start_limit)?;
+        s.save_start_limit(input.expected_version, slots, start_limit)?;
         s.executor_slots_view(None)
     }).await?;
     ws.changes.send(json!({"executorSlots": true}));
@@ -1019,20 +1041,9 @@ async fn put_slots(AxumState(ws): AxumState<Arc<Workspace>>, Json(input): Json<S
     Ok(Json(view))
 }
 
-async fn put_project_slots(
-    AxumState(ws): AxumState<Arc<Workspace>>,
-    Path(id): Path<String>,
-    Json(input): Json<Save>,
-) -> Result<Json<Value>, ApiError> {
-    let (slots, start_limit) = (slots_of(&input)?, start_limit_of(&input)?);
-    let project = id.clone();
-    let view = ws.stored(move |s| {
-        s.save_executor_slots(Some(&project), input.expected_version, slots, start_limit)?;
-        s.executor_slots_view(Some(&project))
-    }).await?;
-    ws.changes.send(json!({"executorSlots": true, "projectId": id}));
-    ws.wake_executor_slots();
-    Ok(Json(view))
+/// A Project's own number from an older page (S5): refused, whatever it sends.
+async fn put_project_slots() -> Result<Json<Value>, ApiError> {
+    Err(anyhow::anyhow!(SETTING_REMOVED).into())
 }
 
 /// A machine's own limit: `slots` (1 to 64), or null to clear it. A start

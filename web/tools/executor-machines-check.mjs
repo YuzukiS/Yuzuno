@@ -37,10 +37,13 @@ let machines = [
   { id: "boxed", name: "Boxed", kind: "ssh", target: "boxed", codex: "codex", defaultCwd: "/srv/boxed", contained: true, lastCheck: null },
 ];
 // What Core keeps and answers (executor_slots.rs `executor_slots_view`).
-let limits = [{ id: "local", name: "this Core host", version: 0, slots: null, executors: 1 },
-  { id: "lab", name: "Lab box", version: 2, slots: 3, executors: 1 }, { id: "boxed", name: "Boxed", version: 0, slots: null, executors: 0 }];
-const slotsView = () => ({ workspace: { version: 0, slots: 3, saved: false, default: 3, startLimitSeconds: 300 },
-  limits: { min: 1, max: 64, startLimitSeconds: { min: 30, max: 3600, default: 300 } }, inUse: { waiting: 1, starting: 0, running: 2 }, machines: limits });
+// As Core answers since YN-2 S5: `slots` is the limit that applies, `saved` whether it is the machine's own.
+let limits = [{ id: "local", name: "this Core host", version: 0, slots: 3, saved: false, default: 3, executors: 1 },
+  { id: "lab", name: "Lab box", version: 2, slots: 3, saved: true, default: 3, executors: 1 },
+  { id: "boxed", name: "Boxed", version: 0, slots: 3, saved: false, default: 3, executors: 0 }];
+const slotsView = () => ({ workspace: { version: 0, startLimitSeconds: 300 },
+  limits: { min: 1, max: 64, default: 3, startLimitSeconds: { min: 30, max: 3600, default: 300 } }, inUse: { waiting: 1, starting: 0, running: 2 },
+  machines: limits, total: limits.reduce((sum, m) => sum + m.slots, 0) });
 let saved = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude" }] };
 const templates = () => ({ workspace: saved, available: saved.templates.map((template) => ({ template, source: "workspace" })),
   defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false });
@@ -82,7 +85,7 @@ await context.route("**/*", async (route) => {
     const id = decodeURIComponent(limitPut[1]);
     const own = limits.find((m) => m.id === id);
     if (!own || body.expectedVersion !== own.version) return route.fulfill({ status: 400, json: { error: "version_conflict: these executor slots changed; reload before saving" } });
-    limits = limits.map((m) => (m.id === id ? { ...m, version: m.version + 1, slots: body.slots } : m));
+    limits = limits.map((m) => (m.id === id ? { ...m, version: m.version + 1, slots: body.slots ?? 3, saved: body.slots !== null } : m));
     return route.fulfill({ json: slotsView() });
   }
   const machinePut = path.match(/^\/api\/machines\/([^/]+)$/);
@@ -215,6 +218,7 @@ try {
   const host = dialog.locator('[data-machine-id="local"] .machine-executor-limit');
   await host.waitFor({ timeout: 10_000 });
   await host.getByText("1 on this machine now.").waitFor({ timeout: 10_000 });
+  assert.equal(await host.locator("input").getAttribute("placeholder"), "Default: 3", "none saved: empty, the default shown (YN-2 S5)");
   await host.locator("input").fill("2");
   await host.getByRole("button", { name: "Save executors at once" }).click();
   await host.getByText("Saved.").waitFor({ timeout: 10_000 });

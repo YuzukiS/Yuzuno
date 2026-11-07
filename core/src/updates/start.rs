@@ -718,6 +718,7 @@ fn probe(client: &reqwest::blocking::Client, port: u16, workspace_id: &str) -> A
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_ports::free_port;
     use crate::updates::catalog;
     use std::{io::Write, net::TcpListener, os::unix::fs::PermissionsExt, sync::Arc};
 
@@ -741,9 +742,6 @@ mod tests {
         fs::create_dir_all(&data).unwrap();
         fs::create_dir_all(&cwd).unwrap();
         Launch { port, data_dir: data, cwd, codex: "/opt/codex/bin/codex".into() }
-    }
-    fn free_port() -> u16 {
-        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port()
     }
     const WORKSPACE: &str = "workspace-1";
     const QUICK: Budget = Budget { lock: Duration::from_secs(5), ready: Duration::from_secs(20) };
@@ -1146,7 +1144,8 @@ http.server.HTTPServer(("127.0.0.1", port), Health).serve_forever()
         }
         assert!(starts_seen(&notes).is_empty());
         // Its remote port is another program's: it exits before it records.
-        let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        // Taken from free_port too: a bind of port 0 could be given Core's.
+        let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, free_port())).unwrap();
         let outcome = start_with(&install.layout.root, port, WORKSPACE, &on(taken.local_addr().unwrap().port()), QUICK);
         assert_eq!((outcome["state"].as_str(), outcome["code"].as_str()), (Some("failed"), Some("exited")), "{outcome}");
         // So with a Core that fails before it listens.
