@@ -1,5 +1,5 @@
 import { memo, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Eye, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareReply, MoreHorizontal, Square, SquareCheckBig } from "lucide-react";
+import { ArrowRight, Eye, FileText, Globe, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareReply, MoreHorizontal, Square, SquareCheckBig } from "lucide-react";
 import { errorText } from "../api";
 import { CopyButton } from "../components";
 import { useLanguage, useStrings } from "../i18n";
@@ -17,7 +17,9 @@ import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { PinOff } from "lucide-react";
 import { CardFoldWorkspace } from "./card-fold";
-import { cardContent, LARGE_METRICS, LARGE_TABLE_PREVIEW, shownSize, TABLE_PREVIEW, type CardFigure, type CardSize } from "./card-preview";
+import { CARD_FILES, cardContent, LARGE_METRICS, LARGE_TABLE_PREVIEW, selfContained, shownSize, TABLE_PREVIEW, type CardFigure, type CardFile, type CardSize } from "./card-preview";
+import { CardPage, CardPageLine } from "./CardPage";
+import { openInPortal } from "../portal";
 import { DeckSizes, sizable } from "./card-sizes";
 import { SizeChoice } from "./SizeChoice";
 import { cardText } from "./card-text";
@@ -113,7 +115,10 @@ export const SummaryCard = memo(function SummaryCard({
       setSeeing(false);
     }
   }
-  const open = (from: HTMLElement) => openReport?.(projectId, section, from);
+  // A card that is its whole report has no way to a page that would show only the same (YN-3); the page keeps its address.
+  const contained = useMemo(() => selfContained(section, content), [section, content]);
+  const report = contained ? null : openReport;
+  const open = (from: HTMLElement) => report?.(projectId, section, from);
   const status = section.kind === "status";
   // A small card draws no figure (Dev 7's v12, v15): Metrics as big numbers;
   // a kept image, a button that opens it whole in place (YN-3); any other,
@@ -125,6 +130,8 @@ export const SummaryCard = memo(function SummaryCard({
     <BigNumbers items={metricsOf(section, shown)!} />
   ) : shown.kind === "image" && shown.kept ? (
     <ImageView section={section} projectId={projectId} figure={shown} />
+  ) : shown.kind === "page" ? (
+    <CardPageLine section={section} projectId={projectId} figure={shown} title={section.title} />
   ) : (
     <p className="home-card-figure-note">{t.figureOnPage(figureKindOf(section, shown, t.figureKind), status)}</p>
   );
@@ -137,7 +144,7 @@ export const SummaryCard = memo(function SummaryCard({
       data-card-size={size ?? undefined}
       data-size-source={source ?? undefined}
       tabIndex={-1}
-      className={`home-section home-summary-card kind-${section.kind}${size ? ` size-${size}` : ""}${content.kind === "unnamed" ? " is-unnamed" : ""}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}`}
+      className={`home-section home-summary-card kind-${section.kind}${size ? ` size-${size}` : ""}${content.kind === "unnamed" ? " is-unnamed" : ""}${contained ? " is-whole" : ""}${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${stale ? " is-stale" : ""}`}
       aria-labelledby={`${domId}-title`}
     >
       {notice}
@@ -193,7 +200,7 @@ export const SummaryCard = memo(function SummaryCard({
       <div className={`home-summary-body${figure ? " has-figure" : ""}`}>
         <div className="home-summary-text">
           <h3 id={`${domId}-title`} className="home-summary-title">
-            {openReport ? (
+            {report ? (
               <button type="button" className="home-summary-title-link" onClick={(event) => open(event.currentTarget)}>
                 {section.title}
               </button>
@@ -212,6 +219,7 @@ export const SummaryCard = memo(function SummaryCard({
         </div>
         {figure}
       </div>
+      {content.files.length > 0 && <CardFiles section={section} projectId={projectId} files={content.files} onReport={report ? open : null} />}
       <footer className="home-summary-foot">
         <span className="home-summary-byline">
           {/* A sub-topic is labelled with its own author, as before (T-197). */}
@@ -226,7 +234,7 @@ export const SummaryCard = memo(function SummaryCard({
             <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
           )}
         </span>
-        {openReport && (
+        {report && (
           <button type="button" className="home-report-open" aria-label={t.openLabel(section.title)} onClick={(event) => open(event.currentTarget)}>
             {status ? t.openStatus : t.openReport}
             <ArrowRight size={14} />
@@ -452,6 +460,64 @@ function BigNumbers({ items }: { items: Metric[] }) {
 
 /** A small card's kept image (YN-3): not drawn in a frame, but one click
  * or key away, whole, in the image viewer, as from its report page. */
+/** The body's other files, named under the picture, each opened in place; past three, "+n more" (YN-3). */
+function CardFiles({ section, projectId, files, onReport }: { section: Section; projectId: string; files: CardFile[]; onReport: ((from: HTMLElement) => void) | null }) {
+  const t = useStrings(cardText);
+  return (
+    <ul className="home-card-files" aria-label={t.filesLabel}>
+      {files.slice(0, CARD_FILES).map((file) => (
+        <li key={file.name}>
+          <CardFileChip section={section} projectId={projectId} file={file} onReport={onReport} />
+        </li>
+      ))}
+      {files.length > CARD_FILES && (
+        <li>
+          {onReport ? (
+            <button type="button" className="quiet-button home-card-file-more" onClick={(event) => onReport(event.currentTarget)}>
+              {t.filesMore(files.length - CARD_FILES)}
+            </button>
+          ) : (
+            <span className="home-card-file-more">{t.filesMore(files.length - CARD_FILES)}</span>
+          )}
+        </li>
+      )}
+    </ul>
+  );
+}
+
+/** One file: a kept image opens in the viewer, a kept page in the Portal, any other on the report page. */
+function CardFileChip({ section, projectId, file, onReport }: { section: Section; projectId: string; file: CardFile; onReport: ((from: HTMLElement) => void) | null }) {
+  const attachment = section.attachments.find((item) => item.name === file.name);
+  const viewer = useKeptImagePreview(projectId, section, file.kind === "image" && file.kept ? attachment : undefined, attachment?.caption);
+  const inPlace = file.kept && (file.kind === "image" || file.kind === "page");
+  const Icon = file.kind === "image" ? ImageIcon : file.kind === "page" ? Globe : FileText;
+  return (
+    <>
+      <button
+        type="button"
+        className="home-card-file"
+        title={file.name}
+        disabled={!inPlace && !onReport}
+        onClick={(event) => {
+          if (file.kind === "image" && inPlace) viewer.open();
+          else if (file.kind === "page" && inPlace)
+            openInPortal({
+              kind: "snapshot",
+              source: { kind: "briefAttachment", projectId, section: section.key, name: file.name, version: section.version },
+              name: file.name,
+              from: `Home · ${section.title}`,
+            }, event.currentTarget);
+          else onReport?.(event.currentTarget);
+        }}
+      >
+        <Icon size={12} aria-hidden="true" />
+        <span>{file.name}</span>
+      </button>
+      {viewer.dialog}
+    </>
+  );
+}
+
 function ImageView({ section, projectId, figure }: { section: Section; projectId: string; figure: Extract<CardFigure, { kind: "image" }> }) {
   const t = useStrings(cardText);
   const file = section.attachments.find((item) => item.name === figure.name);
@@ -500,6 +566,13 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
   const metrics = large ? metricsOf(section, figure) : null;
   const chart = chartOf(section, figure);
   const brief = useMemo(() => ({ projectId, section }), [projectId, section]);
+  if (figure.kind === "page")
+    return (
+      <figure className="home-card-frame kind-page">
+        <CardPage projectId={projectId} section={section} figure={figure} title={section.title} />
+        {figure.caption && <figcaption>{figure.caption}</figcaption>}
+      </figure>
+    );
   return (
     <figure className={`home-card-frame kind-${figure.kind}${chart ? " is-chart" : ""}`}>
       <FrameBody opens={opens} label={figure.kind === "image" ? words.openImage(figure.name) : ""} onOpen={viewer.open}>

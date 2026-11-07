@@ -687,3 +687,107 @@ button.home-card-image-open:focus-visible .brief-image-zoom {
     transition: none;
   }
 }
+
+/* A page shown working on its card (YN-3, CardPage.tsx): the Portal's
+   sandboxed frame, filling the card's figure area; Open large in its corner. */
+.home-card-frame.kind-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+}
+.home-card-page {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 220px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+.home-card-page-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 220px;
+  border: 0;
+  background: #fff;
+}
+.home-card-page-state {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 12px;
+  color: var(--home-ink-2);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-align: center;
+}
+.home-card-page-state > p {
+  margin: 0;
+}
+.home-card-page-name {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.home-card-page-large {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+}
+/* A small card's page: one line that opens it. */
+.home-card-page-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+/* The body's other files, under the picture. */
+.home-card-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.home-card-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 16em;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(9px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.home-card-file > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-card-file:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.home-card-file-more {
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+/* A card that is its whole report shows its lead whole (YN-3). */
+.home-summary-card.is-whole .home-summary-lead .brief-markdown,
+:is(.home-brief, .home-widget-grid) .home-summary-card.is-whole.size-large .home-summary-lead .brief-markdown {
+  display: block;
+  -webkit-line-clamp: unset;
+  line-clamp: none;
+  overflow: visible;
+}
