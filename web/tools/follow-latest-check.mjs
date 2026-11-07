@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { chromium } from "playwright-core";
-import { noJobs, noCiRuns, noReviews, idleJobsBudget, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { noJobs, noCiRuns, noConversationInputs, noReviews, idleJobsBudget, unmanagedUpdates } from "./browser-fixtures.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "An isolated production build is required");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -172,6 +172,7 @@ try {
       else if (url.pathname === "/api/jobs/budget") data = idleJobsBudget;
       else if (url.pathname === "/api/ci") data = noCiRuns;
       else if (url.pathname === "/api/reviews") data = noReviews;
+      else if (/^\/api\/agents\/[ab]\/conversation\/inputs$/.test(url.pathname)) data = noConversationInputs;
       else if (url.pathname === "/api/backlog") data = { observedAt: "2026-10-16T00:00:00Z", agents: {} };
       else if (url.pathname === "/api/pr-reviews/settings") data = { harness: "codex", model: "gpt-6.1-sol" };
       if (data !== undefined) { result.requests.push(url.pathname + url.search); return route.fulfill({ json: data }); }

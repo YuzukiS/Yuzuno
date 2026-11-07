@@ -1210,6 +1210,11 @@ export function App() {
   const lastTop = useRef(0);
   // Puts the page target's place back, while it holds (ConversationRows calls it).
   const heldPlace = useRef<(() => void) | null>(null);
+  // Where the reader is while the page target's window is still on its way:
+  // pages now load as the reader scrolls (YN-19), and the reader keeps
+  // scrolling while one loads, so the place held is the one they are at
+  // when it arrives, not the one where the read began.
+  const pageHold = useRef<{ turnId: string; itemId?: string; top: number } | null>(null);
   // Back to latest from a window that is not the newest waits for it (T-6).
   const toLatest = useRef(false);
   // Back to latest keeps the end in view until the newest window is in and
@@ -1273,9 +1278,10 @@ export function App() {
     if (!window || (window.start === pageTarget.start && window.end === pageTarget.end)) return;
     // Keep the mount hint through the first measurement pass. Otherwise a
     // target in an estimated gap can disappear before its position is stable.
+    const place = pageHold.current ?? pageTarget;
     const restore = () => {
-      const item = pageAnchor(pageTarget.turnId, pageTarget.itemId);
-      const moved = item && scroll.current ? readingTop(item) - pageTarget.top : 0;
+      const item = pageAnchor(place.turnId, place.itemId);
+      const moved = item && scroll.current ? readingTop(item) - place.top : 0;
       if (moved) scroll.current!.scrollTop += moved;
       return Math.abs(moved) >= 0.5;
     };
@@ -2839,6 +2845,7 @@ export function App() {
       top:item ? readingTop(item) : (scroll.current?.getBoundingClientRect().top ?? 0) + 32,
       start:window.start, end:window.end, hold:true as const};
     const reading = readerAnchor();
+    pageHold.current = null;
     stickToBottom.current = false;
     setHistoryReading(true);
     setAtBottom(false);
@@ -4130,6 +4137,13 @@ export function App() {
                     // says nothing about the reader (pinLatest).
                     if (latestPin.current) return;
                     if (draggingScrollbar.current && Math.abs(moved) >= 1) readerWay.current = moved > 0 ? "down" : "up";
+                    // Still scrolling while a page is on its way: the place
+                    // to hold is where the reader is now (pageHold).
+                    const shown = currentDetail?.conversation;
+                    if (pageTarget && shown && shown.start === pageTarget.start && shown.end === pageTarget.end) {
+                      const now = readerAnchor();
+                      if (now) pageHold.current = now;
+                    }
                     if (
                       draggingScrollbar.current &&
                       el.scrollHeight - el.scrollTop - el.clientHeight < 8

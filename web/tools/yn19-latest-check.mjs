@@ -273,10 +273,19 @@ async function scrollTowardEnd(page, cdp, viewport, fixture, run) {
   run.stalled = 0;
   for (let step = 0; step < 160; step++) {
     const before = await pane(page).evaluate((el) => el.scrollTop);
-    await cdp.send("Input.synthesizeScrollGesture", {
-      x: Math.round(view.x + view.width / 2), y: Math.round(view.y + view.height * 0.6),
-      yDistance: -220, speed: 1600, gestureSourceType: viewport.touch ? "touch" : "mouse", preventFling: true,
-    });
+    const x = Math.round(view.x + view.width / 2), y = Math.round(view.y + view.height * 0.6);
+    if (viewport.touch) {
+      // A finger: touch moves through Chromium's input pipeline pan the pane
+      // (a synthesized touch gesture sends the page no moves; reader-row-check).
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+      for (let i = 1; i <= 11; i++) {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - i * 20 }] });
+        await page.waitForTimeout(16);
+      }
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    } else {
+      await cdp.send("Input.synthesizeScrollGesture", { x, y, yDistance: -220, speed: 1600, gestureSourceType: "mouse", preventFling: true });
+    }
     await page.waitForTimeout(40);
     if (await pane(page).evaluate((el, before) => el.scrollTop === before, before)) run.stalled++;
     if (fixture.reads.slice(reads).some((r) => r.direction === "after")) return "loading";
@@ -361,15 +370,21 @@ for (const viewport of VIEWPORTS) for (const lang of LANGS) for (const theme of 
     await page.screenshot({ path: resolve(output, `${tag}-latest.png`) });
 
     // Main's way from the end of an older window, as the user took it:
-    // "Continue to newer messages", then Back to latest until at the end.
+    // "Continue to newer messages" until the newest end is in the window
+    // (main's link goes then), then Back to latest until at the end.
     // Observed, not asserted, and only where that link exists.
     if (near.continueLink) {
       await jumpToFirstTurn(page, viewport, fixture);
       await scrollTowardEnd(page, cdp, viewport, fixture, {});
       const link = page.locator(".main-panel .conversation-history-window button");
-      if (await link.count()) {
+      let continues = 0;
+      for (; continues < 5 && await link.count(); continues++) {
         await link.first().click();
         await page.waitForTimeout(1500);
+        await pane(page).evaluate((el) => { el.scrollTop = el.scrollHeight; });
+        await page.waitForTimeout(400);
+      }
+      if (continues) {
         const continued = await placement(page, t.latest);
         const continuedGap = Math.round(await gap(page));
         const presses = [];
@@ -382,7 +397,7 @@ for (const viewport of VIEWPORTS) for (const lang of LANGS) for (const theme of 
           presses.push({ via: from.pill ? "floating" : "reading-bar", gap: trace.at(-1).gap, newestTop: trace.at(-1).top,
             gaps: trace.filter((_, i) => i % 6 === 0).map((f) => f.gap) });
         }
-        run.userPath = { afterContinue: { gap: continuedGap, pill: !!continued.pill, ways: continued.ways }, presses };
+        run.userPath = { continues, afterContinue: { gap: continuedGap, pill: !!continued.pill, ways: continued.ways }, presses };
         console.log(`OBSERVE ${tag}: main's own path ${JSON.stringify(run.userPath)}`);
       }
     }
