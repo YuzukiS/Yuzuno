@@ -175,7 +175,12 @@ async fn the_listing_names_its_task_by_its_key_and_its_template_by_its_label() {
         params![internal, project.id, json!({"id":"reviewer","label":"Reviewer","source":"workspace"}).to_string()],
     ).unwrap();
     let e1 = listed(s, "e1");
-    assert_eq!(e1["task"], json!({"id":"YN-1","title":"Keyed work"}), "its key, not T-<n>: {e1}");
+    assert_eq!(e1["task"], json!({"id":"YN-1","title":"Keyed work"}), "its key, not T-<n>, and no short name until given: {e1}");
+    // A short name given (T-43): the row says what it is doing by it.
+    let version = s.collaboration_call(None, "task_get", json!({"taskId":"YN-1","view":"current"})).unwrap()["current"]["version"].clone();
+    s.collaboration_call(None, "task_update", json!({"requestId":"named","taskId":"YN-1","expectedVersion":version,
+        "patch":{"shortName":"Keyed export"}})).unwrap();
+    assert_eq!(listed(s, "e1")["task"]["shortName"], "Keyed export");
     assert_eq!(e1["template"], json!({"id":"reviewer","label":"Reviewer"}), "{e1}");
     assert_eq!(e1["dispatchedAt"], "2026-11-06T01:00:00Z", "{e1}");
     // One made before its dispatch row was kept still names its template.

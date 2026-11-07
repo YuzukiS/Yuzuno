@@ -22,6 +22,8 @@ pub(super) struct Row {
     pub id: String,
     pub seq: i64,
     pub title: String,
+    #[serde(default)]
+    pub short_name: Option<String>,
     pub status: String,
     #[serde(default)]
     pub assignee: Option<TaskActor>,
@@ -50,9 +52,14 @@ impl Row {
     }
 
     pub(super) fn value(&self) -> Value {
-        json!({"id":self.id,"seq":self.seq,"title":self.title,"status":self.status,"version":self.version,
+        let mut row = json!({"id":self.id,"seq":self.seq,"title":self.title,"status":self.status,"version":self.version,
             "assignee":self.assignee,"updatedAt":self.updated_at,"progress":summary(&self.progress),
-            "blocker":summary(&self.blocker),"archivedAt":self.archived_at})
+            "blocker":summary(&self.blocker),"archivedAt":self.archived_at});
+        // Only where it has one (T-43): a row stays short.
+        if let Some(short) = &self.short_name {
+            row["shortName"] = json!(short);
+        }
+        row
     }
 }
 
