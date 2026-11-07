@@ -32,7 +32,9 @@ assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
 const report = { task: "YN-3", runs: [], posts: [], replies: [], unexpected: [], errors: [] };
-const HOST = "yuzuno-cards.test";
+// A secure origin, as Core's own (localhost, or https on a tailnet): a reply needs crypto.randomUUID, which a
+// browser gives only there. Every request is answered here; none leaves the browser.
+const HOST = "localhost:47391";
 const at = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 
 // A synthetic plot (a falling line on a light ground), as a kept snapshot.
@@ -169,7 +171,7 @@ async function check(run) {
   }, run.language);
   await context.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
-    if (url.hostname !== HOST) {
+    if (url.host !== HOST) {
       report.unexpected.push(request.url());
       return route.abort();
     }
