@@ -174,10 +174,9 @@ fn inode(metadata: &std::fs::Metadata) -> u64 {
     std::os::unix::fs::MetadataExt::ino(metadata)
 }
 
-/// Where OpenCode 1.19.3 keeps what it keeps, as it works them out from the
-/// environment it runs with (`core/src/global.ts`, xdg-basedir 5.1.0,
-/// Node's `os.homedir()`): `data` holds the snapshot stores; `home`, `state`
-/// and `config` are what its `GET /path` answers, to check against.
+/// Where OpenCode keeps what it keeps, as it works them out from the
+/// environment it runs with (2.2.5 packages/util/src/global-roots.ts,
+/// xdg-basedir, Node's `os.homedir()`): `data` holds the snapshot stores.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Roots {
     pub home: String,
@@ -227,17 +226,6 @@ impl Roots {
             home,
         })
     }
-
-    /// Whether OpenCode's own `GET /path` answer agrees: the same home, state
-    /// and config. It names no data folder, so this checks the environment
-    /// it works from, not the data folder itself.
-    pub fn agrees(&self, path: &Value) -> Result<()> {
-        for (name, ours) in [("home", &self.home), ("state", &self.state), ("config", &self.config)] {
-            let theirs = path[name].as_str().with_context(|| format!("OpenCode's /path has no {name}"))?;
-            ensure!(theirs == ours, "OpenCode's {name} folder is {theirs}, not {ours} as Core started it");
-        }
-        Ok(())
-    }
 }
 
 /// `base` and `parts` joined and normalized as Node's `path.join` does, for
@@ -256,9 +244,10 @@ fn join(base: &str, parts: &[&str]) -> String {
     format!("/{}", kept.join("/"))
 }
 
-/// OpenCode's snapshot store for `project` and `worktree`
-/// (`snapshot/index.ts:71`: `Hash.fast` is SHA-1 in hex), as its `GET /path`
-/// and the session name them, in `data`.
+/// OpenCode's snapshot store for `project` and `worktree` (2.2.5
+/// core/src/snapshot.ts: `Hash.fast` is SHA-1 in hex), as its location
+/// names them for the Agent's folder (the Git top level, resolved), in
+/// `data`.
 pub fn store(data: &str, project: &str, worktree: &str) -> Result<PathBuf> {
     ensure!(!project.is_empty() && project.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
         "OpenCode's project ID is not one folder name ({project})");
@@ -276,43 +265,6 @@ pub struct Target {
     pub file: String,
     pub rel: String,
     pub hash: String,
-}
-
-/// The files a revert to the user message `boundary` sends back, in
-/// OpenCode's order (`session/revert.ts:46-60`): every `patch` part after the
-/// boundary's first part, each file once, with the first such part's
-/// snapshot. `messages` are the session's, as OpenCode lists them. Each file
-/// must be a plain path inside `folder`, the Agent's own, itself inside
-/// `worktree`.
-pub fn targets(messages: &[Value], boundary: &str, worktree: &str, folder: &str) -> Result<Vec<Target>> {
-    ensure!(worktree != "/" && join(worktree, &[]) == worktree, "OpenCode's worktree is not a plain absolute path ({worktree})");
-    ensure!(folder == worktree || folder.starts_with(&format!("{worktree}/")), "The Agent's folder is not inside OpenCode's worktree");
-    let mut matched = false;
-    let mut found: Vec<Target> = Vec::new();
-    for message in messages {
-        let info = &message["info"];
-        for part in message["parts"].as_array().into_iter().flatten() {
-            if matched {
-                if part["type"] == "patch" {
-                    let hash = part["hash"].as_str().context("A patch part names no snapshot")?;
-                    ensure!(matches!(hash.len(), 40 | 64) && hash.bytes().all(|b| b.is_ascii_hexdigit()),
-                        "A patch part's snapshot is not an object ID ({hash})");
-                    for file in part["files"].as_array().context("A patch part names no files")? {
-                        let file = file.as_str().context("A patch part's file is not a path")?;
-                        if found.iter().any(|t| t.file == file) {
-                            continue;
-                        }
-                        found.push(Target { file: file.into(), rel: inside(file, worktree, folder)?, hash: hash.into() });
-                    }
-                }
-            } else if info["id"] == boundary {
-                ensure!(info["role"] == "user", "A revert goes back to a user message, not to {boundary}");
-                matched = true;
-            }
-        }
-    }
-    ensure!(matched, "OpenCode would revert nothing: {boundary} is not a message of this session with any part");
-    Ok(found)
 }
 
 /// The files a 2.x revert to the user message `boundary` sends back, in
