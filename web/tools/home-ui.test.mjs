@@ -800,7 +800,7 @@ test("an Ask answered here keeps its card until the next visit to Home, then is 
 });
 
 // T-132 with T-127: a replied ask's changed blocks are marked wherever its body shows.
-test("a replied ask marks its changed blocks where its body shows: the owner's update in view, or inside its folded details", async () => {
+test("a replied ask marks its changed blocks where its body shows: on its answer card, in the folded question and details; the owner's update after the reply on the card's face too (YN-3)", async () => {
   const notes = (summary) => ({
     root: "body",
     elements: {
@@ -826,18 +826,21 @@ test("a replied ask marks its changed blocks where its body shows: the owner's u
       p.doc.querySelector('[aria-label="Refresh Home"]').click();
       await waitFor(() => card(p, "p-app", "budget").dataset.sectionVersion === "2", "version 2 is shown");
       const budget = card(p, "p-app", "budget");
-      assert.ok(budget.classList.contains("is-replied"));
-      const details = budget.querySelector(".home-replied-details");
+      // A new version, replied when first shown: an answer card (YN-3, D3), its body folded.
+      assert.ok(budget.classList.contains("is-replied") && budget.classList.contains("is-answer"));
+      const body = budget.querySelector(":scope > .home-card-body");
+      assert.ok(body.hidden, "the question and details folded");
       if (updatedSinceReply) {
-        // The owner's update after the reply stays in view, its changed block marked.
-        assert.deepEqual(marks(budget.querySelector(":scope > .home-card-body > .home-section-body")), [["updated", "UpdatedPlan B is under way."]]);
-        assert.equal(details.querySelectorAll(".brief-change").length, 0, "only the question is folded away");
+        // What its owner says since the reply is on the card's face.
+        assert.match(budget.querySelector(".home-answer-update").textContent, /Plan B is under way\./);
       } else {
-        // Changed before the reply: the body is folded with the question, and marked there.
-        assert.equal(budget.querySelector(":scope > .home-card-body > .home-section-body"), null);
-        details.open = true;
-        assert.deepEqual(marks(details), [["updated", "UpdatedPlan B is under way."]]);
+        // Changed before the reply: nothing new from its owner on the face.
+        assert.equal(budget.querySelector(".home-answer-update"), null);
       }
+      // Either way, unfolded, the changed block is marked where the body shows.
+      budget.querySelector(".home-answer-details").click();
+      await waitFor(() => !body.hidden, "unfolded");
+      assert.deepEqual(marks(body.querySelector(":scope > .home-section-body")), [["updated", "UpdatedPlan B is under way."]]);
       assert.deepEqual(p.errors, []);
     } finally {
       p.close();
@@ -3062,17 +3065,16 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
     replied("tokenizer", "Keep the old tokenizer?", 522, "Keep it until the rebuild."),
     replied("draft", "Publish the draft?", 523, "Yes, once CI is green."),
   ];
-  const p = await mount({
-    home,
-    before: (w) => {
-      const own = w.getComputedStyle.bind(w);
-      w.getComputedStyle = (element, pseudo) => {
-        const style = own(element, pseudo);
-        if (!element?.classList?.contains("home-brief")) return style;
-        return new Proxy(style, { get: (target, key) => (key === "gridTemplateColumns" ? "300px 300px 300px 300px" : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
-      };
-    },
-  });
+  // Four columns as a browser lays the deck out; JSDOM lays out nothing.
+  const fourColumns = (w) => {
+    const own = w.getComputedStyle.bind(w);
+    w.getComputedStyle = (element, pseudo) => {
+      const style = own(element, pseudo);
+      if (!element?.classList?.contains("home-brief")) return style;
+      return new Proxy(style, { get: (target, key) => (key === "gridTemplateColumns" ? "300px 300px 300px 300px" : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+    };
+  };
+  const p = await mount({ home, before: fourColumns });
   try {
     await waitFor(() => card(p, "p-app", "draft")?.dataset.deckCols, "the deck is laid out");
     const span = (key) => [card(p, "p-app", key).dataset.deckCols ?? null, card(p, "p-app", key).dataset.deckRows ?? null];
@@ -3090,6 +3092,17 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
+  }
+  // A lone answer card takes its row, so the row has no hole.
+  home.projects.find((entry) => entry.project.id === "p-app").brief.sections.splice(2, 1);
+  const q = await mount({ home, before: fourColumns });
+  try {
+    await waitFor(() => card(q, "p-app", "tokenizer")?.dataset.deckCols, "the deck is laid out");
+    assert.equal(card(q, "p-app", "draft"), null);
+    assert.equal(card(q, "p-app", "tokenizer").dataset.deckCols, "4", "a lone answer card spans its row");
+    assert.deepEqual(q.errors, []);
+  } finally {
+    q.close();
   }
 });
 
