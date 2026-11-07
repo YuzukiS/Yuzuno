@@ -1,5 +1,5 @@
 import { useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
-import { useStateBinding } from "@json-render/react";
+import { useStateBinding, useStateStore } from "@json-render/react";
 import { Minus, Plus } from "lucide-react";
 import { langTag, useLanguage, useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
@@ -38,9 +38,19 @@ export function typedNumber(text: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-function useVariable<T>(name: string, fallback: T, accepts: (value: unknown) => value is T): [T, (value: T) => void] {
+/**
+ * A variable as drawn now, a way to set it, and its value at this moment:
+ * a control acting on what it holds reads that, never the value it was last
+ * drawn with, so two presses before a redraw make two steps.
+ */
+function useVariable<T>(name: string, fallback: T, accepts: (value: unknown) => value is T): [T, (value: T) => void, () => T] {
   const [stored, set] = useStateBinding<T>(`/${name}`);
-  return [accepts(stored) ? stored : fallback, set];
+  const { get } = useStateStore();
+  const now = () => {
+    const value = get(`/${name}`);
+    return accepts(value) ? value : fallback;
+  };
+  return [accepts(stored) ? stored : fallback, set, now];
 }
 const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const isBoolean = (value: unknown): value is boolean => typeof value === "boolean";
@@ -51,8 +61,9 @@ export function BriefNumberInput(props: NumberInputProps) {
   const t = useStrings(briefText);
   const language = useLanguage();
   const id = useId();
-  const [value, set] = useVariable(name, props.value, isNumber);
-  const digits = props.digits ?? decimalsOf(step);
+  const [value, set, now] = useVariable(name, props.value, isNumber);
+  // As many decimals as a value it can take has: the step's, min's or max's (stepped() keeps them).
+  const digits = props.digits ?? Math.max(decimalsOf(step), decimalsOf(min), decimalsOf(max));
   const format = useMemo(
     () => new Intl.NumberFormat(langTag(language), { minimumFractionDigits: digits, maximumFractionDigits: digits, useGrouping: false }),
     [language, digits],
@@ -77,7 +88,7 @@ export function BriefNumberInput(props: NumberInputProps) {
     } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
       event.preventDefault();
       setDraft(null);
-      commit(value + (event.key === "ArrowUp" ? step : -step));
+      commit(now() + (event.key === "ArrowUp" ? step : -step));
     } else if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
       setDraft(null);
@@ -120,11 +131,11 @@ export function BriefNumberInput(props: NumberInputProps) {
           number
         ) : (
           <>
-            <button type="button" className="brief-step" aria-label={t.decrease(label)} disabled={value <= min} onClick={() => commit(value - step)}>
+            <button type="button" className="brief-step" aria-label={t.decrease(label)} disabled={value <= min} onClick={() => commit(now() - step)}>
               <Minus size={16} aria-hidden="true" />
             </button>
             {number}
-            <button type="button" className="brief-step" aria-label={t.increase(label)} disabled={value >= max} onClick={() => commit(value + step)}>
+            <button type="button" className="brief-step" aria-label={t.increase(label)} disabled={value >= max} onClick={() => commit(now() + step)}>
               <Plus size={16} aria-hidden="true" />
             </button>
           </>
@@ -156,7 +167,7 @@ export function BriefSwitch(props: SwitchProps) {
   const { name, label, detail } = props;
   const t = useStrings(briefText);
   const id = useId();
-  const [on, set] = useVariable(name, props.value, isBoolean);
+  const [on, set, now] = useVariable(name, props.value, isBoolean);
   return (
     <div className="brief-input brief-switch">
       <button
@@ -166,7 +177,7 @@ export function BriefSwitch(props: SwitchProps) {
         className="brief-switch-control"
         aria-checked={on}
         aria-describedby={detail ? `${id}-detail` : undefined}
-        onClick={() => set(!on)}
+        onClick={() => set(!now())}
       >
         <span className="brief-switch-track" aria-hidden="true">
           <span className="brief-switch-thumb" />

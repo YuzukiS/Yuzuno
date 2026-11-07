@@ -690,6 +690,7 @@ test("YN-16 a report page's blocks share its variables, which are not its card's
   toggle.click();
   await until(() => /Stir in the olive oil/.test(report.querySelector("#report-block-method").textContent), "a block of another part follows");
   assert.doesNotMatch(report.querySelector("#report-block-method").textContent, /butter/);
-  assert.ok(page.requests.every((request) => request.method === "GET"), "nothing is written");
+  // Home reads its project's linked repositories with a POST (home-api.ts); nothing else is sent.
+  assert.deepEqual(page.requests.filter((request) => request.method !== "GET").map((request) => request.url).filter((url) => url !== "/api/collaboration/github_repositories"), [], "nothing is written");
   assert.deepEqual(page.errors, []);
 });

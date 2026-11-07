@@ -984,7 +984,7 @@ test("YN-16 the guide's interactive part states what the checks check", () => {
   for (const type of ["NumberInput", "Switch", "Segmented"]) assert.ok(part.includes(`- ${type} {name, `), type);
   assert.match(part, /never saved, never sent to you and never runs anything/);
   assert.match(part, /a letter a-z, then up to 31 letters or digits.*declared once per section, at most 16 in all/);
-  assert.match(part, /takes at most 100000 steps from min to max/);
+  assert.match(part, /takes at most 100000 steps from min to max; digits is how many decimals are shown \(default: as many as step, min or max has\)/);
   assert.match(part, /only a block inside a Group has one, as the root's own blocks are always shown/);
   assert.match(part, /eq or neq a value of the variable's kind \(for a Segmented, one of its options' values\), or gt, gte, lt or lte a number/);
   assert.match(part, /at most 8 conditions and 3 levels\. Nothing else is read: no \$item, \$index, \$cond, \$bindState or \$computed/);
