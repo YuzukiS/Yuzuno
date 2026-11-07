@@ -471,5 +471,6 @@ async fn a_lead_lists_the_templates_to_choose_one() {
 
     let tool = crate::collaboration_store::tool_definitions().into_iter().find(|t| t["name"] == LIST_TOOL).expect("offered to Agents");
     assert!(tool["description"].as_str().unwrap().encode_utf16().count() <= crate::results::max_description_length());
-    assert_eq!(tool["inputSchema"]["properties"], json!({}));
+    assert_eq!(tool["inputSchema"]["properties"].as_object().unwrap().keys().collect::<Vec<_>>(), ["full"]);
 }
+
