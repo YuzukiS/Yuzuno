@@ -384,6 +384,7 @@ async fn gh_deadline_ends_only_the_owned_reader() {
     let client = client::Client {
         program: path.to_str().unwrap().into(),
         deadline: Duration::from_millis(100),
+        ..Default::default()
     };
     let started = Instant::now();
     assert!(client
