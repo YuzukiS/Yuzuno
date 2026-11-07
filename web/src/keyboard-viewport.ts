@@ -6,7 +6,9 @@
  * screen. After a rotation sideways and back with the keyboard still open,
  * the focused composer stayed below the 377 px the keyboard leaves.
  *
- * While the phone layout is shown, this sets --visual-height on the root to
+ * Wherever a finger is the pointer — the phone layout, and any touched screen
+ * wide enough to keep the side-by-side one (T-15) — this sets --visual-height
+ * on the root to
  * the visual viewport's height and marks the root data-keyboard; the shell's
  * CSS then fits what is left. It does that only while the keyboard is
  * plainly up:

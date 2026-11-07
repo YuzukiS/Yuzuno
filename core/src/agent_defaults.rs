@@ -28,7 +28,7 @@
 use crate::{model::AgentSettings, server::ApiError, store::Store, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
 use axum::{extract::{Path, Query, State}, routing::{get, post}, Json, Router};
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -356,15 +356,32 @@ pub fn resolve(
     Ok(Resolved { harness, settings, sources: json!({"harness":harness_source,"permission":permission}) })
 }
 
+fn defaults_in(db: &Connection, key: &str) -> Result<AgentDefaults> {
+    let raw: Option<String> = db.query_row("SELECT value FROM workspace_meta WHERE key=?1", [key], |r| r.get(0)).optional()?;
+    Ok(match raw {
+        Some(raw) => serde_json::from_str(&raw)?,
+        None => AgentDefaults::default(),
+    })
+}
+
+/// The harness a new Agent of `project` gets when it names none, and where
+/// that came from ("project", "workspace" or "builtin"), read in the
+/// caller's transaction: a general executor's (YN-2), chosen as its
+/// dispatch is checked.
+pub(crate) fn new_agent_harness(db: &Connection, project: Option<&str>) -> Result<(String, &'static str)> {
+    let own = project.map(|project| defaults_in(db, &project_key(project))).transpose()?;
+    let new = resolve(&defaults_in(db, KEY)?, own.as_ref(), None, None, None)?;
+    let source = match new.sources["harness"].as_str() {
+        Some("project") => "project",
+        Some("workspace") => "workspace",
+        _ => "builtin",
+    };
+    Ok((new.harness, source))
+}
+
 impl Store {
     fn defaults_at(&self, key: &str) -> Result<AgentDefaults> {
-        let raw: Option<String> = self.db.read()?
-            .query_row("SELECT value FROM workspace_meta WHERE key=?1", [key], |r| r.get(0))
-            .optional()?;
-        Ok(match raw {
-            Some(raw) => serde_json::from_str(&raw)?,
-            None => AgentDefaults::default(),
-        })
+        defaults_in(&*self.db.read()?, key)
     }
 
     /// No choice left is no row: inherited (or built in) again.

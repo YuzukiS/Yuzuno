@@ -289,6 +289,9 @@ export type JobsBudgetView = {
   reserved: Resources;
   queuedCount: number;
   activeCount: number;
+  /** Jobs that wait for an earlier stage of their run or for its analysis,
+   * in neither count above. Absent from Cores before T-69. */
+  waitingCount?: number;
   /** Absent from Cores before T-55. */
   maxActive?: number;
   maxActiveSet?: boolean;

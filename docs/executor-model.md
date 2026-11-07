@@ -2,15 +2,17 @@
 
 Yuzuno is moving towards an executor model. A Project has one or more lasting
 **leads**. For each task, Core will start an **executor**, an Agent made for
-that one task from a template. A limited number of executors run at once.
+that one task, from a template or as a general executor. A limited number of
+executors run at once.
 Each executor's result goes back to the lead through the existing dispatch
 and result flow. Review stays with Core, and the lead releases the executor
 when the work is accepted.
 
 The model arrives in phases. Phase 0 is in place: it marks what kind each
 Agent is and lets you choose a Project's leads. Phase 1 is arriving: you
-can keep executor templates and dispatch a task from one, Core creates its
-executor, and once its work is accepted its dispatcher or you release it.
+can dispatch a task to a new executor, a general one or one from an executor
+template you keep, Core creates it, and once its work is accepted its
+dispatcher or you release it.
 
 ## Kinds
 
@@ -20,7 +22,7 @@ Every Agent has one kind:
 | --- | --- | --- |
 | **standing** | You | An Agent you created, as every Agent was before. This is every Agent with no other kind. |
 | **lead** | You mark it | A standing Agent you chose as a lead of its Project. |
-| **executor** | Core | An Agent made for one task by a [dispatch from an executor template](#dispatching-from-a-template). |
+| **executor** | Core | An Agent made for one task by a [dispatch to a new executor](#dispatching-to-a-new-executor). |
 
 - **Where it shows.** The sidebar shows a **Lead** or **Executor** label under
   the Agent's name. Agents see each Agent's kind in `peers_list` (`lead`,
@@ -52,9 +54,9 @@ Agents in that Project can be chosen, and an executor cannot lead.
 - **An older Core's move.** Such a move leaves the mark in place, but it
   applies only if the Agent returns to the Project it was chosen for.
 
-A lead can dispatch a task of its own Project from an executor template.
-You can always dispatch from a template. A task in no Project is dispatched
-from a template by you only.
+A lead can dispatch a task of its own Project to a new executor. You can
+always dispatch to a new executor. A task in no Project is dispatched to a new
+executor by you only.
 
 ## Executor templates
 
@@ -78,7 +80,7 @@ its settings.
 - **Where executors run.** On the machine the dispatch names, else the one
   its template names, else this Core host. A machine is one from the
   Machines list, or `auto`, for Core to choose one at each dispatch (see
-  [Which machine](#dispatching-from-a-template)). OpenCode executors run on
+  [Which machine](#dispatching-to-a-new-executor)). OpenCode executors run on
   this Core host only, and a Codex executor can't run on a machine that
   keeps its Agents contained.
 - **Who changes them.** Only you. Saving replaces the whole list, and a save
@@ -89,17 +91,21 @@ its settings.
   shown or offered to a dispatch, and a save here keeps them as they were.
   The page says how many such templates the list holds.
 
-## Dispatching from a template
+## Dispatching to a new executor
 
-To dispatch a task from a template, give `executor: {templateId}` instead of
-`toAgentId` in `task_dispatch`, or choose **From a template** in the task's
-**Dispatch** form. Core then:
+To dispatch a task to a new executor, give `executor` instead of `toAgentId`
+in `task_dispatch`: `executor: {}` for a [general executor](#the-general-executor),
+or `executor: {templateId}` for one made from that template. In the task's
+**Dispatch** form, choose **A new executor**: the general executor comes first
+and is chosen unless you pick a template. Core then:
 
 1. **Checks** the task's version, that it is not archived, who is
-   dispatching, and the template. Nothing is written before these pass.
+   dispatching, and the template. Nothing is written before these pass. A
+   template neither list has is refused with `template_not_found`, naming the
+   ids it could use.
 2. **Creates the executor**, as **New Agent** creates an Agent. It is made
-   from the template, in the task's Project, and named by the template's
-   pattern. On this Core host it works in the dispatch's worktree when that is
+   from the template, or as a general executor, in the task's Project, and
+   named by the template's pattern (a general executor: `{task} · Executor`). On this Core host it works in the dispatch's worktree when that is
    a folder here, else in the Project's folder here. On another machine it
    works in the Project's folder on that machine; a dispatch there that
    carries a worktree is refused, since a worktree is a path on this Core
@@ -109,8 +115,8 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
    dispatch's or a task's materials, is information, not permission. Your own
    dispatch may name any folder. An Agent's task_update that re-sends
    materials becomes the latest registrant, so a worktree you registered
-   outside the Project's folder is refused for that Agent's template dispatch
-   until you register it again or dispatch it yourself.
+   outside the Project's folder is refused for that Agent's dispatch to a new
+   executor until you register it again or dispatch it yourself.
 3. **Dispatches the task to it**, as a dispatch to an existing Agent does. The
    result goes back to whoever dispatched.
 4. **Queues it.** It starts when a slot is free; see
@@ -129,19 +135,19 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
   the same failure; dispatch again with a new `requestId`. If Core stops
   during a dispatch, it fails the dispatch and closes its executor when it
   next starts, before any Agent's runtime starts.
-- **During an update.** While Core prepares an update, a dispatch from a
-  template is refused, because creating an Agent waits for the update. A
+- **During an update.** While Core prepares an update, a dispatch to a new
+  executor is refused, because creating an Agent waits for the update. A
   dispatch to an existing Agent is not refused. Retry the same request once
   the update is done: one that had not been made goes ahead then, and nothing
   was written for it before. A retry of one already made is refused during
   the update too, and gets its recorded answer after it.
 - **Which machine.** A dispatch's `machineId` names a machine from the
   Machines list, `local` for this Core host, or `auto`. Left out, the
-  template's machine holds, else this Core host. A machine that isn't
-  registered, or can't run the template's harness, is refused before
-  anything is written.
+  template's machine holds, else this Core host (a general executor has no
+  machine of its own). A machine that isn't registered, or can't run the
+  executor's harness, is refused before anything is written.
 - **`auto`.** Core chooses the machine when it dispatches, from this Core
-  host and every registered machine that can run the template's harness and
+  host and every registered machine that can run the executor's harness and
   where the task has a folder: its Project's there, or on this Core host a
   worktree. A dispatch that carries a worktree, a path on this Core host,
   runs on this Core host. Of those, in order:
@@ -158,12 +164,41 @@ To dispatch a task from a template, give `executor: {templateId}` instead of
   alone. The template, and the dispatch's own request, keep `auto`. With no
   machine to choose, the dispatch is refused, naming each machine and why.
 
+### The general executor
+
+A dispatch whose `executor` names no `templateId` (or `templateId: null`)
+makes a general executor: an executor with no template.
+
+- **What it is made of.** Its harness is the default for new Agents of the
+  task's Project, else the Workspace's, else Codex, chosen when the dispatch
+  is checked, so the machine checks are for that harness. Its model,
+  reasoning effort and permissions are left unset, so it inherits them as
+  any new Agent there does; on this Core host a default model is checked
+  against the host's catalog as for **New Agent**.
+- **Its instructions** are the Project's handover document, the task's
+  materials and Core's summary of the task so far (see
+  [What an executor starts with](#what-an-executor-starts-with)): it has
+  none of its own. Its materials say `template: {"id": null, "label":
+  "Executor", "source": "builtin", "instructions": null}`, and its mail says
+  it is a general executor.
+- **Where and how many.** It runs on the dispatch's machine, else this Core
+  host. It has no limit of its own: the Workspace's, its Project's and its
+  machine's limits apply, as to any executor.
+- **Otherwise as from a template.** Who may dispatch it, a retry, a failure,
+  a rebuild of a failed start, release and archiving are as for an executor
+  from a template. A rebuild reads the defaults for new Agents again, as a
+  template's rebuild reads its template again.
+- **After an older Core.** A Core from before general executors runs one it
+  finds and can release it, but can't rebuild one whose start failed: it
+  requires a template, so that task is blocked with the reason.
+
 ## Executors at once
 
 At most this many executors run at the same time in the Workspace: 3 unless
 you change it, a whole number from 1 to 64, in Settings under **Executor
 templates**. A Project can have a limit of its own, on its page, and so can
-a template (its **At most at once**) and a machine: in **Machines**, a
+a template (its **At most at once**; a general executor has none of its
+own) and a machine: in **Machines**, a
 registered machine's in its editor and this Core host's on its card
 (`PUT /api/machines/{id}/executor-slots`, `local` for this Core host); left
 empty, only the Workspace's applies. Only you change them. Lowering a limit
@@ -250,7 +285,7 @@ until fewer hold a slot.
 
 Once an executor's work is accepted, it is released: Core closes it for good.
 
-- **Who.** The Agent that dispatched it from a template, or any lead of its
+- **Who.** The Agent that dispatched it, or any lead of its
   task's Project, with `executor_release`, or you, with **Release executor**
   in its actions (**Manage…**). A lead of another Project is refused with
   `not_project_lead`, naming both Projects; anyone else with
@@ -296,8 +331,9 @@ Once an executor's work is accepted, it is released: Core closes it for good.
 ## What an executor starts with
 
 An executor starts cold, with no memory of the Project. Besides its task's
-materials and its template's instructions, a dispatch from a template gives it
-two more things. Both are in its dispatch's materials (`task_get` with the
+materials and its template's instructions, a dispatch to a new executor gives
+it two more things; for a general executor, which has no template, these are
+its instructions. Both are in its dispatch's materials (`task_get` with the
 dispatchId). The mail says where to read them; it doesn't hold them.
 
 - **The Project's handover document** (`handover`): what the Project already
@@ -353,7 +389,7 @@ until you approve it on Home.
 A dispatch's materials are at most 128 KiB, counting only what the dispatcher
 can shorten: the task's own materials and the dispatch's. The template, the
 handover and the summary are not counted, since each has its own limit
-(instructions 8 KiB, handover 32 KiB, summary 4 KiB). So a template dispatch's
+(instructions 8 KiB, handover 32 KiB, summary 4 KiB). So a new executor's
 materials are at most 128 KiB plus those three. Over the limit, the dispatch
 is refused with `materials_too_large` and nothing is dispatched.
 
@@ -444,10 +480,10 @@ claim, or a new status or blocker. A progress-only update doesn't.
 | Phase | What it adds |
 | --- | --- |
 | 0 | Kinds and leads, as above. |
-| 1 | Executor templates. A dispatch from a template makes the executor Agent, once per request, and its dispatcher releases it. |
+| 1 | Executor templates and the general executor. A dispatch to a new executor makes the executor Agent, once per request, and its dispatcher releases it. |
 | 2 | A limit on how many executors run at once, with a queue and one retry of a failed start. |
 | 3 | Routing a released executor's late mail to the lead, and grouping executors in the sidebar. |
-| 4 | Core merges an accepted pull request itself, with the same evidence as a manual merge. Its first release checks a released PR as a dry run ([merge queue](merge-queue.md)). |
+| 4 | Core merges an accepted pull request itself, with the same evidence as a manual merge. It merges a released PR once CI has tested exactly what lands on main, building a batch when CI tested an older main ([merge queue](merge-queue.md)). |
 
 Standing Agents keep working throughout. Tasks already in progress finish on
 the Agents that hold them.
