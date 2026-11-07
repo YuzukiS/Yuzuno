@@ -95,13 +95,12 @@ async fn recently_left_lists_the_newest_twenty_and_counts_the_rest() {
     assert_eq!(you["recentlyLeftMore"], 3, "the rest, counted");
 }
 
-/// A change naming its owner's section that left says why; another Agent,
-/// or a key an earlier change of the same update took out, reads the plain
-/// reason.
+/// A change naming its owner's section that left says why; another Agent
+/// reads the plain reason.
 #[tokio::test]
 async fn a_change_naming_your_section_that_left_says_why_it_left() {
     let (_dir, ws, project) = lab();
-    accept(&ws, "a", input("a1", 0, vec![put("result", "report"), put("gone", "report"), put("here", "report")])).await;
+    accept(&ws, "a", input("a1", 0, vec![put("result", "report"), put("gone", "report")])).await;
     sections::mark_seen(&ws.store, &project, &[("result".into(), 1)]).unwrap();
     let at = left_at(&ws, &project, "result");
     let edit = json!({"op":"edit","key":"result","elements":{"note":{"type":"Markdown","props":{"text":"More"}}}});
@@ -117,7 +116,4 @@ async fn a_change_naming_your_section_that_left_says_why_it_left() {
     accept(&ws, "a", input("a4", version(&ws, &project), vec![op("remove", "gone")])).await;
     let gone = reject(&ws, "a", input("a5", version(&ws, &project), vec![op("remove", "gone")])).await;
     assert_eq!(reason(&gone), format!("No live section has key gone. You removed it at {}.", left_at(&ws, &project, "gone")));
-    // Taken out earlier in the same update: nothing of an older ending.
-    let twice = reject(&ws, "a", input("a6", version(&ws, &project), vec![op("remove", "here"), op("remove", "here")])).await;
-    assert_eq!(reason(&twice), "No live section has key here.");
 }

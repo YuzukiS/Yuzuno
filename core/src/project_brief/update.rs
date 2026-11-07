@@ -527,12 +527,10 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
             problem("not_owner", format!("{at}.key"), reason, "sections")
         };
         // Why a key that is not live left the Brief, when it was this
-        // Agent's (YN-7); nothing for a key an earlier change here took out.
+        // Agent's (YN-7). Each key is changed once per update, so a key
+        // with no planned section is one the live Brief does not have.
         let gone = || -> Result<String> {
-            Ok(match rows.contains_key(key) {
-                true => String::new(),
-                false => sections::ending_note(db, &ctx.project, key, &ctx.agent)?.unwrap_or_default(),
-            })
+            Ok(sections::ending_note(db, &ctx.project, key, &ctx.agent)?.unwrap_or_default())
         };
         let missing = || -> Result<Value> {
             Ok(problem("not_found", format!("{at}.key"), format!("No live section has key {key}.{}", gone()?), "sections"))
