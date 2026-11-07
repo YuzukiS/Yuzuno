@@ -1040,6 +1040,30 @@
   outline-offset: 2px;
   border-radius: 4px;
 }
+/* Choice cards (SettingsChoices.tsx): as many columns as choices, up to
+   three; one column on a phone (appearance.css). */
+.settings-choice-cards {
+  grid-template-columns: repeat(var(--settings-choice-cols, 3), minmax(0, 1fr));
+}
+/* A card's line is a sentence here, not a word as a theme's. */
+.theme-choice.settings-choice small {
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.45;
+}
+@media (max-width: 520px) {
+  .theme-options.settings-choice-cards {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Appearance hides a choice's leading icon on a phone; here the only icon
+     is the chosen mark. */
+  .settings-choice .theme-choice-name > svg.theme-selected {
+    display: inline;
+  }
+  .theme-choice.settings-choice small {
+    font-size: calc(9px + var(--font-adjust, 3px));
+  }
+}
 /* A labelled field at the settings row's size. */
 .settings-field {
   display: grid;
@@ -1116,6 +1140,19 @@
   color: var(--ink);
   font-size: calc(10px + var(--font-adjust, 3px));
 }
+.settings-savebar[hidden] {
+  display: none;
+}
+.settings-savebar > span:focus {
+  outline: none;
+}
+.settings-savebar > span small {
+  color: var(--text-secondary);
+  font-size: inherit;
+}
+.settings-savebar > span small[role="alert"] {
+  color: var(--error-ink);
+}
 
 /* The slider (SettingsSlider, design A): a drawn track whose fill is the
    value under a native range, a round thumb with hover, pressed and focus
@@ -1156,6 +1193,14 @@
   width: var(--settings-slider-share);
   border-radius: 8px;
   background: color-mix(in srgb, var(--accent-ink) 78%, transparent);
+}
+/* What is in use now (a machine's running Jobs), striped over the fill. */
+.settings-slider-used {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--settings-slider-used, 0%);
+  border-radius: 8px 0 0 8px;
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--ink) 42%, transparent) 0 3px, transparent 3px 6px);
 }
 .settings-slider-ticks {
   position: absolute;

@@ -224,11 +224,18 @@ export function formulaType(node: FormulaNode, names: Readonly<Record<string, Fo
   }
 }
 
-/** A number rounded to `digits` decimals as written in decimal: round(1.005, 2) is 1.01. */
+/**
+ * A number rounded to `digits` decimals as written in decimal, halves away
+ * from zero on either side: round(1.005, 2) is 1.01 and round(-1.005, 2) is
+ * -1.01; round(2.5) is 3 and round(-2.5) is -3 (S2 R1 P3). Never -0.
+ */
 function roundTo(value: number, digits: number) {
   if (!Number.isFinite(value)) return Number.NaN;
-  if (/e/i.test(String(value))) return Math.round(value * 10 ** digits) / 10 ** digits;
-  return Number(`${Math.round(Number(`${value}e${digits}`))}e-${digits}`);
+  const size = Math.abs(value);
+  const rounded = /e/i.test(String(size))
+    ? Math.round(size * 10 ** digits) / 10 ** digits
+    : Number(`${Math.round(Number(`${size}e${digits}`))}e-${digits}`);
+  return rounded === 0 ? 0 : Math.sign(value) * rounded;
 }
 
 /**

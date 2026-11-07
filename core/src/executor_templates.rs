@@ -15,8 +15,8 @@
 //!
 //! A template's executors run on this Core host, on the machine it names, or
 //! on the one Core chooses for each dispatch (`auto`, T-35 S3b); a
-//! dispatch's own machineId wins (T-35 S3a). Its `maxConcurrent` limits
-//! how many of its executors hold a slot at once (executor_slots.rs, T-35).
+//! dispatch's own machineId wins (T-35 S3a). How many run at once is each
+//! machine's limit alone (executor_slots.rs, YN-2 S5), not a template's.
 use crate::{
     agent_defaults::{catalog_entry, catalog_name, check_in_catalog, CLAUDE_MODES, CODEX_PRESETS},
     server::ApiError,
@@ -43,10 +43,13 @@ pub const DEFAULT_NAME_PATTERN: &str = "{task} · {label}";
 pub const GENERAL_LABEL: &str = "Executor";
 const MAX_TEMPLATES: usize = 50;
 pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
-const MAX_CONCURRENT: u32 = 64;
-/// What a save says of a `maxConcurrent` it can't take, whatever was wrong
-/// with it (a negative number, a fraction, text): the editor says the same.
-const AT_ONCE: &str = "At most at once is a whole number from 1 to 64";
+/// `maxConcurrent` is a field an older page still sends (YN-2 S5): a
+/// template has no limit of its own any more, only each machine has. For
+/// one release a save that sends it is taken and the value dropped; the
+/// release after refuses it as unknown.
+/// What `limits.maxConcurrent` still answers, for that same release: a
+/// template page from before S5 reads its field's bound from it.
+const OLDER_PAGES_MAX_CONCURRENT: u32 = 64;
 const FIELDS: [&str; 12] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
     "permissionMode", "machineId", "instructions", "maxConcurrent", "origin"];
 /// The Project lists the migration has copied, each at the version it read.
@@ -83,11 +86,6 @@ pub struct Template {
     /// Given to the executor with its dispatch's materials, at most 8 KiB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
-    /// At most this many of its executors hold a slot at once, within the
-    /// Workspace's, Project's and machine's limits (executor_slots.rs); unset
-    /// adds no limit of its own.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_concurrent: Option<u32>,
     /// A template the migration copied from a Project's own list (YN-2 S2):
     /// which Project, and the id it had there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,9 +201,6 @@ impl Template {
         if let Some(text) = &self.instructions {
             ensure!(text.len() <= MAX_INSTRUCTIONS, "A template's instructions are at most 8 KiB");
         }
-        if let Some(limit) = self.max_concurrent {
-            ensure!((1..=MAX_CONCURRENT).contains(&limit), "{AT_ONCE}");
-        }
         if let Some(origin) = &self.origin {
             for part in [&origin.project_id, &origin.project_name, &origin.id] {
                 ensure!(part.len() <= 200 && !part.chars().any(char::is_control), "A template's origin names its Project and id, at most 200 bytes each");
@@ -220,11 +215,11 @@ impl Template {
     /// the defaults for new Agents as any new Agent does. It has no
     /// instructions of its own: the Project's handover and the task's
     /// materials are its instructions. Its id is empty, which no saved
-    /// template can have, so it has no limit of its own (executor_slots.rs).
+    /// template can have.
     pub(crate) fn general(harness: String) -> Self {
         Self {
             id: String::new(), label: GENERAL_LABEL.into(), name_pattern: None, harness, model: None, reasoning_effort: None,
-            permission_preset: None, permission_mode: None, machine_id: None, instructions: None, max_concurrent: None, origin: None,
+            permission_preset: None, permission_mode: None, machine_id: None, instructions: None, origin: None,
         }
     }
 
@@ -445,11 +440,7 @@ fn parse_save(templates: &[Value], opencode: bool, saved: &[Template]) -> Result
         if let Some(field) = object.keys().find(|k| !FIELDS.contains(&k.as_str())) {
             bail!("Unknown template field: {field}");
         }
-        // Before serde, whose own words for a negative number or a fraction
-        // the user would see instead.
-        if let Some(limit) = object.get("maxConcurrent").filter(|v| !v.is_null()) {
-            ensure!(limit.as_u64().is_some_and(|n| (1..=u64::from(MAX_CONCURRENT)).contains(&n)), "{AT_ONCE}");
-        }
+        // An older page's `maxConcurrent` is taken and dropped (S5): Template has no such field.
         let template: Template = serde_json::from_value(value.clone()).map_err(|e| anyhow::anyhow!("Invalid template: {e}"))?;
         let kept = saved.iter().any(|t| t.id == template.id && t.harness == "opencode");
         template.validate(opencode || kept)?;
@@ -538,7 +529,8 @@ fn view(workspace: &Templates) -> Value {
         "presets": presets(),
         "defaultNamePattern": DEFAULT_NAME_PATTERN,
         // A list the migration took past the limit keeps what it holds.
-        "limits": {"templates": MAX_TEMPLATES.max(workspace.templates.len()), "instructionsBytes": MAX_INSTRUCTIONS, "maxConcurrent": MAX_CONCURRENT},
+        "limits": {"templates": MAX_TEMPLATES.max(workspace.templates.len()), "instructionsBytes": MAX_INSTRUCTIONS,
+            "maxConcurrent": OLDER_PAGES_MAX_CONCURRENT},
         "opencodeEnabled": crate::opencode_agent::enabled(),
         "appliesTo": "Dispatches from a template from now on; executors already created keep their own settings.",
     })

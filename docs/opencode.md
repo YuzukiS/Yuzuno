@@ -45,11 +45,12 @@ yet; 2.x keeps a note of each change in the session. The models come from
 2.x's list (`/api/model`), and interrupting is 2.x's interrupt. A session's
 status is read from the sessions 2.x lists as running (`/api/session/active`).
 
-Still to move: rewind and fork.
-- **Rewind and fork:** they still read 1.19.3's messages, so on a session of
-  2.x's they refuse before doing anything ("not yet on OpenCode 2.x"). Core's
-  tests of them use a 1.19.3 mode of its stand-in OpenCode, removed once
-  their parts land.
+Still to move: fork.
+- **Fork:** it still reads 1.19.3's messages, so on a session of 2.x's it
+  refuses before doing anything ("not yet on OpenCode 2.x"). Core's tests of
+  it use a 1.19.3 mode of its stand-in OpenCode, removed once its part lands.
+- **Rewind** is 2.x's own revert, staged then committed: see
+  [Rewind](rewind.md#opencode).
 
 So creating an OpenCode Agent stays behind the experimental switch.
 

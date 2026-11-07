@@ -15,11 +15,9 @@ import {
   Server,
   Settings2,
   Trash2,
-  X,
 } from "lucide-react";
 import { api, errorText, patch, post, remove } from "./api";
 import { strings, useLanguage, useStrings } from "./i18n";
-import { Avatar } from "./components";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import {
   ALL_PROJECTS,
@@ -39,10 +37,10 @@ import "./projects.css";
 import { GitHubLinks } from "./GitHubLinks";
 import { ProjectServices } from "./ProjectServices";
 import { AgentDefaults } from "./AgentDefaults";
-import { ProjectExecutors } from "./ExecutorTemplates";
 import { ProjectHandover } from "./ProjectHandover";
 import { ReviewSettings } from "./ReviewSettings";
-import { ProjectLeads } from "./ProjectLeads";
+import { ProjectMembers } from "./ProjectLeads";
+import { SaveBarScope, useSaveBarPart } from "./SettingsSaveBar";
 
 function useOutsideClose(
   open: boolean,
@@ -335,9 +333,8 @@ const managerText = strings({
   create: "Create project",
   // A project
   projectName: "Project name",
-  rename: "Rename",
+  nameNeeded: "A project needs a name.",
   projectKey: "Task key prefix",
-  changeKey: "Change prefix",
   keyNote: (key: string) =>
     `Tasks in this project are numbered ${key}-1, ${key}-2 and so on; a task in no project keeps T-1. A new prefix applies to every task here at once, every key a task had still names it, and an old prefix is never given to another project. A prefix is an uppercase letter, then 1 to 9 uppercase letters or digits.`,
   archivedNote: "Archived. Its agents and tasks stay where they are and still reach you when they need you; nothing new joins it.",
@@ -345,18 +342,6 @@ const managerText = strings({
   foldersNote: "Fills in new agents’ folder on each machine. It does not limit which folders an agent may use, and changing it never moves existing agents.",
   machinesFailed: (error: string) => `Couldn’t load machines: ${error}`,
   noDefault: "No default",
-  save: "Save",
-  clear: "Clear",
-  agents: "Agents",
-  closedSuffix: " · closed",
-  removeFrom: (agent: string, project: string) => `Remove ${agent} from ${project}`,
-  removeTip: "Remove from project",
-  noAgents: "No agents yet.",
-  agentToAdd: "Agent to add",
-  addAgent: "Add an agent…",
-  fromProject: (project: string) => ` · from ${project}`,
-  add: "Add",
-  moveNote: "Moving an agent changes only where it is listed. Its folder, conversation and read state stay the same.",
   unarchive: "Unarchive",
   archive: "Archive project",
   stillLinked: (agents: number, tasks: number) =>
@@ -404,9 +389,8 @@ const managerText = strings({
   folderHint: "用于预填新 Agent 的文件夹。Agent 仍可使用任何文件夹，例如别处的 worktree。",
   create: "创建项目",
   projectName: "项目名称",
-  rename: "重命名",
+  nameNeeded: "项目需要一个名称。",
   projectKey: "任务编号前缀",
-  changeKey: "更改前缀",
   keyNote: (key) =>
     `这个项目的任务编号为 ${key}-1、${key}-2 等；不属于任何项目的任务仍是 T-1 这样的编号。新前缀立即用于这里的所有任务，任务用过的每个编号仍能找到它，旧前缀也不会给其他项目。前缀以一个大写字母开头，后跟 1 到 9 个大写字母或数字。`,
   archivedNote: "已归档。它的 Agent 和任务保持原样，需要你时仍会找你；不会再有新的加入。",
@@ -414,18 +398,6 @@ const managerText = strings({
   foldersNote: "用于在每台机器上预填新 Agent 的文件夹。它不限制 Agent 可以使用哪些文件夹，更改它也不会移动现有 Agent。",
   machinesFailed: (error) => `无法加载机器：${error}`,
   noDefault: "无默认值",
-  save: "保存",
-  clear: "清除",
-  agents: "Agent",
-  closedSuffix: " · 已关闭",
-  removeFrom: (agent, project) => `将 ${agent} 移出 ${project}`,
-  removeTip: "移出项目",
-  noAgents: "还没有 Agent。",
-  agentToAdd: "要添加的 Agent",
-  addAgent: "添加 Agent…",
-  fromProject: (project) => ` · 来自 ${project}`,
-  add: "添加",
-  moveNote: "移动 Agent 只改变它列在哪里。它的文件夹、会话和已读状态保持不变。",
   unarchive: "取消归档",
   archive: "归档项目",
   stillLinked: (agents, tasks) => `仍关联 ${agents} 个 Agent 和 ${tasks} 个任务；请改为归档`,
@@ -648,8 +620,9 @@ export function ProjectsPage({
           />
         </div>
       ) : project ? (
+        // One save bar for the page (YN-8), anew for each project.
+        <SaveBarScope key={project.id}>
         <ProjectDetail
-          key={project.id}
           project={project}
           projects={projects}
           tasks={usage[project.id]?.tasks || 0}
@@ -663,6 +636,7 @@ export function ProjectsPage({
             setView({ kind: "list" });
           }}
         />
+        </SaveBarScope>
       ) : null}
     </section>
   );
@@ -684,7 +658,7 @@ function useAction() {
       setBusy(null);
     }
   };
-  return { busy, error, run };
+  return { busy, error, run, clear: () => setError("") };
 }
 
 function NewProject({
@@ -785,42 +759,71 @@ function ProjectDetail({
   const language = useLanguage();
   const [name, setName] = useState(project.name);
   const [key, setKey] = useState(project.key ?? "");
+  const nameAction = useAction();
   const keyAction = useAction();
-  // Unsaved folder edits per machine. The workspace refreshes every few
-  // seconds; only an edit that now matches what Core saved is dropped.
+  const folderAction = useAction();
+  const action = useAction();
+  const path = `/projects/${encodeURIComponent(project.id)}`;
+  // What Core saved last: this page's own save, until the Workspace's
+  // refresh (every few seconds) has caught up with it.
+  const [fresh, setFresh] = useState<Project | null>(null);
+  const base = fresh && fresh.updatedAt >= project.updatedAt ? fresh : project;
+  // Unsaved folder edits per machine; only an edit that now matches what
+  // Core saved is dropped.
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const savedDirs = JSON.stringify(project.defaultDirs);
+  const savedDirs = JSON.stringify(base.defaultDirs);
   useEffect(
     () =>
       setEdits((current) =>
         Object.fromEntries(
           Object.entries(current).filter(
             ([machine, value]) =>
-              value.trim() !== (project.defaultDirs[machine] || ""),
+              value.trim() !== (base.defaultDirs[machine] || ""),
           ),
         ),
       ),
     [savedDirs],
   );
-  const [adding, setAdding] = useState("");
-  const action = useAction();
   const members = agents.filter((agent) => agent.projectId === project.id);
-  const others = agents.filter((agent) => agent.projectId !== project.id);
   const archived = !!project.archivedAt;
-  const path = `/projects/${encodeURIComponent(project.id)}`;
-  const save = (label: string, body: Record<string, unknown>) =>
-    action.run(label, async () => {
-      const saved = await patch<Project>(path, body);
-      onChanged();
-      return saved;
-    });
-  const move = (agent: Agent, projectId: string | null) =>
-    action.run(`agent:${agent.id}`, async () => {
-      await post(`/agents/${encodeURIComponent(agent.id)}/project`, {
-        projectId,
-      });
-      onChanged();
-    });
+  const change = async (body: Record<string, unknown>) => {
+    const saved = await patch<Project>(path, body);
+    setFresh(saved);
+    onChanged();
+    return saved;
+  };
+  // The name, the task prefix and the folders join the page's save bar,
+  // each its own request (YN-8); Archive and Delete are done at once.
+  const nextName = name.trim();
+  useSaveBarPart("name", nextName !== base.name ? {
+    ready: !!nextName,
+    save: async () => !!(await nameAction.run("name", () => change({ name: nextName }))),
+    discard: () => { nameAction.clear(); setName(base.name); },
+  } : null);
+  const nextKey = key.trim();
+  const keyChanged = base.key !== undefined && nextKey !== base.key;
+  // The rule is only a hint here; Core decides and says why not.
+  const keyFits = PROJECT_KEY.test(nextKey);
+  useSaveBarPart("key", keyChanged ? {
+    ready: keyFits,
+    save: async () => !!(await keyAction.run("key", () => change({ key: nextKey }))),
+    discard: () => { keyAction.clear(); setKey(base.key ?? ""); },
+  } : null);
+  const folderChanges: Record<string, string | null> = Object.fromEntries(
+    machines.flatMap((machine) => {
+      const value = edits[machine.id];
+      return value !== undefined && value.trim() !== (base.defaultDirs[machine.id] || "") ? [[machine.id, value.trim() || null]] : [];
+    }),
+  );
+  useSaveBarPart("folders", Object.keys(folderChanges).length ? {
+    save: async () => {
+      const updated = await folderAction.run("folders", () => change({ defaultDirs: folderChanges }));
+      // Core's canonical folders show once the edits are gone.
+      if (updated) setEdits((current) => Object.fromEntries(Object.entries(current).filter(([machine]) => !(machine in folderChanges))));
+      return !!updated;
+    },
+    discard: () => { folderAction.clear(); setEdits({}); },
+  } : null);
   // Four cards, as the design has them (YN-8): the basics, members and
   // leads, this project's defaults, then archive or delete. The blocks with
   // an editor of their own are mounted as they were, one block each.
@@ -834,48 +837,27 @@ function ProjectDetail({
       <div className="settings-group appearance-group">
         <fieldset className="appearance-field project-form">
           <legend>{t.nameAndKey}</legend>
-          <form
-            className="project-rename"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (name.trim() && name.trim() !== project.name)
-                void save("name", { name: name.trim() });
-            }}
-          >
+          <div className="project-rename">
             <label>
               {t.projectName}
               <input
                 required
                 maxLength={100}
                 value={name}
+                aria-invalid={!nextName}
                 onChange={(event) => setName(event.target.value)}
               />
             </label>
-            <button
-              className="secondary-button"
-              disabled={
-                !!action.busy || !name.trim() || name.trim() === project.name
-              }
-            >
-              {t.rename}
-            </button>
-          </form>
+          </div>
+          {!nextName && <p className="inline-error">{t.nameNeeded}</p>}
+          {nameAction.error && (
+            <p role="alert" className="inline-error">
+              {nameAction.error}
+            </p>
+          )}
           {project.key !== undefined && (
             <>
-              <form
-                className="project-rename project-key"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const next = key.trim();
-                  // The rule is only a hint here; Core decides and says why not.
-                  if (PROJECT_KEY.test(next) && next !== project.key)
-                    void keyAction.run("key", async () => {
-                      const saved = await patch<Project>(path, { key: next });
-                      onChanged();
-                      return saved;
-                    });
-                }}
-              >
+              <div className="project-rename project-key">
                 <label>
                   {t.projectKey}
                   <input
@@ -884,17 +866,12 @@ function ProjectDetail({
                     spellCheck={false}
                     autoComplete="off"
                     autoCapitalize="characters"
+                    aria-invalid={keyChanged && !keyFits}
                     onChange={(event) => setKey(event.target.value.toUpperCase())}
                   />
                 </label>
-                <button
-                  className="secondary-button"
-                  disabled={!!keyAction.busy || !PROJECT_KEY.test(key.trim()) || key.trim() === project.key}
-                >
-                  {t.changeKey}
-                </button>
-              </form>
-              <p className="project-note">{t.keyNote(project.key)}</p>
+              </div>
+              <p className="project-note">{t.keyNote(base.key ?? project.key)}</p>
               {keyAction.error && (
                 <p role="alert" className="inline-error">
                   {keyAction.error}
@@ -913,26 +890,10 @@ function ProjectDetail({
           )}
           <div className="project-folders">
             {machines.map((machine) => {
-              const saved = project.defaultDirs[machine.id] || "";
+              const saved = base.defaultDirs[machine.id] || "";
               const value = edits[machine.id] ?? saved;
               return (
-                <form
-                  key={machine.id}
-                  className="project-folder-row"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void save(`folder:${machine.id}`, {
-                      defaultDirs: { [machine.id]: value.trim() || null },
-                    }).then((updated) => {
-                      // Show Core's canonical folder until the refresh arrives.
-                      if (updated)
-                        setEdits((current) => ({
-                          ...current,
-                          [machine.id]: updated.defaultDirs[machine.id] || "",
-                        }));
-                    });
-                  }}
-                >
+                <div key={machine.id} className="project-folder-row">
                   <span className="project-machine">
                     {machine.kind === "ssh" ? (
                       <Server size={14} />
@@ -952,22 +913,15 @@ function ProjectDetail({
                     autoCapitalize="none"
                     autoCorrect="off"
                   />
-                  <button
-                    className="quiet-button"
-                    disabled={!!action.busy || value.trim() === saved}
-                  >
-                    {action.busy === `folder:${machine.id}` ? (
-                      <LoaderCircle size={13} className="spin" />
-                    ) : value.trim() || !saved ? (
-                      t.save
-                    ) : (
-                      t.clear
-                    )}
-                  </button>
-                </form>
+                </div>
               );
             })}
           </div>
+          {folderAction.error && (
+            <p role="alert" className="inline-error">
+              {folderAction.error}
+            </p>
+          )}
         </fieldset>
         <div className="appearance-field project-block">
           <GitHubLinks key={project.id} projectId={project.id} disabled={archived} language={language} />
@@ -979,78 +933,7 @@ function ProjectDetail({
 
       <h4 className="settings-group-title">{t.membersTitle}</h4>
       <div className="settings-group appearance-group">
-        <fieldset className="appearance-field project-form">
-          <legend>
-            {t.agents} <span className="project-count">{members.length}</span>
-          </legend>
-          {members.length ? (
-            <ul className="project-members">
-              {members.map((agent) => (
-                <li key={agent.id}>
-                  <Avatar agent={agent} small />
-                  <span className="project-member-text">
-                    <strong>
-                      {agent.name}
-                      {agent.closedAt ? t.closedSuffix : ""}
-                    </strong>
-                    <small title={agent.cwd}>
-                      {agent.remote?.machine.name || t.coreHost} · {agent.cwd}
-                    </small>
-                  </span>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={t.removeFrom(agent.name, project.name)}
-                    title={t.removeTip}
-                    disabled={!!action.busy}
-                    onClick={() => void move(agent, null)}
-                  >
-                    <X size={14} />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="project-note">{t.noAgents}</p>
-          )}
-          {!archived && others.length > 0 && (
-            <form
-              className="project-add-agent"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const agent = others.find((candidate) => candidate.id === adding);
-                if (agent) void move(agent, project.id).then(() => setAdding(""));
-              }}
-            >
-              <select
-                aria-label={t.agentToAdd}
-                value={adding}
-                onChange={(event) => setAdding(event.target.value)}
-              >
-                <option value="">{t.addAgent}</option>
-                {others.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name}
-                    {agent.projectId
-                      ? t.fromProject(projectName(agent.projectId, projects))
-                      : ""}
-                    {agent.closedAt ? t.closedSuffix : ""}
-                  </option>
-                ))}
-              </select>
-              <button
-                className="secondary-button"
-                disabled={!adding || !!action.busy}
-              >
-                {t.add}
-              </button>
-            </form>
-          )}
-          <p className="project-note">{t.moveNote}</p>
-        </fieldset>
-        <div className="appearance-field project-block">
-          <ProjectLeads key={`leads:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
-        </div>
+        <ProjectMembers key={`members:${project.id}`} project={project} agents={agents} projects={projects} disabled={archived} onChanged={onChanged} />
         <div className="appearance-field project-block">
           <ProjectHandover key={`handover:${project.id}`} projectId={project.id} disabled={archived} />
         </div>
@@ -1060,9 +943,6 @@ function ProjectDetail({
       <div className="settings-group appearance-group">
         <div className="appearance-field project-block">
           <AgentDefaults key={`defaults:${project.id}`} active projectId={project.id} disabled={archived} />
-        </div>
-        <div className="appearance-field project-block">
-          <ProjectExecutors key={`executors:${project.id}`} projectId={project.id} disabled={archived} />
         </div>
         <div className="appearance-field project-block">
           <ReviewSettings key={`review:${project.id}`} active projectId={project.id} disabled={archived} />
@@ -1083,7 +963,7 @@ function ProjectDetail({
               type="button"
               className="secondary-button"
               disabled={!!action.busy}
-              onClick={() => void save("archive", { archived: !archived })}
+              onClick={() => void action.run("archive", () => change({ archived: !archived }))}
             >
               {archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
               {archived ? t.unarchive : t.archive}

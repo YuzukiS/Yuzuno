@@ -12,7 +12,7 @@ import "./remote.css";
 // The editor's own words, in the language its page passes (T-189): Machines
 // and New agent pass the interface language. What the user types and Core's
 // errors are shown as they are.
-const text = strings({
+export const machineEditorText = strings({
   editTitle: (name: string) => `Edit ${name}`,
   addTitle: "A place for remote work",
   editNote: "Changes apply to new agents and checks. Agents already on this machine keep the connection they started with.",
@@ -42,6 +42,18 @@ const text = strings({
   cancel: "Cancel",
   saveChanges: "Save changes",
   saveMachine: "Save machine",
+  // A machine's own page (YN-8): its settings as two blocks, saved with the page's bar.
+  connection: "Connection",
+  jobsLegend: "Jobs and executors",
+  budgetLegend: "What Jobs there may reserve together",
+  strictName: "Refuse the job",
+  strictNote: "A Job that asks for a limit this machine can’t hold isn’t started.",
+  limitedName: "Run it and say",
+  limitedNote: "It runs, and its Job says which limit isn’t enforced.",
+  legacyName: "Hold no limits",
+  readAgain: "Read again",
+  isDefault: (n: number) => `The default, ${n}.`,
+  useDefault: (n: number) => `Use the default (${n})`,
 }, {
   editTitle: (name) => `编辑 ${name}`,
   addTitle: "远程工作的地方",
@@ -72,6 +84,17 @@ const text = strings({
   cancel: "取消",
   saveChanges: "保存更改",
   saveMachine: "保存机器",
+  connection: "连接",
+  jobsLegend: "Job 与执行者",
+  budgetLegend: "该机器上的 Job 合计可预留",
+  strictName: "拒绝该 Job",
+  strictNote: "要求此机器无法保证的限制的 Job 不会启动。",
+  limitedName: "运行并说明",
+  limitedNote: "照常运行，并在该 Job 上说明哪些限制没有被强制执行。",
+  legacyName: "不设限制",
+  readAgain: "重新读取",
+  isDefault: (n) => `默认值 ${n}。`,
+  useDefault: (n) => `使用默认值（${n}）`,
 });
 
 export function MachineEditor({
@@ -102,7 +125,7 @@ export function MachineEditor({
    * opens it, so arrowing through that picker keeps focus there (T-55). */
   autoFocus?: boolean;
 }) {
-  const t = text(language);
+  const t = machineEditorText(language);
   const [name, setName] = useState(machine?.name || "");
   const [target, setTarget] = useState(machine?.target || "");
   const [folder, setFolder] = useState(machine?.defaultCwd || "");
@@ -312,9 +335,9 @@ export function MachineEditor({
           aria-label={executorText.title}
           value={executorsShown}
           onChange={(e) => setExecutors(e.target.value)}
-          placeholder={executorText.placeholder}
+          placeholder={executorText.placeholder(executorLimit.preset)}
         />
-        <span className="field-hint">{executorLimit.readError || executorText.help}</span>
+        <span className="field-hint">{executorLimit.readError || executorText.help(executorLimit.preset)}</span>
       </label>
       {error && (
         <p role="alert" className="remote-field-error">

@@ -501,7 +501,8 @@ test("schema problems name the field, the component's props and the guide part",
 test("hard rules, tool descriptions and the guide are generated within their caps", () => {
   assert.ok(BRIEF_HARD_RULES.length <= 1500, `${BRIEF_HARD_RULES.length} characters`);
   for (const [name, description] of Object.entries(BRIEF_TOOL_DESCRIPTIONS)) {
-    assert.ok(description.length <= 1200, `${name}: ${description.length} characters`);
+    // brief_update grows with its ops (YN-14: patch, markdown); every tool stays within DESCRIPTION_CAP.
+    assert.ok(description.length <= (name === "brief_update" ? 1500 : 1200), `${name}: ${description.length} characters`);
     assert.ok(description.length <= DESCRIPTION_CAP);
     assert.match(description, /brief_guide/, `${name} names the guide`);
   }
@@ -532,7 +533,10 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(briefGuide("ask"), /only after that action is confirmed done.*A green CI or a whole Task being done is not that action/);
   assert.match(briefGuide("ask"), /edit keeps it replied, while put asks it again/);
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /expectedVersion.*requestId.*noChange:true/);
-  for (const op of ["put", "edit", "resolve", "remove", "claim"]) assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, new RegExp(`op:"${op}"`));
+  for (const op of ["put", "edit", "patch", "resolve", "remove", "claim"]) assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, new RegExp(`op:"${op}"`));
+  // patch, as Core applies it (YN-14 A2): RFC 6902 on the body, the whole section checked again.
+  assert.match(briefGuide("sections"), /^patch \{op:"patch", key, patch:\[\.\.\.\], status\?\} changes single values .* RFC 6902 operations .* Core checks the whole section again/m);
+  assert.match(briefGuide("errors"), /patch_path and patch_test/);
   // edit, as Core applies it: blocks by id, the rest kept, the root left to put.
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /edit \{op:"edit", key, elements:\{<id>: block\}\} replaces only those blocks;/);
   assert.match(briefGuide("sections"), /^edit \{op:"edit", key, elements:\{<id>: \{type, props, children\?\}\}, status\?\} replaces blocks .* the root is not edited \(rearrange with put\)\./m);
@@ -776,6 +780,37 @@ test("YN-3 the guide says a card with no visual shows its first kept image or HT
   assert.match(content, /A card with no visual shows instead the first kept image or single HTML page \(\.html or \.htm\) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there\./);
   assert.match(content, /A report whose body holds only its lead \(one paragraph\), the card's picture and files, and its conditions is the whole report: its card has no Open report\./);
   assert.match(content, /large \(two columns, two rows: an image, a scatter chart, an HTML page\)/);
+});
+
+test("a put with markdown instead of body gets the body Core builds for it (YN-14 A3)", () => {
+  const text = "**core.25** is out; the two regressions are fixed in core.26.";
+  const report = checkBriefSection({ op: "put", key: "release", kind: "report", title: "core.25", markdown: text });
+  assert.deepEqual(report.body, { root: "body", elements: {
+    body: { type: "BriefBody", props: {}, children: ["text"] },
+    text: { type: "Markdown", props: { text } },
+  } });
+  assert.equal(report.markdown, undefined, "the stored section has its body, not markdown");
+  // With attachments, size, and for an ask and a status.
+  const files = checkBriefSection({ key: "design", kind: "report", title: "Design", markdown: text, size: "wide",
+    attachments: [{ name: "preview.html", path: "/home/me/preview.html" }, { name: "note.md", path: "/home/me/note.md" }] });
+  assert.deepEqual(files.body.elements.body, { type: "BriefBody", props: { summary: { lead: "text", size: "wide" } }, children: ["text", "files"] });
+  assert.deepEqual(files.body.elements.files, { type: "Attachments", props: { items: [{ name: "preview.html" }, { name: "note.md" }] } });
+  assert.equal(files.size, undefined);
+  const ask = checkBriefSection({ key: "q", kind: "ask", title: "Q", markdown: "Why: it costs a day.",
+    ask: { question: "Run it?", reply: { options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }] } } });
+  assert.equal(ask.body.elements.text.props.text, "Why: it costs a day.");
+  const status = checkBriefSection({ key: "s", kind: "status", title: "S", markdown: "Green.", status: { asOf: "2026-11-07T08:00:00Z", validFor: 600 } });
+  assert.equal(status.body.elements.text.props.text, "Green.");
+  // What is refused, before anything is built.
+  const at = (value) => { const [found] = problems(value); return [found.code, found.path]; };
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: text, body: report.body }), ["invalid_field", "markdown"]);
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: "  " }), ["invalid_field", "markdown"]);
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: 3 }), ["invalid_field", "markdown"]);
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: text, size: "huge" }), ["invalid_field", "size"]);
+  assert.deepEqual(at({ ...report, size: "wide" }), ["invalid_field", "size"], "size goes with markdown");
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R" }), ["missing_field", "body"], "neither is still a missing body");
+  assert.match(briefGuide("sections"), /^- markdown instead of body, for a section that is text: Core makes the body one Markdown block "text"/m);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /body\|markdown/);
 });
 
 // YN-16 S1: inputs, the variables they declare and the visible conditions
@@ -1255,4 +1290,21 @@ test("YN-16 S4 the guide says how a Figure, Steps and a Timeline are written and
   assert.match(part, /next is a plan, not a promise: say so in its text/);
   assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.timeline)));
   assert.match(briefGuide("attachments"), /as LineChart\/BarChart\/ScatterChart data\.attachment, or as a Figure's image/);
+});
+
+test("YN-16 S3 R1 P3: a second Diagram or Figure selecting into the same variable with other ids is told to use a different one", () => {
+  const flow = (ids) => ({ type: "Diagram", props: { select: "part", nodes: ids.map((id) => ({ id, label: id })), edges: [] } });
+  // Two Diagrams, other ids: the second is told; one set of both is never made.
+  const two = problems(inGroup({ one: flow(["frame", "chain"]), two: flow(["frame", "wheel"]) }));
+  assert.deepEqual([two[0].code, two[0].path, two[0].guide], ["invalid_field", "body.elements.two.props.select", "brief_guide interactive"]);
+  assert.match(two[0].reason, /^Diagram "two" selects into "\/part", but another Diagram or Figure \("one"\) already selects into \/part; use a different variable\./);
+  assert.doesNotMatch(two[0].reason, /Segmented/);
+  // A Diagram, then a Figure with other ids: the same.
+  const mixed = problems({ ...inGroup({ one: flow(["frame", "wheel"]), photo: figure({ select: "part" }) }), attachments: [shot.attachments[0]] });
+  assert.match(mixed[0].reason, /^Figure "photo" selects into "\/part", but another Diagram or Figure \("one"\) already selects into \/part; use a different variable\./);
+  // The same ids: two views of one choice, accepted.
+  assert.ok(checkBriefSection(inGroup({ one: flow(["frame", "chain"]), two: flow(["chain", "frame"]) })));
+  // A Segmented's variable missing an id still says so, naming the Segmented.
+  const parts = { type: "Segmented", props: { name: "part", value: "frame", options: [{ value: "frame", label: "Frame" }, { value: "chain", label: "Chain" }] } };
+  assert.match(first(inGroup({ parts, two: flow(["frame", "wheel"]) })).reason, /whose options do not name "wheel"; give its Segmented an option for every node or hotspot/);
 });

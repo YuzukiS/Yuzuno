@@ -8,6 +8,7 @@
 mod checks;
 mod landing;
 mod remote;
+mod revert;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
@@ -130,7 +131,8 @@ pub(super) async fn tick(ws: &Arc<Workspace>) -> Result<()> {
                     continue;
                 }
                 let checked_from = store::anchor(&entry);
-                let outcome = remote::check(ws, &entry).await.map_err(|e| format!("{e:#}"));
+                let outcome = if entry["kind"] == "revert" { revert::check(ws, &entry).await } else { remote::check(ws, &entry).await }
+                    .map_err(|e| format!("{e:#}"));
                 let cooldown = ws.stored(crate::ci_monitor::read_cooldown).await.unwrap_or(0);
                 let key = id.clone();
                 let recorded = ws.stored(move |s| s.merge_record(&key, attempt, &checked_from, outcome, cooldown)).await?;
@@ -215,6 +217,16 @@ pub async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, 
             ws.merge_queue.wake.notify_one();
             Ok(answer)
         }
+        "merge_revert" => {
+            let i: Change = serde_json::from_value(input)?;
+            request_key(&i.request_id)?;
+            ensure!(i.reason.as_ref().is_none_or(|r| r.len() <= 2000), "invalid_input: reason must be at most 2,000 bytes");
+            let answer = ws.stored(move |s| s.merge_revert(actor.as_deref(), &i.request_id, &i.entry_id, i.reason.as_deref())).await?;
+            ws.changes.send(json!({"mergeQueue":true,"collaboration":true}));
+            ws.collaboration_wakeup.notify_one();
+            ws.merge_queue.wake.notify_one();
+            Ok(answer)
+        }
         "merge_unpause" => {
             let i: Unpause = serde_json::from_value(input)?;
             request_key(&i.request_id)?;
@@ -255,6 +267,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/merge-queue/{id}", get(detail))
         .route("/api/merge-queue/{id}/cancel", post(cancel))
         .route("/api/merge-queue/{id}/retry", post(retry))
+        .route("/api/merge-queue/{id}/revert", post(revert_route))
 }
 async fn list(AppState(ws): AppState<Arc<Workspace>>, Query(scope): Query<Scope>) -> Result<Json<Value>, ApiError> {
     let input = json!({"taskId":scope.task_id,"repositoryId":scope.repository_id,"state":scope.state});
@@ -280,6 +293,10 @@ async fn retry(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<String>, J
     let input = strip(json!({"requestId":b.request_id,"entryId":id,"reason":b.reason}));
     Ok(Json(ws.collaboration_call(None, "merge_retry", input).await?))
 }
+async fn revert_route(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<String>, Json(b): Json<ChangeBody>) -> Result<Json<Value>, ApiError> {
+    let input = strip(json!({"requestId":b.request_id,"entryId":id,"reason":b.reason}));
+    Ok(Json(ws.collaboration_call(None, "merge_revert", input).await?))
+}
 async fn unpause(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>, Json(b): Json<ChangeBody>) -> Result<Json<Value>, ApiError> {
     let input = strip(json!({"requestId":b.request_id,"repositoryId":id,"reason":b.reason}));
     Ok(Json(ws.collaboration_call(None, "merge_unpause", input).await?))
@@ -293,18 +310,37 @@ async fn repository(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>)
 struct Switch {
     enabled: Option<bool>,
     landing: Option<String>,
+    /// The landing policy (YN-18 S2d): `strict` or `relaxed`.
+    policy: Option<String>,
+    /// The user's consent to one-step reverts (YN-18 S2d-2).
+    revert: Option<bool>,
+    /// Core reverts on its own when main CI goes red after a merge; needs reverts on.
+    #[serde(rename = "autoRevert")]
+    auto_revert: Option<bool>,
 }
 async fn switch(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>, Json(b): Json<Switch>) -> Result<Json<Value>, ApiError> {
-    if b.enabled.is_none() && b.landing.is_none() {
-        return Err(anyhow::anyhow!("invalid_input: give enabled, landing or both").into());
+    if b.enabled.is_none() && b.landing.is_none() && b.policy.is_none() && b.revert.is_none() && b.auto_revert.is_none() {
+        return Err(anyhow::anyhow!("invalid_input: give enabled, landing, policy, revert, autoRevert or any of them").into());
     }
-    // A landing this Core does not have is refused before anything is saved.
+    // A landing this Core does not have, or an unknown policy, is refused
+    // before anything is saved.
     let landing = b.landing.as_deref().map(landing::Landing::chosen).transpose()?;
+    if let Some(policy) = b.policy.as_deref() {
+        if !matches!(policy, checks::STRICT | checks::RELAXED) {
+            return Err(anyhow::anyhow!("invalid_input: policy is strict or relaxed, not {policy:?}").into());
+        }
+    }
     let answer = ws
         .stored(move |s| {
             let mut answer = Value::Null;
             if let Some(landing) = landing {
                 answer = s.merge_set_landing(id, landing)?;
+            }
+            if let Some(policy) = b.policy.as_deref() {
+                answer = s.merge_set_policy(id, policy)?;
+            }
+            if b.revert.is_some() || b.auto_revert.is_some() {
+                answer = s.merge_set_reverts(id, b.revert, b.auto_revert)?;
             }
             if let Some(enabled) = b.enabled {
                 answer = s.merge_set_enabled(id, enabled)?;
@@ -331,7 +367,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     vec![
         def(
             "merge_enqueue",
-            "Release one reviewed PR head into Core's merge queue. Only the task's dispatching lead, or the user, may release; the task's executor may not, and the user must first turn the queue on for the repository. Today that is the user's own route PUT /api/merge-queue/repositories/{id} on this Core, which no Agent tool reaches; a Settings switch comes in T-37 S2b. While the queue is off, Core writes nothing to GitHub. Releasing states that the project's review pair is complete: Core checks that the last completed review round of this PR reviewed exactly headSha and passes the review policy, and refuses otherwise. Core then checks on fresh GitHub reads that the PR is open at headSha, main CI since the release is not red, every workflow run on the head finished green, and every CI job checked out exactly the merge of the current main and the head. If CI tested an older main, Core opens a CI-only batch PR on the current main and waits for its CI. Once every check holds, Core merges the PR as a merge commit pinned to headSha, checks that the merge commit is main plus the head with the tested tree, removes its batch, and follows main's push CI. The outcome and its evidence are written to the task and mailed to you and the task's executor. Core never reruns CI. Retry an identical request with the same requestId.",
+            "Release one reviewed PR head into Core's merge queue. Only the task's dispatching lead, or the user, may release; the task's executor may not, and the user must first turn the queue on for the repository. That switch is the user's own, in Projects → repositories; no Agent tool reaches it. While the queue is off, Core writes nothing to GitHub. Releasing states that the project's review pair is complete: Core checks that the last completed review round of this PR reviewed exactly headSha and passes the review policy, and that no round at headSha found a P0–P2 issue, and refuses otherwise. Core then checks on fresh GitHub reads that the PR is open at headSha and has no merge conflict (a conflicting PR stops at once with conflict: GitHub runs no CI for it), main CI since the release is not red, every workflow run on the head finished green, and every CI job checked out exactly the merge of the current main and the head. If CI tested an older main, Core opens a CI-only batch PR on the current main and waits for its CI. Under the repository's relaxed policy (the user's choice) CI on an older main counts: Core instead checks that its own merge of the head into the current main is clean (a branch with no PR) and that main CI is not red now, and waits while it is. Once every check holds, Core merges the PR as a merge commit pinned to headSha, checks that the merge commit is main plus the head with the tested tree, removes its batch, and follows main's push CI. The outcome and its evidence are written to the task and mailed to you and the task's executor. Core never reruns CI. Retry an identical request with the same requestId.",
             json!({"requestId":text,"taskId":task,"pullUrl":{"type":"string","description":"https://github.com/<owner>/<repo>/pull/<number>, linked to the task"},"headSha":head,
                 "note":{"type":"string","maxLength":2000},"requireWorkflows":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":100},"description":"Workflows that must also have run green on the head besides CI, for example Desktop macOS."}}),
             &["requestId", "taskId", "pullUrl", "headSha"],
@@ -358,6 +394,12 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             "merge_retry",
             "Check a stopped merge entry again from the start on fresh reads. Core reads main now, and from then on counts only main CI since that main. It never reruns CI: rerun a red job by other means first. Only the Agent that released it, or the user.",
             json!({"requestId":text,"entryId":text,"reason":{"type":"string","maxLength":2000}}),
+            &["requestId", "entryId"],
+        ),
+        def(
+            "merge_revert",
+            "Revert, in one step, a merge the queue made whose main push CI went red (its entry is done with reason main_red). Only a lead of a Project the repository is linked to, or the user, and only while the user allows reverts for the repository (Projects → repositories). Core writes a revert commit (the tree of the main before that merge, on top of it), puts it on its own branch queue/revert-{entry} (merged onto the current main if main has moved on; a conflict stops with revert_conflict) and opens a PR, then queues that PR as a revert entry. It merges as a merge commit pinned to its head once CI on it is green, or at once when main is still the bad merge and the main before it had green push CI. It needs no review round, passes only the main_red pause of the merge it reverts, and green main CI after it ends that pause. The answer is the revert entry; merge_get follows it. Retry an identical request with the same requestId.",
+            json!({"requestId":text,"entryId":{"type":"string","description":"The entry of the merge to revert"},"reason":{"type":"string","maxLength":2000}}),
             &["requestId", "entryId"],
         ),
         def(

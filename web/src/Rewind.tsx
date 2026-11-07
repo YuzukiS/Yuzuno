@@ -342,7 +342,7 @@ function RevertDialog({ revert, onConfirm, onCheck, onDeliver, onClose }: { reve
     <div className="rewind-dialog">
       {busy && <p role="status"><LoaderCircle size={14} className="spin" /> {outcome ? "Checking with OpenCode…" : preview ? "Reverting…" : "Reading OpenCode’s session and snapshots…"}</p>}
       {preview && !outcome && <>
-        <p>This turn and {Math.max(0, preview.removedTurns - 1)} later turns leave the conversation; {preview.keptTurns} earlier turns stay. OpenCode removes them from its session with the next message it gets.</p>
+        <p>This turn and {Math.max(0, preview.removedTurns - 1)} later turns leave the conversation; {preview.keptTurns} earlier turns stay. OpenCode removes them from its session as soon as the files are back.</p>
         {files.length === 0
           ? <p>No file is sent back: no change of these turns went through OpenCode’s snapshots.</p>
           : <>
@@ -358,6 +358,7 @@ function RevertDialog({ revert, onConfirm, onCheck, onDeliver, onClose }: { reve
       {outcome?.files && outcome.files.length > 0 && <ul className="revert-files">
         {outcome.files.map(file => <li key={file.path}><code>{file.path}</code>: {fileOutcomeText(file)}</li>)}
       </ul>}
+      {unsettled(outcome) && outcome?.files && outcome.files.length > 0 && <p>OpenCode may have sent some of these files back before it stopped: each is shown as it is now. Core kept a copy of each first and puts nothing back on its own.</p>}
       {unsettled(outcome) && <p>New messages to this Agent wait until the outcome is confirmed. The revert is never asked for again.</p>}
       {revert.undelivered && <p role="alert">The original text could not be added to the draft (the draft cannot be edited or saved here now). It is kept for you to add.</p>}
       <p className="rewind-note">Only files OpenCode’s snapshots recorded go back. Commands, submitted Jobs, PRs and approvals are not undone. Yuzuno keeps the removed history and execution records.</p>

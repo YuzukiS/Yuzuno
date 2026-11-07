@@ -294,14 +294,23 @@ test("a failed request keeps the stored result, and a workspace change reloads t
   }
 });
 
+// The add form's fields, or a machine's own on its page (YN-8).
+const fieldLabels = (page) => [...page.document.querySelectorAll(".remote-machine-editor label, .machine-settings label")];
 function type(page, label, value) {
-  const input = [...page.document.querySelectorAll(".remote-machine-editor label")]
-    .find((l) => l.textContent.trim().startsWith(label)).querySelector("input");
+  const input = fieldLabels(page).find((l) => l.textContent.trim().startsWith(label)).querySelector("input");
   Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(input, value);
   input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
 }
-const field = (page, label) => [...page.document.querySelectorAll(".remote-machine-editor label")]
-  .find((l) => l.textContent.trim().startsWith(label))?.querySelector("input").value;
+const field = (page, label) => fieldLabels(page).find((l) => l.textContent.trim().startsWith(label))?.querySelector("input").value;
+// A slider on a machine's page (YN-8), by its name: its value, or moved as a user drags it.
+const slider = (page, label) => page.document.querySelector(`.machine-settings input[type=range][aria-label="${label}"]`);
+function slide(page, label, value) {
+  const input = slider(page, label);
+  Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(input, String(value));
+  input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+}
+// The page's save bar, when it is shown.
+const saveBar = (page) => [...page.document.querySelectorAll(".settings-savebar")].find((bar) => !bar.hidden) ?? null;
 
 test("SSH machines are added, edited and removed here; the Core host is only checked", async () => {
   let listed = [local, mini];
@@ -341,16 +350,19 @@ test("SSH machines are added, edited and removed here; the Core host is only che
     assert.ok(page.document.querySelector("#machines-new-ssh") === null, "the form closes");
     assert.equal(page.document.querySelector("#settings-machines-title").textContent, "Studio", "the new machine's page");
 
-    // Editing starts from what is saved and reads the list again after.
+    // A machine's settings are its page's (YN-8): they start from what is
+    // saved, are saved with the page's bar, and the list is read again after.
     await show(page, "mini");
-    page.document.querySelector('[aria-label="Edit Mac mini"]').click();
-    await until(() => field(page, "SSH destination") === "mac-mini", "the edit form, filled in");
+    assert.equal(page.document.querySelector('[aria-label="Edit Mac mini"]'), null, "no Edit: the settings are on the page");
+    await until(() => field(page, "SSH destination") === "mac-mini", "the settings, filled in");
     assert.equal(field(page, "Codex executable"), "/opt/homebrew/bin/codex");
-    assert.match(card(page, "mini").textContent, /keep the connection they started with/);
+    assert.match(page.document.querySelector(".machine-settings").textContent, /keep the connection they started with/);
+    assert.equal(saveBar(page), null, "nothing to save yet");
     type(page, "SSH destination", "mini.local");
-    await tick();
+    await until(() => saveBar(page), "the save bar");
+    assert.match(saveBar(page).textContent, /^1 change not saved/);
     const reads = page.calls.filter((c) => c.url.endsWith("/machines") && c.method === "GET").length;
-    button(card(page, "mini"), "Save changes").click();
+    button(saveBar(page), "Save").click();
     await until(() => /SSH · mini\.local/.test(card(page, "mini").textContent), "the edited destination");
     const put = page.calls.find((c) => c.method === "PUT");
     assert.equal(put.url, "/api/machines/mini");
@@ -395,11 +407,10 @@ test("an edit Core saved shows its new values even if the list can't be read aga
     render(page);
     await loaded(page);
     await show(page, "mini");
-    page.document.querySelector('[aria-label="Edit Mac mini"]').click();
-    await until(() => field(page, "SSH destination") === "mac-mini", "the edit form");
+    await until(() => field(page, "SSH destination") === "mac-mini", "the settings");
     type(page, "SSH destination", "mini.local");
-    await tick();
-    button(card(page, "mini"), "Save changes").click();
+    await until(() => saveBar(page), "the save bar");
+    button(saveBar(page), "Save").click();
     await until(() => /Couldn’t load machines: Core is restarting/.test(page.document.body.textContent), "the failed read is said");
     assert.match(card(page, "mini").textContent, /SSH · mini\.local/, "the saved destination, not the old one");
     assert.match(card(page, "mini").querySelector(".last-check").textContent, /Not checked yet/, "the old address's check is gone");
@@ -464,7 +475,7 @@ test("the Machines page reads in Chinese; names, destinations, paths and Core's 
     assert.match(check, /Claude Code · 仅限 Core 主机/);
     assert.match(remote.textContent, /SSH · mac-mini/);
     assert.ok(button(remote, "测试连接"));
-    assert.ok(page.document.querySelector('[aria-label="编辑 Mac mini"]'), "the machine's name as written");
+    await until(() => field(page, "机器名称") === "Mac mini", "its settings on the page, the name as written");
     assert.ok(page.document.querySelector('[aria-label="移除 Mac mini"]'));
     const facts = remote.querySelector(".machine-facts").textContent;
     assert.match(facts, /默认文件夹\/Users\/me\/projects/);
@@ -511,13 +522,15 @@ test("adding, editing and removing read in Chinese; a saved edit stays shown whe
     await until(() => !page.document.querySelector("#machines-new-ssh"), "the form to close");
 
     await show(page, "mini");
-    page.document.querySelector('[aria-label="编辑 Mac mini"]').click();
-    await until(() => field(page, "SSH 目标") === "mac-mini", "the edit form, filled in");
-    assert.match(card(page, "mini").textContent, /编辑 Mac mini/);
-    assert.match(card(page, "mini").textContent, /已在此机器上的 Agent 保留它们启动时的连接/);
+    await until(() => field(page, "SSH 目标") === "mac-mini", "the settings, filled in");
+    const settings = page.document.querySelector(".machine-settings");
+    assert.deepEqual([...settings.querySelectorAll("legend")].map((l) => l.textContent), ["连接", "Job 与执行者"]);
+    assert.match(settings.textContent, /已在此机器上的 Agent 保留它们启动时的连接/);
+    assert.deepEqual([...settings.querySelectorAll(".theme-choice-name")].map((n) => n.textContent), ["拒绝该 Job", "运行并说明", "不设限制"]);
     type(page, "SSH 目标", "mini.local");
-    await tick();
-    button(card(page, "mini"), "保存更改").click();
+    await until(() => saveBar(page), "the save bar");
+    assert.match(saveBar(page).textContent, /^1 处更改还没保存/);
+    button(saveBar(page), "保存").click();
     await until(() => /无法加载机器：Core is restarting/.test(page.document.body.textContent), "the failed read, Core's words as written");
     assert.match(card(page, "mini").textContent, /SSH · mini\.local/, "the saved destination, not the old one");
     assert.match(card(page, "mini").querySelector(".last-check").textContent, /尚未检查/);
@@ -580,7 +593,7 @@ const slotsView = (machines) => ({
   inUse: { waiting: 0, starting: 0, running: 1 }, machines,
 });
 
-test("the executor limit of a machine is saved with its version after the machine, cleared to none, and a value outside 1 to 64 sends nothing", async () => {
+test("a machine's executor limit is its own part of the page's save: saved against its version, alone or after the machine, and back to the default as none of its own (YN-8)", async () => {
   let limits = [{ id: "local", name: "Core host", version: 0, slots: null, executors: 0 },
     { id: "mini", name: "Mac mini", version: 2, slots: 3, executors: 1 }];
   const page = mount((url, init) => {
@@ -595,45 +608,40 @@ test("the executor limit of a machine is saved with its version after the machin
     return undefined;
   });
   const puts = () => page.calls.filter((c) => c.method === "PUT");
-  const edit = async () => {
-    page.document.querySelector('[aria-label="Edit Mac mini"]').click();
-    await until(() => field(page, "SSH destination") === "mac-mini", "the edit form, filled in");
-  };
   try {
     render(page);
     await loaded(page);
     await show(page, "mini");
-    await edit();
-    await until(() => field(page, "Executors at once") === "3", "the saved limit in the editor");
-    type(page, "Executors at once", "65");
-    await tick();
-    button(card(page, "mini"), "Save changes").click();
-    await until(() => card(page, "mini").querySelector('[role="alert"]'), "the range refusal");
-    assert.match(card(page, "mini").querySelector('[role="alert"]').textContent, /Executors at once is a whole number from 1 to 64, or empty/);
-    assert.equal(puts().length, 0, "outside 1 to 64, nothing is sent");
-    type(page, "Executors at once", "5");
-    await tick();
-    button(card(page, "mini"), "Save changes").click();
-    await until(() => puts().length === 2, "the machine, then its limit");
-    assert.deepEqual(puts().map((c) => c.url), ["/api/machines/mini", "/api/machines/mini/executor-slots"]);
-    assert.deepEqual(puts()[1].body, { expectedVersion: 2, slots: 5 }, "saved against the version it was read at");
-    await until(() => !card(page, "mini").querySelector(".remote-machine-editor"), "the editor to close");
-    await edit();
-    await until(() => field(page, "Executors at once") === "5", "the new limit");
-    type(page, "Executors at once", "");
-    await tick();
-    button(card(page, "mini"), "Save changes").click();
-    await until(() => puts().length === 4, "the second save");
-    assert.deepEqual(puts()[3].body, { expectedVersion: 3, slots: null }, "empty clears it to none");
+    await until(() => slider(page, "Executors at once")?.value === "3", "the saved limit on the slider");
+    assert.equal(slider(page, "Executors at once").max, "64", "the slider stops at Core's 64");
+    // The limit alone: only its own route, against the version read.
+    slide(page, "Executors at once", 5);
+    await until(() => saveBar(page), "the save bar");
+    button(saveBar(page), "Save").click();
+    await until(() => puts().length === 1, "the limit's save");
+    assert.deepEqual(puts().map((c) => [c.url, c.body]), [["/api/machines/mini/executor-slots", { expectedVersion: 2, slots: 5 }]]);
+    await until(() => saveBar(page)?.textContent === "All changes saved.", "saved");
+    // With the machine: each its own request, one after another.
+    type(page, "Machine name", "Mac mini 2");
+    button(page.document.querySelector(".machine-settings-jobs"), "Use the default (3)").click();
+    await until(() => /^2 changes not saved/.test(saveBar(page)?.textContent ?? ""), "two changes");
+    assert.match(page.document.querySelector(".machine-settings-jobs").textContent, /The default, 3\./, "back to the default, said");
+    assert.equal(slider(page, "Executors at once").value, "3", "the slider shows the default");
+    button(saveBar(page), "Save").click();
+    await until(() => puts().length === 3, "the second save");
+    assert.deepEqual(puts().slice(1).map((c) => [c.url, c.body]), [
+      ["/api/machines/mini", { name: "Mac mini 2", target: "mac-mini", codex: "/opt/homebrew/bin/codex", defaultCwd: "/Users/me/projects" }],
+      ["/api/machines/mini/executor-slots", { expectedVersion: 3, slots: null }],
+    ], "the default is none of its own");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
   }
 });
 
-// #645 R1 ae06571c P3: a conflict keeps what was typed; only the limit and
+// #645 R1 ae06571c P3: a conflict keeps what was set; only the limit and
 // its version are read again, and the next save sends it against that version.
-test("a machine executor limit changed meanwhile is read again and said so; the draft is kept and saved against the version read again", async () => {
+test("a machine executor limit changed meanwhile is read again and said so; the change is kept and saved against the version read again", async () => {
   let version = 2;
   let limitPuts = 0;
   const page = mount((url, init) => {
@@ -648,32 +656,31 @@ test("a machine executor limit changed meanwhile is read again and said so; the 
       return slotsView([{ id: "mini", name: "Mac mini", version, slots: JSON.parse(init.body).slots, executors: 1 }]);
     }
     if (url.endsWith("/executor-slots")) return slotsView([{ id: "mini", name: "Mac mini", version, slots: version === 4 ? 7 : 3, executors: 1 }]);
-    if (url.endsWith("/machines/mini") && method === "PUT") return { ...mini, ...JSON.parse(init.body), lastCheck: null };
     return undefined;
   });
   const limitWrites = () => page.calls.filter((c) => c.method === "PUT" && c.url.endsWith("/executor-slots"));
   const limitReads = () => page.calls.filter((c) => c.method === "GET" && c.url.endsWith("/executor-slots")).length;
+  const settings = () => page.document.querySelector(".machine-settings");
   try {
     render(page);
     await loaded(page);
     await show(page, "mini");
-    page.document.querySelector('[aria-label="Edit Mac mini"]').click();
-    await until(() => field(page, "Executors at once") === "3", "the saved limit");
-    type(page, "Executors at once", "5");
-    await tick();
+    await until(() => slider(page, "Executors at once")?.value === "3", "the saved limit");
+    slide(page, "Executors at once", 5);
+    await until(() => saveBar(page), "the save bar");
     const reads = limitReads();
-    button(card(page, "mini"), "Save changes").click();
-    await until(() => card(page, "mini").querySelector('[role="alert"]'), "the conflict");
-    assert.match(card(page, "mini").querySelector('[role="alert"]').textContent,
-      /The machine is saved; its executor limit is not\. This machine’s executor limit changed meanwhile and was read again/);
+    button(saveBar(page), "Save").click();
+    await until(() => settings().querySelector('[role="alert"]'), "the conflict");
+    assert.match(settings().querySelector('[role="alert"]').textContent, /This machine’s executor limit changed meanwhile and was read again\. Save again to apply yours\./);
     await until(() => limitReads() > reads, "the limit read again");
     await tick(30);
-    assert.equal(field(page, "Executors at once"), "5", "the draft is kept after the conflict");
-    assert.ok(card(page, "mini").querySelector(".remote-machine-editor"), "the editor stays open to save again");
-    button(card(page, "mini"), "Save changes").click();
+    assert.equal(slider(page, "Executors at once").value, "5", "the change is kept after the conflict");
+    assert.match(saveBar(page).textContent, /^1 change not saved · 1 change wasn’t saved/);
+    button(saveBar(page), "Save").click();
     await until(() => limitWrites().length === 2, "the second save");
-    assert.deepEqual(limitWrites()[1].body, { expectedVersion: 4, slots: 5 }, "the draft is saved against the version read again");
-    await until(() => !card(page, "mini").querySelector(".remote-machine-editor"), "the editor to close once both are saved");
+    assert.deepEqual(limitWrites()[1].body, { expectedVersion: 4, slots: 5 }, "the change is saved against the version read again");
+    await until(() => saveBar(page)?.textContent === "All changes saved.", "saved");
+    assert.equal(page.calls.filter((c) => c.method === "PUT" && c.url.endsWith("/machines/mini")).length, 0, "the machine itself was not changed, nor sent");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
@@ -753,8 +760,9 @@ test("a new machine whose executor limit fails to save is listed at once and edi
 
 // The Core host has no editor: its card holds its own executor limit.
 const localLimit = (page) => card(page, "local")?.querySelector(".machine-executor-limit");
+// The Core host's limit is a slider on its page (YN-8), saved with the page's bar.
 function typeLocal(page, value) {
-  const input = localLimit(page).querySelector("input");
+  const input = localLimit(page).querySelector('input[type="range"]');
   Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(input, value);
   input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
 }
@@ -778,14 +786,17 @@ test("the Core host card sets its own executor limit, through the route for loca
     await until(() => localLimit(page), "the Core host card control");
     assert.match(localLimit(page).textContent, /2 on this machine now/);
     assert.match(localLimit(page).textContent, /Lowering it stops no running executor/);
+    assert.match(localLimit(page).textContent, /The default, 3\./, "none of its own: the default, on the slider");
+    assert.equal(localLimit(page).querySelector('input[type="range"]').value, "3");
+    assert.equal(button(localLimit(page), "Save executors at once"), undefined, "the page's bar saves it");
     typeLocal(page, "1");
-    await tick();
-    button(localLimit(page), "Save executors at once").click();
+    await until(() => saveBar(page), "the save bar");
+    button(saveBar(page), "Save").click();
     await until(() => page.calls.some((c) => c.method === "PUT"), "the save");
     const put = page.calls.find((c) => c.method === "PUT");
     assert.equal(put.url, "/api/machines/local/executor-slots");
     assert.deepEqual(put.body, { expectedVersion: 0, slots: 1 });
-    await until(() => /Saved/.test(localLimit(page).textContent), "saved");
+    await until(() => saveBar(page)?.textContent === "All changes saved.", "saved");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
@@ -800,8 +811,8 @@ test("the executor limit field says a failed read until a later read succeeds, a
   const conflict = { status: 400, ok: false, json: async () => ({ error: "version_conflict: these executor slots changed; reload before saving" }),
     text: async () => JSON.stringify({ error: "version_conflict: these executor slots changed; reload before saving" }) };
   const reads = (page) => page.calls.filter((c) => c.method === "GET" && c.url.endsWith("/executor-slots")).length;
-  const hint = (page) => [...page.document.querySelectorAll(".remote-machine-editor label")]
-    .find((l) => l.textContent.trim().startsWith("Executors at once"))?.querySelector(".field-hint")?.textContent ?? "";
+  // What the machine's Jobs block says under its executor limit (YN-8: on its page).
+  const said = (page) => page.document.querySelector(".machine-settings-jobs [role=alert]")?.textContent ?? "";
   let failNext = false;
   const page = mount((url, init) => {
     const method = init.method || "GET";
@@ -818,19 +829,22 @@ test("the executor limit field says a failed read until a later read succeeds, a
     await loaded(page);
     await show(page, "local");
     await until(() => localLimit(page), "the Core host card control, read");
-    // The editor's own read fails once.
+    // The page's own read fails once; it is said, and read again when asked.
     failNext = true;
     await show(page, "mini");
-    page.document.querySelector('[aria-label="Edit Mac mini"]').click();
-    await until(() => /executor slots are not available right now/.test(hint(page)), "the failed read under the field");
-    type(page, "Executors at once", "5");
-    await tick();
+    await until(() => /executor slots are not available right now/.test(said(page)), "the failed read in the Jobs block");
+    assert.equal(slider(page, "Executors at once"), null, "no slider without a limit read");
+    button(page.document.querySelector(".machine-settings-jobs"), "Read again").click();
+    await until(() => slider(page, "Executors at once")?.value === "7", "the limit, read again");
+    assert.equal(said(page), "", "a read that succeeds clears the failed one");
+    slide(page, "Executors at once", 5);
+    await until(() => saveBar(page), "the save bar");
     const before = reads(page);
-    button(card(page, "mini"), "Save changes").click();
-    await until(() => card(page, "mini").querySelector('[role="alert"]') && reads(page) > before, "the conflict, and the limit read again");
+    button(saveBar(page), "Save").click();
+    await until(() => /changed meanwhile and was read again/.test(said(page)) && reads(page) > before, "the conflict, and the limit read again");
     await tick(60);
-    assert.match(hint(page), /Lowering it stops no running executor/, "a later read that succeeds brings back the help");
-    assert.doesNotMatch(hint(page), /not available/);
+    assert.match(page.document.querySelector(".machine-settings-jobs").textContent, /Lowering it stops no running executor/, "the help stays");
+    assert.doesNotMatch(said(page), /not available/);
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
@@ -849,9 +863,9 @@ test("the executor limit field says a failed read until a later read succeeds, a
     await show(host, "local");
     await until(() => localLimit(host), "the Core host card control");
     typeLocal(host, "2");
-    await tick();
+    await until(() => saveBar(host), "the save bar");
     const before = reads(host);
-    button(localLimit(host), "Save executors at once").click();
+    button(saveBar(host), "Save").click();
     await until(() => localLimit(host)?.querySelector('[role="alert"]') && reads(host) > before, "the conflict, and the limit read again");
     await tick(60);
     assert.match(localLimit(host).querySelector('[role="alert"]').textContent, /changed meanwhile and was read again/, "the conflict is still said once the limit is read again");
@@ -872,8 +886,12 @@ test("the executor limit reads in Chinese on the Machines page (T-189)", async (
     await until(() => localLimit(page), "the Core host card control");
     assert.match(localLimit(page).textContent, /同时运行的执行者/);
     assert.match(localLimit(page).textContent, /调低不会停止正在运行的执行者/);
-    assert.equal(localLimit(page).querySelector("input").placeholder, "没有自己的上限");
-    assert.ok(button(localLimit(page), "保存同时运行的执行者"), "its save reads in Chinese");
+    assert.match(localLimit(page).textContent, /默认值 3。/, "none of its own: the default (YN-2 S5), said in Chinese");
+    assert.match(localLimit(page).textContent, /此机器上同时最多运行这么多个执行者。整个 Workspace 最多运行各机器数量之和。/);
+    typeLocal(page, "2");
+    await until(() => saveBar(page), "the save bar");
+    assert.ok(button(localLimit(page), "使用默认值（3）"), "back to the default reads in Chinese");
+    assert.equal(saveBar(page).querySelector("span").textContent, "1 处更改还没保存");
   } finally {
     page.close();
   }

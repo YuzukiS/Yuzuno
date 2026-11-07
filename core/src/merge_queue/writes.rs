@@ -2,8 +2,10 @@
 //! Each one runs only while the repository's switch is on, with the Core
 //! host's gh login. The merge is a merge commit pinned to the released head,
 //! never admin. No push is ever forced. Core creates, closes and deletes only
-//! its own `queue/merge-{entry}` branch and that branch's batch PR. CI is
-//! never rerun: no write here can start, rerun or cancel a workflow.
+//! its own `queue/merge-{entry}` and `queue/revert-{entry}` branches and their
+//! PRs. CI is never rerun: no write here can start, rerun or cancel a workflow.
+//! A revert's own writes (its commit, branch and PR, YN-18 S2d-2) also need
+//! the user's consent to reverts for the repository.
 use crate::workspace::Workspace;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -13,8 +15,15 @@ use std::sync::Arc;
 pub(super) fn branch(entry: &str) -> String {
     format!("queue/merge-{entry}")
 }
+/// The branch a revert entry's revert lives on (YN-18 S2d-2).
+pub(super) fn revert_branch(entry: &str) -> String {
+    format!("queue/revert-{entry}")
+}
 fn ours(branch: &str) -> Result<()> {
-    let id = branch.strip_prefix("queue/merge-").context("merge_write_refused: not a merge queue branch")?;
+    let id = branch
+        .strip_prefix("queue/merge-")
+        .or_else(|| branch.strip_prefix("queue/revert-"))
+        .context("merge_write_refused: not a merge queue branch")?;
     ensure!(
         uuid::Uuid::parse_str(id).is_ok(),
         "merge_write_refused: not a merge queue branch"
@@ -35,6 +44,11 @@ pub(super) enum Write<'a> {
     DeleteBranch { branch: &'a str },
     /// `PUT pulls/{n}/merge`: the merge itself.
     Merge { number: u64, head: &'a str },
+    /// `POST git/commits`: a revert's commit, the tree of the main before the
+    /// bad merge on top of that merge (an object only; no ref moves).
+    CreateCommit { tree: &'a str, parent: &'a str, message: String },
+    /// `POST pulls`: the PR of Core's own revert branch, not a draft.
+    OpenRevertPull { branch: &'a str, base: &'a str, title: String, body: String },
 }
 
 /// One write to `repo`, refused unless the user's switch for `repository` is
@@ -48,6 +62,15 @@ pub(super) async fn write(ws: &Arc<Workspace>, repository: i64, repo: &str, w: W
         == true;
     if !on {
         bail!("merge_queue_disabled: the merge queue is off for {repo}; Core writes nothing to GitHub until the user turns it on");
+    }
+    let reverting = match &w {
+        Write::CreateCommit { .. } | Write::OpenRevertPull { .. } => true,
+        Write::CreateBranch { branch, .. } | Write::MergeIntoBranch { branch, .. } => branch.starts_with("queue/revert-"),
+        _ => false,
+    };
+    if reverting {
+        let allowed = ws.stored(move |s| s.merge_repository(repository)).await?["revert"] == true;
+        ensure!(allowed, "merge_revert_not_allowed: reverts are off for {repo}; the user turns them on in Projects → repositories");
     }
     let client = &ws.github.client;
     let deadline = if matches!(w, Write::Merge { .. }) { client.merge_deadline } else { client.deadline };
@@ -74,6 +97,16 @@ pub(super) async fn write(ws: &Arc<Workspace>, repository: i64, repo: &str, w: W
             format!("repos/{repo}/pulls/{number}/merge"),
             Some(json!({"merge_method":"merge","sha":head})),
         ),
+        Write::CreateCommit { tree, parent, message } => (
+            "POST",
+            format!("repos/{repo}/git/commits"),
+            Some(json!({"message":message,"tree":tree,"parents":[parent]})),
+        ),
+        Write::OpenRevertPull { branch, base, title, body } => {
+            ensure!(branch.starts_with("queue/revert-"), "merge_write_refused: not a revert branch");
+            ours(branch)?;
+            ("POST", format!("repos/{repo}/pulls"), Some(json!({"head":branch,"base":base,"title":title,"body":body,"draft":false})))
+        }
     };
     let _slot = ws.github.slots.acquire().await?;
     client.answered_write(method, &endpoint, body.as_ref(), deadline).await
