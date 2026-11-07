@@ -241,13 +241,14 @@ async function run({ width, height, theme, language, density = "detailed" }) {
       r.querySelector(":scope > .agent-island") !== null && !r.querySelector(".executor-row-facts:not(.agent-island .executor-row-facts)")]));
     assert.deepEqual(marks.filter(([, avatar, own]) => avatar || !own), [], `${tag}: no avatar, and one island per row holding its chips`);
     if (density === "compact") {
-      // The compact list keeps the island, chips and all, and hides line two.
+      // The compact list keeps the island and hides line two; the island's
+      // chips show where they fit (it hides the ones that don't).
       const shownParts = await list.locator(`article[data-agent-id="${delivered}"]`).evaluate((row) =>
-        Object.fromEntries([".agent-island", ".agent-island .executor-row-facts", ".agent-row-state"].map((part) => {
+        Object.fromEntries([".agent-island", ".agent-row-state"].map((part) => {
           const el = row.querySelector(part);
           return [part, el ? getComputedStyle(el).display !== "none" : null];
         })));
-      assert.ok(shownParts[".agent-island"] && shownParts[".agent-island .executor-row-facts"] && shownParts[".agent-row-state"] !== true,
+      assert.ok(shownParts[".agent-island"] && shownParts[".agent-row-state"] !== true,
         `${tag}: compact, the island only: ${JSON.stringify(shownParts)}`);
     }
     assert.equal(await list.locator('[data-rail-part="executors"] .rail-subgroup-head > span').first().textContent(), words.executors);
