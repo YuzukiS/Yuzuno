@@ -37,4 +37,8 @@
 .draft-export-block .draft-export-rows:empty { display: none; }
 .draft-export-block .draft-export-rows li { border: 0; border-radius: 0; padding: 9px 12px; }
 .draft-export-block .draft-export-rows li + li { border-top: 1px solid var(--line); }
+/* Nothing listed yet (the listing on its way): no empty block, and no empty
+   card when nothing else is in it (#743's review). */
 .draft-export-block:empty { display: none; }
+.draft-export-block:empty + * { border-top: 0; }
+.settings-group:has(> .draft-export-block:empty:only-child) { display: none; }

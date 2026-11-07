@@ -581,7 +581,10 @@ try {
     diagnostics: "#settings-diagnostics .appearance-group .diagnostics-clear",
     runtime: "#settings-runtime .runtime-groups",
     about: "#settings-about .appearance-group",
+    backup: "#settings-backup .workspace-backup-daily",
   };
+  // Backup's cards are the settings rows' own (S6b); every line on it counts.
+  const notesOf = { backup: "#settings-backup :is(p, .settings-row-help, summary)" };
   for (const [width, height, phone] of [[1440, 900, false], [390, 844, true]]) {
     for (const [language, theme] of [["en", "light"], ["zh-Hans", "dark"]]) {
       const label = `data and about ${width}x${height} ${language} ${theme}`;
@@ -596,17 +599,45 @@ try {
         await page.waitForTimeout(250);
         await noOverflow(page, `${label} ${tab}`);
         if (cards[tab]) {
-          const sizes = await dialog.evaluate((el) => {
+          const sizes = await dialog.evaluate((el, selector) => {
             const adjust = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--font-adjust")) || 0;
-            const notes = [...el.querySelectorAll(".settings-editor:not([hidden]) .appearance-group :is(p, .settings-row-help)")].filter((p) => p.getClientRects().length);
+            const notes = [...el.querySelectorAll(selector)].filter((p) => p.getClientRects().length);
             return { title: 11 + adjust, notes: notes.map((p) => ({ text: p.textContent.slice(0, 40), size: parseFloat(getComputedStyle(p).fontSize) })) };
-          });
+          }, notesOf[tab] ?? ".settings-editor:not([hidden]) .appearance-group :is(p, .settings-row-help)");
           assert.ok(sizes.notes.length > 0, `${label} ${tab}: notes in its cards`);
           for (const note of sizes.notes) assert.ok(note.size <= sizes.title + 0.01, `${label} ${tab}: "${note.text}" is ${note.size}px, larger than a block's title (${sizes.title}px)`);
         }
         if (tab === "storage") {
           const parts = await dialog.locator("#settings-storage .storage-parts").evaluateAll((all) => all.map((card) => card.querySelector(".claude-runtime-copies") !== null));
           assert.deepEqual(parts, [false, true], `${label}: Storage is two cards, the prepared Claude runtimes (which removes) last`);
+          // While Drafts' listing is on its way its block is empty: no empty card (#743's review).
+          const empty = await dialog.evaluate((el) => {
+            const card = document.createElement("div");
+            card.className = "settings-group appearance-group";
+            card.innerHTML = '<div class="appearance-field draft-export-block"></div>';
+            el.querySelector("#settings-drafts").append(card);
+            const display = getComputedStyle(card).display;
+            card.remove();
+            return display;
+          });
+          assert.equal(empty, "none", `${label}: an empty Drafts card isn't drawn`);
+        }
+        if (tab === "backup") {
+          // Every command is drawn as a button, not as bare text (S6b).
+          const bare = await dialog.locator("#settings-backup button").evaluateAll((all) => all.filter((b) => b.getClientRects().length).filter((b) => {
+            const style = getComputedStyle(b);
+            return !(parseFloat(style.borderTopWidth) > 0) && style.backgroundColor === "rgba(0, 0, 0, 0)";
+          }).map((b) => b.textContent.trim()));
+          assert.deepEqual(bare, [], `${label}: Backup's commands are drawn as buttons`);
+          // The daily schedule's change shows in the page's bar, not a Save of its own; Discard sends nothing.
+          const daily = dialog.locator("#settings-backup .workspace-backup-daily");
+          await daily.locator('input[type="checkbox"]').click();
+          const bar = dialog.locator(".settings-savebar:not([hidden])");
+          await bar.waitFor();
+          assert.equal(await daily.getByRole("button", { name: language === "en" ? "Save" : "保存", exact: true }).count(), 0, `${label}: no Save of the daily backup's own`);
+          await page.screenshot({ path: resolve(output, `data-about-backup-bar-${width}x${height}-${language}-${theme}.png`) });
+          await bar.getByRole("button", { name: language === "en" ? "Discard" : "放弃" }).click();
+          await page.waitForFunction(() => !document.querySelector(".settings-savebar:not([hidden])"));
         }
         await page.screenshot({ path: resolve(output, `data-about-${tab}-${width}x${height}-${language}-${theme}.png`) });
         if (phone) {
@@ -616,7 +647,7 @@ try {
         }
       }
       await context.close();
-      check(`${label}: Storage, Backup & restore, Diagnostics, Updates, Runtime and About & help fit; Storage, Diagnostics, Runtime and About are cards whose notes are no larger than a block's title`);
+      check(`${label}: Storage, Backup & restore, Diagnostics, Updates, Runtime and About & help fit; their cards' notes are no larger than a block's title; Backup's commands are buttons and its daily schedule's change shows in the page's bar`);
     }
   }
 

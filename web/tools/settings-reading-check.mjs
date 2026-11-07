@@ -144,6 +144,12 @@ for (const run of runs) {
     return page;
   };
   const openEditor = async (page, s) => {
+    // On a phone a page hides Settings' list and its search: Back first (YN-8 S1).
+    const back = page.locator(".settings-center .settings-back");
+    if (await back.isVisible()) {
+      await back.click();
+      await page.locator(".settings-center.is-root").waitFor({ timeout: 10_000 });
+    }
     if (!(await page.locator(".settings-search input").isVisible())) {
       await page.getByRole("button", { name: run.language ? "设置与更新" : "Settings and updates" }).click({ timeout: 10_000 });
       await page.locator(".settings-search input").waitFor({ timeout: 10_000 });
