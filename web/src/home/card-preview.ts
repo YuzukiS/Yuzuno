@@ -1,4 +1,5 @@
 import { htmlFile } from "../portal/html-file.ts";
+import { interactiveGroup } from "../intelligent-ui/brief-inputs.ts";
 import { firstParagraph, sectionSummary } from "./card-summary.ts";
 import { summaryOf } from "./report/report-model.ts";
 import type { Section, SectionAttachment } from "./types";
@@ -29,13 +30,16 @@ export const LARGE_METRICS = 6;
  *   summary's own, beside it. A small card names the desk in one line.
  * - `page`: one single-file HTML page Core keeps (YN-3), shown working on
  *   the card, sandboxed as the Portal shows it (CardPage.tsx).
+ * - `interactive`: a Group of inputs (YN-16), drawn whole by its own
+ *   renderer at every size, its controls working on the card.
  */
 export type CardFigure =
   | { kind: "block"; id: string }
   | { kind: "table"; id: string; title: string; columns: { key: string; label: string }[]; rows: { id: string; cells: Record<string, unknown> }[]; totalRows: number; totalColumns: number }
   | { kind: "image"; id: string; name: string; caption: string | null; kept: boolean; takenAt: string | null }
   | { kind: "desk"; id: string; title: string; claims: number; plots: number; lead: { id: string; title: string; status: string } | null }
-  | { kind: "page"; id: string; name: string; size: number; caption: string | null; takenAt: string | null };
+  | { kind: "page"; id: string; name: string; size: number; caption: string | null; takenAt: string | null }
+  | { kind: "interactive"; id: string };
 
 /** A file the body shows besides the card's picture, as a card names it (YN-3): a kept image, a page, or another file. */
 export type CardFile = { name: string; kind: "image" | "page" | "file"; kept: boolean };
@@ -113,6 +117,7 @@ export function figureOf(section: Section, id: string): CardFigure | null {
   if (!node) return null;
   const props = node.props ?? {};
   if (CHARTS.has(node.type ?? "") || node.type === "Metrics") return { kind: "block", id };
+  if (interactiveGroup(tree(section)?.elements, id)) return { kind: "interactive", id };
   if (node.type === "Table") {
     const columns = (Array.isArray(props.columns) ? props.columns : []) as { key: string; label: string }[];
     const rows = (Array.isArray(props.rows) ? props.rows : []) as { id: string; cells: Record<string, unknown> }[];
@@ -261,6 +266,7 @@ export function selfContained(section: Section, content: CardContent = cardConte
     figure === null ||
     (figure.kind === "image" && figure.kept) ||
     figure.kind === "page" ||
+    figure.kind === "interactive" ||
     (figure.kind === "block" && size !== "small" && CHARTS.has(body.elements[figure.id]?.type ?? ""));
   const oneParagraph = (id: string | null | undefined) => {
     const value = id ? text(body.elements[id]?.props?.text).trim() : "";

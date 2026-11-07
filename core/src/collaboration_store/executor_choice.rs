@@ -11,9 +11,8 @@
 //! worktree, a path on this Core host, has this Core host only. Each one left
 //! out is named with why.
 //!
-//! In order: a free executor slot first (the machine's own limit not
-//! reached; the Workspace's, the Project's and the template's are the same
-//! wherever it runs), then the most spare memory, then the most spare CPU of
+//! In order: a free executor slot first (the machine's limit not reached:
+//! its own, else the default; YN-2 S5, the only limit), then the most spare memory, then the most spare CPU of
 //! its Jobs budget (the budget less what Jobs reserve now; a machine with no
 //! budget comes after every one with one), then this Core host, then the name.
 //! The choice and every candidate's numbers are recorded on the dispatch, so
@@ -32,14 +31,14 @@ struct Candidate {
     machine: String,
     name: String,
     held: i64,
-    limit: Option<i64>,
+    limit: i64,
     /// Its Jobs budget and what Jobs reserve of it; none without a budget.
     headroom: Option<(Resources, Resources)>,
 }
 
 impl Candidate {
     fn free_slot(&self) -> bool {
-        self.limit.is_none_or(|limit| self.held < limit)
+        self.held < self.limit
     }
 
     fn spare(&self) -> Option<(u64, u64)> {

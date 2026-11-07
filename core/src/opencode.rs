@@ -323,9 +323,12 @@ pub enum Mcp {
 /// What OpenCode holds for one session now.
 #[derive(Debug)]
 pub struct Snapshot {
-    /// When the read began, in milliseconds since the epoch (#699 R2): what it
-    /// found missing was missing from then on, never before.
-    pub began: i64,
+    /// When the read began, on this process's own clock (`Server::tick`,
+    /// #699 R2 and P3-a): what it found missing was missing from then on,
+    /// never before.
+    pub began: u64,
+    /// The Server whose clock `began` is (`Server::id`).
+    pub by: String,
     /// The inbox as read first, before the messages (#699 R2): an item 2.x
     /// delivers and stores while the read goes on is in this list or in
     /// `messages`, never in neither.
@@ -531,6 +534,13 @@ pub struct Server {
     version: String,
     http: reqwest::Client,
     submitted: Mutex<HashSet<MessageId>>,
+    /// This process's own clock of reads and answers (`tick`): the order in
+    /// which they happened, whatever the wall clock does (#699 P3-a).
+    ticks: std::sync::atomic::AtomicU64,
+    /// This Server's own name, new each time one starts (`id`): a tick means
+    /// something only beside the name of the Server that counted it (#707
+    /// R1 44d3157b; a connection's generation restarts with Core).
+    id: String,
 }
 
 impl Server {
@@ -607,6 +617,8 @@ impl Server {
             // Never through a proxy: the password goes to loopback only.
             http: reqwest::Client::builder().no_proxy().build()?,
             submitted: Mutex::default(),
+            ticks: std::sync::atomic::AtomicU64::new(0),
+            id: uuid::Uuid::new_v4().simple().to_string(),
         };
         // From here on, an error drops `server`, which ends its group.
         // OpenCode's output is bytes, not necessarily UTF-8; a line is read
@@ -851,8 +863,19 @@ impl Server {
 
     /// The session's messages, status and inbox, read now, with the requests
     /// pending in it and in the sub-agent sessions `children`.
+    /// The next tick of this process's own clock (`ticks`), from 1: a later
+    /// call answers more. A tick of another Server means nothing here.
+    pub fn tick(&self) -> u64 {
+        self.ticks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// This Server's own name (`id`), whose `tick`s these are.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
-        let began = chrono::Utc::now().timestamp_millis();
+        let began = self.tick();
         let path = format!("/api/session/{}/inbox", segment(session)?);
         let inbox_first = self.data(Method::GET, &path, &[], None).await?;
         ensure!(inbox_first.is_array(), "OpenCode's {path} is not a list");
@@ -863,6 +886,7 @@ impl Server {
         let sessions: Vec<&str> = std::iter::once(session).chain(children.iter().map(String::as_str)).collect();
         Ok(Snapshot {
             began,
+            by: self.id.clone(),
             inbox_first,
             messages,
             status,
@@ -961,6 +985,15 @@ impl Server {
     /// `worktree`, `directory`.
     pub async fn path(&self) -> Result<Value> {
         self.json(Method::GET, "/path", None).await
+    }
+
+    /// Where 2.x holds `directory` (T-61 slice 5: `GET /api/location`, its
+    /// `location[directory]` as a deepObject query, protocol/src/groups/
+    /// location.ts): `{directory, project: {id, directory, canonical}}`, the
+    /// folder as 2.x resolved it and the project it holds it for, whose
+    /// `directory` is the Git top level its snapshots are taken from.
+    pub async fn location(&self, directory: &str) -> Result<Value> {
+        self.json_with(Method::GET, "/api/location", &[(LOCATION, directory)], None).await
     }
 
     /// The project OpenCode holds this instance's folder for (`GET /project/current`).

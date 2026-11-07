@@ -377,6 +377,36 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// A released executor's live sections become `to`'s, as a claim makes
+/// them (executor_archiving.rs, T-36 S2): in each Project the Brief moves on
+/// as a write of exactly those keys, recorded like any other (writes.rs), so
+/// an update read before it to another section is no version conflict.
+/// Content, versions of the sections and seen state are unchanged.
+pub(crate) fn hand_over(db: &Connection, from: &str, to: &str, name: &str) -> Result<()> {
+    let mut handed: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    {
+        let mut query = db.prepare("SELECT project_id,key FROM project_brief_sections WHERE owner_id=?1 AND live=1")?;
+        for row in query.query_map([from], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (project, key) = row?;
+            handed.entry(project).or_default().push(key);
+        }
+    }
+    let at = now();
+    for (project, keys) in &handed {
+        let before = sections::brief_version(db, project)?;
+        db.execute(
+            "INSERT INTO project_briefs(project_id,version,updated_at) VALUES(?1,1,?2)
+             ON CONFLICT(project_id) DO UPDATE SET version=version+1,updated_at=excluded.updated_at",
+            params![project, at],
+        )?;
+        let version = sections::brief_version(db, project)?;
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        writes::record(db, project, before, version, &keys)?;
+    }
+    db.execute("UPDATE project_brief_sections SET owner_id=?2,owner_name=?3 WHERE owner_id=?1 AND live=1", params![from, to, name])?;
+    Ok(())
+}
+
 /// A deleted Agent's turn records and receipts go with it. Its sections
 /// stay, owned by a deleted Agent, for another Agent of the Project to claim.
 pub(crate) fn delete_agent(db: &Connection, id: &str) -> Result<()> {

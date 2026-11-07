@@ -156,7 +156,8 @@ fn a_dispatched_executor_waits_for_its_slot_and_its_task_shows_it() {
     assert_eq!(slots(&store), 0, "created, not yet dispatched: no slot");
     store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
     let executor = plan.dispatch.agent_id.clone();
-    let waiting = json!({"agentId":executor,"state":"waiting","machine":"local","position":1});
+    let waiting = json!({"agentId":executor,"state":"waiting","machine":"local","position":1,
+        "waitsFor":{"machine":"local","name":"this Core host","running":0,"limit":3}});
     let current = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"current"})).unwrap();
     assert_eq!(current["current"]["executorSlot"], waiting, "the task's current view shows its executor's slot");
     let full = store.collaboration_call(None, "task_get", json!({"taskId":t,"view":"full"})).unwrap();
