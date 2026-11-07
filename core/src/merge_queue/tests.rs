@@ -174,6 +174,8 @@ if method=='POST' and path=='git/refs':
     if answer=='lost': out(502,{'message':'Bad gateway'})
     out(201,{'ref':body['ref'],'object':{'sha':body['sha']}})
 if method=='POST' and path=='merges':
+    if s.pop('slowMerge',None):
+        save(); p.with_name('merge-started').write_text('1'); time.sleep(2)
     if s.get('batchConflict'): out(409,{'message':'Merge conflict'})
     k={'sha':s['batchCommit'],'tree':s['batchTree'],'parents':[s['refs'][body['base']],body['head']]}
     c[k['sha']]=k; s['refs'][body['base']]=k['sha']; save()
@@ -1473,6 +1475,58 @@ async fn under_the_relaxed_policy_a_head_tested_on_an_older_main_merges_through_
     lab.release(Some("lead"), "r1").await.unwrap();
     tick(&lab.ws).await.unwrap();
     assert!(lab.entry().await["detail"].as_str().unwrap().contains("Core opened batch #900"));
+}
+
+/// A check counts only under the policy it ran with (S2d-1 R1, P2): the user
+/// turning the repository strict while a relaxed check runs (here, during its
+/// probe merge) must not let that check merge a head whose CI never tested the
+/// current main. The entry is checked again under strict, which batches.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_relaxed_check_that_ends_after_the_user_chose_strict_does_not_merge() {
+    let lab = lab_with(|s| {
+        main_moved_ref_stale(s);
+        s["slowMerge"] = json!(true);
+    });
+    relaxed(&lab);
+    lab.release(Some("lead"), "r1").await.unwrap();
+    let ws = lab.ws.clone();
+    let pass = tokio::spawn(async move { tick(&ws).await });
+    let started = lab.dir.path().join("merge-started");
+    for _ in 0..200 {
+        if started.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(started.exists(), "the relaxed check reached its probe merge");
+    lab.ws.store.merge_set_policy(7, "strict").unwrap();
+    pass.await.unwrap().unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "the relaxed check does not merge under strict: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("changed to strict"), "{}", e["detail"]);
+    assert!(!writes(lab.dir.path()).iter().any(|w| w.starts_with("PUT")), "no merge was sent");
+    let e = lab.step().await;
+    assert!(e["detail"].as_str().unwrap().contains("Core opened batch #900"), "checked under strict, it batches: {}", e["detail"]);
+}
+
+/// The same holds for a merge already journaled-to-be: a merge begun under
+/// the relaxed policy is not sent once the repository is strict.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_begun_under_relaxed_is_not_sent_once_the_repository_is_strict() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    let mut m = lab.entry().await;
+    m["state"] = json!("merging");
+    m["merge"] = json!({"expectedMain":main_sha(),"tree":tree(),"gate":"relaxed","policy":"relaxed","head":head(),"attempts":0,"puts":[],"sha":null,"post":null,"mainCi":null});
+    lab.ws.store.db.write().unwrap().execute("UPDATE merge_entries SET state='merging',next_check=0,data=?1", [m.to_string()]).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("changed to strict"), "{}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty(), "no merge was sent");
+    assert_eq!(e["retiredMerges"][0]["policy"], "relaxed", "the unsent merge is kept: {e}");
 }
 
 /// Under the relaxed policy, a head that does not merge cleanly into the

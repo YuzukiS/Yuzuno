@@ -517,6 +517,9 @@ pub(super) enum Journal {
     NotMerging,
     /// The repository's queue is paused: nothing journaled, nothing sent.
     Paused(String),
+    /// The landing policy is no longer the one the merge was checked under:
+    /// nothing journaled, nothing sent; every check runs again (S2d-1 R1).
+    PolicyChanged(String),
 }
 
 /// The main an entry counts main CI from, and since when. A check records its
@@ -802,7 +805,13 @@ impl Store {
                                 |row| Ok((row.get(0)?, row.get(1)?)),
                             )
                             .optional()?;
-                        let (state, detail, next) = if r["enabled"] != true {
+                        // A check counts only under the policy it ran with: one that
+                        // ended after the user changed it is checked again (S2d-1 R1).
+                        let policy = r["policy"].as_str().unwrap_or(checks::STRICT);
+                        let checked = evidence["policy"].as_str().unwrap_or(checks::STRICT);
+                        let (state, detail, next) = if checked != policy {
+                            ("waiting", format!("The landing policy changed to {policy} while this check ran under {checked}; it is checked again under {policy}."), now_epoch)
+                        } else if r["enabled"] != true {
                             ("ready", format!("Every check held, but the merge queue is off for {}; Core writes nothing to GitHub, and checks it again once the user turns it on.", e["repository"].as_str().unwrap_or("?")), UNTIL_SWITCHED_ON)
                         } else if !r["paused"].is_null() {
                             ("waiting", format!("Every check held, but the repository's queue is paused ({}).", r["paused"]["reason"].as_str().unwrap_or("?")), now_epoch + 60)
@@ -881,12 +890,19 @@ impl Store {
         if e["attempt"].as_i64() != Some(attempt) || e["state"] != "merging" {
             return Ok(Journal::NotMerging);
         }
-        let paused = repository(&tx, e["repositoryId"].as_i64().unwrap_or(0))?["paused"].clone();
+        let r = repository(&tx, e["repositoryId"].as_i64().unwrap_or(0))?;
+        let paused = r["paused"].clone();
         if !paused.is_null() {
             return Ok(Journal::Paused(format!(
                 "The repository's merge queue is paused ({}) since {}, so the merge request was not sent; the entry waits for the unpause.",
                 paused["reason"].as_str().unwrap_or("paused"),
                 paused["at"].as_str().unwrap_or("?")
+            )));
+        }
+        let (policy, checked) = (r["policy"].as_str().unwrap_or(checks::STRICT), e["merge"]["policy"].as_str().unwrap_or(checks::STRICT));
+        if policy != checked {
+            return Ok(Journal::PolicyChanged(format!(
+                "The landing policy changed to {policy} after this merge was checked under {checked}, so the merge request was not sent; every check runs again under {policy}."
             )));
         }
         e["merge"]["attempts"] = json!(1);

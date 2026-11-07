@@ -462,7 +462,8 @@ pub(super) enum MergeOutcome {
     Refused(String),
     /// The one request got no certain answer: it may have merged.
     Unknown(String),
-    /// Main moved since the check, so nothing was sent: check again.
+    /// Main moved, or the landing policy changed, since the check, so nothing
+    /// was sent: check again.
     Moved(String),
     /// Nothing was sent (the switch is off): check again later.
     Held(String),
@@ -498,6 +499,7 @@ pub(super) async fn merge(ws: &Arc<Workspace>, entry: &Value) -> Result<MergeOut
         super::store::Journal::Journaled => {}
         super::store::Journal::NotMerging => bail!("merge_moved_on: the entry is no longer merging"),
         super::store::Journal::Paused(detail) => return Ok(MergeOutcome::Paused(detail)),
+        super::store::Journal::PolicyChanged(detail) => return Ok(MergeOutcome::Moved(detail)),
     }
     match writes::write(ws, t.repository, &t.repo, Write::Merge { number: t.number, head: &t.head }).await {
         Ok((code, body)) => {

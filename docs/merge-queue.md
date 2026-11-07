@@ -238,7 +238,10 @@ entry `done` with `main_red` and pauses the queue. Under `relaxed` that red is
 the expected way a bad merge shows itself, since CI did not test the merge.
 
 A change of policy applies from the next check of every waiting entry, and the
-switch journal records it. A merge records the policy it started with. If the
+switch journal records it. A check counts only under the policy it ran with:
+one still running when the policy changes does not merge, and a merge request
+not yet sent is not sent; the entry is checked again under the new policy. A
+merge records the policy it started with. If the
 policy turns strict while an entry holds a probe on the current main, the probe
 becomes its batch: Core opens the draft PR from it.
 
