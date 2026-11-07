@@ -145,6 +145,7 @@ fn measured(job: &Value, actor: Option<&str>) -> Option<Value> {
 
 /// The suggestion from this task's measured runs (newest first); Null without
 /// any, or without a succeeded one among them.
+#[cfg(test)]
 pub(super) fn suggest(runs: Vec<Value>) -> Value {
     suggest_in(runs, "task")
 }

@@ -259,6 +259,7 @@ fn a_task_without_its_own_runs_gets_its_projects_runs_of_the_same_argv() {
     let other = submit(&s, "T-3", "other", "lib tests", &["cargo", "test", "--lib"], 32768);
     finish(&s, &other, 30000, 3000);
     let got = s.resource_suggestion(&query("T-1", "new name", &["cargo", "test", "--lib"]), None).unwrap();
+    assert!(got["basedOn"].is_array(), "the Project's run of the same argv counts, and only it: {got}");
     assert_eq!(based_on(&got), [id(&sibling)], "the Project's run of the same argv counts, and only it: {got}");
     assert_eq!((got["scope"].clone(), got["memoryMiB"].clone()), (json!("project"), json!(9728)));
     // A task with its own runs keeps to them.

@@ -686,7 +686,8 @@ fn command_contract_bounds_and_tool_schemas_are_explicit() {
     let mut bad = value;
     bad.env.insert("BAD=NAME".into(), "value".into());
     assert!(bad.validate().is_err());
-    assert_eq!(tool_definitions().len(), 16);
+    // 17 with job_suggestion (YN-6 S2).
+    assert_eq!(tool_definitions().len(), 17);
     assert!(tool_definitions()
         .iter()
         .all(|d| d["inputSchema"]["additionalProperties"] == false));
