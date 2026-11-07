@@ -13,8 +13,9 @@
 //! Rust naming: `store::Brief` is an Agent's listed view; everything here is
 //! a Project Brief.
 mod attachments;
-/// A Workspace backup's hold on Brief attachment files (T-192).
-pub(crate) use attachments::hold_all as hold_attachments;
+/// A Workspace backup's hold on Brief attachment files (T-192), and an
+/// interactive preview's on one (YN-10).
+pub(crate) use attachments::{hold as hold_attachment, hold_all as hold_attachments, Hold as AttachmentHold};
 #[cfg(test)]
 pub(crate) use attachments::{collect_garbage as collect_attachment_garbage, held as attachment_held};
 mod editors;
@@ -39,14 +40,33 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::sync::{Arc, OnceLock};
 
-/// The kept file of a section's attachment, in the version given or the
-/// section's latest, for an interactive preview (previews.rs).
+/// A section's attachment as Core keeps it, for an interactive preview
+/// (previews.rs): its snapshot file, that file's SHA-256 (its name) and the
+/// section version it is of.
+pub(crate) struct AttachmentFile {
+    pub path: std::path::PathBuf,
+    pub sha256: String,
+    pub version: i64,
+}
+
+/// The kept file of a section's attachment, in the version given (that one
+/// or none) or the section's latest.
 pub(crate) async fn attachment_file(ws: &Arc<Workspace>, project: &str, section: &str, name: &str, version: Option<i64>)
-    -> Result<std::path::PathBuf> {
+    -> Result<AttachmentFile> {
     let cache = attachments::dir(&ws.data_dir);
     let (project, section, name) = (project.to_owned(), section.to_owned(), name.to_owned());
-    let found = ws.stored(move |store| attachments::snapshot_file(store, &cache, &project, &section, &name, version)).await?;
-    found.map(|(path, _)| path).map_err(|missing| anyhow::anyhow!("{}: {}", missing.code, missing.message))
+    let found = ws.stored(move |store| {
+        let row = match attachments::find_section(store, &project, &section, version)? {
+            Ok(row) => row,
+            Err(missing) => return Ok(Err(missing)),
+        };
+        Ok(attachments::snapshot_of(&cache, &row, &name).map(|(path, attachment)| AttachmentFile {
+            path,
+            sha256: attachment["sha256"].as_str().unwrap_or_default().to_owned(),
+            version: row.version,
+        }))
+    }).await?;
+    found.map_err(|missing| anyhow::anyhow!("{}: {}", missing.code, missing.message))
 }
 
 /// For other modules' tests (previews.rs): Agent `agent` puts section `key`

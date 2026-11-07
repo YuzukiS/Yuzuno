@@ -52,6 +52,24 @@ impl Lab {
     async fn open(&self, path: &str, origin: Option<&str>) -> Result<Value> {
         self.ws.open_preview(Source::Artifact { agent_id: "a".into(), path: path.into() }, Asker::Local(origin)).await
     }
+    /// A snapshot of PAGE as another route would have taken it.
+    fn snapshot(&self, ancestor: Option<&str>, via: Via) -> Snapshot {
+        let file = self.dir.path().join("taken.html");
+        std::fs::write(&file, PAGE).unwrap();
+        Snapshot {
+            file, size: PAGE.len() as u64, ancestor: ancestor.map(str::to_owned), until: Instant::now() + LIFETIME, via,
+            place: Place::Portal, card: None, shown: json!({}), _keep: Keep::default(),
+        }
+    }
+}
+
+/// Core's copies of conversation files, on disk now.
+fn copies(lab: &Lab) -> Vec<std::path::PathBuf> {
+    match std::fs::read_dir(lab.ws.data_dir.join(COPIES)) {
+        Ok(entries) => entries.map(|entry| entry.unwrap().path()).collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(error) => panic!("{error}"),
+    }
 }
 
 /// One request on the previews' port as a browser would send it: status,
@@ -195,8 +213,8 @@ async fn only_one_html_file_of_this_agent_up_to_the_limit_is_previewed() {
     let lab = lab();
     lab.write("notes.txt", b"<b>not html</b>");
     lab.write("binary.html", &[0xff, 0xfe, 0x00]);
-    lab.write("big.html", &vec![b'a'; MAX_BYTES + 1]);
-    lab.write("edge.html", &vec![b'a'; MAX_BYTES]);
+    lab.write("big.html", &vec![b'a'; MAX_BYTES as usize + 1]);
+    lab.write("edge.html", &vec![b'a'; MAX_BYTES as usize]);
     let error = |result: Result<Value>| result.unwrap_err().to_string();
     assert!(error(lab.open("notes.txt", Some(CORE)).await).starts_with("preview_unsupported"));
     assert!(error(lab.open("binary.html", Some(CORE)).await).starts_with("preview_unsupported"));
@@ -251,12 +269,15 @@ async fn the_oldest_snapshots_go_first_and_kept_bytes_stay_bounded() {
     }
     assert_eq!(ask(port, "GET", &path_of(&first["url"]), None, None).await.0, 404, "the oldest of {} went", MAX_KEPT + 1);
     // Large ones: never more than MAX_KEPT_BYTES kept.
-    lab.write("big.html", &vec![b'a'; MAX_BYTES]);
+    lab.write("big.html", &vec![b'a'; MAX_BYTES as usize]);
     for _ in 0..(MAX_KEPT_BYTES / MAX_BYTES + 2) {
         lab.open("big.html", Some(CORE)).await.unwrap();
     }
     let kept = lab.ws.previews.kept.lock().unwrap();
-    assert!(kept.bytes() <= MAX_KEPT_BYTES && kept.snapshots.len() <= MAX_KEPT, "{} bytes in {}", kept.bytes(), kept.snapshots.len());
+    let bytes = kept.bytes(Place::Portal);
+    assert!(bytes <= MAX_KEPT_BYTES && kept.snapshots.len() <= MAX_KEPT, "{bytes} bytes in {}", kept.snapshots.len());
+    // And on disk, the copies of the ones kept alone.
+    assert_eq!(copies(&lab).len(), kept.snapshots.len());
 }
 
 #[tokio::test]
@@ -294,9 +315,7 @@ async fn a_snapshot_taken_for_the_phone_entry_never_opens_on_this_port() {
     let origin = "https://pc.tail0.ts.net:8444";
     {
         let mut kept = lab.ws.previews.kept.lock().unwrap();
-        kept.snapshots.insert("phone".into(), Snapshot {
-            bytes: Arc::new(PAGE.as_bytes().to_vec()), ancestor: Some(origin.into()), until: Instant::now() + LIFETIME, via: Via::Phone(7),
-        });
+        kept.snapshots.insert("phone".into(), lab.snapshot(Some(origin), Via::Phone(7)));
         kept.proofs.insert("phone".into(), Proof {
             answer: "a".into(), origin: Some(origin.into()), until: Instant::now() + PROOF_TTL, used: false, via: Via::Phone(7),
         });
@@ -316,9 +335,7 @@ async fn revoking_the_phones_previews_keeps_this_ports_and_another_runs_only_whe
     {
         let mut kept = lab.ws.previews.kept.lock().unwrap();
         for (token, run) in [("one", 1), ("two", 2)] {
-            kept.snapshots.insert(token.into(), Snapshot {
-                bytes: Arc::new(PAGE.as_bytes().to_vec()), ancestor: None, until: Instant::now() + LIFETIME, via: Via::Phone(run),
-            });
+            kept.snapshots.insert(token.into(), lab.snapshot(None, Via::Phone(run)));
             kept.order.push_back(token.into());
             kept.proofs.insert(token.into(), Proof { answer: "a".into(), origin: None, until: Instant::now() + PROOF_TTL, used: false, via: Via::Phone(run) });
         }
@@ -407,4 +424,168 @@ async fn what_follows_the_head_is_never_read_as_its_headers() {
     // A head over the limit gets no answer at all.
     let (status, head, _) = send(port, &format!("GET {page} HTTP/1.1\r\n{host}X-Pad: {}\r\n\r\n", "a".repeat(HEAD_LIMIT))).await;
     assert_eq!(status, 0, "{head}");
+}
+
+/// The preview of `kept`'s attachment (`attach_for_test`): from a card, with
+/// the version it shows, or (no place) from the Portal.
+fn attachment(kept: &Value, place: Option<&str>) -> Source {
+    let mut source = json!({"kind":"briefAttachment","projectId":kept["projectId"],"section":kept["section"],"name":kept["name"]});
+    if let Some(place) = place {
+        source["place"] = json!(place);
+        source["version"] = kept["version"].clone();
+    }
+    serde_json::from_value(source).unwrap()
+}
+
+/// A Home card's preview of `kept`'s attachment, asked for by the page at `origin`.
+async fn card(lab: &Lab, kept: &Value, origin: &str) -> Value {
+    lab.ws.open_preview(attachment(kept, Some("card")), Asker::Local(Some(origin))).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_large_snapshot_stays_while_it_is_shown_and_goes_when_its_hour_is_up() {
+    let lab = lab();
+    let page = synthetic_page(3 << 20);
+    lab.write("copied.html", &page);
+    let file = lab.dir.path().join("held.html");
+    std::fs::write(&file, &page).unwrap();
+    let kept = crate::project_brief::attach_for_test(&lab.ws, "a", "designs", &file).await;
+    let held = lab.ws.data_dir.join("brief-attachments").join(kept["sha256"].as_str().unwrap());
+    let copied = lab.open("copied.html", Some(CORE)).await.unwrap();
+    let shown = lab.ws.open_preview(attachment(&kept, None), Asker::Local(Some(CORE))).await.unwrap();
+    let port = shown["port"].as_u64().unwrap() as u16;
+    assert_eq!((copies(&lab).len(), crate::project_brief::attachment_held(&held)), (1, true));
+    // No section keeps the attachment now, and the cache is cleared: the preview still has it.
+    lab.ws.store.db.write().unwrap().execute("DELETE FROM project_brief_snapshots", []).unwrap();
+    crate::project_brief::collect_attachment_garbage(&lab.ws.store, held.parent().unwrap()).unwrap();
+    let (status, _, body) = ask_bytes(port, &path_of(&shown["url"])).await;
+    assert_eq!((status, body.len()), (200, page.len()), "held through Clear cache");
+    // Its hour (LIFETIME here) is up, and nothing else was asked meanwhile.
+    tokio::time::sleep(LIFETIME + Duration::from_millis(500)).await;
+    assert!(lab.ws.previews.kept.lock().unwrap().snapshots.is_empty());
+    assert!(copies(&lab).is_empty(), "{:?}", copies(&lab));
+    assert!(!crate::project_brief::attachment_held(&held));
+    crate::project_brief::collect_attachment_garbage(&lab.ws.store, held.parent().unwrap()).unwrap();
+    assert!(!held.exists(), "collected once no preview holds it");
+    for view in [&copied, &shown] {
+        assert_eq!(ask(port, "GET", &path_of(&view["url"]), None, None).await.0, 404);
+    }
+}
+
+#[tokio::test]
+async fn a_range_request_gets_the_whole_page_with_the_same_headers() {
+    let lab = lab();
+    lab.write("proto.html", PAGE.as_bytes());
+    let view = lab.open("proto.html", Some(CORE)).await.unwrap();
+    let port = view["port"].as_u64().unwrap() as u16;
+    let headers = format!("Host: 127.0.0.1:{port}\r\nRange: bytes=0-9\r\n");
+    let (status, head, body) = ask_with(port, "GET", &path_of(&view["url"]), &headers).await;
+    assert_eq!((status, body.as_str()), (200, PAGE), "{head}");
+    assert!(has(&head, "Content-Security-Policy", &page_policy(Some(CORE))) && has(&head, "Content-Length", &PAGE.len().to_string()), "{head}");
+    let lower = head.to_ascii_lowercase();
+    assert!(!lower.contains("content-range") && !lower.contains("accept-ranges"), "{head}");
+}
+
+#[tokio::test]
+async fn copies_an_earlier_core_left_are_removed_at_the_first_copy() {
+    use std::os::unix::fs::PermissionsExt;
+    let lab = lab();
+    let left = lab.ws.data_dir.join(COPIES).join("left.html");
+    std::fs::create_dir_all(left.parent().unwrap()).unwrap();
+    std::fs::write(&left, PAGE).unwrap();
+    lab.write("proto.html", PAGE.as_bytes());
+    lab.open("proto.html", Some(CORE)).await.unwrap();
+    let now = copies(&lab);
+    assert!(!left.exists() && now.len() == 1, "{now:?}");
+    // Core's alone to read.
+    let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!((mode(&lab.ws.data_dir.join(COPIES)), mode(&now[0])), (0o700, 0o600));
+}
+
+#[tokio::test]
+async fn a_card_is_given_its_live_snapshot_again_with_a_proof_of_its_own() {
+    let lab = lab();
+    let file = lab.dir.path().join("card.html");
+    std::fs::write(&file, PAGE).unwrap();
+    let kept = crate::project_brief::attach_for_test(&lab.ws, "a", "designs", &file).await;
+    let first = card(&lab, &kept, CORE).await;
+    let again = card(&lab, &kept, CORE).await;
+    assert_eq!((&first["place"], &first["reused"], &again["reused"]), (&json!("card"), &json!(false), &json!(true)), "{first}");
+    assert_eq!(first["version"], kept["version"]);
+    for field in ["url", "takenAt", "expiresAt", "sha256", "size", "version"] {
+        assert_eq!(again[field], first[field], "{field}: never given more time");
+    }
+    assert_ne!(again["proof"]["challenge"], first["proof"]["challenge"]);
+    // Each viewer's proof, once.
+    let port = first["port"].as_u64().unwrap() as u16;
+    for view in [&first, &again] {
+        let challenge = format!("{PROOF_PATH}{}", view["proof"]["challenge"].as_str().unwrap());
+        assert_eq!(ask(port, "GET", &challenge, None, Some(CORE)).await.2, view["proof"]["answer"].as_str().unwrap());
+        assert_eq!(ask(port, "GET", &challenge, None, Some(CORE)).await.0, 404, "answered once");
+    }
+    // Another asking page gets a snapshot of its own, and the Portal a new one each time.
+    let elsewhere = card(&lab, &kept, "http://127.0.0.1:4317").await;
+    let portal = lab.ws.open_preview(attachment(&kept, None), Asker::Local(Some(CORE))).await.unwrap();
+    let portal_again = lab.ws.open_preview(attachment(&kept, None), Asker::Local(Some(CORE))).await.unwrap();
+    assert!(elsewhere["url"] != first["url"] && portal["url"] != first["url"] && portal_again["url"] != portal["url"]);
+    assert_eq!((&portal["place"], &portal_again["reused"]), (&json!("portal"), &json!(false)));
+    // A card names its version, and gets that one or none.
+    let error = |result: Result<Value>| result.unwrap_err().to_string();
+    let versioned = |version: Value| -> Source {
+        serde_json::from_value(json!({"kind":"briefAttachment","projectId":kept["projectId"],"section":"designs","name":"card.html",
+            "version":version,"place":"card"})).unwrap()
+    };
+    assert!(error(lab.ws.open_preview(versioned(Value::Null), Asker::Local(Some(CORE))).await).starts_with("invalid_input"));
+    assert!(error(lab.ws.open_preview(versioned(json!(99)), Asker::Local(Some(CORE))).await).starts_with("section_not_found"));
+    // Only a Home attachment has a place.
+    assert!(serde_json::from_value::<Source>(json!({"kind":"artifact","agentId":"a","path":"p.html","place":"card"})).is_err());
+    // With less than REUSE_LEFT left, a new one.
+    tokio::time::sleep(LIFETIME - REUSE_LEFT + Duration::from_millis(200)).await;
+    let late = card(&lab, &kept, CORE).await;
+    assert!(late["reused"] == json!(false) && late["url"] != first["url"], "{late}");
+}
+
+#[tokio::test]
+async fn cards_never_take_the_place_of_a_snapshot_the_portal_opened() {
+    let lab = lab();
+    let file = lab.dir.path().join("card.html");
+    std::fs::write(&file, PAGE).unwrap();
+    let kept = crate::project_brief::attach_for_test(&lab.ws, "a", "designs", &file).await;
+    let portal = lab.ws.open_preview(attachment(&kept, None), Asker::Local(Some(CORE))).await.unwrap();
+    let port = portal["port"].as_u64().unwrap() as u16;
+    for n in 0..=MAX_CARDS {
+        card(&lab, &kept, &format!("http://localhost:{}", 5000 + n)).await;
+    }
+    assert_eq!(ask(port, "GET", &path_of(&portal["url"]), None, None).await.0, 200, "the Portal's snapshot stays");
+    {
+        let kept = lab.ws.previews.kept.lock().unwrap();
+        assert_eq!(kept.snapshots.values().filter(|s| s.place == Place::Card).count(), MAX_CARDS);
+    }
+    // One card shown over and over: a proof each time, at most MAX_PROOFS kept, the newest good.
+    let mut last = Value::Null;
+    for _ in 0..=MAX_PROOFS {
+        last = card(&lab, &kept, CORE).await;
+    }
+    assert_eq!(last["reused"], json!(true));
+    assert!(lab.ws.previews.kept.lock().unwrap().proofs.len() <= MAX_PROOFS);
+    let challenge = format!("{PROOF_PATH}{}", last["proof"]["challenge"].as_str().unwrap());
+    assert_eq!(ask(port, "GET", &challenge, None, Some(CORE)).await.2, last["proof"]["answer"].as_str().unwrap());
+}
+
+#[test]
+fn utf8_is_checked_across_chunk_boundaries() {
+    let text = "a é 中 🙂 z".as_bytes();
+    for cut in 0..=text.len() {
+        let mut check = Utf8::default();
+        assert!(check.feed(&text[..cut]) && check.feed(&text[cut..]) && check.whole(), "cut at {cut}");
+    }
+    let mut check = Utf8::default();
+    assert!(text.iter().all(|byte| check.feed(std::slice::from_ref(byte))) && check.whole(), "a byte at a time");
+    // A stray continuation byte, an overlong form, a surrogate, a character cut off at the end.
+    for bad in [&b"a\x80"[..], b"\xC0\xAF", b"\xED\xA0\x80", b"\xE4\xB8"] {
+        for cut in 0..=bad.len() {
+            let mut check = Utf8::default();
+            assert!(!(check.feed(&bad[..cut]) && check.feed(&bad[cut..]) && check.whole()), "{bad:?} cut at {cut}");
+        }
+    }
 }
