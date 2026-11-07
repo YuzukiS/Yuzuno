@@ -112,12 +112,17 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   // Opened at a page, Settings starts there; otherwise at Updates, as before.
   const [initial] = useState<SettingsPage>(() => (openAt?.editor ? pageOfEditor(openAt.editor) : openAt?.page) ?? "updates");
   const [page, setPage] = useState<SettingsPage>(initial);
-  const [requests, setRequests] = useState<Partial<Record<SettingsPage, SettingsRequest>>>({});
+  // A request Settings is opened with is its page's from the first render,
+  // so that page is built once, at what was asked for.
+  const [requests, setRequests] = useState<Partial<Record<SettingsPage, SettingsRequest>>>(() =>
+    openAt ? { [initial]: { sub: openAt.sub, n: 1 } } : {});
+  const applied = useRef(openAt?.nonce);
   // A phone starts at the list of pages; a page has Back to it.
   const [root, setRoot] = useState(phone && !openAt);
   const [query, setQuery] = useState("");
   const [visited, setVisited] = useState<PageEditor[]>(() => [...editorsOf(initial)]);
-  const [focusEditor, setFocusEditor] = useState<{ editor: PageEditor; n: number } | null>(null);
+  const [focusEditor, setFocusEditor] = useState<{ editor: PageEditor; n: number } | null>(() =>
+    openAt ? { editor: openAt.editor ?? editorsOf(initial)[0], n: 1 } : null);
   const content = useRef<HTMLDivElement>(null);
   const language = useLanguage();
   const t = text(language);
@@ -161,10 +166,12 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
     else if (target.kind === "machines") openEditor("machines");
   }
   useEffect(() => {
-    if (!openAt) return;
+    // Each request once: not again when the catalog re-renders, nor the one
+    // Settings was opened with.
+    if (!openAt || openAt.nonce === applied.current) return;
+    applied.current = openAt.nonce;
     const editor = openAt.editor ?? (openAt.page ? editorsOf(openAt.page)[0] : undefined);
     if (editor) openEditor(editor, openAt.sub);
-    // Each request once: not again when the catalog re-renders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openAt?.nonce]);
   // Opened together with its dialog (openAt), this comes after the dialog's
