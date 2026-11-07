@@ -1696,6 +1696,8 @@ pub fn tool_definitions() -> Vec<Value> {
             "body":{"type":"string","description":"Optional supplemental instructions; never replaces automatic task/materials context. Empty is allowed."},"priority":priority,"materials":dispatch_materials::schema()}), &["requestId","taskId","expectedVersion"]),
         // Served by `executor_release`, not here.
         crate::executor_release::tool_definition(),
+        // Served by `executor_templates`, not here.
+        crate::executor_templates::tool_definition(),
         // The working guide, compiled from the yuzuno skill; served by `guide`.
         crate::guide::tool_definition(),
     ].into_iter().chain(crate::github::tool_definitions()).chain(crate::pr_review::tool_definitions()).chain(crate::pr_operations::tool_definitions()).chain(crate::merge_queue::tool_definitions()).chain(crate::jobs::tool_definitions()).chain(crate::ci_monitor::tool_definitions()).chain(crate::delivery::tool_definitions()).chain(crate::services::tool_definitions()).collect()

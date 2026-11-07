@@ -50,8 +50,20 @@ pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
 /// What `limits.maxConcurrent` still answers, for that same release: a
 /// template page from before S5 reads its field's bound from it.
 const OLDER_PAGES_MAX_CONCURRENT: u32 = 64;
-const FIELDS: [&str; 12] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
-    "permissionMode", "machineId", "instructions", "maxConcurrent", "origin"];
+const FIELDS: [&str; 15] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
+    "permissionMode", "machineId", "instructions", "maxConcurrent", "origin", "deliveryMode", "steps", "whenToChoose"];
+/// How a template's work is delivered (YN-23, T-43 S1a): a pull request
+/// (unset, as every template saved before), a commit without one, or no
+/// repository change at all. Said in its executors' materials; Core holds
+/// no PR, review or merge operation to it.
+pub const DELIVERY_MODES: [&str; 3] = ["pr", "direct-commit", "none"];
+/// The kinds a template's steps have, and those only a `pr` template has.
+const STEP_KINDS: [&str; 9] = ["materials", "work", "result", "gate", "job", "pr", "review", "ci", "merge"];
+const PR_STEP_KINDS: [&str; 4] = ["pr", "review", "ci", "merge"];
+const STEP_FIELDS: [&str; 4] = ["kind", "label", "rounds", "approver"];
+/// Who answers a gate step; unset is the user.
+const APPROVERS: [&str; 3] = ["user", "lead", "either"];
+pub const MAX_STEPS: usize = 12;
 /// The Project lists the migration has copied, each at the version it read.
 const MOVED: &str = "executors.templates.moved";
 
@@ -90,6 +102,72 @@ pub struct Template {
     /// which Project, and the id it had there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
+    /// One of `DELIVERY_MODES`; unset is `pr`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_mode: Option<String>,
+    /// 1 to 12 steps its executors follow, descriptive for now: Core keeps
+    /// no state of them. Unset is its delivery mode's (`default_steps`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<Vec<Step>>,
+    /// One line, at most 200 characters: what work to choose it for, read
+    /// by a lead choosing a template (`executor_templates_list`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_to_choose: Option<String>,
+}
+
+/// A step of a template (YN-23). A step with a field this Core doesn't know
+/// doesn't read, so its template is a later Core's: kept as it is by a save.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Step {
+    /// One of `STEP_KINDS`.
+    pub kind: String,
+    /// What the step is, at most 60 characters; unset is its kind alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// A review step's rounds, 1 or 2; unset is 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<i64>,
+    /// A gate step's approver, one of `APPROVERS`; unset is the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver: Option<String>,
+}
+
+impl Step {
+    fn of(kind: &str) -> Self {
+        Self { kind: kind.into(), label: None, rounds: None, approver: None }
+    }
+
+    /// Checked as the editor shows it: `n` is the step's place, from 1.
+    fn validate(&self, n: usize, delivery: &str) -> Result<()> {
+        let kind = self.kind.as_str();
+        ensure!(STEP_KINDS.contains(&kind), "Step {n}: a step is materials, work, result, gate, job, pr, review, ci or merge, not {kind}");
+        ensure!(delivery == "pr" || !PR_STEP_KINDS.contains(&kind), "Step {n}: a {kind} step is for a template delivered by pull request (pr), not {delivery}");
+        if let Some(label) = &self.label {
+            single_line(label, &format!("Step {n}'s label"), 60)?;
+        }
+        match self.rounds {
+            Some(_) if kind != "review" => bail!("Step {n}: only a review step has rounds"),
+            Some(rounds) => ensure!((1..=2).contains(&rounds), "Step {n}: a review is 1 or 2 rounds"),
+            None => {}
+        }
+        match self.approver.as_deref() {
+            Some(_) if kind != "gate" => bail!("Step {n}: only a gate step has an approver"),
+            Some(approver) => ensure!(APPROVERS.contains(&approver), "Step {n}: a gate's approver is user, lead or either, not {approver}"),
+            None => {}
+        }
+        Ok(())
+    }
+}
+
+/// The steps of a template that sets none, by its delivery mode.
+pub fn default_steps(delivery: &str) -> Vec<Step> {
+    let kinds: &[&str] = match delivery {
+        "direct-commit" => &["materials", "work", "job", "result"],
+        "none" => &["materials", "work", "result"],
+        _ => &["materials", "work", "job", "pr", "review", "ci", "merge"],
+    };
+    kinds.iter().map(|kind| Step::of(kind)).collect()
 }
 
 /// Where a copied template came from.
@@ -206,7 +284,29 @@ impl Template {
                 ensure!(part.len() <= 200 && !part.chars().any(char::is_control), "A template's origin names its Project and id, at most 200 bytes each");
             }
         }
+        if let Some(mode) = self.delivery_mode.as_deref() {
+            ensure!(DELIVERY_MODES.contains(&mode), "A template's delivery is pr, direct-commit or none, not {mode}");
+        }
+        if let Some(steps) = &self.steps {
+            ensure!((1..=MAX_STEPS).contains(&steps.len()), "A template has 1 to {MAX_STEPS} steps");
+            for (n, step) in steps.iter().enumerate() {
+                step.validate(n + 1, self.delivery())?;
+            }
+        }
+        if let Some(line) = &self.when_to_choose {
+            single_line(line, "When to choose it", 200)?;
+        }
         Ok(())
+    }
+
+    /// Its delivery mode: unset is `pr`, today's flow.
+    pub(crate) fn delivery(&self) -> &str {
+        self.delivery_mode.as_deref().unwrap_or("pr")
+    }
+
+    /// Its steps, or its delivery mode's when it sets none.
+    pub(crate) fn resolved_steps(&self) -> Vec<Step> {
+        self.steps.clone().unwrap_or_else(|| default_steps(self.delivery()))
     }
 
     /// The general executor a dispatch with no `templateId` makes (YN-2):
@@ -220,15 +320,27 @@ impl Template {
         Self {
             id: String::new(), label: GENERAL_LABEL.into(), name_pattern: None, harness, model: None, reasoning_effort: None,
             permission_preset: None, permission_mode: None, machine_id: None, instructions: None, origin: None,
+            delivery_mode: None, steps: None, when_to_choose: None,
         }
     }
 
     /// What a dispatch's materials say of this template, from the list
     /// `source` names (`workspace`, or `builtin` for the general executor,
-    /// whose id is none; `project` in materials from before YN-2 S2).
+    /// whose id is none; `project` in materials from before YN-2 S2). A
+    /// template's also say how its work is delivered and its steps, resolved
+    /// (YN-23), and when to choose it if it says; the general executor's say
+    /// neither, as before.
     pub(crate) fn given(&self, source: &str) -> Value {
         let id = (!self.id.is_empty()).then_some(self.id.as_str());
-        json!({"id":id,"label":self.label,"source":source,"instructions":self.instructions})
+        let mut given = json!({"id":id,"label":self.label,"source":source,"instructions":self.instructions});
+        if id.is_some() {
+            given["deliveryMode"] = json!(self.delivery());
+            given["steps"] = json!(self.resolved_steps());
+            if let Some(line) = &self.when_to_choose {
+                given["whenToChoose"] = json!(line);
+            }
+        }
+        given
     }
 
     /// The name of the executor this template makes for the task `task` (its
@@ -440,6 +552,14 @@ fn parse_save(templates: &[Value], opencode: bool, saved: &[Template]) -> Result
         if let Some(field) = object.keys().find(|k| !FIELDS.contains(&k.as_str())) {
             bail!("Unknown template field: {field}");
         }
+        if let Some(steps) = object.get("steps").and_then(Value::as_array) {
+            for (n, step) in steps.iter().enumerate() {
+                let Some(step) = step.as_object() else { bail!("Step {}: a step is an object", n + 1) };
+                if let Some(field) = step.keys().find(|k| !STEP_FIELDS.contains(&k.as_str())) {
+                    bail!("Step {}: unknown step field: {field}", n + 1);
+                }
+            }
+        }
         // An older page's `maxConcurrent` is taken and dropped (S5): Template has no such field.
         let template: Template = serde_json::from_value(value.clone()).map_err(|e| anyhow::anyhow!("Invalid template: {e}"))?;
         let kept = saved.iter().any(|t| t.id == template.id && t.harness == "opencode");
@@ -596,6 +716,63 @@ async fn put_templates(State(ws): State<Arc<Workspace>>, Json(input): Json<Save>
 async fn put_project_templates(Path(_id): Path<String>) -> Result<Json<Value>, ApiError> {
     Err(anyhow::anyhow!("setting_moved: executor templates are kept for the whole Workspace now, in Settings → Executor templates; \
         this Project's own were copied there. Nothing was saved; reload the page").into())
+}
+
+// ---- The Agent tool: a lead reads the list to choose a template (YN-23) ----
+
+/// The read-only list an Agent reads. Saving stays the user's (the browser
+/// routes above); no Agent tool writes templates.
+pub(crate) const LIST_TOOL: &str = "executor_templates_list";
+
+pub(crate) fn tool_definition() -> Value {
+    json!({
+        "name": LIST_TOOL,
+        "description": "List the Workspace's executor templates, to choose one for task_dispatch with executor {templateId}. Each template has its id and label; whenToChoose, a line saying what work it is for (absent if its template has none); deliveryMode: pr (the work is delivered as a pull request), direct-commit (committed without one) or none (no repository change: the result is the deliverable); steps, what its executors follow, each {kind, label?, rounds? (review), approver? (gate: user, lead or either; unset is user)}, its delivery mode's default when it sets none; these are descriptive: Core does not track steps or hold PR, review or merge operations to a mode. Each also names its harness (codex, claude or opencode), model, reasoningEffort, permissionPreset (Codex) or permissionMode (Claude Code) and machineId (local, a machine's id or auto); an unset one inherits the defaults for new Agents. instructionsBytes is the size of the instructions its executors get with their materials (0 for none). general says what executor {} makes for your Project. laterTemplates counts templates a newer Core saved that this one can't offer. Only the user saves templates, in Settings → Executor templates; version is the list's version.",
+        "inputSchema": {"type":"object","properties":{},"required":[],"additionalProperties":false},
+    })
+}
+
+/// What `executor_templates_list` says of one template.
+fn listed(template: &Template) -> Value {
+    let mut item = json!({
+        "id": template.id, "label": template.label, "deliveryMode": template.delivery(), "steps": template.resolved_steps(),
+        "harness": template.harness,
+        "instructionsBytes": template.instructions.as_deref().map_or(0, str::len),
+    });
+    for (field, value) in [("whenToChoose", &template.when_to_choose), ("model", &template.model), ("reasoningEffort", &template.reasoning_effort),
+        ("permissionPreset", &template.permission_preset), ("permissionMode", &template.permission_mode), ("machineId", &template.machine_id)] {
+        if let Some(value) = value {
+            item[field] = json!(value);
+        }
+    }
+    item
+}
+
+/// The list for `actor` (None: the user), with the general executor of its Project.
+fn list_for(store: &Store, actor: Option<&str>) -> Result<Value> {
+    let list = store.executor_templates()?;
+    let project: Option<String> = match actor {
+        Some(actor) => store.db.read()?
+            .query_row("SELECT project_id FROM project_agents WHERE agent_id=?1", [actor], |r| r.get(0)).optional()?,
+        None => None,
+    };
+    Ok(json!({
+        "version": list.version,
+        "templates": list.templates.iter().map(listed).collect::<Vec<_>>(),
+        "laterTemplates": list.later_templates,
+        "general": general_view(store, project.as_deref())?,
+    }))
+}
+
+pub async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, input: Value) -> Result<Value> {
+    let input = input.as_object().ok_or_else(|| anyhow::anyhow!("invalid_input: expected an object"))?;
+    if let Some(key) = input.keys().next() {
+        bail!("invalid_input: unknown field {key}");
+    }
+    match operation.as_str() {
+        LIST_TOOL => ws.stored(move |store| list_for(store, actor.as_deref())).await,
+        _ => bail!("unknown_operation: {operation}"),
+    }
 }
 
 pub fn router() -> Router<Arc<Workspace>> {

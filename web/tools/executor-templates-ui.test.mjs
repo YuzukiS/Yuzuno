@@ -321,6 +321,25 @@ test("a template has no limit of its own (T-43: one limit per machine); one save
   assert.deepEqual(page.errors, []);
 });
 
+test("a template's delivery, steps and when to choose it are kept by a save of another edit (YN-23)", async () => {
+  const workflow = { deliveryMode: "none", whenToChoose: "A read-only question",
+    steps: [{ kind: "materials" }, { kind: "work", label: "调查" }, { kind: "gate", approver: "either" }] };
+  let workspace = { version: 1, templates: [{ id: "probe", label: "Probe", harness: "codex", ...workflow }] };
+  const page = mount((url, method, body) => {
+    if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+    return [200, view(workspace)];
+  });
+  page.window.renderTemplates();
+  await until(() => field(page, "Name"), "the template");
+  assert.equal(button(page, "Save templates").disabled, true, "nothing to save as read");
+  await type(page, "Name", "{task} · probe");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1, "the save");
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "probe", label: "Probe", harness: "codex", namePattern: "{task} · probe", ...workflow }],
+    "sent as read, with the edit");
+  assert.deepEqual(page.errors, []);
+});
+
 // T-35 S3: where a template's executors run: this Core host, a registered
 // machine, or auto. The options are read from one rendering of the select,
 // so what is left out is checked in the same list as what is offered.

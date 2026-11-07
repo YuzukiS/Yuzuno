@@ -20,7 +20,17 @@ export type ExecutorTemplate = {
   instructions?: string;
   /** Copied from a project's own list when templates became the Workspace's (YN-2 S2): which project, and its id there. */
   origin?: { projectId: string; projectName: string; id: string };
+  /** How its work is delivered (YN-23); unset is "pr". */
+  deliveryMode?: DeliveryMode;
+  /** 1 to 12 steps its executors follow, descriptive; unset is its delivery's default. */
+  steps?: TemplateStep[];
+  /** One line: what work to choose it for. */
+  whenToChoose?: string;
 };
+export type DeliveryMode = "pr" | "direct-commit" | "none";
+export type StepKind = "materials" | "work" | "result" | "gate" | "job" | "pr" | "review" | "ci" | "merge";
+/** `rounds` only on a review (1 or 2), `approver` only on a gate (unset: the user). */
+export type TemplateStep = { kind: StepKind; label?: string; rounds?: number; approver?: "user" | "lead" | "either" };
 /** A template the user can adopt in Settings: a template's fields, never stored until the user saves. */
 export type ExecutorPreset = ExecutorTemplate & { description?: string };
 /** `laterTemplates`: templates a newer Core saved that this one can't read or use; a save keeps them. */

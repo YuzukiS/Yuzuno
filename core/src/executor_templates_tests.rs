@@ -348,3 +348,128 @@ async fn a_list_the_copy_took_past_the_limit_still_saves() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(refused["error"].as_str().unwrap().contains("At most 60 templates"), "{refused}");
 }
+
+/// YN-23: a template says how its work is delivered, the steps its
+/// executors follow and when to choose it. A save takes them as sent and a
+/// read gives them back; left unset, a template is delivered by pull request
+/// with that mode's steps, as before.
+#[tokio::test]
+async fn a_templates_delivery_steps_and_when_to_choose_round_trip_through_a_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let design = json!({"id":"design-first","label":"Design first","harness":"codex","deliveryMode":"pr",
+        "whenToChoose":"UI or cross-module work the user should see before code",
+        "steps":[{"kind":"materials"},{"kind":"work","label":"设计说明"},{"kind":"result","label":"设计说明"},
+            {"kind":"gate","label":"批准设计说明","approver":"either"},{"kind":"work","label":"切片实现"},{"kind":"job"},{"kind":"pr"},
+            {"kind":"review","rounds":2},{"kind":"ci"},{"kind":"merge"}]});
+    let memo = json!({"id":"memo","label":"Memo","harness":"claude","deliveryMode":"none"});
+    let commit = json!({"id":"results","label":"Results","harness":"codex","deliveryMode":"direct-commit"});
+    let (status, saved) = call(&ws, "PUT", "/api/executor-templates",
+        Some(json!({"expectedVersion":0,"templates":[design.clone(), memo.clone(), commit.clone(), template("plain", "codex")]}))).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["workspace"]["templates"], json!([design, memo, commit, template("plain", "codex")]), "kept as sent");
+    let read = ws.store.executor_templates().unwrap().templates;
+    let kinds = |t: &Template| t.resolved_steps().iter().map(|s| s.kind.clone()).collect::<Vec<_>>().join(" ");
+    assert_eq!(read.iter().map(|t| (t.delivery().to_owned(), kinds(t))).collect::<Vec<_>>(), [
+        ("pr".to_owned(), "materials work result gate work job pr review ci merge".to_owned()),
+        ("none".into(), "materials work result".into()),
+        ("direct-commit".into(), "materials work job result".into()),
+        ("pr".into(), "materials work job pr review ci merge".into()),
+    ], "a template's own steps, else its mode's; unset is pr");
+    assert_eq!(read[0].given("workspace")["steps"][3], json!({"kind":"gate","label":"批准设计说明","approver":"either"}));
+    assert!(Template::general("codex".into()).given("builtin").get("deliveryMode").is_none(), "the general executor has neither");
+}
+
+/// YN-23: steps and the delivery mode are checked as the editor shows them,
+/// each step by its place; a later Core's mode, kind or step field makes
+/// its template one this Core doesn't offer, kept as it is by a save.
+#[test]
+fn delivery_and_steps_are_checked_strictly_and_a_later_cores_are_kept() {
+    let with = |extra: Value| {
+        let mut t = template("t", "codex");
+        t.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        t
+    };
+    let steps = |list: Value| with(json!({"steps":list}));
+    let refused = |template: Value| parse_save(&[template], true, &[]).err().map_or_else(|| "accepted".to_owned(), |e| e.to_string());
+    for (template, says) in [
+        (with(json!({"deliveryMode":"pages"})), "A template's delivery is pr, direct-commit or none, not pages"),
+        (steps(json!([])), "A template has 1 to 12 steps"),
+        (steps(json!((0..13).map(|_| json!({"kind":"work"})).collect::<Vec<_>>())), "A template has 1 to 12 steps"),
+        (steps(json!([{"kind":"work"},{"kind":"deploy"}])), "Step 2: a step is materials, work, result, gate, job, pr, review, ci or merge, not deploy"),
+        (with(json!({"deliveryMode":"none","steps":[{"kind":"work"},{"kind":"pr"}]})), "Step 2: a pr step is for a template delivered by pull request (pr), not none"),
+        (with(json!({"deliveryMode":"direct-commit","steps":[{"kind":"merge"}]})), "Step 1: a merge step is for a template delivered by pull request (pr), not direct-commit"),
+        (steps(json!([{"kind":"work","rounds":2}])), "Step 1: only a review step has rounds"),
+        (steps(json!([{"kind":"review","rounds":3}])), "Step 1: a review is 1 or 2 rounds"),
+        (steps(json!([{"kind":"work","approver":"user"}])), "Step 1: only a gate step has an approver"),
+        (steps(json!([{"kind":"gate","approver":"anyone"}])), "Step 1: a gate's approver is user, lead or either, not anyone"),
+        (steps(json!([{"kind":"work","label":"x".repeat(61)}])), "Step 1's label is a line of at most 60 characters"),
+        (steps(json!([{"kind":"work","label":" "}])), "Step 1's label is a line of at most 60 characters"),
+        (steps(json!([{"kind":"work","optional":true}])), "Step 1: unknown step field: optional"),
+        (steps(json!(["work"])), "Step 1: a step is an object"),
+        (with(json!({"whenToChoose":"two\nlines"})), "When to choose it is a line of at most 200 characters"),
+        (with(json!({"whenToChoose":"x".repeat(201)})), "When to choose it is a line of at most 200 characters"),
+    ] {
+        let got = refused(template.clone());
+        assert!(got.starts_with(says), "{template} should be refused with {says}; got: {got}");
+    }
+    let most = parse_save(&[with(json!({"deliveryMode":"none","whenToChoose":"x".repeat(200),
+        "steps":(0..12).map(|_| json!({"kind":"gate","approver":"lead","label":"批".repeat(60)})).collect::<Vec<_>>()}))], true, &[]);
+    assert!(most.is_ok(), "12 steps, 60-character labels and a 200-character line are taken: {most:?}");
+
+    let later = [json!({"id":"l1","label":"Later mode","harness":"codex","deliveryMode":"pages"}),
+        json!({"id":"l2","label":"Later kind","harness":"codex","steps":[{"kind":"deploy"}]}),
+        json!({"id":"l3","label":"Later step field","harness":"codex","steps":[{"kind":"work","optional":true}]})];
+    let mut list = later.to_vec();
+    list.insert(0, template("a", "codex"));
+    let read = read_list(Some(json!({"version":1,"templates":list}).to_string())).unwrap();
+    assert_eq!((read.templates.len(), read.later_templates), (1, 3), "only the template this Core can use is offered");
+    let stored = stored_list(&read, &read.templates, 2).unwrap();
+    assert_eq!(stored["templates"].as_array().unwrap()[1..], later, "a save keeps a later Core's templates as they are");
+}
+
+/// YN-23: a lead reads the Workspace's templates with executor_templates_list
+/// to choose one: what each is for, how it is delivered, its steps and
+/// settings, and the size of its instructions, not their text. Reading
+/// changes nothing; no Agent saves templates through it.
+#[tokio::test]
+async fn a_lead_lists_the_templates_to_choose_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let p = ws.store.create_project("Lab", BTreeMap::new()).unwrap().id;
+    let detail: crate::model::AgentDetail = serde_json::from_value(json!({"agent":{"id":"lead","name":"Lead","cwd":"/synthetic/work",
+        "model":"","harness":"claude","color":"sage","status":"offline","createdAt":"now","updatedAt":"now",
+        "unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&detail).unwrap();
+    ws.store.set_agent_project("lead", Some(&p)).unwrap();
+    ws.store.save_project_agent_defaults(&p, &crate::agent_defaults::AgentDefaults { harness: Some("claude".into()), ..Default::default() }).unwrap();
+    let memo = json!({"id":"memo","label":"决策备忘","harness":"codex","model":"m-large","reasoningEffort":"high","permissionPreset":"ask",
+        "machineId":"auto","instructions":"列出选项。","whenToChoose":"A choice the user makes","deliveryMode":"none",
+        "steps":[{"kind":"materials"},{"kind":"work"},{"kind":"result","label":"选项表"},{"kind":"gate","approver":"user"}]});
+    let later = json!({"id":"later","label":"Later","harness":"gemini"});
+    stored_at(&ws.store, KEY, json!({"version":4,"templates":[memo, template("plain", "claude"), later]}));
+    let before = raw_at(&ws.store, KEY);
+
+    let listed = ws.collaboration_call(Some("lead"), LIST_TOOL, json!({})).await.unwrap();
+    assert_eq!(listed, json!({"version":4,"laterTemplates":1,
+        "general":{"label":"Executor","harness":"claude","harnessSource":"project"},
+        "templates":[
+            {"id":"memo","label":"决策备忘","whenToChoose":"A choice the user makes","deliveryMode":"none",
+                "steps":[{"kind":"materials"},{"kind":"work"},{"kind":"result","label":"选项表"},{"kind":"gate","approver":"user"}],
+                "harness":"codex","model":"m-large","reasoningEffort":"high","permissionPreset":"ask","machineId":"auto",
+                "instructionsBytes":"列出选项。".len()},
+            {"id":"plain","label":"Label plain","deliveryMode":"pr",
+                "steps":[{"kind":"materials"},{"kind":"work"},{"kind":"job"},{"kind":"pr"},{"kind":"review"},{"kind":"ci"},{"kind":"merge"}],
+                "harness":"claude","instructionsBytes":0},
+        ]}), "{listed}");
+    assert!(!listed.to_string().contains("列出选项"), "its instructions' size, not their text");
+    assert_eq!(raw_at(&ws.store, KEY), before, "reading changes nothing");
+    let general = ws.collaboration_call(None, LIST_TOOL, json!({})).await.unwrap();
+    assert_eq!(general["general"]["harnessSource"], "builtin", "the user's read: the Workspace's general executor");
+    let extra = ws.collaboration_call(Some("lead"), LIST_TOOL, json!({"templates":[]})).await.unwrap_err().to_string();
+    assert_eq!(extra, "invalid_input: unknown field templates", "it takes nothing to save");
+
+    let tool = crate::collaboration_store::tool_definitions().into_iter().find(|t| t["name"] == LIST_TOOL).expect("offered to Agents");
+    assert!(tool["description"].as_str().unwrap().encode_utf16().count() <= crate::results::max_description_length());
+    assert_eq!(tool["inputSchema"]["properties"], json!({}));
+}

@@ -120,7 +120,14 @@ type Draft = {
   machine: string;
   /** Kept as saved: where a copied template came from (YN-2 S2). */
   origin?: ExecutorTemplate["origin"];
+  /** Kept as saved, so a save of another edit doesn't drop them (YN-23). */
+  workflow: Pick<ExecutorTemplate, "deliveryMode" | "steps" | "whenToChoose">;
 };
+const workflowOf = (t: ExecutorTemplate): Draft["workflow"] => ({
+  ...(t.deliveryMode ? { deliveryMode: t.deliveryMode } : {}),
+  ...(t.steps ? { steps: t.steps } : {}),
+  ...(t.whenToChoose ? { whenToChoose: t.whenToChoose } : {}),
+});
 
 let keys = 0;
 const draftOf = (t: ExecutorTemplate): Draft => ({
@@ -129,6 +136,7 @@ const draftOf = (t: ExecutorTemplate): Draft => ({
   namePattern: t.namePattern ?? "", instructions: t.instructions ?? "",
   machine: t.machineId && t.machineId !== "local" ? t.machineId : "",
   ...(t.origin ? { origin: t.origin } : {}),
+  workflow: workflowOf(t),
 });
 const slug = (label: string) => label.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
 /** A new template's id: its label's, or the first free `template-N` for a
@@ -157,7 +165,7 @@ const templateOf = (d: Draft): ExecutorTemplate => {
   // Kept as saved (T-35 S3): an OpenCode template runs on this Core host.
   if (d.machine && d.harness !== "opencode") template.machineId = d.machine;
   if (d.origin) template.origin = d.origin;
-  return template;
+  return { ...template, ...d.workflow };
 };
 /** How many of the folded settings a draft sets, said on the fold. */
 const setCount = (d: Draft) =>
