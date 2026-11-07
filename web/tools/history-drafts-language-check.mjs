@@ -83,6 +83,8 @@ await context.route("**/*", async (route) => {
   if (path === "/other.html") return route.fulfill({ body: "<!doctype html><title>other</title>", contentType: "text/html" });
   if (path.startsWith("/api/")) report.reads.push(`${method} ${path}`);
   if (path === "/api/agents/a/reading") return route.fulfill({ json: method === "GET" ? { handoff: null } : { accepted: true, sourceSeq: 0 } });
+  // Data & storage's task list (on History's page since S1) is a read sent by POST, as in storage-language-check.
+  if (method === "POST" && path === "/api/collaboration/task_list") return route.fulfill({ json: { tasks: [], hasMore: false } });
   if (method !== "GET") {
     report.posts.push({ method, path });
     return route.fulfill({ status: 500, json: { error: "not answered by this fixture" } });
