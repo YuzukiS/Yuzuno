@@ -498,6 +498,8 @@ impl Open {
     fn is_empty(&self) -> bool {
         self.user.is_none() && self.inputs.is_empty() && self.steps.is_empty() && self.tools.is_empty() && self.gathered.is_empty()
             && self.shells.is_empty() && self.compaction.is_none() && self.requests.is_empty() && self.questions.is_empty()
+            // Kept until the run Core declined a request of ends (D-7), after the request's own reply.
+            && !self.declined
     }
 
     fn question(&mut self, form: &Value) {

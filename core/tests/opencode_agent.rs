@@ -828,9 +828,8 @@ async fn a_sub_agents_requests_are_shown_with_it_and_answered_in_its_own_session
     assert_eq!(p.params["turnId"], running, "the Agent's running Turn asked it");
     assert_eq!(d.agent.status, "waiting");
 
-    // The same event again adds nothing, and the sub-agent's idle ends no Turn.
+    // The same event again adds nothing.
     lab.control("event", json!({"type":"permission.asked","properties":asked})).await;
-    lab.control("idle", json!({"sessionID":child})).await;
     let question = lab.control("question", json!({"sessionID":child})).await;
     let d = lab.until("the sub-agent's question", |d| d.pending.iter().any(|p| p.params["id"] == question["id"])).await;
     assert_eq!(d.pending.iter().filter(|p| p.params["id"] == asked["id"]).count(), 1);
@@ -847,6 +846,9 @@ async fn a_sub_agents_requests_are_shown_with_it_and_answered_in_its_own_session
     lab.ws.respond(&q.id, json!({"answers":[["A"]]})).await.expect("a sub-agent's 2.x question is answered");
     assert_eq!(lab.replies().last().unwrap()["path"], format!("/api/session/{child}/form/{}/reply", question["id"].as_str().unwrap()));
     lab.until("the answered requests", |d| d.pending.is_empty()).await;
+    // The sub-agent's run ending ends no Turn of the Agent's (2.x: a run's end ends its requests, so it ends after
+    // they are answered, T-61 slice 2).
+    lab.control("idle", json!({"sessionID":child})).await;
 
     // A request of a sub-agent whose run ended is not answered.
     lab.control("ask", json!({"sessionID":child})).await;
