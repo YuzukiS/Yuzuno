@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import {
@@ -23,7 +23,10 @@ import type { Agent, PendingRequest } from "../types";
 import { ProjectReply } from "./AskReply";
 import { CardReply, cardReplySlot, hasCardReply, KeptCardReplies, referableHistory } from "./CardReply";
 import { HandoverProposal } from "./HandoverProposal";
-import { changedSinceSeen, groupSections, projectDomId, requestDomId, topicName } from "./brief-layout";
+import { changedSinceSeen, groupSections, projectDomId, requestDomId, topicName, type TopicGroup } from "./brief-layout";
+import { DeckSizes } from "./card-sizes";
+import { deckPlace, orderDeck, type DeckPlace } from "./deck-order";
+import { deckCard, deckItems, useDeckPacking } from "./deck-packing";
 import { FoldButton, useCardFold } from "./card-fold";
 import { absolute, relative } from "./format";
 import { readLinkedRepositories, type LinkedRepositories, type SeenMark } from "./home-api";
@@ -345,6 +348,24 @@ export function HomePanel({
     [panel.brief.history, live],
   );
   const groups = groupSections(sections);
+  // The deck's order (YN-3, deck-order.ts): what needs the user, then current status, reports, Asks put off and
+  // what came in during this visit; then the Asks the user answered, under their heading; last, status out of
+  // date, closed. Each card keeps the place it was first shown in during this visit (card-sizes.ts).
+  const sizes = useContext(DeckSizes);
+  const now = Date.now();
+  const ownPlaces = sections.map((s) => [s.key, deckPlace(s, now)] as const);
+  const places: Map<string, DeckPlace> = sizes ? sizes.places(id, ownPlaces) : new Map(ownPlaces);
+  const placeOf = (s: Section) => places.get(s.key) ?? deckPlace(s, now);
+  const ordered = orderDeck(groups, placeOf);
+  const inGroup = (place: DeckPlace) => ordered.filter((o) => o.place === place).map((o) => o.group);
+  const members = (list: TopicGroup[]) => list.flatMap((g) => [...(g.parent ? [g.parent] : []), ...g.subs]);
+  const deckMain = ordered.filter((o) => o.place !== "replied" && o.place !== "stale").map((o) => o.group);
+  const deckReplied = inGroup("replied");
+  const deckStale = inGroup("stale");
+  const repliedCount = members(deckReplied).filter((s) => placeOf(s) === "replied").length;
+  const staleStatus = members(deckStale).filter((s) => placeOf(s) === "stale" && s.status);
+  const newestStale = staleStatus.map((s) => s.status!.asOf).sort().at(-1) ?? null;
+  const staleRef = useRef<HTMLDivElement>(null);
   const uncapped = more || (reveal > 0 && reveal !== handled.cap);
   const capped = rank >= FULL_RANKS && !uncapped;
   const toggleMore = () => {
@@ -354,6 +375,9 @@ export function HomePanel({
     } else setMore(true);
   };
   const [briefRef, overflowing] = useOverflow(capped && !collapsed);
+  // With no holes, in that order (deck-pack.ts).
+  useDeckPacking(briefRef, deckItems, deckCard);
+  useDeckPacking(staleRef, deckItems, deckCard);
   const changed = sections.filter(changedSinceSeen).length;
   async function seenAll() {
     setSeeingAll(true);
@@ -400,6 +424,27 @@ export function HomePanel({
       notice={arrival?.inCard && arrival.key === section.key ? arrival.note : undefined}
     />
   );
+  // A topic's cards together: a sub-topic whose topic has no section of its own stands as a card of its own;
+  // several get a readable heading, never the bare key (T-173).
+  const topicBlock = (group: TopicGroup) =>
+    !group.parent && group.subs.length === 1 ? (
+      <div className="home-topic" key={group.topic} data-topic={group.topic}>
+        {card(group.subs[0])}
+      </div>
+    ) : (
+      <div className="home-topic" key={group.topic} data-topic={group.topic}>
+        {group.parent ? (
+          card(group.parent)
+        ) : (
+          <h3 className="home-topic-name" title={group.topic}>
+            {topicName(group.topic)}
+          </h3>
+        )}
+        {group.subs.length > 0 && (
+          <div className="home-subs">{group.subs.map((sub) => card(sub, topicName(group.topic)))}</div>
+        )}
+      </div>
+    );
   const viewChanges = (request: PendingRequest) => () =>
     onNavigate({
       kind: "changes",
@@ -490,29 +535,24 @@ export function HomePanel({
             {groups.length === 0 ? (
               <p className="home-note home-brief-empty">{t.noContent}</p>
             ) : (
-              groups.map((group) =>
-                // A sub-topic whose topic has no section of its own stands as
-                // a card of its own; several get a readable heading, never the
-                // bare key (T-173).
-                !group.parent && group.subs.length === 1 ? (
-                  <div className="home-topic" key={group.topic} data-topic={group.topic}>
-                    {card(group.subs[0])}
-                  </div>
-                ) : (
-                  <div className="home-topic" key={group.topic} data-topic={group.topic}>
-                    {group.parent ? (
-                      card(group.parent)
-                    ) : (
-                      <h3 className="home-topic-name" title={group.topic}>
-                        {topicName(group.topic)}
-                      </h3>
-                    )}
-                    {group.subs.length > 0 && (
-                      <div className="home-subs">{group.subs.map((sub) => card(sub, topicName(group.topic)))}</div>
-                    )}
-                  </div>
-                ),
-              )
+              <>
+                {deckMain.map(topicBlock)}
+                {deckReplied.length > 0 && (
+                  <>
+                    <h3 className="home-deck-heading">{t.repliedGroup(repliedCount)}</h3>
+                    {deckReplied.map(topicBlock)}
+                  </>
+                )}
+                {deckStale.length > 0 && (
+                  // Closed at each visit; a jump to a card in it opens it (card-fold.tsx unfoldAround).
+                  <details className="home-out-of-date">
+                    <summary>{t.outOfDate(staleStatus.length, newestStale ? absolute(newestStale, time) : "")}</summary>
+                    <div ref={staleRef} className="home-brief-sub">
+                      {deckStale.map(topicBlock)}
+                    </div>
+                  </details>
+                )}
+              </>
             )}
           </div>
           {rank >= FULL_RANKS && (uncapped || overflowing) && (

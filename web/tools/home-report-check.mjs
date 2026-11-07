@@ -608,6 +608,8 @@ try {
           const r = el.getBoundingClientRect(), style = getComputedStyle(el);
           return { key: el.dataset.sectionKey, size: el.dataset.cardSize ?? null, source: el.dataset.sizeSource ?? null, top: Math.round(r.top), left: Math.round(r.left),
             width: Math.round(r.width), height: Math.round(r.height), span: Math.round((r.width + gap) / (column + gap)), rows: style.gridRowStart,
+            // As packed with no holes (deck-pack.ts, YN-3), where the deck's columns are known.
+            deckCols: el.dataset.deckCols ?? null, deckRows: el.dataset.deckRows ?? null,
             cut: el.scrollHeight > el.clientHeight + 1,
             // A wide card's figure beside its text, or under it; a small card's frame (none) and big numbers.
             beside: (() => { const text = el.querySelector(".home-summary-text"), fig = el.querySelector(".home-card-frame");
@@ -664,16 +666,19 @@ try {
       assert.deepEqual(sizes, { setup: "small content", data: "small content", baseline: "small content", eval: "wide author", "dose-study": "small content",
         audit: "wide author", "audit/notes": "wide author", screens: "large author", batches: "wide author", uptime: "small content", pulse: "wide author" });
       for (const place of deckShape.places.filter((p) => p.size)) {
-        const span = deckShape.columns === 1 || place.size === "small" ? 1 : 2;
-        assert.equal(place.span, span, `${place.key} spans ${span}: ${JSON.stringify(place)}`);
-        assert.equal(place.rows, place.size === "large" && deckShape.columns === 4 ? "span 2" : "auto", `${place.key}'s rows: ${JSON.stringify(place)}`);
+        // At least its own size, more where it takes the cells the grid's flow would leave empty; its rows as packed
+        // (deck-pack.ts, YN-3): two only for a large card on four columns with another card beside its second row.
+        const own = deckShape.columns === 1 || place.size === "small" ? 1 : 2;
+        assert.ok(place.span >= own && place.span <= deckShape.columns, `${place.key} spans ${own} or more: ${JSON.stringify(place)}`);
+        assert.equal(place.span, Number(place.deckCols ?? own), `${place.key} spans as packed: ${JSON.stringify(place)}`);
+        assert.equal(place.rows, place.deckRows ? `span ${place.deckRows}` : place.size === "large" && deckShape.columns === 4 ? "span 2" : "auto", `${place.key}'s rows: ${JSON.stringify(place)}`);
         assert.equal(place.cut, false, `${place.key} shows all it holds: ${JSON.stringify(place)}`);
         // A wide card's figure beside its text where the deck has two columns or more; stacked on one.
         if (place.size === "wide" && place.beside !== null) assert.equal(place.beside, deckShape.columns > 1, `${place.key}'s figure beside its text: ${JSON.stringify(place)}`);
         if (place.size === "small") assert.equal(place.frame, false, `a small card has no frame: ${place.key}`);
         if (place.size === "large" && place.leadGap !== null) assert.ok(place.leadGap <= 12, `${place.key}: ${place.leadGap} px between its text and its figure`);
         // A minimum on each card, not each row (Dev 7, 2396): none on one column; a card with no summary has it too (YN-3).
-        const least = deckShape.columns === 1 ? "auto" : place.size === "large" && deckShape.columns === 4 ? "536px" : "260px";
+        const least = deckShape.columns === 1 ? "auto" : place.size === "large" && deckShape.columns === 4 && place.deckRows !== "1" ? "536px" : "260px";
         assert.equal(place.minHeight, least, `${place.key}'s minimum height: ${JSON.stringify(place)}`);
         if (place.open) assert.ok(place.open.wrap === "nowrap" && place.open.height <= 34, `${place.key}'s Open on one line: ${JSON.stringify(place.open)}`);
         // No stripe on any card's side, nor on its conditions: one border all round.
