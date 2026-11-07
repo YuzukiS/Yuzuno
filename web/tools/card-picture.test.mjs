@@ -72,3 +72,16 @@ test("YN-3 a report whose body holds only what its card shows is the whole repor
   // Only a report: a status keeps its page.
   assert.equal(whole({ lead: "lead" }, { lead: md("Done."), shown: files("ring.html") }, page, { kind: "status" }), false);
 });
+
+test("YN-3 a whole report is decided as the card is shown: a chart a small card only names, a file it can only name, keep the report page (PR C2's review)", () => {
+  const chart = { type: "LineChart", props: { id: "c", title: "Loss", data: { attachment: "loss.csv", x: "step", series: [{ name: "A", column: "a" }] } } };
+  const trend = section({ lead: "lead", visual: "chart" }, { lead: md("Loss falls."), chart }, [kept("loss.csv", "data")]);
+  assert.equal(selfContained(trend, cardContent(trend), "wide"), true, "a chart drawn on a wide card");
+  assert.equal(selfContained(trend, cardContent(trend), "small"), false, "a small card names the chart as on the report");
+  // Every file named beside the picture must open in place: a kept image or page.
+  const withFile = (...attachments) => section({ lead: "lead" }, { lead: md("Done."), shown: files("ring.html", "method.pdf") }, [kept("ring.html"), ...attachments]);
+  assert.equal(selfContained(withFile(kept("method.pdf", "pdf"))), false, "a PDF opens on the report page");
+  assert.equal(selfContained(withFile(referenced("method.pdf", "image"))), false, "an image only referenced");
+  const withImage = section({ lead: "lead" }, { lead: md("Done."), shown: files("ring.html", "ring.png") }, [kept("ring.html"), kept("ring.png", "image")]);
+  assert.equal(selfContained(withImage), true, "a kept image opens in place");
+});

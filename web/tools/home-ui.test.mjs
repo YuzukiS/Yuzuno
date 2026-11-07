@@ -3220,6 +3220,13 @@ function pageFixture() {
     section("spec", "report", "Spec page", 2, mori, { id: 602, body: pageBody("The spec.\n\nA second paragraph the card leaves to the page.", null, "spec.html"),
       attachments: [pageFile("spec.html")] }),
     section("tiny", "report", "Tiny page", 1, mori, { id: 603, body: pageBody("A small one.", "small", "tiny.html"), attachments: [pageFile("tiny.html")] }),
+    section("trend", "report", "Loss trend", 1, mori, { id: 604, body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "chart", size: "small" } }, children: ["lead", "chart"] },
+      lead: { type: "Markdown", props: { text: "Loss falls." } },
+      chart: { type: "LineChart", props: { id: "c", title: "Loss", data: { attachment: "loss.csv", x: "step", series: [{ name: "A", column: "a" }] } } },
+    } }, attachments: [pageFile("loss.csv", { kind: "data", mime: "text/csv" })] }),
+    section("method", "report", "Method page", 1, mori, { id: 605, body: pageBody("The method, working.", null, "method.html", "method.pdf"),
+      attachments: [pageFile("method.html"), pageFile("method.pdf", { kind: "pdf", mime: "application/pdf" })] }),
   );
   return home;
 }
@@ -3299,6 +3306,33 @@ test("YN-3 a card's HTML page works on its card once in view: one card preview, 
   }
 });
 
+test("YN-3 a card's page shown when its author writes a new version: the new version's page, not loaded something else (PR C2's review)", async () => {
+  let show;
+  const p = await mount({ home: pageFixture(), before: (w) => (show = watchedViews(w)) });
+  try {
+    const asked = cardPreviews(p);
+    const ring = () => card(p, "p-app", "ring");
+    await waitFor(() => ring()?.querySelector(".home-card-page"), "the ring card's page frame");
+    show();
+    await waitFor(() => ring().querySelector("iframe.home-card-page-frame"), "version 3's page is shown");
+    ring().querySelector("iframe.home-card-page-frame").dispatchEvent(new p.w.Event("load"));
+    // The author writes version 4; Core serves its page at the same address, as a stub may.
+    Object.assign(p.state.home.projects.find((entry) => entry.project.id === "p-app").brief.sections.find((s) => s.key === "ring"), { version: 4 });
+    p.event({ type: "workspace.changed", scope: "brief" });
+    await waitFor(() => ring().dataset.sectionVersion === "4", "Home read version 4");
+    show();
+    await waitFor(() => asked.some((body) => body.section === "ring" && body.version === 4), "version 4's page asked for");
+    await waitFor(() => ring().querySelector("iframe.home-card-page-frame") && ring().querySelector(".home-card-page").dataset.pageState === "ready", "version 4's page is shown");
+    ring().querySelector("iframe.home-card-page-frame").dispatchEvent(new p.w.Event("load"));
+    await pause(50);
+    assert.doesNotMatch(ring().querySelector(".home-card-page").textContent, /loaded something else/, "its first load is the page");
+    assert.ok(ring().querySelector("iframe.home-card-page-frame"), "the page stays shown");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 test("YN-3 where a card's page can't be shown, the card names the file and offers its Preview: an older Core, phone access without previews, another version", async () => {
   for (const [why, refuse, note] of [
     ["an older Core refuses the field", [422, "Failed to deserialize the JSON body into the target type: unknown field `place`"], /can't show it on the card/],
@@ -3348,6 +3382,13 @@ test("YN-3 a report whose body holds only what its card shows is the whole repor
     assert.ok(!spec.classList.contains("is-whole"));
     assert.ok(p.button("Open report", spec), "a card that leaves more to its page keeps Open report");
     assert.ok(spec.querySelector(".home-summary-title-link"));
+    // What the card can only name keeps its page linked (PR C2's review): a chart on a small card, a PDF beside the page.
+    const trend = card(p, "p-app", "trend"), method = card(p, "p-app", "method");
+    assert.equal(trend.dataset.cardSize, "small");
+    assert.match(trend.textContent, /Line chart · on the report/);
+    assert.ok(!trend.classList.contains("is-whole") && p.button("Open report", trend), "a chart named as on the report, and the report linked");
+    assert.ok(!method.classList.contains("is-whole") && p.button("Open report", method), "the PDF opens on the report page");
+    assert.equal(method.querySelector(".home-card-file").disabled, false, "its chip opens it there");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
