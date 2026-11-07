@@ -12,6 +12,7 @@ import {
 import { MAX_PROBLEMS, MAX_SPEC_BYTES, ResultError, SIGNATURE_LEGEND } from "../src/intelligent-ui/contract.ts";
 import { clarificationExample } from "../src/intelligent-ui/clarification.ts";
 import { benchmark, doseStudy, layoutStudy } from "./research-fixtures.mjs";
+import { parseContract } from "./contract-json.mjs";
 
 const problems = (value, previousBody) => {
   try {
@@ -628,7 +629,7 @@ test("a ResearchDesk number may be a CSV row's cell named by its key columns, an
 });
 
 test("contract.json carries the brief, generated from this file", async () => {
-  const committed = JSON.parse(await readFile(new URL("../../runtimes/result-validator/contract.json", import.meta.url), "utf8"));
+  const committed = parseContract(await readFile(new URL("../../runtimes/result-validator/contract.json", import.meta.url), "utf8"));
   const brief = describeBrief();
   assert.deepEqual(committed.brief, JSON.parse(JSON.stringify(brief)), "stale: npm run build:result-validator");
   assert.deepEqual(Object.keys(committed.brief).sort(), ["guide", "guideParts", "hardRules", "limits", "outcomeHint", "schemaVersion", "toolDescriptions"]);

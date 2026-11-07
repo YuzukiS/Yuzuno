@@ -80,7 +80,7 @@ python3 tools/package-release.py \
   --helper "$artifacts/yuzuno-update-helper" \
   --web "$artifacts/web" \
   --claude "$artifacts/claude" \
-  --result-validator "$reviewed_checkout/runtimes/result-validator" \
+  --result-validator "$artifacts/result-validator" \
   --release-id "$release_id" --version "$version" --git-sha "$reviewed_commit" \
   --notes-file "$artifacts/notes.txt" --out "$bundle"
 ```
@@ -93,10 +93,15 @@ hash must be approved through the release review process; a directory alone is
 not a trusted candidate. Node and authenticated official CLIs remain host
 prerequisites.
 
-`runtimes/result-validator` is generated from the interactive-result contract
-and committed; packaging checks the bundle against the hash in its
-`contract.json`, and Core runs only the bundle its own build names. Core does
-not require it to verify a release, so an older package without it remains a
+`runtimes/result-validator` is generated from the interactive-result contract.
+Its `contract.json` and notices are committed; `validator.mjs` is not
+(`npm --prefix web run build:result-validator` makes it). A release Core is
+built for one `validator.mjs`: `tools/build-core-artifact.py` generates it
+first and compiles its SHA-256 into Core, which then runs no other bundle.
+Pass the folder that Core was built with, such as the build's
+`result-validator` input: packaging refuses a bundle whose SHA-256 the Core
+does not carry, so a release is never packaged unpinned. Core does not require
+the validator to verify a release, so an older package without it remains a
 valid previous or rollback release; that release just has no result or
 Brief validator.
 

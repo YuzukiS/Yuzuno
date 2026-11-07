@@ -199,6 +199,8 @@ def package_fixture(lab, release_id, git_sha, core, update_helper):
     fixture_inputs(inputs)
     args = types.SimpleNamespace(core=core, helper=update_helper, licenses=inputs / "licenses", web=inputs / "web",
                                  claude=inputs / "claude", result_validator=ROOT / "runtimes/result-validator",
+                                 # A development build pins no validator (YN-22).
+                                 unpinned_validator=True,
                                  windows_helper=HELPER_DIR, out=lab / "bundle", notes_file=inputs / "notes.txt",
                                  release_id=release_id, version="T-108 acceptance fixture", git_sha=git_sha)
     printed = io.StringIO()

@@ -69,6 +69,18 @@ def build(out):
     def run(argv, cwd=ROOT):
         subprocess.run(list(map(str, argv)), cwd=cwd, env=env, check=True)
     try:
+        spec = importlib.util.spec_from_file_location('packager', ROOT / 'tools/package-release.py')
+        packager = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(packager)
+        # The result validator first (YN-22): it is generated, not committed,
+        # and the release Core compiles in its SHA-256 and runs no other
+        # bundle. A bundled-release build without the value does not compile.
+        # --check first: the committed contract.json must already match.
+        validator = ROOT / 'runtimes/result-validator'
+        run(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], ROOT / 'web')
+        run(['node', '--experimental-strip-types', 'tools/result-validator.mjs', '--check'], ROOT / 'web')
+        run(['node', '--experimental-strip-types', 'tools/result-validator.mjs'], ROOT / 'web')
+        env['YUZUNO_RESULT_VALIDATOR_SHA256'] = digest(validator / 'validator.mjs')
         run(['cargo', 'zigbuild', '--target', GLIBC_TARGET, '--locked', '--release', '--features', 'bundled-release', '-j', '1', '-p', 'yuzuno-workspace',
              '--bin', 'yuzuno-workspace', '--bin', 'yuzuno-update-helper'])
         inputs = stage / 'inputs'
@@ -91,13 +103,8 @@ def build(out):
         # toolchain that built them, and the project license (T-90).
         run([sys.executable, ROOT / 'tools/third_party_notices.py', '--target', TARGET, '--out', inputs / 'licenses'])
         shutil.copy2(ROOT / 'LICENSE', inputs / 'licenses/LICENSE')
-        run(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], ROOT / 'web')
         run(['node', 'node_modules/typescript/bin/tsc', '--noEmit'], ROOT / 'web')
         run(['node', 'node_modules/vite/bin/vite.js', 'build', '--outDir', inputs / 'web'], ROOT / 'web')
-        run(['node', '--experimental-strip-types', 'tools/result-validator.mjs', '--check'], ROOT / 'web')
-        spec = importlib.util.spec_from_file_location('packager', ROOT / 'tools/package-release.py')
-        packager = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(packager)
         runtime = stage / 'runtime'
         shutil.copytree(ROOT / 'runtimes/claude', runtime, ignore=shutil.ignore_patterns('node_modules'))
         run(['npm', 'ci', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], runtime)
@@ -110,7 +117,9 @@ def build(out):
         # claude-agent-sdk.json names it (T-159; docs/public-readiness.md).
         claude_sdk_release.leave_out_sdk(runtime)
         packager.copy_tree(runtime, inputs / 'claude')
-        packager.copy_tree(ROOT / 'runtimes/result-validator', inputs / 'result-validator')
+        # The bundle the Core above was built for, and only it.
+        packager.check_result_validator(validator, inputs / 'bin/yuzuno-workspace')
+        packager.copy_tree(validator, inputs / 'result-validator')
         # Built on Windows from a fixed commit and committed (T-108): only if
         # it was built from this tree's windows_job.cs and speaks its protocol.
         windows_helper = packager.check_windows_helper(ROOT / 'runtimes/windows-jobs', ROOT / 'core/src/jobs/windows_job.cs')

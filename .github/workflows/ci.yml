@@ -155,6 +155,14 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           package-manager-cache: false
 
+      # validator.mjs is generated, not committed (YN-22): web/'s packages
+      # build it from the contract before Core's tests need it.
+      - name: Result validator
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build:result-validator
+
       # Integration tests start scripted fake runtimes (Codex app-server and
       # SSH helper stand-ins) through /usr/bin/python3, and the SSH check test
       # runs `ssh` against an unresolvable .invalid host. No real Codex,
