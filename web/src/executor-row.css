@@ -4,7 +4,9 @@
    agent-island.css). */
 .agent-row-state > .executor-row-facts {
   display: flex;
-  flex: none;
+  /* It gives way to the island, the template first. */
+  flex: 0 1 auto;
+  overflow: hidden;
   align-items: baseline;
   gap: 5px;
   min-width: 0;
@@ -23,7 +25,12 @@
   white-space: nowrap;
 }
 .executor-template-chip {
+  flex: 0 1 auto;
+  min-width: 0;
   opacity: 0.8;
+}
+.executor-pr-chip {
+  flex: none;
 }
 .executor-pr-chip[data-tone="ok"] {
   color: var(--state-working, #5f7f52);

@@ -503,7 +503,8 @@ has the blocker (`blocked`); its state stays what it is.
   - One line with the time, and the word except for Working's dot, while
     something is going on.
   - Two lines, the state with its clock and then one sentence, by itself
-    when the Agent needs you or failed.
+    when the Agent needs you or failed. The row's work summary gives way to
+    them: what it asks is their sentence.
   - Pressing the island opens its card in the row's place, under its two
     lines: the ring becomes the card's cover, beside the state with its
     clock and what the Agent is at; then the clock's line, the unread count
@@ -513,7 +514,7 @@ has the blocker (`blocked`); its state stays what it is.
   - Its size morphs in 280 ms and its cover slides in 320 ms; nothing moves
     under reduced motion.
   - Beside what an executor is doing are its template, when its name doesn't
-    say it, and its PR. With the compact Agent list (Settings → Appearance),
+    say it, and its PR; they give way to the island, the template first. With the compact Agent list (Settings → Appearance),
     only the island shows on line two.
 - **Its PR** comes from `GET /api/executors/live`: for each open executor
   (not archived, its Agent not closed) whose task links a PR, the open or

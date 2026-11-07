@@ -279,7 +279,8 @@ export function AgentRailRow({
           doing. The whole row opens the agent; the island opens its card. */}
       <div className="agent-row-state">
         {executor && <ExecutorRowFacts view={executor} template={template} title={kind?.title} />}
-        {summary && (
+        {/* Beside two lines the island's second line says it: the summary gives way. */}
+        {summary && form !== "two" && (
           <div
             className={`agent-work-summary kind-${summary.kind}`}
             data-source-kind={summary.kind}

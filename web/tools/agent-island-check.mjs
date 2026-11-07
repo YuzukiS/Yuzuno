@@ -47,7 +47,8 @@ const agents = [
     workSummary: { kind: "pending", source: "runtime", text: "Approve the design note", requestId: "q1" } }),
   executor("yn33", "YN-33 · Design first", "failed", { closedAt: ago(1) }, { reason: "Both starts failed" }),
   executor("yn30", "YN-30 · Small fix", "queued", {}, { position: 2 }),
-  standing("dev5", "Dev 5", { lastTurnEnd: { seq: 2, outcome: "finished", at: ago(80) } }),
+  // Its last Turn end is one this device has shown (reviewedSeq 1): idle, not done.
+  standing("dev5", "Dev 5", { lastTurnEnd: { seq: 1, outcome: "finished", at: ago(80) } }),
 ];
 // What each row's island says, and its form while nothing is pressed.
 const EXPECTED = {

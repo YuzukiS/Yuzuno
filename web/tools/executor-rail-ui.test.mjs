@@ -144,7 +144,7 @@ test("needs you opens to two lines by itself, with how long; the bell under the 
     assert.equal(p.island("w").dataset.form, "two");
     assert.match(p.island("w").title, /^Needs you · waiting 12m · Approve the design note\n/);
     assert.equal(p.bell("w"), false, "no second \"needs you\" under it");
-    assert.match(p.row("w").querySelector(".agent-work-summary").textContent, /Approve the design note/);
+    assert.equal(p.row("w").querySelector(".agent-work-summary"), null, "beside two lines the sentence is the island's, not said again");
     assert.match(p.row("w").querySelector(".agent-select").getAttribute("aria-description"), /^Executor · Needs you, on /);
     // A standing Agent that needs you: its island says it, the same way.
     assert.deepEqual(p.state("s"), ["waiting", "Needs you: Allow npm test"]);
