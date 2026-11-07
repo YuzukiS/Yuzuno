@@ -137,12 +137,52 @@ pub(super) fn last_project(db: &Connection) -> Result<Option<String>> {
         .and_then(|v| v["lastProject"].as_str().map(str::to_owned)))
 }
 
+/// The project served last. It sets only its own key: the row also keeps
+/// what the last pass found waiting for CPU (`record_cpu_waiting`).
 pub(super) fn served(db: &Connection, project: &str) -> Result<()> {
     db.execute(
-        "INSERT INTO local_job_queue_state(id,data) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
-        [json!({"lastProject":project}).to_string()],
+        "INSERT INTO local_job_queue_state(id,data) VALUES(1,json_object('lastProject',?1))
+         ON CONFLICT(id) DO UPDATE SET data=json_set(data,'$.lastProject',?1)",
+        [project],
     )?;
     Ok(())
+}
+
+/// What the last admission pass found (YN-6): how many queued Jobs only CPU,
+/// or nothing, kept from starting, the first of them, and since when some
+/// have (null with none). Written only when the count or the first changes,
+/// so a queue that stays as it is writes nothing. Shown by job_budget; the
+/// grant and the raises read the pass itself, never this.
+pub(super) fn record_cpu_waiting(db: &Connection, waiting: &[String]) -> Result<()> {
+    let saved = saved_cpu_waiting(db)?;
+    let first = waiting.first();
+    if saved["count"] == json!(waiting.len()) && saved["firstJobId"] == json!(first) {
+        return Ok(());
+    }
+    let since = match (waiting.is_empty(), saved["since"].as_str()) {
+        (true, _) => Value::Null,
+        (false, Some(since)) if saved["count"].as_u64().is_some_and(|n| n > 0) => json!(since),
+        (false, _) => json!(crate::model::now()),
+    };
+    let value = json!({"count": waiting.len(), "firstJobId": first, "since": since});
+    db.execute(
+        "INSERT INTO local_job_queue_state(id,data) VALUES(1,json_object('cpuWaiting',json(?1)))
+         ON CONFLICT(id) DO UPDATE SET data=json_set(data,'$.cpuWaiting',json(?1))",
+        [value.to_string()],
+    )?;
+    Ok(())
+}
+
+/// The last pass's `record_cpu_waiting`, or Null when none was saved (no
+/// pass yet, or a row an older Core rewrote).
+pub(super) fn saved_cpu_waiting(db: &Connection) -> Result<Value> {
+    let raw: Option<String> = db
+        .query_row("SELECT data FROM local_job_queue_state WHERE id=1", [], |r| r.get(0))
+        .optional()?;
+    Ok(raw
+        .and_then(|r| serde_json::from_str::<Value>(&r).ok())
+        .map(|v| v["cpuWaiting"].clone())
+        .unwrap_or(Value::Null))
 }
 
 #[cfg(test)]

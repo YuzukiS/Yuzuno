@@ -10,14 +10,21 @@ test may leave a switch before it starts: `host` (the address it reports),
 `version` (the version it reports), `exit` (exit before listening), `noise`
 (a long line that is not UTF-8 before listening), `line1x` (it says it
 listens as 1.x does), `starting` (seconds it answers `/api/info` with 503,
-as 2.x does while it starts), `mcp` (the MCP status it reports), `stubborn`
+as 2.x does while it starts), `mcp` (the status an MCP server it connects ends in: `connected`, `failed`,
+`needs_auth`, or `pending`, which it never leaves), `stubborn`
 (it and a child of its own ignore SIGTERM), `tool` (it starts a process in a
 session of its own, as OpenCode's tools run, which only its teardown after
 SIGTERM ends), `teardown` (seconds its teardown takes before it ends that
 process and exits), `closeStreamsFirst` (its teardown first ends its event
 streams and cuts every request still being served, before that wait, as 2.x
-closes what it serves early) or `xdg-data` (a folder it takes as its XDG_DATA_HOME, as
-if started with it).
+closes what it serves early), `xdg-data` (a folder it takes as its XDG_DATA_HOME, as
+if started with it) or `slowSave` (seconds each save of its state waits with its file open, before it writes).
+MCP servers are 2.x's (T-61 slice 1): added at runtime per folder (`PUT /api/experimental/mcp/:server`), listed
+with their status only (`GET /api/mcp`), connected again (`…/connect`), kept in memory, and dropped with the folder
+(control `mcpDrop`, as 2.x unloads an idle folder). Mode `mcpPendingFor` (seconds) lists one as `pending` that long
+after it is added, as 2.x may for a folder's first, before its status settles; `mcpRefuse` answers an add with 400
+quoting the request, as a schema rejection may; `mcpErrorEcho` puts the request's Authorization in a failed one's
+error. 1.19.3's `POST /mcp` and `GET /mcp` are answered only in the 1.19.3 mode (`v1Messages`).
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
@@ -98,6 +105,9 @@ lock = threading.Lock()
 active = set()
 counter = [0]
 sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
+# 2.x's MCP servers added at runtime (T-61 slice 1), by name: their configuration, status and folder; and each
+# connection it made of one (a name and why), which the same configuration added again does not make.
+mcp_servers, mcp_connects = {}, []
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
          'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
@@ -605,15 +615,22 @@ def page(items, query, kept):
 
 
 def save():
+    # Written whole or not at all (T-61 S0): into a file of its own beside state.json, then put in its place, so a process
+    # ended in the middle of a save never leaves a cut state.json that its next start can't read (CI 42314910718).
     with lock:
-        (ROOT / 'state.json').write_text(json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0],
-                                                     'durable': durable, 'aggregates': aggregates,
-                                                     # 2.x stores its idle messages with the session's others,
-                                                     # and its inbox.
-                                                     'idles': {s: v['idles'] for s, v in v2_state.items()},
-                                                     'inbox': {s: {'pending': v['pending'], 'steer': sorted(v['steer'])}
-                                                               for s, v in v2_state.items()},
-                                                     'shells': {s: v['shells'] for s, v in v2_state.items()}}))
+        data = json.dumps({'sessions': sessions, 'messages': messages, 'counter': counter[0],
+                           'durable': durable, 'aggregates': aggregates,
+                           # 2.x stores its idle messages with the session's others,
+                           # and its inbox.
+                           'idles': {s: v['idles'] for s, v in v2_state.items()},
+                           'inbox': {s: {'pending': v['pending'], 'steer': sorted(v['steer'])}
+                                     for s, v in v2_state.items()},
+                           'shells': {s: v['shells'] for s, v in v2_state.items()}})
+        written = ROOT / f'state.json.{os.getpid()}.tmp'
+        with open(written, 'w') as out:
+            time.sleep(float(switch('slowSave') or 0))
+            out.write(data)
+        os.replace(written, ROOT / 'state.json')
 
 
 def load():
@@ -879,10 +896,53 @@ def without(pending, gone):
     pending[:] = [r for r in pending if all(r is not g for g in gone)]
 
 
+def mcp_settled(config):
+    # The status an MCP server ends in (switch or mode `mcp`), with 2.x's error for one not connected.
+    status = modes['mcp']
+    if status in ('connected', 'pending'):
+        return {'status': status}
+    error = 'fixture: needs authentication' if status == 'needs_auth' else 'fixture: connection refused'
+    if modes.get('mcpErrorEcho'):
+        error += ' with ' + str((config.get('headers') or {}).get('Authorization'))
+    return {'status': status, 'error': error}
+
+
+def mcp_connect(name, config, location, why):
+    # 2.x's startServer: `pending`, then the status it settles in, each with an `mcp.status.changed` (mcp/index.ts).
+    settled, wait = mcp_settled(config), float(modes.get('mcpPendingFor') or 0)
+    with lock:
+        mcp_servers[name] = {'config': config, 'location': location, 'status': {'status': 'pending'} if wait else settled}
+        mcp_connects.append({'name': name, 'why': why})
+    if not wait:
+        send('mcp.status.changed', {'server': name})
+        return
+
+    def later():
+        time.sleep(wait)
+        with lock:
+            held = mcp_servers.get(name)
+            if held is None or held['config'] != config:
+                return
+            held['status'] = settled
+        send('mcp.status.changed', {'server': name})
+    threading.Thread(target=later, daemon=True).start()
+
+
 def control(name, body):
     if name == 'mode':
         modes.update(body)
         return modes
+    if name == 'mcpDrop':
+        # As 2.x unloads an idle folder (location-activity.ts) or reloads it: its runtime MCP servers go with it.
+        with lock:
+            dropped = sorted(mcp_servers)
+            mcp_servers.clear()
+        send('location.shutdown', {'location': {'directory': str(WORK)}})
+        return {'dropped': dropped}
+    if name == 'mcp':
+        with lock:
+            return {'servers': {name: {'status': s['status'], 'location': s['location']} for name, s in mcp_servers.items()},
+                    'connects': list(mcp_connects)}
     if name == 'ask':
         request = {'id': new_id('per'), 'sessionID': body['sessionID'], 'permission': 'bash', 'patterns': ['ls'],
                    'metadata': {}, 'always': ['ls *'], 'tool': {'messageID': 'msg_fixture', 'callID': 'call_1'}}
@@ -1126,6 +1186,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         self.route('PATCH')
 
+    def do_PUT(self):
+        self.route('PUT')
+
     def do_DELETE(self):
         self.route('DELETE')
 
@@ -1142,6 +1205,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def missing(self, what):
         return self.reply(404, {'name': 'NotFoundError', 'data': {'message': f'{what} not found'}})
+
+    def mcp_v2(self, method, name, rest, query, body):
+        # 2.x's runtime MCP routes (2.2.5 protocol/src/groups/mcp.ts, server/src/handlers/mcp.ts): 204 each.
+        location = query.get('location[directory]', [str(WORK)])[0]
+        if method == 'PUT' and not rest:
+            config = (body or {}).get('config')
+            if modes.get('mcpRefuse'):
+                return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'schema rejection: ' + json.dumps(body)})
+            if not isinstance(config, dict) or config.get('type') != 'remote' or not isinstance(config.get('url'), str):
+                return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'Invalid config'})
+            with lock:
+                held = mcp_servers.get(name)
+                same = held is not None and held['config'] == config and held['location'] == location
+            # The same configuration again changes nothing, a failed server's included (mcp/index.ts reconcile).
+            if not same:
+                mcp_connect(name, config, location, 'added' if held is None else 'changed')
+            return self.reply(204)
+        if method == 'POST' and rest == ['connect']:
+            with lock:
+                held = mcp_servers.get(name)
+            if held is None or held['location'] != location:
+                return self.reply(404, {'_tag': 'McpServerNotFoundError', 'message': f'MCP server {name} not found'})
+            mcp_connect(name, held['config'], location, 'connect')
+            return self.reply(204)
+        return self.missing(f'MCP route {method} {name}/{"/".join(rest)}')
 
     def route(self, method):
         url = urlsplit(self.path)
@@ -1218,8 +1306,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, permissions)
         if key == ('GET', 'question'):
             return self.reply(200, questions)
-        if key == ('GET', 'mcp'):
+        if key == ('GET', 'mcp') and v1():
             return self.reply(200, mcp)
+        if key == ('GET', 'api', 'mcp'):
+            # Each server of the folder, its status only (2.2.5 core/src/mcp/index.ts `servers()`).
+            location = parse_qs(url.query).get('location[directory]', [str(WORK)])[0]
+            with lock:
+                listed = [{'name': name, 'status': dict(server['status'])} for name, server in mcp_servers.items()
+                          if server['location'] == location]
+            return self.reply(200, {'location': {'directory': location}, 'data': listed})
+        if parts[:3] == ['api', 'experimental', 'mcp'] and len(parts) in (4, 5):
+            return self.mcp_v2(method, parts[3], parts[4:], parse_qs(url.query), body)
         if key == ('GET', 'config', 'providers'):
             return self.reply(200, modes['providers'])
         if key == ('GET', 'api', 'command') and modes.get('apiCommands'):
@@ -1233,7 +1330,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_providers()})
         if key == ('GET', 'config'):
             return self.reply(200, modes['config'])
-        if key == ('POST', 'mcp'):
+        if key == ('POST', 'mcp') and v1():
             status = {'status': modes['mcp']}
             if modes['mcp'] == 'failed':
                 status['error'] = 'fixture: connection refused'
@@ -2008,6 +2105,9 @@ def teardown(signum, frame):
         except ProcessLookupError:
             pass
         tool.wait()
+    # No save is cut short: one under way holds `lock`, and ends before this exits (T-61 S0). Bounded, should the
+    # handler run in the thread that holds it.
+    lock.acquire(timeout=10)
     os._exit(0)
 
 
@@ -2022,8 +2122,21 @@ def main():
         sys.stderr.write('\x1b[31mERROR\x1b[0m\nUnrecognized flag: --mdns in command opencode serve\n')
         sys.exit(1)
     new = not (ROOT / 'state.json').exists()
+    # A save file a stand-in killed in the middle of a save left beside its state (T-61 S0, R1 note): never read,
+    # removed once the process that wrote it is gone.
+    for stale in ROOT.glob('state.json.*.tmp'):
+        try:
+            os.kill(int(stale.name.split('.')[2]), 0)
+        except (ValueError, IndexError, ProcessLookupError):
+            stale.unlink(missing_ok=True)
+        except PermissionError:
+            pass
     load()
     modes['mcp'] = switch('mcp') or 'connected'
+    # The MCP modes a test needs before the Agent first connects, from switches of the same names.
+    for name in ('mcpPendingFor', 'mcpRefuse', 'mcpErrorEcho'):
+        if switch(name) is not None:
+            modes[name] = switch(name) or True
     # Modes for a process started on a new database (T-10 Fork), as a fork's target is: a test cannot leave
     # a switch in a folder it does not know yet, so it leaves them beside every Agent's.
     planned = ROOT.parent / 'fixture-new.json'

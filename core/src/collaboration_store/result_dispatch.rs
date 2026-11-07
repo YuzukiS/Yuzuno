@@ -190,9 +190,15 @@ pub(super) fn notify(store: &Store, db: &Connection, task: &SharedTask, event: &
         .context("Missing result activity sequence")?;
     let summary = result["summary"].as_str().unwrap_or_default();
     let excerpt = summary.chars().take(1_200).collect::<String>();
-    let mut body = format!("{number}: {} ({}) submitted a result with status {}. Result {} for dispatch {}.\n{}{}\nRead task_get(taskId={number}, afterSeq={}) for this result's full summary, evidence links and original author/source. Submission is the author's report, not independent review, acceptance, merging or deployment.",
+    // An intermediate result (YN-4): the dispatch goes on after it.
+    let what = if task.status == "doing" {
+        "an intermediate result (status doing); the task stays doing and this dispatch continues".to_owned()
+    } else {
+        format!("a result with status {}", task.status)
+    };
+    let mut body = format!("{number}: {} ({}) submitted {what}. Result {} for dispatch {}.\n{}{}\nRead task_get(taskId={number}, afterSeq={}) for this result's full summary, evidence links and original author/source. Submission is the author's report, not independent review, acceptance, merging or deployment.",
         result["reportedBy"]["name"].as_str().unwrap_or("Agent"),
-        result["reportedBy"]["id"].as_str().unwrap_or("unknown"), task.status,
+        result["reportedBy"]["id"].as_str().unwrap_or("unknown"),
         result["id"].as_str().unwrap_or_default(), result["dispatchId"].as_str().unwrap_or_default(),
         excerpt, if excerpt.len() < summary.len() { "…" } else { "" }, seq - 1);
     // The recipient may be the one who keeps the Project's Home: advice only.

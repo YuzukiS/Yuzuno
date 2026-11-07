@@ -250,6 +250,7 @@ async fn conditional_client_bounds_and_304_cache_preservation() {
     let c = crate::github::client::Client {
         program: path.to_string_lossy().into(),
         deadline: Duration::from_secs(1),
+        ..Default::default()
     };
     let v = c
         .conditional("repos/o/r/actions/runs", Some("\"one\""))

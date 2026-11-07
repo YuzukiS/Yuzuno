@@ -12,18 +12,65 @@
 .conversation-header .conversation-title {
   flex: 1;
 }
+/* The entries beside the name take a line of their own rather than slide
+   under the conversation's tools when the name and the status leave them too
+   little: a chip that cannot be pressed is worse than a taller head, and
+   clipping their counts would hide the very thing they are there to say
+   (T-15).
+
+   That was written as two rules, and the second undid the first: `wrap`
+   followed by `nowrap` at the same specificity leaves `nowrap`, so the row
+   never broke and its children overflowed the title's box to the right
+   instead. Measured by Dev 7 and reproduced here at 951x669 by touch with a
+   Claude Agent, the reading index entry ended up at x 561-638 — 77px of it
+   lying over the conversation's tools, where it took 0 of 9 presses, all of
+   them landing on "Model & approvals" — and the Agent's name was squeezed to
+   0px. One rule now, and it wraps. */
 .conversation-heading {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 4px 10px;
 }
 .conversation-heading h1 {
-  min-width: 0;
+  /* Enough of the name to read a little of and to press for the rest
+     (h1[data-open] below); at 0 it vanished and there was nothing to press. */
+  min-width: 72px;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* A name the header cannot fit is pressed to read: it wraps to as many lines
+   as it needs and presses again to go back. A title would only answer a
+   pointer, and the rail may have had to cut the same name (T-15). */
+.conversation-heading h1[data-open] {
+  overflow: visible;
+  white-space: normal;
+}
+.conversation-heading h1 > .conversation-name {
+  display: block;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: inherit;
+}
+.conversation-heading h1[data-open] > .conversation-name {
+  overflow: visible;
+}
+.conversation-heading h1 > .conversation-name:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 .app .conversation-header .status-label {
   padding: 0;
@@ -135,5 +182,31 @@
   .conversation-actions .agent-settings-button {
     margin: 0;
     padding: 0;
+  }
+}
+/* Narrower still: the name, the work entry and the reading index cannot have
+   a row each. Measured at a 320px screen, the heading took three rows and
+   118px and the header 139px against 55px before this task, and the request
+   pin — which sits at the header's foot — then covered an approval's Allow
+   once and Decline, the one thing that must stay pressable, with the
+   conversation already scrolled to its end (phone-conversation-check,
+   t15-folded-head.mjs). Bounded, the two entries share a row and their text
+   clips as the name above them already does; neither loses a word a reader
+   hears, and each keeps it in its own title. Only here: by a 383px
+   conversation the two already sit on one row at their full width, and
+   clipping them there would cost reading for nothing. */
+@container conversation (max-width: 380px) {
+  .conversation-heading > .work-activity-entry {
+    max-width: 55%;
+  }
+  .conversation-heading > .conversation-index-entry {
+    max-width: 40%;
+  }
+  .work-activity-entry .work-activity-counts,
+  .conversation-index-entry > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }

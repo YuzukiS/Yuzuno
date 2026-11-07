@@ -135,7 +135,7 @@ fn sharing_needs_the_users_opt_in_and_memory_is_checked_conservatively() {
     // 12000 free when sampled, less 8000 reserved, less 1024 kept free:
     // 2976 MiB for a new job, not one more.
     let g3 = gpu(&s, "g3", 2977, "shared");
-    let (none, changed) = s.reserve_next(None, None, None).unwrap();
+    let (none, changed, _) = s.reserve_next(None, None, None).unwrap();
     assert!(none.is_none() && changed);
     let told = reason(&s, &g3);
     assert!(
@@ -145,7 +145,7 @@ fn sharing_needs_the_users_opt_in_and_memory_is_checked_conservatively() {
     // A resample whose free memory moved but still does not fit leaves the
     // waiting job as it is: no rewrite, no change to announce.
     sample(&s, json!([card(GPU0, 0, 11900)]));
-    let (none, changed) = s.reserve_next(None, None, None).unwrap();
+    let (none, changed, _) = s.reserve_next(None, None, None).unwrap();
     assert!(none.is_none() && !changed);
     assert_eq!(reason(&s, &g3), told);
     s.request_job_cancel(None, g3["id"].as_str().unwrap())
@@ -694,4 +694,21 @@ fn multi_gpu_request_that_can_no_longer_be_met(named: bool) {
         reason(&s, &fits)
     );
     assert!(reason(&s, &later).contains("held for an earlier job waiting for it"));
+}
+
+#[test]
+fn a_job_waiting_for_a_gpu_does_not_hold_a_starting_cpu_range_at_its_minimum() {
+    let (_dir, s) = setup();
+    sample(&s, json!([card(GPU0, 0, 16000)]));
+    let first = gpu(&s, "g1", 4096, "exclusive");
+    assert_eq!(start(&s).unwrap()["id"], first["id"]);
+    gpu(&s, "g2", 4096, "exclusive");
+    let request: Submit = serde_json::from_value(json!({"requestId":"build","taskId":"T-1","name":"build","cwd":"/workspace","argv":["/usr/bin/true"],
+        "resources":{"cpuMillisMin":1000,"cpuMillisMax":2000,"memoryMiB":128,"swapMiB":0}})).unwrap();
+    request.validate().unwrap();
+    let build = s.create_job(Some("a"), request, json!({"cwd":"/workspace"}), machine(), json!({"bootId":"boot"})).unwrap();
+    let started = start(&s).unwrap();
+    assert_eq!(started["id"], build["id"], "CPU work is not held behind a GPU waiter");
+    // YN-6: g2 waits for GPU0, which g1 holds, not for CPU.
+    assert_eq!(started["cpuGrantedAtStart"], 2000, "a Job waiting for a GPU holds no range at its minimum: {}", started["cpuGrant"]);
 }

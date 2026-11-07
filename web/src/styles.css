@@ -7,7 +7,16 @@
     "Yuzuno Han",
     sans-serif;
   color: #364b3c;
-  background: #f7f7f2;
+  /* The root's background is the page canvas: it is what an overscroll or
+     rubber-band area shows, and what is left beside the shell when the
+     on-screen keyboard shortens it (:root[data-keyboard]). A fixed light
+     colour here stayed rgb(247, 247, 242) under every dark theme and palette
+     while --cream was redefined to #252c26 or #121813, so those places were a
+     light flash under a dark theme. It follows the theme now; the theme's and
+     the palette's own --cream override this one (appearance.css,
+     palettes.css). The literal below is the fallback for the moment before a
+     theme is applied, and is the same value --cream starts at. (T-15) */
+  background: var(--cream, #f5f4ed);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -3672,6 +3681,19 @@ p {
     display: none;
   }
 }
+/* A workbench that is not a phone, with the on-screen keyboard up: the shell
+   fits what the keyboard leaves, so the input area and Send stay on screen
+   rather than under it (T-15). The keyboard covers the bottom of a tablet or
+   an opened folding phone exactly as it covers a phone's, and the shell was
+   100dvh tall through all of it. Only the height moves here: the rest of this
+   layout has the room to stay as it is, which a phone's does not. */
+:root[data-keyboard] .app:not(.phone) {
+  /* min-height: 500px is the desktop minimum and it floored this at 500 when
+     the keyboard left 369, which put the input area back under the keyboard.
+     A phone drops it for the same reason when held sideways. */
+  min-height: 0;
+  height: min(100dvh, var(--visual-height, 100dvh));
+}
 /* With the on-screen keyboard up (keyboard-viewport.ts) the phone shell is
    as short as a phone held sideways, though the window is not: the same
    short layout, so the turn dock is not drawn over the composer and Send. */
@@ -3770,4 +3792,110 @@ p {
 .app.phone .conversation-header {
   position: relative;
   z-index: 5;
+}
+
+/* The chrome above the conversation on a middle-sized workbench (T-15 V4).
+   At 951x669 the two rows above the conversation cost 122px — a toolbar of
+   57 and a header of 65 — to carry contents 32px and 40px tall. The rest is
+   breathing room a tall desktop can spend and a short screen cannot: 122 of
+   669 is nearly a fifth of the window before a word of the conversation.
+   A short screen, or any screen worked by touch, keeps the contents and
+   gives back the room around them. The header's own buttons grow to 40px in
+   the same breath (V3), so the shorter head is not a harder one to hit: 32px
+   inside a padded group cost the same 40px of header that a 40px button
+   costs without the padding. A tall screen with a mouse is left as it was. */
+@media (max-height: 820px), (hover: none) and (pointer: coarse) {
+  /* The last row is the bottom bar's, and on this screen the bar is not in
+     the grid at all: it hangs under the toolbar instead, opened from the
+     toolbar's Core status entry (V5, statusbar.css). */
+  .app:not(.phone) {
+    grid-template-rows: 48px minmax(0, 1fr) 0;
+  }
+  .app:not(.phone):has(.preview-strip) {
+    grid-template-rows: 28px 48px minmax(0, 1fr) 0;
+  }
+  .app:not(.phone) .conversation-header {
+    padding-block: 4px;
+  }
+  /* The avatar reserves 47px of the name's side, and the rail beside it
+     already shows the same one. Without it the two entries share one wrapped
+     row instead of taking one each: measured at 951x669 by touch with a
+     Claude Agent, whose tools group is 300px of the 647, the head is 91px
+     rather than 123. (The conversation's own layout already drops it below
+     640px of container — this is the same thought for a short screen, where
+     the container is just above that.) */
+  .app:not(.phone) .conversation-title > .avatar {
+    display: none;
+  }
+  /* The tools took 300px of the head's 647 — "Model & approvals" alone is a
+     167px button — which left the name, its status and the two entries 275px
+     and forced them onto rows of their own. On a short screen the tools keep
+     their icons and give up their words: the control is still there, still
+     40px, still named for a reader by its aria-label, and the conversation's
+     own layout already does this below 640px of container. With that width
+     back the head is one row again (51px) instead of two (79px), and the wrap
+     above stays as the thing that keeps them from ever overlapping. */
+  .app:not(.phone) .conversation-actions .agent-settings-button > span {
+    display: none;
+  }
+  /* The group keeps its outline — it reads as one set of tools — and loses
+     only the padding inside it. */
+  .app:not(.phone) .conversation-header .conversation-actions {
+    padding: 0;
+  }
+  .app:not(.phone) .conversation-action {
+    height: 40px;
+    min-width: 40px;
+  }
+}
+
+/* Targets a finger can hit on a workbench that is not a phone (T-15 V3).
+   Measured by hit test rather than by box — several of these are extended by
+   an ::after that takes the press, and the box understates them — these came
+   back at 28x28 and 30x30 in the toolbar and 28x28 to 30x29 around the input
+   area, against the 40px this task asks for. A phone has had its own 44px
+   rules since T-170; this is the same thought for a tablet, a Duo or any
+   screen worked by touch. The room is there: the toolbar row is 48px.
+   What is deliberately not here: the "…" in an Agent row, which a touch
+   screen reaches by holding the row (agent-actions.css), and the work dock's
+   own entries, which a finger reads rather than presses — the Work activity
+   entry beside the conversation's name opens the same work as a column of
+   44px rows (work-dock.css, V9). */
+@media (hover: none) and (pointer: coarse) {
+  /* The ring that marks where the keyboard is reaches 6px past a button here
+     (a 2px outline at 4px of offset, styles.css). The desktop toolbar has
+     13-15px around its buttons and loses none of it; a 40px target in this
+     48px row has 4px, and measured, all seven rings were cut 3px by `.app`'s
+     own clipping at its padding box. The ring is brought in to 1px of offset
+     on this row rather than the row made 52px tall: it needs 3px then, which
+     the 4px holds, and the head above the conversation keeps 7-14px and is
+     left alone. (This is also why the row is not d6's 44: that leaves 2px,
+     which even a 1px ring does not fit in.) */
+  .app:not(.phone) .toolbar button:focus-visible {
+    outline-offset: 1px;
+  }
+  .app:not(.phone) .toolbar .icon-button,
+  .app:not(.phone) .toolbar-nav .catchup-nav,
+  .app:not(.phone) .rail-actions .icon-button,
+  .app:not(.phone) .agent-scope button,
+  .app:not(.phone) .project-group-add,
+  .app:not(.phone) .composer-tool,
+  .app:not(.phone) .interrupt-button,
+  .app:not(.phone) .send-button,
+  .app:not(.phone) .context-usage-button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  /* The "…" keeps the 26px it is drawn at — a wider one would cost the names
+     beside it the width they were given back — and takes its presses from a
+     40px area around itself instead. */
+  .app:not(.phone) .agent-row:is(.selected, :hover, :focus-within) .agent-row-menu::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 40px;
+    height: 40px;
+    transform: translate(-50%, -50%);
+    content: "";
+  }
 }

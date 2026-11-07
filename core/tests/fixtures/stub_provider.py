@@ -4,8 +4,9 @@ OpenAI-compatible chat completions server on loopback, so that a real
 
 `python3 stub_provider.py <log>` prints its port, then serves
 `POST /v1/chat/completions`. Each request is appended to <log> as one JSON
-line: its path, its Authorization header, whether it streams, its model and
-messages. It answers by the newest user message's keyword:
+line: its path, its Authorization header, whether it streams, the names of
+the tools it offers, its model and messages. It answers by the newest user
+message's keyword:
 - `probe-4a tools`: some text, then one call of OpenCode's `read` tool for
   `a.txt`; once that tool's result is back, a last text.
 - `probe-4a image`: a short text.
@@ -13,6 +14,8 @@ messages. It answers by the newest user message's keyword:
 - `probe-4a ask`: one call of OpenCode's `shell` tool, which the probe's
   config makes OpenCode ask permission for.
 - `probe-4a form`: one call of OpenCode's `question` tool, which opens a form.
+- `probe-61 mcp` (T-61 slice 1): one call of the Workspace MCP's
+  `yuzuno_peers_list`; once its result is back, a last text.
 A request without tools (OpenCode's own title, say) is answered with a
 title, streamed when it asks for a stream, as OpenCode does.
 """
@@ -53,6 +56,7 @@ class Handler(BaseHTTPRequestHandler):
         with open(LOG, 'a') as out:
             out.write(json.dumps({'path': self.path, 'authorization': self.headers.get('authorization'),
                                   'stream': bool(body.get('stream')), 'tools': bool(body.get('tools')),
+                                  'toolNames': [t.get('function', {}).get('name') for t in body.get('tools') or []],
                                   'model': body.get('model'), 'messages': messages}) + '\n')
         users = [m for m in messages if m.get('role') == 'user']
         asked = text_of(users[-1]) if users else ''
@@ -70,6 +74,12 @@ class Handler(BaseHTTPRequestHandler):
                                              'options': [{'label': 'A', 'description': 'the first'}]}]})
             call = {'index': 0, 'id': 'call_stub_2', 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(arguments)}}
             return self.stream([chunk({'role': 'assistant', 'tool_calls': [call]}), chunk({}, 'tool_calls')])
+        if 'probe-61 mcp' in asked:
+            if last != 'tool':
+                call = {'index': 0, 'id': 'call_stub_61', 'type': 'function',
+                        'function': {'name': 'yuzuno_peers_list', 'arguments': '{}'}}
+                return self.stream([chunk({'role': 'assistant', 'tool_calls': [call]}), chunk({}, 'tool_calls')])
+            return self.stream([chunk({'role': 'assistant', 'content': 'Peers seen.'}), chunk({}, 'stop')])
         if 'probe-4a tools' in asked and last != 'tool':
             call = {'index': 0, 'id': 'call_stub_1', 'type': 'function',
                     'function': {'name': 'read', 'arguments': json.dumps({'path': 'a.txt'})}}
