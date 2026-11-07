@@ -26,7 +26,9 @@ login:
   never a squash, a rebase or an admin merge.
 - A batch, when CI tested an older main: the branch `queue/merge-{entry}` at
   the current main, the released head merged into it (`POST merges`), and a
-  draft PR from it, whose pull_request event runs CI.
+  draft PR from it, whose pull_request event runs CI. A later step of a chain
+  of batches (see Chains) starts its branch at the batch commit of the step
+  ahead of it instead.
 - Under the relaxed policy (below), a probe instead of a batch: the same
   branch at the current main with the head merged in, but no PR, so no CI
   runs on it. It shows that the head merges cleanly into the current main
@@ -113,8 +115,9 @@ entry is checked again from the new anchor.
    at the batch commit, its CI is green, and every CI job checked out the merge
    of main and the batch commit, whose tree is the batch's tree. Core reads
    every job (all pages), and each job's log, at most 4 MiB, for the
-   `HEAD is now at …` line, keeping the log's sha256. Under the relaxed policy
-   the gate is the probe instead: Core's own merge of the head into the current
+   `HEAD is now at …` line, keeping the log's sha256. A later step of a chain
+   of batches is gated on its own batch CI by tree instead (see Chains). Under
+   the relaxed policy the gate is the probe instead: Core's own merge of the head into the current
    main is clean, and its tree is the tree the merge must land. CI on the PR may
    have tested an older main, and the merge ref may be stale.
 
@@ -250,6 +253,47 @@ merge records the policy it started with. If the
 policy turns strict while an entry holds a probe on the current main, the probe
 becomes its batch: Core opens the draft PR from it.
 
+## Chains
+
+Under the strict policy, an entry that needs a batch does not wait for the
+batch ahead of it to merge before its own CI starts. Its batch stacks on the
+one ahead: the branch starts at that step's batch commit, with the head merged
+in. The steps form one chain of batches per repository, at most four steps
+(four of Core's draft PRs) at a time; an entry that would be a fifth waits
+until a step merges or leaves. CI runs on every step at once.
+
+The steps merge in order, each with its own merge request pinned to its head:
+
+- A step waits while the step ahead of it is still to merge or its merge is
+  not yet post-checked.
+- Once the step ahead merged and its post-check held, and main is that merge
+  commit, the step's gate is its own batch: the batch PR is still Core's own
+  at the batch commit, every workflow run on it is green, and every CI job
+  checked out a merge of the batch commit whose tree is the batch's tree.
+  GitHub tested the batch merged into the main of its moment, older than the
+  main the step lands on; the tree is what both have in common, so the jobs
+  must show the tree, not the main. The post-check then compares the merge
+  commit's tree with the batch's tree, as for any batch.
+- If the step ahead left the chain (it stopped or was cancelled), or was
+  rebuilt, or main moved some other way, the step's batch is removed and it
+  joins the chain again, which may start a new chain on main.
+
+Red CI on a step stops that entry with `batch_failed`, and Core removes its
+batch. The steps after it stand on a batch that left, so each one is rebuilt
+without it: on the step still ahead of them, or on main. Core does not retry
+the failed step; its release is told what to do next.
+
+Stacks keep their order. Before an entry joins, Core compares its head with
+the head of every entry released before it that has not joined yet; if its
+head contains one of theirs, it waits for that entry to join first.
+
+Known limits: a rebuilt step runs all of its CI again; an entry whose batch
+build was interrupted can lose its place in the chain to a later release, so
+it lands after that release, and some CI runs again; and the tree check
+relies on GitHub's merge of the step's PR into the new main landing the
+batch's tree, which the post-check verifies afterwards: if it does not, the
+entry stops with `post_check_failed` and the queue pauses.
+
 ## Reverts
 
 When main's push CI goes red after a merge the queue made, the entry ends
@@ -332,7 +376,7 @@ run.
 | `merging` | The merge request is journaled or sent. |
 | `merged` | GitHub merged it; Core follows main's push CI. |
 | `done` | Main's push CI on the merge commit finished. |
-| `stopped` | A check decided against. `reason` is one of `head_moved`, `pr_not_open`, `base_changed`, `review_not_passing`, `main_red`, `ci_red`, `conflict`, `nothing_to_merge`, `merge_blocked`, `batch_changed`, `checkout_mismatch`, `checkout_unproven`, `merge_refused`, `merge_unknown`, `post_check_failed`, `post_check_unverified`, `gh_too_old`, `wait_timeout`, `github_unreachable`, `dry_run_ended`, `revert_conflict`, `revert_not_allowed` or `revert_outdated`. |
+| `stopped` | A check decided against. `reason` is one of `head_moved`, `pr_not_open`, `base_changed`, `review_not_passing`, `main_red`, `ci_red`, `batch_failed`, `conflict`, `nothing_to_merge`, `merge_blocked`, `batch_changed`, `checkout_mismatch`, `checkout_unproven`, `merge_refused`, `merge_unknown`, `post_check_failed`, `post_check_unverified`, `gh_too_old`, `wait_timeout`, `github_unreachable`, `dry_run_ended`, `revert_conflict`, `revert_not_allowed` or `revert_outdated`. |
 | `cancelled` | Cancelled by the Agent that released it, or by the user. |
 
 `merge_retry` checks a stopped entry again from the start. Only the Agent that
