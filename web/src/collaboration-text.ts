@@ -75,7 +75,7 @@ export const boardText = strings({
     state === "waiting" ? (position ? `Queued (number ${position})` : "Queued")
       : state === "starting" ? (reason ? `Start not finished: ${reason}` : "Starting") : "Running",
   executorSlotHelp: (state: string, reason?: string | null) =>
-    state === "waiting" ? "Its executor waits for a free slot and starts in turn. Settings → Executor templates sets how many run at once."
+    state === "waiting" ? "Its executor waits for a free slot on its machine and starts in turn. Settings → Machines sets how many run at once on each machine."
       : state === "starting" ? (reason ? `Its executor keeps its slot, open; its start didn't finish: ${reason}. Connect starts it again; Close frees its slot.` : "Its executor holds a slot and is starting.")
       : "Its executor holds a slot and is running.",
   updatedAt: (at: string) => `Updated ${at}`,
@@ -279,7 +279,7 @@ export const boardText = strings({
     state === "waiting" ? (position ? `排队中（第 ${position} 位）` : "排队中")
       : state === "starting" ? (reason ? `启动未完成：${reason}` : "启动中") : "运行中",
   executorSlotHelp: (state, reason) =>
-    state === "waiting" ? "它的执行者在等空位，会按顺序启动。同时运行的数量在 设置 → 执行者模板 中设定。"
+    state === "waiting" ? "它的执行者在等所在机器的空位，会按顺序启动。每台机器同时运行的数量在“设置 → 机器”中设定。"
       : state === "starting" ? (reason ? `它的执行者保持打开并占着一个位置；启动未完成：${reason}。连接会再次启动它；关闭会释放它的位置。` : "它的执行者占着一个位置，正在启动。")
       : "它的执行者占着一个位置，正在运行。",
   updatedAt: (at) => `更新于 ${at}`,

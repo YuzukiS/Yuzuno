@@ -6,8 +6,6 @@
 // starting, running), in English and in Chinese; on a phone, both fit.
 // S2: the Workspace's start time limit: 29 is not offered, 120 is saved
 // alone; in Chinese too.
-// S4: a template's own At most at once: a fraction or a negative number holds
-// the save, said at the field (in Chinese too); a whole number is saved.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-slots-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -193,30 +191,6 @@ try {
   assert.deepEqual(limitPut.body, { expectedVersion: 0, startLimitSeconds: 120 }, "the start time limit alone");
   assert.equal(await limitInput.inputValue(), "120");
   check("the start time limit: 29 not offered (said in Chinese too); 120 saved alone against version 0", { body: limitPut.body });
-
-  // ---- A template's own limit (S4).
-  await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
-  const limitField = box.locator('input[aria-label="At most at once"]');
-  const saveTemplates = box.getByRole("button", { name: "Save templates" });
-  for (const bad of ["2.5", "-1"]) {
-    await limitField.fill(bad);
-    await box.getByText("At most at once is a whole number from 1 to 64.").waitFor({ timeout: 10_000 });
-    assert.equal(await saveTemplates.isDisabled(), true, `${bad} holds the save`);
-  }
-  await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
-  await box.getByText("同时最多 是 1 到 64 之间的整数。").waitFor({ timeout: 10_000 });
-  await box.locator('input[aria-label="同时最多"]').screenshot({ path: join(output, "2b-template-limit-zh.png") });
-  await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" })));
-  await box.getByText("At most at once is a whole number from 1 to 64.").waitFor({ timeout: 10_000 });
-  await limitField.fill("2");
-  await box.getByText("At most this many of this template’s executors run at once, within Executors at once. Empty: no limit of its own.").waitFor({ timeout: 10_000 });
-  await saveTemplates.click();
-  // The templates' own actions: the limit group above says Saved. too.
-  await box.locator(".executor-templates-actions:not(.executor-slots-actions)").getByText("Saved.", { exact: true }).waitFor({ timeout: 10_000 });
-  const templatesPut = report.writes.find((w) => w.path === "/api/executor-templates");
-  assert.deepEqual(templatesPut.body, { expectedVersion: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude", maxConcurrent: 2 }] });
-  assert.deepEqual(await fits(box), { box: true, wider: [] }, "the editor fits its width");
-  check("a template's own limit: 2.5 and -1 hold the save, said at the field (in Chinese too); 2 is saved", { body: templatesPut.body });
 
   // ---- The board: each card says where its executor stands.
   await page.keyboard.press("Escape");
