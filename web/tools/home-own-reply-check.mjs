@@ -7,7 +7,7 @@
 //  - its height is within 3 px of the same answer card at a fresh visit (a reload), at the same width;
 //  - Reply again, sent, closes the opened card back to its answer card, the new reply on it, again with no blank;
 //  - nothing is wider than the window, and nothing is sent but reads and those two replies.
-// Before and after pictures of the deck go to the output directory, with SHA256SUMS.
+// Before and after pictures (the window, the Ask's card at its top) go to the output directory, with SHA256SUMS.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/home-own-reply-check.mjs
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -195,10 +195,12 @@ async function check(run) {
   const card = (key) => page.locator(`#home-section-p-orch-${key}`);
   const deck = page.locator('[data-home-project="p-orch"] .home-brief').first();
   const press = (locator) => (run.phone ? locator.tap() : locator.click());
-  const deckShot = async (name) => {
+  // What the user sees: the window, with the Ask's card at its top.
+  const shot = async (name) => {
     const file = `${run.name}-${name}.png`;
-    await deck.scrollIntoViewIfNeeded();
-    await deck.screenshot({ path: join(output, file) });
+    await card("overnight").evaluate((el) => el.scrollIntoView({ block: "start" }));
+    await page.waitForTimeout(100);
+    await page.screenshot({ path: join(output, file) });
     result.shots.push(file);
   };
   // A card as laid out: its box, what is held on it, and the room under its last shown child (its blank area).
@@ -214,13 +216,17 @@ async function check(run) {
     }
     const inner = box.bottom - parseFloat(style.borderBottomWidth) - parseFloat(style.paddingBottom);
     return {
-      height: Math.round(box.height * 10) / 10, width: Math.round(box.width), top: Math.round(box.top + scrollY), blank: Math.round(inner - bottom),
+      height: Math.round(box.height * 10) / 10, width: Math.round(box.width), blank: Math.round(inner - bottom),
       minHeight: el.style.minHeight, answer: el.classList.contains("is-answer"), open: el.classList.contains("is-open"), size: el.dataset.cardSize ?? null,
       kind: el.querySelector(".home-kind")?.textContent.trim() ?? null, reply: el.querySelector(".home-answer-reply")?.textContent ?? null,
       next: el.querySelector(".home-answer-next")?.textContent ?? null, focused: document.activeElement === el, running: el.getAnimations().length,
     };
   }, key);
-  const topOf = (key) => page.evaluate((key) => Math.round(document.getElementById(`home-section-p-orch-${key}`).getBoundingClientRect().top + scrollY), key);
+  // Where a card stands on its deck, from the deck's top: whatever is scrolled.
+  const topOf = (key) => page.evaluate((key) => {
+    const el = document.getElementById(`home-section-p-orch-${key}`);
+    return Math.round(el.getBoundingClientRect().top - el.closest(".home-brief").getBoundingClientRect().top);
+  }, key);
   const order = () => deck.locator("[data-section-key]").evaluateAll((els) => els.map((el) => el.dataset.sectionKey));
   const collapses = () => page.evaluate(() => window.__animations.filter((a) => a.id === "home-section-p-orch-overnight" && /height/.test(a.frames)));
   const openHome = async () => {
@@ -246,7 +252,7 @@ async function check(run) {
     const belowBefore = await topOf("plan");
     const placed = await order();
     assert.ok(!before.answer && before.size === null, `an open Ask's card: ${JSON.stringify(before)}`);
-    await deckShot("before-reply");
+    await shot("before-reply");
 
     // ---- The user answers by an option: the answer card as soon as Core has the reply.
     await page.evaluate(() => (window.__animations.length = 0));
@@ -258,7 +264,7 @@ async function check(run) {
     const belowAfter = await topOf("plan");
     const played = await collapses();
     result.measured.first = { before, landed, after, belowBefore, belowAfter, played };
-    await deckShot("after-reply");
+    await shot("after-reply");
     assert.ok(after.answer && after.size === "small" && !after.open, `the answer card: ${JSON.stringify(after)}`);
     assert.equal(after.kind, w.replied);
     assert.match(after.reply, new RegExp(`${w.yes}$`));
@@ -291,7 +297,7 @@ async function check(run) {
     assert.ok(Math.abs(fresh.width - after.width) <= 2, `the same width: ${after.width} vs ${fresh.width}`);
     assert.ok(Math.abs(fresh.height - after.height) <= 3, `as tall as at a fresh visit: ${after.height} vs ${fresh.height}`);
     assert.ok(Math.abs(fresh.blank - after.blank) <= 3, `the same room inside: ${after.blank} vs ${fresh.blank}`);
-    await deckShot("fresh-visit");
+    await shot("fresh-visit");
     pass("as tall as the same answer card at a fresh visit, at the same width", { after: after.height, fresh: fresh.height });
 
     // ---- Reply again: opened, sent, closed back to the answer card with the new reply.
@@ -309,7 +315,7 @@ async function check(run) {
     const again = await measure("overnight");
     const replayed = await collapses();
     result.measured.again = { again, replayed };
-    await deckShot("after-reply-again");
+    await shot("after-reply-again");
     assert.ok(again.answer && again.size === "small" && !again.open, JSON.stringify(again));
     assert.equal(again.minHeight, "");
     assert.ok(again.blank <= 12, `no blank area: ${again.blank} px`);
