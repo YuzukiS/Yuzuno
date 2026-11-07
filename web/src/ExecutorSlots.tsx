@@ -3,6 +3,7 @@ import { LoaderCircle } from "lucide-react";
 import { errorText } from "./api";
 import { readExecutorSlots, saveStartLimit, type ExecutorSlotsView } from "./executor-slots";
 import { strings, useLanguage } from "./i18n";
+import { useSaveBarPart } from "./SettingsSaveBar";
 
 const text = strings({
   group: "How many executors run at once",
@@ -70,16 +71,25 @@ export function ExecutorSlots({ active, disabled = false }: { active: boolean; p
   const limit = view ? parseLimit(limitDraft, view) : null;
   const badLimit = !!view && limit === null;
   const changed = !!view && limit !== null && limit !== view.workspace.startLimitSeconds;
-  async function save() {
-    if (!view || limit === null) return;
+  async function save(): Promise<boolean> {
+    if (!view || limit === null) return false;
     setBusy(true);
     setError("");
     try {
       adopt(await saveStartLimit(view.workspace.version, limit));
       setDone(true);
-    } catch (e) { setError(errorText(e)); }
+      return true;
+    } catch (e) { setError(errorText(e)); return false; }
     finally { setBusy(false); }
   }
+  // On Settings › Executors the change joins the page's save bar (YN-8),
+  // held while out of range; alone it keeps its own Save.
+  const edited = !!view && limitDraft !== String(view.workspace.startLimitSeconds);
+  const inBar = useSaveBarPart("executor-start-limit", edited && view && !disabled ? {
+    ready: !badLimit,
+    save,
+    discard: () => { setError(""); adopt(view); },
+  } : null);
   return (
     <div className="settings-group executor-slots" role="group" aria-label={t.group}>
       {view && <>
@@ -105,11 +115,13 @@ export function ExecutorSlots({ active, disabled = false }: { active: boolean; p
           {t.inUse(view.inUse.running, view.inUse.starting, view.inUse.waiting)}
         </p>
         <div className="executor-templates-actions executor-slots-actions">
-          <button type="button" className="secondary-button" disabled={disabled || busy || !changed} onClick={() => void save()}>
-            {busy && <LoaderCircle size={13} className="spin" />} {t.save}
-          </button>
+          {!inBar && (
+            <button type="button" className="secondary-button" disabled={disabled || busy || !changed} onClick={() => void save()}>
+              {busy && <LoaderCircle size={13} className="spin" />} {t.save}
+            </button>
+          )}
           {badLimit ? <span className="settings-row-help">{t.startLimitRange(view.limits.startLimitSeconds.min, view.limits.startLimitSeconds.max)}</span>
-            : changed ? <span className="settings-row-help">{t.unsaved}</span>
+            : changed && !inBar ? <span className="settings-row-help">{t.unsaved}</span>
             : done && <span className="settings-row-help" role="status">{t.saved}</span>}
         </div>
       </>}

@@ -165,8 +165,11 @@ try {
     .waitFor({ timeout: 10_000 });
   await group.getByText("In this Workspace now: 3 running, 1 starting, 2 waiting.").waitFor({ timeout: 10_000 });
   assert.equal(await group.locator('input[aria-label="Executors at once"]').count(), 0, "no Workspace number to set");
-  const save = group.getByRole("button", { name: "Save start time limit" });
-  assert.equal(await save.isDisabled(), true, "nothing to save yet");
+  // Settings › Executors' one save bar (YN-8 S5): shown once something changed.
+  const bar = page.locator(".settings-savebar:not([hidden])");
+  const save = bar.getByRole("button", { name: "Save", exact: true });
+  assert.equal(await bar.count(), 0, "nothing to save yet");
+  assert.equal(await group.getByRole("button", { name: "Save start time limit" }).count(), 0, "no Save of its own on the page");
   assert.deepEqual(await fits(box), { box: true, wider: [] }, "the editor fits its width");
   await group.screenshot({ path: join(output, "1-settings-machines.png") });
   check("each machine's number, the default marked, their sum and what holds a slot; no Workspace number to set");
@@ -176,7 +179,7 @@ try {
   assert.equal(await limitInput.inputValue(), "300");
   await limitInput.fill("29");
   await group.getByText("A whole number of seconds from 30 to 3600.").waitFor({ timeout: 10_000 });
-  assert.equal(await save.isDisabled(), true, "29 is not offered");
+  assert.equal(await save.isDisabled(), true, "29 is not offered: the bar waits");
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
   // In Chinese the group has its Chinese name: found by its class here.
   const slotsGroup = box.locator(".executor-slots");

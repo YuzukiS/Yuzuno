@@ -239,7 +239,8 @@ try {
   assert.deepEqual(await options(runsOn), ["", "lab", "boxed", "auto"], "Claude Code: this Core host, each machine, auto");
   await runsOn.selectOption("auto");
   await box.getByText("Core chooses at each dispatch: a machine with a free executor slot first").waitFor({ timeout: 10_000 });
-  await box.getByRole("button", { name: "Save templates" }).click();
+  // Settings › Executors' one save bar (YN-8 S5).
+  await page.locator(".settings-savebar:not([hidden])").getByRole("button", { name: "Save", exact: true }).click();
   await box.locator(".executor-templates-actions:not(.executor-slots-actions)").getByText("Saved.", { exact: true }).waitFor({ timeout: 10_000 });
   const put = report.writes.find((w) => w.path === "/api/executor-templates");
   assert.equal(put.body.templates[0].machineId, "auto");

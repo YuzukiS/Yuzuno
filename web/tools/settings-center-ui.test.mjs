@@ -198,7 +198,10 @@ test("keyboard navigation and search preserve a failed Home edit and move focus 
   await until(() => p.doc.querySelector('[aria-label="Your note for Agents"]'));
   assert.equal(p.doc.activeElement.id, "settings-editor-home");
   const note = p.doc.querySelector('[aria-label="Your note for Agents"]'); p.type(note, "Keep this unsaved preference");
-  await until(() => p.button("Save Home preference")); p.button("Save Home preference").click();
+  // Settings › Home's one save bar (YN-8 S5) saves it.
+  const pageSave = () => p.doc.querySelector('.settings-savebar:not([hidden]) .primary-button');
+  assert.equal(p.button("Save Home preference"), undefined, "no Save of its own on the page");
+  await until(pageSave); pageSave().click();
   await until(() => p.doc.querySelector('[role="alert"]'));
   // While searching, the sidebar keeps the pages that match (YN-8).
   p.type(query, "主页"); await until(() => p.doc.querySelector('#setting-home') && tab("home") && !tab("appearance"));

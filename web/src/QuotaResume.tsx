@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Clock, LoaderCircle, Play, X } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
+import { useSaveBarPart } from "./SettingsSaveBar";
 import type { AgentDetail } from "./types";
 import "./recovery.css";
 import "./quota-resume.css";
@@ -519,8 +520,8 @@ export function AutoContinueDefault({ active }: { active: boolean }) {
       });
     return () => controller.abort();
   }, [active]);
-  async function save(enabled: boolean | null) {
-    if (saving) return;
+  async function save(enabled: boolean | null): Promise<boolean> {
+    if (saving) return false;
     setSaving(true);
     setError("");
     try {
@@ -528,13 +529,21 @@ export function AutoContinueDefault({ active }: { active: boolean }) {
       setView(value);
       setDraft(value.enabled);
       tellWorkspaceDefault(value, heard.current);
+      return true;
     } catch (e) {
       setError(errorText(e));
+      return false;
     } finally {
       setSaving(false);
     }
   }
   const changed = !!view && draft !== view.enabled;
+  // On a Workspace page with a save bar (YN-8) the change joins it; back to
+  // the built-in stays a command here. Mounted alone it keeps its own Save.
+  const inBar = useSaveBarPart("auto-continue", changed && view ? {
+    save: () => save(draft),
+    discard: () => { setError(""); setDraft(view.enabled); },
+  } : null);
   // Only a saved default can be deleted; an older Core can't say.
   const own = view?.saved === true || view?.saved === false;
   return (
@@ -577,7 +586,7 @@ export function AutoContinueDefault({ active }: { active: boolean }) {
               <option value="on">{t.resume}</option>
             </select>
           </label>
-          {(changed || saving || own) && (
+          {(own || (!inBar && (changed || saving))) && (
             <div className="settings-row settings-row-end">
               <div className="settings-row-action">
                 {own && (
@@ -585,7 +594,7 @@ export function AutoContinueDefault({ active }: { active: boolean }) {
                     {t.useBuiltIn}
                   </button>
                 )}
-                {(changed || saving) && (
+                {!inBar && (changed || saving) && (
                   <button type="button" className="primary-button" disabled={saving} onClick={() => void save(draft)}>
                     {saving ? t.saving : t.save}
                   </button>

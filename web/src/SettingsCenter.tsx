@@ -8,6 +8,7 @@ import { langTag, strings, TranslatedPart, useLanguage, useStrings } from "./i18
 import { findSettings, localizedEntry, translatedEditors, type SettingEntry, type SettingsDestination, type SettingsEditor } from "./settings-catalog";
 import { groupLabel, legacyEditors, pageLabel, pageOfEditor, pageOfEntry, settingsGroups, settingsPages, type PageEditor, type SettingsPage } from "./settings-pages";
 import { usePhone } from "./phone-layout";
+import { SaveBarScope } from "./SettingsSaveBar";
 import "./settings-center.css";
 
 export type SettingsNavigation = {
@@ -128,6 +129,12 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
   const [root, setRoot] = useState(phone && !openAt);
   const [query, setQuery] = useState("");
   const [visited, setVisited] = useState<PageEditor[]>(() => [...editorsOf(initial)]);
+  // The visited editors by page, in the order the pages were first visited.
+  const visitedPages = [...visited.reduce((pages, id) => {
+    const of = pageOfEditor(id);
+    pages.set(of, [...(pages.get(of) ?? []), id]);
+    return pages;
+  }, new Map<SettingsPage, PageEditor[]>())];
   const [focusEditor, setFocusEditor] = useState<{ editor: PageEditor; block?: string; n: number } | null>(() =>
     opening ? { editor: opening.editor, block: opening.block, n: 1 } : null);
   const content = useRef<HTMLDivElement>(null);
@@ -268,16 +275,21 @@ export function SettingsCenter({ attention, navigation, renderEditor, onEditorCh
           </section>}
         </>}
         {/* Keep visited editors mounted while searching or changing page:
-            failed saves and unfinished compound inputs must not disappear. */}
-        {visited.map((id) => {
-          const visible = !searching && !atRoot && pageOfEditor(id) === page;
-          return <div key={id} hidden={!visible} className="settings-editor"
-            id={`settings-editor-${id}`} tabIndex={-1} lang={translated(id) ? langTag(language) : "en"}>
-            <TranslatedPart value={translated(id)}>
-              {renderEditor(id, visible, openEditor, requests[pageOfEditor(id)])}
-            </TranslatedPart>
-          </div>;
-        })}
+            failed saves and unfinished compound inputs must not disappear.
+            A page's editors share its one save bar (YN-8), shown with it. */}
+        {visitedPages.map(([pageId, ids]) => (
+          <SaveBarScope key={pageId} hidden={searching || atRoot || pageId !== page}>
+            {ids.map((id) => {
+              const visible = !searching && !atRoot && pageId === page;
+              return <div key={id} hidden={!visible} className="settings-editor"
+                id={`settings-editor-${id}`} tabIndex={-1} lang={translated(id) ? langTag(language) : "en"}>
+                <TranslatedPart value={translated(id)}>
+                  {renderEditor(id, visible, openEditor, requests[pageId])}
+                </TranslatedPart>
+              </div>;
+            })}
+          </SaveBarScope>
+        ))}
       </div>
     </div>
   </div>;

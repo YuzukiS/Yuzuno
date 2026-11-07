@@ -421,6 +421,50 @@ test("an edit Core saved shows its new values even if the list can't be read aga
   }
 });
 
+// #730 R1 P3: a field changed while the machine's save is on its way stays a
+// change once that save comes back; only what was sent is taken as saved.
+test("an edit made while the machine is being saved stays a change after the save", async () => {
+  let answer;
+  let listed = [local, mini];
+  const page = mount((url, init) => {
+    const method = init.method || "GET";
+    if (url.endsWith("/machines/mini") && method === "PUT") {
+      const body = JSON.parse(init.body);
+      return new Promise((resolve) => {
+        answer = () => {
+          listed = listed.map((m) => (m.id === "mini" ? { ...mini, ...body, lastCheck: null } : m));
+          resolve(listed.find((m) => m.id === "mini"));
+        };
+      });
+    }
+    if (url.endsWith("/machines")) return { machines: listed };
+    return undefined;
+  });
+  try {
+    render(page);
+    await loaded(page);
+    await show(page, "mini");
+    await until(() => field(page, "Machine name") === "Mac mini", "the settings");
+    type(page, "Machine name", "Mac mini 2");
+    await until(() => saveBar(page), "the save bar");
+    button(saveBar(page), "Save").click();
+    await until(() => typeof answer === "function", "the save on its way");
+    type(page, "Codex executable", "/usr/local/bin/codex");
+    await tick();
+    answer();
+    // The save comes back first: the bar is no longer saving, the name saved.
+    await until(() => saveBar(page) && !/Saving…/.test(saveBar(page).textContent) && page.calls.filter((c) => c.method === "GET" && c.url.endsWith("/machines")).length >= 2, "the save ends");
+    await tick();
+    assert.match(saveBar(page).textContent, /^1 change not saved/, "the later edit is still a change");
+    assert.equal(field(page, "Codex executable"), "/usr/local/bin/codex", "what was typed meanwhile is kept");
+    assert.equal(field(page, "Machine name"), "Mac mini 2", "the saved name shows");
+    assert.deepEqual(page.calls.filter((c) => c.method === "PUT").map((c) => c.body.codex), ["/opt/homebrew/bin/codex"], "the first save sent the old Codex");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("a removal Core refuses says why and keeps the machine", async () => {
   const page = mount((url, init) =>
     init.method === "DELETE"

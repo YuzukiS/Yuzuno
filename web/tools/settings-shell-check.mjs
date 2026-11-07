@@ -40,6 +40,9 @@ const hostBudget = {
   maxActiveDefault: 4,
   maxActiveBounds: { minimum: 1, maximum: 16 },
 };
+const builtInDefaults = { harness: "codex", codexPermissionPreset: null, claudePermissionMode: "default", codexModel: null, codexReasoningEffort: null, claudeModel: null };
+const agentDefaults = { saved: {}, builtIn: builtInDefaults, modelAppliesTo: "Codex Agents created on the Core host.",
+  effective: Object.fromEntries(Object.entries(builtInDefaults).map(([key, value]) => [key, { value, source: "builtin" }])) };
 const projects = [
   { id: "garden", name: "Garden", defaultDirs: { local: "/fixture/garden" }, createdAt: "", updatedAt: "" },
   { id: "orchard", name: "Orchard", defaultDirs: { local: "/fixture/orchard" }, createdAt: "", updatedAt: "" },
@@ -83,6 +86,11 @@ async function open({ width, height, language = "en", theme = "light", phone = f
       case "/api/updates": case "/api/updates/check": return respond(unmanagedUpdates);
       case "/api/models": return respond({ models: [] });
       case "/api/machines": return respond({ machines });
+      case "/api/home/presentation": return respond({ style: "default", note: "", agentText: null });
+      // The Agent defaults page (S5's Workspace bar part), as Core answers it.
+      case "/api/agent-defaults": return respond(agentDefaults);
+      case "/api/claude/auto-continue": return respond({ enabled: false, saved: null });
+      case "/api/pr-reviews/settings": return respond({ harness: "codex", model: "gpt-6.1-sol", source: "builtin", builtIn: { harness: "codex", model: "gpt-6.1-sol" } });
       case "/api/jobs": return respond(noJobs);
       case "/api/jobs/budget": return respond(hostBudget);
       case "/api/jobs/live": return respond(noLiveJobs);
@@ -224,6 +232,8 @@ try {
     assert.equal(await size.locator('input[type="range"]').inputValue(), "18");
     await size.locator('input[type="range"]').focus(); await page.keyboard.press("ArrowRight");
     await page.waitForFunction(() => document.documentElement.dataset.fontSize === "19");
+    // The typed field follows in the render after the size applies: waited for, then read.
+    await page.waitForFunction(() => document.querySelector('.settings-slider:has(input[name="appearance-font-size"]) input[type="number"]')?.value === "19", null, { timeout: 5_000 }).catch(() => {});
     assert.equal(await typed.inputValue(), "19", "the typed field follows the slider");
     await typed.fill("40"); await typed.press("Enter");
     await page.waitForFunction(() => document.documentElement.dataset.fontSize === "24");
@@ -279,7 +289,7 @@ try {
       await members.locator("[role=switch]").first().waitFor();
       assert.deepEqual(await members.locator(".project-leads-members li strong").allInnerTexts(), ["Pine", "Maple"], `${label}: Orchard's members`);
       assert.deepEqual(await members.locator("[role=switch]").evaluateAll((list) => list.map((el) => el.getAttribute("aria-checked"))), ["false", "false"]);
-      const bar = dialog.locator(".settings-savebar");
+      const bar = dialog.locator(".settings-savebar:not([hidden])");
       assert.equal(await bar.isVisible(), false, `${label}: no bar before a change`);
       const lead = language === "en" ? "Lead · Pine" : "负责人 · Pine";
       await members.getByRole("switch", { name: lead }).click();
@@ -351,7 +361,7 @@ try {
         [6.7, 11.4, 12.2, 0], `${label}: what running Jobs hold (2 Jobs, 2 CPU, 4096 MiB, no swap), drawn on each track`);
       assert.equal(await dialog.locator('[data-machine-id="local"] .machine-executor-limit input[type=range]').count(), 1, `${label}: the executor limit is a slider`);
       assert.equal(await hostJobs.getByRole("button", { name: language === "en" ? "Save budget" : "保存预算" }).count(), 0, `${label}: no Save of its own on the page`);
-      const hostBar = dialog.locator(".settings-savebar");
+      const hostBar = dialog.locator(".settings-savebar:not([hidden])");
       await hostJobs.locator('input[type=range][name="cpu"]').fill("10");
       await hostBar.waitFor({ state: "visible" });
       assert.equal(await hostBar.locator("span").first().innerText(), language === "en" ? "1 change not saved" : "1 处更改还没保存");
@@ -377,7 +387,7 @@ try {
       assert.equal(await ms.locator("input[type=range]").count(), 2, `${label}: Jobs at once and executors at once are sliders`);
       assert.equal(await ms.locator(".theme-choice").count(), 3, `${label}: the limit mode's three cards`);
       assert.equal(await ms.locator(".theme-choice input:checked").getAttribute("value"), "legacy", `${label}: a machine saved before limits holds none`);
-      const machineBar = dialog.locator(".settings-savebar");
+      const machineBar = dialog.locator(".settings-savebar:not([hidden])");
       assert.equal(await machineBar.isVisible(), false, `${label}: no bar before a change`);
       await ms.locator(".machine-settings-jobs").evaluate((el) => el.scrollIntoView({ block: "start" }));
       await page.waitForTimeout(100);
@@ -483,6 +493,48 @@ try {
       await context.close();
       check(`${label}: Shortcuts, Notifications and Move to another device are Appearance's cards and fit; the on/offs are switches`);
     }
+  }
+
+  // ---- A Workspace page's one save bar (S5): shown with its page's change,
+  // hidden on another page and back with it, Discard back to what was saved.
+  for (const [width, height, phone] of [[1440, 900, false], [390, 844, true]]) {
+    const label = `workspace bar ${width}x${height}`;
+    const { page, context } = await open({ width, height, phone });
+    await openSettings(page);
+    await page.waitForTimeout(300); // the dialog's entrance
+    const dialog = settings(page);
+    const bar = dialog.locator(".settings-savebar:not([hidden])");
+    await dialog.locator("#settings-tab-home").click();
+    const home = dialog.locator("#settings-editor-home:not([hidden])");
+    await home.locator('select[aria-label="Home presentation"]').waitFor();
+    assert.equal(await bar.count(), 0, `${label}: no bar before a change`);
+    await home.locator('select[aria-label="Home presentation"]').selectOption("visual");
+    await bar.waitFor();
+    assert.equal(await bar.locator("span").first().innerText(), "1 change not saved");
+    assert.equal(await home.getByRole("button", { name: "Save Home preference" }).count(), 0, `${label}: no Save of the block's own`);
+    await noOverflow(page, `${label} Home with the bar`);
+    await page.screenshot({ path: resolve(output, `workspace-bar-home-${width}x${height}.png`) });
+    if (phone) {
+      await dialog.locator(".settings-back").click();
+      await dialog.locator(".settings-center.is-root").waitFor();
+      await page.waitForTimeout(200);
+    }
+    await dialog.locator("#settings-tab-agents").click();
+    await dialog.locator("#settings-editor-agent-defaults:not([hidden])").waitFor();
+    assert.equal(await bar.count(), 0, `${label}: another page shows no bar of Home's`);
+    if (phone) {
+      await dialog.locator(".settings-back").click();
+      await dialog.locator(".settings-center.is-root").waitFor();
+      await page.waitForTimeout(200);
+    }
+    await dialog.locator("#settings-tab-home").click();
+    await bar.waitFor();
+    assert.equal(await home.locator('select[aria-label="Home presentation"]').inputValue(), "visual", `${label}: the change is kept`);
+    await bar.getByRole("button", { name: "Discard" }).click();
+    await page.waitForFunction(() => !document.querySelector(".settings-savebar:not([hidden])"));
+    assert.equal(await home.locator('select[aria-label="Home presentation"]').inputValue(), "default", `${label}: Discard is back to what was saved`);
+    await context.close();
+    check(`${label}: Home's change shows the page's bar, another page doesn't, back on Home it is still there; Discard`);
   }
 
   // ---- Deep links: the Workspace menu and the status bar open their pages.
