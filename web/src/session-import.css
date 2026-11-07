@@ -1,5 +1,9 @@
+/* Each tab at least as wide as its longest word: where four don't fit in a
+   row (a phone with larger text), the last wraps to a row of its own rather
+   than clip a word such as "OpenCode" (T-61 slice 8). */
 .agent-create-modes {
   display: flex;
+  flex-wrap: wrap;
   gap: 5px;
   padding: 4px;
   margin-top: 20px;
@@ -9,7 +13,7 @@
 }
 .agent-create-modes button {
   flex: 1;
-  min-width: 0;
+  min-width: min-content;
   padding: 9px 6px;
   border: 1px solid transparent;
   border-radius: 6px;
