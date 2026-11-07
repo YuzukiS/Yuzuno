@@ -60,6 +60,12 @@ export type OutcomeResult = {
     capturedAt?: string;
   } | null;
 };
+
+/** An intermediate result (YN-4): submitted with status doing, one step of
+ * work that goes on, and its task still in progress. It is the newest step,
+ * not an earlier result that work has moved past. */
+export const isStepResult = (task: { status: string; result?: OutcomeResult | null }) =>
+  task.status === "doing" && task.result?.status === "doing";
 export type OutcomeHistory = {
   resultId: string | null;
   seq: number;
