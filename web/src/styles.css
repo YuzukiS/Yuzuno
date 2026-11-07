@@ -567,13 +567,6 @@ p {
   gap: 7px;
   margin-top: 11px;
 }
-.agent-runtime {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: calc(9px + var(--font-adjust, 3px));
-  color: #909782;
-}
 .status-dot {
   display: inline-block;
   width: 5px;
@@ -3455,10 +3448,6 @@ p {
 .agent-row.selected p {
   color: #82744f;
 }
-.agent-runtime {
-  font-size: calc(10px + var(--font-adjust, 3px));
-  color: #738467;
-}
 .needs-you {
   font-size: calc(10px + var(--font-adjust, 3px));
   color: #987344;
@@ -3508,7 +3497,6 @@ p {
   .conversation-meta {
     font-size: calc(9px + var(--font-adjust, 3px));
   }
-  .agent-runtime,
   .needs-you {
     font-size: calc(9px + var(--font-adjust, 3px));
   }

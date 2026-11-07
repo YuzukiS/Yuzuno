@@ -12,8 +12,11 @@ import type { StepsProps, TimelineProps } from "./brief-catalog";
 export function BriefSteps({ title, mode = "list", steps }: StepsProps) {
   const t = useStrings(briefText);
   const id = useId();
-  const [at, setAt] = useState(0);
-  const step = (index: number) => steps[Math.max(0, Math.min(steps.length - 1, index))];
+  const [chosen, setAt] = useState(0);
+  // The step shown, kept within the list: a later version may have fewer
+  // steps than the one the reader was on (S4 R1 P3). The counter, the dots,
+  // Back and Next all read this one index.
+  const at = Math.max(0, Math.min(steps.length - 1, chosen));
   if (mode === "list" || steps.length === 1)
     return (
       <section className="brief-steps" aria-labelledby={title ? `${id}-title` : undefined}>
@@ -34,7 +37,7 @@ export function BriefSteps({ title, mode = "list", steps }: StepsProps) {
         </ol>
       </section>
     );
-  const current = step(at);
+  const current = steps[at];
   return (
     <section className="brief-steps" data-mode="walk" aria-labelledby={title ? `${id}-title` : undefined}>
       {title && <h4 id={`${id}-title`}>{title}</h4>}

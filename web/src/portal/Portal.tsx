@@ -25,6 +25,8 @@ import { serviceIdle } from "./service-lifecycle";
 import { ServiceLifecycle } from "./ServiceLifecycle";
 import { currentBrowserReach, type ServiceBrowserReach } from "./service-observation";
 import { serviceText } from "./service-text";
+import { useFrameBridge } from "../home/frame-bridge";
+import { PageSendBar, usePageSend } from "../home/PageSend";
 import "./portal.css";
 
 // The Portal's own words (T-189); names, paths and addresses as they are.
@@ -410,6 +412,14 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
     : { state: "proven", url: target.url, checkedAt: target.browserCheckedAt,
       jobId: target.browserJobId !== undefined ? target.browserJobId : target.service.job?.jobId ?? null });
   const [checkError, setCheckError] = useState("");
+  // A snapshot's page talks to Home through the bridge (YN-16 S6) while it shows
+  // its first load: the theme goes to it, and a Brief section's page may offer
+  // a message for its author, sent only on Send. Its height stays the Portal's.
+  const pageFrame = useRef<HTMLIFrameElement>(null);
+  const pageLive = target.kind === "snapshot" && minted.state === "ready" && loads <= 1;
+  const replyTo = target.kind === "snapshot" ? target.replyTo ?? null : null;
+  const sending = usePageSend(pageLive ? replyTo : null);
+  const giveTheme = useFrameBridge(pageFrame, pageLive, { send: sending.offer });
   const alive = useRef(true);
   const reads = useRef(0);
   useEffect(() => {
@@ -591,6 +601,7 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
             </div>
           ) : minted.state === "ready" ? (
             <iframe
+              ref={pageFrame}
               key={frameKey}
               className="portal-frame"
               title={target.name}
@@ -599,7 +610,11 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
               sandbox="allow-scripts"
               referrerPolicy="no-referrer"
               allow=""
-              onLoad={() => setLoads((n) => n + 1)}
+              onLoad={() => {
+                // The theme goes to its first load only: a later one is a page it went to.
+                if (loads === 0) giveTheme();
+                setLoads((n) => n + 1);
+              }}
             />
           ) : minted.state === "preparing" ? (
             <p className="portal-state" role="status"><LoaderCircle size={16} className="spin" /> {t.preparing}</p>
@@ -654,6 +669,9 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
           </>
         )}
       </div>
+      {pageLive && replyTo && (
+        <PageSendBar to={replyTo} state={sending.state} onSend={(text) => void sending.send(text)} onDiscard={sending.discard} />
+      )}
       {managed ? (
         <ServiceLifecycle service={managed} browserReach={reach} previewUrl={connectionUrl} disconnected={disconnected}
           readFailed={readFailed} onRefresh={readService} onDisconnect={disconnect} onCheckPreview={checkPreview} />

@@ -1,38 +1,49 @@
 //! Forking an OpenCode Agent into a new one (T-10 Fork; contract on T-10
-//! #3527, Lead 3525). The new Agent works in the same folder, with its own
-//! OpenCode process and database, and holds the conversation through one of
-//! the source's completed Turns. The source Agent and its session are never
-//! changed.
+//! #3527, Lead 3525; moved to OpenCode 2.x in T-61 slice 7, D-28 F-A). The
+//! new Agent works in the same folder, with its own OpenCode process and
+//! database, and holds the conversation through one of the source's
+//! completed Turns. The source Agent and its session are never written.
 //!
-//! OpenCode forks the session in the source's own database (`POST
-//! /session/:id/fork`): a new session there, with every message before the
-//! next Turn's start copied under new IDs. Core then reads that session's own
-//! durable events (`/sync/history`), checks they are exactly that copy,
-//! starts the new Agent's OpenCode once on an empty database, replays them
-//! there (`/sync/replay`), reads it all back, and only then registers the new
-//! Agent and attaches it to that same process. The copy left in the source's
-//! database is not deleted, and nothing shows it.
+//! Core reads the source's session and every page of its messages under
+//! the source's gate, while it is idle, and fixes the copy: every message up
+//! to the idle that ended the Turn's last run (`opencode_fork_check::cut`),
+//! under a new session ID Core chooses, with a marker naming this request.
+//! The source goes on then. The new Agent's OpenCode is started once on its
+//! own empty database in the same folder, the copy is written there through
+//! 2.x's import (`opencode_transfer`), read back and compared field by
+//! field, and only then is the new Agent registered and attached to that
+//! same process. 2.x's import keeps every message's ID, so the copied Turns
+//! name the same messages they did (`opencode_fork_check::copy`).
 //!
 //! One request, kept in `opencode_forks` from before it is asked, is never
-//! asked again: an answer that never came leaves it uncertain, and no fork
-//! is asked anew from that Turn (Lead 4195), by this request or another.
-//! That uncertainty is the attempt's alone: the source Agent goes on.
-//! Everything after the answer is checked or replayed again from what was
-//! fixed, never forked again and never registered twice.
+//! asked anew from that Turn (Lead 4195), by this request or another. One
+//! whose import answer never came is uncertain: the same request goes on
+//! from it (D-33), reading what the new Agent's OpenCode holds first and
+//! writing only if it holds nothing, so that it is never written twice (a
+//! second write of the same ID is refused, 409). That uncertainty is the
+//! attempt's alone: the source Agent goes on.
+//!
+//! The new Agent has no login of the source's (D-31): its OpenCode starts
+//! on an empty database, and no credential is ever copied. Its copied Turns
+//! cannot be rewound (D-32): their snapshots are in the source's store.
 use super::*;
-use crate::opencode::ForkAnswer;
 use crate::opencode_fork_check as check;
+use crate::opencode_transfer::{self as transfer, ImportAnswer, Payload};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// How long the source's gate waits for the fork's answer before it lets
-/// the source go on; the request goes on, and an answer after that still
-/// settles the attempt. (Shorter in tests.)
+/// How long the import is waited for before the attempt is left uncertain.
+/// (Shorter in tests.)
 const WATCH: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 120 });
 /// At most this much of the source is fixed for one fork.
 const FROZEN_LIMIT: usize = 64 << 20;
-/// States an attempt holds its boundary in: one live attempt per Turn.
+/// States an attempt holds its boundary in: one live attempt per Turn. Each
+/// as 1.19.3's fork named it, so that the index made then still holds:
+/// `forked` is an attempt whose copy the new Agent's OpenCode holds, and
+/// `chained` is only 1.19.3's.
 const LIVE: &str = "('sending','uncertain','forked','verified','chained','completed')";
+/// What an attempt fixes, in this form since 2.x (an earlier one is 1.19.3's).
+const FROZEN_VERSION: u32 = 2;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -50,7 +61,7 @@ pub(crate) struct Which {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Request {
+pub struct Request {
     request_id: String,
     turn_id: String,
     name: String,
@@ -65,36 +76,29 @@ struct Row {
     target_agent_id: String,
     name: String,
     state: String,
+    /// The new session's ID, chosen before anything is asked.
     fork_session: Option<String>,
     error: Option<String>,
-    /// Digests of what it fixed: the messages the fork must copy, and the
-    /// fork's own events once read (Lead 3529). What is read back must match.
+    /// A digest of the copy it fixed: what is written must be it.
     prefix_sha: String,
-    chain_sha: Option<String>,
 }
 
-/// What an attempt fixed before it asked: what the fork must copy, and what
-/// the new Agent is made from.
+/// What an attempt fixed before it asked: the copy, and what the new Agent
+/// is made from.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Frozen {
+    #[serde(default)]
+    version: u32,
+    /// The source's session.
     session: String,
     cwd: String,
-    cutoff: Option<String>,
-    messages: Vec<Value>,
+    /// The project 2.x holds the folder for, which the new Agent's OpenCode must too.
+    project: String,
+    payload: Payload,
+    /// The source's Turns through the fork's, as stored.
     turns: Vec<Value>,
     agent: Value,
-    path: Value,
-    project: String,
-}
-
-/// The fork as verified in the source's database.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Verified {
-    info: Value,
-    messages: Vec<Value>,
-    ids: check::Ids,
 }
 
 /// A source read under its gate, for a fork through one Turn.
@@ -102,10 +106,10 @@ struct Read {
     session: String,
     generation: u64,
     detail: AgentDetail,
-    cutoff: Option<String>,
-    messages: Vec<Value>,
-    path: Value,
+    info: Value,
+    folder: String,
     project: String,
+    prefix: Vec<Value>,
     kept: usize,
     later: usize,
 }
@@ -113,11 +117,11 @@ struct Read {
 impl Workspace {
     /// What a fork through `turn` would keep, read without a write (contract
     /// 1): refused, saying why, unless one could start now.
-    pub(crate) async fn opencode_fork_preview(self: &Arc<Self>, id: &str, turn: &str) -> Result<Value> {
+    pub async fn opencode_fork_preview(self: &Arc<Self>, id: &str, turn: &str) -> Result<Value> {
         let _permit = self.admission.enter_work()?;
         let read = self.opencode_fork_read(id, turn).await?;
         Ok(json!({
-            "turnId": turn, "keptTurns": read.kept, "laterTurns": read.later, "messages": read.messages.len(),
+            "turnId": turn, "keptTurns": read.kept, "laterTurns": read.later, "messages": read.prefix.len(),
             "cwd": read.detail.agent.cwd, "name": format!("{} (fork)", read.detail.agent.name),
             "model": read.detail.agent.model, "variant": read.detail.agent.settings.reasoning_effort,
         }))
@@ -135,15 +139,14 @@ impl Workspace {
         }).await?;
         let Some(row) = row else { return Ok(json!({"state":"none"})) };
         Ok(match row.state.as_str() {
-            "sending" | "uncertain" => outcome(&row, "uncertain", row.error.clone().unwrap_or_else(||
-                "OpenCode 还没有回答这次 fork；结果确认之前不会再请求一次，原 Agent 照常可用".into())),
+            "sending" | "uncertain" => outcome(&row, "uncertain", row.error.clone().unwrap_or_else(|| UNCERTAIN.into())),
             "failed" | "released" => outcome(&row, "failed", row.error.clone().unwrap_or_else(|| "fork 没有完成".into())),
             "completed" => match self.listed(&row.target_agent_id).await {
                 Ok(agent) => json!({"state":"completed","requestId":row.request_id,"connected":agent.connection_state == "connected","agent":agent,"warnings":[]}),
                 Err(_) => outcome(&row, "failed", "fork 出的 Agent 已删除".into()),
             },
             _ => outcome(&row, "pending", row.error.clone().map(|e| format!("{e}。")).unwrap_or_default()
-                + "这次 fork 还没有登记完；继续会接着核对和重放同一份记录，不会重新 fork"),
+                + "这次 fork 还没有登记完；继续会接着核对和登记同一份副本，不会再写一次"),
         })
     }
 
@@ -171,35 +174,37 @@ impl Workspace {
         ensure!(!busy(&detail), "OpenCode 正在执行或等待回应；fork 只在空闲时进行");
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能 fork")?;
         let unread = "没有读到 OpenCode 会话现在的状态；没有 fork";
-        let session = c.server.session(&c.session).await.context(unread)?;
-        ensure!(session["revert"].is_null(), "OpenCode 会话里有一次尚未处理的回退；没有 fork");
-        ensure!(session["workspaceID"].as_str().unwrap_or_default().is_empty(), "OpenCode 会话属于一个 OpenCode workspace，fork 还不支持；没有 fork");
-        for name in ["permission", "agent", "model"] {
-            ensure!(session[name].is_null() || session[name] == json!([]),
-                "OpenCode 会话设有自己的 {name}，fork 无法照样带到新会话；没有 fork");
-        }
+        let info = c.server.session(&c.session).await.context(unread)?;
+        ensure!(info["revert"].is_null(), "OpenCode 会话里有一次尚未处理的回退；没有 fork");
+        ensure!(info["parentID"].is_null() && info["fork"].is_null(), "OpenCode 会话是另一个会话的子会话或分叉；没有 fork");
+        ensure!(info["metadata"].is_null() || info["metadata"] == json!({}), "OpenCode 会话带有别处写的 metadata，fork 无法照样带到新会话；没有 fork");
         ensure!(c.server.session_status(&c.session).await.context(unread)?["type"] == "idle", "OpenCode 会话不是空闲状态；没有 fork");
         let listed = c.server.messages(&c.session).await.context(unread)?;
-        ensure!(!crate::opencode_v2::is_v2(&listed), "{}；没有 fork", crate::opencode_v2::NOT_YET);
         let list = listed.as_array().context(unread)?.clone();
-        let path = c.server.path().await.context(unread)?;
-        ensure!(path["directory"] == detail.agent.cwd.as_str(), "OpenCode 的工作目录不是这个 Agent 的目录；没有 fork");
-        let project = c.server.project().await.context(unread)?["id"].as_str().context("OpenCode 没有说它的项目；没有 fork")?.to_owned();
-        ensure!(session["projectID"] == project.as_str(), "OpenCode 会话不属于它现在的项目；没有 fork");
-        let (cutoff, end) = check::boundary(&detail.turns, &list, turn)?;
+        // The folder as OpenCode resolves it, and the project it holds it for: the session's.
+        let cwd = detail.agent.cwd.clone();
+        let folder = tokio::task::spawn_blocking(move || std::fs::canonicalize(cwd)).await?.context("这个 Agent 的目录无法读取；没有 fork")?
+            .to_str().context("这个 Agent 的目录不是 UTF-8；没有 fork")?.to_owned();
+        let location = c.server.location(&folder).await.context(unread)?;
+        let named = location["directory"].as_str().map(PathBuf::from);
+        let directory = tokio::task::spawn_blocking(move || named.and_then(|d| std::fs::canonicalize(d).ok())).await?;
+        ensure!(directory.as_deref() == Some(Path::new(&folder)), "OpenCode 的工作目录不是这个 Agent 的目录；没有 fork");
+        let project = location["project"]["id"].as_str().context("OpenCode 没有说它的项目；没有 fork")?.to_owned();
+        ensure!(info["projectID"] == project.as_str(), "OpenCode 会话不属于它现在的项目；没有 fork");
+        let end = check::cut(&detail.turns, &list, turn)?;
         let index = detail.turns.iter().position(|t| t["id"] == turn).unwrap_or_default();
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化；没有 fork");
         Ok(Read {
             session: c.session.clone(), generation: c.generation, kept: index + 1, later: detail.turns.len() - index - 1,
-            detail, cutoff, messages: list[..end].to_vec(), path, project,
+            detail, info, folder, project, prefix: list[..end].to_vec(),
         })
     }
 
     /// One fork, as `request` asks (see the module). In a task of its own:
     /// a client that goes away drops only its wait for the outcome. Asked
     /// again with the same request, it goes on from where that attempt is,
-    /// and never asks OpenCode again.
-    pub(crate) async fn opencode_fork(self: &Arc<Self>, id: &str, request: Request) -> Result<Value> {
+    /// and never writes the copy twice.
+    pub async fn opencode_fork(self: &Arc<Self>, id: &str, request: Request) -> Result<Value> {
         let permit = self.admission.enter_work()?;
         ensure!(uuid::Uuid::parse_str(&request.request_id).is_ok(), "fork 请求编号无效");
         ensure!(!request.turn_id.is_empty() && request.turn_id.len() <= 200 && !request.turn_id.chars().any(char::is_control), "fork 的 Turn 无效");
@@ -228,14 +233,24 @@ impl Workspace {
         let key = row.request_id.clone();
         row = self.stored(move |s| s.opencode_fork_row(&key)).await?.context("fork 记录不见了")?;
         let mut warnings = Vec::new();
+        // The new Agent's OpenCode, once started for this run: what it reads back is what it is attached to.
+        let mut started = None;
         loop {
+            if matches!(row.state.as_str(), "sending" | "uncertain" | "forked" | "verified") && !self.opencode_fork_current(&row)? {
+                self.opencode_fork_state(&mut row, "failed", Some(EARLIER.into())).await?;
+                continue;
+            }
             match row.state.as_str() {
-                "sending" | "uncertain" => return Ok(outcome(&row, "uncertain", row.error.clone().unwrap_or_else(||
-                    "OpenCode 没有回答这次 fork；结果确认之前不会再请求一次，原 Agent 照常可用".into()))),
+                "sending" | "uncertain" => {
+                    self.opencode_fork_import(&mut row, &mut started).await?;
+                    if row.state == "uncertain" {
+                        return Ok(outcome(&row, "uncertain", row.error.clone().unwrap_or_else(|| UNCERTAIN.into())));
+                    }
+                }
                 "failed" | "released" => return Ok(outcome(&row, "failed", row.error.clone().unwrap_or_else(|| "fork 没有完成".into()))),
-                "forked" => self.opencode_fork_verify(&mut row).await?,
-                "verified" => self.opencode_fork_chain(&mut row).await?,
-                "chained" => self.opencode_fork_target(&mut row, &mut warnings).await?,
+                "forked" => self.opencode_fork_verify(&mut row, &mut started).await?,
+                "verified" => self.opencode_fork_target(&mut row, &mut started, &mut warnings).await?,
+                "chained" => self.opencode_fork_state(&mut row, "failed", Some(EARLIER.into())).await?,
                 "completed" => break,
                 other => bail!("未知的 fork 状态 {other}"),
             }
@@ -247,11 +262,13 @@ impl Workspace {
 
     /// The attempt's start, under the source's gate (contract 3): another
     /// live attempt for the same Turn is answered as it stands, whatever
-    /// request asks; otherwise the source is read, what it holds is fixed and
-    /// kept, and OpenCode is asked once, watched for WATCH.
+    /// request asks; otherwise the source is read and what it holds is fixed
+    /// and kept, under the session ID the copy will have. Nothing is asked
+    /// of the source's OpenCode but reads: the source goes on once this
+    /// returns.
     async fn opencode_fork_begin(self: &Arc<Self>, id: &str, request: &Request) -> Result<Row> {
         let gate = self.gate(id).await;
-        let held = gate.lock().await;
+        let _held = gate.lock().await;
         let (source, turn) = (id.to_owned(), request.turn_id.clone());
         if let Some(earlier) = self.stored(move |s| s.opencode_live_fork(&source, &turn)).await? {
             // Its Agent deleted, a completed fork no longer continues anything (as with Codex).
@@ -263,193 +280,119 @@ impl Workspace {
         }
         let read = self.opencode_fork_read(id, &request.turn_id).await?;
         let index = read.detail.turns.iter().position(|t| t["id"] == request.turn_id.as_str()).unwrap_or_default();
+        let payload = fork_payload(&read, &request.name, &request.request_id)?;
         let frozen = Frozen {
-            session: read.session.clone(), cwd: read.detail.agent.cwd.clone(), cutoff: read.cutoff.clone(),
-            messages: read.messages.clone(), turns: read.detail.turns[..=index].to_vec(),
-            agent: serde_json::to_value(&read.detail.agent)?, path: read.path.clone(), project: read.project.clone(),
+            version: FROZEN_VERSION, session: read.session.clone(), cwd: read.detail.agent.cwd.clone(), project: read.project.clone(),
+            payload, turns: read.detail.turns[..=index].to_vec(), agent: serde_json::to_value(&read.detail.agent)?,
         };
         let bytes = serde_json::to_vec(&frozen)?;
         ensure!(bytes.len() <= FROZEN_LIMIT, "要 fork 的内容超过 {} MiB；没有 fork", FROZEN_LIMIT >> 20);
         let row = Row {
             request_id: request.request_id.clone(), source_agent_id: id.into(), through_turn_id: request.turn_id.clone(),
             target_agent_id: uuid::Uuid::new_v4().to_string(), name: request.name.clone(), state: "sending".into(),
-            fork_session: None, error: None, prefix_sha: check::digest(&json!(frozen.messages))?, chain_sha: None,
+            fork_session: Some(frozen.payload.id().to_owned()), error: None, prefix_sha: check::digest(&serde_json::to_value(&frozen.payload)?)?,
         };
         let folder = self.opencode_fork_folder(&row.request_id)?;
         write_private(&folder.join("frozen.json"), &bytes)?;
         self.opencode_fork_reserve(&row)?;
-        let c = self.opencode_current(id, read.generation).context("OpenCode 连接已变化；没有 fork")?;
-        // Made now, sent only below: nothing past the kept attempt is refused before it is asked.
-        let fork = c.server.fork(&read.session, read.cutoff.as_deref())?;
+        ensure!(self.opencode_current(id, read.generation).is_some(), "OpenCode 连接已变化；没有 fork");
         let kept = row.clone();
         self.stored(move |s| s.opencode_begin_fork(&kept)).await?;
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
-        let (owner, key) = (Arc::downgrade(self), row.request_id.clone());
-        tokio::spawn(async move {
-            let answer = fork.await;
-            if let Err(answer) = tx.send(answer) {
-                if let Some(ws) = owner.upgrade() {
-                    if let Err(error) = ws.opencode_fork_answered(&key, answer, true).await {
-                        eprintln!("Workspace OpenCode fork {key} answered late, not recorded: {error:#}");
-                    }
-                }
-            }
-        });
-        let answered = match tokio::time::timeout(WATCH, &mut rx).await {
-            Ok(answer) => answer.ok(),
-            Err(_) => {
-                rx.close();
-                rx.try_recv().ok()
-            }
-        };
-        match answered {
-            Some(answer) => self.opencode_fork_answered(&row.request_id, answer, false).await?,
-            None => {
-                let key = row.request_id.clone();
-                let message = format!("OpenCode 在 {} 秒内没有回答这次 fork；结果确认之前不会再请求一次，原 Agent 照常可用", WATCH.as_secs());
-                self.stored(move |s| s.opencode_settle_fork(&key, &["sending"], "uncertain", None, Some(&message))).await?;
-            }
-        }
-        // The fork only read the source's session: it goes on now.
-        drop(held);
-        let key = row.request_id.clone();
-        self.stored(move |s| s.opencode_fork_row(&key)).await?.context("fork 记录不见了")
+        Ok(row)
     }
 
-    /// The fork's own answer settles its attempt (contract 3): a 200 with a
-    /// new session in this folder and no workspace is a fork; one that is not
-    /// is a failed one, its session kept; anything else leaves it uncertain.
-    /// `late`: after the watch, when only an attempt still unconfirmed is
-    /// settled, and only against what it fixed.
-    async fn opencode_fork_answered(self: &Arc<Self>, key: &str, answer: ForkAnswer, late: bool) -> Result<()> {
-        let from: &[&str] = if late { &["sending", "uncertain"] } else { &["sending"] };
-        let (state, session, message) = match answer {
-            ForkAnswer::Answered(session) => {
-                let id = session["id"].as_str().unwrap_or_default().to_owned();
-                let frozen = self.opencode_fork_frozen(key)?;
-                if id.is_empty() || id == frozen.session {
-                    ("failed", None, Some(format!("OpenCode 的回答不是一个新的会话：{}", session["id"])))
-                } else if session["directory"] != frozen.cwd.as_str() || !session["workspaceID"].as_str().unwrap_or_default().is_empty() {
-                    ("failed", Some(id), Some("OpenCode fork 出的会话不在这个目录或属于一个 workspace；它留在原 Agent 的 OpenCode 里，没有登记".to_owned()))
-                } else {
-                    ("forked", Some(id), None)
-                }
-            }
-            ForkAnswer::Unknown(why) => ("uncertain", None, Some(format!("这次 fork 的结果无法确认（{why}）；结果确认之前不会再请求一次，原 Agent 照常可用"))),
-        };
-        let key = key.to_owned();
-        let from: Vec<String> = from.iter().map(|s| s.to_string()).collect();
-        self.stored(move |s| {
-            let from: Vec<&str> = from.iter().map(String::as_str).collect();
-            s.opencode_settle_fork(&key, &from, state, session.as_deref(), message.as_deref())
-        }).await
-    }
-
-    /// Contract 4: the fork as OpenCode holds it in the source's database,
-    /// paired with what was fixed. A failed read proves nothing: it stays
-    /// forked, and is read again next time.
-    async fn opencode_fork_verify(self: &Arc<Self>, row: &mut Row) -> Result<()> {
+    /// The new Agent's OpenCode started once on its own empty database in
+    /// the same folder (or the one this run started), and the copy written
+    /// there once (rule R5): only if it lists no session at all. One that
+    /// lists only this very copy, with this request's marker, holds it
+    /// already (an earlier write whose answer was lost); anything else fails
+    /// the fork, written over by nothing. The import's answer:
+    /// - 200, or 409 for this ID: it holds a session under it (only a read
+    ///   tells which);
+    /// - any error answer: the fork fails, so that the Turn is free to be
+    ///   forked anew (#736 R1); a session it may have written stays in this
+    ///   attempt's folder (D-36), and a new attempt writes into its own;
+    /// - none within WATCH: uncertain, and the same request goes on from
+    ///   there (D-33). Gone on from there, its new OpenCode read to hold
+    ///   nothing, none a second time fails it as well: an import that never
+    ///   answers never holds the Turn.
+    async fn opencode_fork_import(self: &Arc<Self>, row: &mut Row, started: &mut Option<Started>) -> Result<()> {
         let frozen = self.opencode_fork_fixed(row)?;
-        let session = row.fork_session.clone().context("fork 记录缺少会话")?;
-        let c = self.opencodes.lock().unwrap().get(&row.source_agent_id).cloned()
-            .context("原 Agent 的 OpenCode 未连接；连接后重试，会再次核对这个 fork，不会重新 fork")?;
-        let info = c.server.session(&session).await.context("暂时读不到 fork 出的会话；重试会再次核对它")?;
-        let messages = c.server.messages(&session).await.context("暂时读不到 fork 出的会话；重试会再次核对它")?
-            .as_array().cloned().unwrap_or_default();
-        let checked = (|| -> Result<check::Ids> {
-            ensure!(info["id"] == session.as_str() && info["directory"] == frozen.cwd.as_str() && info["parentID"].is_null(),
-                "fork 出的会话不是一个独立的同目录会话；没有登记");
-            ensure!(info["workspaceID"].as_str().unwrap_or_default().is_empty(), "fork 出的会话属于一个 workspace；没有登记");
-            check::pair(&frozen.messages, &messages, &session)
-        })();
-        match checked {
-            Ok(ids) => {
-                let verified = Verified { info, messages, ids };
-                write_private(&self.opencode_fork_folder(&row.request_id)?.join("verified.json"), &serde_json::to_vec(&verified)?)?;
-                self.opencode_fork_state(row, "verified", None).await
-            }
-            Err(error) => self.opencode_fork_state(row, "failed", Some(format!("{error:#}。原 Agent 未改变；这个 fork 留在原 Agent 的 OpenCode 里"))).await,
-        }
-    }
-
-    /// Contract 5: the fork's own durable events, fixed.
-    async fn opencode_fork_chain(self: &Arc<Self>, row: &mut Row) -> Result<()> {
-        let verified: Verified = read_private(&self.opencode_fork_folder(&row.request_id)?.join("verified.json"))?;
-        let session = row.fork_session.clone().context("fork 记录缺少会话")?;
-        let c = self.opencodes.lock().unwrap().get(&row.source_agent_id).cloned()
-            .context("原 Agent 的 OpenCode 未连接；连接后重试，会再次读取这个 fork，不会重新 fork")?;
-        let (source, fork) = (row.source_agent_id.clone(), session.clone());
-        let mut others: Vec<String> = self.stored(move |s| s.opencode_fork_sessions(&source)).await?;
-        others.push(c.session.clone());
-        others.extend(c.known_children());
-        // Never this fork's own: an earlier attempt's list may hold it, and
-        // leaving it out would read as a fork with no events.
-        others.retain(|s| *s != fork);
-        let events = c.server.history_of(&session, &check::known(others)).await?;
-        match check::chain(&events, &session, &verified.info, &verified.messages) {
-            Ok(chain) => {
-                let sha = check::digest(&json!(chain))?;
-                write_private(&self.opencode_fork_folder(&row.request_id)?.join("chain.json"), &serde_json::to_vec(&chain)?)?;
-                let (key, kept) = (row.request_id.clone(), sha.clone());
-                self.stored(move |s| s.opencode_fork_chained(&key, &kept)).await?;
-                row.chain_sha = Some(sha);
-                self.opencode_fork_state(row, "chained", None).await
-            }
-            Err(error) => self.opencode_fork_state(row, "failed", Some(format!("{error:#}。原 Agent 未改变"))).await,
-        }
-    }
-
-    /// Contract 6: the new Agent's OpenCode started once, on its own empty
-    /// database in the same folder; the fixed events replayed and read back
-    /// whole; then the Agent registered and attached to that same process.
-    /// A failed start, replay or read leaves it chained: the same events are
-    /// replayed again next time, into the same Agent.
-    async fn opencode_fork_target(self: &Arc<Self>, row: &mut Row, warnings: &mut Vec<String>) -> Result<()> {
-        let folder = self.opencode_fork_folder(&row.request_id)?;
-        let frozen = self.opencode_fork_fixed(row)?;
-        let verified: Verified = read_private(&folder.join("verified.json"))?;
-        let chain: Vec<Value> = read_private(&folder.join("chain.json"))?;
-        ensure!(row.chain_sha.as_deref() == Some(check::digest(&json!(chain))?.as_str()), "fork 记下的事件与当时读到的不同；没有登记");
-        let session = row.fork_session.clone().context("fork 记录缺少会话")?;
         self.opencode_fork_reserved(row)?;
-        let started = self.opencode_start(&row.target_agent_id, &frozen.cwd).await?;
-        // What its database holds already: nothing, or what an earlier
-        // attempt of this one replayed of these same events, exactly.
-        let held = started.server.history(&serde_json::Map::new()).await
-            .context("读不到新 Agent 的 OpenCode 现有的记录；重试会再次核对，不会重新 fork")?;
-        let ours = held.len() <= chain.len() && held.iter().zip(&chain).all(|(h, c)| h["aggregate_id"] == session.as_str()
-            && h["id"] == c["id"] && h["seq"] == c["seq"] && h["type"] == c["type"] && h["data"] == c["data"]);
-        if !ours {
-            return self.opencode_fork_state(row, "failed", Some(
-                "新 Agent 的 OpenCode 数据库里有不是这次 fork 的记录；没有覆盖，也没有登记".into())).await;
-        }
-        let path = started.server.path().await?;
-        let project = started.server.project().await?["id"].as_str().unwrap_or_default().to_owned();
-        if let Err(error) = check::same_place(&(frozen.path.clone(), frozen.project.clone()), &(path, project)) {
+        let server = self.opencode_fork_server(row, &frozen, started).await?;
+        let again = "重试会接着核对新 Agent 的 OpenCode，不会写第二次";
+        if let Err(error) = self.opencode_fork_place(&server, &frozen).await {
             return self.opencode_fork_state(row, "failed", Some(format!("{error:#}"))).await;
         }
-        let replayed = started.server.replay(&chain).await;
-        let info = started.server.session(&session).await;
-        let messages = started.server.messages(&session).await;
-        // As the fork reads in the source's own database once it was made
-        // (its cost and tokens summed from its parts by OpenCode's own
-        // projection): the session and every message and part, whole.
-        let same = match (&info, &messages) {
-            (Ok(info), Ok(messages)) => *info == verified.info && messages.as_array() == Some(&verified.messages),
-            _ => false,
+        let listed = server.sessions().await.with_context(|| format!("读不到新 Agent 的 OpenCode 里的会话；{again}"))?;
+        let held = match transfer::holds_only(&listed, &frozen.payload) {
+            Ok(held) => held,
+            Err(error) => return self.opencode_fork_state(row, "failed", Some(format!("{error:#}；没有登记"))).await,
         };
-        if !same {
-            let why = match replayed {
-                Err(error) => format!("{error:#}"),
-                Ok(_) => "重放后读到的会话与 fork 不同".into(),
-            };
-            bail!("新 Agent 的 OpenCode 还没有完整的 fork（{why}）；重试会把同一份记录重放到同一个新 Agent，不会重新 fork");
+        if held {
+            return self.opencode_fork_state(row, "forked", None).await;
         }
+        let anew = "可以重新 fork，新的一次会写进它自己的目录";
+        let before = row.state.clone();
+        match server.import(&frozen.payload, WATCH).await {
+            ImportAnswer::Imported(_) | ImportAnswer::Exists => self.opencode_fork_state(row, "forked", None).await,
+            ImportAnswer::Refused(status) => self.opencode_fork_state(row, "failed",
+                Some(format!("新 Agent 的 OpenCode 拒绝写入这份副本，什么也没有写（{status}）；没有登记，{anew}"))).await,
+            ImportAnswer::Failed(status) => self.opencode_fork_state(row, "failed",
+                Some(format!("新 Agent 的 OpenCode 写入这份副本时出错（{status}）；没有登记，新 Agent 的目录留着，{anew}"))).await,
+            ImportAnswer::Unknown(why) if before == "uncertain" => self.opencode_fork_state(row, "failed",
+                Some(format!("新 Agent 的 OpenCode 又一次没有回答这份副本的写入（{why}），此前它什么也没有；没有登记，新 Agent 的目录留着，{anew}"))).await,
+            ImportAnswer::Unknown(why) => self.opencode_fork_state(row, "uncertain",
+                Some(format!("新 Agent 的 OpenCode 没有确认写入这份副本（{why}）；{again}。原 Agent 照常可用"))).await,
+        }
+    }
+
+    /// The new Agent's OpenCode holds this folder for the source's project:
+    /// its copy is where the source's session is.
+    async fn opencode_fork_place(&self, server: &opencode::Server, frozen: &Frozen) -> Result<()> {
+        let location = server.location(&frozen.payload.directory).await.context("读不到新 Agent 的 OpenCode 认定的目录；没有登记")?;
+        let named = location["directory"].as_str().map(PathBuf::from);
+        let directory = tokio::task::spawn_blocking(move || named.and_then(|d| std::fs::canonicalize(d).ok())).await?;
+        ensure!(directory.as_deref() == Some(Path::new(&frozen.payload.directory)), "新 Agent 的 OpenCode 认定的目录与原 Agent 的不同；没有登记");
+        ensure!(location["project"]["id"] == frozen.project.as_str(), "新 Agent 的 OpenCode 认定的项目与原 Agent 的不同；没有登记");
+        Ok(())
+    }
+
+    /// The copy as the new Agent's OpenCode holds it, read back whole and
+    /// compared with what was fixed (rule R6): any difference fails the
+    /// fork, and the new Agent's folder is kept (D-36). A failed read proves
+    /// nothing: it stays written, and is read again next time.
+    async fn opencode_fork_verify(self: &Arc<Self>, row: &mut Row, started: &mut Option<Started>) -> Result<()> {
+        let frozen = self.opencode_fork_fixed(row)?;
+        self.opencode_fork_reserved(row)?;
+        let server = self.opencode_fork_server(row, &frozen, started).await?;
+        let unread = "暂时读不到写入新 Agent 的 OpenCode 的副本；重试会再次核对它，不会再写一次";
+        let id = frozen.payload.id();
+        let info = server.session(id).await.context(unread)?;
+        let messages = server.messages(id).await.context(unread)?;
+        let messages = messages.as_array().context(unread)?;
+        let checked = transfer::read_back(&frozen.payload, &frozen.project, &info, messages);
+        match checked {
+            Ok(()) => self.opencode_fork_state(row, "verified", None).await,
+            Err(error) => self.opencode_fork_state(row, "failed",
+                Some(format!("{error:#}；没有登记，新 Agent 的目录留着，原 Agent 未改变"))).await,
+        }
+    }
+
+    /// Contract 6: the copy verified, the new Agent registered with the
+    /// source's Turns as copied, and attached to the very process the copy
+    /// was read back from (or one started now, on a later run).
+    async fn opencode_fork_target(self: &Arc<Self>, row: &mut Row, started: &mut Option<Started>, warnings: &mut Vec<String>) -> Result<()> {
+        let frozen = self.opencode_fork_fixed(row)?;
+        self.opencode_fork_reserved(row)?;
+        let session = frozen.payload.id().to_owned();
         let root = self.data_dir.canonicalize().unwrap_or_else(|_| self.data_dir.clone());
         let mut images = Images { root, from: row.source_agent_id.clone(), to: row.target_agent_id.clone(), files: Vec::new() };
-        let turns = remap(&frozen.turns, &verified.ids, &session, &mut images)?;
+        let from = json!({"agentId": row.source_agent_id, "sessionId": frozen.session, "requestId": row.request_id});
+        let turns = check::copy(&frozen.turns, &session, &from, &mut images)?;
         tokio::task::spawn_blocking(move || images.copy()).await??;
-        let detail = self.opencode_fork_detail(row, &frozen, &session, turns, started.server.version())?;
+        let server = self.opencode_fork_server(row, &frozen, started).await?;
+        let detail = self.opencode_fork_detail(row, &frozen, &session, turns, server.version())?;
         let (source, request) = (row.source_agent_id.clone(), row.request_id.clone());
         let (agent, project_kept, project) = self.stored(move |s| {
             let project = s.agent_project(&source)?;
@@ -466,12 +409,22 @@ impl Workspace {
             // The fork leads the source's Project (YN-2 S4).
             self.projects_changed();
         }
-        // Attached to the very process the fork was replayed into. A failed
+        // Attached to the very process the copy was read back from. A failed
         // attach leaves the registered Agent offline; nothing is retried here.
-        if let Err(error) = self.opencode_ensure_on(&agent.id, Some(started)).await {
+        if let Err(error) = self.opencode_ensure_on(&agent.id, started.take()).await {
             warnings.push(format!("fork 已登记，但连接失败：{error}"));
         }
         Ok(())
+    }
+
+    /// The new Agent's OpenCode for this run: the one it started, or one
+    /// started now on its own folder.
+    async fn opencode_fork_server(self: &Arc<Self>, row: &Row, frozen: &Frozen, started: &mut Option<Started>) -> Result<Arc<opencode::Server>> {
+        if started.is_none() {
+            *started = Some(self.opencode_start(&row.target_agent_id, &frozen.cwd).await
+                .context("新 Agent 的 OpenCode 没有启动；重试会接着进行，不会写第二次")?);
+        }
+        started.as_ref().map(|started| started.server.clone()).context("新 Agent 的 OpenCode 没有启动")
     }
 
     fn opencode_fork_detail(&self, row: &Row, frozen: &Frozen, session: &str, turns: Vec<Value>, version: &str) -> Result<AgentDetail> {
@@ -513,14 +466,19 @@ impl Workspace {
         Ok(folder)
     }
 
-    fn opencode_fork_frozen(&self, request: &str) -> Result<Frozen> {
-        read_private(&self.opencode_fork_folder(request)?.join("frozen.json"))
+    /// Whether what the attempt fixed is of this form: one 1.19.3's fork
+    /// fixed cannot go on here.
+    fn opencode_fork_current(&self, row: &Row) -> Result<bool> {
+        let fixed: Value = read_private(&self.opencode_fork_folder(&row.request_id)?.join("frozen.json"))?;
+        Ok(fixed["version"] == FROZEN_VERSION)
     }
 
     /// What the attempt fixed, as it fixed it: its digest the kept one.
     fn opencode_fork_fixed(&self, row: &Row) -> Result<Frozen> {
-        let frozen = self.opencode_fork_frozen(&row.request_id)?;
-        ensure!(check::digest(&json!(frozen.messages))? == row.prefix_sha, "fork 记下的内容与当时不同；没有登记");
+        let frozen: Frozen = read_private(&self.opencode_fork_folder(&row.request_id)?.join("frozen.json"))?;
+        ensure!(frozen.version == FROZEN_VERSION, "{EARLIER}");
+        ensure!(check::digest(&serde_json::to_value(&frozen.payload)?)? == row.prefix_sha
+            && row.fork_session.as_deref() == Some(frozen.payload.id()), "fork 记下的内容与当时不同；没有登记");
         Ok(frozen)
     }
 
@@ -559,6 +517,35 @@ impl Workspace {
     }
 }
 
+/// An attempt left without the import's answer.
+const UNCERTAIN: &str = "新 Agent 的 OpenCode 还没有确认写入这份副本；再次 fork 同一个请求会接着核对，不会写第二次，原 Agent 照常可用";
+/// An attempt 1.19.3's fork began.
+const EARLIER: &str = "这次 fork 是之前的 Core 在 OpenCode 1.19.3 上开始的，不能在 2.x 上接着进行；原 Agent 未改变，可以重新 fork";
+
+/// The copy a fork writes (D-28): every message through the cut, as read,
+/// under a new session ID with this request's marker; the session's own
+/// settings as they stood at the cut (the agent and model of the copy's
+/// newest selection, else the session's); no usage (D-34, as 2.x's own fork);
+/// its times those of the source's start and of the cut's idle, and that
+/// idle's outcome. No fork, revert or parent: the copy is a session of its own.
+fn fork_payload(read: &Read, name: &str, request: &str) -> Result<Payload> {
+    let idle = read.prefix.last().filter(|m| m["type"] == "idle").context("这个 Turn 之后的运行还没有结束；没有 fork")?;
+    let info = &read.info;
+    let mut sent = json!({
+        "id": transfer::session_id(), "projectID": info["projectID"], "title": name,
+        "location": {"directory": read.folder}, "metadata": {"yuzuno": {"fork": request}},
+        "cost": 0, "tokens": transfer::no_tokens(),
+        "time": {"created": info["time"]["created"], "updated": idle["time"]["created"], "idle": idle["time"]["created"]},
+        "outcome": idle["outcome"], "permissions": info["permissions"],
+    });
+    for (field, kind) in [("agent", "agent-switched"), ("model", "model-switched")] {
+        sent[field] = transfer::selected(&read.prefix, kind, field, &info[field]);
+    }
+    transfer::without_nulls(&mut sent);
+    ensure!(sent["time"]["created"].is_number(), "OpenCode 会话没有说它何时开始；没有 fork");
+    Ok(Payload { info: sent, messages: read.prefix.clone(), directory: read.folder.clone() })
+}
+
 /// The pasted images the copied messages show, each the new Agent's own
 /// copy: the web reads one through its owner's route, and the source may go.
 struct Images {
@@ -568,7 +555,7 @@ struct Images {
     files: Vec<String>,
 }
 
-impl Images {
+impl check::ImagePaths for Images {
     /// The new Agent's path for an image of the source's; refused for any
     /// other (none is carried as it is).
     fn path(&mut self, path: &str) -> Result<String> {
@@ -579,7 +566,9 @@ impl Images {
         self.files.push(id.to_owned());
         Ok(crate::input_images::image_path(&self.root, &self.to, id)?.to_string_lossy().into_owned())
     }
+}
 
+impl Images {
     /// Each image, and what is kept beside it (its thumbnail, the copy fitted
     /// for OpenCode), copied into the new Agent's folder. Blocking.
     fn copy(self) -> Result<()> {
@@ -602,6 +591,7 @@ impl Images {
         Ok(())
     }
 }
+
 
 fn outcome(row: &Row, state: &str, message: String) -> Value {
     json!({"state":state,"requestId":row.request_id,"message":message,"warnings":[]})
@@ -626,154 +616,6 @@ fn read_private<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Resul
     Ok(serde_json::from_slice(&std::fs::read(path).with_context(|| format!("读不到 fork 记下的 {}", path.display()))?)?)
 }
 
-/// The source's Turns through the fork's, as the new Agent holds them
-/// (contract 8): every native ID they hold is its copy's, by the verified
-/// map; what bound them to the source's own run is left behind. A field this
-/// does not know refuses the fork rather than being carried.
-fn remap(turns: &[Value], ids: &check::Ids, session: &str, images: &mut Images) -> Result<Vec<Value>> {
-    let id = |old: &str| -> Result<String> {
-        ids.get(old).cloned().with_context(|| format!("fork 里没有 {old} 的副本；没有登记"))
-    };
-    let mut kept = Vec::new();
-    for turn in turns {
-        let object = turn.as_object().context("Turn 记录无法读取")?;
-        let mut copy = serde_json::Map::new();
-        let compact = object.contains_key("_opencodeCompact");
-        for (name, value) in object {
-            let value = match name.as_str() {
-                "id" if compact => value.clone(),
-                "id" => json!(id(value.as_str().context("Turn 没有 ID")?)?),
-                "items" => {
-                    let mut items = Vec::new();
-                    for item in value.as_array().into_iter().flatten() {
-                        items.push(remap_item(item, &id, images)?);
-                    }
-                    Value::Array(items)
-                }
-                "_opencodeInputs" => {
-                    let mut inputs = serde_json::Map::new();
-                    for (input, state) in value.as_object().into_iter().flatten() {
-                        let mut state = state.clone();
-                        // A way back for an input still being sent, and its sender's ID: the source's run.
-                        if let Some(object) = state.as_object_mut() {
-                            object.remove("previous");
-                            object.remove("clientMessageId");
-                            object.remove("deliveryUnconfirmed");
-                        }
-                        inputs.insert(id(input)?, state);
-                    }
-                    Value::Object(inputs)
-                }
-                "_opencodeLastInput" | "_opencodeFollowed" => json!(id(value.as_str().context("Turn 的消息 ID 无法读取")?)?),
-                "_opencodeAnswers" => {
-                    let mut answers = serde_json::Map::new();
-                    for (answer, state) in value.as_object().into_iter().flatten() {
-                        let mut state = state.clone();
-                        if let Some(parent) = state["parent"].as_str() {
-                            state["parent"] = json!(id(parent)?);
-                        }
-                        answers.insert(id(answer)?, state);
-                    }
-                    Value::Object(answers)
-                }
-                "_opencodeCompact" => remap_compact(value, &id, session)?,
-                // As they were: what the Turn was, not what bound it to the source's run.
-                "status" | "error" | "_opencodeConfirmed" | "_opencodeSessionError" | "_yuzunoStartedAt" | "_yuzunoCompletedAt"
-                | "_yuzunoDurationMs" | "_yuzunoCompactionStartedAt" | "itemsView" => value.clone(),
-                "_yuzunoCompactionId" => json!(format!("{}:compaction", object["id"].as_str().unwrap_or_default())),
-                // The source's own run: not the new Agent's.
-                "interruptRequested" | "deliveryUnconfirmed" => continue,
-                other => bail!("Turn {} 里有 fork 还不能带过去的记录 {other}；没有 fork", object["id"]),
-            };
-            copy.insert(name.clone(), value);
-        }
-        kept.push(Value::Object(copy));
-    }
-    Ok(kept)
-}
-
-fn remap_item(item: &Value, id: &impl Fn(&str) -> Result<String>, images: &mut Images) -> Result<Value> {
-    let object = item.as_object().context("Turn 的内容无法读取")?;
-    let mut copy = serde_json::Map::new();
-    for (name, value) in object {
-        let value = match name.as_str() {
-            "id" => {
-                let old = value.as_str().context("内容没有 ID")?;
-                match old.strip_suffix(":input") {
-                    Some(message) => json!(format!("{}:input", id(message)?)),
-                    None if object["type"] == "contextCompaction" => value.clone(),
-                    None => json!(id(old)?),
-                }
-            }
-            "nativeMessageId" => json!(id(value.as_str().context("内容的消息 ID 无法读取")?)?),
-            "clientId" | "deliveryUnconfirmed" => continue,
-            "content" => {
-                let mut content = value.clone();
-                for part in content.as_array_mut().into_iter().flatten() {
-                    if part["type"] == "localImage" {
-                        part["path"] = json!(images.path(part["path"].as_str().context("图片路径无法读取；没有 fork")?)?);
-                    }
-                }
-                content
-            }
-            "type" | "text" | "summary" | "name" | "callId" | "input" | "output" | "status" | "trigger"
-            | "_yuzunoTime" | "_yuzunoCompletedText" | "_yuzunoTextBlocks" | "_yuzunoInputText" => value.clone(),
-            other => bail!("Turn 内容里有 fork 还不能带过去的记录 {other}；没有 fork"),
-        };
-        copy.insert(name.clone(), value);
-    }
-    Ok(Value::Object(copy))
-}
-
-fn remap_compact(value: &Value, id: &impl Fn(&str) -> Result<String>, session: &str) -> Result<Value> {
-    let object = value.as_object().context("压缩记录无法读取")?;
-    let mut copy = serde_json::Map::new();
-    for (name, value) in object {
-        let value = match name.as_str() {
-            "message" | "part" => json!(id(value.as_str().context("压缩记录的 ID 无法读取")?)?),
-            "session" => json!(session),
-            "summary" => {
-                let mut summary = value.clone();
-                if let Some(answer) = value["id"].as_str() {
-                    summary["id"] = json!(id(answer)?);
-                }
-                summary
-            }
-            "text" => {
-                let mut text = serde_json::Map::new();
-                for (part, body) in value.as_object().into_iter().flatten() {
-                    text.insert(id(part)?, body.clone());
-                }
-                Value::Object(text)
-            }
-            // What it looked at: in the fork, only what it copied.
-            "candidates" => {
-                let mut candidates = serde_json::Map::new();
-                for (message, state) in value.as_object().into_iter().flatten() {
-                    let Ok(message) = id(message) else { continue };
-                    let mut state = state.clone();
-                    if let Some(part) = state["part"].as_str() {
-                        match id(part) {
-                            Ok(part) => state["part"] = json!(part),
-                            Err(_) => { state.as_object_mut().map(|o| o.remove("part")); }
-                        }
-                    }
-                    candidates.insert(message, state);
-                }
-                Value::Object(candidates)
-            }
-            // Compaction messages from before it began: in the fork, only those it copied.
-            "known" => Value::Array(value.as_array().into_iter().flatten().filter_map(|k| k.as_str().and_then(|k| id(k).ok())).map(Value::from).collect()),
-            "state" | "providerID" | "modelID" | "auto" => value.clone(),
-            // The source's own run.
-            "generation" | "answer" | "nativePending" | "abandonRequested" | "abandonedAt" => continue,
-            other => bail!("压缩记录里有 fork 还不能带过去的记录 {other}；没有 fork"),
-        };
-        copy.insert(name.clone(), value);
-    }
-    Ok(Value::Object(copy))
-}
-
 /// Contract 8 has no web view yet: the routes.
 pub(crate) fn router() -> axum::Router<Arc<Workspace>> {
     use axum::{extract::{Path, Query, State}, routing::post, Json};
@@ -791,6 +633,8 @@ pub(crate) fn router() -> axum::Router<Arc<Workspace>> {
         .route("/api/agents/{id}/opencode/fork", post(fork).get(seen))
 }
 
+/// The table as 1.19.3's fork made it: `fork_session` is the copy's session
+/// now, `prefix_sha` the digest of the copy, `chain_sha` only 1.19.3's.
 pub(crate) fn migrate(db: &rusqlite::Connection) -> Result<()> {
     db.execute_batch(&format!("CREATE TABLE IF NOT EXISTS opencode_forks(
         request_id TEXT PRIMARY KEY, source_agent_id TEXT NOT NULL, through_turn_id TEXT NOT NULL,
@@ -801,12 +645,12 @@ pub(crate) fn migrate(db: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-const COLUMNS: &str = "request_id,source_agent_id,through_turn_id,target_agent_id,name,state,fork_session,error,prefix_sha,chain_sha";
+const COLUMNS: &str = "request_id,source_agent_id,through_turn_id,target_agent_id,name,state,fork_session,error,prefix_sha";
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
     Ok(Row {
         request_id: r.get(0)?, source_agent_id: r.get(1)?, through_turn_id: r.get(2)?, target_agent_id: r.get(3)?,
-        name: r.get(4)?, state: r.get(5)?, fork_session: r.get(6)?, error: r.get(7)?, prefix_sha: r.get(8)?, chain_sha: r.get(9)?,
+        name: r.get(4)?, state: r.get(5)?, fork_session: r.get(6)?, error: r.get(7)?, prefix_sha: r.get(8)?,
     })
 }
 
@@ -820,23 +664,10 @@ impl crate::store::Store {
         Ok(self.db.read()?.query_row(&format!("SELECT {COLUMNS} FROM opencode_forks WHERE source_agent_id=?1 AND through_turn_id=?2
             AND state IN {LIVE}"), [source, turn], row).optional()?)
     }
-    /// The sessions this Agent's earlier forks made in its database.
-    fn opencode_fork_sessions(&self, source: &str) -> Result<Vec<String>> {
-        let db = self.db.read()?;
-        let mut query = db.prepare("SELECT fork_session FROM opencode_forks WHERE source_agent_id=?1 AND fork_session IS NOT NULL")?;
-        let sessions = query.query_map([source], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-        Ok(sessions)
-    }
     fn opencode_begin_fork(&self, row: &Row) -> Result<()> {
         let at = now();
-        self.db.write()?.execute(&format!("INSERT INTO opencode_forks({COLUMNS},created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'sending',NULL,NULL,?6,NULL,?7,?7)"),
-            rusqlite::params![row.request_id, row.source_agent_id, row.through_turn_id, row.target_agent_id, row.name, row.prefix_sha, at])?;
-        Ok(())
-    }
-    /// The fork's own events, fixed: their digest kept, once.
-    fn opencode_fork_chained(&self, request: &str, sha: &str) -> Result<()> {
-        self.db.write()?.execute("UPDATE opencode_forks SET chain_sha=?2, updated_at=?3 WHERE request_id=?1 AND (chain_sha IS NULL OR chain_sha=?2)",
-            rusqlite::params![request, sha, now()])?;
+        self.db.write()?.execute(&format!("INSERT INTO opencode_forks({COLUMNS},chain_sha,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'sending',?6,NULL,?7,NULL,?8,?8)"),
+            rusqlite::params![row.request_id, row.source_agent_id, row.through_turn_id, row.target_agent_id, row.name, row.fork_session, row.prefix_sha, at])?;
         Ok(())
     }
     fn opencode_set_fork(&self, request: &str, state: &str, session: Option<&str>, error: Option<&str>) -> Result<()> {
@@ -844,18 +675,7 @@ impl crate::store::Store {
             rusqlite::params![request, state, session, error, now()])?;
         Ok(())
     }
-    /// Settles an attempt by its answer, only from one of `from`: an answer
-    /// after another settled it changes nothing.
-    fn opencode_settle_fork(&self, request: &str, from: &[&str], state: &str, session: Option<&str>, error: Option<&str>) -> Result<()> {
-        let db = self.db.write()?;
-        let current: String = db.query_row("SELECT state FROM opencode_forks WHERE request_id=?1", [request], |r| r.get(0))?;
-        if from.contains(&current.as_str()) {
-            db.execute("UPDATE opencode_forks SET state=?2, fork_session=COALESCE(?3,fork_session), error=?4, updated_at=?5 WHERE request_id=?1",
-                rusqlite::params![request, state, session, error, now()])?;
-        }
-        Ok(())
-    }
-    /// Registers a replayed fork in one transaction: the Agent with its
+    /// Registers a verified fork in one transaction: the Agent with its
     /// Turns, its Project membership when still assignable, a record of where
     /// it came from on both Agents, and the completed attempt. Whether the
     /// Project was kept.
@@ -864,7 +684,7 @@ impl crate::store::Store {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let current: String = tx.query_row("SELECT state FROM opencode_forks WHERE request_id=?1", [request], |r| r.get(0))?;
-        ensure!(current == "chained", "fork 已不在等待登记；没有登记第二次");
+        ensure!(current == "verified", "fork 已不在等待登记；没有登记第二次");
         crate::record_rows::insert(&tx, &detail.agent.id, &rows)?;
         let kept = match project {
             Some(project) if !crate::projects::is_archived(&tx, project)? => {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { LoaderCircle, MessageSquareReply, Send, Trash2, X } from "lucide-react";
-import { errorText, HttpError, shortcutModifier } from "../api";
+import { shortcutModifier } from "../api";
 import { CopyButton } from "../components";
 import { useStrings } from "../i18n";
 import { useSurfaceIn } from "../surface";
@@ -8,7 +8,7 @@ import { returnKey, returnSends, useDevicePreferences } from "../device-preferen
 import { touchKeyboard } from "../touch-input";
 import type { Agent } from "../types";
 import { TargetPicker } from "./AskReply";
-import { dropPendingReply, outboxKey, pendingReply, sendReply } from "./home-api";
+import { dropPendingReply, explain, OLDER_CORE, olderCore, outboxKey, pendingReply, sendReply } from "./home-api";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import type { ProjectPanel, Section } from "./types";
@@ -43,9 +43,6 @@ const drafts = draftStore<CardDraft>("yuzuno.home-card-drafts.v1");
 
 /** `to` is null when the Agent had no name to show: worded when shown. */
 type Sent = { status: string; to: string | null; version: number };
-/** Why a send failed: Core's reason, or that this Core is too old, worded
- * when shown so it follows the interface language (T-189). */
-const OLDER_CORE = Symbol("older Core");
 /** One card's reply, shared by every place the card shows. */
 type ReplyState = { draft: CardDraft | null; busy: boolean; error: string | typeof OLDER_CORE; sent: Sent | null };
 const replies = new Map<string, ReplyState>();
@@ -119,15 +116,6 @@ export function replyableIn(panel: ProjectPanel | undefined, section: Section) {
   return referableHistory(panel.brief.history, live).includes(section);
 }
 
-/** A Core from before card replies refuses the reply's version: nothing was sent. */
-const olderCore = (error: unknown) =>
-  error instanceof HttpError && /unknown field `(version|title)`/.test(errorText(error));
-
-/** Core's reason without its code, or that an older Core refused the reply. */
-function explain(error: unknown) {
-  if (olderCore(error)) return OLDER_CORE;
-  return errorText(error).replace(/^(section_changed|section_removed):\s*/, "");
-}
 
 export function CardReply({
   section,

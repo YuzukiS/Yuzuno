@@ -4979,9 +4979,11 @@ test("rail shows attributed current work as plain text; the inspector opens the 
       false,
     );
     assert.match(rail.textContent, /Reported/);
-    // One target opens the card, then its actions (T-184); the machine is
+    // One target opens the card, then its ring (T-43), which goes to its
+    // unread update, then its actions beside it (T-184); the machine is
     // shown, the working folder is not.
-    assert.deepEqual([...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")), ["Open Mori", "Actions for Mori"]);
+    assert.deepEqual([...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")),
+      ["Open Mori", "Mori · Read 1 unread", "Actions for Mori"]);
     // The name has the row's first line to itself (T-15): a rail this narrow
     // cannot hold an avatar, a whole name and the status word together, so
     // where the Agent runs moved into the actions menu, which a pointer, a
@@ -5873,7 +5875,7 @@ test("an idle Agent with unfinished jobs shows Waiting · Job in the Agent list 
   let live = { agents: { a: { active: 1, unknown: 0 }, b: { active: 2, unknown: 0 } } };
   const page = await mount({ status: "working", liveJobs: () => live });
   const runtime = (id) =>
-    page.document.querySelector(`[data-agent-id="${id}"] .agent-runtime`)?.textContent;
+    page.document.querySelector(`[data-agent-id="${id}"] .agent-island`)?.getAttribute("data-status");
   const liveReads = () => page.calls.filter((c) => c.url.endsWith("/api/jobs/live")).length;
   const title = (id) => page.document.querySelector(`[data-agent-id="${id}"] .agent-select`)?.title || "";
   // A jobs change makes the app read live jobs again; wait for that read,
@@ -5915,7 +5917,7 @@ test("an idle Agent with unfinished jobs shows Waiting · Job in the Agent list 
 test("CI rail refreshes on Jobs, collaboration closure and reconnect, without reloading conversations", async () => {
   let ci={agents:{b:{running:1,discovering:0,check:0}}};
   const page=await mount({status:"working",liveCI:()=>ci});
-  const runtime=id=>page.document.querySelector(`[data-agent-id="${id}"] .agent-runtime`)?.textContent;
+  const runtime=id=>page.document.querySelector(`[data-agent-id="${id}"] .agent-island`)?.getAttribute("data-status");
   const reads=()=>page.calls.filter(c=>c.url.endsWith("/api/ci/live")).length;
   const stream=()=>page.eventSources.at(-1);
   // Core answers an opened stream with `resumed` first. Without it the

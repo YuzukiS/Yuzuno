@@ -552,6 +552,8 @@ export function describeFenceGuide(): string {
     ...FENCE_COMPONENTS.map(componentGuide),
     "Rules:",
     `Sources hrefs are http(s) URLs or local file paths (optionally :line); rows and bars cite them by id in sourceIds. Table and BarChart ids, row ids and column keys are unique; every Table row has a cell for each column key and no others. A block that fails these checks when it closes shows as text.`,
+    // YN-16: the reader's own inputs and figures are the Project Brief's alone.
+    `Inputs the reader sets (a number, a switch, a choice), Calc formulas, Diagram, Figure, Steps and Timeline exist only in Project Brief sections (brief_guide interactive), not in a reply's yuzuno-ui block.`,
   ].join("\n");
 }
 

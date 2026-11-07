@@ -80,6 +80,14 @@ impl Workspace {
             return tokio::spawn(crate::handover_tools::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Handover operation ended unexpectedly")?;
         }
+        if operation == crate::executor_template_changes::TOOL {
+            return tokio::spawn(crate::executor_template_changes::call(self.clone(), actor.map(str::to_owned), input))
+                .await.context("Executor template change ended unexpectedly")?;
+        }
+        if operation.starts_with("executor_templates_") {
+            return tokio::spawn(crate::executor_templates::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
+                .await.context("Executor template operation ended unexpectedly")?;
+        }
         if operation == "executor_release" {
             // Its close is awaited in turn; a dropped request does not stop it.
             return tokio::spawn(crate::executor_release::call(self.clone(), actor.map(str::to_owned), input))

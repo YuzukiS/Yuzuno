@@ -24,8 +24,9 @@ Every Agent has one kind:
 | **lead** | You, by making it there | An Agent you created, imported, forked or moved into a Project leads it ([below](#leads)), unless you removed it. |
 | **executor** | Core | An Agent made for one task by a [dispatch to a new executor](#dispatching-to-a-new-executor). |
 
-- **Where it shows.** The sidebar shows a **Lead** or **Executor** label under
-  the Agent's name. Agents see each Agent's kind in `peers_list` (`lead`,
+- **Where it shows.** The sidebar shows a **Lead** label beside a lead's
+  name, and an executor's row its state, in its ring (see
+  [An executor's lifecycle](#an-executors-lifecycle)). Agents see each Agent's kind in `peers_list` (`lead`,
   `executor` or `standing`), and can list only one kind with its `kind`
   filter.
 - **How it is stored.** Core keeps the kind in a table of its own,
@@ -136,14 +137,51 @@ not a template's or a Project's.
 | **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
+| **When to choose** (`whenToChoose`) | One line, up to 200 characters: what work the template is for. A lead reads it with `executor_templates_list` to choose a template; it is in the dispatch's materials, not in the executor's mail. |
+| **Delivery** (`deliveryMode`) | How the work is delivered: `pr`, as a pull request; `direct-commit`, committed without one (for a results repository, say); or `none`, no repository change, the result itself being the deliverable (an investigation, a memo, a check). Unset is `pr`, so every template saved before keeps today's flow. See [Delivery and steps](#delivery-and-steps). |
+| **Steps** (`steps`) | 1 to 12 steps its executors follow, in order. Unset is its delivery's default steps. See [Delivery and steps](#delivery-and-steps). |
 
 - **Which template a dispatch gets.** The Workspace's template of the named
   id, whatever the task's Project. A dispatch naming an id the Workspace
   doesn't have is refused with `template_not_found`, naming the ids it has.
-- **Presets.** Where Core ships template presets, Settings offers them under
-  **Add from a preset**. Choosing one adds an unsaved template filled from
-  it, with a free id if its id is taken; **Save templates** saves it as any
-  other edit. No Agent saves templates or presets.
+- **Presets.** Core ships ten presets, in English and Chinese:
+
+  | Id | Preset | Delivery | For |
+  | --- | --- | --- | --- |
+  | `design-first` | Design first · 设计先行 | `pr` | A design note approved before any code, then a PR per slice |
+  | `red-test-fix` | Red test first · 红测先行修复 | `pr` | A reproducible bug: a failing test first, then the fix |
+  | `batch-change` | Mechanical batch · 机械批量改动 | `pr` | One mechanical change in many places, no behaviour change |
+  | `investigation` | Read-only investigation · 只读调查 | `none` | A question answered in a memo, each claim with its source |
+  | `decision-memo` | Decision memo · 决策备忘 | `none` | Options with cost and risk, and a gate for your choice |
+  | `verification` | Independent check · 独立核查 | `none` | Named checks run in Jobs, a verdict each |
+  | `sliced-feature` | Sliced long task · 切片长任务 | `pr` | A large feature in slices, with a progress file across sessions |
+  | `runbook` | Gated runbook · 人工把关的运行手册 | `none` | Irreversible steps, each approved; asks before each action |
+  | `small-fix` | Small fix · 小修快路径 | `pr` | A small fix whose cause is clear |
+  | `test-hygiene` | Test hygiene · 测试卫生修复 | `pr` | A flaky or wrong test, fixed in the test alone |
+
+  In Settings, **Add presets** shows them in the page's language, each
+  with when to choose it, its delivery and its steps. You pick which to
+  add. Each becomes an unsaved template, under a free id if its id is
+  taken, for the harness of the defaults for new Agents (Codex unless you
+  set another). Each has its instructions, delivery, steps and when to
+  choose it. The gated runbook also has its permission: Codex **ask**,
+  Claude Code **default**. A preset names no model, since Core has no model
+  tiers; the template shows the preset's suggestion beside **Model**, which
+  isn't saved. Saving (the page's save bar, or **Save templates** where the
+  editor stands alone) saves the new templates like any other edit. A
+  preset is never stored as one. No Agent saves presets; a lead changes
+  templates as below. "Read-only" in the investigation, decision memo and
+  design-note steps is an instruction only: no permission enforces it.
+- **The editor.** Each template is a card: its label, harness and when to
+  choose it; its delivery, chosen from three cards; its steps, shown as its
+  delivery's default until you choose **Change the steps**, then one row
+  each (kind, label, a review's rounds or a gate's approver, moved up or
+  down, removed). A step the delivery can't have is marked at its row, and
+  nothing is saved until it's fixed. **Use the default steps** sets them
+  back to unset. The other settings stay under **More settings**. A saved
+  template's card shows who last changed it, from `lastModified` (see
+  **History** below), as one line under its name: "Last changed: who ·
+  when · why", "You" for your own save.
 - **Templates a Project had.** Before this version, a Project could keep
   templates of its own, used before the Workspace's of the same id. When this
   Core first opens a Workspace, it copies each Project's own templates into
@@ -170,13 +208,89 @@ not a template's or a Project's.
   [Which machine](#dispatching-to-a-new-executor)). OpenCode executors run on
   this Core host only, and a Codex executor can't run on a machine that
   keeps its Agents contained.
-- **Who changes them.** Only you. Saving replaces the whole list, and a save
-  against a list changed meanwhile is refused, so the page reloads first.
-  Removing a template, or a Project, changes no executor already made.
+- **Who changes them.** You, in Settings, and a lead of a Project, with
+  `executor_templates_change` (YN-24). Your save replaces the whole list, and
+  a save against a list changed meanwhile is refused, so the page reloads
+  first; when a lead changed it, the refusal says who changed which
+  templates. Removing a template, or a Project, changes no executor already
+  made.
+- **A lead's change.** A lead sends changes to one or more templates (a
+  whole template that adds one or replaces the one with its id, or the id of
+  one to remove) against the list's version it read, with a reason. It is
+  checked as your save checks a template and saved at once; no one approves
+  it, and that includes a change to an executor's permissions, model or
+  machine. It applies while each template it changes is as it was at the
+  version the lead read, so your save of another template meanwhile doesn't
+  stop it; a change to one of its templates does, and the refusal names who
+  made it. Executors and other members can't. The Project's other leads get
+  one short mail with the reason.
+- **History.** Each save, yours too, is kept: the version it made, who, when,
+  the lead's reason, and each template it changed as it was and as it is. The
+  templates' answer (`GET /api/executor-templates`) carries `lastModified`:
+  who changed each template last, when and why. A save an older Core made is
+  not in it, and a lead's change made on a version before such a save is
+  refused until the lead reads the list again.
+- **What a lead reads.** `executor_templates_list` lists the Workspace's
+  templates for an Agent choosing one for `task_dispatch`. For each it gives
+  the id, label, when to choose it, delivery, steps (resolved: its delivery's
+  default when it sets none), harness, model, reasoning effort,
+  permissions, machine, and the size of its instructions in bytes, not
+  their text. It also gives the list's version, how many templates a newer
+  Core saved that this one can't offer, and `general`, what `executor: {}`
+  makes for the caller's Project. With `full: true`, for leads of a Project
+  only, each also carries `template`, the template as saved with all its
+  fields, for a lead to change and send back whole with
+  `executor_templates_change`; an executor or another member is refused
+  (`not_lead`). Reading changes nothing.
 - **After a newer Core.** Templates and fields that a newer Core saved and
   this one can't read or use, such as another harness or machine, are not
   shown or offered to a dispatch, and a save here keeps them as they were.
   The page says how many such templates the list holds.
+
+### Delivery and steps
+
+A template's delivery and steps say how its executors work. They are
+descriptive: Core passes them to the executor and to whoever chooses the
+template, but doesn't track which step an executor is on, and doesn't
+refuse a pull request, review or merge to a template whose delivery is
+`direct-commit` or `none`.
+
+- **Steps.** Each step is `{kind, label?, rounds?, approver?}`:
+
+  | Kind | The step |
+  | --- | --- |
+  | `materials` | Read the dispatch's materials. |
+  | `work` | Do the work the label names. |
+  | `result` | Submit a result: the label says which (a design note, a memo). |
+  | `gate` | Wait for an answer before going on. `approver` says who answers: `user` (also when unset), `lead` or `either`. |
+  | `job` | Run a Job (a build, a test suite, a check). |
+  | `pr` | Open or update the pull request. |
+  | `review` | A review round at the frozen head; `rounds` is 1 (also when unset) or 2. |
+  | `ci` | CI at the pull request's head. |
+  | `merge` | The pull request is merged. |
+
+  A label is one line of up to 60 characters; without one a step is its
+  kind alone. Only a `pr` template has `pr`, `review`, `ci` and `merge`
+  steps, only a review has `rounds`, and only a gate has an `approver`. A
+  save that breaks one of these is refused, naming the step by its place
+  ("Step 3: …").
+- **Default steps.** A template that sets no steps has its delivery's:
+  - `pr`: materials → work → job → pr → review → ci → merge;
+  - `direct-commit`: materials → work → job → result;
+  - `none`: materials → work → result.
+- **What the executor gets.** A template dispatch's materials say, under
+  `template`, its `deliveryMode` and its `steps` as resolved (its own, else
+  the default), and `whenToChoose` when it has one. Its mail says the
+  delivery and the steps on one line each, such as `Delivery: none: no
+  repository change to deliver; your result is the deliverable` and `Steps
+  (descriptive: Core does not track them): materials → work: Write the memo
+  → gate (user): Your choice`. A general
+  executor's materials and mail have neither, as before.
+- **After a newer Core.** A template whose delivery, step kind or step field
+  this Core doesn't know is one this Core can't use: it isn't offered or
+  listed, and a save here keeps it as it is. An older Core reading a
+  template with these fields offers it as before, without them, and a save
+  there keeps them.
 
 ## Dispatching to a new executor
 
@@ -553,20 +667,105 @@ first that holds names the state:
 | 4 | `closed` | 已关闭 · Closed | It is closed for another reason: closed by hand, or a failed start that Core rebuilt as a new executor. |
 | 5 | `queued` | 排队中 · Queued | It waits for an executor slot; `position` is its place, 1 first. |
 | 6 | `starting` | 启动中 · Starting | It holds a slot and its runtime is starting. |
-| 7 | `delivering` | 交付待放行 · Awaiting release | Its result is in, on its own dispatch, and its task is in review. |
+| 7 | `delivering` | 已交 · Handed in | Its result is in, on its own dispatch, and its task is in review. |
 | 8 | `running` | 运行中 · Running | Anything else: it is at work. |
 
-Each also names its task (`task.id`, `task.title`), who dispatched it
-(`dispatcher`: `user`, or an Agent with its ID and name), and since when
-(`since`). An executor at work whose task is blocked also has the blocker
-(`blocked`); its state stays what it is.
+Each also names its task (`task.id`, the key the task has now, such as
+`YN-3`, or `T-<n>` while it has none; `task.title`), who dispatched it
+(`dispatcher`: `user`, or an Agent with its ID and name), the template it
+was made from (`template`: its `id`, and its `label` as its dispatch's
+materials give it), when it was dispatched (`dispatchedAt`), and since when
+it is in its state (`since`). An executor at work whose task is blocked also
+has the blocker (`blocked`); its state stays what it is.
 
 - **The sidebar.** In each Project's list, leads come first, then the
   other Agents, then a 任务执行者 · Executors group and, folded by default,
   已归档 · Archived. With attention order, executors are ordered by: waiting
-  on you, or failed; delivered, awaiting release; running; archiving;
+  on you, or failed; handed in; running; archiving;
   queued or starting. A failed executor shows there only while its task is
-  blocked on it; a released one, under Archived and in Closed.
+  blocked on it; a released one, under Archived and in Closed. While some
+  wait for a slot, the group's heading says how many are queued and how
+  many run.
+- **Every Agent's row** has no avatar. Line one is a standing Agent's or a
+  lead's name, and an executor's activity: what it is doing, after its
+  state's word ("Needs you: approve the design note", "Handed in #688 ·
+  waiting for the lead"; Working has no word). Line two is what a standing
+  Agent last said, or an executor's task key and its clock, small and grey.
+  At the row's top right is its ring (灵动环, `AgentIsland.tsx` over
+  `agent-island.ts`), then the "…" of its actions where you are (the row
+  selected, or the keyboard on its link or on the "…"). The executor's name,
+  template and PR are in its ring's title. A row is never more than three
+  lines, and its height follows what it says.
+  The states are 空闲 Idle, 在做 Working, 已交 · 等负责人 Handed in, 等你
+  Needs you, 排队 Queued, 离线 Offline, 完成 Done, 出错 Failed and 已归档
+  Archived.
+  - An executor's comes from its one state, the first of these that holds:
+    released or archiving (archived, with what an archiving one waits for);
+    its start failed (failed, with why); closed (archived); queued or
+    starting (queued, with its place); a request or question waiting for
+    you (needs you: what it asks is its work summary); its Turn failed
+    (failed); offline or disconnected (offline); delivering (handed in, or
+    working while a Turn runs: it is on its next slice); otherwise working.
+    Its activity is its task's blocker, else its work summary, else what
+    its state is at (a result to check, its unfinished Jobs and CI), else
+    its task's title.
+  - A standing Agent's comes from its runtime: closed; offline; a request
+    waiting; an error, or a Turn that failed and this device hasn't shown;
+    working (compacting too, and an idle Agent's unfinished Jobs or CI); a
+    Turn ended with updates unread (done); otherwise idle.
+- **Its clock** runs while it works (an executor's time on its task since
+  its dispatch), needs you (since its oldest wait in Home's Needs you), is
+  handed in (since it handed in) and is queued. For idle, offline, done and
+  failed it says how long ago, and for an archived executor its whole time,
+  which no longer runs. A standing Agent's runtime gives no start for its
+  Turn, so its Working shows no clock.
+- **The ring is the state** (22 px, strokes only): Working is an arc that
+  turns, its length the progress (a fixed quarter until templates carry
+  their steps); Handed in, an outer arc of its review rounds (k of 2) round
+  an inner ring; Needs you, a bold ring that breathes; Queued, dots that
+  turn slowly; Offline, dashes; Idle, a thin ring; Done ✓, Failed ✕ and
+  Archived (a box) carry a mark inside. Unread updates are a count beside
+  its top left. Under reduced motion nothing turns or breathes.
+- **Its forms.** One outline grows out of the ring and shrinks back into it.
+  - At rest a ring, except needs you and failed, which are the row as the
+    island (the outline round the whole row) until handled. A row is three
+    lines at most.
+  - A passing event grows a pill left out of the ring for about three
+    seconds (five for bad news): its PR merged, a review asked for changes
+    or passed, its checks failed or turned green, it handed in, it started
+    after queuing, new messages came. The pill takes its width from line
+    one, whose words wrap rather than being covered, so the row may grow
+    while it shows; the ring keeps its place. Nothing on the row's first
+    showing or its PR's first reading, and nothing while the row is the
+    island. A Job's end grows none yet: the rail reads how many Jobs run,
+    not how each ended.
+  - Each change animates the outline from the ring's circle, or from where
+    it was, in 320 ms, and back into the ring in 300 ms; nothing moves under
+    reduced motion.
+- **A click on the row** opens the Agent's conversation, the text of a row
+  island included, and changes no island. **A click on the ring** goes
+  straight to its state's place: needs you, to its item in Home's Needs you,
+  scrolled to and highlighted; an executor's, to its task (why its start
+  failed, its result, its place in the queue, or the task); a Turn that
+  failed, or updates unread, to the conversation. Its label says where
+  ("Answer its question on Home"). A ring with nowhere of its own (idle,
+  offline, a standing Agent at work) is no button: the row's click is its.
+  The ring's button takes presses 28 px wide with a mouse and 40 px on
+  touch, with nothing drawn; on hover or focus the ring grows a little (its
+  strokes thicken under reduced motion), and hover on the rest of the row
+  only darkens its background, with no border. There are no cards.
+- With the compact Agent list (Settings → Appearance), every row is line
+  one and its ring; needs you and failed keep their word on line two.
+- **Its PR** comes from `GET /api/executors/live`: for each open executor
+  (not archived, its Agent not closed) whose task links a PR, the open or
+  draft one with the highest number, else the highest-numbered; its state;
+  the checks on its head as Core last read them (`unknown` when Core last
+  saw them for another commit); and the review rounds on that head, the
+  approvals since the newest that asked for changes, and whether one is
+  under way. A review whose reviewer never started is no round. The read
+  uses Core's records only and never asks GitHub; the web reads it again on
+  every collaboration change, which a GitHub refresh, a link and a review
+  each announce. Two rounds count as approved, the standard flow.
 - **The task's card** shows its executor and its state, with its place
   while it is queued.
 - **Home's Needs you** lists, for an executor you dispatched, a result

@@ -40,6 +40,11 @@ const NOTE = "Charts first · 先给图表";
 const AGENT_TEXT = "The user prefers visuals first: lead with a chart, screenshot or sketch where it fits. Their note: Charts first · 先给图表";
 const presentation = { style: "visual", note: NOTE, updatedAt: "2026-10-24T20:00:00Z", scope: "workspace", agentText: AGENT_TEXT };
 const reviewSettings = { harness: "claude", model: "fixture-opus", source: "workspace", builtIn: { harness: "codex", model: "gpt-6.1-sol" } };
+// Code review shares its page with New Agent defaults and the usage-limit
+// default since YN-8 S1: those are read too, as Core answers them.
+const builtInDefaults = { harness: "codex", codexPermissionPreset: null, claudePermissionMode: "default", codexModel: null, codexReasoningEffort: null, claudeModel: null };
+const agentDefaults = { saved: {}, builtIn: builtInDefaults, modelAppliesTo: "Codex Agents created on the Core host.",
+  effective: Object.fromEntries(Object.entries(builtInDefaults).map(([key, value]) => [key, { value, source: "builtin" }])) };
 const models = [
   { id: "m1", model: "fixture-opus", displayName: "Fixture Opus", description: "Most capable fixture model for long reviews.", isDefault: true },
   { id: "m2", model: "fixture-sonnet", displayName: "Fixture Sonnet", description: "Faster fixture model.", isDefault: false },
@@ -71,6 +76,7 @@ await context.route("**/*", async (route) => {
     "/api/home": home, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
     "/api/jobs": noJobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
     "/api/home/presentation": presentation, "/api/pr-reviews/settings": reviewSettings, "/api/models": { models },
+    "/api/agent-defaults": agentDefaults, "/api/claude/auto-continue": { enabled: false, saved: null },
   }[path];
   if (json) return route.fulfill({ json });
   if (path.startsWith("/api/")) return route.fulfill({ json: {} });
@@ -82,6 +88,11 @@ await context.route("**/*", async (route) => {
     await route.fulfill({ status: 404, body: "" });
   }
 });
+// The shown page's one save bar (YN-8 S5): what it says and its buttons.
+const saveBar = (page) => page.locator(".settings-savebar:not([hidden])").evaluate((el) => ({
+  text: el.querySelector("span")?.textContent ?? "",
+  buttons: [...el.querySelectorAll("button")].map((b) => b.textContent.trim()),
+}));
 const page = await context.newPage();
 page.on("pageerror", (error) => report.errors.push(error.message));
 const other = await context.newPage();
@@ -93,12 +104,18 @@ async function openSettings() {
 }
 async function openEditor(query, title, editor) {
   await openSettings();
-  await page.locator(".settings-search input").fill(query);
-  const card = page.locator(".settings-catalog-card").filter({ has: page.locator("h4", { hasText: title }) }).first();
-  await card.locator("button").click({ timeout: 10_000 });
+  // Since YN-8 a project's page has its own Code review too: of the cards
+  // with this title, the one that opens this editor is used.
+  const cards = page.locator(".settings-catalog-card").filter({ has: page.locator("h4", { hasText: title }) });
   const box = page.locator(`#settings-editor-${editor}`);
-  await box.waitFor({ timeout: 10_000 });
-  return box;
+  for (let n = 0; ; n++) {
+    await openSettings();
+    await page.locator(".settings-search input").fill(query);
+    await cards.first().waitFor({ timeout: 10_000 });
+    assert.ok(n < await cards.count(), `a ${title} card that opens ${editor}`);
+    await cards.nth(n).locator("button").click({ timeout: 10_000 });
+    if (await box.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) return box;
+  }
 }
 /** The language changed in the other window; this one follows it. Returns
  * what this page asked Core meanwhile, once `shown` (a line in the new
@@ -149,7 +166,9 @@ try {
   const homeEn = await homeState(box);
   assert.deepEqual([homeEn.lang, homeEn.heading, homeEn.current, homeEn.style, homeEn.note], ["en", "Home", "Visual first · with your note", "default", "Tables for numbers"]);
   assert.equal(homeEn.agentText, AGENT_TEXT);
-  assert.deepEqual(homeEn.buttons, ["Restore default", "Save Home preference"]);
+  // The page's one save bar saves it (YN-8 S5); the block keeps its command.
+  assert.deepEqual(homeEn.buttons, ["Restore default"]);
+  assert.deepEqual(await saveBar(page), { text: "1 change not saved", buttons: ["Discard", "Save"] });
   check("Home presentation in English, changed and not saved", { buttons: homeEn.buttons });
 
   let meanwhile = await elsewhere("zh-Hans", box.locator(".settings-row-title", { hasText: "展示方式" }));
@@ -160,7 +179,8 @@ try {
   assert.deepEqual([homeZh.style, homeZh.note], ["default", "Tables for numbers"], "the unsaved change stays");
   assert.equal(homeZh.noteHelp, "用你自己的话补充这项偏好。18/300");
   assert.equal(homeZh.agentText, AGENT_TEXT, "what Agents receive, as Core wrote it");
-  assert.deepEqual(homeZh.buttons, ["恢复默认", "保存 Home 偏好"]);
+  assert.deepEqual(homeZh.buttons, ["恢复默认"]);
+  assert.deepEqual(await saveBar(page), { text: "1 处更改还没保存", buttons: ["放弃", "保存"] });
   assert.deepEqual(pageOwn(meanwhile), []);
   await page.screenshot({ path: join(output, "home-zh.png") });
   check("changed to Chinese in another window: Home is Chinese, the unsaved change and what Agents receive as they were, nothing read or saved", { titles: homeZh.titles, meanwhile });
@@ -177,7 +197,8 @@ try {
   assert.deepEqual([reviewZh.harness, reviewZh.model], ["claude", "fixture-sonnet"]);
   assert.deepEqual(reviewZh.models, ["Fixture Opus · 默认", "Fixture Sonnet"]);
   assert.equal(reviewZh.modelHelp, "Faster fixture model.", "a model's own description, as it comes");
-  assert.deepEqual(reviewZh.buttons, ["使用内置", "保存审查设置"]);
+  assert.deepEqual(reviewZh.buttons, ["使用内置"]);
+  assert.deepEqual(await saveBar(page), { text: "1 处更改还没保存", buttons: ["放弃", "保存"] });
   await page.screenshot({ path: join(output, "review-zh.png") });
   check("Code review in Chinese: harness and model names, a model's description and the built-in reviewer as they come", { source: reviewZh.source, models: reviewZh.models });
 
@@ -186,7 +207,8 @@ try {
   assert.equal(reviewEn.source, "Set for this Workspace. Built in: Codex · GPT-6.1 Sol.");
   assert.deepEqual([reviewEn.lang, reviewEn.harness, reviewEn.model, reviewEn.modelHelp], ["en", "claude", "fixture-sonnet", "Faster fixture model."], "the unsaved choice stays");
   assert.deepEqual(reviewEn.models, ["Fixture Opus · default", "Fixture Sonnet"]);
-  assert.deepEqual(reviewEn.buttons, ["Use built-in", "Save review settings"]);
+  assert.deepEqual(reviewEn.buttons, ["Use built-in"]);
+  assert.deepEqual(await saveBar(page), { text: "1 change not saved", buttons: ["Discard", "Save"] });
   assert.equal(report.reads.filter((read) => read.startsWith("GET /api/models")).length, listed, "the models not listed again");
   assert.deepEqual(pageOwn(meanwhile), []);
   check("changed to English in another window: Code review is English, the unsaved choice stays, nothing read or saved", { meanwhile });

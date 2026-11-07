@@ -1,0 +1,239 @@
+{"presets": [
+ {
+  "id": "design-first",
+  "deliveryMode": "pr",
+  "steps": [
+   {"kind": "materials"},
+   {"kind": "work", "label": {"zh-Hans": "设计说明", "en": "Design note"}},
+   {"kind": "result", "label": {"zh-Hans": "设计说明", "en": "Design note"}},
+   {"kind": "gate", "approver": "either", "label": {"zh-Hans": "批准设计说明", "en": "Design note approved"}},
+   {"kind": "work", "label": {"zh-Hans": "切片实现", "en": "Build a slice"}},
+   {"kind": "job"},
+   {"kind": "pr"},
+   {"kind": "review"},
+   {"kind": "ci"},
+   {"kind": "merge"}
+  ],
+  "en": {
+   "label": "Design first",
+   "whenToChoose": "UI, cross-module or user-visible work the user should see as a design before any code",
+   "modelHint": "A strong model; on Codex, reasoning effort high.",
+   "instructions": "Design first, then build.\n\n1. Read your dispatch's materials (task_get with your dispatchId) and the Project's handover. Don't edit anything yet.\n2. Write a one-page design note: the problem, the change you propose, the files it touches, what you won't do, and how you'll check it (tests, a browser check). Add a preview when the change is visible.\n3. Submit the note as your first result (task_submit_result, status doing) and wait for approval. Until then, change nothing in the repository: no edits, commits or branches. Reading, searching and throwaway experiments outside the worktree are fine. Nothing enforces this; your permissions may allow more.\n4. Once approved, build in slices: one pull request per slice, each small enough to review in one pass. Follow the note. If the work has to depart from it, say so and ask before going further.\n5. For each slice: commit, push, link the PR to the task (github_links), run the evidence the note named, and start its review at the frozen head.\n6. Report each slice: the PR and its head, the CI run, each Job with its status, each review round with its conclusion, and known limits.\n\nDon't merge, release or install. Don't go beyond the approved note."
+  },
+  "zh-Hans": {
+   "label": "设计先行",
+   "whenToChoose": "界面、跨模块或用户要先看效果的改动：先交设计说明，批准后再写代码",
+   "modelHint": "强模型；Codex 推理强度用 high。",
+   "instructions": "先设计，后实现。\n\n1. 读派发材料（用你的 dispatchId 调 task_get）和项目交接文档。先不要改任何东西。\n2. 写一页设计说明：问题、打算怎么改、会动哪些文件、不做什么、怎么验证（测试、浏览器检查）。改动看得见的，附一个预览。\n3. 把设计说明作为第一个结果提交（task_submit_result，status 用 doing），然后等批准。批准之前不改仓库：不编辑、不提交、不建分支。阅读、搜索、在 worktree 之外做一次性试验都可以。这一条只靠说明，权限本身可能允许更多。\n4. 批准后按切片实现：一个切片一个 PR，每个 PR 小到一轮审查能读完。照设计说明做；必须偏离时，先说明并询问，再继续。\n5. 每个切片：提交、推送、把 PR 关联到任务（github_links）、跑设计说明里写的证据、在冻结的 head 上开审查。\n6. 每个切片报告：PR 与 head、CI run、每个 Job 及其状态、每轮审查及结论、已知限制。\n\n不合并、不发布、不安装。不超出已批准的设计说明。"
+  }
+ },
+ {
+  "id": "red-test-fix",
+  "deliveryMode": "pr",
+  "steps": [
+   {"kind": "materials"},
+   {"kind": "work", "label": {"zh-Hans": "写红测", "en": "Write the red test"}},
+   {"kind": "job", "label": {"zh-Hans": "红在断言处", "en": "Red at its assertion"}},
+   {"kind": "work", "label": {"zh-Hans": "修复", "en": "Fix"}},
+   {"kind": "job", "label": {"zh-Hans": "绿", "en": "Green"}},
+   {"kind": "pr"},
+   {"kind": "review"},
+   {"kind": "ci"},
+   {"kind": "merge"}
+  ],
+  "en": {
+   "label": "Red test first",
+   "whenToChoose": "A bug that can be reproduced: prove it with a failing test, then fix it",
+   "modelHint": "A mid-range model.",
+   "instructions": "1. Read the materials. Reproduce the bug and state it in one line: the input, what should happen, what happens.\n2. Write a test that fails for exactly that reason. Run it on the unfixed code, in a disposable copy if the worktree is in use, and check that it fails at its own assertion, not in setup or at compile time. Keep that output.\n3. Fix the code. Never change the test to make it pass. If the test was wrong, say why and start again at step 2.\n4. Run the test and the tests around it on the fix: it passes, and nothing else fails.\n5. Open the PR with the failing output from step 2 in its description. Link it to the task, wait for its CI and start its review at the frozen head.\n6. Result: the bug in one line, the red evidence, the fix, the PR and head, the CI run, the review rounds and known limits.\n\nKeep the fix minimal. Problems you find on the way go to the lead, not into this PR."
+  },
+  "zh-Hans": {
+   "label": "红测先行修复",
+   "whenToChoose": "能复现的 bug：先用一个失败的测试证明它，再修",
+   "modelHint": "中等模型。",
+   "instructions": "1. 读材料。复现这个 bug，用一行写清：输入、应该怎样、实际怎样。\n2. 写一个正好因为这个原因失败的测试。在未修复的代码上跑（worktree 正被使用时，用一次性副本），确认它失败在自己的断言处，而不是准备阶段或编译出错。保留这次输出。\n3. 修代码。绝不为了通过去改测试；测试本身写错了，说明原因，从第 2 步重来。\n4. 在修复上跑这个测试和它周围的测试：它通过，其他的也没有变红。\n5. 开 PR，说明里贴第 2 步的失败输出。关联到任务，等 CI，在冻结的 head 上开审查。\n6. 结果：一行 bug 描述、红测证据、修复、PR 与 head、CI run、审查轮次、已知限制。\n\n修复保持最小。路上发现的其他问题交给负责人，不放进这个 PR。"
+  }
+ },
+ {
+  "id": "batch-change",
+  "deliveryMode": "pr",
+  "steps": [
+   {"kind": "materials"},
+   {"kind": "work", "label": {"zh-Hans": "枚举与脚本", "en": "List and script"}},
+   {"kind": "job", "label": {"zh-Hans": "全量测试", "en": "Full test run"}},
+   {"kind": "pr"},
+   {"kind": "review"},
+   {"kind": "ci"},
+   {"kind": "merge"}
+  ],
+  "en": {
+   "label": "Mechanical batch",
+   "whenToChoose": "One mechanical change in many places (a rename, a moved API, formatting) that changes no behaviour",
+   "modelHint": "An economical model; on Codex, reasoning effort low.",
+   "instructions": "1. Read the materials. List every unit to change (file, symbol, call site) with the command that found them, and count them.\n2. Make the change with a script or a repeatable command where you can, not by hand. Keep the script with your evidence.\n3. Change nothing else: no refactoring, fixes or reformatting beyond the stated change. A unit that doesn't fit the pattern is left as it is and listed.\n4. Run the full test suite in a Job.\n5. Open one PR. Its description gives the counts (found, changed, left with the reason), the script, and a hash of the diff (for example `git diff <base> | sha256sum`), so that a rerun can be compared.\n6. Stop and ask the lead when the scope and the materials disagree, for example when the count is far from what the task expected."
+  },
+  "zh-Hans": {
+   "label": "机械批量改动",
+   "whenToChoose": "在很多地方做同一个机械改动（改名、迁移调用、格式化），行为不变",
+   "modelHint": "经济型模型；Codex 推理强度用 low。",
+   "instructions": "1. 读材料。列出每一个要改的单元（文件、符号、调用点）和找出它们的命令，并计数。\n2. 能用脚本或可重复的命令就不要手改。脚本和证据放在一起。\n3. 不改别的：除了说定的改动，不重构、不顺手修、不重新格式化。不符合模式的单元保持原样，并列出来。\n4. 在 Job 里跑全量测试。\n5. 开一个 PR。说明里写清计数（找到、改了、没改及原因）、脚本、diff 的哈希（例如 `git diff <base> | sha256sum`），以便重跑时比对。\n6. 范围和材料对不上时（例如数量和任务预期差很多），停下来问负责人。"
+  }
+ },
+ {
+  "id": "investigation",
+  "deliveryMode": "none",
+  "steps": [
+   {"kind": "materials"},
+   {"kind": "work", "label": {"zh-Hans": "调查", "en": "Investigate"}},
+   {"kind": "result", "label": {"zh-Hans": "备忘录", "en": "Memo"}}
+  ],
+  "en": {
+   "label": "Read-only investigation",
+   "whenToChoose": "A question about code, data or behaviour that needs an answer, not a change",
+   "modelHint": "A mid-range model.",
+   "instructions": "This is read-only: don't change the repository (no edits, commits, branches or pull requests). Reading, searching, read-only commands and Jobs that only measure are fine. Nothing enforces this; your permissions may allow more.\n\n1. Read the materials. Restate the question in a line or two, and what would count as an answer.\n2. Investigate. Trust the code and the records over documents and memory.\n3. Submit a memo as your result (task_submit_result):\n   - the answer first, in a few lines;\n   - each claim with its source: path:line at a named commit, a command with its output, or a Job's ID;\n   - what you couldn't find out, and what would settle it;\n   - follow-up work, as suggestions only.\n4. Keep what you inferred apart from what you observed: say so where you didn't check."
+  },
+  "zh-Hans": {
+   "label": "只读调查",
+   "whenToChoose": "需要回答而不是改动的问题：代码、数据或行为是怎样的",
+   "modelHint": "中等模型。",
+   "instructions": "这是只读任务：不改仓库（不编辑、不提交、不建分支、不开 PR）。阅读、搜索、只读命令和只做测量的 Job 都可以。这一条只靠说明，权限本身可能允许更多。\n\n1. 读材料。用一两行复述问题，以及怎样才算回答了它。\n2. 调查。以代码和记录为准，不以文档或记忆为准。\n3. 把备忘录作为结果提交（task_submit_result）：\n   - 先给答案，几行即可；\n   - 每个结论附来源：某个提交上的 path:line、命令及其输出，或 Job ID；\n   - 没查清的地方，以及怎样能查清；\n   - 后续工作只作为建议。\n4. 推断和观察分开写：没核实的地方明说。"
+  }
+ },
+ {
+  "id": "decision-memo",
+  "deliveryMode": "none",
+  "steps": [
+   {"kind": "materials"},
+   {"kind": "work", "label": {"zh-Hans": "调查", "en": "Investigate"}},
+   {"kind": "result", "label": {"zh-Hans": "选项表", "en": "Options"}},
+   {"kind": "gate", "approver": "user", "label": {"zh-Hans": "你的选择", "en": "Your choice"}}
+  ],
+  "en": {
+   "label": "Decision memo",
+   "whenToChoose": "A choice the user should make between options, with their costs and risks laid out",
+   "modelHint": "A strong model.",
+   "instructions": "Don't change the repository before the choice is made. Nothing enforces this; your permissions may allow more.\n\n1. Read the materials. State the decision in one line, and what constrains it.\n2. Investigate enough to compare the options fairly. Find at least two real options; doing nothing counts when it is one.\n3. Submit the options as your result (task_submit_result, status doing). For each: what it is, its cost (work, time, money), its risks, whether and how it can be undone, and what it rules out. End with your recommendation and why.\n4. The user chooses; the lead passes the answer on. Wait for it, and do nothing irreversible before it. Work that every option needs may go ahead: say which.\n5. When the answer comes, record it on the task and go only as far as it allows."
+  },
+  "zh-Hans": {
+   "label": "决策备忘",
+   "whenToChoose": "需要用户在几个选项中做选择：把每个选项的代价和风险摆清楚",
+   "modelHint": "强模型。",
+   "instructions": "做出选择之前不改仓库。这一条只靠说明，权限本身可能允许更多。\n\n1. 读材料。用一行写清要决定什么，以及受什么约束。\n2. 调查到足以公平比较各个选项为止。至少找出两个真实的选项；\"不做\"是真实选项时也算一个。\n3. 把选项作为结果提交（task_submit_result，status 用 doing）。每个选项写清：是什么、代价（工作量、时间、花费）、风险、能否撤回以及怎么撤回、会排除掉什么。最后给出你的推荐和理由。\n4. 由用户选择，负责人转达答案。等答案，答之前不做任何不可逆的事。每个选项都需要的工作可以先做，写明是哪些。\n5. 答案来了，记在任务上，只做到它允许的范围。"
+  }
+ },
+ {
+  "id": "verification",
+  "deliveryMode": "none",
+  "steps": [
+   {"kind": "materials"},
+   {"kind": "job", "label": {"zh-Hans": "构建与命名检查", "en": "Build and named checks"}},
+   {"kind": "result", "label": {"zh-Hans": "按检查结论", "en": "A verdict per check"}}
+  ],
+  "en": {
+   "label": "Independent check",
+   "whenToChoose": "Checking someone else's change or claim independently: a build, tests or named checks, each with a verdict",
+   "modelHint": "A mid-range model.",
+   "instructions": "You check; you don't fix. Don't change what you are checking.\n\n1. Read the materials: what to check, at which commit, and the claim to test.\n2. Before running anything, name each check and what passes or fails it. Post that list on the task (task_comment), so it can't drift afterwards.\n3. Run the checks in Jobs at that exact commit, with its Git state guarded. A Job's own status is its verdict: a failed Job stays failed even if a rerun passes; report both.\n4. Record the environment: machine, operating system, toolchain versions, the commit.\n5. Result: a verdict for each named check (passed, failed, or not run with the reason), the Job IDs, and what the checks don't cover.\n6. If you wrote what you are asked to check, say so and stop: the checker must not be its author."
+  },
+  "zh-Hans": {
+   "label": "独立核查",
+   "whenToChoose": "独立核查别人的改动或结论：构建、测试或指定的检查，逐项给结论",
+   "modelHint": "中等模型。",
+   "instructions": "你只核查，不修复。不改被核查的东西。\n\n1. 读材料：核查什么、在哪个提交上、要检验的结论是什么。\n2. 跑任何东西之前，先列出每项检查，以及怎样算通过、怎样算失败。把这份清单发在任务上（task_comment），之后不能改口。\n3. 在那个确切的提交上用 Job 跑检查，冻结它的 Git 状态。Job 自己的状态就是结论：失败的 Job 一直是失败，即使重跑通过了；两次都要报告。\n4. 记下环境：机器、操作系统、工具链版本、提交。\n5. 结果：每项检查一个结论（通过、失败，或没跑及原因）、Job ID，以及这些检查覆盖不到什么。\n6. 如果被核查的东西是你写的，说明并停下：核查者不能是作者。"
+  }
+ },
+ {
+  "id": "sliced-feature",
+  "deliveryMode": "pr",
+  "steps": [
+   {"kind": "materials"},
+   {"kind": "work", "label": {"zh-Hans": "特性清单与进度文件", "en": "Feature list and progress file"}},
+   {"kind": "work", "label": {"zh-Hans": "本片", "en": "This slice"}},
+   {"kind": "job"},
+   {"kind": "pr"},
+   {"kind": "review"},
+   {"kind": "ci"},
+   {"kind": "merge"}
+  ],
+  "en": {
+   "label": "Sliced long task",
+   "whenToChoose": "A feature too large for one session: built in slices, one PR each, with a progress file between sessions",
+   "modelHint": "A strong model.",
+   "instructions": "1. Read the materials. Write a feature list: the slices in order, each a PR that makes sense on its own. Keep it in a progress file at a path you name, outside ignored folders so it isn't lost, with each slice's state.\n2. Work on one slice per session. Start each session from the progress file and the repository, not from memory.\n3. For the slice: build it, run its evidence, open its PR, link it to the task, wait for its CI and start its review at the frozen head.\n4. End every session in a clean, committed state, with nothing half-edited. Update the progress file: what is done, what comes next, what you learned.\n5. Each result names the progress file's path, the slice done, its PR, head, CI and review, and the next slice.\n6. When a slice turns out too large for one review to read, split it and update the list."
+  },
+  "zh-Hans": {
+   "label": "切片长任务",
+   "whenToChoose": "一个会话做不完的大功能：分片做，每片一个 PR，会话之间靠进度文件衔接",
+   "modelHint": "强模型。",
+   "instructions": "1. 读材料。写一份特性清单：按顺序列出切片，每片是一个单独看得懂的 PR。清单放在你指定路径的进度文件里（不要放在被忽略的目录，以免丢失），写明每片的状态。\n2. 每个会话只做一片。每次从进度文件和仓库开始，而不是从记忆开始。\n3. 这一片：实现、跑证据、开 PR、关联到任务、等 CI、在冻结的 head 上开审查。\n4. 每个会话结束时停在干净、已提交的状态，不留改了一半的文件。更新进度文件：做完了什么、下一步是什么、学到了什么。\n5. 每个结果写明进度文件的路径、做完的切片、它的 PR、head、CI 和审查，以及下一片。\n6. 某一片大到一轮审查读不完时，拆开并更新清单。"
+  }
+ },
+ {
+  "id": "runbook",
+  "deliveryMode": "none",
+  "permissions": {"codex": "ask", "claude": "default"},
+  "steps": [
+   {"kind": "materials"},
+   {"kind": "work", "label": {"zh-Hans": "预检", "en": "Pre-checks"}},
+   {"kind": "result", "label": {"zh-Hans": "步骤计划（含回滚）", "en": "Step plan with rollback"}},
+   {"kind": "gate", "approver": "user", "label": {"zh-Hans": "批准不可逆步骤", "en": "Irreversible steps approved"}},
+   {"kind": "work", "label": {"zh-Hans": "逐步执行与验证", "en": "Run and verify each step"}},
+   {"kind": "result", "label": {"zh-Hans": "后检报告", "en": "Post-check report"}}
+  ],
+  "en": {
+   "label": "Gated runbook",
+   "whenToChoose": "An operation with irreversible steps (a migration, a release, a data change), each approved before it runs",
+   "modelHint": "The strongest model you have.",
+   "instructions": "Run one runbook at a time. This template asks before each action (Codex: ask; Claude Code: default).\n\n1. Read the materials. Run the pre-checks, read-only: the target exists and is as expected, the backups are there, you have the access you need.\n2. Submit a step plan as your result (task_submit_result, status doing). For each step: the exact command, its target, its risk, how you'll check it worked, and its rollback. Mark every step that can't be undone.\n3. Wait for approval. Each irreversible step needs its own approval, naming it: an approval of the plan covers only the steps it names.\n4. Run the steps in order, with each step's check after it. Stop at the first failed check; don't improvise. Roll back where the plan says to, then report.\n5. Retry a failed step at most once, and only when the failure is clearly transient. Then stop and tell the lead.\n6. Result: a post-check report with each step's outcome and its check's output, what was rolled back, and the final state."
+  },
+  "zh-Hans": {
+   "label": "人工把关的运行手册",
+   "whenToChoose": "有不可逆步骤的操作（迁移、发布、改数据）：每个不可逆步骤执行前都要批准",
+   "modelHint": "你能用的最强模型。",
+   "instructions": "一次只跑一份运行手册。这个模板每次操作前都会询问（Codex：ask；Claude Code：default）。\n\n1. 读材料。以只读方式做预检：目标存在且状态符合预期、备份在、你有需要的权限。\n2. 把步骤计划作为结果提交（task_submit_result，status 用 doing）。每一步写清：确切的命令、目标、风险、怎么检查它成功了、怎么回滚。标出每个不可撤回的步骤。\n3. 等批准。每个不可逆步骤都要单独批准，并点名是哪一步：对计划的批准只覆盖它点名的步骤。\n4. 按顺序执行，每步之后跑它的检查。第一个检查失败就停下，不要临场发挥。计划要求回滚的就回滚，然后报告。\n5. 失败的步骤最多重试一次，而且只在失败明显是暂时性的时候。之后停下，告诉负责人。\n6. 结果：一份后检报告，写明每一步的结果和它的检查输出、回滚了什么、最终状态。"
+  }
+ },
+ {
+  "id": "small-fix",
+  "deliveryMode": "pr",
+  "en": {
+   "label": "Small fix",
+   "whenToChoose": "A small, low-risk fix whose cause is already clear (a typo, a wrong constant, a missing check)",
+   "modelHint": "An economical model.",
+   "instructions": "1. Read the materials and confirm the cause in one line. If it isn't what the task says, or the fix is more than a few lines, stop and tell the lead: this template is for small fixes.\n2. Make the smallest fix.\n3. Run focused evidence: the tests that cover the changed code, or a quick check that shows the fix.\n4. Open the PR. Say why it needs no failing test first (a text change, say, or behaviour an existing test now covers), or add one when the fix changes behaviour.\n5. Link it to the task, wait for its CI and start its review at the frozen head.\n6. Result: the PR and head, the CI run, the review and known limits. Keep it short."
+  },
+  "zh-Hans": {
+   "label": "小修快路径",
+   "whenToChoose": "原因已经清楚、风险低的小修（错字、常量写错、漏了一个检查）",
+   "modelHint": "经济型模型。",
+   "instructions": "1. 读材料，用一行确认原因。原因和任务说的不一样，或者修复不止几行，就停下告诉负责人：这个模板只用于小修。\n2. 做最小的修复。\n3. 跑聚焦的证据：覆盖改动代码的测试，或者一个能说明修好了的快速检查。\n4. 开 PR。说明为什么不需要先写失败的测试（例如只改文字，或者现有测试现在已经覆盖这个行为）；修复改变了行为的，就补一个。\n5. 关联到任务，等 CI，在冻结的 head 上开审查。\n6. 结果：PR 与 head、CI run、审查、已知限制。写短一点。"
+  }
+ },
+ {
+  "id": "test-hygiene",
+  "deliveryMode": "pr",
+  "steps": [
+   {"kind": "materials"},
+   {"kind": "work", "label": {"zh-Hans": "一次性副本复现红", "en": "Reproduce the red in a disposable copy"}},
+   {"kind": "work", "label": {"zh-Hans": "只改测试", "en": "Change only the test"}},
+   {"kind": "job", "label": {"zh-Hans": "绿", "en": "Green"}},
+   {"kind": "pr"},
+   {"kind": "review"},
+   {"kind": "ci"},
+   {"kind": "merge"}
+  ],
+  "en": {
+   "label": "Test hygiene",
+   "whenToChoose": "A flaky, wrong or slow test, fixed in the test alone with no product change",
+   "modelHint": "A mid-range model.",
+   "instructions": "Change tests only. If the product code is wrong, stop and tell the lead: that is a bug fix, not test hygiene.\n\n1. Read the materials. Reproduce the failure in a disposable copy, never in the shared worktree: it must fail at the test's own assertion, and keep that output. For a flaky test, run it often enough to see it fail, and note how many runs that took.\n2. Find the cause: a race, shared state, timing, an order dependence, a wrong expectation.\n3. Change only the test or its helpers to remove the cause. Don't just loosen the assertion or add a retry or a sleep unless that really is the fix, and then say why.\n4. Run it again, as many times as before, now with no failure. Report the counts before and after.\n5. Open the PR with the cause, both counts and the commands that ran. Link it to the task, wait for its CI and start its review at the frozen head."
+  },
+  "zh-Hans": {
+   "label": "测试卫生修复",
+   "whenToChoose": "不稳定、写错或太慢的测试：只改测试，不改产品代码",
+   "modelHint": "中等模型。",
+   "instructions": "只改测试。产品代码有错，就停下告诉负责人：那是修 bug，不是测试卫生。\n\n1. 读材料。在一次性副本里复现失败，绝不在共用的 worktree 里：它必须失败在测试自己的断言处，保留这次输出。不稳定的测试，多跑几次直到看到失败，记下跑了几次。\n2. 找原因：竞态、共享状态、时间、执行顺序、预期写错。\n3. 只改测试或它的辅助代码来消除原因。不要只是放宽断言、加重试或加 sleep，除非那正是修复，那时要说明理由。\n4. 再跑同样多的次数，这次没有失败。报告前后的次数。\n5. 开 PR，说明原因、前后次数和所跑的命令。关联到任务，等 CI，在冻结的 head 上开审查。"
+  }
+ }
+]}

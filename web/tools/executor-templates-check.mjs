@@ -104,10 +104,13 @@ try {
   await page.getByRole("button", { name: "Settings and updates" }).waitFor({ timeout: 10_000 });
   await other.goto(`https://${HOST}/other.html`);
 
+  // Settings › Executors' one save bar (YN-8 S5), below the page's blocks.
+  const bar = page.locator(".settings-savebar:not([hidden])");
   // ---- An empty list; a template added and saved.
   let box = await openEditor(page);
   await box.getByText("No template yet: a dispatch makes a general executor.").waitFor({ timeout: 10_000 });
-  assert.equal(await box.getByRole("button", { name: "Save templates" }).isDisabled(), true, "nothing to save yet");
+  assert.equal(await bar.count(), 0, "nothing to save yet");
+  assert.equal(await box.getByRole("button", { name: "Save templates" }).count(), 0, "no Save of its own on the page");
   await box.getByRole("button", { name: "Add template" }).click();
   await box.locator('input[aria-label="Label"]').fill("Code reviewer");
   assert.equal(await box.locator('input[aria-label="Id"]').inputValue(), "code-reviewer", "a new template's id follows its label");
@@ -115,14 +118,14 @@ try {
   await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
   await box.locator('select[aria-label="Permissions"]').selectOption("auto");
   await box.locator('textarea[aria-label="Instructions"]').fill("Read the acceptance first, then the linked PR.");
-  await box.getByText("Unsaved changes").waitFor({ timeout: 10_000 });
+  await bar.getByText("1 change not saved").waitFor({ timeout: 10_000 });
   await page.screenshot({ path: join(output, "1-unsaved.png") });
-  await box.getByRole("button", { name: "Save templates" }).click();
+  await bar.getByRole("button", { name: "Save", exact: true }).click();
   await box.getByText("Saved.").waitFor({ timeout: 10_000 });
   const put = report.writes.find((w) => w.path === "/api/executor-templates");
   assert.deepEqual(put.body, { expectedVersion: 0, templates: [{ id: "code-reviewer", label: "Code reviewer", harness: "claude",
     permissionMode: "auto", instructions: "Read the acceptance first, then the linked PR." }] });
-  assert.equal(await box.getByRole("button", { name: "Save templates" }).isDisabled(), true, "what was saved is what is shown");
+  await bar.getByText("All changes saved.").waitFor({ timeout: 10_000 }); // what was saved is what is shown
   assert.deepEqual(await fits(box), { box: true, wider: [] }, "the editor fits its width");
   await page.screenshot({ path: join(output, "2-saved.png") });
   check("a template added, its id following its label, and saved as the whole list against version 0", { body: put.body });
@@ -134,7 +137,7 @@ try {
   await box.locator("h3", { hasText: "执行者模板" }).waitFor({ timeout: 10_000 });
   assert.equal(await box.getAttribute("lang"), "zh-Hans");
   assert.equal(await box.locator('textarea[aria-label="说明"]').inputValue(), "Read the acceptance first.", "the unsaved text stays");
-  await box.getByText("有未保存的更改").waitFor({ timeout: 10_000 });
+  await bar.getByText("1 处更改还没保存").waitFor({ timeout: 10_000 });
   await page.screenshot({ path: join(output, "3-zh.png") });
   check("in Chinese after a language change in another window, the unsaved text kept");
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" })));

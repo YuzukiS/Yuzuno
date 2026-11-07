@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
 import { strings, useStrings } from "./i18n";
+import { useSaveBarPart } from "./SettingsSaveBar";
 import { useRevealIn } from "./surface";
 
 type Style = "default" | "visual";
@@ -121,19 +122,27 @@ export function HomePresentationSettings({ active }: { active: boolean }) {
       });
     return () => controller.abort();
   }, [active]);
-  async function save(next: { style: Style; note: string }) {
-    if (saving) return;
+  async function save(next: { style: Style; note: string }): Promise<boolean> {
+    if (saving) return false;
     setSaving(true);
     setError("");
     try {
       adopt(await api<Presentation>("/home/presentation", { method: "PUT", body: JSON.stringify(next) }));
+      return true;
     } catch (e) {
       setError(errorText(e));
+      return false;
     } finally {
       setSaving(false);
     }
   }
   const changed = !!saved && (style !== saved.style || collapsed(note) !== saved.note);
+  // On Settings › Home the change joins the page's save bar (YN-8); Restore
+  // the default stays a command here. Mounted alone it keeps its own Save.
+  const inBar = useSaveBarPart("home-presentation", changed && saved ? {
+    save: () => save({ style, note }),
+    discard: () => { setError(""); setStyle(saved.style); setNote(saved.note); },
+  } : null);
   const isDefault = !!saved && saved.style === "default" && !saved.note;
   function restore() {
     setConfirming(false);
@@ -195,7 +204,7 @@ export function HomePresentationSettings({ active }: { active: boolean }) {
               <span className="settings-row-help">{t.receiveHelp}</span>
             </span>
           </div>
-          {(changed || saving || !isDefault) && (
+          {(!isDefault || (!inBar && (changed || saving))) && (
             <div className="settings-row settings-row-end">
               <div className="settings-row-action">
                 {!isDefault && (
@@ -209,7 +218,7 @@ export function HomePresentationSettings({ active }: { active: boolean }) {
                     {t.restore}
                   </button>
                 )}
-                {(changed || saving) && (
+                {!inBar && (changed || saving) && (
                   <button
                     type="button"
                     className="primary-button"

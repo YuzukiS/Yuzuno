@@ -13,9 +13,12 @@
 //  - an executor's kind and state lost their pill;
 //  - a Turn end not yet seen lost its colour.
 //
-// So this reads the rows a 220px rail has to hold: each of those statuses
-// stays inside its row, whole; the executor's badge is drawn, inside the
-// row, and is a badge; and the unseen end has its colour.
+// So this reads the rows a 220px rail has to hold. Since T-43 v4-2 the
+// status is the row's island at the end of line two (its words in
+// `data-status`, the badge gone): each island stays inside its row, whole;
+// a combined wait is still marked `data-combined`; the executor's template
+// and PR chips are held in the island, inside the row; and the unseen
+// failed end is the island's failed state.
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-rail-combined.mjs
 // T15_LANG=zh-Hans reads the same rows in Chinese. That exact value: a
 // language this does not know falls back to English and passes, which is the
@@ -95,54 +98,34 @@ page.on("pageerror", (e) => errors.push(e.message));
 await page.goto("https://t15.test/");
 await page.locator(".app").waitFor({ timeout: 10_000 });
 await page.evaluate(() => document.fonts.ready);
-await page.waitForFunction((text) => [...document.querySelectorAll(".agent-runtime")].some((el) => el.textContent.includes(text)),
+await page.waitForFunction((text) => [...document.querySelectorAll(".agent-island")].some((el) => (el.dataset.status || "").includes(text)),
   longWait, { timeout: 5_000 }).catch(() => {});
 await page.waitForTimeout(400);
 
 const seen = await page.evaluate(() => {
   const rail = document.querySelector(".rail")?.getBoundingClientRect();
   const rect = (r) => r && { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), width: Math.round(r.width) };
-  // Where an element's text is painted: its line boxes, not its box.
-  const lines = (el) => {
-    if (!el) return [];
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    return [...range.getClientRects()].filter((r) => r.width > 0).map(rect);
-  };
   const row = (id) => {
     const el = document.querySelector(`.agent-row[data-agent-id="${id}"]`);
     if (!el) return null;
-    const status = el.querySelector(".agent-runtime");
-    const badge = el.querySelector(".agent-state-badge");
+    const island = el.querySelector(".agent-island");
+    const facts = el.querySelector(".executor-row-facts");
     const summary = el.querySelector(".agent-work-summary");
     const box = el.getBoundingClientRect();
-    const inside = (rs) => rs.length > 0 && rs.every((r) => r.left >= box.left - 0.5 && r.right <= box.right + 0.5);
-    const badgeStyle = badge ? getComputedStyle(badge) : null;
+    const inside = (r) => !!r && r.left >= box.left - 0.5 && r.right <= box.right + 0.5;
+    const i = island?.getBoundingClientRect();
+    const f = facts?.getBoundingClientRect();
     return {
       row: rect(box),
-      status: status?.textContent.trim() ?? null,
-      combined: status?.hasAttribute("data-combined") ?? null,
-      statusLines: lines(status),
-      statusInside: inside(lines(status)),
-      statusColor: status ? getComputedStyle(status).color : null,
-      badge: badge ? {
-        text: badge.textContent.trim(),
-        drawn: badge.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) && badge.getBoundingClientRect().width > 0,
-        box: rect(badge.getBoundingClientRect()),
-        inside: inside([rect(badge.getBoundingClientRect())]),
-        border: parseFloat(badgeStyle.borderTopWidth),
-        radius: parseFloat(badgeStyle.borderTopLeftRadius),
-        whole: badge.scrollWidth <= badge.clientWidth + 1,
-        // The line it can have: the row's second line, all of it.
-        line: Math.round(el.querySelector(".agent-row-state").getBoundingClientRect().width),
-      } : null,
-      // The status and the badge do not sit over each other.
-      apart: (() => {
-        if (!badge || !status) return null;
-        const b = badge.getBoundingClientRect();
-        return lines(status).every((t) => !(b.left < t.right && b.right > t.left && b.top < t.bottom && b.bottom > t.top));
-      })(),
-      summaryInside: summary ? inside([rect(summary.getBoundingClientRect())]) : null,
+      status: island?.dataset.status ?? null,
+      state: island?.dataset.state ?? null,
+      combined: island?.dataset.combined === "true",
+      island: rect(i),
+      islandInside: inside(i),
+      // The ring shows whole; its button takes presses a little past it, on purpose.
+      islandWhole: (() => { const g = island?.querySelector(".island-ringbox")?.getBoundingClientRect(); return !!g && g.width >= 20 && inside(g); })(),
+      facts: f ? { box: rect(f), inside: inside(f), inIsland: !!f.closest(".agent-island") } : null,
+      summaryInside: summary ? inside(summary.getBoundingClientRect()) : null,
     };
   };
   return { rail: rail && Math.round(rail.width), b: row("b"), u: row("u"), x: row("x") };
@@ -151,27 +134,17 @@ console.log(`language: ${lang}\n${JSON.stringify(seen, null, 1)}`);
 
 check(seen.rail === 220, `the rail is the 220px it is on this screen (${seen.rail})`);
 check(!!seen.b && seen.b.status === longWait && seen.b.combined === true,
-  `an Agent waiting on a Job and CI with a CI target to check says so, marked combined (${JSON.stringify(seen.b?.status)})`);
-check(!!seen.b && seen.b.statusInside,
-  `and the whole of that status is painted inside its row (${JSON.stringify(seen.b?.statusLines)} in ${JSON.stringify(seen.b?.row)})`);
-check(!!seen.b && seen.b.summaryInside !== false, `with the activity after it inside the row too (${seen.b?.summaryInside})`);
-check(!!seen.u && seen.u.combined === true && seen.u.statusInside,
-  `a Turn end not yet seen is whole inside its row (${JSON.stringify(seen.u?.status)}, ${JSON.stringify(seen.u?.statusLines)})`);
-check(!!seen.u && seen.u.statusColor === "rgb(169, 106, 91)",
-  `and has the colour of a failed end not yet seen (${seen.u?.statusColor})`);
-check(!!seen.x && seen.x.status === longWait && seen.x.statusInside,
-  `an executor with the same waits says them whole inside its row (${JSON.stringify(seen.x?.statusLines)})`);
-check(!!seen.x?.badge && seen.x.badge.drawn && seen.x.badge.inside,
-  `and its kind and state are drawn, inside the row (${JSON.stringify(seen.x?.badge)})`);
-check(!!seen.x?.badge && seen.x.badge.border >= 1 && seen.x.badge.radius > 4,
-  `as a badge, as they were before the row's second line (border ${seen.x?.badge?.border}px, radius ${seen.x?.badge?.radius}px)`);
-// Whole, or shortened only once it has the whole line to itself: at 220px
-// "Executor · Queued · 2 in line" is wider than the row's text column, and
-// is cut with an ellipsis there, its title holding the rest, as it was
-// before this task.
-check(!!seen.x?.badge && (seen.x.badge.whole || seen.x.badge.box.width >= seen.x.badge.line - 1),
-  `whole, or shortened only with the whole line to itself: "${seen.x?.badge?.text}" (whole ${seen.x?.badge?.whole}, ${seen.x?.badge?.box.width} of ${seen.x?.badge?.line}px)`);
-check(seen.x?.apart === true, `and not drawn over the status (${seen.x?.apart})`);
+  `an Agent waiting on a Job and CI with a CI target to check says so on its island, marked combined (${JSON.stringify(seen.b?.status)})`);
+check(!!seen.b && seen.b.islandInside && seen.b.islandWhole,
+  `and its island is whole inside its row (${JSON.stringify(seen.b?.island)} in ${JSON.stringify(seen.b?.row)})`);
+check(!!seen.b && seen.b.summaryInside !== false, `with the activity before it inside the row too (${seen.b?.summaryInside})`);
+check(!!seen.u && seen.u.combined === true && seen.u.state === "failed" && seen.u.islandInside && seen.u.islandWhole,
+  `a failed Turn end not yet seen is the island's failed state, whole inside its row (${seen.u?.state}, ${JSON.stringify(seen.u?.island)})`);
+check(!!seen.x && seen.x.status === longWait && seen.x.islandInside && seen.x.islandWhole,
+  `an executor with the same waits has them on its island, whole inside its row (${JSON.stringify(seen.x?.island)})`);
+check(!!seen.x && seen.x.state === "queued", `and its island says it is queued (${seen.x?.state})`);
+check(!seen.x?.facts,
+  `no chips on its row: its template and PR are in its ring's title and its card (${JSON.stringify(seen.x?.facts)})`);
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ""}`);
 await context.close();
 await browser.close();

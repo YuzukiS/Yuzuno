@@ -10,8 +10,10 @@
 //! Lists are read leniently, so a later Core's further fields do
 //! not stop this one; a save is checked strictly, against the version it was
 //! read at, and replaces the whole list, keeping as it was what a later Core
-//! stored that this one can't read. Only the user saves them: these are
-//! browser routes, never a collaboration operation.
+//! stored that this one can't read. The user saves them through these
+//! browser routes, and a lead of a Project with `executor_templates_change`
+//! (executor_template_changes.rs, YN-24); each save is a row of the list's
+//! history there.
 //!
 //! A template's executors run on this Core host, on the machine it names, or
 //! on the one Core chooses for each dispatch (`auto`, T-35 S3b); a
@@ -30,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::BTreeSet, sync::Arc};
 
-const KEY: &str = "executors.templates";
+pub(crate) const KEY: &str = "executors.templates";
 /// Where a Project's own templates were kept before YN-2 S2: read only by
 /// `migrate`, and removed with their Project (projects.rs).
 pub(crate) fn project_key(project: &str) -> String {
@@ -41,7 +43,7 @@ const HARNESSES: [&str; 3] = ["codex", "claude", "opencode"];
 pub const DEFAULT_NAME_PATTERN: &str = "{task} · {label}";
 /// The general executor's label (YN-2), so its name is `{task} · Executor`.
 pub const GENERAL_LABEL: &str = "Executor";
-const MAX_TEMPLATES: usize = 50;
+pub(crate) const MAX_TEMPLATES: usize = 50;
 pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
 /// `maxConcurrent` is a field an older page still sends (YN-2 S5): a
 /// template has no limit of its own any more, only each machine has. For
@@ -50,8 +52,20 @@ pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
 /// What `limits.maxConcurrent` still answers, for that same release: a
 /// template page from before S5 reads its field's bound from it.
 const OLDER_PAGES_MAX_CONCURRENT: u32 = 64;
-const FIELDS: [&str; 12] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
-    "permissionMode", "machineId", "instructions", "maxConcurrent", "origin"];
+const FIELDS: [&str; 15] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
+    "permissionMode", "machineId", "instructions", "maxConcurrent", "origin", "deliveryMode", "steps", "whenToChoose"];
+/// How a template's work is delivered (YN-23, T-43 S1a): a pull request
+/// (unset, as every template saved before), a commit without one, or no
+/// repository change at all. Said in its executors' materials; Core holds
+/// no PR, review or merge operation to it.
+pub const DELIVERY_MODES: [&str; 3] = ["pr", "direct-commit", "none"];
+/// The kinds a template's steps have, and those only a `pr` template has.
+const STEP_KINDS: [&str; 9] = ["materials", "work", "result", "gate", "job", "pr", "review", "ci", "merge"];
+const PR_STEP_KINDS: [&str; 4] = ["pr", "review", "ci", "merge"];
+const STEP_FIELDS: [&str; 4] = ["kind", "label", "rounds", "approver"];
+/// Who answers a gate step; unset is the user.
+const APPROVERS: [&str; 3] = ["user", "lead", "either"];
+pub const MAX_STEPS: usize = 12;
 /// The Project lists the migration has copied, each at the version it read.
 const MOVED: &str = "executors.templates.moved";
 
@@ -90,6 +104,72 @@ pub struct Template {
     /// which Project, and the id it had there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
+    /// One of `DELIVERY_MODES`; unset is `pr`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_mode: Option<String>,
+    /// 1 to 12 steps its executors follow, descriptive for now: Core keeps
+    /// no state of them. Unset is its delivery mode's (`default_steps`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<Vec<Step>>,
+    /// One line, at most 200 characters: what work to choose it for, read
+    /// by a lead choosing a template (`executor_templates_list`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_to_choose: Option<String>,
+}
+
+/// A step of a template (YN-23). A step with a field this Core doesn't know
+/// doesn't read, so its template is a later Core's: kept as it is by a save.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Step {
+    /// One of `STEP_KINDS`.
+    pub kind: String,
+    /// What the step is, at most 60 characters; unset is its kind alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// A review step's rounds, 1 or 2; unset is 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<i64>,
+    /// A gate step's approver, one of `APPROVERS`; unset is the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver: Option<String>,
+}
+
+impl Step {
+    fn of(kind: &str) -> Self {
+        Self { kind: kind.into(), label: None, rounds: None, approver: None }
+    }
+
+    /// Checked as the editor shows it: `n` is the step's place, from 1.
+    fn validate(&self, n: usize, delivery: &str) -> Result<()> {
+        let kind = self.kind.as_str();
+        ensure!(STEP_KINDS.contains(&kind), "Step {n}: a step is materials, work, result, gate, job, pr, review, ci or merge, not {kind}");
+        ensure!(delivery == "pr" || !PR_STEP_KINDS.contains(&kind), "Step {n}: a {kind} step is for a template delivered by pull request (pr), not {delivery}");
+        if let Some(label) = &self.label {
+            single_line(label, &format!("Step {n}'s label"), 60)?;
+        }
+        match self.rounds {
+            Some(_) if kind != "review" => bail!("Step {n}: only a review step has rounds"),
+            Some(rounds) => ensure!((1..=2).contains(&rounds), "Step {n}: a review is 1 or 2 rounds"),
+            None => {}
+        }
+        match self.approver.as_deref() {
+            Some(_) if kind != "gate" => bail!("Step {n}: only a gate step has an approver"),
+            Some(approver) => ensure!(APPROVERS.contains(&approver), "Step {n}: a gate's approver is user, lead or either, not {approver}"),
+            None => {}
+        }
+        Ok(())
+    }
+}
+
+/// The steps of a template that sets none, by its delivery mode.
+pub fn default_steps(delivery: &str) -> Vec<Step> {
+    let kinds: &[&str] = match delivery {
+        "direct-commit" => &["materials", "work", "job", "result"],
+        "none" => &["materials", "work", "result"],
+        _ => &["materials", "work", "job", "pr", "review", "ci", "merge"],
+    };
+    kinds.iter().map(|kind| Step::of(kind)).collect()
 }
 
 /// Where a copied template came from.
@@ -114,6 +194,13 @@ pub struct Templates {
     /// The list as stored, for what a save keeps.
     #[serde(skip)]
     stored: Option<Value>,
+}
+
+impl Templates {
+    /// The stored templates, a later Core's too, as stored.
+    pub(crate) fn stored_templates(&self) -> Vec<Value> {
+        self.stored.as_ref().and_then(|s| s["templates"].as_array().cloned()).unwrap_or_default()
+    }
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -206,7 +293,29 @@ impl Template {
                 ensure!(part.len() <= 200 && !part.chars().any(char::is_control), "A template's origin names its Project and id, at most 200 bytes each");
             }
         }
+        if let Some(mode) = self.delivery_mode.as_deref() {
+            ensure!(DELIVERY_MODES.contains(&mode), "A template's delivery is pr, direct-commit or none, not {mode}");
+        }
+        if let Some(steps) = &self.steps {
+            ensure!((1..=MAX_STEPS).contains(&steps.len()), "A template has 1 to {MAX_STEPS} steps");
+            for (n, step) in steps.iter().enumerate() {
+                step.validate(n + 1, self.delivery())?;
+            }
+        }
+        if let Some(line) = &self.when_to_choose {
+            single_line(line, "When to choose it", 200)?;
+        }
         Ok(())
+    }
+
+    /// Its delivery mode: unset is `pr`, today's flow.
+    pub(crate) fn delivery(&self) -> &str {
+        self.delivery_mode.as_deref().unwrap_or("pr")
+    }
+
+    /// Its steps, or its delivery mode's when it sets none.
+    pub(crate) fn resolved_steps(&self) -> Vec<Step> {
+        self.steps.clone().unwrap_or_else(|| default_steps(self.delivery()))
     }
 
     /// The general executor a dispatch with no `templateId` makes (YN-2):
@@ -220,15 +329,27 @@ impl Template {
         Self {
             id: String::new(), label: GENERAL_LABEL.into(), name_pattern: None, harness, model: None, reasoning_effort: None,
             permission_preset: None, permission_mode: None, machine_id: None, instructions: None, origin: None,
+            delivery_mode: None, steps: None, when_to_choose: None,
         }
     }
 
     /// What a dispatch's materials say of this template, from the list
     /// `source` names (`workspace`, or `builtin` for the general executor,
-    /// whose id is none; `project` in materials from before YN-2 S2).
+    /// whose id is none; `project` in materials from before YN-2 S2). A
+    /// template's also say how its work is delivered and its steps, resolved
+    /// (YN-23), and when to choose it if it says; the general executor's say
+    /// neither, as before.
     pub(crate) fn given(&self, source: &str) -> Value {
         let id = (!self.id.is_empty()).then_some(self.id.as_str());
-        json!({"id":id,"label":self.label,"source":source,"instructions":self.instructions})
+        let mut given = json!({"id":id,"label":self.label,"source":source,"instructions":self.instructions});
+        if id.is_some() {
+            given["deliveryMode"] = json!(self.delivery());
+            given["steps"] = json!(self.resolved_steps());
+            if let Some(line) = &self.when_to_choose {
+                given["whenToChoose"] = json!(line);
+            }
+        }
+        given
     }
 
     /// The name of the executor this template makes for the task `task` (its
@@ -256,7 +377,7 @@ impl Template {
 /// refuses (another harness or machine, a larger limit) is not this Core's
 /// (R2 70093e91). OpenCode's gate is not part of it: an OpenCode template
 /// saved while OpenCode was enabled stays this Core's own.
-fn readable(value: &Value) -> Option<Template> {
+pub(crate) fn readable(value: &Value) -> Option<Template> {
     let template: Template = serde_json::from_value(value.clone()).ok()?;
     template.validate(true).ok().map(|_| template)
 }
@@ -304,7 +425,7 @@ fn stored_list(current: &Templates, templates: &[Template], version: i64) -> Res
     Ok(Value::Object(stored))
 }
 
-fn list_at(db: &Connection, key: &str) -> Result<Templates> {
+pub(crate) fn list_at(db: &Connection, key: &str) -> Result<Templates> {
     read_list(db.query_row("SELECT value FROM workspace_meta WHERE key=?1", [key], |r| r.get(0)).optional()?)
 }
 
@@ -318,11 +439,53 @@ pub(crate) fn ids(db: &Connection) -> Result<Vec<String>> {
     Ok(list_at(db, KEY)?.templates.into_iter().map(|t| t.id).collect())
 }
 
-/// The template presets the user can adopt in Settings: template-shaped
-/// objects, never stored by Core and never saved by an Agent. T-43 fills
-/// this list; adopting one is the user's ordinary save.
+/// The ten presets (YN-23, T-43 S1a), in each language the page has. A
+/// preset names no harness: the page fills in the default for new Agents.
+const PRESETS: &str = include_str!("executor_templates/presets.json");
+/// The languages presets are written in, as the page names them.
+pub(crate) const PRESET_LANGUAGES: [&str; 2] = ["en", "zh-Hans"];
+
+/// The template presets the user can adopt in Settings, one entry per preset
+/// and language: `{id, language, label, whenToChoose, modelHint,
+/// instructions, deliveryMode, steps?, permissions?}`, where `permissions`
+/// gives the permission for each harness (`codex`: a permissionPreset,
+/// `claude`: a permissionMode). Never stored by Core and never saved by an
+/// Agent: adopting one fills an unsaved template on the page, and the
+/// user's ordinary save writes it.
 pub(crate) fn presets() -> Vec<Value> {
-    Vec::new()
+    static RESOLVED: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
+    RESOLVED.get_or_init(|| {
+        let source: Value = serde_json::from_str(PRESETS).expect("presets.json is JSON");
+        let mut out = Vec::new();
+        for preset in source["presets"].as_array().expect("presets.json lists presets") {
+            for language in PRESET_LANGUAGES {
+                let text = &preset[language];
+                let mut item = json!({
+                    "id": preset["id"], "language": language, "label": text["label"], "whenToChoose": text["whenToChoose"],
+                    "modelHint": text["modelHint"], "instructions": text["instructions"], "deliveryMode": preset["deliveryMode"],
+                });
+                if let Some(steps) = preset["steps"].as_array() {
+                    item["steps"] = steps.iter().map(|step| {
+                        let mut step = step.clone();
+                        match step["label"][language].as_str() {
+                            Some(label) => step["label"] = json!(label),
+                            None => {
+                                if let Some(step) = step.as_object_mut() {
+                                    step.remove("label");
+                                }
+                            }
+                        }
+                        step
+                    }).collect();
+                }
+                if preset["permissions"].is_object() {
+                    item["permissions"] = preset["permissions"].clone();
+                }
+                out.push(item);
+            }
+        }
+        out
+    }).clone()
 }
 
 /// A stored template without these fields.
@@ -434,21 +597,33 @@ fn parse_save(templates: &[Value], opencode: bool, saved: &[Template]) -> Result
     // The migration may have passed the limit: a list keeps what it holds.
     let most = MAX_TEMPLATES.max(saved.len());
     ensure!(templates.len() <= most, "At most {most} templates");
-    let mut parsed = Vec::with_capacity(templates.len());
-    for value in templates {
-        let Some(object) = value.as_object() else { bail!("A template is an object") };
-        if let Some(field) = object.keys().find(|k| !FIELDS.contains(&k.as_str())) {
-            bail!("Unknown template field: {field}");
-        }
-        // An older page's `maxConcurrent` is taken and dropped (S5): Template has no such field.
-        let template: Template = serde_json::from_value(value.clone()).map_err(|e| anyhow::anyhow!("Invalid template: {e}"))?;
-        let kept = saved.iter().any(|t| t.id == template.id && t.harness == "opencode");
-        template.validate(opencode || kept)?;
-        parsed.push(template);
-    }
+    let parsed = templates.iter().map(|value| parse_one(value, opencode, saved)).collect::<Result<Vec<_>>>()?;
     let ids: BTreeSet<_> = parsed.iter().map(|t| t.id.as_str()).collect();
     ensure!(ids.len() == parsed.len(), "Each template id must be used once");
     Ok(parsed)
+}
+
+/// One template a save or a lead's change names, checked strictly: no field this
+/// Core doesn't know and every value valid, with OpenCode's gate as
+/// `parse_save` says.
+pub(crate) fn parse_one(value: &Value, opencode: bool, saved: &[Template]) -> Result<Template> {
+    let Some(object) = value.as_object() else { bail!("A template is an object") };
+    if let Some(field) = object.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+        bail!("Unknown template field: {field}");
+    }
+    if let Some(steps) = object.get("steps").and_then(Value::as_array) {
+        for (n, step) in steps.iter().enumerate() {
+            let Some(step) = step.as_object() else { bail!("Step {}: a step is an object", n + 1) };
+            if let Some(field) = step.keys().find(|k| !STEP_FIELDS.contains(&k.as_str())) {
+                bail!("Step {}: unknown step field: {field}", n + 1);
+            }
+        }
+    }
+    // An older page's `maxConcurrent` is taken and dropped (S5): Template has no such field.
+    let template: Template = serde_json::from_value(value.clone()).map_err(|e| anyhow::anyhow!("Invalid template: {e}"))?;
+    let kept = saved.iter().any(|t| t.id == template.id && t.harness == "opencode");
+    template.validate(opencode || kept)?;
+    Ok(template)
 }
 
 /// This Core host's catalogs a save needs, read before its transaction.
@@ -508,15 +683,29 @@ impl Store {
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
         let current = list_at(&tx, key)?;
-        ensure!(current.version == expected, "version_conflict: these executor templates changed; reload before saving");
-        let stored = stored_list(&current, &templates, current.version + 1)?.to_string();
-        tx.execute(
-            "INSERT INTO workspace_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            params![key, stored],
-        )?;
+        if current.version != expected {
+            // A lead's change is named (YN-24): the user didn't make it here.
+            match crate::executor_template_changes::by_leads_since(&tx, expected)? {
+                Some(changes) => bail!("version_conflict: {changes} after you read the templates; reload before saving"),
+                None => bail!("version_conflict: these executor templates changed; reload before saving"),
+            }
+        }
+        let stored = write_list(&tx, &current, &templates)?;
+        crate::executor_template_changes::record(&tx, &current, &templates, crate::executor_template_changes::Author::User)?;
         tx.commit()?;
         read_list(Some(stored))
     }
+}
+
+/// Writes `templates` as the next version of the list `current` is, keeping
+/// what a later Core stored (`stored_list`); the stored list's text.
+pub(crate) fn write_list(tx: &Connection, current: &Templates, templates: &[Template]) -> Result<String> {
+    let stored = stored_list(current, templates, current.version + 1)?.to_string();
+    tx.execute(
+        "INSERT INTO workspace_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![KEY, stored],
+    )?;
+    Ok(stored)
 }
 
 /// The Workspace's list, what a dispatch can use (the same templates, for
@@ -534,6 +723,13 @@ fn view(workspace: &Templates) -> Value {
         "opencodeEnabled": crate::opencode_agent::enabled(),
         "appliesTo": "Dispatches from a template from now on; executors already created keep their own settings.",
     })
+}
+
+/// The view, with who changed each template last, when and why (YN-24).
+fn shown(store: &Store, workspace: &Templates) -> Result<Value> {
+    let mut answer = view(workspace);
+    answer["lastModified"] = crate::executor_template_changes::last_modified(&*store.db.read()?, &workspace.templates)?;
+    Ok(answer)
 }
 
 #[derive(Deserialize)]
@@ -562,7 +758,7 @@ async fn get_templates(State(ws): State<Arc<Workspace>>, Query(query): Query<For
         if let Some(id) = &query.project_id {
             crate::projects::ensure_exists(&*s.db.read()?, id)?;
         }
-        let mut answer = view(&s.executor_templates()?);
+        let mut answer = shown(s, &s.executor_templates()?)?;
         // A Project's id says whose new-Agent defaults the general executor takes.
         answer["general"] = general_view(s, query.project_id.as_deref())?;
         Ok(answer)
@@ -573,22 +769,28 @@ async fn get_templates(State(ws): State<Arc<Workspace>>, Query(query): Query<For
 /// before the store transaction: a catalog can take long.
 async fn prepared(ws: &Arc<Workspace>, input: &Save, saved: Templates) -> Result<Vec<Template>> {
     let mut templates = parse_save(&input.templates, crate::opencode_agent::enabled(), &saved.templates)?;
-    let local = |harness: &str| templates.iter().any(|t| t.harness == harness && t.names_new_model(&saved.templates));
+    confirmed(ws, &mut templates, &saved.templates).await?;
+    Ok(templates)
+}
+
+/// Each model `templates` name anew, against `saved`, confirmed by this Core
+/// host's catalogs as a save confirms them.
+pub(crate) async fn confirmed(ws: &Arc<Workspace>, templates: &mut [Template], saved: &[Template]) -> Result<()> {
+    let local = |harness: &str| templates.iter().any(|t| t.harness == harness && t.names_new_model(saved));
     let catalogs = Catalogs {
         codex: if local("codex") { Some(ws.catalog().await) } else { None },
         claude: if local("claude") { Some(ws.claude_catalog().await) } else { None },
     };
-    confirm_models(&mut templates, &saved.templates, &catalogs)?;
-    Ok(templates)
+    confirm_models(templates, saved, &catalogs)
 }
 
 async fn put_templates(State(ws): State<Arc<Workspace>>, Json(input): Json<Save>) -> Result<Json<Value>, ApiError> {
     let _permit = ws.admission.enter_work()?;
     let current = ws.stored(|s| s.executor_templates()).await?;
     let templates = prepared(&ws, &input, current).await?;
-    let saved = ws.stored(move |s| s.save_templates(input.expected_version, templates)).await?;
+    let saved = ws.stored(move |s| shown(s, &s.save_templates(input.expected_version, templates)?)).await?;
     ws.changes.send(json!({"executorTemplates": true}));
-    Ok(Json(view(&saved)))
+    Ok(Json(saved))
 }
 
 /// A page from before YN-2 S2 saving a Project's own list is told where
@@ -598,10 +800,98 @@ async fn put_project_templates(Path(_id): Path<String>) -> Result<Json<Value>, A
         this Project's own were copied there. Nothing was saved; reload the page").into())
 }
 
+// ---- The Agent tool: a lead reads the list to choose a template (YN-23) ----
+
+/// The read-only list an Agent reads. Saving stays the user's (the browser
+/// routes above); no Agent tool writes templates.
+pub(crate) const LIST_TOOL: &str = "executor_templates_list";
+
+pub(crate) fn tool_definition() -> Value {
+    json!({
+        "name": LIST_TOOL,
+        "description": "List the Workspace's executor templates, to choose one for task_dispatch with executor {templateId}. Each template has its id and label; whenToChoose, a line saying what work it is for (absent if its template has none); deliveryMode: pr (the work is delivered as a pull request), direct-commit (committed without one) or none (no repository change: the result is the deliverable); steps, what its executors follow, each {kind, label?, rounds? (review), approver? (gate: user, lead or either; unset is user)}, its delivery mode's default when it sets none; these are descriptive: Core does not track steps or hold PR, review or merge operations to a mode. Each also names its harness (codex, claude or opencode), model, reasoningEffort, permissionPreset (Codex) or permissionMode (Claude Code) and machineId (local, a machine's id or auto); an unset one inherits the defaults for new Agents. instructionsBytes is the size of the instructions its executors get with their materials (0 for none). general says what executor {} makes for your Project. laterTemplates counts templates a newer Core saved that this one can't offer. With full true, for leads of a Project only, each also has template: the template as saved, every field, to change and send back whole with executor_templates_change. The user saves templates in Settings, and a lead with executor_templates_change; version is the list's version, its expectedVersion.",
+        "inputSchema": {"type":"object","properties":{"full":{"type":"boolean","description":"Also give each template as saved, instructions included: for leads of a Project only (YN-24)."}},"required":[],"additionalProperties":false},
+    })
+}
+
+/// What `executor_templates_list` says of one template.
+fn listed(template: &Template) -> Value {
+    let mut item = json!({
+        "id": template.id, "label": template.label, "deliveryMode": template.delivery(), "steps": template.resolved_steps(),
+        "harness": template.harness,
+        "instructionsBytes": template.instructions.as_deref().map_or(0, str::len),
+    });
+    for (field, value) in [("whenToChoose", &template.when_to_choose), ("model", &template.model), ("reasoningEffort", &template.reasoning_effort),
+        ("permissionPreset", &template.permission_preset), ("permissionMode", &template.permission_mode), ("machineId", &template.machine_id)] {
+        if let Some(value) = value {
+            item[field] = json!(value);
+        }
+    }
+    item
+}
+
+/// The list for `actor` (None: the user), with the general executor of its Project.
+fn list_for(store: &Store, actor: Option<&str>, full: bool) -> Result<Value> {
+    let list = store.executor_templates()?;
+    let project: Option<String> = match actor {
+        Some(actor) => store.db.read()?
+            .query_row("SELECT project_id FROM project_agents WHERE agent_id=?1", [actor], |r| r.get(0)).optional()?,
+        None => None,
+    };
+    Ok(json!({
+        "version": list.version,
+        "templates": list.templates.iter().map(|template| {
+            let mut item = listed(template);
+            // As saved, for a lead's change to send back whole (YN-24).
+            if full {
+                item["template"] = json!(template);
+            }
+            item
+        }).collect::<Vec<_>>(),
+        "laterTemplates": list.later_templates,
+        "general": general_view(store, project.as_deref())?,
+    }))
+}
+
+/// Whether `actor` may read the templates whole (`full`, YN-24): a lead of
+/// its Project, as one that changes them; executors and other members list
+/// them without their instructions.
+fn reads_whole(db: &Connection, actor: &str) -> Result<()> {
+    let project: Option<String> = db.query_row("SELECT project_id FROM project_agents WHERE agent_id=?1", [actor], |r| r.get(0)).optional()?;
+    let leads = match project {
+        Some(project) => crate::agent_roles::leads(db, actor, &project)?,
+        None => false,
+    };
+    ensure!(leads, "not_lead: only a lead of a Project reads the templates whole (full); without full, executor_templates_list lists them without their instructions");
+    Ok(())
+}
+
+pub async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, input: Value) -> Result<Value> {
+    let input = input.as_object().ok_or_else(|| anyhow::anyhow!("invalid_input: expected an object"))?;
+    if let Some(key) = input.keys().find(|k| k.as_str() != "full") {
+        bail!("invalid_input: unknown field {key}");
+    }
+    let full = match input.get("full") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(full)) => *full,
+        Some(_) => bail!("invalid_input: full is true or false"),
+    };
+    match operation.as_str() {
+        LIST_TOOL => ws.stored(move |store| {
+            if let (true, Some(actor)) = (full, actor.as_deref()) {
+                reads_whole(&*store.db.read()?, actor)?;
+            }
+            list_for(store, actor.as_deref(), full)
+        }).await,
+        _ => bail!("unknown_operation: {operation}"),
+    }
+}
+
 pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/executor-templates", get(get_templates).put(put_templates))
         .route("/api/projects/{id}/executor-templates", put(put_project_templates))
+
 }
 
 #[cfg(test)]

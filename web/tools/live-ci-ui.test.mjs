@@ -112,8 +112,8 @@ function mount() {
   ];
   dom.window.renderRows(rows);
   const label = (id) =>
-    dom.window.document.querySelector(`[data-agent-id="${id}"] .agent-runtime`)
-      ?.textContent;
+    dom.window.document.querySelector(`[data-agent-id="${id}"] .agent-island`)
+      ?.getAttribute("data-status");
   return {
     window: dom.window,
     calls,
@@ -144,7 +144,7 @@ test("idle CI and Jobs coexist, unknown jobs stay Check job, runtime states win"
     // One wait stays beside the name like "Waiting · Job"; only a combined
     // status takes its own line (data-combined).
     const combined = (id) =>
-      p.window.document.querySelector(`[data-agent-id="${id}"] .agent-runtime`).hasAttribute("data-combined");
+      p.window.document.querySelector(`[data-agent-id="${id}"] .agent-island`).hasAttribute("data-combined");
     assert.equal(combined("a"), false, "a lone CI wait is not moved below the name");
     assert.equal(p.label("c"), "Ready");
     for (const status of ["Working", "Needs you", "Compacting", "Closed"]) {

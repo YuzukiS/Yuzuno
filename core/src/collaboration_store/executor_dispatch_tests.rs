@@ -105,8 +105,16 @@ fn a_retry_with_the_same_request_finds_its_dispatch_and_never_makes_a_second_age
     assert_eq!((answer["agentId"].as_str(), answer["task"]["assigneeAgentId"].as_str()), (Some(executor.as_str()), Some(executor.as_str())));
     assert_eq!(row(&store, "user", "first").0, "dispatched", "the task and its row are dispatched together");
     let given = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
-    assert_eq!(given["dispatchMaterials"]["template"], json!({"id":"reviewer","label":"Reviewer","source":"workspace","instructions":"Review the change."}),
+    // A template that says no delivery or steps is delivered as before, by
+    // pull request, with that mode's steps (YN-23).
+    let pr_steps = json!([{"kind":"materials"},{"kind":"work"},{"kind":"job"},{"kind":"pr"},{"kind":"review"},{"kind":"ci"},{"kind":"merge"}]);
+    assert_eq!(given["dispatchMaterials"]["template"], json!({"id":"reviewer","label":"Reviewer","source":"workspace","instructions":"Review the change.",
+        "deliveryMode":"pr","steps":pr_steps}),
         "the template and its instructions reach the executor with its materials");
+    let body = answer["message"]["body"].as_str().unwrap();
+    assert!(body.contains("\nDelivery: pr: deliver the work as a pull request\n")
+        && body.contains("\nSteps (descriptive: Core does not track them): materials → work → job → pr → review → ci → merge\n"),
+        "the mail says how the work is delivered and its steps: {body}");
     for _ in 0..2 {
         let again = store.executor_dispatch_begin(None, dispatch(&t, "first"), LocalDefault::Read(None));
         let Ok(Next::Dispatch(again)) = again else {
@@ -550,6 +558,33 @@ fn a_template_dispatch_carries_the_projects_handover_and_a_summary_of_the_task()
         "an ordinary dispatch carries neither");
 }
 
+/// YN-23: a template's delivery mode, steps and when-to-choose line reach
+/// its executor's materials as the template says them, and its mail says
+/// the mode and the steps, each step's approver, rounds and label.
+#[test]
+fn a_template_dispatch_carries_its_delivery_mode_and_steps() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    let steps = json!([{"kind":"materials"},{"kind":"work","label":"Write the memo"},{"kind":"result","label":"Options"},
+        {"kind":"gate","label":"Your choice"},{"kind":"gate","approver":"either","label":"Go ahead"}]);
+    let memo = json!({"id":"reviewer","label":"Decision memo","harness":"codex","deliveryMode":"none","steps":steps,
+        "whenToChoose":"A choice between options, with cost and risk"});
+    templates(&store, json!([memo]));
+    let t = task(&store, "Choose", Some(&p), None);
+    let plan = begun(&store, None, dispatch(&t, "memo")).unwrap();
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    assert_eq!(given["dispatchMaterials"]["template"], json!({"id":"reviewer","label":"Decision memo","source":"workspace","instructions":null,
+        "deliveryMode":"none","steps":steps,"whenToChoose":"A choice between options, with cost and risk"}));
+    let body = answer["message"]["body"].as_str().unwrap();
+    assert!(body.contains("\nDelivery: none: no repository change to deliver; your result is the deliverable\n"), "{body}");
+    assert!(body.contains("\nSteps (descriptive: Core does not track them): materials → work: Write the memo → result: Options → gate (user): Your choice → gate (either): Go ahead\n"),
+        "an approver left unset is the user: {body}");
+    assert!(!body.contains("A choice between options"), "when to choose it is for whoever dispatches, not in the executor's mail: {body}");
+}
+
 /// T-34 S3a: what a template dispatch adds is held to its own limits, not to
 /// the task's: the longest handover a Project can keep, beside the longest
 /// description a task can have, still dispatches.
@@ -667,6 +702,7 @@ fn a_dispatch_without_a_template_makes_a_general_executor_from_the_defaults_for_
     assert_eq!(materials["handover"]["markdown"], "# Lab\nBuild with make.", "its instructions are the handover and the materials");
     let body = answer["message"]["body"].as_str().unwrap();
     assert!(body.contains("General executor") && !body.contains("Executor template:"), "the mail says it has no template: {body}");
+    assert!(!body.contains("\nDelivery:") && !body.contains("\nSteps"), "nor a template's delivery or steps (YN-23): {body}");
     let role: Option<String> = store.db.read().unwrap()
         .query_row("SELECT template_id FROM agent_roles WHERE agent_id=?1 AND kind='executor'", [&executor], |r| r.get(0)).unwrap();
     assert_eq!(role, None, "its role names no template");

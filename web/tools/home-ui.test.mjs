@@ -772,27 +772,95 @@ test("YN-3 a replied ask is an answer card: whom it waits for, its title, the re
   }
 });
 
-test("an Ask answered here keeps its card until the next visit to Home, then is an answer card (YN-3)", async () => {
-  const p = await mount();
+// YN-21, the user's choice: an Ask the user answers from this Home turns into its answer card as soon as Core has
+// the reply, whichever way it was answered, Reply again too, keeping its place on the deck; one answered elsewhere
+// (another device or tab) keeps its card until the next visit, as before (YN-3).
+test("YN-21 an Ask answered here is its answer card as soon as Core has the reply: free text, a choice, a form, Reply again; its owner's update keeps it small; one answered elsewhere keeps its card until the next visit", async () => {
+  const home = homeFixture();
+  const app = home.projects.find((entry) => entry.project.id === "p-app");
+  app.brief.sections.push(section("seed", "ask", "Which seed?", 2, owner("b", "Hana"), {
+    ask: { question: "Seed 7 or 11?", state: "open", reply: { freeText: true } },
+  }), section("scope", "ask", "Which part first?", 1, owner("a", "Mori"), {
+    ask: { question: "Which part ships first?", state: "open", reply: { form: { id: "scope", title: "Which part ships first?",
+      fields: [{ id: "part", type: "single", label: "First part", required: false, options: [{ id: "ui", label: "The UI" }, { id: "core", label: "Core" }] }] } } },
+  }));
+  const live = (key) => app.brief.sections.find((s) => s.key === key);
+  const replied = (s, replyText) => {
+    s.ask = { ...s.ask, state: "replied", repliedAt: new Date().toISOString(), replyText };
+    home.needsYou = home.needsYou.filter((item) => item.sectionKey !== s.key);
+  };
+  // As Core: a reply marks that version of the ask replied before its receipt comes back (home.rs mark_replied).
+  const replyAnswer = (reply) => {
+    const s = live(reply.key);
+    if (s?.ask && s.version === reply.askVersion) {
+      const labels = [...(s.ask.reply.options ?? []), ...Object.values(s.ask.reply.choice ?? {})];
+      const label = labels.find((option) => option.id === reply.choice)?.label;
+      replied(s, label && reply.text ? `${label}: ${reply.text}` : label ?? reply.text);
+    }
+    return null;
+  };
+  const p = await mount({ home, replyAnswer });
   try {
     const release = () => card(p, "p-app", "release");
+    const budget = () => card(p, "p-app", "budget");
+    const seed = () => card(p, "p-app", "seed");
+    const scope = () => card(p, "p-app", "scope");
+    const deck = () => [...p.panel("p-app").querySelectorAll(".home-brief [data-section-key]")].map((el) => el.dataset.sectionKey);
+    const order = deck();
     await type(p, release().querySelector("textarea"), "Ship it after the docs fix");
     p.button("Send", release()).click();
-    await waitFor(() => /Replied · waiting for Mori/.test(release().textContent), "replied here");
-    // Core now reads it replied; Home reads again in this visit.
-    const ask = p.state.home.projects.find((entry) => entry.project.id === "p-app").brief.sections.find((s) => s.key === "release");
-    ask.ask = { ...ask.ask, state: "replied", repliedAt: at(0), replyText: "Ship it after the docs fix" };
+    // Core has it: the answer card at once, as a fresh visit shows it, with nothing held for the card it was.
+    await waitFor(() => release().classList.contains("is-answer"), "an answer card as soon as Core has the reply");
+    assert.equal(release().dataset.cardSize, "small", "a small card on the deck");
+    assert.ok(release().querySelector(":scope > .home-card-body").hidden, "the question and details folded");
+    assert.equal(release().style.minHeight, "", "no height held for the card it was");
+    assert.equal(release().querySelector(".home-kind").textContent.trim(), "Replied · waiting for Mori");
+    assert.match(release().querySelector(".home-answer-reply").textContent, /^You\s*Ship it after the docs fix$/);
+    assert.equal(release().querySelector(".home-answer-next").textContent, "Next: Mori acts on your reply");
+    assert.ok(p.button("Reply again", release()), "Reply again on its face");
+    assert.equal(release().querySelector(".home-answer-details").textContent.trim(), "Question and details");
+    assert.ok(p.doc.activeElement === release(), "focus, gone with the reply's controls, is on the card");
+    assert.deepEqual(deck(), order, "its place on the deck kept: only its size changed");
+    // A choice.
+    p.button("Choose B", budget()).click();
+    await waitFor(() => budget().classList.contains("is-answer"), "a choice: the answer card as soon as Core has it");
+    assert.match(budget().querySelector(".home-answer-reply").textContent, /^You\s*Plan B$/);
+    // A form, sent at its defaults (it copies its answers as it sends them).
+    p.w.structuredClone = structuredClone;
+    scope().querySelector(".clarification footer .primary-button").click();
+    await waitFor(() => scope().classList.contains("is-answer"), "a form: the answer card as soon as Core has it");
+    assert.equal(p.posts(/\/brief\/reply$/).at(-1).body.form?.formId, "scope", "sent as the form's answers");
+    // Its owner updates it after the reply, in this visit: still the answer card, with what the owner says now.
+    Object.assign(live("release"), { version: 4, updatedAt: new Date().toISOString(), body: body("Shipping once the docs fix lands.") });
     p.doc.querySelector('[aria-label="Refresh Home"]').click();
-    await waitFor(() => release().classList.contains("is-replied"), "read as replied");
-    assert.ok(!release().classList.contains("is-answer"), "still its card in this visit");
-    assert.ok(!release().querySelector(":scope > .home-card-body").hidden, "nothing folded under the user's hand");
-    // The next visit to Home: an answer card.
+    await waitFor(() => release().dataset.sectionVersion === "4", "the owner's update read");
+    assert.ok(release().classList.contains("is-answer") && release().dataset.cardSize === "small", "it does not grow back");
+    assert.match(release().querySelector(".home-answer-update").textContent, /after your reply.*Shipping once the docs fix lands\./s);
+    // Reply again: opened, it takes its row; sent, it closes back to the answer card with the new reply.
+    p.button("Reply again", release()).click();
+    await waitFor(() => release().querySelector(".home-card-body textarea"), "the reply field, on the card");
+    assert.ok(release().classList.contains("is-open"));
+    await type(p, release().querySelector(".home-card-body textarea"), "Ship it tomorrow instead");
+    p.button("Send", release().querySelector(".home-card-body")).click();
+    await waitFor(() => !release().classList.contains("is-open") && /Ship it tomorrow instead$/.test(release().querySelector(".home-answer-reply").textContent),
+      "Reply again: closed back to the answer card, the new reply on it");
+    assert.ok(release().querySelector(":scope > .home-card-body").hidden);
+    assert.equal(p.posts(/\/brief\/reply$/).at(-1).body.askVersion, 4, "the version on screen answered");
+    assert.ok(p.doc.activeElement === release(), "focus on the card again");
+    // Answered elsewhere: Core reads it replied, and its card stays as it is in this visit.
+    replied(live("seed"), "Seed 7");
+    p.doc.querySelector('[aria-label="Refresh Home"]').click();
+    await waitFor(() => seed().classList.contains("is-replied"), "read as replied");
+    assert.ok(!seed().classList.contains("is-answer"), "answered elsewhere: still its card in this visit");
+    assert.ok(!seed().querySelector(":scope > .home-card-body").hidden, "nothing folded under the user's hand");
+    assert.deepEqual(deck(), order, "no card moved on the deck");
+    // The next visit to Home: every answered Ask is an answer card, under its heading.
     p.doc.querySelector('.agent-row[data-agent-id="b"] .agent-select').click();
     await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Hana", "away from Home");
     p.button("Home").click();
-    await waitFor(() => release()?.classList.contains("is-answer"), "an answer card at the next visit");
-    assert.ok(release().querySelector(":scope > .home-card-body").hidden, "the rest folded");
-    assert.match(release().querySelector(".home-answer-reply").textContent, /^You\s*Ship it after the docs fix$/);
+    await waitFor(() => seed()?.classList.contains("is-answer"), "an answer card at the next visit");
+    assert.ok(["release", "budget", "scope"].every((key) => card(p, "p-app", key).classList.contains("is-answer")));
+    assert.match(seed().querySelector(".home-answer-reply").textContent, /^You\s*Seed 7$/);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -2814,7 +2882,8 @@ const attentionHome = () => {
 // The window opens on Sora, whose last Turn hasn't ended: nothing is seen before the test looks.
 const startOnSora = { "yuzuno.selected.ws-home": JSON.stringify("c") };
 const railIds = (p) => [...p.doc.querySelectorAll(".agent-list .agent-row")].map((row) => row.dataset.agentId);
-const railLabel = (p, id) => p.doc.querySelector(`.agent-row[data-agent-id="${id}"] .agent-runtime`)?.textContent ?? null;
+// The status words the row has for it, on its island (T-43 v4-2).
+const railLabel = (p, id) => p.doc.querySelector(`.agent-row[data-agent-id="${id}"] .agent-island`)?.getAttribute("data-status") ?? null;
 const shown = (p) => p.doc.querySelector(".conversation-title h1")?.textContent ?? null;
 
 test("Needs you lists an open question and opens its conversation; a Turn that ended unseen is not listed there, only marked on the Agent list, and stays this device's (YN-3)", async () => {
@@ -3326,6 +3395,150 @@ test("YN-3 a card's HTML page works on its card once in view: one card preview, 
     assert.equal(ring().querySelector("iframe"), null);
     p.button("Back to the page", ring()).click();
     await waitFor(() => ring().querySelector("iframe.home-card-page-frame"), "back to the page");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// YN-16 S6: the page's frame, as the bridge reads and answers it. A message
+// event as the browser delivers one: from the frame's own window, origin "null".
+const fromPage = (p, data, source, origin = "null") => p.w.dispatchEvent(new p.w.MessageEvent("message", { data, source, origin }));
+// What Home posts to the frame's window, kept instead of delivered.
+function givenTo(frame) {
+  const given = [];
+  Object.defineProperty(frame.contentWindow, "postMessage", { configurable: true, value: (message, origin) => given.push([message, origin]) });
+  return given;
+}
+
+test("YN-16 S6 a card's page talks to Home only through the bridge: the theme on its first load and on a change, its height within 120-1600 px, a message sent to the section's author only on Send", async () => {
+  let show;
+  const p = await mount({ home: pageFixture(), before: (w) => (show = watchedViews(w)) });
+  try {
+    cardPreviews(p);
+    const ring = () => card(p, "p-app", "ring");
+    await waitFor(() => ring()?.querySelector(".home-card-page"), "the ring card's page frame");
+    show();
+    await waitFor(() => ring().querySelector("iframe.home-card-page-frame"), "the page is shown");
+    const frame = ring().querySelector("iframe.home-card-page-frame");
+    const page = frame.contentWindow;
+    const given = givenTo(frame);
+    frame.dispatchEvent(new p.w.Event("load"));
+    assert.equal(given.length, 1, "the theme, on its first load");
+    const [[theme, origin]] = given;
+    assert.equal(origin, "*", "an opaque origin is named *");
+    assert.equal(theme.type, "yuzuno:theme");
+    assert.deepEqual(Object.keys(theme.vars), ["--paper", "--ink", "--line", "--accent-ink", "--green", "--font"]);
+    assert.equal(theme.scheme, "light");
+    // Its height: kept within 120-1600 px, the newest once per frame. The bridge
+    // starts listening in an effect after the frame is drawn: the first height is
+    // sent until it is taken, and from then on the bridge is known to listen.
+    await waitFor(() => {
+      fromPage(p, { type: "yuzuno:height", px: 5000 }, page);
+      return frame.style.height === "1600px";
+    }, "at most 1600 px");
+    fromPage(p, { type: "yuzuno:height", px: 40 }, page);
+    fromPage(p, { type: "yuzuno:height", px: 300.4 }, page);
+    await waitFor(() => frame.style.height === "300px", "the newest");
+    assert.ok(ring().querySelector(".home-card-page").classList.contains("is-sized"));
+    fromPage(p, { type: "yuzuno:height", px: 40 }, page);
+    await waitFor(() => frame.style.height === "120px", "at least 120 px");
+    // The bridge listens now (a height was taken, by the effect that also watches the theme): the theme changes.
+    p.doc.documentElement.dataset.theme = "dark";
+    await waitFor(() => given.length === 2, "the theme given again when it changes");
+    assert.equal(given[1][0].scheme, "dark");
+    p.doc.documentElement.dataset.agentList = "compact";
+    await pause(30);
+    assert.equal(given.length, 2, "nothing else is given");
+    // Not this page's, or not a message the bridge takes: nothing.
+    fromPage(p, { type: "yuzuno:send", text: "from Home's own window" }, p.w);
+    fromPage(p, { type: "yuzuno:send", text: "from a page with an origin" }, page, "http://127.0.0.1:47390");
+    fromPage(p, { type: "yuzuno:send", text: "x".repeat(2001) }, page);
+    fromPage(p, { type: "yuzuno:send", text: "   " }, page);
+    fromPage(p, { type: "yuzuno:send", text: 42 }, page);
+    fromPage(p, { type: "yuzuno:height", px: 900 }, p.w);
+    await pause(30);
+    const bar = () => ring().querySelector(".home-page-send");
+    assert.equal(bar(), null, "nothing offered");
+    assert.equal(frame.style.height, "120px", "another window's height is not taken");
+    // Offered: the newest replaces the one before; Don't send sends nothing.
+    fromPage(p, { type: "yuzuno:send", text: "First idea" }, page);
+    await waitFor(() => bar(), "the page's message offered under it");
+    fromPage(p, { type: "yuzuno:send", text: "  Ring size 7, gold  " }, page);
+    await waitFor(() => /Ring size 7, gold/.test(bar().textContent), "a newer one replaces it");
+    assert.doesNotMatch(bar().textContent, /First idea/);
+    assert.equal(bar().querySelector(".home-page-send-head").textContent, "ring.html asks to send this to Mori, as your reply:");
+    assert.equal(bar().querySelector(".home-page-send-text").textContent, "Ring size 7, gold");
+    p.button("Don't send", bar()).click();
+    await waitFor(() => !bar(), "gone, not sent");
+    assert.deepEqual(p.posts(/\/brief\/reply$/), [], "nothing is sent without Send");
+    // Send: the user's own reply from Home, to the section's author, at the version shown.
+    fromPage(p, { type: "yuzuno:send", text: "Ring size 7, gold" }, page);
+    await waitFor(() => bar(), "offered again");
+    // Send takes a message only once it has been shown a second (S6 R1 P2).
+    const sendButton = () => p.button("Send", bar());
+    assert.equal(sendButton().disabled, true, "not yet: just shown");
+    const shownAt = Date.now();
+    await waitFor(() => !sendButton().disabled, "armed once read");
+    assert.ok(Date.now() - shownAt >= 900, `armed after about a second, not ${Date.now() - shownAt} ms`);
+    // The page swaps its text as the pointer reaches Send, and the click lands
+    // before the bar is drawn again: the text the user read is not the newest,
+    // so nothing is sent; the new text is shown, and Send waits for it to be read.
+    const read = sendButton();
+    fromPage(p, { type: "yuzuno:send", text: "Ring size 9, silver" }, page);
+    read.click();
+    await waitFor(() => /Ring size 9, silver/.test(bar().textContent), "the new text shown");
+    assert.equal(sendButton().disabled, true, "the new text is not read yet");
+    await pause(60);
+    assert.deepEqual(p.posts(/\/brief\/reply$/), [], "neither the text read nor the one swapped in is sent");
+    // The page offers the first again: a new text to read, then Send sends what it shows.
+    fromPage(p, { type: "yuzuno:send", text: "Ring size 7, gold" }, page);
+    await waitFor(() => bar().querySelector(".home-page-send-text").textContent === "Ring size 7, gold" && sendButton().disabled, "shown again, not armed");
+    await waitFor(() => !sendButton().disabled, "armed again");
+    sendButton().click();
+    await waitFor(() => /Sent to Mori\./.test(bar()?.textContent ?? ""), "sent");
+    const sent = p.posts(/\/brief\/reply$/);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0].url, /\/api\/projects\/p-app\/brief\/reply$/);
+    const { key, agentId, text, version, title, clientMessageId } = sent[0].body;
+    assert.deepEqual({ key, agentId, text, version, title }, { key: "ring", agentId: "a", text: "From the page “ring.html”:\n\nRing size 7, gold", version: 3, title: "Ring design" });
+    assert.equal(typeof clientMessageId, "string");
+    assert.ok(!("shown" in sent[0].body) && !("sentAt" in sent[0].body), "what is kept here only stays here");
+    // A page that went elsewhere is not listened to.
+    frame.dispatchEvent(new p.w.Event("load"));
+    await waitFor(() => /loaded something else/.test(ring().querySelector(".home-card-page").textContent), "moved");
+    fromPage(p, { type: "yuzuno:send", text: "from where it went" }, page);
+    await pause(30);
+    assert.equal(bar(), null);
+    assert.equal(given.length, 2, "no theme for the page it went to");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("YN-16 S6 a card's page whose author is not open in the Project: its message is shown, and can't be sent from here", async () => {
+  let show;
+  const home = pageFixture();
+  home.projects.find((entry) => entry.project.id === "p-app").brief.sections.find((s) => s.key === "ring").owner.state = "closed";
+  const p = await mount({ home, before: (w) => (show = watchedViews(w)) });
+  try {
+    cardPreviews(p);
+    const ring = () => card(p, "p-app", "ring");
+    await waitFor(() => ring()?.querySelector(".home-card-page"), "the ring card's page frame");
+    show();
+    await waitFor(() => ring().querySelector("iframe.home-card-page-frame"), "the page is shown");
+    const frame = ring().querySelector("iframe.home-card-page-frame");
+    givenTo(frame);
+    frame.dispatchEvent(new p.w.Event("load"));
+    const bar = () => ring().querySelector(".home-page-send");
+    // Sent until the bridge, listening from an effect after the frame is drawn, takes it.
+    await waitFor(() => bar() || (fromPage(p, { type: "yuzuno:send", text: "Ring size 7" }, frame.contentWindow), false), "offered");
+    assert.match(bar().textContent, /ring\.html asks to send this to Mori, who isn't open in this Project, so it can't be sent from here:/);
+    assert.deepEqual([...bar().querySelectorAll("button")].map((b) => b.textContent.trim()), ["Don't send"]);
+    p.button("Don't send", bar()).click();
+    await waitFor(() => !bar(), "gone");
+    assert.deepEqual(p.posts(/\/brief\/reply$/), []);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

@@ -20,58 +20,23 @@
   outline: 2px solid var(--focus, #9caa76);
   outline-offset: 1px;
 }
-.agent-rail-avatar {
-  position: relative;
-  display: inline-flex;
-  flex-shrink: 0;
-}
-/* Unread updates: a thin ring around the avatar, apart from it by a small
-   gap. Drawn behind the avatar so its leaf stays on top; no dot, so it
-   never reads as one of the status dots. */
-.agent-rail-avatar.has-unread::before {
-  content: "";
-  position: absolute;
-  inset: -3.5px;
-  border: 1.5px solid color-mix(in srgb, var(--ink) 72%, transparent);
-  border-radius: 13px;
-  pointer-events: none;
-}
 .agent-select .agent-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Line two of a row: the status word leads it and keeps its whole self, the
-   activity follows after a separator and is the one that gives way. Both are
-   always drawn -- a colour alone would be the same as saying nothing until
-   the pointer arrives (T-15). */
+/* Line two of a row: what the Agent is doing, and only that (T-43, the
+   user's review of 2026-11-07); a row with nothing to say there has no line
+   two. Its state, clock, unread, template and PR are its island's, at the
+   row's right end (agent-island.css). */
 .agent-row-state {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 2px 6px;
   min-width: 0;
   margin-top: 5px;
-}
-.agent-row-state > .agent-runtime {
-  flex: none;
-  white-space: nowrap;
-}
-/* CI beside a Job or a check hint ("Waiting · Job / CI"), or a Turn end not
-   yet seen: that longer status takes the whole line and wraps inside it,
-   and whatever follows starts the next. Kept to one line it ran past the
-   row's edge on a 220px rail and pushed the executor badge and the activity
-   out of sight; its rules still styled it inside the name's button, which
-   it left when the row got its second line (#459 R8, P3). */
-.agent-row-state > .agent-runtime[data-combined] {
-  flex: 1 1 100%;
-  min-width: 0;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.agent-row-state > .agent-runtime[data-combined] + .agent-work-summary::before {
-  content: none;
 }
 .agent-row-state > .agent-work-summary {
   flex: 1;
@@ -82,11 +47,6 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-.agent-row-state > .agent-work-summary::before {
-  content: "·";
-  flex: none;
-  opacity: 0.55;
 }
 .agent-row-state > .agent-work-summary > * {
   overflow: hidden;
@@ -107,14 +67,21 @@
 .agent-work-summary.kind-pending {
   color: var(--attention-ink, #987344);
 }
-/* Compact Agent list (Settings → Appearance): the name and status only.
-   The latest report or update stays in the conversation; "needs you"
-   still shows. */
+/* Compact Agent list (Settings → Appearance): line one and the ring only.
+   The latest report or update stays in the conversation; "needs you" and
+   "failed" still say their word. */
 :root[data-agent-list="compact"] .agent-row {
   padding-block: 9px;
   margin-bottom: 4px;
 }
-:root[data-agent-list="compact"] .agent-work-summary {
+/* In the list a compact row is one line already: no more padding than a
+   detailed one. */
+:root[data-agent-list="compact"] .agent-list .agent-row {
+  padding-block: 7px;
+}
+:root[data-agent-list="compact"] .agent-work-summary,
+:root[data-agent-list="compact"] .agent-row-said,
+:root[data-agent-list="compact"] .agent-list .agent-row > .agent-row-state:not(.is-alert) {
   display: none;
 }
 :root[data-agent-list="compact"] .agent-row .agent-row-bottom {
@@ -131,50 +98,212 @@
   min-width: 0;
   gap: 1px;
 }
-/* Two lines beside one avatar: the name on the first, what the Agent is and
-   is doing on the second. The avatar stands beside both rather than setting
-   the height of the first, which is what kept a row at 89px (T-15). */
+/* A row (T-43 灵动环 v10.2, the user's design): line one, a standing
+   Agent's name or an executor's activity; line two, what a standing Agent
+   last said or an executor's task key and clock. Three lines at most. The
+   ring at the top right, then the "…" where the reader is. The row's height
+   follows what it says. */
 .agent-list .agent-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  column-gap: 9px;
-  row-gap: 2px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  column-gap: 0;
+  row-gap: 0;
+  align-items: start;
   position: relative;
-  padding: 8px 14px;
-}
-.agent-list .agent-row > .agent-rail-avatar {
-  grid-column: 1;
-  grid-row: 1 / span 2;
-  align-self: center;
+  isolation: isolate;
+  padding: 7px 9px 7px 12px;
 }
 .agent-list .agent-row > .agent-select.agent-row-top {
-  grid-column: 2;
+  grid-column: 1;
   grid-row: 1;
-  align-items: center;
+  align-items: flex-start;
   gap: 0;
 }
-.agent-list .agent-row > .agent-row-state {
-  grid-column: 2;
-  grid-row: 2;
-  margin-top: 0;
+/* The "…" has a column of its own here, so line one keeps its width. */
+.agent-list .agent-row:is(.selected, :hover, :focus-within) > .agent-select.agent-row-top,
+.agent-list .agent-row > .agent-select.agent-row-top {
+  padding-right: 0;
 }
-/* Anything else the row says spans both columns, under the two lines. */
+.agent-list .agent-row > :is(.agent-row-state, .agent-row-meta) {
+  grid-column: 1;
+  grid-row: 2;
+  margin-top: 1px;
+}
+.agent-list .agent-row > .agent-island {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  justify-self: end;
+  margin: 0 0 0 8px;
+}
+/* A pill's outline reaches a little left of its words: room for it, clear of line one. */
+.agent-list .agent-row[data-form="pill"] > .agent-island {
+  margin-left: 16px;
+}
+/* An executor's activity: two lines at most, never cut mid-word without
+   its ellipsis. */
+.agent-activity {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  min-width: 0;
+  color: var(--ink);
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.agent-row :is(.agent-activity, .is-alert) > .island-word {
+  color: var(--tone);
+  font-weight: 700;
+}
+/* Its task's key, small and grey, and its clock in the state's colour. */
+.agent-row-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-row-meta > .island-clock {
+  color: var(--tone);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+:root[data-theme="dark"] .agent-row-meta > .island-clock,
+:root[data-theme="dark"] .agent-row :is(.agent-activity, .is-alert) > .island-word {
+  color: var(--tone);
+}
+/* A standing Agent that needs you or failed: the word, then what it said. */
+.agent-row-state.is-alert > .island-word {
+  flex: none;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.agent-row-state.is-alert > .agent-row-said {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+/* Hover darkens the row's background, and only that (the user, v9): no
+   border. On a ring that is a button the row stays as it is and the ring
+   grows a little (agent-island.css). A row island darkens its outline's
+   fill instead. */
+.agent-list .agent-row:not(.selected):hover,
+:root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"])) .agent-list .agent-row:not(.selected):hover {
+  border-color: transparent;
+}
+.agent-list .agent-row:not(.selected):hover:has(> button.agent-island:hover) {
+  background: transparent;
+}
+.agent-list .agent-row:hover:not(:has(> button.agent-island:hover)) > .island-shell {
+  background: color-mix(in srgb, var(--tone) 20%, var(--paper));
+}
+:root[data-agent-list="compact"] .agent-list .agent-row > .agent-row-meta {
+  display: none;
+}
+/* Where the reader is -- the selected row, or the keyboard on its link or
+   on the "…" itself -- the "…" opens beside the ring; elsewhere it takes no
+   width, and is still reached by keyboard (T-15), a right-click or a
+   long-press. Not under the pointer or on the ring: hover only darkens the
+   row (the user, v9), and the ring stays where it was clicked. */
+.agent-list .agent-row > .agent-row-menu {
+  position: relative;
+  top: auto;
+  right: auto;
+  z-index: 1;
+  grid-column: 3;
+  grid-row: 1;
+  align-self: start;
+  width: 0;
+  /* Centred on the ring, and no taller than it in the row's layout. */
+  height: 26px;
+  margin-block: -2px;
+  margin-left: 0;
+  overflow: hidden;
+}
+.agent-list .agent-row:is(.selected, :has(> .agent-select:focus-visible), :has(> .agent-row-menu:is(:focus-visible, [aria-expanded="true"]))) > .agent-row-menu {
+  width: 26px;
+  margin-left: 3px;
+}
+@media (pointer: coarse) {
+  .agent-list .agent-row > .agent-row-menu {
+    height: 38px;
+    margin-block: -8px;
+  }
+  .agent-list .agent-row:is(.selected, :has(> .agent-select:focus-visible), :has(> .agent-row-menu:is(:focus-visible, [aria-expanded="true"]))) > .agent-row-menu {
+    width: 38px;
+  }
+}
+/* To a finger the whole row is the target, 44 px at least; its link
+   needn't be. */
+@media (pointer: coarse) {
+  .agent-list .agent-row {
+    min-height: 44px;
+  }
+}
+.app.phone .agent-list .agent-row {
+  min-height: 44px;
+}
+.app.phone .agent-list .agent-row > .agent-select {
+  min-height: 0;
+}
+/* A standing Agent's name, then its kind ("Lead") beside it, or under it
+   when both don't fit: the name isn't cut for its badge. */
+.agent-list .agent-row .agent-line-one.agent-identity {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+}
+.agent-list .agent-row .agent-line-one.agent-identity > .agent-name {
+  flex: 0 1 auto;
+}
+/* While a pill takes line one's width, line one wraps rather than being cut
+   (the user, v10.2): an activity past its two lines, a name past its one.
+   The row grows for those few seconds. */
+.agent-list .agent-row[data-form="pill"] .agent-activity {
+  display: block;
+  -webkit-line-clamp: none;
+  overflow: visible;
+}
+/* Its key and clock too: they wrap rather than end in "…". */
+.agent-list .agent-row[data-form="pill"] > .agent-row-meta {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.agent-list .agent-row[data-form="pill"] .agent-line-one.agent-identity {
+  flex-wrap: wrap;
+}
+.agent-list .agent-row[data-form="pill"] .agent-line-one.agent-identity > .agent-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* Alone on line one, the name has its whole width (T-15). */
+.agent-list .agent-row .agent-line-one.agent-identity > .agent-name:last-child {
+  flex: 1 1 auto;
+}
+.agent-list .agent-row .agent-line-one.agent-identity > .agent-kind-badge {
+  flex: none;
+  align-self: center;
+}
 .agent-list .agent-row > .handoff-hint,
 .agent-list .agent-row > .agent-row-bottom {
   grid-column: 1 / -1;
 }
-/* The whole row opens the Agent, the avatar included, while the actions
-   button and the words on the second line stay reachable above it. */
+/* The whole row opens the conversation, the text of a row island included,
+   while the ring and the "…" stay reachable above it. */
 .agent-list .agent-row > .agent-select.agent-row-top::after {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
-}
-.agent-list .agent-row > .agent-row-menu {
-  z-index: 1;
 }
 .agent-identity > .agent-name {
   flex: none;
@@ -265,18 +394,7 @@
   text-decoration: underline;
 }
 
-/* A Turn end this device has not shown yet (T-42), and the list's way to
-   the next thing that needs you while something does. On the row's second
-   line, where the status is now; under the name's button these matched
-   nothing once it moved (#459 R8). */
-.agent-row-state > .agent-runtime.unseen-finished {
-  color: #6f8a5c;
-  font-weight: 600;
-}
-.agent-row-state > .agent-runtime.unseen-failed {
-  color: #a96a5b;
-  font-weight: 600;
-}
+/* The list's way to the next thing that needs you while something does (T-42). */
 .next-needs-you {
   display: flex;
   align-items: center;

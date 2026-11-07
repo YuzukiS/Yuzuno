@@ -189,6 +189,7 @@ import { ConversationSubAgentDock } from "./ClaudeSubAgentDock";
 import { ConversationBackgroundTaskDock } from "./ClaudeBackgroundTasks";
 import { refreshLiveJobs } from "./live-jobs";
 import { clearLiveCI, refreshLiveCI } from "./live-ci";
+import { clearLiveExecutors, refreshLiveExecutors } from "./live-executors";
 import { TurnNavigator } from "./TurnNavigator";
 import { useConversationInputs } from "./useConversationInputs";
 import { entryInput, inputEntries, readingEntry, type ReadBy } from "./input-dock";
@@ -1170,6 +1171,14 @@ export function App() {
     const timer = setInterval(() => refreshLiveCI(workspaceId), 30_000);
     return () => { clearInterval(timer); clearLiveCI(); };
   }, [workspaceId, previewMode]);
+  // Each open executor's PR for its row (T-43 S2): read again on every
+  // collaboration change (a link, a GitHub refresh, a review's end) and
+  // when the open executors change; one local read, never GitHub.
+  const openExecutors = workspace?.agents.filter((a) => a.kind === "executor" && !a.closedAt).map((a) => a.id).join(",") ?? "";
+  useEffect(() => {
+    if (previewMode || !workspaceId || !openExecutors) { clearLiveExecutors(); return; }
+    refreshLiveExecutors(workspaceId);
+  }, [boardRevision, openExecutors, workspaceId, previewMode]);
   const scope = validScope(storedScope, projects);
   scopeRef.current = scope;
   const panelWidths = usePanelWidths(
@@ -1782,7 +1791,7 @@ export function App() {
     [needsYouItems, activeAgents],
   );
   const lastNeedsJump = useRef<NeedsJump | null>(null);
-  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; n: number } | null>(null);
+  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; agentId?: string; n: number } | null>(null);
   const goNextNeedsYou = () => {
     const shown: NeedsTarget | null = homeOpen
       ? lastNeedsJump.current && lastNeedsJump.current.target.kind !== "agent" ? lastNeedsJump.current.target : null
@@ -3184,9 +3193,10 @@ export function App() {
     setSelected(fork.id);
     setAgentScope(fork.closedAt ? "closed" : "active");
     refresh();
+    // No credential crosses Agents (T-61 slice 7, D-31): the new one's OpenCode has no login of this one's.
     setNotice(fork.closedAt ? shell.forkClosed(fork.name)
-      : outcome.connected ? shell.forkContinuing(fork.name)
-      : shell.forkNotConnected(fork.name, (outcome.warnings ?? []).join(" ")));
+      : `${outcome.connected ? shell.forkContinuing(fork.name)
+        : shell.forkNotConnected(fork.name, (outcome.warnings ?? []).join(" "))} ${shell.openCodeForkLogin}`);
   }
   /**
    * Send to Agent (T-152): the menu and a drop on the rail both end here. It
@@ -3626,6 +3636,8 @@ export function App() {
         )}
         <nav className="agent-list" aria-label={shell.agents}>
           {(() => {
+            // How long each has waited for you, from Home's Needs you (T-43 S2).
+            const waited = waitingSince(needsYouItems);
             const row = (a: Agent) => {
             const unseen = unseenEnd(a, turnSeen);
             return (
@@ -3648,7 +3660,15 @@ export function App() {
                 !(a.id === selected && compacting) &&
                 a.status === "idle"
               }
+              waitingSince={waited.get(a.id) ?? null}
+              compacting={a.id === selected && compacting}
               onSelect={() => openFromList(a.id)}
+              onOpenHome={(agentId) => {
+                // Its ring (T-43 v10.2): Home, at what it asks in Needs you.
+                goHome();
+                setHomeJump((last) => ({ projectId: null, agentId, n: (last?.n ?? 0) + 1 }));
+              }}
+              onOpenTask={(taskId) => window.dispatchEvent(new CustomEvent("yuzuno:open-task-review", { detail: { taskId } }))}
               actions={agentActions}
             />
             );

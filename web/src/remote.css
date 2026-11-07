@@ -149,7 +149,7 @@
 .agent-row-bottom > .remote-machine-badge {
   flex-shrink: 0;
 }
-.agent-row-bottom:has(.remote-machine-badge) > :is(.agent-runtime, .needs-you) {
+.agent-row-bottom:has(.remote-machine-badge) > .needs-you {
   flex-shrink: 0;
   white-space: nowrap;
 }

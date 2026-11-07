@@ -24,12 +24,6 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
-/// What compaction, rewind and fork say on a session whose messages are
-/// 2.x's (Lead 4983, decision A): each still reads 1.19.3's, until its own
-/// slice moves it. An empty session says nothing of its shape, and holds
-/// nothing to rewind or fork.
-pub(crate) const NOT_YET: &str = "这在 OpenCode 2.x 上还不能用（not yet on OpenCode 2.x）：Yuzuno 还读不懂 2.x 这一部分的消息";
-
 /// The name Core's record gives a 2.x execution that failed (`halted`).
 pub(crate) const EXECUTION_FAILED: &str = "ExecutionFailed";
 const ABORTED: &str = "MessageAbortedError";

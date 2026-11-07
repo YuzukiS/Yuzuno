@@ -110,7 +110,7 @@ const frame = () => page.evaluate(() => {
     heading: document.querySelector(".rail-heading > span").textContent,
     scope: texts(".agent-scope button"),
     groups: texts(".project-group-name"),
-    rows: Object.fromEntries([...document.querySelectorAll(".agent-row")].map((row) => [row.querySelector(".agent-name").textContent, [row.querySelector(".agent-runtime").textContent, row.querySelector(".needs-you")?.textContent ?? null]])),
+    rows: Object.fromEntries([...document.querySelectorAll(".agent-row")].map((row) => [row.querySelector(".agent-name").textContent, [row.querySelector(".agent-island").dataset.status, (row.querySelector(".is-alert .island-word")?.textContent ?? row.querySelector(".agent-island").dataset.state), row.querySelector(".needs-you")?.textContent ?? null]])),
     selected: attr('.agent-select[aria-current="true"]', "aria-label"),
     search: document.querySelector(".agent-search input")?.value ?? null,
     searchPlaceholder: attr(".agent-search input", "placeholder"),
@@ -132,7 +132,11 @@ try {
   assert.deepEqual(en.nav, ["Home", "Tasks & messages", "Jobs"]);
   assert.deepEqual(en.core, { text: "Core connected", status: "Core connected" });
   assert.deepEqual([en.heading, en.scope, en.groups], ["YOUR AGENTS", ["Active 4", "Closed 1"], ["Yuzuno", "No project"]]);
-  assert.deepEqual(en.rows, { Mori: ["Ready", "1 needs you"], Cedar: ["Working", null], Pine: ["Offline", null], Rowan: ["Needs a look", null] });
+  // Each row: its status words and its island's state (T-43 v4-2); needs you
+  // is said once, by the island, so no bell under it.
+  // The status in the row's words; then needs you's and failed's word on
+  // line two, or the ring's state (T-43: the ring says the rest in strokes).
+  assert.deepEqual(en.rows, { Mori: ["Ready", "Needs you", null], Cedar: ["Working", "working", null], Pine: ["Offline", "offline", null], Rowan: ["Needs a look", "Failed", null] });
   assert.equal(en.selected, "Open Cedar");
   // A search typed, matching no Agent: the list's empty state.
   await page.locator(".rail-heading").getByRole("button", { name: "Search agents" }).click();
@@ -162,7 +166,7 @@ try {
   await page.locator('.agent-row[data-agent-id="a"]').waitFor({ timeout: 10_000 });
   const rows = await frame();
   assert.deepEqual(rows.groups, ["Yuzuno", "无项目"]);
-  assert.deepEqual(rows.rows, { Mori: ["就绪", "1 项需要你"], Cedar: ["工作中", null], Pine: ["离线", null], Rowan: ["需要查看", null] });
+  assert.deepEqual(rows.rows, { Mori: ["就绪", "等你", null], Cedar: ["工作中", "working", null], Pine: ["离线", "offline", null], Rowan: ["需要查看", "出错", null] });
   assert.equal(rows.selected, "打开 Cedar", "the chosen Agent is kept");
   assert.deepEqual(meanwhile.filter((read) => !read.startsWith("GET ")), [], "nothing sent");
   await page.screenshot({ path: join(output, "shell-zh.png") });

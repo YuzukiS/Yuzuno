@@ -224,6 +224,21 @@ try {
     assert.equal(phone.sideways, false, JSON.stringify(phone));
     await shot(page, "settings-granted-390.png");
     check("granted: on, a test sent to Chromium's Notification and its report shown; the editor fits at 1280 and 390 px", { outcome, text, wide, phone });
+    // Forced colors (#731 R1 P3): each switch keeps a border, and on and off
+    // still look different, in the system's colors.
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.emulateMedia({ forcedColors: "active" });
+    const looks = await editor.locator('input.settings-toggle[role="switch"]').evaluateAll((list) => list.map((el) => {
+      const style = getComputedStyle(el);
+      return { on: el.checked, border: `${style.borderTopStyle} ${style.borderTopWidth}`, adjust: style.forcedColorAdjust, look: `${style.backgroundColor} ${style.backgroundImage}` };
+    }));
+    assert.ok(looks.length >= 2 && looks.some((l) => l.on) && looks.some((l) => !l.on), `on and off switches to compare: ${JSON.stringify(looks)}`);
+    assert.ok(looks.every((l) => l.border === "solid 1px" && l.adjust === "none"), `a border on each, colors kept: ${JSON.stringify(looks)}`);
+    const onLook = new Set(looks.filter((l) => l.on).map((l) => l.look)), offLook = new Set(looks.filter((l) => !l.on).map((l) => l.look));
+    assert.ok([...onLook].every((look) => !offLook.has(look)), `on looks unlike off: ${JSON.stringify(looks)}`);
+    await shot(page, "settings-granted-forced-colors.png");
+    await page.emulateMedia({ forcedColors: "none" });
+    check("forced colors: every switch keeps a border, and on looks unlike off", { switches: looks.length });
     await context.close();
   }
 

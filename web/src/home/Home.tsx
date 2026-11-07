@@ -18,7 +18,7 @@ import { HomeReadContext, type HomeRead } from "./home-read";
 import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
 import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
-import { NeedsYou } from "./NeedsYou";
+import { NeedsYou, needsYouKey } from "./NeedsYou";
 import { PinNotes, PinnedSection } from "./PinnedSection";
 import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
@@ -109,8 +109,9 @@ export function Home({
   onChanged: () => void;
   /** Each read's Needs you, for the Home tab's count. */
   onNeedsYou?: (items: NeedsYouItem[]) => void;
-  /** An Ask "next needs you" goes to; another jump is another `n`. */
-  jumpTo?: { projectId: string | null; sectionKey?: string; n: number } | null;
+  /** An Ask "next needs you" goes to, or an Agent whose ring in the Agent
+   * list asked for its place here (T-43 v10.2); another jump is another `n`. */
+  jumpTo?: { projectId: string | null; sectionKey?: string; agentId?: string; n: number } | null;
   /** "Open on Home" on a reply from Home (T-9): the section and version it
    * answered, and the message to go back to; another opening is another `n`. */
   arrival?: { origin: HomeReplyOrigin; back: MessageLink; n: number } | null;
@@ -139,6 +140,13 @@ export function Home({
   const jumped = useRef(0);
   useEffect(() => {
     if (!jumpTo || !data || jumped.current === jumpTo.n) return;
+    if (jumpTo.agentId) {
+      // An Agent's ring: its item in Needs you, else Needs you itself.
+      jumped.current = jumpTo.n;
+      const item = data.needsYou.find((n) => n.agentId === jumpTo.agentId);
+      showNeeds.current(item ? needsYouKey(item) : null);
+      return;
+    }
     const item = data.needsYou.find((n) => n.projectId === jumpTo.projectId && n.kind === "ask" && n.sectionKey === jumpTo.sectionKey);
     if (!item) return;
     jumped.current = jumpTo.n;
@@ -182,6 +190,23 @@ export function Home({
   // The Needs you area's landing mark, from the return overview (T-19).
   const needsSettled = useRef<(() => void) | null>(null);
   useEffect(() => () => needsSettled.current?.(), []);
+  /** Needs you, or one of its items, scrolled to, focused and marked once it
+   * has landed; a folded card opens to show it (T-115). */
+  const showNeeds = useRef((key: string | null) => {
+    const area = document.getElementById("home-current-needs");
+    const item = key ? [...(area?.querySelectorAll<HTMLElement>("[data-needs-you]") ?? [])].find((el) => el.dataset.needsYou === key) : null;
+    const target = item ?? area;
+    if (!target) return;
+    const smooth = !reducedMotion();
+    const show = () => {
+      target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center", inline: "center" });
+      target.focus({ preventScroll: true });
+      needsSettled.current?.();
+      needsSettled.current = settleWhenLanded(target, "data-home-highlight", smooth);
+    };
+    if (unfoldAround(target)) requestAnimationFrame(show);
+    else show();
+  });
   const pendingJump = useRef<{ target: () => HTMLElement | null; n: number; block?: ScrollLogicalPosition } | null>(null);
   const reload = useCallback(() => setTick((n) => n + 1), []);
   // Refresh asked for and not yet answered (T-19 HM:H3): its icon turns and it says it is busy. The reads Home makes
@@ -808,15 +833,7 @@ export function Home({
             data={data}
             readFailed={readFailed}
             onSection={(projectId, key) => revealIn(projectId, () => document.getElementById(sectionDomId(projectId, key)))}
-            onNeedsYou={() => {
-              const target = document.getElementById("home-current-needs");
-              if (!target) return;
-              const smooth = !reducedMotion();
-              target.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "center" });
-              target.focus({ preventScroll: true });
-              needsSettled.current?.();
-              needsSettled.current = settleWhenLanded(target, "data-home-highlight", smooth);
-            }}
+            onNeedsYou={() => showNeeds.current(null)}
             onNavigate={onNavigate}
           />
           <div className="home-needs-area" id="home-current-needs" tabIndex={-1}>

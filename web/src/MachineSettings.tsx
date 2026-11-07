@@ -70,6 +70,8 @@ export function MachineSettings({ machine, language, onSaved }: {
         : "";
   async function saveMachine(): Promise<boolean> {
     setError("");
+    // What is sent: a field changed while it is on its way stays a change (#730 R1 P3).
+    const sent = { ...edits };
     const v = (field: Field) => value(field).trim();
     // Core keeps a Jobs setting left out and clears one sent as null.
     const body = {
@@ -85,7 +87,7 @@ export function MachineSettings({ machine, language, onSaved }: {
     };
     try {
       const next = await api<WorkspaceMachine>(`/machines/${encodeURIComponent(machine.id)}`, { method: "PUT", body: JSON.stringify(body) });
-      setEdits({});
+      setEdits((current) => Object.fromEntries(Object.entries(current).filter(([field, value]) => value !== sent[field as Field])));
       onSaved(next);
       return true;
     } catch (e) {

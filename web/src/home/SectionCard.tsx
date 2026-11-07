@@ -1,4 +1,4 @@
-import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Component, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
 import { BookOpen, CalendarClock, Check, ChevronDown, ChevronRight, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
@@ -12,6 +12,7 @@ import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { BriefMarkdown } from "./brief/Markdown";
 import { changedSinceSeen, repliedThenUpdated, sectionDomId } from "./brief-layout";
 import { DeckSizes } from "./card-sizes";
+import { packDeckOf } from "./deck-packing";
 import { FoldButton, useCardFold } from "./card-fold";
 import { sectionConditions, sectionSummary, unmaintained } from "./card-summary";
 import { absolute, deferChoices, duration, relative } from "./format";
@@ -22,6 +23,7 @@ import type { Section } from "./types";
 import { pinnable, PinsContext } from "./widget-layout";
 import { useReportOpen } from "./report/report-open";
 import { reportText } from "./report/report-text";
+import { collapseFrom } from "../surface";
 
 /** When a status's data is from, and whether it is past its validity. */
 export function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
@@ -53,7 +55,9 @@ export function SectionTime({ label, iso }: { label: string; iso?: string }) {
  * Keeps a card at least as tall as it was before Core sent a new version, or
  * a new state of its ask (replied, as Core reads the reply: T-19 HM:A4, with
  * the version unchanged), until the reader touches it, so shorter content
- * never pulls up the blocks below while they are being read.
+ * never pulls up the blocks below while they are being read. A reply sent
+ * from the card itself is the user's own act: it becomes its answer card,
+ * which holds no room (YN-21, `collapsed`).
  */
 function useReservedHeight(content: string, collapsed: boolean) {
   const ref = useRef<HTMLElement>(null);
@@ -76,6 +80,37 @@ function useReservedHeight(content: string, collapsed: boolean) {
     if (ref.current?.style.minHeight) ref.current.style.minHeight = "";
   };
   return [ref, release] as const;
+}
+
+/**
+ * A card the user's own reply turned into its answer card (YN-21) collapses
+ * to it from the height it had just before (surface.ts collapseFrom). Drawn
+ * inside the card, it reads that height before React changes the card, as
+ * each new `collapse` comes; it plays before the frame is painted, once the
+ * deck has packed the card: HomePanel's layout effect, after the card's, when
+ * Core's read changed it, else here (Reply again closes it by its own state).
+ * Anything held for the card it was is let go first.
+ */
+type CollapseProps = { target: RefObject<HTMLElement | null>; collapse: string | null };
+class CollapseFrom extends Component<CollapseProps, object, number | null> {
+  getSnapshotBeforeUpdate(previous: Readonly<CollapseProps>) {
+    const { target, collapse } = this.props;
+    if (collapse === null || collapse === previous.collapse) return null;
+    return target.current?.getBoundingClientRect().height ?? null;
+  }
+  componentDidUpdate(_previous: Readonly<CollapseProps>, _state: object, from?: number | null) {
+    const element = this.props.target.current;
+    if (from == null || !element) return;
+    element.style.minHeight = "";
+    queueMicrotask(() => {
+      if (!element.isConnected) return;
+      packDeckOf(element);
+      collapseFrom(element, from);
+    });
+  }
+  render() {
+    return null;
+  }
 }
 
 /** Pins a status or report section to the widget column, or takes it off.
@@ -139,18 +174,50 @@ export const SectionCard = memo(function SectionCard({
   // and the header still says what changed and offers Seen (T-115).
   const [chosenFold, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
   // Answered and waiting for its owner, as it was when first shown in this
-  // visit: an answer card, a small card on the deck (YN-3, the design the user
-  // chose, D3): the question's title, the reply quoted, who acts next or what
-  // its owner changed since, Reply again; the question and details one click
-  // away. One answered here keeps its card until the next visit (card-sizes.ts).
+  // visit or answered here: an answer card, a small card on the deck (YN-3,
+  // the design the user chose, D3): the question's title, the reply quoted,
+  // who acts next or what its owner changed since, Reply again; the question
+  // and details one click away. One answered elsewhere keeps its card until
+  // the next visit (card-sizes.ts).
   const replied = section.ask?.state === "replied";
   const sizes = useContext(DeckSizes);
   const short = sizes ? sizes.short(projectId, section.key, section.version, replied) : replied;
   const [rowOpen, setRowOpen] = useState(false);
   // Each step is the answer card's Reply again (AskReply).
   const [againRequest, setAgainRequest] = useState(0);
+  // The user's reply from this card, as Core accepted it (YN-21, the user's choice): the user acted, so the
+  // card is its answer card once Core reads the ask replied, in this visit. Its place on the deck stays
+  // (card-sizes.ts). A reply from elsewhere keeps the rules above.
+  const [own, setOwn] = useState<{ version: number; n: number } | null>(null);
+  // Until Core's read has that reply (the reply's time is no longer the one Core showed as it was sent), the
+  // card stays as it is; Reply again's opened card then closes to its answer card with the new reply on it.
+  const [awaiting, setAwaiting] = useState<{ before: string | null } | null>(null);
+  if (awaiting && (section.ask?.repliedAt ?? null) !== awaiting.before) {
+    setAwaiting(null);
+    setRowOpen(false);
+  }
+  const repliedHere = useCallback(
+    (version: number, before: string | null) => {
+      sizes?.answered(projectId, section.key, version);
+      setOwn((was) => ({ version, n: (was?.n ?? 0) + 1 }));
+      setAwaiting({ before });
+    },
+    [sizes, projectId, section.key],
+  );
+  // Each own reply the card now shows in short collapses it once, as Core's read has it.
+  const collapse = short && !awaiting && own?.version === section.version ? String(own.n) : null;
   const collapsed = short ? !rowOpen : chosenFold;
   const [ref, release] = useReservedHeight(`${section.version}:${section.ask?.state ?? ""}`, collapsed);
+  // Focus that went with the reply's controls goes to the card, which says what was answered.
+  useLayoutEffect(() => {
+    const card = ref.current;
+    if (collapse === null || !card) return;
+    const active = document.activeElement;
+    if (!active || active === document.body || (card.contains(active) && active.closest("[hidden]")))
+      card.focus({ preventScroll: true });
+    // Only as an own reply collapses it; `ref` is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collapse]);
   const [seeing, setSeeing] = useState(false);
   const [deferOpen, setDeferOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -261,6 +328,7 @@ export const SectionCard = memo(function SectionCard({
         onPointerDown={release}
         aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
       >
+        <CollapseFrom target={ref} collapse={collapse} />
         {notice}
         <header className="home-section-head">
           {topic !== undefined && <span className="home-sub-of">{t.inTopic(topic)}</span>}
@@ -298,6 +366,7 @@ export const SectionCard = memo(function SectionCard({
                 type="button"
                 className="secondary-button home-answer-again"
                 onClick={() => {
+                  setAwaiting(null);
                   setRowOpen(true);
                   setAgainRequest((n) => n + 1);
                 }}
@@ -312,7 +381,10 @@ export const SectionCard = memo(function SectionCard({
               className="quiet-button home-fold home-answer-details"
               aria-expanded={rowOpen}
               aria-controls={bodyId}
-              onClick={() => setRowOpen((open) => !open)}
+              onClick={() => {
+                setAwaiting(null);
+                setRowOpen((open) => !open);
+              }}
             >
               {rowOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
               {t.questionAndDetails}
@@ -341,6 +413,7 @@ export const SectionCard = memo(function SectionCard({
               agents={agents}
               readOnly={readOnly}
               onSent={onChanged}
+              onReplied={repliedHere}
             />
           </div>
         </div>
@@ -363,6 +436,7 @@ export const SectionCard = memo(function SectionCard({
       onPointerDown={release}
       aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
     >
+      <CollapseFrom target={ref} collapse={collapse} />
       {notice}
       <header className="home-section-head">
         <FoldButton
@@ -473,6 +547,7 @@ export const SectionCard = memo(function SectionCard({
             agents={agents}
             readOnly={readOnly}
             onSent={onChanged}
+            onReplied={repliedHere}
           />
           {!readOnly && !replied && (
             <div className="home-defer">
