@@ -301,7 +301,7 @@ async fn a_lost_admission_is_found_by_its_id_and_never_sent_again() {
     let error = lab.ws.opencode_compact(ID).await.unwrap_err().to_string();
     assert!(error.contains("结果未确认，不会重发"), "{error}");
     let d = lab.detail();
-    assert_eq!((&compaction(&d)["status"], &compaction(&d)["_opencodeCompact"]["state"]), (&json!("unknown"), &json!("unknown")));
+    assert_eq!((&compaction(&d)["status"], &compaction(&d)["_opencodeCompact"]["state"]), (&json!("outcomeUnknown"), &json!("unknown")), "its Turn and attempt both unknown");
     assert_eq!(lab.compacts().await.len(), 3);
     refuses_new_writes(&lab, "上一次 /compact 的结果无法确认").await;
     assert_eq!(lab.compacts().await.len(), 3, "never sent again");
