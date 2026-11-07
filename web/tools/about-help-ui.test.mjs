@@ -83,8 +83,8 @@ function mount(t, answers) {
     link: (label) => [...document.querySelectorAll("#settings-about a")].find((a) => a.textContent.trim() === label),
   };
   page.open = async () => {
-    // In Updates & about's row of entries (T-187).
-    (await until(() => [...document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === "About & help"), "Updates & about offers About & help")).click();
+    // Its page of Settings (YN-8).
+    (await until(() => document.querySelector("#settings-tab-about"), "Settings has an About & help page")).click();
     return until(() => page.row("This version"), "About & help is shown");
   };
   return page;
@@ -126,7 +126,7 @@ test("About & help shows the version and notes the Workspace service runs, and t
   // Help it points to is the editors Settings already has.
   page.button("Keyboard shortcuts").click();
   await until(() => page.document.querySelector('#settings-editor-shortcuts:not([hidden]) #settings-shortcuts-title'), "the shortcuts editor");
-  assert.equal(page.document.querySelector("#settings-tab-appearance").getAttribute("aria-selected"), "true");
+  assert.equal(page.document.querySelector("#settings-tab-shortcuts").getAttribute("aria-selected"), "true");
   assert.equal(page.document.querySelector("#settings-editor-about").hidden, true);
   page.document.querySelector("#settings-tab-updates").click();
   await page.open();

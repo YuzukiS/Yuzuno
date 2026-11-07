@@ -427,6 +427,7 @@ export function ProjectManager({
   agents,
   onChanged,
   onCreated,
+  inline = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -438,6 +439,9 @@ export function ProjectManager({
   agents: Agent[];
   onChanged: () => void;
   onCreated: (project: Project) => void;
+  /** Settings › Projects (YN-8): the same manager as a page, not a dialog;
+   * `open` is then whether its page is shown. */
+  inline?: boolean;
 }) {
   const t = useStrings(managerText);
   const [view, setView] = useState<ManagerView>({ kind: "new" });
@@ -485,14 +489,7 @@ export function ProjectManager({
     </button>
   );
   const archived = projects.filter((p) => !!p.archivedAt);
-  return (
-    <Modal
-      open={open}
-      onOpenChange={onOpenChange}
-      wide
-      title={t.title}
-      description={t.description}
-    >
+  const body = (
       <div className="project-manager">
         <nav className="project-list" aria-label={t.list}>
           {activeProjects(projects).map(listItem)}
@@ -561,6 +558,28 @@ export function ProjectManager({
           )}
         </section>
       </div>
+  );
+  if (inline)
+    return (
+      <section className="settings-section settings-manager" aria-labelledby="settings-projects-title">
+        <header className="settings-section-heading">
+          <div>
+            <h3 id="settings-projects-title">{t.title}</h3>
+            <p>{t.description}</p>
+          </div>
+        </header>
+        {body}
+      </section>
+    );
+  return (
+    <Modal
+      open={open}
+      onOpenChange={onOpenChange}
+      wide
+      title={t.title}
+      description={t.description}
+    >
+      {body}
     </Modal>
   );
 }

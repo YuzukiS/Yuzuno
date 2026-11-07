@@ -756,8 +756,10 @@ test("Machines opens from the Workspace menu, reads nothing while open, and open
     agents: { a: { unreadCount: 2, reviewedSeq: 3 } } });
   try {
     await fromScopeMenu(page, "Machines");
-    // The page says "Loading machines…" until /api/machines is answered.
-    const dialog = await waitFor(() => /Core host/.test(dialogOf(page)?.textContent || "") && dialogOf(page), "the Machines page lists Core host");
+    // Settings › Machines (YN-8). The page says "Loading machines…" until
+    // /api/machines is answered; Settings' other pages say "Core host" too.
+    const machinesPage = () => page.document.querySelector("#settings-editor-machines:not([hidden])");
+    const dialog = await waitFor(() => /Not checked yet/.test(machinesPage()?.textContent || "") && machinesPage(), "the Machines page lists Core host");
     assert.match(dialog.textContent, /Machines/);
     assert.match(dialog.textContent, /Core host/);
     assert.match(dialog.textContent, /Not checked yet/);
@@ -803,9 +805,11 @@ test("Home content editor settings save stable IDs, explicit none and compatibil
     assert.deepEqual(saves()[1].body.editorAgentIds, []);
     await waitFor(() => !page.document.querySelector('.home-editor-members input').disabled
       && !page.document.querySelector('.home-editor-actions').textContent.includes('Unsaved changes'), "second save finished");
-    button(page, "Research", dialogOf(page)).click();
+    // The project list: Settings' sidebar has an "Appearance" too (YN-8).
+    const list = () => page.document.querySelector(".project-list");
+    button(page, "Research", list()).click();
     await waitFor(() => page.document.querySelector('.home-editor-mode input')?.checked === true, "different project retains compatibility");
-    button(page, "App", dialogOf(page)).click();
+    button(page, "App", list()).click();
     await waitFor(() => page.document.querySelector('.home-editor-mode input')?.checked === false, "saved empty list restored");
     assert.ok([...page.document.querySelectorAll('.home-editor-members input')].every(box => !box.checked));
     page.document.querySelector('.home-editor-mode input').click(); await pause();

@@ -99,8 +99,8 @@ function mount(t, mcp) {
     },
   };
   page.open = async () => {
-    // In Updates & about's row of entries (T-187).
-    (await until(() => [...document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === "Runtime"), "Updates & about offers Runtime & versions")).click();
+    // Its page of Settings (YN-8).
+    (await until(() => document.querySelector("#settings-tab-runtime"), "Settings has a Runtime page")).click();
     return until(() => page.group(), "the MCP services group");
   };
   return page;
