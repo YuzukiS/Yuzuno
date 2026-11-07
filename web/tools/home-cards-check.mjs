@@ -276,7 +276,7 @@ async function check(run) {
     assert.doesNotMatch(await card("notes").innerText(), /No summary named|未指定摘要|Details follow|second paragraph/);
     pass("the card with no summary shows its first paragraph only");
 
-    // ---- Replied Asks: one line each, the reply in short, never New; unfolded, the reply and Reply again.
+    // ---- Replied Asks in short: one line where the pane is wide, the reply in short, never New; unfolded, the reply and Reply again.
     const rows = {};
     for (const key of ["tokenizer", "draft"]) {
       const row = card(key);
@@ -290,12 +290,18 @@ async function check(run) {
           pane: Math.round(document.querySelector(".home-view")?.getBoundingClientRect().width ?? 0),
           cut: (() => { const r = el.querySelector(".home-replied-short"); return r ? r.scrollWidth > r.clientWidth : null; })() };
       });
+    }
+    // Pictured before the rules below, so a failure still shows the rows.
+    await cardShot("tokenizer", "replied-row");
+    await cardShot("draft", "replied-updated-row");
+    for (const key of ["tokenizer", "draft"]) {
       assert.ok(rows[key].short, `${key}: in short`);
       assert.equal(rows[key].kind, w.replied);
-      // One line where the pane is wide; where it is narrow (640 px or less), the reply takes a second.
+      // One line where the pane is wide. Where it is narrow (640 px or less) the reply takes a line of its own,
+      // and on a phone the title may take one too: never more than three short lines.
       const narrow = rows[key].pane <= 640 + 80;
       assert.equal(rows[key].replyBelow, narrow, `${key}: the reply ${narrow ? "below" : "beside"} the title: ${JSON.stringify(rows[key])}`);
-      assert.ok(rows[key].height <= (narrow ? 96 : 56), `${key}: ${rows[key].height} px`);
+      assert.ok(rows[key].height <= (run.phone ? 112 : narrow ? 96 : 56), `${key}: ${rows[key].height} px: ${JSON.stringify(rows[key])}`);
     }
     assert.equal(rows.tokenizer.changed, null, "answered, not New");
     assert.equal(rows.draft.changed, w.updated, "changed by its owner after the reply: Updated");
@@ -307,9 +313,7 @@ async function check(run) {
     await cardShot("tokenizer", "replied-open");
     await tokenizer.locator(".home-fold").click();
     await tokenizer.locator(".home-card-body").waitFor({ state: "hidden", timeout: 10_000 });
-    await cardShot("tokenizer", "replied-row");
-    await cardShot("draft", "replied-updated-row");
-    pass("replied Asks are one line, the reply in short, Updated only after the owner's change; unfolded, Reply again", rows);
+    pass("replied Asks in short (one line where the pane is wide), the reply in short, Updated only after the owner's change; unfolded, Reply again", rows);
   } finally {
     await context.close();
   }
