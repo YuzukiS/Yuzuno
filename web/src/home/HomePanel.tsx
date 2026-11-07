@@ -17,7 +17,6 @@ import {
 } from "lucide-react";
 import { errorText } from "../api";
 import { PendingCard } from "../components";
-import { GitHubLinks, GitHubSummary } from "../GitHubLinks";
 import { openJobs } from "../Jobs";
 import type { Agent, PendingRequest } from "../types";
 import { ProjectReply } from "./AskReply";
@@ -92,18 +91,15 @@ function useOverflow(active: boolean) {
 }
 
 /**
- * Linked repositories, one line each (T-18): name, branch, the default
- * branch's latest run, the last commit and the open PRs. Repository details
- * add the activity lists, the GitHub summary and the links; once opened, the
- * links stay mounted while closed, with anything typed in them. A project
- * without any repository shows nothing.
+ * Linked repositories (T-18; the design's layout A, YN-8 S7): each one's
+ * line, then its open PRs grouped by what they need, its recent commits
+ * folded under them. Linking repositories, their sync and the merge queue
+ * switch are in Settings › Projects, which Manage in Settings opens. A
+ * project without any repository shows nothing.
  */
-function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boolean }) {
+function RepoBlock({ projectId, readOnly, onManage }: { projectId: string; readOnly: boolean; onManage: () => void }) {
   const t = useStrings(homeText);
-  const language = useLanguage();
   const [page, setPage] = useState<LinkedRepositories | null>(null);
-  const [details, setDetails] = useState(false);
-  const [opened, setOpened] = useState(false);
   useEffect(() => {
     if (readOnly) return;
     const controller = new AbortController();
@@ -116,28 +112,14 @@ function RepoBlock({ projectId, readOnly }: { projectId: string; readOnly: boole
     return () => controller.abort();
   }, [projectId, readOnly]);
   if (!page?.repositories.length) return null;
-  const body = `${projectDomId(projectId)}-repos`;
   return (
-    <div className={`home-widget home-repos${details ? " is-open" : ""}`} role="group" aria-label={t.repositories}>
+    <div className="home-widget home-repos" role="group" aria-label={t.repositories}>
       <Github size={13} className="home-repos-icon" aria-hidden />
-      <RepoActivity projectId={projectId} linked={page.repositories} line lists={details} />
-      <button
-        type="button"
-        className="quiet-button home-repos-details"
-        aria-expanded={details}
-        aria-controls={body}
-        onClick={() => {
-          setDetails((value) => !value);
-          setOpened(true);
-        }}
-      >
-        {details ? t.hideRepositoryDetails : t.repositoryDetails}
-        {details ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+      <RepoActivity projectId={projectId} linked={page.repositories} line lists={false} groups />
+      <button type="button" className="quiet-button home-repos-manage" onClick={onManage}>
+        {t.manageRepositories}
+        <ChevronRight size={13} aria-hidden />
       </button>
-      <div className="home-repos-more" id={body} hidden={!details}>
-        <GitHubSummary links={page.links} />
-        {opened && <GitHubLinks projectId={projectId} disabled={readOnly} language={language} />}
-      </div>
     </div>
   );
 }
@@ -524,7 +506,7 @@ export function HomePanel({
                 ))}
               </Approvals>
             )}
-            <RepoBlock projectId={id} readOnly={readOnly} />
+            <RepoBlock projectId={id} readOnly={readOnly} onManage={() => onNavigate({ kind: "projectSettings", projectId: id })} />
           </div>
           <div ref={briefRef} className={`home-brief${capped ? " is-capped" : ""}`}>
             {groups.length === 0 ? (

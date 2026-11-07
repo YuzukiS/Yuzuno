@@ -923,9 +923,9 @@ ul.home-widget {
 .home-job-status.status-unknown {
   color: var(--home-error-ink);
 }
-/* The project's repositories as one bar under its head (T-18): each
-   repository a line, Repository details at the end; the details open below,
-   across the whole bar. */
+/* The project's repositories as one card under its head (T-18; layout A,
+   YN-8 S7): each repository's line and its PRs by what they need, Manage in
+   Settings at the end of the first line. */
 .home-repos {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -940,17 +940,11 @@ ul.home-widget {
   margin-top: 0.3em;
   color: var(--home-ink-2);
 }
-.quiet-button.home-repos-details {
+.quiet-button.home-repos-manage {
   display: inline-flex;
   align-items: center;
   gap: 2px;
   color: var(--text-secondary);
-}
-.home-repos-more {
-  grid-column: 1 / -1;
-}
-.home-repos-more[hidden] {
-  display: none;
 }
 .home-repos li {
   display: flex;
@@ -963,9 +957,6 @@ ul.home-widget {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-}
-.home-repos .github-panel {
-  margin-top: 8px;
 }
 .home-missing {
   display: flex;

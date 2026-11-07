@@ -8,6 +8,8 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   ArrowUpRight,
+  ChevronDown,
+  ChevronRight,
   CircleAlert,
   CircleCheck,
   CircleDashed,
@@ -260,6 +262,100 @@ function Lists({ repo }: { repo: RepoActivityRepository }) {
   );
 }
 
+type PullGroup = "failure" | "pending" | "success" | "unknown" | "draft";
+/** What needs you first (YN-8 S7, the design's layout A): failing checks,
+ * then running, passed, unknown, and drafts last whatever their checks. */
+const PULL_GROUPS: PullGroup[] = ["failure", "pending", "success", "unknown", "draft"];
+const groupOf = (pull: RepoPull): PullGroup => (pull.draft ? "draft" : pull.ci && pullCi[pull.ci.state] ? pull.ci.state : "unknown");
+
+/** A repository's open PRs, grouped by what they need, in aligned rows (Home). */
+function PullGroups({ repo }: { repo: RepoActivityRepository }) {
+  const language = useLanguage();
+  const t = homeText(language);
+  if (repo.pulls.length === 0) return <p className="repo-empty repo-groups-empty">{t.noPulls}</p>;
+  return (
+    <div className="repo-groups">
+      {PULL_GROUPS.map((group) => {
+        const pulls = repo.pulls.filter((pull) => groupOf(pull) === group);
+        if (!pulls.length) return null;
+        return (
+          <section key={group} className="repo-group" data-group={group} aria-label={t.pullGroups[group]}>
+            <h5>
+              {t.pullGroups[group]} <span className="repo-count">{pulls.length}</span>
+            </h5>
+            <ul>
+              {pulls.map((pull) => {
+                const ci = pull.ci && pullCi[pull.ci.state] ? { ...pullCi[pull.ci.state], label: t.checks[pull.ci.state] } : undefined;
+                const CiIcon = ci?.icon;
+                return (
+                  <li key={pull.number}>
+                    <Row
+                      href={pull.url}
+                      label={`#${pull.number} ${pull.title} · ${pull.author || t.unknownAuthor}${pull.draft ? ` · ${t.draft}` : ""} · ${ci?.label || t.checksUnknown}`}
+                    >
+                      <code className="repo-pull-number">#{pull.number}</code>
+                      <span className="repo-row-title">{pull.title}</span>
+                      <small className="repo-pull-author">{pull.author || t.unknown}</small>
+                      <span className={`repo-state repo-pull-ci is-${ci?.tone ?? "neutral"}`} role="img" aria-label={ci?.label || t.checksUnknown}>
+                        {CiIcon ? <CiIcon size={11} aria-hidden /> : <CircleDashed size={11} aria-hidden />}
+                      </span>
+                    </Row>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Under the PRs (Home): more on GitHub, the recent commits folded, the runs on GitHub. */
+function RepoFooter({ repo }: { repo: RepoActivityRepository }) {
+  const time = useTimeDisplay();
+  const language = useLanguage();
+  const t = homeText(language);
+  const [commits, setCommits] = useState(false);
+  const more = (repo.pullsTotal ?? repo.pulls.length) - repo.pulls.length;
+  const pullsPage = githubPage(`${repo.url}/pulls`);
+  const runsPage = githubPage(`${repo.url}/actions`);
+  const body = `repo-commits-${repo.id}`;
+  return (
+    <div className="repo-footer">
+      <div className="repo-footer-links">
+        {more > 0 && pullsPage && (
+          <a href={pullsPage} target="_blank" rel="noopener noreferrer">
+            {t.morePulls(more)} <ArrowUpRight size={11} aria-hidden />
+          </a>
+        )}
+        <button type="button" className="quiet-button repo-commits-toggle" aria-expanded={commits} aria-controls={body} onClick={() => setCommits((open) => !open)}>
+          {commits ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />} {t.recentCommits}
+        </button>
+        {runsPage && (
+          <a href={runsPage} target="_blank" rel="noopener noreferrer">
+            {t.runsOnGitHub} <ArrowUpRight size={11} aria-hidden />
+          </a>
+        )}
+      </div>
+      <ul className="repo-commits" id={body} hidden={!commits}>
+        {repo.commits.length === 0 && <li className="repo-empty">{t.noCommits}</li>}
+        {repo.commits.map((commit) => (
+          <li key={commit.sha}>
+            <Row href={commit.url} label={`${commit.sha.slice(0, 7)} ${commit.title} · ${commit.author || t.unknownAuthor} · ${absolute(commit.at, time)}`}>
+              <code>{commit.sha.slice(0, 7)}</code>
+              <span className="repo-row-title">{commit.title}</span>
+              <small>
+                {commit.author || t.unknown} · {when(commit.at, language)}
+              </small>
+            </Row>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** While nothing is known yet: the same frame, so arriving data does not move anything. */
 function Placeholder() {
   const t = homeText(useLanguage());
@@ -383,14 +479,17 @@ export function RepoActivity({
   linked,
   line = false,
   lists = true,
+  groups = false,
 }: {
   projectId: string;
   /** The linked repositories as already known, to hold their place while loading. */
   linked?: { id: number; fullName: string; url: string }[];
   /** Each repository as one line (Home, T-18) instead of its name heading the lists. */
   line?: boolean;
-  /** Commits, PRs and runs as lists; Home shows them with the repository details. */
+  /** Commits, PRs and runs as lists. */
   lists?: boolean;
+  /** The open PRs grouped by what they need, the commits folded under them (Home, YN-8 S7). */
+  groups?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const visible = useOnScreen(ref);
@@ -456,6 +555,8 @@ export function RepoActivity({
                 )}
                 {problem && <Problem lead={t.lastKnown} text={problem} />}
                 {lists && <Lists repo={repo} />}
+                {groups && <PullGroups repo={repo} />}
+                {groups && <RepoFooter repo={repo} />}
               </article>
             );
           })
