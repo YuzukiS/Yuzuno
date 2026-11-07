@@ -254,7 +254,7 @@ async fn only_the_owner_changes_a_section_and_others_add_sub_topics() {
     assert_eq!(read["version"], 2);
     assert_eq!(section(&read, "round-12")["owner"]["agentId"], "a");
     assert_eq!(section(&read, "round-12/review")["owner"]["agentId"], "b");
-    assert_eq!(read["you"], json!({"agentId":"b","ownsKeys":["round-12/review"],"openAsks":0,"repliedAsks":[],"staleStatus":[],
+    assert_eq!(read["you"], json!({"agentId":"b","ownsKeys":["round-12/review"],"openAsks":0,"repliedAsks":[],"staleStatus":[],"recentlyLeft":[],"recentlyLeftMore":0,
         "capabilities":{"editContent":true,"requiresTurnUpdate":false,"writeOwnAsk":true},"homeHint":outcome_hint()}));
     for change in [op("remove", "round-12"), op("claim", "round-12")] {
         let codes = codes(&reject(&ws, "b", input("b3", 2, vec![change])).await);
@@ -1557,7 +1557,7 @@ fn the_tools_come_from_the_contract_and_brief_get_and_update_load_without_search
     let limits = &brief_contract().unwrap()["limits"];
     for (key, value) in [("topics", MAX_TOPICS as u64), ("subtopicsPerTopic", MAX_SUBTOPICS as u64), ("openAsksPerAgent", MAX_OPEN_ASKS as u64),
         ("attachments", MAX_ATTACHMENTS as u64), ("snapshotFileBytes", SNAPSHOT_FILE_BYTES), ("snapshotBriefBytes", SNAPSHOT_BRIEF_BYTES),
-        ("historyDays", HISTORY_DAYS as u64), ("chartSeries", attachments::CHART_SERIES as u64),
+        ("historyDays", HISTORY_DAYS as u64), ("recentlyLeft", sections::RECENTLY_LEFT as u64), ("chartSeries", attachments::CHART_SERIES as u64),
         ("chartPointsPerSeriesFromData", attachments::CHART_POINTS as u64)] {
         assert_eq!(limits[key].as_u64(), Some(value), "{key}");
     }
@@ -1729,6 +1729,8 @@ mod editors_tests;
 mod release_handover_tests;
 #[path = "executor_needs_tests.rs"]
 mod executor_needs_tests;
+#[path = "recently_left_tests.rs"]
+mod recently_left_tests;
 #[path = "cas_tests.rs"]
 mod cas_tests;
 

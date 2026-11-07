@@ -553,6 +553,15 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(guide, /^- Columns \{widths\?\[2-4\]\(integer\)\}: Lays out its children side by side.* Children: 2-4, one per column\.$/m);
 });
 
+test("a report the user marks seen leaves brief_get, and you.recentlyLeft says which, why and when (YN-7)", () => {
+  assert.equal(BRIEF_LIMITS.recentlyLeft, 20);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /recentlyLeft \(your sections that left lately and why: a report the user marked seen is no longer among the sections\), recentlyLeftMore/);
+  const sections = briefGuide("sections");
+  assert.match(sections, /a report the user marks seen leaves brief_get's sections and your ownsKeys at once .* put it again under its key to continue it on Home, as edit needs a live section/);
+  assert.match(sections, /you\.recentlyLeft lists your sections that left the live Brief in the last 30 days and are not live again, newest first, at most 20: \{key, kind, title, version, reason, at\}, reason seen \(the user marked that version seen\), removed or resolved; recentlyLeftMore counts the rest\./);
+  assert.match(sections, /A change naming one of them is refused with not_found, saying why it left\./);
+});
+
 test("contract.json carries the brief, generated from this file", async () => {
   const committed = JSON.parse(await readFile(new URL("../../runtimes/result-validator/contract.json", import.meta.url), "utf8"));
   const brief = describeBrief();
