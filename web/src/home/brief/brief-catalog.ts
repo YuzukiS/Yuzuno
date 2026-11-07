@@ -47,6 +47,9 @@ export type SegmentedProps = Props<"Segmented">;
 export type CalcProps = Props<"Calc">;
 export type ButtonProps = Props<"Button">;
 export type DiagramProps = Props<"Diagram">;
+export type FigureProps = Props<"Figure">;
+export type StepsProps = Props<"Steps">;
+export type TimelineProps = Props<"Timeline">;
 
 export type BriefElement = {
   type: string;
@@ -84,6 +87,9 @@ export const BRIEF_COMPONENTS = [
   "Calc",
   "Button",
   "Diagram",
+  "Figure",
+  "Steps",
+  "Timeline",
 ] as const satisfies readonly BriefComponent[];
 export const CHART_TYPES = new Set(["LineChart", "BarChart", "ScatterChart"]);
 

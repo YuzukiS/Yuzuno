@@ -38,7 +38,7 @@ const TOPICS: [Topic; 9] = [
     Topic { name: "jobs", covers: "Direct command or Job: Jobs, GPUs, pauses, checkpoint stops, remote machines, runs of stages and provenance exports.", section: Some("Direct command or Job"), reference: Some("jobs.md") },
     Topic { name: "async", covers: "Asynchronous operations: identifiers, mailbox notifications, retries with the same requestId.", section: Some("Asynchronous operations"), reference: None },
     Topic { name: "delivery", covers: "Delivering a code change: candidate, delivery flow, CI, independent review and the result.", section: Some("Delivering"), reference: Some("delivery.md") },
-    Topic { name: "results", covers: "Showing a table, chart, form or task status proposal with result_publish.", section: Some("Showing a result"), reference: None },
+    Topic { name: "results", covers: "Showing a table, chart, metrics or sources in a reply's yuzuno-ui block, with each component's props.", section: Some("Showing a result"), reference: None },
     Topic { name: "brief", covers: "Keeping the Project Brief: capabilities, sections, layout, attachments and asks.", section: Some("Keeping the Project Brief"), reference: None },
     Topic { name: "rewind", covers: "Conversation rewind and file restore.", section: None, reference: Some("rewind.md") },
     Topic { name: "maintenance", covers: "When tools and instructions disagree, when changes reach a session, and changing this guide.", section: Some("When the tools disagree with your instructions"), reference: Some("maintenance.md") },
@@ -83,7 +83,7 @@ pub fn revision() -> &'static str {
     static REVISION: OnceLock<String> = OnceLock::new();
     REVISION.get_or_init(|| {
         let mut digest = Sha256::new();
-        for (name, text) in std::iter::once(("SKILL.md", SKILL)).chain(REFERENCES) {
+        for (name, text) in std::iter::once(("SKILL.md", SKILL)).chain(REFERENCES).chain([("fence guide", crate::results::fence_guide())]) {
             digest.update(name.as_bytes());
             digest.update([0]);
             digest.update(text.as_bytes());
@@ -133,6 +133,10 @@ fn text(topic: &Topic) -> String {
     }
     if let Some(file) = topic.reference {
         parts.push(rewrite(reference(file).unwrap_or_default(), Some(file)));
+    }
+    // The display components' props, generated from the result contract (YN-14 A5).
+    if topic.name == "results" {
+        parts.push(crate::results::fence_guide().to_owned());
     }
     parts.join("\n\n")
 }
@@ -359,7 +363,7 @@ mod tests {
             ("jobs", "## Direct command or Job", "# Jobs"),
             ("async", "## Asynchronous operations", "Do not poll, sleep or watch."),
             ("delivery", "## Delivering", "# Delivering a code change"),
-            ("results", "## Showing a result", "result_guide"),
+            ("results", "## Showing a result", "- Table {"),
             ("brief", "## Keeping the Project Brief", "brief_guide"),
             ("rewind", "# ", "rewind"),
             ("maintenance", "## When the tools disagree", "## When changes take effect"),
@@ -393,7 +397,10 @@ mod tests {
     #[test]
     fn links_become_topic_pointers_and_every_anchor_resolves() {
         for topic in &TOPICS {
-            let text = text(topic);
+            let whole = text(topic);
+            // The results topic ends in generated component signatures, not
+            // markdown: there `[≤12](string)` is an array of strings.
+            let text = whole.strip_suffix(crate::results::fence_guide()).unwrap_or(&whole);
             for line in text.lines() {
                 // Only web links keep markdown link syntax.
                 let mut rest = line;

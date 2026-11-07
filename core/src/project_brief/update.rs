@@ -74,7 +74,7 @@ pub(super) fn problem(code: &str, path: impl Into<String>, reason: impl Into<Str
     json!({"code":code,"path":path.into(),"reason":reason.into(),"guide":format!("brief_guide {guide}")})
 }
 
-/// A rejection the Agent can fix, in result_publish's form. Nothing was
+/// A rejection the Agent can fix, in the result contract's form. Nothing was
 /// changed and no receipt was given. Past MAX_PROBLEMS, `moreProblems` says
 /// how many were left out (T-176).
 pub(super) fn rejection(mut problems: Vec<Value>, latest: Option<Value>) -> Value {

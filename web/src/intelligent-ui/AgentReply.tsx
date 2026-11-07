@@ -1,5 +1,5 @@
 import { Component, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
-import { LoaderCircle, RotateCcw, TriangleAlert } from "lucide-react";
+import { Info, LoaderCircle, RotateCcw, TriangleAlert } from "lucide-react";
 import { CopyButton, Prose } from "../components";
 import { useFullItem } from "../item-payload";
 import type { NativeItem } from "../types";
@@ -195,10 +195,12 @@ export function ResultUnavailable({
   onReload?: () => void;
 }) {
   const t = useStrings(resultText);
+  // A part no longer shown (YN-14 A5) is information, not a failure.
+  const notice = kind === "acts";
   return (
-    <div className="result-state result-unavailable" data-result-state={kind}>
+    <div className={`result-state result-unavailable${notice ? " result-notice" : ""}`} data-result-state={kind}>
       <p role="status">
-        <TriangleAlert size={15} aria-hidden="true" />
+        {notice ? <Info size={15} aria-hidden="true" /> : <TriangleAlert size={15} aria-hidden="true" />}
         <span>{t.unavailable[kind]}</span>
         {onRetry && (
           <button type="button" className="quiet-button result-retry" onClick={onRetry}>
@@ -221,6 +223,7 @@ export function ResultUnavailable({
 function stateOf(problem: ResultProblem): Unavailable {
   if (problem.code === "unfinished") return "unfinished";
   if (problem.code === "multiple_results") return "multiple";
+  if (problem.code === "display_only") return "acts";
   return "format";
 }
 

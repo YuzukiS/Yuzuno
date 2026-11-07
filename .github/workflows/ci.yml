@@ -148,7 +148,7 @@ jobs:
           rustup toolchain list
           rustc --version && cargo --version
 
-      # The result_publish tests run the generated validator
+      # The result and Brief tests run the generated validator
       # (runtimes/result-validator) with Node, as Core does.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

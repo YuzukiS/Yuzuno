@@ -24,6 +24,8 @@ import { BriefResearchDesk } from "./ResearchDesk";
 import { BriefNumberInput, BriefSegmented, BriefSwitch } from "./Inputs";
 import { BriefButton, BriefCalc, type Press } from "./Calc";
 import { BriefDiagram } from "./Diagram";
+import { BriefFigure } from "./Figure";
+import { BriefSteps, BriefTimeline } from "./Steps";
 import { VARIABLE_NAME } from "../../intelligent-ui/brief-inputs.ts";
 import { useSectionStore } from "./brief-state";
 import { useBriefDensity } from "../home-density";
@@ -166,6 +168,9 @@ const registry: ComponentRegistry = {
   Calc: part(BriefCalc),
   Button: part(BriefButton),
   Diagram: part(BriefDiagram),
+  Figure: part(BriefFigure),
+  Steps: part(BriefSteps),
+  Timeline: part(BriefTimeline),
 };
 const noActions = Object.freeze({});
 function BriefSources(props: SourcesProps) {

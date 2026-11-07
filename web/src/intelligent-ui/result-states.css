@@ -27,6 +27,11 @@
   flex: none;
   color: var(--yellow, #c9a640);
 }
+/* A result that used a part no longer shown: information, in the muted tone. */
+.result-notice > p,
+.result-notice > p > svg {
+  color: var(--muted);
+}
 .result-unavailable > p > span {
   flex: 1 1 16rem;
   min-width: 0;

@@ -119,6 +119,15 @@ export const briefText = strings({
   diagramHint: "Select a node to read about it.",
   diagramEdges: "Connections",
   diagramEdge: (from: string, to: string, label?: string) => `${from} → ${to}${label ? ` (${label})` : ""}`,
+  // Figures, steps and timelines (YN-16 S4).
+  figureHint: "Select a numbered part to read about it.",
+  figureKey: (alt: string) => `Parts of ${alt}`,
+  figureNotKept: (name: string) => `${name} is only referenced, not kept, so it can't be shown here; its parts are listed below.`,
+  stepOf: (at: number, total: number) => `Step ${at} of ${total}`,
+  stepBack: "Back",
+  stepNext: "Next",
+  stepsLabel: "Steps",
+  timelineState: { done: "Done", now: "Now", next: "Planned" } as Record<"done" | "now" | "next", string>,
 }, {
   change: {
     new: ["新", "自你标为已看后新增"],
@@ -215,4 +224,12 @@ export const briefText = strings({
   diagramHint: "选择一个节点查看说明。",
   diagramEdges: "连线",
   diagramEdge: (from, to, label) => `${from} → ${to}${label ? `（${label}）` : ""}`,
+  figureHint: "选择一个编号查看说明。",
+  figureKey: (alt) => `${alt} 的各部分`,
+  figureNotKept: (name) => `${name} 只是引用，没有保存，无法在这里显示；它的各部分列在下面。`,
+  stepOf: (at, total) => `第 ${at} 步，共 ${total} 步`,
+  stepBack: "上一步",
+  stepNext: "下一步",
+  stepsLabel: "步骤",
+  timelineState: { done: "已完成", now: "进行中", next: "计划" },
 });

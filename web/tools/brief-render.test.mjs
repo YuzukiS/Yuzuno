@@ -867,6 +867,7 @@ test("the contract's examples render without a failed part", async (t) => {
     interactive: ["6% of training data", "Validation split", "Current", "Larger", "Training data", "100", "Budget", "GPU-days"],
     calculator: ["¥684", "People", "None", "15%", "Round each share up", "Total", "¥752", "Each", "¥188.10", "Back to 4, 10%"],
     flowchart: ["its own CI and one review round", "Push the branch → PR CI", "All green? → Merged (yes)", "Fix and push → PR CI"],
+    timeline: ["the user installs it", "Nov 3, 2026", "Candidate cut", "Notes reviewed", "Week 46", "Planned", "Installing it", "Step 1 of 4", "Download the bundle"],
   };
   const reads = {
     note: [],
@@ -881,6 +882,7 @@ test("the contract's examples render without a failed part", async (t) => {
     interactive: [],
     calculator: [],
     flowchart: [],
+    timeline: [],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {
@@ -1864,6 +1866,131 @@ test("YN-16 S3 a Diagram on a card works there and never opens the report; its l
   assert.deepEqual(page.errors, []);
 });
 
+// YN-16 S4: a Figure over the section's own image, Steps and a Timeline;
+// each works by pointer and keyboard, and nothing is sent.
+const bikeShot = () => ({
+  op: "put", key: "parts", kind: "report", title: "Parts",
+  attachments: [{ name: "bike.png", path: "/runs/bike.png" }],
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "try", size: "large" } }, children: ["lead", "try", "how", "when"] },
+    lead: { type: "Markdown", props: { text: "Two parts carry the drive." } },
+    try: { type: "Group", props: {}, children: ["part", "photo"] },
+    part: { type: "Segmented", props: { name: "part", value: "frame", options: [{ value: "frame", label: "Frame" }, { value: "chain", label: "Chain" }] } },
+    photo: { type: "Figure", props: { image: "bike.png", alt: "A seven-speed bike", caption: "Side view", select: "part", hotspots: [
+      { id: "frame", label: "Frame", x: 40, y: 50, detail: "Holds every other part." },
+      { id: "chain", label: "Chain", x: 62.5, y: 75, detail: "Carries the force." },
+    ] } },
+    how: { type: "Steps", props: { title: "Oiling the chain", mode: "walk", steps: [
+      { id: "clean", title: "Wipe the chain", time: "2 min" },
+      { id: "oil", title: "Oil each link", text: "One drop per link." },
+      { id: "wipe", title: "Wipe off the rest" },
+    ] } },
+    when: { type: "Timeline", props: { title: "Service", items: [
+      { id: "bought", at: "2026-03-14", title: "Bought", state: "done" },
+      { id: "service", at: "2026-11-07T09:30:00Z", title: "First service", state: "now", text: "Brakes and chain." },
+      { id: "next", at: "Spring", title: "Next service", state: "next", text: "Planned, not booked." },
+    ] } },
+  } },
+});
+const keptPng = (extra = {}) => attachment("bike.png", "image", "image/png", { width: 400, height: 300, ...extra });
+
+test("YN-16 S4 a Figure shows the section's image at its own size with numbered hotspots; the list selects them with the segments", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.renderSection(readSection(page, bikeShot(), { attachments: [keptPng()] }), PROJECT);
+  const figure = document.querySelector(".brief-figure");
+  const img = figure.querySelector("img");
+  assert.equal(img.getAttribute("src"), `${base}/attachments/parts/bike.png?version=3`);
+  assert.equal(img.getAttribute("alt"), "A seven-speed bike");
+  assert.match(figure.querySelector(".brief-figure-picture").getAttribute("style"), /aspect-ratio: 400 \/ 300/);
+  const markers = [...figure.querySelectorAll(".brief-hotspot")];
+  assert.deepEqual(markers.map((m) => [m.textContent, m.style.left, m.style.top, m.getAttribute("tabindex")]), [["1", "40%", "50%", "-1"], ["2", "62.5%", "75%", "-1"]]);
+  const keys = () => [...figure.querySelectorAll(".brief-figure-key-item")];
+  assert.equal(figure.querySelector(".brief-figure-key").getAttribute("aria-label"), "Parts of A seven-speed bike");
+  assert.deepEqual(keys().map((k) => [k.textContent, k.getAttribute("aria-pressed")]), [["1Frame", "true"], ["2Chain", "false"]]);
+  assert.match(figure.querySelector(".brief-figure-detail").textContent, /Holds every other part/);
+  keys()[1].click();
+  await until(() => keys()[1].getAttribute("aria-pressed") === "true", "the list selects");
+  assert.equal(document.querySelector('[role="radio"][aria-checked="true"]').textContent, "Chain", "the segments follow");
+  markers[0].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await until(() => keys()[0].getAttribute("aria-pressed") === "true", "a marker selects");
+  assert.equal(figure.querySelector("figcaption").textContent, "Side view");
+  // Only referenced, not kept: no picture, the parts still listed.
+  window.renderSection(readSection(page, bikeShot(), { attachments: [keptPng({ snapshot: false })] }), PROJECT);
+  assert.ok(!document.querySelector(".brief-figure img"));
+  assert.match(document.querySelector(".brief-figure-missing").textContent, /bike\.png is only referenced, not kept/);
+  assert.equal(document.querySelectorAll(".brief-figure-key-item").length, 2);
+  assert.deepEqual(page.requests, [], "an image is read by the browser from its address; nothing is fetched or sent");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S4 Steps walk one at a time with Back, Next and a dot each; a Timeline formats dates, opens an event, and says what is planned", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.renderSection(readSection(page, bikeShot(), { attachments: [keptPng()] }), PROJECT);
+  const steps = document.querySelector('.brief-steps[data-mode="walk"]');
+  const card = () => steps.querySelector(".brief-step-card");
+  const [back, next] = [...steps.querySelectorAll(".brief-step-move")];
+  assert.match(card().textContent, /Step 1 of 3.*Wipe the chain.*2 min/);
+  assert.ok(back.disabled && !next.disabled);
+  next.click();
+  await until(() => /Step 2 of 3.*Oil each link.*One drop per link/.test(card().textContent), "Next");
+  const dots = [...steps.querySelectorAll(".brief-step-dot")];
+  assert.deepEqual(dots.map((d) => d.getAttribute("aria-current")), [null, "step", null]);
+  dots[2].click();
+  await until(() => /Wipe off the rest/.test(card().textContent) && next.disabled, "a dot jumps; Next stops at the end");
+  // The Timeline: down without room to measure; dates in the reader's format; text on asking.
+  const timeline = document.querySelector(".brief-timeline");
+  assert.equal(timeline.getAttribute("data-layout"), "down");
+  const rows = [...timeline.querySelectorAll(".brief-timeline-items > li")];
+  assert.deepEqual(rows.map((r) => r.getAttribute("data-state")), ["done", "now", "next"]);
+  assert.match(rows[0].textContent, /^Mar 14, 2026Bought/);
+  assert.ok(!rows[0].querySelector("button"), "an event without text is not a control");
+  assert.match(rows[2].textContent, /SpringNext servicePlanned/);
+  const open = rows[1].querySelector("button");
+  assert.equal(open.getAttribute("aria-expanded"), "false");
+  open.click();
+  await until(() => /Brakes and chain/.test(rows[1].textContent), "the event's text");
+  assert.equal(open.getAttribute("aria-expanded"), "true");
+  window.chooseLanguage("zh-Hans");
+  window.renderSection(readSection(page, bikeShot(), { attachments: [keptPng()] }), PROJECT);
+  // The same section redrawn keeps the step the reader is on: the third.
+  await until(() => /第 3 步，共 3 步/.test(document.querySelector(".brief-step-card")?.textContent ?? ""), "Chinese steps, still on the third");
+  assert.equal(document.querySelectorAll(".brief-step-move")[0].textContent, "上一步");
+  assert.match(document.querySelector(".brief-timeline").textContent, /2026年3月14日/);
+  window.chooseLanguage("en");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S4 on a card the Figure, Steps and a Timeline work as on the page, opening no report", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.reportOpens = [];
+  for (const visual of ["try", "how", "when"]) {
+    const put = bikeShot();
+    put.body.elements.body.props.summary.visual = visual;
+    window.renderCard(readSection(page, put, { attachments: [keptPng()] }), PROJECT, { deck: true });
+    const frame = document.querySelector(".home-card-frame.kind-interactive");
+    assert.ok(frame && !frame.closest("[inert]"), visual);
+    if (visual === "try") {
+      frame.querySelectorAll(".brief-figure-key-item")[1].click();
+      await until(() => frame.querySelector('[role="radio"][aria-checked="true"]')?.textContent === "Chain", "the card's figure");
+    } else if (visual === "how") {
+      frame.querySelectorAll(".brief-step-move")[1].click();
+      await until(() => /Step 2 of 3/.test(frame.textContent), "the card's steps");
+    } else {
+      frame.querySelector(".brief-timeline-items button").click();
+      await until(() => /Brakes and chain/.test(frame.textContent), "the card's timeline");
+    }
+    window.unmountSection();
+  }
+  assert.deepEqual(window.reportOpens, []);
+  assert.deepEqual(page.errors, []);
+});
+
 test("YN-16 S2 R1 P3: Copy report leaves out a Calc that shows nothing at the starting values, title and all", (t) => {
   const page = mount();
   t.after(page.close);
@@ -1875,5 +2002,31 @@ test("YN-16 S2 R1 P3: Copy report leaves out a Calc that shows nothing at the st
   assert.ok(!copied.includes("Only when rounding"), copied);
   assert.equal(copied.split("Worked out from the starting values").length - 1, 1, "only the Calc that shows something says it");
   assert.match(copied, /#+ Shares\n+_Worked out from the starting values_\n+- Total: ¥660\.00\n- Each: ¥165\.00/);
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S4 R1 P3: walking Steps stays within a list a later version shortens: the counter, the dots and Next agree", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const put = bikeShot();
+  window.renderSection(readSection(page, put, { attachments: [keptPng()] }), PROJECT);
+  const steps = () => document.querySelector('.brief-steps[data-mode="walk"]');
+  const next = () => steps().querySelectorAll(".brief-step-move")[1];
+  // One press at a time, as a reader's taps arrive: each is drawn before the next.
+  next().click();
+  await until(() => /Step 2 of 3/.test(steps().textContent), "on the second of three");
+  next().click();
+  await until(() => /Step 3 of 3/.test(steps().textContent), "on the last of three");
+  // A later version has two steps: the reader is on the last there is.
+  const shorter = bikeShot();
+  shorter.body.elements.how.props.steps = shorter.body.elements.how.props.steps.slice(0, 2);
+  window.renderSection({ ...readSection(page, shorter, { attachments: [keptPng()] }), version: 4 }, PROJECT);
+  await until(() => /Step 2 of 2/.test(steps().textContent), "the counter within the list");
+  assert.match(steps().querySelector(".brief-step-card").textContent, /Oil each link/);
+  assert.ok(next().disabled, "Next stops at the end");
+  assert.deepEqual([...steps().querySelectorAll(".brief-step-dot")].map((d) => d.getAttribute("aria-current")), [null, "step"]);
+  steps().querySelectorAll(".brief-step-move")[0].click();
+  await until(() => /Step 1 of 2/.test(steps().textContent), "Back from the clamped step");
   assert.deepEqual(page.errors, []);
 });
