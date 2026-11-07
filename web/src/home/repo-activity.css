@@ -233,7 +233,7 @@
 }
 
 /* Open PRs by what they need (Home, YN-8 S7): a group a heading and rows
-   whose number, title, author and checks line up across the groups. */
+   whose number, title, branch, time and checks line up across the groups. */
 .repo-activity .repo-groups {
   display: grid;
   gap: 8px;
@@ -267,13 +267,22 @@
 }
 .repo-activity .repo-group .repo-row {
   display: grid;
-  grid-template-columns: 4.5em minmax(0, 1fr) minmax(0, 9em) 1.4em;
+  grid-template-columns: 4.5em minmax(0, 1fr) minmax(0, 11em) 6em 1.4em;
   align-items: center;
   gap: 8px;
 }
 .repo-activity .repo-group .repo-row small {
   max-width: none;
   white-space: nowrap;
+}
+.repo-activity .repo-group .repo-pull-branch {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Noto Sans SC", monospace;
+  text-overflow: ellipsis;
+}
+.repo-activity .repo-group .repo-pull-time {
+  text-align: right;
 }
 .repo-activity .repo-pull-ci {
   justify-content: flex-end;
@@ -333,17 +342,24 @@
     flex-wrap: wrap;
     gap: 0 8px;
   }
-  /* A PR in two lines: its number and title, then its author and checks. */
+  /* A PR in two lines: its number, title and checks, then its branch and time. */
   .repo-activity .repo-group .repo-row {
-    grid-template-columns: 4em minmax(0, 1fr) 1.4em;
+    grid-template-columns: 4em minmax(0, 1fr) auto 1.4em;
     row-gap: 0;
   }
-  .repo-activity .repo-group .repo-pull-author {
+  .repo-activity .repo-group .repo-row-title {
+    grid-column: 2 / 4;
+  }
+  .repo-activity .repo-group .repo-pull-branch {
     grid-column: 2;
     grid-row: 2;
   }
-  .repo-activity .repo-group .repo-pull-ci {
+  .repo-activity .repo-group .repo-pull-time {
     grid-column: 3;
+    grid-row: 2;
+  }
+  .repo-activity .repo-group .repo-pull-ci {
+    grid-column: 4;
     grid-row: 1;
   }
 }
