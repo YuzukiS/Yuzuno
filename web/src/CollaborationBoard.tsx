@@ -1,6 +1,6 @@
 import { TaskOutcome, TaskOutcomeEditor } from "./TaskOutcome";
 import { TaskResearch, type ResearchRecord } from "./TaskResearch";
-import { outcomeInput, type OutcomeReport, type OutcomeResult } from "./task-outcome";
+import { isStepResult, outcomeInput, type OutcomeReport, type OutcomeResult } from "./task-outcome";
 import { DeliveryFlow, type DeliveryCandidate } from "./DeliveryFlow";
 import { openJobs } from "./Jobs";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
@@ -1615,12 +1615,14 @@ function TaskPane({
   // Outcomes and gaps lead the detail; CRUD and the original result transaction
   // stay alongside them. Older reports keep their historical label.
   const current = task && (task.status === "review" || task.status === "done");
+  // An intermediate result is the newest step of work going on (YN-4).
+  const earlier = !!task?.result && !current && !isStepResult(task);
   const resultSection = task && (
           <section className="collab-section collab-result">
             <div className="collab-section-heading">
               <h4>
-                {task.result && !current ? <History size={16} /> : <Check size={16} />}
-                {task.result && !current ? t.earlierResult : t.theResult}
+                {earlier ? <History size={16} /> : <Check size={16} />}
+                {earlier ? t.earlierResult : task.result && !current ? t.stepResult : t.theResult}
               </h4>
               <button
                 className="text-button"

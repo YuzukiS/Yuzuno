@@ -395,14 +395,21 @@ is refused with `materials_too_large` and nothing is dispatched.
 
 ## What an executor doesn't do
 
-An executor does its task and reports to the Agent that dispatched it. Two
+An executor does its task and reports to the Agent that dispatched it. Three
 things are not its to do:
 
 - **Setting its own task done.** `task_update` to done, and a
   `task_submit_result` with status done, are refused with
-  `executor_done_refused`, and nothing is written. It submits its result
-  with status review, and its dispatcher, or you, sets the task done. Any
-  other status is its to set.
+  `executor_done_refused`, and nothing is written. It submits its last
+  result with status review, and its dispatcher, or you, sets the task done.
+  Any other status is its to set.
+- **Showing a step as finished.** A result along the way, such as a plan for
+  its dispatcher's approval or one slice of several, is submitted with status
+  doing. Its task stays in progress and the executor running, not awaiting
+  release, so nobody sets the task back by hand. Its dispatcher gets the
+  result's mail as for any result, saying the dispatch continues, and the
+  task's detail heads it 阶段结果 · Step result. A delivery candidate is
+  still submitted with status review.
 - **Writing Home's content.** An executor is never a Home content editor.
   With no list chosen, every member but an executor edits; a list can't name
   one (`invalid_editor`), and one saved before doesn't make it an editor. It
