@@ -22,7 +22,7 @@ export type WorkKind = (typeof workKinds)[number];
 /**
  * `unrecognized` is work this build has no word for -- a Core older or newer
  * than it. It is counted and shown apart rather than dropped: Work activity
- * is where someone looks for what needs a look, and a count that reads clean
+ * is where someone looks for what went wrong, and a count that reads clean
  * while something sits unclassified elsewhere is the gap worth avoiding. It
  * is never folded into done.
  */

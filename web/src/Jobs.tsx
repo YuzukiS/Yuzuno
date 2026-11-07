@@ -407,13 +407,12 @@ export function ConversationJobs({
    * panel keeps (#459 round 1, P2c; recorded as deviation row 14, a
    * refinement of d6 B2).
    *
-   * The panel is the history. This line is what needs a look and what is
-   * going on, so a thing already answered is not held against the count for
-   * good:
+   * The panel is the history. Work activity is what went wrong and what is
+   * going on, so a thing already answered is not held against it for good:
    *
    *  - a CI workflow is its **latest run**. An older failing run that a
    *    later run of the same workflow has replaced is history; counting it
-   *    meant one bad run made the entry say "needs a look" forever.
+   *    meant one bad run stayed in Work activity as failed forever.
    *  - a Job the **user cancelled** is not a problem to go and see.
    *  - a Job that failed and whose **name has since succeeded** is resolved.
    *

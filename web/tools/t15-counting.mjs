@@ -16,6 +16,11 @@
 //       exceptions *and* unrecognised work, where the entry counts only
 //       exceptions.
 //
+// Since YN-17 S2 (the user's decision) there is no "Needs a look" group and
+// the entry counts what is running, not what went wrong: what went wrong is
+// listed in its own kind's group, first, with its state. P2c is read in the
+// column now, and P3a's group is the sub-agents' own.
+//
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-counting.mjs
 // T15_LANG=zh-Hans reads the same screen in Chinese. That exact value: a
 // language this does not know falls back to English and passes, which is
@@ -126,6 +131,8 @@ const look = () => {
     label: (section.getAttribute("aria-label") || "").trim(),
     rows: [...section.querySelectorAll(".work-activity-row")].map((row) =>
       (row.textContent || "").replace(/\s+/g, " ").trim().slice(0, 40)),
+    states: [...section.querySelectorAll(".work-activity-row:not(.work-activity-row-list)")].map((row) =>
+      row.getAttribute("data-state")),
   }));
   return { there: !!entry, counts, digits, open: !!column, groups };
 };
@@ -154,10 +161,14 @@ const look = () => {
   console.log(`\n--- P2c: an old failure a later run answered ---`);
   console.log(`  entry "${seen.counts}"  numbers ${JSON.stringify(seen.digits)}`);
   check(seen.there, "the entry is there");
-  check(!/need|待查看/.test(seen.counts),
-    `nothing needs a look: the rerun answered the failure, the cancel was the user's ("${seen.counts}")`);
   check(/1/.test(seen.counts) && /run|进行/.test(seen.counts),
-    `and the one still going is counted ("${seen.counts}")`);
+    `the one still going is counted ("${seen.counts}")`);
+  await page.locator(".work-activity-entry").click();
+  await page.waitForTimeout(500);
+  const listed = await page.evaluate(look);
+  const failedRows = listed.groups.flatMap((g) => g.states).filter((state) => state === "exception").length;
+  check(listed.open && failedRows === 0,
+    `nothing is listed as gone wrong: the rerun answered the failure, the cancel was the user's (${failedRows} of ${JSON.stringify(listed.groups.map((g) => `${g.label}:${g.states.join("/")}`))})`);
   await context.close();
 }
 
@@ -184,8 +195,8 @@ const look = () => {
     `both kinds are counted, not one overwriting the other ("${both.counts}")`);
   const labels = both.groups.map((g) => g.label).join(" | ");
   check(/Background|后台/.test(labels), `the background tasks have a group of their own (${labels})`);
-  // The failed sub-agent is in the attention group rather than its own, which
-  // is where an exception belongs; what matters is that it is still there.
+  // The failed sub-agent is in its own kind's group (YN-17 S2); what matters
+  // here is that it is still there.
   check(both.groups.some((g) => g.rows.some((row) => /子 Agent|Explore/.test(row))),
     `and the sub-agent's own work is still listed (${both.groups.map((g) => g.rows.join("/")).join(" | ")})`);
 
@@ -223,7 +234,7 @@ const look = () => {
   await context.close();
 }
 
-// --- P3a: the card with the dock's limit at 0, and one definition of attention ---
+// --- P3a: the card with the dock's limit at 0, and where what failed is listed ---
 {
   const agents = [agentOf("a", "Dev 8 · Mac / iOS")];
   const details = { a: { agent: agents[0], pending: [], messageReceipts: [], artifacts: [],
@@ -242,13 +253,14 @@ const look = () => {
   check(column.open, "the column still opens");
   check(column.groups.some((g) => g.rows.length > 0), "and still lists the work the dock did not draw");
 
-  // The attention heading counts what the entry counts: exceptions.
-  const attention = column.groups.find((g) => /Needs a look|需要注意/.test(g.label));
-  const needsLook = entryCounts.counts.match(/(\d+)\s*(?:need|个待查看)/);
-  check(!!attention, `there is a "needs a look" group (${column.groups.map((g) => g.label).join(", ")})`);
-  if (attention && needsLook)
-    check(attention.rows.length === Number(needsLook[1]),
-      `and it holds exactly what the entry counted (${attention.rows.length} rows against ${needsLook[1]})`);
+  // No group of what went wrong, and no count of it on the entry: the failed
+  // sub-agent is first in the sub-agents' own group, with its state.
+  check(!column.groups.some((g) => /Needs a look|需要注意/.test(g.label)),
+    `there is no "needs a look" group (${column.groups.map((g) => g.label).join(", ")})`);
+  check(!/need|待查看/.test(entryCounts.counts), `and the entry counts nothing as needing a look ("${entryCounts.counts}")`);
+  const subAgents = column.groups.find((g) => /Sub-agents|子 Agent/.test(g.label));
+  check(!!subAgents && JSON.stringify(subAgents.states) === JSON.stringify(["exception", "done"]),
+    `the failed sub-agent is first in the sub-agents' group, then the one that finished (${JSON.stringify(subAgents?.states)})`);
 
   // Its row opens the card, which used to be unreachable at this limit.
   const row = page.locator(".work-activity-row").first();
