@@ -41,6 +41,12 @@ test("arithmetic, comparison, logic, ?: and the functions evaluate as written", 
     ["guests > 4 ? guests > 5 ? 3 : 2 : 1", 3],
     ["round(1.005, 2)", 1.01],
     ["round(2.5)", 3],
+    // Halves away from zero on the negative side too (S2 R1 P3).
+    ["round(-1.005, 2)", -1.01],
+    ["round(-2.5)", -3],
+    ["round(-2.4)", -2],
+    ["round(-0.125, 2)", -0.13],
+    ["round(0 - 684 * 1.1, 2)", -752.4],
     ["floor(2.7) + ceil(2.1) + abs(-1)", 6],
     ["sqrt(16)", 4],
     ["min(3, guests, 9)", 3],
@@ -139,4 +145,8 @@ test("evaluation reads only the names given, as own values", () => {
   const tree = parseFormula("toString");
   assert.ok(Number.isNaN(evaluateFormula(tree, {})), "an inherited name is no value");
   assert.ok(Number.isNaN(evaluateFormula(parseFormula("a + 1"), Object.create({ a: 5 }))), "a prototype's value is no value");
+});
+
+test("round never gives -0: a negative that rounds to nothing is 0", () => {
+  for (const text of ["round(-0.004, 2)", "round(-0.4)"]) assert.ok(Object.is(run(text), 0), text);
 });

@@ -31,6 +31,7 @@ import {
   type SegmentedProps,
   type SwitchProps,
   type CalcProps,
+  type DiagramProps,
   researchPath,
   shownRefId,
 } from "./brief-catalog";
@@ -337,7 +338,18 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
           const number = Number.isNaN(value) ? "—" : `${item.prefix ?? ""}${item.digits === undefined ? Number(value.toFixed(2)) : value.toFixed(item.digits)}${item.unit ? ` ${item.unit}` : ""}`;
           return [`- ${inline(item.label)}: ${inline(number)}`];
         });
+        // Nothing shown at the starting values: nothing copied, not even its title (S2 R1 P3).
+        if (!lines.length) return [];
         return [...heading(depth, title), `_${w.fromStart}_`, lines.join("\n")];
+      }
+      // A Diagram copies as its nodes and the connections between them (YN-16 S3).
+      case "Diagram": {
+        const { title, caption, nodes, edges } = part.props as DiagramProps;
+        const name = new Map(nodes.map((node) => [node.id, node.label]));
+        return [...heading(depth, title), ...(caption ? [`_${inline(caption)}_`] : []),
+          nodes.map((node) => `- ${inline(node.label)}${node.detail ? ` — ${inline(node.detail)}` : ""}`).join("\n"),
+          edges.map((edge) => `- ${inline(name.get(edge.from) ?? edge.from)} → ${inline(name.get(edge.to) ?? edge.to)}${edge.label ? ` (${inline(edge.label)})` : ""}`).join("\n")]
+          .filter(Boolean);
       }
       case "Sources": {
         const { items } = part.props as SourcesProps;

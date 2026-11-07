@@ -19,7 +19,7 @@ import {
   MAX_SPEC_BYTES, ResultError, sourceTarget,
 } from "./contract.ts";
 import { clarificationSchema } from "./clarification.ts";
-import { CARD_PART_TYPES, CARD_PARTS, declaredVariable, INPUT_TYPES, interactiveGroup, VARIABLE_NAME, type VariableKind } from "./brief-inputs.ts";
+import { CARD_PART_TYPES, CARD_PARTS, declaredVariable, INPUT_TYPES, interactiveGroup, selectOf, VARIABLE_NAME, type VariableKind } from "./brief-inputs.ts";
 import { FORMULA_FUNCTIONS, FORMULA_LIMITS, FormulaError, formulaType, parseFormula, type FormulaType } from "./brief-formula.ts";
 import { TASK_KEY } from "./task-key.ts";
 
@@ -80,6 +80,9 @@ export const BRIEF_LIMITS = {
   formulaDepth: FORMULA_LIMITS.depth,
   formulas: FORMULA_LIMITS.perSection,
   buttonActions: 4,
+  // Diagram (YN-16 S3): nodes and edges; Yuzuno lays it out.
+  diagramNodes: 40,
+  diagramEdges: 60,
   validForMin: 60,
   validForMax: 31_536_000,
   problems: MAX_PROBLEMS,
@@ -463,12 +466,41 @@ export const briefComponentProps = {
       .max(L.calcItems),
   }),
   Button: z.strictObject({ label: short, tone: z.enum(["plain", "accent"]).optional() }),
+  // YN-16 S3: a flowchart or a diagram of parts; Yuzuno lays it out (dagre).
+  Diagram: z.strictObject({
+    title: short.optional(),
+    caption: short.optional(),
+    direction: z.enum(["down", "right"]).optional(),
+    select: variableName.optional(),
+    nodes: z
+      .array(
+        z.strictObject({
+          id,
+          label: z.string().trim().min(1).max(60),
+          shape: z.enum(["box", "round", "diamond"]).optional(),
+          tone: z.enum(["plain", "accent", "ok", "warn", "muted"]).optional(),
+          detail: z.string().trim().min(1).max(600).optional(),
+        }),
+      )
+      .min(1)
+      .max(L.diagramNodes),
+    edges: z
+      .array(
+        z.strictObject({
+          from: id,
+          to: id,
+          label: z.string().trim().min(1).max(24).optional(),
+          style: z.enum(["solid", "dashed"]).optional(),
+        }),
+      )
+      .max(L.diagramEdges),
+  }),
 };
 export type BriefComponent = keyof typeof briefComponentProps;
 type Props<K extends BriefComponent> = z.infer<(typeof briefComponentProps)[K]>;
 const CHARTS = ["LineChart", "BarChart", "ScatterChart"] as const;
 /** What a summary's figure may be (T-18); Attachments with exactly one image file. */
-const SUMMARY_FIGURES = new Set<string>([...CHARTS, "Metrics", "Calc", "Table", "ResearchDesk", "Attachments"]);
+const SUMMARY_FIGURES = new Set<string>([...CHARTS, "Metrics", "Calc", "Diagram", "Table", "ResearchDesk", "Attachments"]);
 const isChart = (type: string): type is (typeof CHARTS)[number] => (CHARTS as readonly string[]).includes(type);
 
 /** What each component is for; brief_guide and the renderer's catalog use these. */
@@ -495,11 +527,12 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   Segmented: "One choice among 2-6 options, as a row of segments; it declares the variable name, starting at value, one of the options' values.",
   Calc: "Numbers worked out from the section's variables as the reader sets them: each item's expr is a formula, shown with its label; when hides the item while it is false. layout list (the default) is a two-column list, metrics shows them as Metrics.",
   Button: "A button that sets variables to fixed values when pressed, e.g. Reset; its element's on says which (see interactive).",
+  Diagram: "A flowchart or a diagram of parts, as nodes and the edges between them; Yuzuno lays it out and draws it. A node's detail shows when the reader selects it; select names a variable that holds the selected node's id.",
 } as const satisfies Record<BriefComponent, string>;
 
 const leaves = [
   "Markdown", "Math", "Checklist", "Plan", "Findings", "Metrics", "Table",
-  "LineChart", "BarChart", "ScatterChart", "LiveRefs", "Attachments", "Sources", "ResearchDesk", ...INPUT_TYPES, "Calc",
+  "LineChart", "BarChart", "ScatterChart", "LiveRefs", "Attachments", "Sources", "ResearchDesk", ...INPUT_TYPES, "Calc", "Diagram",
 ] as const satisfies readonly Exclude<BriefComponent, "BriefBody" | "Group" | "Columns">[];
 // A block's condition on the variables (YN-16). Its grammar, a small part of
 // json-render's, is checked with the tree (checkVisible), where the variables
@@ -1111,7 +1144,7 @@ function checkResearch(
 }
 
 /** The components brief_guide interactive describes (YN-16). */
-const INTERACTIVE_TYPES = [...INPUT_TYPES, "Calc", "Button"] as const;
+const INTERACTIVE_TYPES = [...INPUT_TYPES, "Calc", "Button", "Diagram"] as const;
 /** The code a formula Core cannot keep is refused with (YN-16 S2): fix the expression, not the block. */
 const FORMULA_CODE: ProblemCode = "formula";
 const COMPARISONS = ["eq", "neq", "gt", "gte", "lt", "lte"] as const;
@@ -1141,8 +1174,25 @@ function checkVariables(spec: BriefBodySpec, add: (found: BriefProblem) => void)
         range: node.type === "NumberInput" ? [(node.props as Props<"NumberInput">).min, (node.props as Props<"NumberInput">).max] : undefined,
       });
   }
+  // A Diagram's select (S3): into a Segmented's variable of texts whose options
+  // name every node, or a variable of its own, starting with nothing selected.
+  for (const [key, node] of Object.entries(spec.elements)) {
+    const found = selectOf(node);
+    if (!found) continue;
+    const path = `body.elements.${key}.props.select`;
+    const declared = variables.get(found.name);
+    if (!declared) {
+      variables.set(found.name, { kind: "text", options: ["", ...found.ids] });
+      continue;
+    }
+    const missing = found.ids.filter((one) => !declared.options?.includes(one));
+    if (declared.kind !== "text" || !declared.options)
+      bad("invalid_field", path, `${node.type} "${key}" selects into "/${found.name}", a ${declared.kind} variable; select names a variable of its own, or a Segmented's of texts with an option for every node.`);
+    else if (missing.length)
+      bad("invalid_field", path, `${node.type} "${key}" selects into "/${found.name}", whose options do not name ${missing.map((one) => JSON.stringify(one)).join(", ")}; give its Segmented an option for every node, or select into a variable of the Diagram's own.`);
+  }
   if (variables.size > L.variables)
-    bad("too_many", "body.elements", `The section's inputs declare ${variables.size} variables; the limit is ${L.variables}.`);
+    bad("too_many", "body.elements", `The section's inputs and selects declare ${variables.size} variables; the limit is ${L.variables}.`);
   const named = [...variables.keys()].map((name) => `/${name}`).join(", ") || "none: add an input";
   for (const [key, node] of Object.entries(spec.elements)) {
     if (!("visible" in node) || node.visible === undefined) continue;
@@ -1415,7 +1465,7 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
   const slots = named ? (["lead", "visual", "conditions"] as const).flatMap((slot) => (named[slot] === undefined ? [] : [[slot, named[slot]] as const])) : [];
   const SLOT_RULE = {
     lead: ["a Markdown", (key: string) => typeOf(key) === "Markdown"],
-    visual: ["a chart, Metrics, Calc, Table, ResearchDesk, Attachments with one image file, or a Group of inputs", (key: string) => {
+    visual: ["a chart, Metrics, Calc, Diagram, Table, ResearchDesk, Attachments with one image file, or a Group of inputs", (key: string) => {
       // An interactive figure (YN-16): a Group of inputs the reader sets on the card.
       if (typeOf(key) === "Group") return interactiveGroup(spec.elements, key);
       if (!SUMMARY_FIGURES.has(typeOf(key) ?? "")) return false;
@@ -1505,6 +1555,25 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
       case "Attachments":
         (node.props as Props<"Attachments">).items.forEach((item, index) => needsFile(item.name, `${at}.items.${index}.name`, false));
         break;
+      case "Diagram": {
+        const { nodes, edges } = node.props as Props<"Diagram">;
+        const name = `Diagram "${key}"`;
+        unique(nodes.map((one) => one.id), `${at}.nodes`, `${name} node id`);
+        const ids = new Set(nodes.map((one) => one.id));
+        const pairs = new Set<string>();
+        edges.forEach((edge, index) => {
+          const path = `${at}.edges.${index}`;
+          const absent = [edge.from, edge.to].filter((end) => !ids.has(end));
+          if (absent.length)
+            add(problem("invalid_field", path, `${name} edge ${index + 1} joins ${absent.map((end) => `"${end}"`).join(" and ")}, which no node of the Diagram has.`, "interactive"));
+          else if (edge.from === edge.to)
+            add(problem("invalid_field", path, `${name} edge ${index + 1} goes from "${edge.from}" to itself; a step that repeats is a loop back from a later node.`, "interactive"));
+          else if (pairs.has(`${edge.from}\n${edge.to}`))
+            add(problem("duplicate_id", path, `${name} has two edges from "${edge.from}" to "${edge.to}"; give one edge, with one label.`, "interactive"));
+          pairs.add(`${edge.from}\n${edge.to}`);
+        });
+        break;
+      }
       case "NumberInput": {
         const { value, min, max, step = 1 } = node.props as Props<"NumberInput">;
         const name = `NumberInput "${key}"`;
@@ -1911,6 +1980,41 @@ export const BRIEF_EXAMPLES = {
       },
     },
   },
+  flowchart: {
+    op: "put",
+    key: "release-path",
+    kind: "report",
+    title: "How a change reaches main",
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "flow", size: "wide" } }, children: ["lead", "flow"] },
+        lead: { type: "Markdown", props: { text: "A change merges only after **its own CI and one review round** pass; a red result goes back to the author." } },
+        flow: {
+          type: "Diagram",
+          props: {
+            direction: "right",
+            nodes: [
+              { id: "push", label: "Push the branch", shape: "round" },
+              { id: "ci", label: "PR CI", detail: "Every test of the repository on GitHub-hosted runners." },
+              { id: "review", label: "Review round" },
+              { id: "green", label: "All green?", shape: "diamond" },
+              { id: "fix", label: "Fix and push", tone: "warn" },
+              { id: "merge", label: "Merged", shape: "round", tone: "ok" },
+            ],
+            edges: [
+              { from: "push", to: "ci" },
+              { from: "ci", to: "review" },
+              { from: "review", to: "green" },
+              { from: "green", to: "merge", label: "yes" },
+              { from: "green", to: "fix", label: "no" },
+              { from: "fix", to: "ci", style: "dashed" },
+            ],
+          },
+        },
+      },
+    },
+  },
   decision: {
     op: "put",
     key: "next-run",
@@ -2017,7 +2121,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `LiveRefs show Core's records, read each time Home reads the Brief and never saved in your section: your label names the item, and its state is the record's own (a task's board state, a Job's run state), not whether an Agent is working on it now. An item Core does not know shows as not found: check its id. One Core could not read just then shows as couldn't read: leave it, a later read shows its state again. A state you write in Plan, Table, Metrics or Markdown is your account as of when you wrote it (a status's asOf), not live: for the current state of a task, PR, CI run or Job, reference it, as the overview example does with its Job.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
-    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, size}: lead, visual and conditions are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Calc, Table, ResearchDesk, Attachments with one image file, or a Group of inputs the reader sets on the card, see interactive); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk) or large (two columns, two rows: an image, a scatter chart, an HTML page). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. A card with no visual shows instead the first kept image or single HTML page (.html or .htm) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there. A report whose body holds only its lead (one paragraph), the card's picture and files, and its conditions is the whole report: its card has no Open report. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
+    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, size}: lead, visual and conditions are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Calc, Diagram, Table, ResearchDesk, Attachments with one image file, or a Group of inputs the reader sets on the card, see interactive); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk) or large (two columns, two rows: an image, a scatter chart, an HTML page). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. A card with no visual shows instead the first kept image or single HTML page (.html or .htm) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there. A report whose body holds only its lead (one paragraph), the card's picture and files, and its conditions is the whole report: its card has no Open report. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
     `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
   ],
@@ -2044,11 +2148,13 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Variables: each input declares one, under its name (a letter a-z, then up to 31 letters or digits, e.g. guests), starting at the input's value: a NumberInput's a number, a Switch's true or false, a Segmented's its options' values, all numbers or all texts, each once, value one of them. A name is declared once per section, at most ${L.variables} in all. A section's variables are its own; its card and its page each keep theirs.`,
     `NumberInput: min is less than max and value lies between them; step (default 1) takes at most ${L.numberSteps} steps from min to max; digits is how many decimals are shown (default: as many as step, min or max has); control stepper (the default: - and + beside the number), slider, or both. prefix and unit (at most 8 characters) are shown before and after the number, e.g. "¥" or "g".`,
     `visible, beside type and props, shows a block only while a condition on the variables holds; only a block inside a Group has one, as the root's own blocks are always shown. A condition is {"$state": "/<name>"}, true while a Switch is on, or with one comparison: eq or neq a value of the variable's kind (for a Segmented, one of its options' values), or gt, gte, lt or lte a number, for a number variable. not: true negates it. An array means all of its conditions hold; {"$and": [...]} and {"$or": [...]} combine conditions and each other: at most ${L.visibleConditions} conditions and ${L.visibleDepth} levels. Nothing else is read: no $item, $index, $cond, $bindState or $computed, and no expression in props.`,
-    `Calc formulas: expr gives a number and when true or false, from numbers (12, 0.5), true, false, "texts" (at most ${FORMULA_LIMITS.textChars} characters), the section's variables and this Calc's earlier items by id (when may also use the item's own), with + - * / % ^ (power, right to left: -2^2 is -4), < <= > >= == !=, && || !, cond ? a : b, parentheses and the functions ${Object.entries(FORMULA_FUNCTIONS).map(([name, [least, most]]) => `${name}(${least === most ? least : `${least}-${most}`})`).join(", ")}; round(x, d) rounds to d decimals (0-6) as written, so round(1.005, 2) is 1.01. Arithmetic and order take numbers, && || ! take true or false, and a text only sits beside == or != with a text or a Segmented's variable on its other side. Nothing else: no =, no . or [ ], no other names or functions. At most ${FORMULA_LIMITS.chars} characters, ${FORMULA_LIMITS.tokens} parts and ${FORMULA_LIMITS.depth} levels each, ${FORMULA_LIMITS.perSection} formulas per section, ${L.calcItems} items per Calc. An item id is a name like a variable's, unique in its Calc and none of the section's variables. Numbers are shown with digits decimals in the reader's language (default up to 2); one that cannot be computed (a division by zero, the square root of a negative) shows a dash with its reason, and money is best rounded with round in its last step.`,
+    `Calc formulas: expr gives a number and when true or false, from numbers (12, 0.5), true, false, "texts" (at most ${FORMULA_LIMITS.textChars} characters), the section's variables and this Calc's earlier items by id (when may also use the item's own), with + - * / % ^ (power, right to left: -2^2 is -4), < <= > >= == !=, && || !, cond ? a : b, parentheses and the functions ${Object.entries(FORMULA_FUNCTIONS).map(([name, [least, most]]) => `${name}(${least === most ? least : `${least}-${most}`})`).join(", ")}; round(x, d) rounds to d decimals (0-6) as written, halves away from zero, so round(1.005, 2) is 1.01 and round(-2.5) is -3. Arithmetic and order take numbers, && || ! take true or false, and a text only sits beside == or != with a text or a Segmented's variable on its other side. Nothing else: no =, no . or [ ], no other names or functions. At most ${FORMULA_LIMITS.chars} characters, ${FORMULA_LIMITS.tokens} parts and ${FORMULA_LIMITS.depth} levels each, ${FORMULA_LIMITS.perSection} formulas per section, ${L.calcItems} items per Calc. An item id is a name like a variable's, unique in its Calc and none of the section's variables. Numbers are shown with digits decimals in the reader's language (default up to 2); one that cannot be computed (a division by zero, the square root of a negative) shows a dash with its reason, and money is best rounded with round in its last step.`,
     `Button: its element has on: {"press": action or a list of 1-${L.buttonActions}}, each {"action": "setState", "params": {"statePath": "/<name>", "value": v}}, where v is a value that variable can take (a Segmented's option, a NumberInput's number from min to max). Nothing else runs from a Button, and no other block takes on.`,
+    `Diagram: you give nodes and edges only; Yuzuno lays them out (top to bottom, or left to right with direction right, turned top to bottom where the window is too narrow) and draws them in the reader's theme. Use it for a process with a decision or a loop, or more than four steps that branch, and for the parts of a thing and how they connect. A node's shape diamond is a decision, round a start or an end; tone accent marks the path that matters, ok and warn an outcome, muted what is out of scope. An edge's label (at most 24 characters) names the branch, e.g. yes or no; style dashed is optional or later. An edge may go back to an earlier node (a loop); none goes from a node to itself, and two nodes have at most one edge in each direction. At most ${L.diagramNodes} nodes and ${L.diagramEdges} edges; node ids are unique. The reader selects a node by pointer or keyboard to read its detail (at most 600 characters). select names a variable that then holds the selected node's id ("" while none is), for visible and Calc to read: one of the Diagram's own, or a Segmented's of texts with an option for every node id, so the segments and the nodes select together.`,
     `On Home: to make the card itself adjustable, name a Group of inputs as the summary's visual: 1-${L.cardParts} blocks of its own, each ${[...CARD_PART_TYPES].join(", ")}, at least one an input, and its blocks' visible conditions. The card draws that Group whole, at any size, growing to fit it, and its controls work there; the card's title and Open report still open the page, where the page's own inputs start again from your values. Name size wide or large when it has more than two inputs.`,
     `Examples: ${JSON.stringify(BRIEF_EXAMPLES.interactive)}`,
     JSON.stringify(BRIEF_EXAMPLES.calculator),
+    JSON.stringify(BRIEF_EXAMPLES.flowchart),
   ],
   attachments: [
     formatComponentGuide("attachments", z.array(attachmentSchema).max(L.attachments), "Files and links of this section."),

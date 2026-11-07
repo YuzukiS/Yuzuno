@@ -14,6 +14,10 @@
 //    back on Home, the card keeps the reader's values;
 //  - (S2) a Calc on a card works its numbers out again as the reader sets
 //    the inputs, and its Button sets them back, without opening the report;
+//  - (S3) a Diagram, laid out by dagre, keeps every node inside its drawing
+//    and none over another, turns top to bottom where left to right does
+//    not fit, and selects a node by pointer, touch or keyboard, the segments
+//    of a Segmented following; nothing opens the report;
 //  - nothing is sent but reads, and nothing is asked of another host.
 // Pattern: YN-7's home-desk-cards-check.mjs.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node --experimental-strip-types tools/home-inputs-check.mjs
@@ -93,6 +97,35 @@ const sections = [
     ] }),
     reset: { ...node("Button", { label: "Back to 4 people" }), on: { press: { action: "setState", params: { statePath: "/people", value: 4 } } } },
     why: md("The tip is shared evenly."),
+  } }),
+  // Wide (S3): a flowchart left to right, a loop back and labelled branches.
+  section("flow", "How a change reaches main", { root: "body", elements: {
+    body: node("BriefBody", { summary: { lead: "lead", visual: "chart", size: "wide" } }, ["lead", "chart", "why"]),
+    lead: md("A change merges only after its own CI and one review round pass."),
+    chart: node("Diagram", { direction: "right", nodes: [
+      { id: "push", label: "Push the branch", shape: "round" },
+      { id: "ci", label: "PR CI", detail: "Every test, on GitHub-hosted runners." },
+      { id: "review", label: "Review round", detail: "One round you start at the frozen head." },
+      { id: "green", label: "All green?", shape: "diamond" },
+      { id: "fix", label: "Fix and push", tone: "warn" },
+      { id: "merge", label: "Merged", shape: "round", tone: "ok" },
+    ], edges: [
+      { from: "push", to: "ci" }, { from: "ci", to: "review" }, { from: "review", to: "green" },
+      { from: "green", to: "merge", label: "yes" }, { from: "green", to: "fix", label: "no" }, { from: "fix", to: "ci", style: "dashed" },
+    ] }),
+    why: md("Dev 9 merges."),
+  } }),
+  // Large (S3): a Segmented and a Diagram select one part together.
+  section("bike", "A seven-speed bike", { root: "body", elements: {
+    body: node("BriefBody", { summary: { lead: "lead", visual: "parts", size: "large" } }, ["lead", "parts"]),
+    lead: md("Five parts carry the drive."),
+    parts: node("Group", {}, ["pick", "drawing"]),
+    pick: node("Segmented", { name: "part", label: "Part", value: "frame", options: [{ value: "frame", label: "Frame" }, { value: "chain", label: "Chain" }, { value: "gears", label: "Gears" }] }),
+    drawing: node("Diagram", { select: "part", nodes: [
+      { id: "frame", label: "Frame", detail: "Holds every other part." },
+      { id: "chain", label: "Chain", detail: "Carries the pedals' force to the rear wheel." },
+      { id: "gears", label: "Seven rear gears", shape: "diamond", tone: "accent", detail: "Seven sizes; the derailleur moves the chain between them." },
+    ], edges: [{ from: "frame", to: "chain" }, { from: "chain", to: "gears", label: "drives" }] }),
   } }),
 ];
 const home = () => ({
@@ -287,6 +320,47 @@ async function check(run) {
     await noReport("the Calc's inputs and its Button");
     pass("a card's Calc works its numbers out again as the inputs change, and its Button sets them back, opening no report", { each: await each() });
 
+    // ---- (S3) Diagrams: laid out inside their drawing, none over another; down where right does not fit.
+    for (const key of ["flow", "bike"]) {
+      await frame(key).locator(".brief-diagram svg").waitFor({ timeout: 10_000 });
+      const drawn = await frame(key).evaluate((el) => {
+        const svg = el.querySelector(".brief-diagram svg");
+        const s = svg.getBoundingClientRect();
+        const boxes = [...svg.querySelectorAll(".brief-diagram-shape")].map((shape) => shape.getBoundingClientRect());
+        const inside = boxes.every((b) => b.left >= s.left - 1 && b.right <= s.right + 1 && b.top >= s.top - 1 && b.bottom <= s.bottom + 1);
+        let overlaps = 0;
+        boxes.forEach((a, i) => boxes.slice(i + 1).forEach((b) => {
+          if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) overlaps++;
+        }));
+        const frameBody = el.querySelector(".home-card-frame-body");
+        return { nodes: boxes.length, inside, overlaps, direction: svg.dataset.direction, svgWidth: Math.round(s.width),
+          sideways: frameBody.scrollWidth > frameBody.clientWidth + 1, smallest: Math.round(Math.min(...boxes.map((b) => b.height))) };
+      });
+      assert.ok(drawn.nodes > 0 && drawn.inside && drawn.overlaps === 0 && !drawn.sideways, `${key}: ${JSON.stringify(drawn)}`);
+      // Left to right is 735 px wide here: a phone's card has it top to bottom; a wider frame keeps it (recorded).
+      if (key === "flow" && run.phone) assert.equal(drawn.direction, "down", `flow: ${JSON.stringify(drawn)}`);
+      await shot(card(key), `card-diagram-${key}`);
+      result[`diagram-${key}`] = drawn;
+    }
+    pass("each Diagram keeps its nodes inside the drawing, none over another, and goes top to bottom where left to right does not fit",
+      { flow: result["diagram-flow"], bike: result["diagram-bike"] });
+
+    // ---- Selecting a node by pointer or touch and by keyboard; the segments follow; no report.
+    const nodeOf = (key, id) => frame(key).locator(`.brief-diagram-node[data-node="${id}"]`);
+    await press(nodeOf("bike", "chain"));
+    await page.waitForFunction((sel) => document.querySelector(sel)?.getAttribute("aria-pressed") === "true", `#home-section-${PROJECT}-bike .brief-diagram-node[data-node="chain"]`, { timeout: 5000 });
+    assert.equal(await frame("bike").locator('[role="radio"][aria-checked="true"]').textContent(), "Chain");
+    assert.match(await frame("bike").locator(".brief-diagram-detail").textContent(), /Carries the pedals' force/);
+    await nodeOf("flow", "review").focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await nodeOf("flow", "review").getAttribute("aria-pressed"), "true");
+    assert.match(await frame("flow").locator(".brief-diagram-detail").textContent(), /One round you start/);
+    const nodeRing = await nodeOf("flow", "review").evaluate((el) => getComputedStyle(el.querySelector(".brief-diagram-shape")).strokeWidth);
+    assert.ok(parseFloat(nodeRing) >= 2.4, `the focused, selected node is outlined: ${nodeRing}`);
+    await shot(card("bike"), "card-diagram-bike-set");
+    await noReport("a Diagram's nodes");
+    pass("a node is selected by pointer, touch or keyboard; the Segmented follows; its detail shows; no report opens");
+
     // ---- The keyboard: arrows step the number and move the choice; a focused control shows its ring.
     const field = frame("scones").locator(".brief-number-field");
     await field.focus();
@@ -327,6 +401,25 @@ async function check(run) {
     assert.equal(await value("scones"), "8", "the card keeps the reader's value");
     assert.equal(await frame("scones").locator('[role="switch"]').getAttribute("aria-checked"), "true");
     pass("the report page starts from the section's values and shares them across its parts; the card keeps its own");
+
+    // ---- (S3) The flowchart's report page: left to right where its 735 px fit (the desktop's page), top to bottom on a phone.
+    await press(card("flow").locator(".home-report-open"));
+    const flowPage = page.locator(".home-report");
+    const flowSvg = flowPage.locator(".report-hero .brief-diagram svg");
+    await flowSvg.waitFor({ timeout: 10_000 });
+    const onPage = await flowSvg.evaluate((svg) => {
+      const s = svg.getBoundingClientRect();
+      const boxes = [...svg.querySelectorAll(".brief-diagram-shape")].map((shape) => shape.getBoundingClientRect());
+      return { direction: svg.dataset.direction, width: Math.round(s.width), room: Math.round(svg.parentElement.clientWidth),
+        inside: boxes.every((b) => b.left >= s.left - 1 && b.right <= s.right + 1 && b.top >= s.top - 1 && b.bottom <= s.bottom + 1) };
+    });
+    assert.equal(onPage.direction, onPage.room >= 735 ? "right" : "down", JSON.stringify(onPage));
+    if (!run.phone) assert.equal(onPage.direction, "right", `the desktop's page has room: ${JSON.stringify(onPage)}`);
+    assert.ok(onPage.inside, JSON.stringify(onPage));
+    await shot(flowPage.locator(".report-hero"), "report-diagram-flow");
+    await press(flowPage.locator(".report-back"));
+    await flowPage.waitFor({ state: "detached", timeout: 10_000 });
+    pass("the flowchart's report page lays it out left to right where it fits and top to bottom where it does not", onPage);
 
     const widths = await page.evaluate(() => ({ page: document.scrollingElement.scrollWidth, window: innerWidth }));
     assert.ok(widths.page <= widths.window + 1, JSON.stringify(widths));
