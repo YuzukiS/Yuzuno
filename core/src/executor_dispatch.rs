@@ -19,7 +19,7 @@ use std::{path::Path, sync::Arc};
 /// ordinary one is not: it creates an Agent, work an update waits for. The
 /// permit comes before the row is read, so a retry of one already made is
 /// refused too, and gets its recorded answer after the update (Lead 5080).
-const UPDATING: &str = "workspace_updating: Workspace is preparing an update, and a dispatch from an executor template waits for it, as creating an Agent does. Retry the same request once the update is done: a dispatch it already made returns its recorded answer, and one it had not made goes ahead then. A dispatch to an existing Agent is not refused";
+const UPDATING: &str = "workspace_updating: Workspace is preparing an update, and a dispatch to a new executor waits for it, as creating an Agent does. Retry the same request once the update is done: a dispatch it already made returns its recorded answer, and one it had not made goes ahead then. A dispatch to an existing Agent is not refused";
 
 /// That refusal, typed: nothing of the dispatch was written, so a rebuild it
 /// meets stays pending for a later pass instead of blocking its task

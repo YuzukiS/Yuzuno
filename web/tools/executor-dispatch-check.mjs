@@ -1,7 +1,7 @@
-// T-34 S2: giving a task to a new executor from a template, in Chromium, with
+// T-34 S2, YN-2 S1: giving a task to a new executor, in Chromium, with
 // every API answered here (no Core, no CLI, no daily configuration). Through
-// the real Tasks & messages window: the task's dispatch form offers its
-// Project's templates, then the Workspace's; one is chosen and sent as
+// the real Tasks & messages window: the task's dispatch form offers a
+// general executor, then its Project's templates, then the Workspace's; one is chosen and sent as
 // `executor`, never as an Agent; afterwards the rail marks the executor Core
 // made. In Chinese on a phone, the form fits its width.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-dispatch-check.mjs
@@ -40,7 +40,8 @@ const view = { workspace: { version: 2, templates: [] }, project: { id: "p1", ve
     { template: { id: "reviewer", label: "Reviewer", harness: "claude", instructions: "Read the acceptance first." }, source: "project" },
     { template: { id: "builder", label: "Builder", harness: "codex" }, source: "workspace" },
   ],
-  defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false };
+  defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false,
+  general: { label: "Executor", harness: "claude", harnessSource: "project" } };
 // Well-formed answers for what the selected Agent's panels read: `{}` there
 // sends the app to its error boundary with no page error (browser pitfalls).
 const usage = {
@@ -159,13 +160,14 @@ try {
   let page = await open({ width: 1280, locale: "en-US" });
   let form = await dispatchForm(page, { tasks: "Tasks & messages", give: "Give to agent" });
   assert.equal(await form.getByLabel("An existing agent").isChecked(), true, "an existing agent comes first");
-  await form.getByLabel("A new executor, from a template").check();
+  await form.getByLabel("A new executor").check();
   const picker = form.locator("select").last();
-  await page.waitForFunction((el) => !el.disabled && el.options.length === 3, await picker.elementHandle(), { timeout: 10_000 });
-  assert.deepEqual(await picker.locator("option").allTextContents(), ["Choose a template", "Reviewer · this project’s", "Builder"]);
-  assert.equal(await form.getByRole("button", { name: "Create and send" }).isDisabled(), true, "nothing to send before a template is chosen");
+  await page.waitForFunction((el) => el.options.length === 3, await picker.elementHandle(), { timeout: 10_000 });
+  assert.deepEqual(await picker.locator("option").allTextContents(),
+    ["General executor · Claude Code (this project’s default)", "Reviewer · this project’s", "Builder"]);
+  assert.equal(await form.getByRole("button", { name: "Create and send" }).isDisabled(), false, "a general executor needs no template");
   await picker.selectOption("reviewer");
-  await form.getByText("Core creates an agent for this task from the template").waitFor({ timeout: 10_000 });
+  await form.getByText("Core creates an agent for this task, a general one or from the template you choose").waitFor({ timeout: 10_000 });
   await page.screenshot({ path: join(output, "1-form.png") });
   await form.getByRole("button", { name: "Create and send" }).click();
   await page.getByText("Task sent.").waitFor({ timeout: 10_000 });
@@ -175,7 +177,7 @@ try {
   assert.equal(typeof requestId, "string");
   assert.deepEqual(body, { taskId: "T-7", expectedVersion: 1, executor: { templateId: "reviewer" }, priority: "normal" });
   await page.screenshot({ path: join(output, "2-sent.png") });
-  check("the task's Project's templates, then the Workspace's, offered; the chosen one sent as executor, with no Agent", { body });
+  check("a general executor, then the task's Project's templates, then the Workspace's, offered; the chosen one sent as executor, with no Agent", { body });
 
   // ---- The rail marks the executor Core made.
   await page.reload();
@@ -192,9 +194,9 @@ try {
   current = { ...current, status: "todo", version: 1, assigneeAgentId: null, assignee: null };
   page = await open({ width: 390, locale: "zh-CN", language: "zh-Hans" });
   form = await dispatchForm(page, { tasks: "任务与消息", give: "交给 Agent" });
-  await form.getByLabel("按模板新建执行者").check();
-  await page.waitForFunction((el) => !el.disabled, await form.locator("select").last().elementHandle(), { timeout: 10_000 });
-  await form.getByText("Core 按模板为这个任务创建一个 Agent").waitFor({ timeout: 10_000 });
+  await form.getByLabel("新建执行者").check();
+  await page.waitForFunction((el) => el.options.length === 3, await form.locator("select").last().elementHandle(), { timeout: 10_000 });
+  await form.getByText("Core 为这个任务创建一个 Agent（通用的，或按你选的模板）").waitFor({ timeout: 10_000 });
   assert.deepEqual(await fits(form), { box: true, wider: [] }, "on a phone the form fits its width");
   await page.screenshot({ path: join(output, "4-phone-zh.png") });
   check("in Chinese at 390 px the dispatch form and each field fit their width");
