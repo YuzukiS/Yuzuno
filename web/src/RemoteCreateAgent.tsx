@@ -18,6 +18,7 @@ import type { Agent, Model, Project } from "./types";
 import { activeProjects } from "./projects";
 import { ImportCodexSession } from "./ImportCodexSession";
 import { ImportClaudeSession } from "./ImportClaudeSession";
+import { ImportOpenCodeSession } from "./ImportOpenCodeSession";
 import { harnessName, runMachineCheck, type MachineCheck } from "./machine-checks";
 import { LastCheck } from "./MachinesPage";
 import {
@@ -158,7 +159,7 @@ export function RemoteCreateAgent({
   const [modelError, setModelError] = useState("");
   const [modelReload, setModelReload] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<"new" | "existing" | "claude">("new");
+  const [mode, setMode] = useState<"new" | "existing" | "claude" | "opencode">("new");
   // A pane shown once in this opening stays, hidden, so a session ID, its
   // preview and a name typed there survive a switch; the one switched to
   // fades in over small (T-19 ST:SX-02). The New form is never remounted.
@@ -174,6 +175,10 @@ export function RemoteCreateAgent({
     setSwitches((n) => n + 1);
   }
   const [importBusy, setImportBusy] = useState(false);
+  // The OpenCode export tab, as OpenCode Agents, only while Core creates them.
+  useEffect(() => {
+    if (!opencode && mode === "opencode" && !importBusy) setMode("new");
+  }, [opencode, mode, importBusy]);
   const [error, setError] = useState("");
   const [adding, setAdding] = useState(false);
   // Escape with the machine editor open closes the editor, not the dialog,
@@ -467,7 +472,13 @@ export function RemoteCreateAgent({
       }}
       title={mode === "new" ? t.newTitle : t.existingTitle}
       description={
-        mode === "new" ? t.newDescription : mode === "claude" ? t.claudeDescription : t.codexDescription
+        mode === "new"
+          ? t.newDescription
+          : mode === "claude"
+            ? t.claudeDescription
+            : mode === "opencode"
+              ? t.openCodeDescription
+              : t.codexDescription
       }
       lang={langTag(language)}
       closeLabel={t.close}
@@ -497,6 +508,16 @@ export function RemoteCreateAgent({
         >
           {t.existingClaude}
         </button>
+        {opencode && (
+          <button
+            type="button"
+            aria-pressed={mode === "opencode"}
+            disabled={locked}
+            onClick={() => switchTo("opencode")}
+          >
+            {t.existingOpenCode}
+          </button>
+        )}
       </div>
       {kept("existing") && (
         <div ref={mode === "existing" ? shownPane : undefined} hidden={mode !== "existing"}>
@@ -517,6 +538,16 @@ export function RemoteCreateAgent({
             onBusyChange={setImportBusy}
             projects={projects}
             initialProjectId={projectId}
+          />
+        </div>
+      )}
+      {opencode && kept("opencode") && (
+        <div ref={mode === "opencode" ? shownPane : undefined} hidden={mode !== "opencode"}>
+          <ImportOpenCodeSession
+            disabled={disabled}
+            close={close}
+            onCreated={onCreated}
+            onBusyChange={setImportBusy}
           />
         </div>
       )}
