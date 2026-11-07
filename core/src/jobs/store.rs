@@ -212,7 +212,7 @@ fn triple(r: &Resources) -> String {
     format!("{} mCPU / {} MiB RAM / {} MiB swap", r.cpu_millis, r.memory_mi_b, r.swap_mi_b)
 }
 /// What job_budget's CPU hints are, and are not (T-64).
-const CPU_HINT: &str = "cpuMillisFree (the budget less every running Job's current CPU grant and collector), queueLength (local Jobs waiting) and running (local Jobs running) are read now, to choose a CPU range with: they are not an entitlement. A Job's grant is decided when it starts.";
+const CPU_HINT: &str = "cpuMillisFree (the budget less every running Job's current CPU grant and collector), queueLength (local Jobs queued), cpuWaiting (how many of them only CPU, or nothing, kept from starting at the last admission pass, and since when) and running (local Jobs running) are read now, to choose a CPU range with: they are not an entitlement. A Job's grant is decided when it starts: its minimum while another queued Job waits for CPU, never because of Jobs waiting for RAM, a GPU, disk, a slot or an exclusive Job; and running Jobs are raised only while none waits for CPU.";
 pub(super) fn save(db: &Connection, value: &Value) -> Result<()> {
     db.execute(
         "UPDATE local_jobs SET status=?2,reserved=?3,data=?4 WHERE id=?1",
@@ -665,8 +665,13 @@ impl Store {
         let mut payload = input.as_requested()?;
         payload["taskId"] = json!(task);
         let identity = super::runs::job_identity(&input, &snapshot);
+        // What earlier runs of the same Job suggest, read before it is in the
+        // table and kept with it, its request beside it (YN-6 S2).
+        let query = super::suggestion::Query { task_id: input.task_id.clone(), name: input.name.clone(), argv: input.argv.clone() };
+        let suggestion = super::suggestion::for_job(&tx, &query, actor, input.resources.memory_mi_b)?;
         let mut value = new_job(self, &tx, actor, &input, snapshot, machine, capability)?;
         value["identity"] = identity;
+        value["suggestion"] = suggestion;
         let value = insert_job(&tx, value)?;
         if let Some(link) = &input.service_link {
             crate::service_jobs::insert(&tx, value["id"].as_str().context("Job identity missing")?, link)?;
@@ -859,19 +864,25 @@ impl Store {
     /// (free less headroom) is not a reservation that can be held open, so
     /// nothing passes it. A job waiting for a GPU holds only that device, a
     /// disk wait is skipped, an exclusive job holds everything, and stages
-    /// waiting on upstream are not queued at all. Returns the reserved job and
-    /// whether any waiting reason changed.
+    /// waiting on upstream are not queued at all.
+    ///
+    /// The same transaction reads which queued Jobs wait for CPU (YN-6,
+    /// `cpu_waiting`): after the job it reserves, for that job's grant, and
+    /// when it reserves none, to plan the raises of running elastic Jobs if
+    /// none does. Returns the reserved job, whether any waiting reason
+    /// changed, and those raises (none when a job was reserved).
+    #[allow(clippy::type_complexity)]
     pub(super) fn reserve_next(
         &self,
         host_memory_available: Option<u64>,
         host: Option<Value>,
         disk: Option<&[super::DiskCheck]>,
-    ) -> Result<(Option<Value>, bool)> {
+    ) -> Result<(Option<Value>, bool, Vec<(Value, super::cpu::Raise, u64)>)> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let queued = super::queue::queued(&tx)?;
         if queued.is_empty() {
-            return Ok((None, false));
+            return Ok((None, false, Vec::new()));
         }
         let last = super::queue::last_project(&tx)?;
         let order = super::queue::order(&queued, last.as_deref());
@@ -908,19 +919,9 @@ impl Store {
                 if candidate.exclusive && state.active > 0 {
                     break;
                 }
-                if let Some(disk) = disk {
-                    if !matches!(disk.iter().find(|d| d.job_id == candidate.id).map(|d| &d.verdict), Some(super::disk::Verdict::Start)) {
-                        continue;
-                    }
-                }
-                let job = get(&tx, &candidate.id)?;
-                if host.as_ref().is_some_and(|h| h["id"] != job["machine"]["id"])
-                    || self.brief_in(&tx, job["agentId"].as_str().unwrap_or(""))?.is_none_or(|v| v.agent.closed_at.is_some())
-                    || crate::executor_archiving::archiving(&tx, job["agentId"].as_str().unwrap_or(""))?.is_some()
-                    || super::service_recovery::reservation(self, &mut job.clone()).is_some()
-                {
+                let Some(job) = self.tried(&tx, candidate, host.as_ref(), disk, false)? else {
                     continue;
-                }
+                };
                 let need: Resources = serde_json::from_value(job["reservation"].clone())?;
                 match budget_shortage(&need, &free) {
                     Some((waits, _)) => {
@@ -957,7 +958,7 @@ impl Store {
             }
             Ok(())
         };
-        for index in order {
+        for &index in &order {
             let candidate = &queued[index];
             let mut job = get(&tx, &candidate.id)?;
             // Unknown, starting and cancelling reservations all still count. Only
@@ -1108,9 +1109,9 @@ impl Store {
                     }
                 },
             };
-            // Its CPU within what it asked for (T-64), decided before it holds
-            // any of the budget: what is free, and whether anything else waits.
-            super::cpu::record_grant(&tx, &mut job, limit.cpu_millis, queued.len().saturating_sub(1), max_active(&tx)?)?;
+            // What the Jobs holding the budget hold of its CPU before this one
+            // holds any: its grant's free (T-64).
+            let held_cpu = super::cpu::held(&tx)?;
             job["reserved"] = json!(true);
             // A queued job has not started: bind its attempt to the boot at reservation,
             // not the earlier submission boot. Started attempts never get rebound.
@@ -1137,12 +1138,146 @@ impl Store {
                 fields.remove("admission");
             }
             save(&tx, &job)?;
+            // Its CPU within what it asked for (T-64): its minimum while
+            // another queued Job waits for CPU once this one holds its
+            // reservation, slot and GPUs (YN-6), read in this transaction.
+            let waiting = self.cpu_waiting(&tx, &queued, &order, Some(&candidate.id), first.as_deref(), host_memory_available, host.as_ref(), disk)?;
+            super::cpu::record_grant(&mut job, limit.cpu_millis, held_cpu, queued.len().saturating_sub(1), &waiting, max_active(&tx)?)?;
+            save(&tx, &job)?;
             super::queue::served(&tx, &candidate.project)?;
+            super::queue::record_cpu_waiting(&tx, &waiting)?;
             tx.commit()?;
-            return Ok((Some(job), true));
+            return Ok((Some(job), true, Vec::new()));
         }
+        // Nothing starts. With no queued Job waiting for CPU, running elastic
+        // Jobs may take what is free (YN-6): planned here, in the transaction
+        // that found none, so a Job queued after it is seen by the next pass.
+        let waiting = self.cpu_waiting(&tx, &queued, &order, None, first.as_deref(), host_memory_available, host.as_ref(), disk)?;
+        super::queue::record_cpu_waiting(&tx, &waiting)?;
+        let raises = if waiting.is_empty() { super::cpu::planned(&tx)? } else { Vec::new() };
         tx.commit()?;
-        Ok((None, changed))
+        Ok((None, changed, raises))
+    }
+
+    /// Whether the scan tries `candidate` at all, with its record when it
+    /// does: its own free-space verdict lets it start, it runs on this
+    /// machine, its Agent is open and not being released, and (a service's
+    /// automatic retry) it may still start. A Job it does not try is rejected,
+    /// held or left for the next round there, and is never a head.
+    ///
+    /// With `unread_starts`, a Job with no free-space verdict this round (one
+    /// queued after the round's reads) is tried as if it had one that lets it
+    /// start: `cpu_waiting` holds raises one tick too long for such a Job
+    /// rather than miss one that fits (YN-6 S1, #676 R1).
+    fn tried(&self, tx: &Connection, candidate: &super::queue::Queued, host: Option<&Value>, disk: Option<&[super::DiskCheck]>, unread_starts: bool) -> Result<Option<Value>> {
+        if let Some(disk) = disk {
+            match disk.iter().find(|d| d.job_id == candidate.id).map(|d| &d.verdict) {
+                Some(super::disk::Verdict::Start) => {}
+                None if unread_starts => {}
+                _ => return Ok(None),
+            }
+        }
+        let job = get(tx, &candidate.id)?;
+        let agent = job["agentId"].as_str().unwrap_or("");
+        if host.is_some_and(|h| h["id"] != job["machine"]["id"])
+            || self.brief_in(tx, agent)?.is_none_or(|v| v.agent.closed_at.is_some())
+            || crate::executor_archiving::archiving(tx, agent)?.is_some()
+            || super::service_recovery::reservation(self, &mut job.clone()).is_some()
+        {
+            return Ok(None);
+        }
+        Ok(Some(job))
+    }
+
+    /// The queued Jobs in `order`, other than `except`, that wait for CPU now
+    /// (YN-6): only CPU, or nothing, keeps each from starting, so it would
+    /// start if its CPU need were zero. One that fits and waits only for its
+    /// turn counts. Read in the admission transaction after what it reserved,
+    /// with the scan's own checks in the scan's order (`own_turn` is the
+    /// former head that goes first, outside any head's room), changing
+    /// nothing; a Job queued after the round's free-space reads is read as if
+    /// its disk let it start. Not one: a Job the scan does not try, one behind
+    /// an exclusive Job or behind a Job short of host memory, or one waiting for a slot or
+    /// a lowered budget, for RAM or swap (of what is free, or of what a
+    /// blocked head leaves), for host memory or for a GPU. In admission order.
+    #[allow(clippy::too_many_arguments)]
+    fn cpu_waiting(
+        &self,
+        tx: &Connection,
+        queued: &[super::queue::Queued],
+        order: &[usize],
+        except: Option<&str>,
+        own_turn: Option<&str>,
+        host_memory_available: Option<u64>,
+        host: Option<&Value>,
+        disk: Option<&[super::DiskCheck]>,
+    ) -> Result<Vec<String>> {
+        let state = QueueState::read(tx)?;
+        let limit = budget(tx, None)?;
+        let (used, count) = reserved(tx)?;
+        if state.exclusive_active || !used.fits(&limit) || count >= max_active(tx)? {
+            return Ok(Vec::new());
+        }
+        let free = limit.available(&used);
+        // The Jobs the scan tries, in its order, with what each needs.
+        let mut tried = Vec::new();
+        for &index in order {
+            let candidate = &queued[index];
+            if candidate.exclusive && state.active > 0 {
+                break;
+            }
+            if except == Some(candidate.id.as_str()) {
+                continue;
+            }
+            let Some(job) = self.tried(tx, candidate, host, disk, true)? else {
+                continue;
+            };
+            // Rejected by the scan this round: no longer queued.
+            if job["status"] != "queued" {
+                continue;
+            }
+            let need: Resources = serde_json::from_value(job["reservation"].clone())?;
+            tried.push((job, need));
+        }
+        // The head as the scan holds it: the first of them short of the budget.
+        let head = match tried.iter().find_map(|(job, need)| budget_shortage(need, &free).map(|(waits, _)| (job, need, waits))) {
+            Some((job, need, waits)) => Some(BlockedHead::new(tx, job["id"].as_str().unwrap_or(""), String::new(), waits, need, &limit)?),
+            None => None,
+        };
+        let gpus = super::gpu::view(tx)?;
+        let mut held: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let short_of_host = |need: &Resources| host_memory_available.is_some_and(|n| need.memory_mi_b > n);
+        let mut waiting = Vec::new();
+        for (job, need) in &tried {
+            let id = job["id"].as_str().unwrap_or("");
+            let room = match head.as_ref().filter(|h| h.id != id && own_turn != Some(id)) {
+                Some(head) => head.room(&free),
+                None => free.clone(),
+            };
+            let gpu: Option<super::gpu::GpuRequest> = serde_json::from_value(job["gpu"].clone())?;
+            if need.fits(&room) {
+                // As the scan: host memory, then the GPUs.
+                if short_of_host(need) {
+                    // Nothing passes it.
+                    break;
+                }
+                if let Some(request) = &gpu {
+                    if let Err((_, wanted)) = super::gpu::fit(request, &gpus, &held) {
+                        held.extend(wanted);
+                        continue;
+                    }
+                }
+                // It waits only for its turn.
+                waiting.push(id.to_owned());
+            } else if (Resources { cpu_millis: 0, ..need.clone() }).fits(&room)
+                && !short_of_host(need)
+                && gpu.as_ref().is_none_or(|request| super::gpu::fit(request, &gpus, &held).is_ok())
+            {
+                // Only CPU keeps it.
+                waiting.push(id.to_owned());
+            }
+        }
+        Ok(waiting)
     }
     pub(super) fn request_job_cancel(&self, actor: Option<&str>, id: &str) -> Result<Value> {
         let mut db = self.db.write()?;
@@ -1269,6 +1404,14 @@ impl Store {
         let available = limit.available(&used);
         // Hints for choosing a CPU range (T-64), as the grant rule reads them now.
         let cpu_free = limit.cpu_millis.saturating_sub(super::cpu::held(&db)?);
+        // Which queued Jobs wait for CPU, as the last admission pass found
+        // (YN-6); none with nothing queued, unknown before any pass.
+        let saved = super::queue::saved_cpu_waiting(&db)?;
+        let cpu_waiting = if queued == 0 {
+            json!({"count": 0, "since": null})
+        } else {
+            json!({"count": saved["count"], "since": saved["since"]})
+        };
         let running: i64 = db.query_row(
             "SELECT COUNT(*) FROM local_jobs WHERE status='running' AND json_extract(data,'$.executor') IS NULL",
             [],
@@ -1286,7 +1429,7 @@ impl Store {
         let windows = json!({"maxJobs": windows_cap.map_or(super::remote::SLOTS, i64::from), "set": windows_cap.is_some(),
             "defaultMaxJobs": super::remote::SLOTS, "activeCount": windows_active, "sharesThisBudget": true});
         Ok(
-            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"waitingCount":waiting,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"cpuMillisFree":cpu_free,"queueLength":queued,"running":running,"cpuHint":CPU_HINT,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
+            json!({"machine":machine,"budget":limit,"budgetBounds":{"minimum":super::BUDGET_MIN,"maximum":super::BUDGET_MAX},"reserved":used,"available":available,"requestCapacity":capacity,"activeCount":count,"queuedCount":queued,"waitingCount":waiting,"maxActive":max_active(&db)?,"maxActiveSet":saved_max_active(&db)?.is_some(),"maxActiveDefault":DEFAULT_MAX_ACTIVE,"maxActiveBounds":{"minimum":MAX_ACTIVE_RANGE.start(),"maximum":MAX_ACTIVE_RANGE.end()},"cpuMillisFree":cpu_free,"queueLength":queued,"cpuWaiting":cpu_waiting,"running":running,"cpuHint":CPU_HINT,"windows":windows,"collectorOverhead":{"cpuMillis":super::COLLECTOR_CPU,"memoryMiB":super::COLLECTOR_MEMORY,"swapMiB":0},"gpus":super::gpu::devices_value(&db)?}),
         )
     }
     /// A budget save that leaves maxActive as it is (tests; the route takes both).

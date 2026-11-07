@@ -83,9 +83,8 @@ try {
 
   await page.getByRole("button", { name: "Settings and updates" }).click();
   const dialog = page.getByRole("dialog");
-  const picker = dialog.getByRole("combobox", { name: "Settings category", exact: true });
-  if (await picker.count()) await picker.selectOption({ label: "Notifications & attention" });
-  else await dialog.getByRole("tab", { name: "Notifications & attention" }).click();
+  // Its page of Settings; on a phone the list of pages comes first (YN-8).
+  await dialog.locator("#settings-tab-notifications").click();
   const editor = dialog.locator("#settings-notifications");
   const push = editor.getByRole("checkbox", { name: "Push notifications on this device" });
   await push.waitFor();

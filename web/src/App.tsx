@@ -98,6 +98,8 @@ import type {
   WorkSummary,
 } from "./types";
 import type { SettingsDestination, SettingsEditor } from "./settings-catalog";
+import { destinationPage, type SettingsPage } from "./settings-pages";
+import type { SettingsOpenAt } from "./SettingsCenter";
 import { UpdateBanner, WorkspaceUpdatesHost } from "./WorkspaceUpdates";
 import { onFollowApplied, useAppearanceFollow } from "./appearance-follow";
 import { RemoteCreateAgent, type CreateInitial } from "./RemoteCreateAgent";
@@ -150,7 +152,7 @@ import { CollaborationBoard } from "./CollaborationBoard";
 import { MachinesPage } from "./MachinesPage";
 import {
   AgentProjectPicker,
-  ProjectManager,
+  ProjectsPage,
   ProjectSwitcher,
 } from "./ProjectWorkspace";
 import {
@@ -225,7 +227,6 @@ import {
   orderByAttention,
   unseenEnd,
   waitingSince,
-  proposersWaiting,
   type NeedsJump,
   type NeedsTarget,
 } from "./attention";
@@ -374,14 +375,14 @@ export function App() {
   // The letters shown beside New agent, as this device has them.
   const boundKeys = useShortcutKeys();
   const [updatesOpen, setUpdatesOpen] = useState(false);
-  // Settings opened at one editor, as a backup notification's click does (T-196).
-  const [settingsAt, setSettingsAt] = useState<{ editor: SettingsEditor; nonce: number } | null>(null);
+  // Settings opened at a page or an editor, as a backup notification's click
+  // (T-196) and the rail's project and machine entries (YN-8) do.
+  const [settingsAt, setSettingsAt] = useState<SettingsOpenAt | null>(null);
   // Core said the daily backup's last run changed: read again for notifications.
   const [backupRevision, setBackupRevision] = useState(0);
   const [updatesNeedReload, setUpdatesNeedReload] = useState(false);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
   const [settingsInspectorAgent, setSettingsInspectorAgent] = useState<string | null>(null);
-  const [settingsProject, setSettingsProject] = useState<string | null>(null);
   // The composer's `/model`: opens this Agent's settings, never a prompt.
   const [modelRequest, setModelRequest] = useState<{ model: string; nonce: number; kind?: "permissions"; agentId?: string; section?: "model" | "context" } | null>(null);
   // What /new and /resume open New agent with (T-29); null is its usual start.
@@ -612,11 +613,7 @@ export function App() {
   const [readActionsOpen, setReadActionsOpen] = useState(false);
   const [agentScope, setAgentScope] = useState<"active" | "closed">("active");
   const [storedScope, setStoredScope] = useState<ProjectScope>(ALL_PROJECTS);
-  const [projectDialog, setProjectDialog] = useState<"new" | "manage" | null>(
-    null,
-  );
   const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
-  const [machinesOpen, setMachinesOpen] = useState(false);
   const [requestReopen, setRequestReopen] = useState<{
     agentId: string;
     sequence: number;
@@ -1664,9 +1661,10 @@ export function App() {
     (r) => r.status === "uncertain" || (r.status === "sending" && !(sending && outgoing.some((m) =>
       m.agentId === selected && m.receipt.status === "sending" && m.receipt.input.clientMessageId === r.input.clientMessageId))),
   );
-  // The Home tab counts what Needs you lists: requests and open Asks. Unread
-  // turns stay with their conversations: Home does not list them, so its
-  // badge does not count them.
+  // The Home tab counts what Needs you lists, only what waits for the user's
+  // decision (YN-3): requests and questions, open Asks and executors the user
+  // dispatched. Turns that ended unseen stay with their
+  // conversations and the Agent list's mark: Home does not list or count them.
   const totalPending = activeAgents.reduce((n, a) => n + a.pendingCount, 0);
   const [openAsks, reportNeedsYou, needsYouItems] = useOpenAsks(workspaceId, !homeOpen && !previewMode, asksRevision);
   // This device's system notifications, where it chose them and its system
@@ -1722,14 +1720,14 @@ export function App() {
     const done = needsYou > 0 ? badge.setAppBadge?.(needsYou) : badge.clearAppBadge?.();
     done?.catch(() => {});
   }, [previewMode, needsYou]);
-  // Next needs you: Home's Needs you in Core's order, then the Turn ends not
-  // seen here (attention.ts). After an Ask, Home stays the place shown.
+  // Next needs you: Home's Needs you in Core's order (attention.ts). After an
+  // Ask, Home stays the place shown.
   const needsTargets = useMemo(
-    () => needsYouTargets(needsYouItems, activeAgents, turnSeen),
-    [needsYouItems, activeAgents, turnSeen],
+    () => needsYouTargets(needsYouItems, activeAgents),
+    [needsYouItems, activeAgents],
   );
   const lastNeedsJump = useRef<NeedsJump | null>(null);
-  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; proposalId?: string; n: number } | null>(null);
+  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; n: number } | null>(null);
   const goNextNeedsYou = () => {
     const shown: NeedsTarget | null = homeOpen
       ? lastNeedsJump.current && lastNeedsJump.current.target.kind !== "agent" ? lastNeedsJump.current.target : null
@@ -1742,8 +1740,7 @@ export function App() {
       selectAgent(target.agentId);
     } else {
       goHome();
-      setHomeJump((last) => ({ projectId: target.projectId, n: (last?.n ?? 0) + 1,
-        ...(target.kind === "handover" ? { proposalId: target.proposalId } : { sectionKey: target.sectionKey }) }));
+      setHomeJump((last) => ({ projectId: target.projectId, n: (last?.n ?? 0) + 1, sectionKey: target.sectionKey }));
     }
   };
   const nextNeedsYou = useRef(goNextNeedsYou);
@@ -1782,9 +1779,7 @@ export function App() {
       !agentSettingsOpen &&
       !turnDockEngaged &&
       !readActionsOpen &&
-      !projectDialog &&
       !scopeMenuOpen &&
-      !machinesOpen &&
       !changesRequest &&
       !forkOpen &&
       !reviewRequest &&
@@ -2247,8 +2242,22 @@ export function App() {
       setUpdatesOpen(true);
     });
   }
+  /** Settings at a page (YN-8): the rail's projects and machines, the status
+   * bar's machines, Home's machine links. */
+  function openSettingsPage(page: SettingsPage, sub?: string) {
+    if (previewMode) return;
+    setSettingsAt({ page, sub, nonce: Date.now() });
+    setUpdatesOpen(true);
+  }
   function openSettingsDestination(destination: SettingsDestination) {
     if (previewMode) return;
+    // A project or the machines is a page of Settings: it stays open.
+    const page = destinationPage(destination);
+    if (page) {
+      if (destination.kind === "project" && !projects.some((project) => project.id === destination.projectId && !project.archivedAt)) return;
+      setSettingsAt({ ...page, nonce: Date.now() });
+      return;
+    }
     setUpdatesOpen(false);
     // Let the Settings dialog release its focus/aria-hidden layer before
     // another existing dialog or the conversation inspector takes over.
@@ -2266,16 +2275,12 @@ export function App() {
       } else {
         setModelRequest({ model: "", nonce: Date.now(), agentId: chosen.id, section: destination.section });
       }
-    } else if (destination.kind === "project") {
-      if (!projects.some((project) => project.id === destination.projectId && !project.archivedAt)) return;
-      setSettingsProject(destination.projectId);
-      setProjectDialog("manage");
     } else if (destination.kind === "taskWorkspaces") {
       // That Task, by its ID, at its own Workspace section: it opens there and
       // lists, and nothing is previewed or removed until it is asked there.
       setTaskFocus({ taskId: destination.taskId, section: "workspaces", at: Date.now() });
       setCollaborationOpen(true);
-    } else if (destination.kind === "machines") setMachinesOpen(true);
+    }
     });
   }
   // An Agent's action menu (T-184), in the list and the conversation header.
@@ -2388,10 +2393,10 @@ export function App() {
     setSourceJump(true);
     setJumpToTurn(null);
   }
-  /** Home links into a conversation (or the Machines page) and leads back. */
+  /** Home links into a conversation (or Settings › Machines) and leads back. */
   function openFromHome(target: HomeTarget) {
     if (target.kind === "machine") {
-      setMachinesOpen(true);
+      openSettingsPage("machines");
       return;
     }
     const owner = workspace?.agents.find((a) => a.id === target.agentId);
@@ -3224,7 +3229,7 @@ export function App() {
   // ordered within each group as grouping keeps the list's order.
   const filteredAgents =
     appearance.agentOrder === "attention"
-      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems), waiting: proposersWaiting(needsYouItems) })
+      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems) })
       : searched;
 
   return (
@@ -3325,7 +3330,10 @@ export function App() {
             title={core.description}
             data-core-status={core.status}
           >
-            <span />
+            {/* The dot is named too: the dot rule once matched every span in
+                here, the label included, which drew it as a second 5px dot
+                with its words wrapped over the icons (YN-17). */}
+            <span className="connection-dot" />
             {/* Named, so a screen too short for the words can keep the dot
                 and its title (T-15 V5). */}
             <span className="connection-label">{core.label}</span>
@@ -3485,7 +3493,7 @@ export function App() {
               agentScope === "closed" ? agents.map(row) : (
                 <ExecutorRail agents={agents} listKey={key} workspaceId={workspaceId} selectedId={homeOpen ? null : selected}
                   searching={!!search.trim()} renderAgent={row}
-                  order={appearance.agentOrder === "attention" ? { seen: turnSeen, waiting: proposersWaiting(needsYouItems) } : undefined} />
+                  order={appearance.agentOrder === "attention" ? { seen: turnSeen } : undefined} />
               );
             return groups ? (
               <GroupedAgents
@@ -3539,9 +3547,12 @@ export function App() {
           projects={projects}
           agents={workspace?.agents || []}
           onScope={changeScope}
-          onNewProject={() => setProjectDialog("new")}
-          onManage={() => setProjectDialog("manage")}
-          onMachines={() => setMachinesOpen(true)}
+          onNewProject={() => openSettingsPage("projects", "new")}
+          onManage={() => {
+            // The project in scope, else the first, as the manager always opened (YN-8).
+            openSettingsPage("projects", scope.startsWith("project:") ? scope.slice("project:".length) : undefined);
+          }}
+          onMachines={() => openSettingsPage("machines")}
           onOpenChange={setScopeMenuOpen}
           readOnly={previewMode}
         />
@@ -3618,7 +3629,6 @@ export function App() {
             onNavigate={openFromHome}
             onChanged={refresh}
             onNeedsYou={reportNeedsYou}
-            turnSeen={turnSeen}
             jumpTo={homeJump}
             arrival={homeArrival}
             onBackToReply={(link) => openMessageLink(link)}
@@ -4710,7 +4720,7 @@ export function App() {
         codexAgent={agent?.harness === "codex" ? agent : null}
         coreLabel={core.label}
         coreHealthy={core.healthy}
-        onMachines={() => setMachinesOpen(true)}
+        onMachines={() => openSettingsPage("machines")}
       />
       <WorkspaceUpdatesHost
         enabled={!previewMode}
@@ -4721,6 +4731,38 @@ export function App() {
         navigation={{ agents: workspace?.agents || [], projects, disabled: previewMode, onNavigate: openSettingsDestination }}
         workspaceId={previewMode ? "" : workspaceId}
         preserveDrafts={() => { if (imageUploads.hasPending()) throw new Error("Wait for images to finish saving before updating."); preserveDrafts(); }}
+        pages={{
+          // Settings › Projects and › Machines (YN-8). Each request (the rail,
+          // a search result) opens the projects page anew, at what it names.
+          projects: (open, request) => (
+            <ProjectsPage
+              key={request?.n ?? 0}
+              open={open}
+              onOpenChange={(open) => { if (!open) setUpdatesOpen(false); }}
+              initialView={request?.sub === "new" ? "new" : "manage"}
+              initialProjectId={request?.sub && request.sub !== "new" ? request.sub : null}
+              projects={projects}
+              usage={workspace?.projectUsage}
+              agents={workspace?.agents || []}
+              onChanged={refresh}
+              onCreated={(project) => setNotice(shell.projectReady(project.name))}
+            />
+          ),
+          machines: (open) => (
+            <MachinesPage
+              inline
+              open={open}
+              onOpenChange={(open) => { if (!open) setUpdatesOpen(false); }}
+              agents={workspace?.agents || []}
+              projects={projects}
+              revision={machinesRevision}
+              onOpenAgent={(id) => {
+                setUpdatesOpen(false);
+                selectAgent(id);
+              }}
+            />
+          ),
+        }}
       />
       <CollaborationBoard
         open={collaborationOpen}
@@ -4912,30 +4954,6 @@ export function App() {
                   : shell.created(a.name),
           );
         }}
-      />
-      <MachinesPage
-        open={machinesOpen}
-        onOpenChange={setMachinesOpen}
-        agents={workspace?.agents || []}
-        projects={projects}
-        revision={machinesRevision}
-        onOpenAgent={(id) => {
-          setMachinesOpen(false);
-          selectAgent(id);
-        }}
-      />
-      <ProjectManager
-        open={!!projectDialog}
-        onOpenChange={(open) => { if (!open) { setProjectDialog(null); setSettingsProject(null); } }}
-        initialView={projectDialog || "manage"}
-        initialProjectId={settingsProject}
-        projects={projects}
-        usage={workspace?.projectUsage}
-        agents={workspace?.agents || []}
-        onChanged={refresh}
-        onCreated={(project) =>
-          setNotice(shell.projectReady(project.name))
-        }
       />
       <ArtifactModal
         artifact={artifact}

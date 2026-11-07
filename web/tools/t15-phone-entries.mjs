@@ -16,6 +16,8 @@
 // press out, the way the drawer's buttons do; and with the dock's reviews at
 // 0 and one review that asked for changes, or its sub-agents at 0 and one
 // that failed, the press opens that work rather than an empty drawer.
+// Since YN-17 S2 (the user's decision) the entry no longer counts what went
+// wrong: with only that work it says nothing is running, and still opens it.
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-phone-entries.mjs
 // T15_LANG=zh-Hans reads the same screens in Chinese. That exact value: a
 // language this does not know falls back to English and passes, which is the
@@ -34,7 +36,8 @@ const now = Date.now();
 const iso = (ms) => new Date(now + ms).toISOString();
 let failed = 0;
 const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if (!ok) failed++; };
-const needsLook = lang === "zh-Hans" ? "1 个待查看" : "1 need a look";
+const quiet = lang === "zh-Hans" ? "没有在进行的工作" : "nothing running";
+const gone = lang === "zh-Hans" ? /待查看|需要注意/ : /need a look|Needs a look/i;
 
 const agent = {
   id: "a", name: "Dev 8 · Mac / iOS", status: "idle", harness: "claude", cwd: "/Users/yuzuki/work",
@@ -182,8 +185,8 @@ const state = (page) => page.evaluate(() => {
   await page.waitForTimeout(700);
   const after = await state(page);
   console.log(`\n--- 390x844, a phone, reviews at 0, one review asked for changes ---\n  before ${JSON.stringify(before)}\n  after  ${JSON.stringify(after)}`);
-  check(before.dockItems === 0 && !!before.entry?.includes(needsLook),
-    `the dock draws no review, and the entry counts the one that asked for changes (${before.dockItems}, ${JSON.stringify(before.entry)})`);
+  check(before.dockItems === 0 && !!before.entry?.includes(quiet) && !gone.test(before.entry),
+    `the dock draws no review, and the entry is there for the one that asked for changes, counting nothing as needing a look (${before.dockItems}, ${JSON.stringify(before.entry)})`);
   check(!(after.drawer === "work" && after.dockItems === 0),
     `its press does not open a drawer with nothing in it (drawer ${after.drawer}, drawn ${after.dockDrawn}, ${after.dockItems} in it)`);
   check(after.opened.length === 1 && after.opened[0].involving === "a" && after.opened[0].source === "reviews",
@@ -204,8 +207,8 @@ const state = (page) => page.evaluate(() => {
     return el ? (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80) : null;
   });
   console.log(`\n--- 390x844, a phone, sub-agents at 0, one failed ---\n  before ${JSON.stringify(before)}\n  after  ${JSON.stringify(after)}\n  card: ${JSON.stringify(card)}`);
-  check(before.dockItems === 0 && !!before.entry?.includes(needsLook),
-    `the dock draws no sub-agent, and the entry counts the one that failed (${before.dockItems}, ${JSON.stringify(before.entry)})`);
+  check(before.dockItems === 0 && !!before.entry?.includes(quiet) && !gone.test(before.entry),
+    `the dock draws no sub-agent, and the entry is there for the one that failed, counting nothing as needing a look (${before.dockItems}, ${JSON.stringify(before.entry)})`);
   check(!(after.drawer === "work" && after.dockItems === 0),
     `its press does not open a drawer with nothing in it (drawer ${after.drawer}, drawn ${after.dockDrawn}, ${after.dockItems} in it)`);
   check(!!card, `it opens the sub-agents' card instead (${JSON.stringify(card)})`);

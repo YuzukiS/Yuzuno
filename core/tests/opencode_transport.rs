@@ -6,7 +6,8 @@
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
 use yuzuno_workspace::opencode::{
-    session_of, Events, HttpStatus, Launch, Mcp, MessageId, Reply, Server, Submission, EVENT_IDLE_LIMIT,
+    session_of, CommandAnswer, Events, HttpStatus, Launch, Mcp, McpRefused, MessageId, Reply, RequestRefused, Server, Submission,
+    EVENT_IDLE_LIMIT,
 };
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
@@ -497,7 +498,7 @@ async fn events_arrive_in_order_and_a_broken_stream_is_recovered_by_a_snapshot()
     assert!(snapshot.questions.is_empty());
     assert_eq!(server.snapshot(&other, &[]).await.unwrap().status, json!({"type": "idle"}), "an unlisted session is idle");
     lab.control("question", json!({"sessionID": session})).await;
-    assert_eq!(session_of(&next_of(&mut events, "question.asked").await), Some(session.as_str()));
+    assert_eq!(session_of(&next_of(&mut events, "form.created").await), Some(session.as_str()));
 
     // A silent stream is an error, not an end.
     lab.control("mode", json!({"heartbeat": 0})).await;
@@ -507,78 +508,132 @@ async fn events_arrive_in_order_and_a_broken_stream_is_recovered_by_a_snapshot()
     server.shutdown().await.unwrap();
 }
 
+/// A Workspace MCP server goes to OpenCode 2.x by its own route (T-61 slice
+/// 1): added at runtime to the Agent's folder, named as its sessions name it,
+/// with OAuth off and its tools as tools of their own, and listed by its
+/// status only. The same configuration again connects nothing anew; another
+/// does; a failed one is tried again only when asked. A refusal says its
+/// status and kind, never what OpenCode answered.
 #[tokio::test]
-async fn mcp_is_ready_only_when_opencode_reports_it_connected() {
+async fn mcp_goes_to_the_agents_folder_by_2x_s_own_route_and_is_ready_only_when_listed_connected() {
     let lab = lab();
     let server = Server::start(&lab.launch).await.unwrap();
     let url = "http://127.0.0.1:9/mcp/agent";
-    assert_eq!(server.add_mcp("yuzuno", url, "token-1").await.unwrap(), Mcp::Connected);
+    let folder = json!([lab.launch.directory.to_str().unwrap()]);
+    let connects = || async { lab.control("mcp", json!({})).await["connects"].as_array().unwrap().len() };
+    assert_eq!(server.mcp("yuzuno").await.unwrap(), Mcp::Absent);
+    server.add_mcp("yuzuno", url, "token-1").await.unwrap();
     assert_eq!(server.mcp("yuzuno").await.unwrap(), Mcp::Connected);
-    assert_eq!(lab.posts("/mcp")[0]["body"], json!({"name": "yuzuno", "config": {"type": "remote", "url": url,
-        "oauth": false, "headers": {"Authorization": "Bearer token-1"}}}));
+    let added: Vec<Value> = lab.calls().into_iter().filter(|c| c["method"] == "PUT").collect();
+    assert_eq!(added[0]["path"], "/api/experimental/mcp/yuzuno");
+    assert_eq!(added[0]["query"]["location[directory]"], folder, "the Agent's folder, named");
+    assert_eq!(added[0]["body"], json!({"config": {"type": "remote", "url": url, "oauth": false, "codemode": false,
+        "headers": {"Authorization": "Bearer token-1"}, "timeout": {"startup": 10000, "catalog": 10000}}}));
+    let listed: Vec<Value> = lab.calls().into_iter().filter(|c| c["path"] == "/api/mcp").collect();
+    assert!(listed.iter().all(|c| c["query"]["location[directory]"] == folder));
+    server.add_mcp("yuzuno", url, "token-1").await.unwrap();
+    assert_eq!(connects().await, 1, "the same configuration again connects nothing anew");
 
     for status in ["failed", "needs_auth"] {
         lab.control("mode", json!({"mcp": status})).await;
-        match server.add_mcp("yuzuno", url, "token-2").await.unwrap() {
-            Mcp::NotConnected(native) => assert_eq!(native["status"], status),
-            Mcp::Connected => panic!("{status} is not ready"),
+        server.add_mcp("yuzuno", url, &format!("token-{status}")).await.unwrap();
+        match server.mcp("yuzuno").await.unwrap() {
+            Mcp::NotConnected(native) => assert!(native["status"] == status && native["error"].is_string(), "{native}"),
+            other => panic!("{status} is not ready: {other:?}"),
         }
-        assert!(matches!(server.mcp("yuzuno").await.unwrap(), Mcp::NotConnected(_)));
     }
-    assert_eq!(server.mcp("absent").await.unwrap(), Mcp::NotConnected(Value::Null));
-    assert!(lab.calls().iter().all(|c| matches!(c["path"].as_str(), Some("/api/info" | "/mcp"))),
-        "nothing else was sent: no permission rule, no configuration");
+    // Failed, and the same configuration again: nothing is tried again; asked, it is.
+    lab.control("mode", json!({"mcp": "connected"})).await;
+    let before = connects().await;
+    server.add_mcp("yuzuno", url, "token-needs_auth").await.unwrap();
+    assert!(matches!(server.mcp("yuzuno").await.unwrap(), Mcp::NotConnected(_)));
+    assert_eq!(connects().await, before);
+    server.connect_mcp("yuzuno").await.unwrap();
+    assert_eq!(server.mcp("yuzuno").await.unwrap(), Mcp::Connected);
+    assert_eq!(lab.posts("/api/experimental/mcp/yuzuno/connect")[0]["query"]["location[directory]"], folder);
+
+    lab.control("mode", json!({"mcp": "pending"})).await;
+    server.add_mcp("yuzuno", url, "token-3").await.unwrap();
+    assert_eq!(server.mcp("yuzuno").await.unwrap(), Mcp::Pending);
+
+    lab.control("mode", json!({"mcpRefuse": true})).await;
+    let refused = server.add_mcp("yuzuno", url, "token-4").await.unwrap_err();
+    assert_eq!(refused.downcast_ref::<McpRefused>(), Some(&McpRefused { code: 400, kind: Some("InvalidRequestError".into()) }));
+    assert!(!refused.to_string().contains("token-4"), "{refused}");
+    let unknown = server.connect_mcp("other").await.unwrap_err();
+    assert_eq!(unknown.downcast_ref::<McpRefused>(), Some(&McpRefused { code: 404, kind: Some("McpServerNotFoundError".into()) }));
+    assert!(lab.calls().iter().all(|c| c["path"] == "/api/info" || c["path"] == "/api/mcp"
+            || c["path"].as_str().unwrap().starts_with("/api/experimental/mcp/")),
+        "nothing else was sent: no permission rule, no configuration, nothing to 1.19.3's /mcp");
     server.shutdown().await.unwrap();
 }
 
+/// 2.x's requests are answered by its own routes, each in the session that
+/// asked (T-61 slice 2): through another session, 2.x refuses it as gone
+/// (404) and answers nothing; a form answer it can't take is refused and the
+/// form stays pending (400). An interrupt ends a's run only, dropping its
+/// permission requests and cancelling its forms; a reject rejects the
+/// session's others with it.
 #[tokio::test]
 async fn answers_and_abort_stay_within_their_session() {
     let lab = lab();
     let server = Server::start(&lab.launch).await.unwrap();
     let (a, b) = (session(&server).await, session(&server).await);
     let ask_a = lab.control("ask", json!({"sessionID": a})).await["id"].as_str().unwrap().to_owned();
+    let form_a = lab.control("question", json!({"sessionID": a})).await["id"].as_str().unwrap().to_owned();
     let ask_b = lab.control("ask", json!({"sessionID": b})).await["id"].as_str().unwrap().to_owned();
     let question_b = lab.control("question", json!({"sessionID": b})).await["id"].as_str().unwrap().to_owned();
+    let gone = |error: anyhow::Error| matches!(error.downcast_ref::<RequestRefused>(), Some(RequestRefused::Gone { code: 404, .. }));
+    let replies = || -> Vec<(String, String, Value)> { lab.calls().into_iter()
+        .filter(|c| c["path"].as_str().is_some_and(|p| p.starts_with("/api/session/") && (p.ends_with("/reply") || (c["method"] == "DELETE" && p.contains("/form/")))))
+        .map(|c| (c["method"].as_str().unwrap().to_owned(), c["path"].as_str().unwrap().to_owned(), c["body"].clone())).collect() };
 
     // Another session's request is not answered through this one.
-    let error = server.reply_permission(&a, &ask_b, Reply::Once).await.unwrap_err().to_string();
-    assert!(error.contains("not pending in session"), "{error}");
-    assert!(server.reply_question(&a, &question_b, &[vec!["A".into()]]).await.is_err());
-    assert!(server.reject_question(&a, &question_b).await.is_err());
-    assert!(lab.posts("/permission/").is_empty() && lab.posts("/question/").is_empty());
+    assert!(gone(server.reply_permission(&a, &ask_b, Reply::Once).await.unwrap_err()), "a permission request through another session is gone");
+    assert!(gone(server.reply_form(&a, &question_b, &json!({"q0": "A"})).await.unwrap_err()), "a form through another session is gone");
+    assert!(gone(server.cancel_form(&a, &question_b).await.unwrap_err()), "a form declined through another session is gone");
+    let now_b = server.snapshot(&b, &[]).await.unwrap();
+    assert_eq!((now_b.permissions.len(), now_b.questions.len()), (1, 1), "b's still pending");
+    // An answer 2.x can't take: refused with its reason, the form still pending.
+    let invalid = server.reply_form(&b, &question_b, &json!({"q9": "x"})).await.unwrap_err();
+    assert!(matches!(invalid.downcast_ref::<RequestRefused>(), Some(RequestRefused::Invalid { message }) if message.contains("Unknown form field: q9")),
+        "refused with 2.x's reason: {invalid}");
+    assert_eq!(server.snapshot(&b, &[]).await.unwrap().questions.len(), 1, "the form stays pending");
 
-    // Abort ends a's run and a's requests only.
+    // An interrupt ends a's run: its permission request dropped, its form cancelled, a's only.
     let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
     server.abort(&a).await.unwrap();
-    let idle = tokio::time::timeout(Duration::from_secs(10), async {
+    let seen = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut seen = Vec::new();
         loop {
             let event = events.next().await.unwrap().expect("the stream ended");
-            if event["type"].as_str().is_some_and(|kind| kind.starts_with("session.execution.")) {
-                return event;
+            let end = event["type"].as_str().is_some_and(|kind| kind.starts_with("session.execution.") && kind != "session.execution.started");
+            seen.push(event);
+            if end {
+                return seen;
             }
         }
     }).await.expect("the execution's end");
-    assert_eq!(session_of(&idle), Some(a.as_str()));
-    assert!(server.snapshot(&a, &[]).await.unwrap().permissions.is_empty());
+    assert_eq!(session_of(seen.last().unwrap()), Some(a.as_str()));
+    assert!(seen.iter().any(|e| e["type"] == "form.cancelled" && e["data"]["id"] == form_a.as_str()), "a's form cancelled with its run");
+    let now_a = server.snapshot(&a, &[]).await.unwrap();
+    assert!(now_a.permissions.is_empty() && now_a.questions.is_empty());
     let now_b = server.snapshot(&b, &[]).await.unwrap();
     assert_eq!((now_b.permissions.len(), now_b.questions.len()), (1, 1));
-    let stale = server.reply_permission(&a, &ask_a, Reply::Once).await.unwrap_err().to_string();
-    assert!(stale.contains("not pending"), "{stale}");
+    assert!(gone(server.reply_permission(&a, &ask_a, Reply::Once).await.unwrap_err()), "a's request ended with its run");
 
-    // b's own requests are answered in b, each once.
+    // b's own requests are answered in b, each once, by 2.x's routes.
+    let before = replies().len();
     server.reply_permission(&b, &ask_b, Reply::Once).await.unwrap();
-    server.reply_question(&b, &question_b, &[vec!["A".into()]]).await.unwrap();
-    let answered: Vec<_> = lab.posts("/permission/").into_iter().chain(lab.posts("/question/"))
-        .map(|c| (c["path"].as_str().unwrap().to_owned(), c["body"].clone())).collect();
-    assert_eq!(answered, [(format!("/permission/{ask_b}/reply"), json!({"reply": "once"})),
-        (format!("/question/{question_b}/reply"), json!({"answers": [["A"]]}))]);
+    server.reply_form(&b, &question_b, &json!({"q0": "A"})).await.unwrap();
+    assert_eq!(replies()[before..], [("POST".to_owned(), format!("/api/session/{b}/permission/{ask_b}/reply"), json!({"decision": "once"})),
+        ("POST".to_owned(), format!("/api/session/{b}/form/{question_b}/reply"), json!({"answer": {"q0": "A"}}))]);
 
-    // A reject is sent as OpenCode's `reject`; OpenCode itself then rejects
-    // the rest pending in that session.
+    // A reject is sent as 2.x's `reject`; 2.x itself then rejects the rest pending in that session.
     let first = lab.control("ask", json!({"sessionID": b})).await["id"].as_str().unwrap().to_owned();
     lab.control("ask", json!({"sessionID": b})).await;
     server.reply_permission(&b, &first, Reply::Reject).await.unwrap();
-    assert_eq!(lab.posts("/permission/").last().unwrap()["body"], json!({"reply": "reject"}));
+    assert_eq!(replies().last().unwrap().2, json!({"decision": "reject"}));
     assert!(server.snapshot(&b, &[]).await.unwrap().permissions.is_empty());
     server.shutdown().await.unwrap();
 }
@@ -690,5 +745,38 @@ async fn an_active_list_of_another_shape_is_refused_never_read_as_idle() {
             "another shape is refused, never read as idle: {read:?}");
     }
     assert!(server.snapshot(&session, &[]).await.is_err(), "nor read into a snapshot");
+    server.shutdown().await.unwrap();
+}
+
+/// A command goes to 2.x by its own route (T-61 slice 3): its name and text
+/// only, no ID and no model, and once for the ID Core keeps of its Turn.
+/// 2.x's 204 is done; its 404 for a name it does not define and its 500 for
+/// what a command does are refusals, in 2.x's own words; no answer is
+/// unknown. 2.x's list names and describes each command, nothing more.
+#[tokio::test]
+async fn a_command_goes_through_2xs_route_with_its_name_and_text_only() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    let listed = server.commands().await.unwrap();
+    assert_eq!(listed.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["delegate", "explain", "pinned", "review", "status"]);
+    assert_eq!(listed[1].description, "Explain one thing");
+
+    let id = MessageId::new();
+    assert_eq!(server.command(&session, &id, "explain", "closures").unwrap().await, CommandAnswer::Done);
+    let sent = lab.posts(&format!("/api/session/{session}/command"));
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["body"], json!({"name":"explain","text":"closures"}), "no ID and no model");
+    assert!(server.command(&session, &id, "explain", "closures").is_err(), "an ID it was given before is never sent again");
+    assert_eq!(lab.posts(&format!("/api/session/{session}/command")).len(), 1);
+
+    assert_eq!(server.command(&session, &MessageId::new(), "nope", "").unwrap().await,
+        CommandAnswer::Refused { code: 404, message: "Command not found: nope".into() });
+    lab.control("mode", json!({"command":"fail"})).await;
+    assert_eq!(server.command(&session, &MessageId::new(), "explain", "x").unwrap().await,
+        CommandAnswer::Refused { code: 500, message: "fixture: the command failed".into() });
+    lab.control("mode", json!({"command":"drop"})).await;
+    assert!(matches!(server.command(&session, &MessageId::new(), "explain", "x").unwrap().await, CommandAnswer::Unknown(_)));
+    assert_eq!(lab.calls().iter().filter(|c| c["path"] == format!("/session/{session}/command")).count(), 0, "never 1.19.3's route");
     server.shutdown().await.unwrap();
 }

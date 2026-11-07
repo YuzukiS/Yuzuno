@@ -429,7 +429,7 @@ pub(crate) fn submitted(
     );
     ensure!(
         task.status == "review",
-        "Submit an automated delivery for review, not done"
+        "Submit an automated delivery with status review"
     );
     let r = f.rounds.last_mut().unwrap();
     ensure!(

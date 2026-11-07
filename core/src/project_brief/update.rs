@@ -483,27 +483,25 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
     let rows: BTreeMap<&str, &Row> = live.iter().map(|row| (row.key.as_str(), row)).collect();
     let mut owners = Owners::default();
     let mut problems = vec![];
-    let open_asks = |planned: &BTreeMap<String, Planned>| {
-        planned.values().filter(|p| p.owner == ctx.agent && p.open_ask).count()
-    };
-    let ask_limit = |at: &str| problem("ask_limit", at,
-        format!("You already have {MAX_OPEN_ASKS} unresolved asks; resolve one before asking more."), "ask");
     for (index, change) in request.changes.iter().enumerate() {
         let at = format!("changes[{index}]");
         let key = change.key.as_str();
         let existing = planned.get(key).cloned();
         if !can_edit {
-            let own_ask = rows.get(key).is_some_and(|row| row.owner_id == ctx.agent && row.kind == "ask");
+            let own = rows.get(key).is_some_and(|row| row.owner_id == ctx.agent);
+            let own_ask = own && rows.get(key).is_some_and(|row| row.kind == "ask");
             let permitted = match change.op {
                 Op::Put => change.kind == "ask" && (existing.is_none() || own_ask),
                 // An edit keeps the stored kind: an Ask-only member edits
                 // only its own ask, never a report or status it wrote before.
-                Op::Resolve | Op::Remove | Op::Edit => own_ask,
+                Op::Resolve | Op::Edit => own_ask,
+                // It may take down what it wrote as an editor (YN-2 S4, Q-L5).
+                Op::Remove => own,
                 Op::Claim => false,
             };
             if !permitted {
                 problems.push(problem("ask_only", format!("{at}.op"),
-                    "You are Ask-only in this Project. You may submit and update your own valid asks, resolve them, or send noChange:true. Only the user can select Home content editors. Keep internal progress in tasks and mail; no per-turn Brief update is required.", "sections"));
+                    "You are Ask-only in this Project. You may submit and update your own valid asks, resolve them, remove your own older sections, or send noChange:true. A Project's leads edit Home; the user chooses them. Keep internal progress in tasks and mail; no per-turn Brief update is required.", "sections"));
                 continue;
             }
         }
@@ -526,7 +524,15 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
             };
             problem("not_owner", format!("{at}.key"), reason, "sections")
         };
-        let missing = || problem("not_found", format!("{at}.key"), format!("No live section has key {key}."), "sections");
+        // Why a key that is not live left the Brief, when it was this
+        // Agent's (YN-7). Each key is changed once per update, so a key
+        // with no planned section is one the live Brief does not have.
+        let gone = || -> Result<String> {
+            Ok(sections::ending_note(db, &ctx.project, key, &ctx.agent)?.unwrap_or_default())
+        };
+        let missing = || -> Result<Value> {
+            Ok(problem("not_found", format!("{at}.key"), format!("No live section has key {key}.{}", gone()?), "sections"))
+        };
         match change.op {
             Op::Put => {
                 match &existing {
@@ -556,21 +562,19 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                         }
                     }
                 }
-                let was_open = existing.as_ref().is_some_and(|p| p.open_ask);
                 planned.insert(key.into(), Planned { owner: ctx.agent.clone(), open_ask: change.kind == "ask" });
-                if change.kind == "ask" && !was_open && open_asks(&planned) > MAX_OPEN_ASKS {
-                    problems.push(ask_limit(&format!("{at}.kind")));
-                }
             }
             // Changes no owner, kind or ask state; the blocks are `edited`'s.
             Op::Edit => match &existing {
-                None => problems.push(problem("not_found", format!("{at}.key"),
-                    format!("No live section has key {key}; create it with put."), "sections")),
+                None => problems.push(problem("not_found", format!("{at}.key"), match gone()? {
+                    note if note.is_empty() => format!("No live section has key {key}; create it with put."),
+                    note => format!("No live section has key {key}, so there is nothing to edit.{note}"),
+                }, "sections")),
                 Some(p) if p.owner != ctx.agent => problems.push(not_owner(p)),
                 Some(_) => {}
             },
             Op::Resolve => match &existing {
-                None => problems.push(missing()),
+                None => problems.push(missing()?),
                 Some(p) if p.owner != ctx.agent => problems.push(not_owner(p)),
                 Some(p) if !p.open_ask => problems.push(problem("not_ask", format!("{at}.key"),
                     format!("{key} is not an unresolved ask; remove a report or status instead."), "sections")),
@@ -579,7 +583,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 }
             },
             Op::Remove => match &existing {
-                None => problems.push(missing()),
+                None => problems.push(missing()?),
                 Some(p) if p.owner != ctx.agent => problems.push(not_owner(p)),
                 Some(p) if p.open_ask => problems.push(problem("ask_unresolved", format!("{at}.op"),
                     format!("{key} is an unresolved ask; it leaves the Brief when you resolve it."), "ask")),
@@ -588,17 +592,13 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 }
             },
             Op::Claim => match &existing {
-                None => problems.push(missing()),
+                None => problems.push(missing()?),
                 Some(p) if p.owner == ctx.agent => problems.push(problem("not_orphan", format!("{at}.key"),
                     format!("{key} is already yours."), "sections")),
                 Some(_) if orphaned.is_none() => problems.push(problem("not_orphan", format!("{at}.key"),
                     format!("{key} has an active owner; only a section whose owner was closed, deleted or left the Project can be claimed."), "sections")),
                 Some(p) => {
-                    let open = p.open_ask;
                     planned.insert(key.into(), Planned { owner: ctx.agent.clone(), ..p.clone() });
-                    if open && open_asks(&planned) > MAX_OPEN_ASKS {
-                        problems.push(ask_limit(&format!("{at}.key")));
-                    }
                 }
             },
         }
@@ -692,7 +692,7 @@ fn revoked_during_validation_cannot_commit_or_leave_a_receipt() {
     // This is the lock-free validator/attachment-staging interval. Policy
     // versions are separate from Brief versions, so only the commit rules
     // (not the ordinary optimistic Brief check) can reject this write.
-    editors::save(&ws.store, &project, 0, Some(vec![])).unwrap();
+    super::tests::set_leads(&ws, &project, &[]);
     let (answer, changed) = commit(&ws.store, "a", "race", &input, &turn, &request, &[request.changes[0].section.clone()], &[vec![]]).unwrap();
     assert_eq!(answer.unwrap_err()["problems"][0]["code"], "ask_only");
     assert!(changed.is_none());
@@ -715,7 +715,7 @@ fn an_edit_revoked_during_validation_cannot_commit() {
         "elements":{"note":{"type":"Markdown","props":{"text":"Second."}}}}]});
     let Start::Check(request, _, turn) = start(&ws.store, "a", "edit", &edit).unwrap() else { panic!("initially permitted") };
     // Revoked while the edited section is checked: the write's own rules refuse it.
-    editors::save(&ws.store, &project, 0, Some(vec![])).unwrap();
+    super::tests::set_leads(&ws, &project, &[]);
     let (answer, changed) = commit(&ws.store, "a", "edit", &edit, &turn, &request, &[request.changes[0].section.clone()], &[vec![]]).unwrap();
     assert_eq!(answer.unwrap_err()["problems"][0]["code"], "ask_only");
     assert!(changed.is_none());

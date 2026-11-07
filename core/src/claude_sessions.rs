@@ -220,6 +220,10 @@ impl Workspace {
         let (agent, created) = self.stored(move |store| store.insert_claude_import(&detail, project.as_deref(), &journal)).await?;
         if created {
             self.changed(&agent.id);
+            if agent.project_id.is_some() {
+                // It leads the Project it was imported into (YN-2 S4).
+                self.projects_changed();
+            }
         }
         Ok(Imported { agent, existing: !created, saved: if created { entries.len() } else { 0 },
             turns: if created { turns } else { 0 }, left_out: if created { left_out } else { 0 }, compacted: created && compacted })
@@ -311,6 +315,8 @@ impl Store {
         crate::record_rows::insert(&tx, &detail.agent.id, &rows)?;
         if let Some(project) = project {
             crate::projects::set_agent_project_in(&tx, &detail.agent.id, Some(project))?;
+            // The user imported it into the Project: it leads it (YN-2 S4).
+            crate::agent_roles::user_added(&tx, &detail.agent.id, project)?;
         }
         // The saved history is already in the record: no transcript-sized
         // journal entry, no completion or mailbox delivery.

@@ -31,9 +31,9 @@ const wait = (ms = 60) => new Promise((done) => setTimeout(done, ms));
 // leaves every other delay, and Date, as they are.
 const PRODUCT_POLL_MS = 1500;
 const POLL_MS = 100;
-// Opens an entry from its Settings category's row (T-187), once it is there.
-const settingsEntry = (f, text) => until(() => {
-  const el = [...f.w.document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === text);
+// Opens a page of Settings from its sidebar (YN-8), once it is there.
+const settingsPage = (f, id) => until(() => {
+  const el = f.w.document.querySelector(`#settings-tab-${id}`);
   el?.click();
   return !!el;
 });
@@ -240,7 +240,7 @@ async function mount(overrides = {}, shell, seed, { idleMs } = {}) {
       return respond({ product: "yuzuno", application: "yuzuno-next" });
     if (url.endsWith("/api/models")) return respond({ models: [] });
     if (url.endsWith("/api/machines")) return respond({ machines: [] });
-    // Data, privacy & recovery opens at its storage overview (T-187).
+    // The Storage page shows its storage overview (YN-8).
     if (url.endsWith("/api/storage"))
       return respond({ format: 1, readAt: "2026-10-24T22:00:00Z", dataDir: "/fixture/data", entries: [], unreadable: null,
         database: { pageSize: 4096, pages: 10, freePages: 0 }, jobs: { total: 0, unfinished: 0 }, native: [], notInBackup: [] });
@@ -279,16 +279,16 @@ async function mount(overrides = {}, shell, seed, { idleMs } = {}) {
     w.document.querySelector('[aria-label="Settings and updates"]').click();
     assert.ok(await until(() => !!w.document.querySelector('[role="dialog"]')), "Settings opens");
   };
-  // Settings shows one category at a time and opens on Updates, which holds
+  // Settings shows one page at a time and opens on Updates, which holds
   // the desktop app's updates after the Workspace service's. In the desktop
   // window the section is drawn before the shell answers its status (or
   // refuses), so a test waits for what that answer shows: `shown`.
-  const desktopSection = () => w.document.querySelector('#settings-panel-updates [aria-label="Desktop app"]');
+  const desktopSection = () => w.document.querySelector('#settings-page [aria-label="Desktop app"]');
   const openDesktop = async (shown) => {
     await open();
     assert.ok(await until(() => !!desktopSection()), "the desktop app shows under Updates");
     if (shown) assert.ok(await until(() => shown.test(desktopSection()?.textContent ?? "")), `the desktop app shows ${shown}`);
-    assert.ok(!w.document.querySelector("#settings-tab-desktop"), "no Desktop app category of its own");
+    assert.ok(!w.document.querySelector("#settings-tab-desktop"), "no Desktop app page of its own");
   };
   const close = async () => {
     w.document.querySelector('[role="dialog"]').dispatchEvent(
@@ -1185,10 +1185,9 @@ test("a step Core refuses or fails ends the chain once, with its reason, and is 
   } finally { g.w.close(); }
 });
 
-// Phone access is one of Settings' editors (T-185 in T-187's Settings): its
-// entry under Connections & devices opens it in place. It reads Core's view
-// only while it is shown, and again each time it is shown.
-test("phone access opens from Connections & devices and reads Core's view each time it is shown", async () => {
+// Phone access is one of Settings' editors (T-185), on its own page (YN-8).
+// It reads Core's view only while it is shown, and again each time it is shown.
+test("phone access opens from its page and reads Core's view each time it is shown", async () => {
   const f = await mount();
   const view = JSON.parse(
     await readFile(new URL("./fixtures/remote-access-views.json", import.meta.url), "utf8"),
@@ -1202,19 +1201,17 @@ test("phone access opens from Connections & devices and reads Core's view each t
   const reads = () => f.calls.filter((c) => c.url.includes("/api/remote-access")).length;
   const editor = () => f.w.document.querySelector("#settings-editor-remote");
   const openPhone = async () => {
-    f.w.document.querySelector("#settings-tab-connections").click();
-    assert.ok(await settingsEntry(f, "Phone access"), "Connections & devices offers phone access");
+    assert.ok(await settingsPage(f, "phone"), "Settings has a Phone access page");
     assert.ok(await until(() => editor() && !editor().hidden && /pc\.tail0\.ts\.net/.test(editor().textContent)), "the phone editor shows Core's view");
   };
   try {
     await f.open();
-    f.w.document.querySelector("#settings-tab-connections").click();
-    assert.ok(await until(() => !!f.w.document.querySelector(".settings-entries")));
-    assert.equal(reads(), 0, "Connections opens at Machines: phone access reads nothing until it is shown");
+    assert.ok(await until(() => !!f.w.document.querySelector("#settings-tab-phone")));
+    assert.equal(reads(), 0, "Settings opens at Updates: phone access reads nothing until it is shown");
     await openPhone();
     assert.equal(reads(), 1);
     f.w.document.querySelector("#settings-tab-updates").click();
-    assert.ok(await until(() => editor()?.hidden === true), "another category hides it, still mounted");
+    assert.ok(await until(() => editor()?.hidden === true), "another page hides it, still mounted");
     await polls(f);
     assert.equal(reads(), 1, "hidden, it reads nothing");
     await openPhone();
@@ -1227,10 +1224,10 @@ test("phone access opens from Connections & devices and reads Core's view each t
   } finally { f.w.close(); }
 });
 
-// Data & storage is one of Settings' editors (T-193), the first under Data,
-// privacy & recovery, which opens at it (T-187). It reads Core's overview
-// only while it is shown, and again each time it is shown.
-test("data & storage opens from Data, privacy & recovery and reads Core's overview each time it is shown", async () => {
+// Data & storage is one of Settings' editors (T-193), the first on the
+// Storage page (YN-8). It reads Core's overview only while it is shown, and
+// again each time it is shown.
+test("data & storage opens from the Storage page and reads Core's overview each time it is shown", async () => {
   const f = await mount();
   const view = {
     format: 1, readAt: "2026-10-24T22:00:00Z", dataDir: "/fixture/data",
@@ -1247,18 +1244,18 @@ test("data & storage opens from Data, privacy & recovery and reads Core's overvi
   const reads = () => f.calls.filter((c) => c.url.includes("/api/storage")).length;
   const editor = () => f.w.document.querySelector("#settings-editor-storage");
   const openStorage = async () => {
-    f.w.document.querySelector("#settings-tab-data").click();
-    assert.ok(await until(() => editor() && !editor().hidden && /Job records and output logs/.test(editor().textContent)), "Data opens at Core's overview");
+    f.w.document.querySelector("#settings-tab-storage").click();
+    assert.ok(await until(() => editor() && !editor().hidden && /Job records and output logs/.test(editor().textContent)), "Storage opens at Core's overview");
   };
   try {
     await f.open();
-    assert.equal(reads(), 0, "nothing is read before Data is chosen");
+    assert.equal(reads(), 0, "nothing is read before Storage is chosen");
     await openStorage();
     assert.equal(reads(), 1);
     // The update status Settings already holds is passed in, not read again.
     assert.match(editor().textContent, /This Core is not a managed install|Releases: /);
     f.w.document.querySelector("#settings-tab-updates").click();
-    assert.ok(await until(() => editor()?.hidden === true), "another category hides it, still mounted");
+    assert.ok(await until(() => editor()?.hidden === true), "another page hides it, still mounted");
     await polls(f);
     assert.equal(reads(), 1, "hidden, it reads nothing");
     await openStorage();
@@ -1317,7 +1314,7 @@ test("a task chosen in data & storage opens on the task board at its Workspace s
   const section = () => f.w.document.querySelector(".task-workspaces");
   try {
     await f.open();
-    f.w.document.querySelector("#settings-tab-data").click();
+    f.w.document.querySelector("#settings-tab-storage").click();
     let select;
     assert.ok(await until(() => (select = f.w.document.querySelector("#settings-editor-storage .storage-task-open select")) && select.options.length === 3), "the tasks to choose from");
     Object.getOwnPropertyDescriptor(f.w.HTMLSelectElement.prototype, "value").set.call(select, "T-7");
@@ -1334,15 +1331,14 @@ test("a task chosen in data & storage opens on the task board at its Workspace s
   } finally { f.w.close(); }
 });
 
-// Draft storage is one of Settings' editors (T-193 slice 3): its entry under
-// Data, privacy & recovery opens it in place and lists this device's saved
-// drafts for the Workspace's Agents; one is shown whole only when chosen.
-test("draft storage opens from Data, privacy & recovery and shows the Agent's saved draft whole", async () => {
+// Draft storage is one of Settings' editors (T-193 slice 3): on the Storage
+// page (YN-8) it lists this device's saved drafts for the Workspace's
+// Agents; one is shown whole only when chosen.
+test("draft storage is on the Storage page and shows the Agent's saved draft whole", async () => {
   const f = await mount();
   try {
     await f.open();
-    f.w.document.querySelector("#settings-tab-data").click();
-    assert.ok(await settingsEntry(f, "Drafts"), "Data, privacy & recovery offers it");
+    assert.ok(await settingsPage(f, "storage"), "Settings has a Storage page");
     const row = () => f.w.document.querySelector('#settings-drafts [data-agent="a"]');
     assert.ok(await until(() => !!row()), "the Agent's saved draft is listed");
     assert.equal(f.w.document.querySelector("#settings-drafts textarea") === null, true, "nothing is opened until chosen");

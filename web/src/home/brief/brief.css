@@ -18,9 +18,11 @@
   color: var(--ink);
   font-size: 0.88rem;
 }
-/* The series slots: a section's charts, and a chart drawn as a card's figure on Home (T-18). */
+/* The series slots: a section's charts, a chart drawn as a card's figure on Home (T-18), and a research desk drawn as
+ * one (YN-7). */
 .brief-body,
-.home-card-chart {
+.home-card-chart,
+.research-card {
   --brief-series-1: #2a78d6;
   --brief-series-2: #eb6834;
   --brief-series-3: #1baf7a;
@@ -30,7 +32,7 @@
   --brief-series-7: #4a3aa7;
   --brief-series-8: #e34948;
 }
-:root[data-theme="dark"] :is(.brief-body, .home-card-chart) {
+:root[data-theme="dark"] :is(.brief-body, .home-card-chart, .research-card) {
   --brief-series-1: #3987e5;
   --brief-series-2: #d95926;
   --brief-series-3: #199e70;

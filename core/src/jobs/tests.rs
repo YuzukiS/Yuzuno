@@ -686,7 +686,8 @@ fn command_contract_bounds_and_tool_schemas_are_explicit() {
     let mut bad = value;
     bad.env.insert("BAD=NAME".into(), "value".into());
     assert!(bad.validate().is_err());
-    assert_eq!(tool_definitions().len(), 16);
+    // 17 with job_suggestion (YN-6 S2).
+    assert_eq!(tool_definitions().len(), 17);
     assert!(tool_definitions()
         .iter()
         .all(|d| d["inputSchema"]["additionalProperties"] == false));
@@ -1571,4 +1572,117 @@ fn a_refused_wake_up_to_a_recipient_closed_since_is_not_requeued_and_says_so() {
     let on_task = task["current"]["mailProblems"].as_array().unwrap().iter().find(|p| p["jobId"] == job["id"]).unwrap()["problem"].clone();
     let on_job = s.mail_notifications(&s.job(id).unwrap()["notifications"]).unwrap()["succeeded"]["problem"].clone();
     assert_eq!((on_task, on_job), (words.clone(), words));
+}
+
+// ---- YN-6 S4: a command that exits and leaves processes behind -----------
+//
+// Through job_submit and Core's own Jobs loop, on this host's systemd user
+// manager: the worker and collector units are real ones of this test's own
+// Workspace. Each leftover is a `sleep 120`, and an attempt that does not end
+// in time is cancelled before the test fails, so nothing outlives it.
+
+/// A Workspace whose Jobs loop runs, with Agent "a" and task T-1.
+fn leftover_lab() -> (tempfile::TempDir, Arc<Workspace>, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+    let agent: AgentDetail = serde_json::from_value(json!({"agent":{"id":"a","name":"a","cwd":"/tmp","model":"test","color":"sage",
+        "status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,"lastSeq":0,"reviewedSeq":0},
+        "turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"task","title":"Leftovers","status":"doing"})).unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let cwd = work.to_string_lossy().into_owned();
+    (dir, ws, cwd)
+}
+
+/// Submit `script` (sh -c) and wait up to `seconds` for its attempt to end
+/// and release its reservation. One that has not is cancelled, and waited for,
+/// before this returns it as it was.
+async fn ends_within(ws: &Arc<Workspace>, cwd: &str, name: &str, script: &str, seconds: u64) -> (Value, bool) {
+    let submitted = call(ws.clone(), Some("a".into()), "job_submit".into(), json!({"requestId":name,"taskId":"T-1","name":name,
+        "cwd":cwd,"argv":["/bin/sh","-c",script],"resources":{"cpuMillis":200,"memoryMiB":128,"swapMiB":0},
+        "guardGit":false,"timeoutSeconds":90})).await.unwrap();
+    let id = submitted["id"].as_str().unwrap().to_owned();
+    let ended = |job: &Value| job["reserved"] == false
+        && matches!(job["status"].as_str(), Some("succeeded" | "failed" | "cancelled" | "rejected" | "interrupted" | "unknown"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    loop {
+        let job = ws.store.job(&id).unwrap();
+        if ended(&job) {
+            return (job, true);
+        }
+        if std::time::Instant::now() >= deadline {
+            // Not in time: stop it, so that nothing it left outlives the test.
+            let _ = call(ws.clone(), Some("a".into()), "job_cancel".into(), json!({"jobId":id})).await;
+            for _ in 0..60 {
+                if ended(&ws.store.job(&id).unwrap()) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            return (job, false);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a systemd user manager (XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS); run in a Job"]
+async fn a_process_the_command_left_is_stopped_and_named_and_the_attempt_ends() {
+    let (_dir, ws, cwd) = leftover_lab();
+    let (job, ended) = ends_within(&ws, &cwd, "detached", "setsid sleep 120 </dev/null >/dev/null 2>&1 & echo started; exit 0", 40).await;
+    assert!(ended, "the attempt ends once what its command left is stopped: {}", job["reason"]);
+    assert_eq!(job["status"], "succeeded", "the command's own exit 0: {}", job["reason"]);
+    let reason = job["reason"].as_str().unwrap();
+    assert!(reason.contains("1 process(es) still in its cgroup 5 s after it exited were stopped (sleep)"), "{reason}");
+    let leftover = &job["result"]["evidence"]["leftover"];
+    assert_eq!((leftover["count"].clone(), leftover["processes"][0]["comm"].clone()), (json!(1), json!("sleep")), "{leftover}");
+    assert!(leftover["processes"][0].get("cmdline").is_none(), "names only: {leftover}");
+    // Measured from the unit as the worker left it.
+    let got = call(ws.clone(), Some("a".into()), "job_get".into(), json!({"jobId":job["id"]})).await.unwrap();
+    assert_eq!(got["resourceSummary"]["measurement"], "complete", "{}", got["resourceSummary"]);
+}
+
+#[tokio::test]
+#[ignore = "needs a systemd user manager (XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS); run in a Job"]
+async fn a_process_left_holding_the_output_is_stopped_after_the_grace() {
+    let (_dir, ws, cwd) = leftover_lab();
+    let (job, ended) = ends_within(&ws, &cwd, "held", "sleep 120 & echo started; exit 0", 40).await;
+    assert!(ended, "the attempt ends although what its command left holds the output: {}", job["reason"]);
+    assert_eq!(job["status"], "succeeded", "{}", job["reason"]);
+    assert_eq!(job["result"]["evidence"]["leftover"]["count"], 1, "{}", job["result"]["evidence"]);
+    assert_eq!(job["result"]["evidence"]["command"]["outputHeldOpen"], true, "{}", job["result"]["evidence"]["command"]);
+}
+
+#[tokio::test]
+#[ignore = "needs a systemd user manager (XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS); run in a Job"]
+async fn a_leftover_that_ignores_sigterm_is_killed_and_the_outcome_stays_the_commands() {
+    let (_dir, ws, cwd) = leftover_lab();
+    let script = "setsid sh -c 'trap \"\" TERM; exec sleep 120' </dev/null >/dev/null 2>&1 & exit 0";
+    let (job, ended) = ends_within(&ws, &cwd, "stubborn", script, 45).await;
+    assert!(ended, "the attempt ends once SIGKILL stops what its command left: {}", job["reason"]);
+    assert_eq!(job["status"], "succeeded", "not the stop's timeout: {}", job["reason"]);
+    assert_eq!(job["result"]["evidence"]["systemdAfterStop"]["Result"], "timeout", "{}", job["result"]["evidence"]);
+}
+
+#[tokio::test]
+#[ignore = "needs a systemd user manager (XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS); run in a Job"]
+async fn the_commands_exit_code_stands_when_what_it_left_holds_the_output() {
+    let (_dir, ws, cwd) = leftover_lab();
+    let (job, ended) = ends_within(&ws, &cwd, "exit3", "sleep 120 & exit 3", 40).await;
+    assert!(ended, "the attempt ends with its command's exit although what it left holds the output: {}", job["reason"]);
+    assert_eq!((job["status"].clone(), job["result"]["evidence"]["systemd"]["ExecMainStatus"].clone()), (json!("failed"), json!("3")),
+        "{}", job["result"]["evidence"]);
+}
+
+#[tokio::test]
+#[ignore = "needs a systemd user manager (XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS); run in a Job"]
+async fn a_child_that_ends_within_the_grace_is_not_left_over_and_its_output_is_kept() {
+    let (_dir, ws, cwd) = leftover_lab();
+    let (job, ended) = ends_within(&ws, &cwd, "quick", "(sleep 2; echo late) & echo early; exit 0", 40).await;
+    assert!(ended && job["status"] == "succeeded", "{}", job["reason"]);
+    assert!(job["result"]["evidence"].get("leftover").is_none_or(Value::is_null), "{}", job["result"]["evidence"]);
+    let logs = call(ws.clone(), Some("a".into()), "job_logs".into(), json!({"jobId":job["id"]})).await.unwrap().to_string();
+    assert!(logs.contains("early") && logs.contains("late"), "{logs}");
 }

@@ -92,6 +92,10 @@ export const requestWords = strings({
   period: ".",
   reject: "Reject",
   openHint: "Applies only to this request; your OpenCode permission rules stay in place. OpenCode rejects this session’s other waiting requests along with this one.",
+  // OpenCode 2.x (T-61): its run ends when Core rejects or declines one of its requests.
+  openHintEnds: "Applies only to this request; your OpenCode permission rules stay in place. Rejecting ends this turn, and OpenCode rejects this session’s other waiting requests along with this one.",
+  cantAnswer: "Yuzuno can’t answer this question: ",
+  declineEnds: "Declining ends this turn.",
 }, {
   needsYou: "需要你处理",
   sendAnswer: "发送回答",
@@ -171,6 +175,9 @@ export const requestWords = strings({
   period: "。",
   reject: "拒绝",
   openHint: "只对此请求生效；你的 OpenCode 权限规则保持不变。OpenCode 会连同此请求一起拒绝本会话中其他等待中的请求。",
+  openHintEnds: "只对此请求生效；你的 OpenCode 权限规则保持不变。拒绝会结束这个 Turn，OpenCode 也会连同此请求一起拒绝本会话中其他等待中的请求。",
+  cantAnswer: "Yuzuno 无法回答这个问题：",
+  declineEnds: "拒绝会结束这个 Turn。",
 });
 export type RequestWords = ReturnType<typeof requestWords>;
 /** A card's error in the language shown: Core's own error as it came. */

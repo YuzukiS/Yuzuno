@@ -32,7 +32,7 @@ type Definition = NonNullable<Desk["definitions"]>[number];
 
 type Read =
   | { status: "read"; value: number; from: string }
-  | { status: "missing" | "not_number"; from: string }
+  | { status: "missing" | "not_number" | "ambiguous"; from: string }
   | { status: "unavailable"; reason?: string; from: string };
 type SourceInfo = {
   attachment?: string;
@@ -50,7 +50,7 @@ type SourceInfo = {
 };
 type Resolved = { version: number; values: Record<string, Read>; sources: Record<string, SourceInfo> };
 type Loaded = { key: string; data?: Resolved; error?: string; readAt?: string };
-type Origin = "read" | "provided" | "missing" | "not_number" | "unavailable" | "loading";
+type Origin = "read" | "provided" | "missing" | "not_number" | "ambiguous" | "unavailable" | "loading";
 /** A number as shown: its value when there is one (as the file or the Agent has it), and where it came from. */
 type Shown = { value: number | null; origin: Origin; from?: string };
 /** A shown number times a plot's display scale; the value itself stays as it was. */
@@ -416,8 +416,13 @@ function Intervals({
   );
 }
 
-/** What Core knows of a source's snapshot, and the Agent's own description of it. */
-function SourceLine({ source, info, lines }: { source: Source; info?: SourceInfo; lines?: string }) {
+/**
+ * What Core knows of a source's snapshot, and the Agent's own description of
+ * it. In the desk's own list of sources the list says once that locations and
+ * revisions are the Agent's (YN-7), so each line shows them without saying it
+ * again (`prefix` false); a source shown on its own says it each time.
+ */
+function SourceLine({ source, info, lines, prefix = true }: { source: Source; info?: SourceInfo; lines?: string; prefix?: boolean }) {
   const t = useStrings(researchText);
   const time = useTimeDisplay();
   return (
@@ -469,8 +474,8 @@ function SourceLine({ source, info, lines }: { source: Source; info?: SourceInfo
       {info?.stated && <span className="research-note" data-stated={info.stated}>{t.stated[info.stated]}</span>}
       {(source.location || source.revision) && (
         <span className="research-described">
-          {t.described}: {source.location && <>{t.location} <code>{source.location}</code></>}
-          {source.revision && <> · {t.revision} <code>{source.revision}</code></>}
+          {prefix ? <>{t.described}: {source.location && <>{t.location} <code>{source.location}</code></>}</> : source.location && <code>{source.location}</code>}
+          {source.revision && <>{(prefix || source.location) && " · "}{t.revision} <code>{source.revision}</code></>}
         </span>
       )}
     </li>
@@ -508,6 +513,53 @@ function Statements({ claim, onBasis, labelOf }: { claim: Claim; onBasis: (id: s
           </section>
         ) : null,
       )}
+    </div>
+  );
+}
+
+/**
+ * A desk as a wide or large Home card's figure (YN-7): its question, its lead
+ * claim (the first) with the author's status, as the page shows it, and the
+ * interval of the row that claim leads with (its primary; else the first row
+ * of its first plot), each number read as the report page reads it; then
+ * `more`, what else the page has. Nothing in it is a control: the card's
+ * frame is inert, and the page is where the desk is explored.
+ */
+export function DeskCardClaim({ desk, elementKey, more }: { desk: Desk; elementKey: string; more: ReactNode }) {
+  const t = useStrings(researchText);
+  const claim = desk.claims[0];
+  const firstPlot = claim?.plots?.length ? desk.plots.find((plot) => plot.id === claim.plots![0]) : desk.plots[0];
+  const primary = claim?.primary ? desk.plots.flatMap((plot) => plot.rows.map((row) => ({ plot, row }))).find((item) => item.row.id === claim.primary) : undefined;
+  const lead = primary ?? (firstPlot?.rows[0] ? { plot: firstPlot, row: firstPlot.rows[0] } : undefined);
+  const estimate = lead?.row.estimate;
+  const reads = !!estimate && [estimate.value, estimate.low, estimate.high].some((n) => n !== undefined && typeof n !== "number");
+  const { data: resolved, loading } = useResolved(elementKey, reads);
+  return (
+    <div className="research-card">
+      <p className="research-card-question">{desk.title}</p>
+      {claim && (
+        <>
+          <span className="research-status" data-status={claim.status}>
+            {t.status[claim.status]} <small>({t.authors})</small>
+          </span>
+          <strong className="research-card-claim">{claim.title}</strong>
+        </>
+      )}
+      {lead && (
+        <div className="research-card-plot">
+          <span className="research-card-plot-title">{lead.plot.title}</span>
+          <Intervals
+            title={lead.plot.title}
+            lines={linesOf([lead.row], resolved, loading)}
+            digits={lead.plot.digits}
+            scale={lead.plot.scale}
+            unit={lead.plot.unit}
+            reference={lead.plot.reference}
+            signed={!!lead.plot.reference && lead.plot.reference.value === 0}
+          />
+        </div>
+      )}
+      <p className="research-card-more">{more}</p>
     </div>
   );
 }
@@ -921,8 +973,9 @@ export function BriefResearchDesk(props: Desk & { elementKey?: string }) {
       ) : null}
       <section className="research-panel">
         <h5>{t.sources}</h5>
+        {desk.sources.some((source) => source.location || source.revision) && <p className="research-note research-described-note">{t.describedList}</p>}
         <ul className="research-sources">
-          {desk.sources.map((source) => <SourceLine key={source.id} source={source} info={sourceInfo(source.id)} />)}
+          {desk.sources.map((source) => <SourceLine key={source.id} source={source} info={sourceInfo(source.id)} prefix={false} />)}
         </ul>
         {namesRecords && resolved && (
           <p className="research-recheck" role="status">

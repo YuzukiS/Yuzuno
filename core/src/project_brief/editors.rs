@@ -1,51 +1,40 @@
-//! User-owned project policy. A missing/null list is compatibility mode:
-//! every member but a task executor edits; an explicitly empty list makes
-//! every member Ask-only. Agents cannot set it. A task executor is never an
-//! editor, listed or not (T-36): it may still ask its own questions.
+//! Who edits a Project's Home (YN-2 S4): its leads (agent_roles.rs). Every
+//! other member, an executor too, is Ask-only: it writes its own Asks and may
+//! remove its own older sections. The user chooses leads: an Agent the user
+//! creates or adds to the Project leads it unless the user removes it, and
+//! no Agent can make itself or another a lead. The list older Cores kept
+//! (`project_brief_editors`, T-36) stays as it is, for them; it is no longer
+//! read here or written.
 use super::*;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use serde::Serialize;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// The Project's Home editors as answers show them (`contentEditors`): its
+/// leads and their version, in the shape older readers know.
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Policy {
     pub version: i64,
-    pub editor_agent_ids: Option<Vec<String>>,
-    /// The Workspace's task executors, read with the list: never editors.
-    #[serde(skip)]
-    executors: BTreeSet<String>,
+    pub editor_agent_ids: Vec<String>,
+    pub rule: &'static str,
 }
 
 impl Policy {
     pub fn includes(&self, agent: &str) -> bool {
-        !self.executors.contains(agent)
-            && self.editor_agent_ids.as_ref().is_none_or(|ids| ids.iter().any(|id| id == agent))
+        self.editor_agent_ids.iter().any(|id| id == agent)
     }
-}
-
-fn executors(db: &Connection) -> Result<BTreeSet<String>> {
-    Ok(crate::agent_roles::kinds(db)?.into_iter()
-        .filter(|(_, kind)| *kind == crate::agent_roles::EXECUTOR).map(|(agent, _)| agent).collect())
 }
 
 pub(super) fn policy(db: &Connection, project: &str) -> Result<Policy> {
-    let saved: Option<(i64, String)> = db.query_row(
-        "SELECT version,editor_ids FROM project_brief_editors WHERE project_id=?1",
-        [project], |r| Ok((r.get(0)?, r.get(1)?)),
-    ).optional()?;
-    let executors = executors(db)?;
-    match saved {
-        Some((version, raw)) => Ok(Policy { version, editor_agent_ids: serde_json::from_str(&raw)?, executors }),
-        None => Ok(Policy { version: 0, editor_agent_ids: None, executors }),
-    }
+    let leads = crate::agent_roles::leads_in(db, project)?;
+    Ok(Policy { version: leads.version, editor_agent_ids: leads.lead_agent_ids, rule: "leads" })
 }
 
-/// Both the membership and list are read from the caller's snapshot/transaction.
+/// Read from the caller's snapshot/transaction: a lead of `project`, open,
+/// while the Project is not archived.
 pub(super) fn can_edit(store: &Store, db: &Connection, project: &str, agent: &str) -> Result<bool> {
-    Ok(crate::projects::agent_project(db, agent)?.as_deref() == Some(project)
+    Ok(crate::agent_roles::leads(db, agent, project)?
         && !crate::projects::is_archived(db, project)?
-        && store.brief_in(db, agent)?.is_some_and(|a| a.agent.closed_at.is_none())
-        && policy(db, project)?.includes(agent))
+        && store.brief_in(db, agent)?.is_some_and(|a| a.agent.closed_at.is_none()))
 }
 
 pub(super) fn get(store: &Store, project: &str) -> Result<Policy> {
@@ -54,29 +43,7 @@ pub(super) fn get(store: &Store, project: &str) -> Result<Policy> {
     policy(&db, project)
 }
 
-/// Called only by the user HTTP route, never a collaboration operation.
-pub(super) fn save(store: &Store, project: &str, expected: i64, ids: Option<Vec<String>>) -> Result<Policy> {
-    let mut writer = store.db.write()?;
-    let tx = writer.transaction()?;
-    crate::projects::ensure_assignable(&tx, project)?;
-    let current = policy(&tx, project)?;
-    ensure!(current.version == expected, "version_conflict: Home content editors changed; reload before saving");
-    if let Some(ids) = &ids {
-        ensure!(ids.len() <= 500, "Select at most 500 Home content editors");
-        let unique: BTreeSet<_> = ids.iter().collect();
-        ensure!(unique.len() == ids.len(), "Each Home content editor must be listed once");
-        for agent in ids {
-            ensure!(crate::projects::agent_project(&tx, agent)?.as_deref() == Some(project)
-                && store.brief_in(&tx, agent)?.is_some_and(|a| a.agent.closed_at.is_none()),
-                "invalid_editor: select an open Agent in this Project");
-            ensure!(!current.executors.contains(agent),
-                "invalid_editor: a task executor is never a Home content editor; it can still ask its own questions");
-        }
-    }
-    let next = Policy { version: current.version + 1, editor_agent_ids: ids, executors: current.executors };
-    tx.execute("INSERT INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,?2,?3)
-        ON CONFLICT(project_id) DO UPDATE SET version=excluded.version,editor_ids=excluded.editor_ids",
-        params![project, next.version, serde_json::to_string(&next.editor_agent_ids)?])?;
-    tx.commit()?;
-    Ok(next)
-}
+/// The separate Home editors setting is gone (YN-2 S4): a save from an older
+/// page is refused, and the stored list is kept for older Cores.
+pub(super) const SETTING_REMOVED: &str =
+    "setting_removed: Home editors are the Project's leads; choose leads in the Project's settings";

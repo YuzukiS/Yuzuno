@@ -13,8 +13,9 @@
 //! Rust naming: `store::Brief` is an Agent's listed view; everything here is
 //! a Project Brief.
 mod attachments;
-/// A Workspace backup's hold on Brief attachment files (T-192).
-pub(crate) use attachments::hold_all as hold_attachments;
+/// A Workspace backup's hold on Brief attachment files (T-192), and an
+/// interactive preview's on one (YN-10).
+pub(crate) use attachments::{hold as hold_attachment, hold_all as hold_attachments, Hold as AttachmentHold};
 #[cfg(test)]
 pub(crate) use attachments::{collect_garbage as collect_attachment_garbage, held as attachment_held};
 mod editors;
@@ -39,21 +40,83 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::sync::{Arc, OnceLock};
 
-/// The kept file of a section's attachment, in the version given or the
-/// section's latest, for an interactive preview (previews.rs).
+/// A section's attachment as Core keeps it, for an interactive preview
+/// (previews.rs): its snapshot file, that file's SHA-256 (its name) and the
+/// section version it is of.
+pub(crate) struct AttachmentFile {
+    pub path: std::path::PathBuf,
+    pub sha256: String,
+    pub version: i64,
+}
+
+/// The kept file of a section's attachment, in the version given (that one
+/// or none) or the section's latest.
 pub(crate) async fn attachment_file(ws: &Arc<Workspace>, project: &str, section: &str, name: &str, version: Option<i64>)
-    -> Result<std::path::PathBuf> {
+    -> Result<AttachmentFile> {
     let cache = attachments::dir(&ws.data_dir);
     let (project, section, name) = (project.to_owned(), section.to_owned(), name.to_owned());
-    let found = ws.stored(move |store| attachments::snapshot_file(store, &cache, &project, &section, &name, version)).await?;
-    found.map(|(path, _)| path).map_err(|missing| anyhow::anyhow!("{}: {}", missing.code, missing.message))
+    let found = ws.stored(move |store| {
+        let row = match attachments::find_section(store, &project, &section, version)? {
+            Ok(row) => row,
+            Err(missing) => return Ok(Err(missing)),
+        };
+        Ok(attachments::snapshot_of(&cache, &row, &name).map(|(path, attachment)| AttachmentFile {
+            path,
+            sha256: attachment["sha256"].as_str().unwrap_or_default().to_owned(),
+            version: row.version,
+        }))
+    }).await?;
+    found.map_err(|missing| anyhow::anyhow!("{}: {}", missing.code, missing.message))
+}
+
+/// For other modules' tests (previews.rs): Agent `agent` puts section `key`
+/// with the file at `file` as its one attachment, as its brief_update would
+/// in a Turn of its own (it joins a new Project if it is in none, and leads
+/// it, since only a lead writes a report: YN-2 S4). Returns the Project,
+/// section, name and version, and the attachment as kept.
+#[cfg(test)]
+pub(crate) async fn attach_for_test(ws: &Arc<Workspace>, agent: &str, key: &str, file: &std::path::Path) -> Value {
+    let own = crate::projects::agent_project(&ws.store.db.read().unwrap(), agent).unwrap();
+    let project = match own {
+        Some(project) => project,
+        None => {
+            let project = ws.store.create_project("Previews", Default::default()).unwrap().id;
+            ws.store.set_agent_project(agent, Some(&project)).unwrap();
+            project
+        }
+    };
+    // The user's choice of leads, saved as the settings page saves it.
+    let leads = crate::agent_roles::get(&ws.store, &project).unwrap();
+    if !leads.lead_agent_ids.iter().any(|id| id == agent) {
+        let mut ids = leads.lead_agent_ids;
+        ids.push(agent.to_owned());
+        crate::agent_roles::save(&ws.store, &project, leads.version, ids).unwrap();
+    }
+    ws.store.update(agent, "test/running", &json!({}), |d| {
+        if !d.turns.iter().any(|t| t["status"] == "inProgress") {
+            d.turns.push(json!({"id":"t-attach","status":"inProgress","items":[]}));
+        }
+        d.agent.status = "working".into();
+        d.agent.connection_state = "connected".into();
+    }).unwrap();
+    let expected = sections::brief_version(&ws.store.db.read().unwrap(), &project).unwrap();
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
+    let body = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["note"]},
+        "note":{"type":"Markdown","props":{"text":"A page."}}}});
+    let change = json!({"op":"put","key":key,"kind":"report","title":"Designs","body":body,"attachments":[{"name":name,"path":file}]});
+    let input = json!({"requestId":format!("attach-{key}-{expected}"),"expectedVersion":expected,"changes":[change]});
+    let answer = update::update(ws, &update::Checker::Fake(|section| Ok(section.clone())), agent, input).await.unwrap();
+    assert!(answer.is_ok(), "{answer:?}");
+    let row = sections::find(&ws.store.db.read().unwrap(), &project, key, None).unwrap().unwrap();
+    let attachment = &row.data["attachments"][0];
+    json!({"projectId":project,"section":key,"name":name,"version":row.version,
+        "sha256":attachment["sha256"],"snapshot":attachment["snapshot"],"size":attachment["size"]})
 }
 
 pub(crate) use update::TOOL as UPDATE_TOOL;
 
 pub(crate) const MAX_TOPICS: usize = 12;
 pub(crate) const MAX_SUBTOPICS: usize = 4;
-pub(crate) const MAX_OPEN_ASKS: usize = 3;
 pub(crate) const MAX_ATTACHMENTS: usize = 12;
 /// A file up to this size is kept as it was; a larger one is referenced.
 pub(crate) const SNAPSHOT_FILE_BYTES: u64 = 25 * 1024 * 1024;
@@ -91,7 +154,7 @@ fn contract_text(value: &'static Value) -> Option<&'static str> {
 }
 
 const FALLBACK_RULES: &str = "Project Brief rules (Yuzuno). Nothing requires a Brief update each Turn: update it when something changed. \
-Only the user selects content editors. When editContent=false and writeOwnAsk=true, only your own Asks are allowed. When writeOwnAsk=false the Brief is read-only. \
+Leads edit Home; the user chooses leads. When editContent=false and writeOwnAsk=true, only your own Asks are allowed, and removing your own older sections. When writeOwnAsk=false the Brief is read-only. \
 Call brief_get, then brief_update with the expectedVersion it returned: put, resolve, remove or claim your sections. A rejected call changes nothing: fix the listed problems \
 (on version_conflict use the latest Brief attached) and call again with a new requestId. \
 Only a section's owner changes it; to add to another Agent's topic, put a sub-topic such as topic/review. \
@@ -106,7 +169,7 @@ At most 12 topics with 4 sub-topics each. Only the owner changes a section; add 
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
 put: {op:'put', key, kind:'ask'|'report'|'status', title, body, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root.\n\
 edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else.\n\
-ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. At most 3 unresolved asks per Agent. \
+ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. \
 A user's reply marks it replied (out of Needs you, listed in brief_get you.repliedAsks); resolve it once handled: a preference when taken in, \
 an authorized action only after it is done, with its result on the Task or Brief. While it runs or after it fails, keep it replied and report progress.\n\
 status: status.asOf (ISO time) and status.validFor (seconds); it greys out when stale.\n\
@@ -203,9 +266,9 @@ fn limits() -> Value {
     if let Some(limits) = brief_contract().map(|brief| &brief["limits"]).filter(|limits| limits.is_object()) {
         return limits.clone();
     }
-    json!({"topics":MAX_TOPICS,"subtopicsPerTopic":MAX_SUBTOPICS,"openAsksPerAgent":MAX_OPEN_ASKS,
+    json!({"topics":MAX_TOPICS,"subtopicsPerTopic":MAX_SUBTOPICS,
         "attachments":MAX_ATTACHMENTS,"snapshotFileBytes":SNAPSHOT_FILE_BYTES,
-        "snapshotBriefBytes":SNAPSHOT_BRIEF_BYTES,"historyDays":HISTORY_DAYS})
+        "snapshotBriefBytes":SNAPSHOT_BRIEF_BYTES,"historyDays":HISTORY_DAYS,"recentlyLeft":sections::RECENTLY_LEFT})
 }
 
 /// `brief_guide`: the guide generated from the contract, whole or one part.
@@ -317,7 +380,7 @@ pub(crate) fn delete_agent(db: &Connection, id: &str) -> Result<()> {
 }
 
 /// The Project whose Brief this Agent may edit: Some while it belongs to a
-/// Project that is not archived and the user chose it as a content editor.
+/// Project that is not archived and leads it (YN-2 S4: a lead edits Home).
 pub fn agent_edits_brief(store: &Store, agent_id: &str) -> Result<Option<String>> {
     let db = store.db.read()?;
     let Some(project) = crate::projects::agent_project(&db, agent_id)? else { return Ok(None) };
@@ -588,8 +651,14 @@ fn get(store: &Store, actor: Option<&str>, input: &Value) -> Result<Value> {
         let stale: Vec<&str> = rows.iter()
             .filter(|row| row.owner_id == actor && row.kind == "status" && sections::stale(&row.data["status"], at))
             .map(|row| row.key.as_str()).collect();
+        // Your sections that left the live Brief lately, and why (YN-7): a
+        // report the user marked seen is no longer among the sections.
+        let left = sections::recently_left(&db, &project, actor)?;
+        let left_more = left.len().saturating_sub(sections::RECENTLY_LEFT);
+        let left: Vec<Value> = left.iter().take(sections::RECENTLY_LEFT).map(sections::left_json).collect();
         let can_edit = editors::can_edit(store, &db, &project, actor)?;
         let mut you = json!({"agentId":actor,"ownsKeys":owned,"openAsks":open,"repliedAsks":replied,"staleStatus":stale,
+            "recentlyLeft":left,"recentlyLeftMore":left_more,
             "capabilities":{"editContent":can_edit,"requiresTurnUpdate":false,
                 "writeOwnAsk":own.as_deref() == Some(project.as_str()) && !crate::projects::is_archived(&db, &project)?
                     && store.brief_in(&db, actor)?.is_some_and(|a| a.agent.closed_at.is_none())}});

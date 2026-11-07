@@ -248,6 +248,7 @@ export function MachinesPage({
   projects,
   revision,
   onOpenAgent,
+  inline = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -256,6 +257,9 @@ export function MachinesPage({
   /** Workspace change counter; another window's check refreshes this list. */
   revision: number;
   onOpenAgent: (id: string) => void;
+  /** Settings › Machines (YN-8): the same page inside Settings, not a
+   * dialog; `open` is then whether its page is shown. */
+  inline?: boolean;
 }) {
   const language = useLanguage();
   const t = text(language);
@@ -325,14 +329,7 @@ export function MachinesPage({
       setChecking((c) => ({ ...c, [machine.id]: false }));
     }
   }
-  return (
-    <Modal
-      open={open}
-      onOpenChange={onOpenChange}
-      wide
-      title={t.title}
-      description={t.description}
-    >
+  const body = (
       <div className="machines-page">
         <div className="machines-toolbar">
           <button
@@ -589,6 +586,28 @@ export function MachinesPage({
         })}
         <p className="machine-note machines-footnote">{t.footnote}</p>
       </div>
+  );
+  if (inline)
+    return (
+      <section className="settings-section settings-manager" aria-labelledby="settings-machines-title">
+        <header className="settings-section-heading">
+          <div>
+            <h3 id="settings-machines-title">{t.title}</h3>
+            <p>{t.description}</p>
+          </div>
+        </header>
+        {body}
+      </section>
+    );
+  return (
+    <Modal
+      open={open}
+      onOpenChange={onOpenChange}
+      wide
+      title={t.title}
+      description={t.description}
+    >
+      {body}
     </Modal>
   );
 }

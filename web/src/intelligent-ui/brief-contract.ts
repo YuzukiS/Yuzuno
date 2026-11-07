@@ -10,8 +10,8 @@
  * a BriefBody root), the per-block limits, and the text Agents are given
  * (hard rules, tool descriptions and brief_guide). Core runs it in the same
  * generated bundle as results, runtimes/result-validator/, and reads the text
- * from its contract.json. Rules across sections (topic counts, open asks per
- * Agent, owners, versions) are Core's.
+ * from its contract.json. Rules across sections (topic counts, owners,
+ * versions) are Core's.
  */
 import { z } from "zod";
 import {
@@ -31,8 +31,9 @@ export const BRIEF_LIMITS = {
   // Across sections; Core enforces these.
   topics: 12,
   subtopicsPerTopic: 4,
-  openAsksPerAgent: 3,
   historyDays: 30,
+  // brief_get's you.recentlyLeft lists at most this many (YN-7).
+  recentlyLeft: 20,
   snapshotFileBytes: 25 * 1024 * 1024,
   snapshotBriefBytes: 1024 * 1024 * 1024,
   // One section; checked here.
@@ -76,6 +77,8 @@ export const BRIEF_LIMITS = {
   research: {
     claims: 12, plots: 8, rows: 40, parts: 4, sources: 40, definitions: 12, versions: 6, revisions: 12, plans: 6,
     items: 16, links: 4, values: 400, textChars: 1200, pointerChars: 200,
+    // A CSV or TSV cell (YN-7): the columns whose text picks its row, and how long a name or a cell may be.
+    keyColumns: 4, columnChars: 120, cellChars: 200,
   },
 } as const;
 const L = BRIEF_LIMITS;
@@ -124,8 +127,10 @@ const metricValue = z.union([z.number().finite(), short]);
 const tableShape = componentProps.Table.shape;
 
 // ResearchDesk (T-9). A number is the Agent's own (a literal) or one Core
-// reads from a JSON snapshot of this section, {from, pointer}; Core says
-// which, and never calls either a check of the research.
+// reads from a snapshot of this section: from a JSON file, {from, pointer};
+// from a CSV or TSV file, {from, row, column} (YN-7), the row whose named
+// columns hold exactly that text. Core says which, and never calls either a
+// check of the research.
 const R = L.research;
 const researchText = z.string().trim().min(1).max(R.textChars);
 const researchList = <T extends z.ZodType>(item: T) => z.array(item).max(R.items).optional();
@@ -133,7 +138,16 @@ const jsonPointer = z
   .string()
   .max(R.pointerChars)
   .regex(/^(\/([^~/]|~[01])*)+$/, "Use a JSON Pointer into the attachment, e.g. /E/avg4/mean or /rows/0/value.");
-const researchNumber = z.union([z.number().finite(), z.strictObject({ from: attachmentName, pointer: jsonPointer })]);
+const csvColumn = z.string().trim().min(1).max(R.columnChars);
+const csvRow = z
+  .record(csvColumn, z.string().max(R.cellChars))
+  .refine((row) => Object.keys(row).length >= 1 && Object.keys(row).length <= R.keyColumns,
+    `Name 1 to ${R.keyColumns} columns and the text each holds in the row, e.g. {"sport": "alpha", "d": "2"}.`);
+const researchNumber = z.union([
+  z.number().finite(),
+  z.strictObject({ from: attachmentName, pointer: jsonPointer }),
+  z.strictObject({ from: attachmentName, row: csvRow, column: csvColumn }),
+]);
 const lines = z.string().regex(/^[1-9]\d{0,5}(-[1-9]\d{0,5})?$/, "Use a line or a range, e.g. 187 or 187-191.");
 const citation = z.strictObject({ source: id, lines: lines.optional() });
 const definitionVersion = z.number().int().min(1).max(99);
@@ -156,6 +170,7 @@ const researchDeskProps = z.strictObject({
         statement: researchText,
         // The author's own reading, shown as theirs.
         status: z.enum(["supported", "conditional", "unsupported", "open"]),
+        // A row id of the desk's plots (plots[].rows[].id), not a plot or part id.
         primary: id.optional(),
         plots: z.array(id).max(R.plots).optional(),
         paper: researchList(z.strictObject({ label: short, cite: citation })),
@@ -277,7 +292,7 @@ const researchDeskProps = z.strictObject({
         outputs: researchList(short),
         notProduced: researchList(short),
         links: z
-          .array(z.strictObject({ kind: z.enum(["task", "job"]), id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/), label: short.optional() }))
+          .array(z.strictObject({ kind: z.enum(["task", "job", "run"]), id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/), label: short.optional() }))
           .max(R.links)
           .optional(),
         note: researchText.optional(),
@@ -356,7 +371,7 @@ export const briefComponentProps = {
     items: z
       .array(
         z.strictObject({
-          kind: z.enum(["task", "pr", "ci", "job", "review", "agent", "machine"]),
+          kind: z.enum(["task", "pr", "ci", "job", "run", "review", "agent", "machine"]),
           id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/, "Use the 1-200 character id the matching yuzuno tool uses."),
           label: short.optional(),
           note: z.string().min(1).max(L.refNoteChars).optional(),
@@ -396,7 +411,7 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   LineChart: "A line chart from inline points or a data attachment.",
   BarChart: "A bar chart from inline points or a data attachment; x is usually a label.",
   ScatterChart: "A scatter plot with numeric x, from inline points or a data attachment.",
-  LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12, or a Project task key such as YN-3), pr (owner/repo#12), ci (run id), job, review (review id), agent or machine id. layout list shows one row per item in your order, with a short note of yours; for tasks Yuzuno fills in the title, state, assignee and last update, so write none of them. While Home cannot read Core, a list keeps the states it read last and says they are out of date.",
+  LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12, or a Project task key such as YN-3), pr (owner/repo#12), ci (run id), job, run (a run of stages: the runId job_run_submit returned; Yuzuno shows its status and how many stages are done), review (review id), agent or machine id. layout list shows one row per item in your order, with a short note of yours; for tasks Yuzuno fills in the title, state, assignee and last update, so write none of them. While Home cannot read Core, a list keeps the states it read last and says they are out of date.",
   Attachments: "Shows this section's attachments by name with optional captions.",
   Sources: "Explicit HTTPS or local file references; Table rows cite them by id in sourceIds.",
   ResearchDesk: "A research question as claims with intervals, the conditions and limits of what may be said, the sources and definitions each number rests on, and candidate next steps; see research.",
@@ -510,7 +525,7 @@ export const BRIEF_PROBLEM_CODES = {
   attachment_location: "An attachment without exactly one of path or url, or with a path that is not absolute or a url that is not https.",
   duplicate_attachment: "Two attachments share a name.",
   missing_reference: "A ResearchDesk id that names no claim, plot, row, part, source, definition version or plan of that desk.",
-  research_attachment: "A ResearchDesk number read from an attachment that is not a JSON file with a path.",
+  research_attachment: "A ResearchDesk number read from an attachment of the wrong kind: a JSON Pointer needs a .json file, a CSV row a .csv or .tsv file, each with a path.",
   unsaved_definition: "A ResearchDesk definition version citing a source with neither a snapshot nor a Task method record.",
   definition_order: "A ResearchDesk revision whose definition versions do not go from older to newer.",
   too_many_values: `A ResearchDesk reading over ${L.research.values} numbers from attachments.`,
@@ -766,16 +781,22 @@ type Attachment = NonNullable<BriefSection["attachments"]>[number];
 type ResearchNumber = z.infer<typeof researchNumber>;
 type Estimate = z.infer<typeof estimate>;
 
+/** Where Core reads one number of a desk: a JSON Pointer, or a CSV or TSV row and column (YN-7). */
+export type ResearchRead =
+  | { at: string; from: string; pointer: string }
+  | { at: string; from: string; row: Record<string, string>; column: string };
 /**
  * Every number of a desk Core reads from an attachment, with where it sits
  * (`${row or part id}.value|low|high`); Core's research read resolves these.
  */
-export function researchReads(props: ResearchDesk): { at: string; from: string; pointer: string }[] {
-  const reads: { at: string; from: string; pointer: string }[] = [];
+export function researchReads(props: ResearchDesk): ResearchRead[] {
+  const reads: ResearchRead[] = [];
   const add = (owner: string, found: Estimate) => {
     for (const field of ["value", "low", "high"] as const) {
       const number: ResearchNumber | undefined = found[field];
-      if (number !== undefined && typeof number !== "number") reads.push({ at: `${owner}.${field}`, from: number.from, pointer: number.pointer });
+      if (number === undefined || typeof number === "number") continue;
+      const at = `${owner}.${field}`;
+      reads.push("pointer" in number ? { at, from: number.from, pointer: number.pointer } : { at, from: number.from, row: number.row, column: number.column });
     }
   };
   for (const plot of props.plots)
@@ -864,8 +885,11 @@ function checkResearch(
     if (found === undefined || typeof found === "number") return;
     reads++;
     const file = needsFile(found.from, `${path}.from`);
-    if (file && (file.path === undefined || !/\.json$/i.test(file.path)))
-      bad("research_attachment", `${path}.from`, `${desk} reads numbers from JSON files only: attachment "${found.from}" needs a path ending in .json.`);
+    if (!file) return;
+    if ("pointer" in found && (file.path === undefined || !/\.json$/i.test(file.path)))
+      bad("research_attachment", `${path}.from`, `${desk} reads a JSON Pointer from JSON files only: attachment "${found.from}" needs a path ending in .json.`);
+    if ("row" in found && (file.path === undefined || !/\.(csv|tsv)$/i.test(file.path)))
+      bad("research_attachment", `${path}.from`, `${desk} reads a row's cell from CSV or TSV files only: attachment "${found.from}" needs a path ending in .csv or .tsv.`);
   };
   const checkEstimate = (found: Estimate, path: string) => {
     for (const field of ["value", "low", "high"] as const) number(found[field], `${path}.${field}`);
@@ -892,7 +916,9 @@ function checkResearch(
     const path = `${at}.claims.${c}`;
     once(claims, claim.id, `${path}.id`, "claim");
     if (claim.primary !== undefined && !rows.has(claim.primary))
-      bad("missing_reference", `${path}.primary`, `${desk} claim "${claim.id}" primary "${claim.primary}" is not a row of its plots.`);
+      bad("missing_reference", `${path}.primary`,
+        `${desk} claim "${claim.id}" primary "${claim.primary}" is not a row of its plots: primary is a row id (plots[].rows[].id)` +
+          (plots.has(claim.primary) ? `; "${claim.primary}" is a plot id` : points.has(claim.primary) ? `; "${claim.primary}" is a part id` : "") + ".");
     for (const plot of claim.plots ?? [])
       if (!plots.has(plot)) bad("missing_reference", `${path}.plots`, `${desk} claim "${claim.id}" names plot "${plot}", which the desk does not have.`);
     (claim.paper ?? []).forEach((place, index) => cites(place.cite, `${path}.paper.${index}.cite`));
@@ -1522,17 +1548,18 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   sections: [
     `This guide is the format. What to write and in which form is yuzuno_guide topic brief ("Write for Home"): one conclusion first, important limits beside it, each fact in one place, and execution evidence (logs, raw data, full test output, run and PR lists) left on its Task and linked.`,
     `What goes where: ${BRIEF_OUTCOME_HINT} Update a section when something changed, not every turn; a status past its validFor shows as stale until new facts refresh it. Details stay on the Task and its sources.`,
-    `Home content editors are set by the user per Project. brief_get returns you.capabilities. When editContent is false and writeOwnAsk is true, only create/update/resolve/remove your own Asks or send noChange; do not claim sections, convert regular content into an Ask, or write reports/status. When writeOwnAsk is false, this Brief is read-only, including no noChange writes. Ownership rules still apply to editors. Hidden old content remains in team details/history.`,
+    `A Project's leads edit its Home; the user chooses them. brief_get returns you.capabilities. When editContent is false and writeOwnAsk is true, only create/update/resolve/remove your own Asks, remove your own older sections, or send noChange; do not claim sections, convert regular content into an Ask, or write reports/status. When writeOwnAsk is false, this Brief is read-only, including no noChange writes. Ownership rules still apply to editors. Hidden old content remains in team details/history.`,
     `brief_update takes changes: [...]. put creates or replaces one section you own:`,
     `- put {op:"put", ${signature(jsonSchema(sectionSchema), 1).slice(1)}`,
     `- key: topic or topic/sub; each part 1-48 of a-z, 0-9 and -, starting with a letter or digit (round-12, round-12/review). A Brief has at most ${L.topics} topics with ${L.subtopicsPerTopic} subs each.`,
-    `- kind: ask (a question for the user, see ask); report (a result the user reads and marks seen; seen reports stay in history ${L.historyDays} days); status (current state; needs status {asOf, validFor}, validFor ${L.validForMin}-${L.validForMax} seconds; greyed once asOf + validFor has passed).`,
+    `- kind: ask (a question for the user, see ask); report (a result the user reads and marks seen; a report the user marks seen at its latest version leaves brief_get's sections and your ownsKeys at once (a newer version stays, unseen) and stays in Home's history ${L.historyDays} days: put it again under its key to continue it on Home, as edit needs a live section); status (current state; needs status {asOf, validFor}, validFor ${L.validForMin}-${L.validForMax} seconds; greyed once asOf + validFor has passed). While a conclusion still moves, keep it in a status and refresh it with new facts; once a claim settles, write it as a report under its own key linked to its Task, which the user marks seen and history keeps, and let the status point to it or drop it. A status keeps only its current version: putting it again replaces the earlier wording.`,
     `- title: 1-${L.titleChars} characters. body: {root, elements}, see content. time: due, eta and nextUpdate, ISO 8601 with a time zone. attachments: see attachments.`,
     `edit {op:"edit", key, elements:{<id>: {type, props, children?}}, status?} replaces blocks of a section you own by id and keeps the rest as it was: the other blocks and their order, title, attachments, time and the ask's state. Each id is one the body already has, or a new block named as a child by a block you edit; the root is not edited (rearrange with put). Core checks the whole section again. status (kind status only) refreshes asOf. Day to day, edit the blocks that changed, e.g. {op:"edit", key:"overview", elements:{progress:{type:"Plan", props:{steps:[...]}}}}; put a section to create it or change its layout.`,
     `Other changes: {op:"resolve", key} resolves your ask; {op:"remove", key} removes your section (reports and status go to history); {op:"claim", key} takes an orphaned section of your Project; change it in a later brief_update, not in the one that claims it.`,
+    `brief_get's you.recentlyLeft lists your sections that left the live Brief in the last ${L.historyDays} days and are not live again, newest first, at most ${L.recentlyLeft}: {key, kind, title, version, reason, at}, reason seen (the user marked that version seen), removed or resolved; recentlyLeftMore counts the rest. An edit, resolve, remove or claim naming one of them is refused with not_found, saying why it left; put writes it again.`,
     `Only a section's owner changes it. To add to another Agent's section, put your own section under its key as topic/sub; Home shows them together with each author.`,
     `Pass expectedVersion from brief_get. On version_conflict the rejection includes latest: merge and retry with a new requestId. Nothing requires an update each turn; noChange:true is still accepted and changes nothing.`,
-    `validateOnly:true pre-checks a brief_update: it runs the checks made before the write, with their problems as the update would give them (and latest), and writes nothing: no requestId kept, no version or space reserved, and it is not your update. Its answer has valid, whether the pre-check passed, and checkedAll, only whether it ran all its steps. Checking stops at the first step with problems, so false means later steps did not run and the problems listed may not be all. Checks made only on writing are outside it: sending the update checks version, Turn and permissions again against the Brief as it is then, and can still be refused, e.g. with snapshot_limit when the Brief's snapshots would exceed their total. Use it for a complex section; an ordinary edit needs no check first.`,
+    `validateOnly:true pre-checks a brief_update: it runs the checks made before the write, with their problems as the update would give them (and latest), and writes nothing: no requestId kept, no version or space reserved, and it is not your update. Its answer has valid, whether the pre-check passed, and checkedAll, only whether it ran all its steps. Checking stops at the first step with problems, so false means later steps did not run and the problems listed may not be all. Checks made only on writing are outside it: sending the update checks version, Turn and permissions again against the Brief as it is then, and can still be refused, e.g. with snapshot_limit when the Brief's snapshots would exceed their total. brief_update itself makes the same checks and writes nothing when it refuses, so a section you mean to send now needs no pre-check: send it, fix what the rejection lists and send again with a new requestId. Use validateOnly to check without writing, e.g. a draft you will not send in this Turn.`,
   ],
   ask: [
     `kind ask needs ask:`,
@@ -1543,7 +1570,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Use options for one choice and a form for several related answers, as in the decision and form examples.`,
     `The user's answer reaches you as an ordinary message quoting the section. The ask then shows "replied": it leaves Needs you, and brief_get lists it in you.repliedAsks (key, title, repliedAt, the reply in short, updatedSinceReply). It stays until you resolve it with {op:"resolve", key}; nothing closes it for you.`,
     `When to resolve: a preference or information you asked for, once you have taken it in; an action the reply authorizes, only after that action is confirmed done and its result is on the existing Task or a Brief section. A green CI or a whole Task being done is not that action. While it runs, or after it fails, keep the ask replied and report progress on the Task or Brief: edit keeps it replied, while put asks it again. Ask again only when the user has something new to decide. A reply executes nothing by itself: act on what the user has authorized, an explicit reply included, without asking for it again, and never infer a retry, merge or wider permission from an answer that does not grant it.`,
-    `openAsks counts your unresolved asks, open or replied; at most ${L.openAsksPerAgent} per Agent.`,
+    `brief_get's you.openAsks counts your unresolved asks, open or replied.`,
     `Answers never execute actions: nothing in a Brief merges, deploys or approves; Core approvals stay separate.`,
   ],
   content: [
@@ -1555,7 +1582,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `LiveRefs show Core's records, read each time Home reads the Brief and never saved in your section: your label names the item, and its state is the record's own (a task's board state, a Job's run state), not whether an Agent is working on it now. An item Core does not know shows as not found: check its id. One Core could not read just then shows as couldn't read: leave it, a later read shows its state again. A state you write in Plan, Table, Metrics or Markdown is your account as of when you wrote it (a status's asOf), not live: for the current state of a task, PR, CI run or Job, reference it, as the overview example does with its Job.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
-    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, size}: lead, visual and conditions are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Table, ResearchDesk, or Attachments with one image file); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk) or large (two columns, two rows: an image, a scatter chart). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
+    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, size}: lead, visual and conditions are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Table, ResearchDesk, or Attachments with one image file); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk) or large (two columns, two rows: an image, a scatter chart, an HTML page). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. A card with no visual shows instead the first kept image or single HTML page (.html or .htm) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there. A report whose body holds only its lead (one paragraph), the card's picture and files, and its conditions is the whole report: its card has no Open report. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
     `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
   ],
@@ -1569,11 +1596,11 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   research: [
     componentLine("ResearchDesk"),
     `One block for a research question: what each claim may and may not say, the numbers and intervals it rests on, under which conditions, from which sources and under which definition, and what could be done next. The reader selects a claim, a row or one of its parts; the block keeps that selection across your later versions while the ids stay. Use your own ids and keep them across versions. Row and part ids share one namespace across the whole desk, every plot included: each is used once, so two plots cannot both have a row "a", nor a part the id of a row.`,
-    `Numbers: each value, low and high is a literal, shown as provided by you, or {from, pointer}: a JSON Pointer into one of this section's attachments whose path ends in .json. Yuzuno reads it from the snapshot taken when you wrote the section and shows it as read from that snapshot, with the snapshot's SHA-256 and when it was taken; a pointer that finds no number shows as such. Neither is a check of the research: a snapshot read only says the number is in that file. Yuzuno does not compare your text with the numbers or round anything for you; digits sets how many decimals are displayed, and scale a factor for display only (e.g. 100 for a fraction shown as percentage points, with unit saying so): the value as the file has it is shown beside it. At most ${R.values} numbers read from attachments per desk.`,
+    `Numbers: each value, low and high is a literal, shown as provided by you, or {from, pointer}: a JSON Pointer into one of this section's attachments whose path ends in .json, or {from, row, column} for one whose path ends in .csv or .tsv (a header row, then one row per line): row names 1 to ${R.keyColumns} columns and the text each holds, e.g. {"sport": "alpha", "d": "2"}, every one of which must match, and column is the column the number is in. Cells compare as text as written, without the spaces around them: "2" does not match "2.0". No matching row shows as missing, two or more as ambiguous, never a guess; a cell that is not a number shows as such. Yuzuno reads it from the snapshot taken when you wrote the section and shows it as read from that snapshot, with the snapshot's SHA-256 and when it was taken; a pointer that finds no number shows as such. Neither is a check of the research: a snapshot read only says the number is in that file. Yuzuno does not compare your text with the numbers or round anything for you; digits sets how many decimals are displayed, and scale a factor for display only (e.g. 100 for a fraction shown as percentage points, with unit saying so): the value as the file has it is shown beside it. At most ${R.values} numbers read from attachments per desk.`,
     `Sources: each source may name a snapshot (an attachment of this section); location, revision and sha256 are your description, shown as yours and never read. revision is a commit hash, 7 to 64 lowercase hexadecimal characters (not a branch, tag or other name); sha256 is 64 lowercase hexadecimal characters. A source with a snapshot shows the snapshot's SHA-256 and when it was taken, and whether your sha256 is the same file content; that is file identity, not a result. Yuzuno does not look at the file again later: the snapshot is as of when you wrote the section. A source may instead name a Task research record, task: {taskId, activitySeq} (taskId T-N or a Project task key such as YN-3; any key the task had still names it), one you or another Agent wrote with task_comment research: it is shown as the task keeps it (its type, title, producer and version) and needs no attachment; that is the record's identity, not a check of it. Removing the section leaves the record on its task.`,
     `Definitions: an analysis definition keeps every version you give, each citing a source with a snapshot (with lines when part of a file) or a source naming a Task method record. A version's number names one content: to change a definition, add a new version; Core refuses a version whose text, citation or cited file differs from the same version of the same desk (the element) in this section's previous version; each desk's definitions are its own. Estimates name the definition version they use; rows with the same compare id under two versions show side by side as before and after. Removing old versions is allowed, but the history then shows only what remains.`,
-    `Claims: status (supported, conditional, unsupported, open) and statements are your reading and show as yours; kind criterion is a statistical criterion, interpretation your interpretation, exploratory an exploratory observation. dependsOn names the definition versions a claim rests on; when a newer version exists, the claim shows as affected through that declared dependency only. revisions are your drafts of changed wording for a claim (basis declared, or author when the author confirmed the dependency); Yuzuno shows them for review and never applies them.`,
-    `Plans: candidate next steps as a preview: the question, inputs, parameters, compute (none, cpu or gpu), budget, what they produce and what they do not. Nothing runs from the block, and opening it runs nothing; links name existing tasks or Jobs, shown with their current state like LiveRefs (they count toward the ${L.liveRefs} LiveRefs of a section). A Job that succeeded is not a result that holds.`,
+    `Claims: primary is the id of one row of the desk's plots (plots[].rows[].id), the row the claim leads with; not a plot or part id. plots lists plot ids. status (supported, conditional, unsupported, open) and statements are your reading and show as yours; kind criterion is a statistical criterion, interpretation your interpretation, exploratory an exploratory observation. dependsOn names the definition versions a claim rests on; when a newer version exists, the claim shows as affected through that declared dependency only. revisions are your drafts of changed wording for a claim (basis declared, or author when the author confirmed the dependency); Yuzuno shows them for review and never applies them.`,
+    `Plans: candidate next steps as a preview: the question, inputs, parameters, compute (none, cpu or gpu), budget, what they produce and what they do not. Nothing runs from the block, and opening it runs nothing; links name existing tasks, Jobs or runs of stages (kind run, the runId job_run_submit returned), shown with their current state like LiveRefs (they count toward the ${L.liveRefs} LiveRefs of a section). A Job that succeeded is not a result that holds.`,
     `Limits: ${R.claims} claims, ${R.plots} plots, ${R.rows} rows per plot, ${R.parts} parts per row, ${R.sources} sources, ${R.definitions} definitions with ${R.versions} versions each, ${R.revisions} revisions, ${R.plans} plans, ${R.items} entries per list, ${R.textChars} characters per text.`,
   ],
   attachments: [
@@ -1589,7 +1616,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Attach what the user should look at: a screenshot or a sketch (its caption says which) and the data file a chart reads. Logs, raw data, full tables and test output are execution evidence: leave them on their Task and link it with LiveRefs instead of attaching them here.`,
   ],
   limits: [
-    `- Brief: ${L.topics} topics, ${L.subtopicsPerTopic} subs per topic, ${L.openAsksPerAgent} open asks per Agent; seen reports stay ${L.historyDays} days.`,
+    `- Brief: ${L.topics} topics, ${L.subtopicsPerTopic} subs per topic; seen reports stay ${L.historyDays} days.`,
     `- Body: ${L.bodyBytes} bytes of compact JSON, ${L.components} components, ${L.depth} levels; BriefBody ${L.bodyChildren} children, Group ${L.groupChildren}, Columns 2-${L.columns}.`,
     `- Markdown: each fenced code or log block ${L.codeBlockLines} lines. Math: ${L.mathChars} characters.`,
     `- Checklist, Plan and Findings: ${L.listItems} items each. Metrics: ${L.metrics}. Sources: ${L.sources}.`,
@@ -1602,7 +1629,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   errors: [
     `A rejected brief_update lists problems {code, path, reason, guide}: at most ${MAX_PROBLEMS} for each section's format and at most ${L.callProblems} in all. moreProblems says how many more Core found past ${L.callProblems}; problems past a section's ${MAX_PROBLEMS} are not found or counted. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
-    `- ask_only: Your current Project permission allows only your own valid asks and optional noChange. Only the user can select content editors. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
+    `- ask_only: Your current Project permission allows only your own valid asks, removing your own older sections, and optional noChange. A Project's leads edit Home; the user chooses them. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
     `Core also rejects version_conflict (a section you change was written after the version you read, or expectedVersion is ahead of the Brief; other sections' writes don't count; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), definition_changed (a ResearchDesk definition version whose text, citation or cited file or record differs from the section's previous version; see research), unsaved_definition also when Core kept no snapshot of a definition's cited file or the cited Task record is not a method record it can read, and changes that break owner, topic or open-ask rules.`,
   ],
   examples: [
@@ -1639,7 +1666,7 @@ export const BRIEF_HARD_RULES = [
   `Yuzuno Project Brief rules:`,
   `1. No Brief update is required each turn: write when something changed, for the user: conclusion first, limits beside it, evidence on its Task. A current state goes in a status, a lasting finding or decision in a short report linked to its Task, a choice for the user in an ask; result_publish never reaches Home. Load tools with tool search if needed.`,
   `2. Pass expectedVersion from brief_get. On version_conflict, re-read (the rejection has the latest), merge and retry with a new requestId.`,
-  `3. Only the user selects Home content editors. If editContent is false and writeOwnAsk is true, write only your own Asks. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
+  `3. Leads edit Home; the user chooses leads. If editContent is false and writeOwnAsk is true, write only your own Asks. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
   `4. An ask needs a question plus reply options, freeText, a form or a choice. A reply marks it replied. Resolve your asks explicitly with resolve once they are handled: a preference once taken in, an authorized action only after it is done and its result is on the Task or Brief. A reply executes nothing itself: act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant.`,
   `5. Brief content never executes actions: nothing you write merges, deploys or approves; answers come back to you as messages.`,
   `6. If brief_update is rejected, fix the listed problems and call it again. Read yuzuno_guide brief for what to write and brief_guide for formats, limits and examples.`,
@@ -1648,8 +1675,9 @@ export const BRIEF_HARD_RULES = [
 export const BRIEF_TOOL_DESCRIPTIONS = {
   brief_get:
     `Read your Project's Brief: its version, the live sections (key, kind, title, owner, body, ask state, status, attachments), ` +
-    `you {agentId, ownsKeys, openAsks, repliedAsks (your asks the user answered, to act on and resolve), staleStatus, capabilities; ` +
-    `for a Home content editor homeHint, and homePreference once the user set one: how they like results presented, current as of this read, ` +
+    `you {agentId, ownsKeys, openAsks, repliedAsks (your asks the user answered, to act on and resolve), staleStatus, ` +
+    `recentlyLeft (your sections that left lately and why: a report the user marked seen is no longer among the sections), recentlyLeftMore, capabilities; ` +
+    `for a lead (a Home editor) homeHint, and homePreference once the user set one: how they like results presented, current as of this read, ` +
     `granting nothing} and the limits. ` +
     `keys: omit for every section with its body; [] for an index of the sections without bodies; [key, ...] for those sections in full. ` +
     `Pass its version to brief_update as expectedVersion. projectId defaults to your own Project. Nothing requires reading or updating the Brief each turn. Formats: brief_guide.`,

@@ -316,6 +316,34 @@ async fn a_fork_through_a_turn_is_a_new_agent_in_the_same_folder_and_the_source_
     ws.close_agent("oc").await.unwrap();
 }
 
+/// YN-2 S4: the user's fork leads the source's Project, even when the source
+/// is an executor: the fork is a standing Agent of its own. The source stays
+/// an executor.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_fork_of_an_executor_leads_the_sources_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, _data, _cwd, [_first, second, _third]) = three(&root).await;
+    let project = ws.store.create_project("Lab", Default::default()).unwrap().id;
+    ws.store.set_agent_project("oc", Some(&project)).unwrap();
+    ws.store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,template_id,task_id,created_by,state,created_at,updated_at)
+         VALUES('oc','executor','reviewer','T-1','lead','running','now','now')", []).unwrap();
+    let key = uuid::Uuid::new_v4().to_string();
+    let outcome = ws.opencode_fork("oc", request(&key, &second, "Forked")).await.unwrap();
+    assert_eq!(outcome["state"], "completed", "{outcome}");
+    let target = outcome["agent"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(ws.store.agent_project(&target).unwrap().as_deref(), Some(project.as_str()));
+    {
+        let db = ws.store.db.read().unwrap();
+        assert!(crate::agent_roles::leads(&db, &target, &project).unwrap(), "the user's fork of an executor leads the source's Project");
+        assert_eq!(crate::agent_roles::kind(&db, "oc").unwrap(), crate::agent_roles::EXECUTOR, "the source stays an executor");
+    }
+    ws.close_agent(&target).await.unwrap();
+    ws.close_agent("oc").await.unwrap();
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_fork_whose_answer_never_came_is_uncertain_never_asked_again_and_holds_the_source_back_not_at_all() {

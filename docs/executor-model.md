@@ -20,8 +20,8 @@ Every Agent has one kind:
 
 | Kind | Who makes it | What it is |
 | --- | --- | --- |
-| **standing** | You | An Agent you created, as every Agent was before. This is every Agent with no other kind. |
-| **lead** | You mark it | A standing Agent you chose as a lead of its Project. |
+| **standing** | You | An Agent of yours that leads no Project: one in no Project, or one you removed as a lead. This is every Agent with no other kind. |
+| **lead** | You, by making it there | An Agent you created, imported, forked or moved into a Project leads it ([below](#leads)), unless you removed it. |
 | **executor** | Core | An Agent made for one task by a [dispatch to a new executor](#dispatching-to-a-new-executor). |
 
 - **Where it shows.** The sidebar shows a **Lead** or **Executor** label under
@@ -36,23 +36,80 @@ Every Agent has one kind:
 
 ## Leads
 
-You choose a Project's leads in its settings, under **Leads**. Only open
-Agents in that Project can be chosen, and an executor cannot lead.
+An Agent you make in a Project leads it: you never have to set a lead. A
+Project's leads dispatch its tasks to executors, edit its Home and write its
+handover document; every other Agent there can only ask. In the Project's
+settings, under **Leads**, you can remove a lead or choose again. Only open
+Agents in that Project can be chosen, and an executor never leads.
 
-- **Who can set them.** Only you, through `PUT /api/projects/{id}/leads`. The
-  request is `{expectedVersion, leadAgentIds}` and the answer is
+- **Made a lead by you.** These make an Agent a lead of the Project it is in
+  afterwards:
+  - creating it in the Project (`POST /api/agents` with `projectId`, on this
+    Core host or on an SSH machine);
+  - importing a Claude Code session into it;
+  - forking a Codex or OpenCode Agent: the fork leads the source's Project,
+    even when the source is an executor, since the fork is an Agent of its own;
+  - moving it into the Project (`POST /api/agents/{id}/project`).
+
+  An imported Codex session is in no Project, so it leads none until you move
+  it. A closed Agent isn't made a lead. No Agent tool creates or moves an
+  Agent, and an executor a dispatch creates never leads.
+- **A list you saved keeps your choice.** Agents you make there from then on
+  join it. An Agent you removed stays removed while it stays in the Project.
+- **At upgrade, once.** When this Core first opens a Workspace, a Project
+  whose leads were never saved gets every open member that is not an executor
+  as its lead, and its list's version moves on. Before this change those
+  members wrote its Home, so they still do. A Project whose leads you saved
+  keeps them; its other members are Ask-only from then on.
+- **Who can change them.** Only you, through `PUT /api/projects/{id}/leads`.
+  The request is `{expectedVersion, leadAgentIds}` and the answer is
   `{version, leadAgentIds}`. No Agent tool sets leads, so an Agent cannot
   make itself or another a lead.
 - **Saving.** A save replaces the whole list. An Agent left out stops being a
   lead. A save against a list someone else changed meanwhile is refused.
-- **A lead belongs to its Project.** Core keeps which Project an Agent was
-  chosen to lead. It leads that Project only while it is a member there, and
-  never leads a Project it is moved to.
-- **Moving a lead.** When Core moves a lead to another Project, or out of every
-  Project, its mark ends. The list it left changes version, so a settings page
-  still showing the old list reloads before saving.
+  Core's own changes to a list (an Agent you made joining it, a lead moved
+  away) move its version on too.
+- **A lead belongs to its Project.** Core keeps which Project an Agent leads.
+  It leads that Project only while it is a member there.
+- **Moving a lead.** When you move a lead to another Project, it leads that
+  one instead; moved out of every Project, it leads none. The list it left
+  changes version, so a settings page still showing the old list reloads
+  before saving.
 - **An older Core's move.** Such a move leaves the mark in place, but it
   applies only if the Agent returns to the Project it was chosen for.
+
+### Leads edit Home
+
+A Project's leads are its Home editors. Every other member, an executor too,
+is Ask-only there.
+
+- **A lead** writes reports and status, edits and removes its own sections,
+  and claims a section whose author is gone, as content editors did before.
+  `brief_get` answers `you.capabilities.editContent: true` exactly for an open
+  lead of a Project that is not archived.
+- **An Ask-only member** may put, edit and resolve its own Asks, remove its
+  own older sections (a report or status it wrote while it edited Home), and
+  send `noChange`. It can't write, edit or claim a report or status, or turn
+  one into an Ask; such a change is refused with `ask_only`.
+- **What a former editor wrote.** A member that edited Home before and isn't
+  a lead now becomes Ask-only. Its report and status leave Home's main view
+  for the team sections, unread marks as they were; it can remove them.
+- **The separate setting is gone.** `PUT /api/projects/{id}/home-editors`, a
+  save from an older page, is refused with `setting_removed`; `GET` answers
+  the leads. `brief_get`'s `contentEditors` keeps its shape for older readers:
+  `{version, editorAgentIds, rule: "leads"}`, the leads and their version.
+  The list an older Core kept (`project_brief_editors`) stays as it is and is
+  no longer read or written.
+- **Opening the Workspace with core.24 afterwards.** core.24 reads its own
+  Home editor list again: where none was saved, every member but an executor
+  edits. The leads this Core made stay leads there, so they can still
+  dispatch from templates. An Agent made on core.24 is not a lead when this
+  Core opens the Workspace again, unless its Project's leads were never saved.
+- **Known limit: the user's routes.** Leads, templates, the handover and these
+  settings are changed through browser routes that Core guards by their
+  headers: a loopback host, no proxy headers, and `x-yuzuno-client: desktop`
+  for a write (`server.rs`, the browser guard). A process on the Core host
+  that sends those headers is treated as you, here as everywhere else.
 
 A lead can dispatch a task of its own Project to a new executor. You can
 always dispatch to a new executor. A task in no Project is dispatched to a new
@@ -364,13 +421,12 @@ dispatchId). The mail says where to read them; it doesn't hold them.
 - **The Project's handover document** (`handover`): what the Project already
   knows, in Markdown, up to 32 KiB of text: line breaks (LF or CRLF) and
   tabs, but no other control characters; a save with one is refused at its
-  line and column. You keep it in the Project's settings,
-  under **Handover**, and a lead can propose a version for you to approve
-  (below). Each save is a new version, kept with who wrote it and
-  why, and a save against a document that changed meanwhile is refused. The
-  settings page lists the versions and shows any past one. A Project's
-  document goes with it when the Project is deleted. An archived Project's
-  document can't change.
+  line and column. The Project's leads write it
+  ([below](#a-lead-writes-it)); you read and change it in the Project's
+  settings, under **Handover**, which shows who changed it last. A save
+  against a document that changed meanwhile is refused. A Project's document
+  goes with it when the Project is deleted. An archived Project's document
+  can't change.
 - **Core's summary of the task so far** (`contextSummary`): at most 4 KiB,
   written by Core from what it holds, in this order:
   - the latest result;
@@ -383,33 +439,36 @@ dispatchId). The mail says where to read them; it doesn't hold them.
 A dispatch to an existing Agent gets neither; that Agent already has its own
 context.
 
-### A lead proposes, you decide
+### A lead writes it
 
-A lead of the Project can propose a new handover document; nothing changes
-until you approve it on Home.
+A lead of the Project writes the handover document directly: no one
+approves it, and nothing about it waits on Home.
 
-- **Reading and proposing.** Agents of the Project read the document with
-  `handover_get`. A lead proposes a whole new document with
-  `handover_propose`, against the version it read. The same rules apply as
-  for a save: 32 KiB of text, and a proposal on an older version is refused
-  with the current one named. An executor never proposes, and no Agent tool
-  approves.
-- **One at a time.** A Project has at most one proposal waiting. A lead's new
-  proposal replaces its own waiting one, which is kept as superseded; another
-  lead's is refused until you decide, naming whose waits and since when.
-- **Waiting on you.** A waiting proposal shows in Home's **Needs you**, named
-  by its lead. That lead counts as waiting on you in the attention order,
-  Ctrl/⌘+J goes to the proposal, and it is in the title's count, the system
-  notification and push. On Home its card shows the reason and the changed
-  lines.
-- **Your decision.** Approve, and it becomes a normal version, written by the
-  lead and approved by you, with the lead's reason; the history shows both.
-  Reject, and nothing changes. Either way, one mail tells the lead, with your
-  note (up to 1,000 bytes). Both are checked against the document you read
-  and the proposal: a proposal made on a version you have since replaced
-  can't be approved, and its rejection tells the lead to propose again on
-  the current version. A decided or replaced proposal leaves Needs you at
-  once.
+- **Reading.** Every member of the Project, its executors too, reads the
+  document with `handover_get`. Its answer has the document, its `version`
+  (an internal revision, for the next write), who changed it last, when and
+  with what note (`lastModified`), and `canWrite`: whether the caller may
+  write it, as a lead of the Project while the Project is not archived.
+- **Writing.** A lead writes a whole new document with `handover_update`,
+  against the `version` it read, with an optional `note` of what changed (up
+  to 200 characters; `reason`, its older name, is still accepted). It is
+  saved at once, and every executor dispatched from then on gets it. The
+  same rules apply as for your save: 32 KiB of text, and a write against an
+  older revision is refused, naming the current one. A retry with the same
+  `requestId` answers as the first write did; another payload under it is
+  refused. An executor and any other member are refused with `not_lead`.
+- **What you see.** In the Project's settings, under **Handover**: the
+  document, and one line saying who changed it last (a lead's name, or
+  you), when, and its note. You can change the document there too, with
+  an optional note. A lead's next write is checked against your save, as
+  yours is against its. No history of earlier versions is shown; Core keeps
+  each save, but nothing lists or restores them.
+- **Proposals from before.** A lead used to propose a version for you to
+  approve on Home (`handover_propose`). That tool is gone: a call to it is
+  refused, naming `handover_update`. When this Core first opens a Workspace,
+  a proposal still waiting is marked superseded, its text kept, and its lead,
+  if open, gets one mail with that text, to write it with `handover_update`
+  if it is still needed.
 
 A dispatch's materials are at most 128 KiB, counting only what the dispatcher
 can shorten: the task's own materials and the dispatch's. The template, the
@@ -420,19 +479,25 @@ is refused with `materials_too_large` and nothing is dispatched.
 
 ## What an executor doesn't do
 
-An executor does its task and reports to the Agent that dispatched it. Two
+An executor does its task and reports to the Agent that dispatched it. Three
 things are not its to do:
 
 - **Setting its own task done.** `task_update` to done, and a
   `task_submit_result` with status done, are refused with
-  `executor_done_refused`, and nothing is written. It submits its result
-  with status review, and its dispatcher, or you, sets the task done. Any
-  other status is its to set.
-- **Writing Home's content.** An executor is never a Home content editor.
-  With no list chosen, every member but an executor edits; a list can't name
-  one (`invalid_editor`), and one saved before doesn't make it an editor. It
-  can still ask you its own questions, and what it wrote before shows with
-  the team's sections.
+  `executor_done_refused`, and nothing is written. It submits its last
+  result with status review, and its dispatcher, or you, sets the task done.
+  Any other status is its to set.
+- **Showing a step as finished.** A result along the way, such as a plan for
+  its dispatcher's approval or one slice of several, is submitted with status
+  doing. Its task stays in progress and the executor running, not awaiting
+  release, so nobody sets the task back by hand. Its dispatcher gets the
+  result's mail as for any result, saying the dispatch continues, and the
+  task's detail heads it 阶段结果 · Step result. A delivery candidate is
+  still submitted with status review.
+- **Writing Home's content.** An executor is never a Home editor: it can't
+  lead (`invalid_lead`), and a list an older Core kept that names it doesn't
+  make it one. It can still ask you its own questions, and what it wrote
+  before shows with the team's sections.
 
 ## After an executor is released
 
