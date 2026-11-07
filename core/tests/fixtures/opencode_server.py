@@ -193,8 +193,8 @@ def v2_message_id():
 
 def publish(kind, properties):
     """An event of the stand-in's own store, kept in 1.19.3's shape: sent as 2.x sends its own (T-32 slice 3b), or as it
-    is in the 1.19.3 mode (switch or mode `v1Messages`), which only the tests of rewind and fork use until their slices
-    move them. Durable ones are kept for `/sync/history` as they are."""
+    is in the 1.19.3 mode (switch or mode `v1Messages`), which only the tests of fork use until its slice moves them
+    (rewind moved in T-61 slice 6). Durable ones are kept for `/sync/history` as they are."""
     if v1():
         sent = send(kind, properties)
     else:

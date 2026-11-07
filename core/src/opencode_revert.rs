@@ -95,6 +95,28 @@ impl Plan {
     }
 }
 
+/// The attempts whose one request is still out in this process, no answer
+/// to it come yet: 2.x sends the files back before it keeps the revert, so
+/// a check takes none of these as unchanged (`opencode_revert_held`).
+static OUT: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// One attempt's request, in `OUT` until this is dropped: once its answer
+/// has come, or the task waiting for it has ended.
+struct Out(String);
+
+impl Out {
+    fn new(attempt: &str) -> Self {
+        OUT.lock().unwrap().insert(attempt.to_owned());
+        Out(attempt.to_owned())
+    }
+}
+
+impl Drop for Out {
+    fn drop(&mut self) {
+        OUT.lock().unwrap().remove(&self.0);
+    }
+}
+
 /// Tests only: holds the confirm of one attempt once its answer has reached
 /// it, before anything of that answer is settled, until the test lets it go.
 #[cfg(test)]
@@ -368,8 +390,10 @@ impl Workspace {
         // One request, watched for WATCH. An answer after that settles the attempt when it comes.
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         let (owner, agent, key_owned) = (Arc::downgrade(self), id.to_owned(), key.to_owned());
+        let out = Out::new(key);
         tokio::spawn(async move {
             let answer = request.await;
+            drop(out);
             if let Err(answer) = tx.send(answer) {
                 if let Some(ws) = owner.upgrade() {
                     if let Err(error) = ws.opencode_revert_late(&agent, &key_owned, answer).await {
@@ -521,9 +545,9 @@ impl Workspace {
         Ok(())
     }
 
-    /// The request ended, yet the session holds no revert (Lead 4109 3):
-    /// that alone does not say it changed nothing, since OpenCode changes the
-    /// files before it keeps the revert. Read again, whole, under the gate:
+    /// The session holds no revert of this one, its request ended or no
+    /// longer out (Lead 4109 3): that alone does not say it changed nothing,
+    /// since OpenCode changes the files before it keeps the revert. Read again, whole, under the gate:
     /// only if the Agent passes every check a preview makes, the session's
     /// messages are as the plan read them and every file is as it was before
     /// the request, nothing is kept of the revert and the attempt holds the
@@ -539,11 +563,11 @@ impl Workspace {
         match differs {
             None => {
                 attempt.state = "unchanged".into();
-                attempt.message = Some("OpenCode 的请求已结束，但没有确认回退；再次读到的会话消息和每个文件都与执行前一致，没有保留回退的结果，这个 Agent 可以照常使用".into());
+                attempt.message = Some("OpenCode 的会话没有保留这次回退；再次读到的会话消息和每个文件都与执行前一致，没有保留回退的结果，这个 Agent 可以照常使用".into());
             }
             Some(why) => {
                 attempt.state = "unknown".into();
-                attempt.message = Some(format!("OpenCode 的请求已结束，但没有确认回退；{why}。结果确认之前这个 Agent 不会收到新的内容，回退也不会再请求一次"));
+                attempt.message = Some(format!("OpenCode 的会话没有保留这次回退；{why}。结果确认之前这个 Agent 不会收到新的内容，回退也不会再请求一次"));
             }
         }
     }
@@ -585,7 +609,9 @@ impl Workspace {
     /// reverted, then committed. One holding none whose boundary message is
     /// gone was committed already (by 2.x at a prompt or compaction, or by
     /// another client): recorded too. One holding none with the boundary
-    /// still there is read again whole (`opencode_revert_unmarked`). Anything
+    /// still there is read again whole (`opencode_revert_unmarked`), unless
+    /// its request is still out (`OUT`): 2.x may yet send the files back, so
+    /// it stays unknown until the answer comes and settles it. Anything
     /// else, or nothing read, stays unknown: 2.x may have changed files
     /// before it stopped, and nothing is guessed or asked again.
     async fn opencode_revert_held(self: &Arc<Self>, id: &str, attempt: &mut Attempt, plan: &mut Plan) {
@@ -612,6 +638,10 @@ impl Workspace {
                         plan.held = true;
                         plan.committed = Some("answered".into());
                         self.opencode_revert_kept(id, attempt, plan).await;
+                    }
+                    Ok(_) if OUT.lock().unwrap().contains(&attempt.id) => {
+                        attempt.state = "unknown".into();
+                        attempt.message = Some("这次回退的请求还没有回答，OpenCode 可能还在送回文件；回答到了再核对。结果确认之前这个 Agent 不会收到新的内容，回退也不会再请求一次".into());
                     }
                     Ok(_) => self.opencode_revert_unmarked(id, attempt, plan).await,
                     Err(error) => {
