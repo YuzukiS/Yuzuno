@@ -47,7 +47,9 @@ fn at(value: &Value) -> Option<DateTime<FixedOffset>> {
 /// A gate ends a stage. The stage after it has begun only once each result
 /// asked for before the gate is in (the n-th result step is the n-th result
 /// handed in on this dispatch), and its Jobs are those made after the newest
-/// of those results: a stage's records never pass a later stage. Materials,
+/// of those results; a stage ended by its own result has only the Jobs made
+/// before that result (#749 R2: a later stage's Job never changes an earlier
+/// stage's step). A stage's records never pass another stage. Materials,
 /// work and a gate have no record of their own: each is done once a step
 /// after it has begun. The first step not begun is where the executor is:
 /// materials, work or a result under way while it runs, a gate or one of
@@ -55,6 +57,24 @@ fn at(value: &Value) -> Option<DateTime<FixedOffset>> {
 pub(super) fn step_states(steps: &[Value], facts: &Facts) -> Vec<Value> {
     let running = matches!(facts.lifecycle.as_str(), "running" | "delivering");
     let pull = facts.pull.as_ref();
+    // Each stage's end: the newest result it asked for itself, once that is
+    // in; none for the last stage, or one that asked for no result.
+    let ends: Vec<Option<DateTime<FixedOffset>>> = {
+        let (mut ends, mut asked, mut at_start) = (Vec::new(), 0usize, 0usize);
+        for step in steps {
+            match step["kind"].as_str() {
+                Some("result") => asked += 1,
+                Some("gate") => {
+                    let own = asked > at_start;
+                    ends.push(asked.checked_sub(1).filter(|_| own).and_then(|n| facts.results.get(n)).and_then(|r| at(&r["reportedAt"])));
+                    at_start = asked;
+                }
+                _ => {}
+            }
+        }
+        ends
+    };
+    let mut stage = 0usize;
     let mut asked = 0usize;
     let mut open = true;
     let mut since: Option<DateTime<FixedOffset>> = None;
@@ -62,6 +82,7 @@ pub(super) fn step_states(steps: &[Value], facts: &Facts) -> Vec<Value> {
     for step in steps {
         let kind = step["kind"].as_str().unwrap_or("");
         if kind == "gate" {
+            stage += 1;
             open = open && facts.results.len() >= asked;
             if let Some(result) = asked.checked_sub(1).and_then(|n| facts.results.get(n)) {
                 since = at(&result["reportedAt"]).or(since);
@@ -82,8 +103,12 @@ pub(super) fn step_states(steps: &[Value], facts: &Facts) -> Vec<Value> {
                 None => ("todo", Value::Null),
             },
             "job" => {
-                let newer = |job: &&Value| since.is_none_or(|since| at(&job["createdAt"]).is_some_and(|made| made > since));
-                match facts.jobs.iter().find(newer) {
+                let until = ends.get(stage).copied().flatten();
+                let within = |job: &&Value| {
+                    let made = at(&job["createdAt"]);
+                    since.is_none_or(|since| made.is_some_and(|made| made > since)) && until.is_none_or(|until| made.is_some_and(|made| made <= until))
+                };
+                match facts.jobs.iter().find(within) {
                     None => ("todo", Value::Null),
                     Some(job) => {
                         let status = job["status"].as_str().unwrap_or("");

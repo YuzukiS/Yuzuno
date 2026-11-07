@@ -126,6 +126,24 @@ fn a_job_from_before_the_gate_is_not_the_job_after_it() {
     assert_eq!(read[3]["ref"]["id"], "j1");
 }
 
+/// #749 R2 (P3): a Job step before a gate takes only the Jobs of its own
+/// stage, made before the result that ends it; a later stage's Job, failing
+/// or running, never changes it.
+#[test]
+fn a_job_after_the_gate_is_not_the_job_before_it() {
+    let steps: Vec<Value> = ["materials", "job", "result", "gate", "job", "pr"].iter().map(|k| json!({"kind":k})).collect();
+    let facts = Facts { lifecycle: "running".into(), read_at: Some("2026-11-07T09:00:00Z".into()),
+        results: vec![json!({"id":"note","reportedAt":"2026-11-07T10:00:00Z"})],
+        jobs: vec![json!({"id":"j-after","name":"tests","status":"failed","createdAt":"2026-11-07T11:00:00+00:00"}),
+            json!({"id":"j-before","name":"preview","status":"succeeded","createdAt":"2026-11-07T09:30:00+00:00"})], ..Facts::default() };
+    let read = step_states(&steps, &facts);
+    assert_eq!(states(&steps, &facts)[1..5], ["job:done", "result:done", "gate:done", "job:failed"]);
+    assert_eq!((read[1]["ref"]["id"].clone(), read[4]["ref"]["id"].clone()), (json!("j-before"), json!("j-after")));
+    // Before its result is in, the first stage is open-ended: its newest Job.
+    let open = Facts { results: vec![], ..facts };
+    assert_eq!(step_states(&steps, &open)[1]["ref"]["id"], "j-after");
+}
+
 /// The route's read: none for another Agent; an executor's lifecycle, task,
 /// steps (its delivery mode's when its dispatch kept no template), PR with
 /// its diff size, CI, review and its own Jobs.
