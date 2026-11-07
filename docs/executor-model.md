@@ -58,9 +58,10 @@ Agents in that Project can be chosen, and an executor never leads.
   join it. An Agent you removed stays removed while it stays in the Project.
 - **At upgrade, once.** When this Core first opens a Workspace, a Project
   whose leads were never saved gets every open member that is not an executor
-  as its lead, and its list's version moves on. Before this change those
-  members wrote its Home, so they still do. A Project whose leads you saved
-  keeps them; its other members are Ask-only from then on.
+  as its lead, and its list's version moves on. A Home editor list saved on
+  an older Core isn't consulted: a member it left out becomes a lead too. A
+  Project whose leads you saved keeps them; its other members are Ask-only
+  from then on.
 - **Who can change them.** Only you, through `PUT /api/projects/{id}/leads`.
   The request is `{expectedVersion, leadAgentIds}` and the answer is
   `{version, leadAgentIds}`. No Agent tool sets leads, so an Agent cannot
@@ -157,9 +158,12 @@ below. A Project's page has no templates of its own, only its own
     the project Lab, where its id was reviewer";
   - a template this Core can't read stays in its Project's list.
 
-  If an older Core saves a Project's list again, the next open copies what
-  changed in it. The copies may take the list past 50 templates: a save
-  then keeps what the list holds, but can't add more.
+  If an older Core saves a Project's list again, the next open checks every
+  template in it again, not only what changed. One the Workspace still holds
+  as copied is skipped, but one whose copy you edited or deleted here is
+  copied in again (under another id when its own is taken). Edit or delete
+  those copies afterwards. The copies may take the list past 50 templates: a
+  save then keeps what the list holds, but can't add more.
 - **Where executors run.** On the machine the dispatch names, else the one
   its template names, else this Core host. A machine is one from the
   Machines list, or `auto`, for Core to choose one at each dispatch (see
