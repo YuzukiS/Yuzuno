@@ -153,6 +153,14 @@ const budget = {
   queuedCount: 1,
   activeCount: 1,
 };
+// What the managed Jobs use now (GET /api/machine-load, JobBudget.tsx useMachineLoad): 5 % of 32 cores, 1.5 GiB.
+const machineLoad = {
+  at: new Date(0).toISOString(),
+  cpu: { cores: 32, totalPct: 20, jobsPct: 5, agentsPct: null, otherPct: null },
+  memory: { totalMiB: 40_107, usedMiB: 12_000, availableMiB: 28_107, jobsMiB: 1536, agentsMiB: null },
+  gpus: [],
+  jobs: [],
+};
 const sha = "a".repeat(40);
 const run = (id, name, status, conclusion, updatedMs) => ({
   id: `github:1:${id}:1`,
@@ -273,6 +281,7 @@ try {
         "/api/agents/a": detail,
         "/api/updates": unmanagedUpdates,
         "/api/jobs/budget": budget,
+        "/api/machine-load": machineLoad,
         "/api/jobs": jobPage,
         "/api/jobs/live": noLiveJobs,
         "/api/ci": ciPage,
@@ -481,11 +490,15 @@ try {
     await shot("local-light-1440.png");
     check("Local: sources rail with its tabs at their own height and packed at the top, two groups with Finished folded, queued and finished times, live row times, the dock's marks and card details", { rowTime, railTabs });
 
-    // The budget as meters, its form a step away.
-    const meters = await page.getByRole("meter").evaluateAll((els) => els.map((el) => [el.getAttribute("aria-label"), el.getAttribute("aria-valuetext"), el.getAttribute("aria-valuenow")]));
-    assert.deepEqual(meters, [["CPU reserved", "2.1 / 6 reserved", "35"], ["RAM reserved", "3.1 GiB / 10.0 GiB reserved", "31"]]);
+    // The budget as meters, its form a step away: each says what the Jobs use now and what is reserved,
+    // of the budget (T-189's words, fe5aaaed); the bar fills to the use.
+    const meters = await page.getByRole("meter").evaluateAll((els) => els.map((el) => [el.getAttribute("aria-label"), el.getAttribute("aria-valuenow")]));
+    assert.deepEqual(meters, [["CPU: 1.6 in use, 2.1 of 6 reserved", "27"], ["RAM: 1.5 GiB in use, 3.1 GiB of 10.0 GiB reserved", "15"]]);
+    const words = await page.locator(".jobs-budget .jobs-meter").evaluateAll((els) =>
+      els.map((el) => [".jobs-meter-name", ".jobs-meter-value", ".jobs-reserved-text"].map((s) => el.querySelector(s)?.textContent.trim() ?? null)));
+    assert.deepEqual(words, [["CPU", "1.6 in use", "2.1 / 6 reserved"], ["RAM", "1.5 GiB in use", "3.1 GiB / 10.0 GiB reserved"]]);
     assert.match(await page.locator(".jobs-budget").innerText(), /1 active · 1 queued/);
-    check("the machine budget reads as two meters", { meters });
+    check("the machine budget reads as two meters: use and reservation of the budget", { meters, words });
 
     // Arrow keys move through the sources, as in Settings.
     await tabs.first().focus();

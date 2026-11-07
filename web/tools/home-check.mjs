@@ -429,7 +429,10 @@ async function serve(route) {
     }
     if ((match = /^\/api\/projects\/(p[12])\/brief\/reply$/.exec(path))) {
       const s = body.key && sectionByKey(match[1], body.key);
-      if (s?.ask) s.ask = { ...s.ask, state: "replied", repliedAt: new Date().toISOString(), replyText: body.text };
+      // Marked as Core marks it (project_brief/home.rs): a chosen option by its label, any text after it.
+      const label = body.choice && s?.ask?.reply?.options?.find((o) => o.id === body.choice)?.label;
+      const replyText = label ? (body.text.trim() ? `${label}: ${body.text}` : label) : body.text;
+      if (s?.ask) s.ask = { ...s.ask, state: "replied", repliedAt: new Date().toISOString(), replyText };
       return route.fulfill({ json: { input: { text: body.text, clientMessageId: body.clientMessageId }, status: "accepted", turnId: `${body.agentId}-t2`, error: null } });
     }
     if ((match = /^\/api\/projects\/(p[12])\/brief\/defer$/.exec(path))) {
@@ -896,6 +899,16 @@ try {
     } finally {
       await closeReport();
     }
+    // A status past its validity waits in the deck's closed "Out of date" group (YN-3, 928d85f2);
+    // opened, it is there as it was. Opening it tells Core nothing.
+    const outOfDate = viewOf("p2").locator("details.home-out-of-date");
+    const writesBeforeFold = writes.length;
+    await expect("out of date, folded", async () => {
+      assert.equal(await outOfDate.evaluate((el) => el.open), false);
+      assert.match(await outOfDate.locator(":scope > summary").innerText(), /^Out of date · 1 status · newest data as of \S/);
+    });
+    await outOfDate.locator(":scope > summary").click();
+    await card("p2", "queue").waitFor();
     await expect("stale status", async () => {
       assert.match(await card("p2", "queue").getAttribute("class"), /\bis-stale\b/);
       assert.match(await card("p2", "queue").locator(".home-stale").innerText(), /older than its 1 h validity/);
@@ -928,6 +941,9 @@ try {
     await expect("no failed part on Home", async () => assert.equal(await page.locator(".home-view .result-part-error").count(), 0));
     for (const [pid, key] of [["p1", "release"], ["p1", "build"], ["p1", "naming"], ["p1", "refs"], ["p2", "results"], ["p2", "files"], ["p2", "queue"]])
       await shot(`section-${pid}-${key.replace("/", "-")}.png`, card(pid, key));
+    // Folded again, as the rest of this check expects Home.
+    await outOfDate.locator(":scope > summary").click();
+    await expect("opening Out of date writes nothing", async () => assert.deepEqual(writes.slice(writesBeforeFold), []));
     await page.setViewportSize({ width: 1440, height: 900 });
     assert.deepEqual(problems, [], "components");
     assert.deepEqual(report.errors, [], "no console errors while drawing");
@@ -1067,20 +1083,24 @@ try {
     return { body: write.body, marks };
   });
 
-  await step("4 an option posts its id as choice (with the ask's version and Workspace, T-9) and the ask then shows in short as Replied · waiting; Defer on an open ask posts {key, until}; free text posts the text", async () => {
+  await step("4 an option posts its id as choice (with the ask's version and Workspace, T-9) and the ask then becomes its answer card: Replied · waiting, the reply, what is next; Defer on an open ask posts {key, until}; free text posts the text", async () => {
     const release = card("p1", "release");
     await release.getByRole("button", { name: "Ship today", exact: true }).click();
     const option = await until("the option reply", () => writesTo(/\/brief\/reply$/)[0]);
     assert.equal(option.path, "/api/projects/p1/brief/reply");
     assert.deepEqual({ ...option.body, clientMessageId: typeof option.body.clientMessageId }, { key: "release", agentId: "kumo", text: "", choice: "ship", clientMessageId: "string", askVersion: 2, workspaceId: "ws" });
-    await release.locator(".home-ask-replied").waitFor();
-    assert.match(await release.locator(".home-ask-replied").innerText(), /Replied · waiting for Kumo\s*Ship today/);
-    // T-132: answered, it is Kumo's to act on: in short, no Defer, the question folded away.
-    await until("the replied card in short", async () => /\bis-replied\b/.test(await release.getAttribute("class")));
-    assert.equal(await release.locator(".home-kind").innerText(), "REPLIED");
+    // Answered, it is Kumo's to act on (T-132): at once its answer card (YN-21, b7079262), which says
+    // whom it waits for, the reply as Core marked it and what is next; no Defer; the question folded away.
+    const answer = (el) => ({
+      kind: el.querySelector(".home-kind")?.textContent.trim() ?? null,
+      reply: el.querySelector(".home-answer-reply")?.textContent.trim() ?? null,
+      next: el.querySelector(".home-answer-next")?.textContent.trim() ?? null,
+    });
+    await until("the answer card with its reply", async () => /\bis-answer\b/.test(await release.getAttribute("class")) && (await release.evaluate(answer)).reply !== null);
+    assert.deepEqual(await release.evaluate(answer), { kind: "Replied · waiting for Kumo", reply: "YouShip today", next: "Next: Kumo acts on your reply" });
     assert.equal(await release.getByRole("button", { name: "Defer", exact: true }).count(), 0);
-    assert.equal(await release.locator(".home-replied-details").getAttribute("open"), null);
-    assert.equal(await release.locator(".home-replied-details .home-question").isVisible(), false);
+    assert.equal(await release.locator(".home-answer-details").getAttribute("aria-expanded"), "false");
+    assert.equal(await release.locator(".home-question").isVisible(), false);
     const naming = card("p1", "naming");
     await naming.getByRole("button", { name: "Defer", exact: true }).click();
     const before = Date.now();
@@ -1096,7 +1116,8 @@ try {
     const text = await until("the text reply", () => writesTo(/\/brief\/reply$/)[1]);
     assert.deepEqual({ ...text.body, clientMessageId: typeof text.body.clientMessageId }, { key: "naming", agentId: "mori", text: "Call it brief_write.", clientMessageId: "string", askVersion: 1, workspaceId: "ws" });
     assert.notEqual(text.body.clientMessageId, option.body.clientMessageId);
-    await naming.locator(".home-ask-replied").waitFor();
+    await until("its answer card with the text", async () => (await naming.evaluate(answer)).reply === "YouCall it brief_write.");
+    assert.match(await naming.getAttribute("class"), /\bis-answer\b/);
     await until("the deferral note to go once replied", async () => (await naming.getByText(/Deferred until/).count()) === 0);
     assert.equal(await naming.getByRole("button", { name: "Defer", exact: true }).count(), 0);
     await until("needs-you to drop the replied asks", async () => JSON.stringify(await needsShown()) === JSON.stringify(["approval:req-1"]));
@@ -1152,7 +1173,7 @@ try {
     const resolved = await settled();
     const below = [...keys.filter((k) => k !== "release" && k !== "build"), "deploy"];
     const pulledUp = below.map((key) => ({ key, by: resolved.panels.p1.cards[key].top - shorter.panels.p1.cards[key].top })).filter((m) => m.by < -1);
-    assert.deepEqual(pulledUp, [], "resolving the replied ask pulled the cards below up");
+    assert.deepEqual(pulledUp, [], `resolving the replied ask pulled the cards below up: ${JSON.stringify({ shorter: shorter.panels.p1.cards, resolved: resolved.panels.p1.cards })}`);
     return {
       appendedAt: after.panels.p1.cards.deploy.top,
       buildHeight: [after.panels.p1.cards.build.height, shorter.panels.p1.cards.build.height],
