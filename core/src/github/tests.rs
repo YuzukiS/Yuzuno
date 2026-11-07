@@ -400,6 +400,12 @@ fn activity_fixture(id: i64) -> Value {
     let sha = |c: char| c.to_string().repeat(40);
     let commit = |c: char, title: &str, author: Value| json!({"oid":sha(c),"messageHeadline":title,"committedDate":"2026-10-17T01:02:03Z","author":author});
     let pull = |n: u64, head: char, rollup: char, state: Value, draft: bool, author: Value| json!({"number":n,"title":format!("PR {n}"),"isDraft":draft,"headRefOid":sha(head),"author":author,"commits":{"nodes":[{"commit":{"oid":sha(rollup),"statusCheckRollup":state}}]}});
+    // With its branch and when it was last updated (YN-8 S7b), as GitHub answers them.
+    let with_branch = |mut p: Value, branch: &str, updated: &str| {
+        p["headRefName"] = json!(branch);
+        p["updatedAt"] = json!(updated);
+        p
+    };
     json!({"repository":{"databaseId":id,"nameWithOwner":"owner/repo","defaultBranchRef":{"name":"main","target":{"history":{"nodes":[
         commit('a', "Fix 中文 parsing", json!({"name":"Mori Git","user":{"login":"mori"}})),
         commit('b', "No account", json!({"name":"Plain Name","user":null})),
@@ -409,8 +415,8 @@ fn activity_fixture(id: i64) -> Value {
         commit('e', "Five", json!(null)),
         commit('f', "Six is beyond the limit", json!(null)),
     ]}}},"pullRequests":{"totalCount":9,"nodes":[
-        pull(12, 'c', 'c', json!({"state":"SUCCESS"}), false, json!({"login":"hana"})),
-        pull(13, 'd', 'e', json!({"state":"FAILURE"}), true, json!(null)),
+        with_branch(pull(12, 'c', 'c', json!({"state":"SUCCESS"}), false, json!({"login":"hana"})), "feat/home-card", "2026-10-17T02:03:04Z"),
+        with_branch(pull(13, 'd', 'e', json!({"state":"FAILURE"}), true, json!(null)), "fix/\nsecond line", "not a time"),
         pull(14, 'f', 'f', json!(null), false, json!({"login":"sora"})),
         pull(15, 'a', 'a', json!({"state":"ERROR"}), false, json!({"login":"sora"})),
         pull(16, 'b', 'b', json!({"state":"EXPECTED"}), false, json!({"login":"sora"})),
@@ -450,8 +456,13 @@ fn activity_parses_github_fixtures_into_home_shape() {
     assert_eq!(pulls.len(), 5);
     assert_eq!(
         pulls[0],
-        json!({"number":12,"title":"PR 12","author":"hana","url":"https://github.com/owner/repo/pull/12","draft":false,"ci":{"state":"success"}})
+        json!({"number":12,"title":"PR 12","author":"hana","url":"https://github.com/owner/repo/pull/12","draft":false,
+            "branch":"feat/home-card","updatedAt":"2026-10-17T02:03:04Z","ci":{"state":"success"}})
     );
+    // A branch keeps its first line only; a time that isn't one, and none at all, read as null.
+    assert_eq!(pulls[1]["branch"], "fix/");
+    assert!(pulls[1]["updatedAt"].is_null());
+    assert!(pulls[2]["branch"].is_null() && pulls[2]["updatedAt"].is_null());
     // A rollup for an older head says nothing about the current one.
     assert!(pulls[1].get("ci").is_none());
     assert_eq!(pulls[1]["draft"], true);

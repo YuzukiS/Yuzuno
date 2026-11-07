@@ -207,7 +207,8 @@ const home = () => ({ generatedAt: new Date().toISOString(), order: ["p1"], need
 const linkedRepo = { id: 1, fullName: "example/atlas-notes", url: "https://github.com/example/atlas-notes", syncedAt: iso(-MIN), error: null };
 const repoActivity = () => ({ ...linkedRepo, defaultBranch: "main", observedAt: iso(-MIN), stale: false, pullsTotal: 2,
   commits: [{ sha: "b2eaeea5b9270debca8421ebfc94b2fc0bb13f5c", title: "Merge the synthetic loader fix", author: "mori", at: iso(-16 * 60 * MIN), url: "https://github.com/example/atlas-notes/commit/b2eaeea" }],
-  pulls: [{ number: 12, title: "Dose study notes", author: "mori", draft: false, url: "https://github.com/example/atlas-notes/pull/12" }],
+  pulls: [{ number: 12, title: "Dose study notes", author: "mori", draft: false, url: "https://github.com/example/atlas-notes/pull/12",
+    branch: "feat/dose-notes", updatedAt: iso(-90 * MIN) }],
   runs: [{ id: 7, name: "CI", branch: "main", status: "completed", conclusion: "success", at: iso(-15 * 60 * MIN), url: "https://github.com/example/atlas-notes/actions/runs/7" }] });
 const machineLoad = () => ({ at: new Date().toISOString(), cpu: { cores: 32, totalPct: 20, jobsPct: 0, agentsPct: null, otherPct: null },
   memory: { totalMiB: 40107, usedMiB: 12000, availableMiB: 28107, jobsMiB: 0, agentsMiB: null }, gpus: [],
@@ -743,7 +744,7 @@ try {
         ".home-summary-card .home-card-conditions .brief-markdown :is(p, li)",
         ".home-summary-card .home-card-numbers :is(dt, dd)",
         ".home-summary-card :is(.home-sub-of, .home-card-numbers-count)",
-        '[data-home-project="p1"] .home-repos :is(.repo-name, .repo-branch, .repo-state, .repo-row-title, .repo-line-pulls, .repo-asof, .home-repos-manage, .repo-group h5, .repo-pull-number, .repo-pull-author, .repo-footer-links a, .repo-commits-toggle)',
+        '[data-home-project="p1"] .home-repos :is(.repo-name, .repo-branch, .repo-state, .repo-row-title, .repo-line-pulls, .repo-asof, .home-repos-manage, .repo-group h5, .repo-pull-number, .repo-pull-branch, .repo-pull-time, .repo-footer-links a, .repo-commits-toggle)',
         ".home-machines :is(.home-load-title, .home-load-short, .home-machine-job-count, .home-machine-job-first, .home-machines-manage)",
       ];
       const measured = { closed: await contrast(CARD_TEXT) };

@@ -5,7 +5,7 @@
  * only while this block is on screen, apart from /api/home. A repository
  * whose read failed shows its last known data with a muted line saying so.
  */
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   ArrowUpRight,
   ChevronDown,
@@ -45,6 +45,9 @@ export type RepoPull = {
   draft: boolean;
   /** GitHub's check rollup for the PR's current head; absent when unknown. */
   ci?: { state: "success" | "failure" | "pending" };
+  /** Its branch and when it was last updated (YN-8 S7b); absent from an older Core, null when GitHub gave none. */
+  branch?: string | null;
+  updatedAt?: string | null;
 };
 export type RepoRun = {
   id: number;
@@ -268,8 +271,11 @@ type PullGroup = "failure" | "pending" | "success" | "unknown" | "draft";
 const PULL_GROUPS: PullGroup[] = ["failure", "pending", "success", "unknown", "draft"];
 const groupOf = (pull: RepoPull): PullGroup => (pull.draft ? "draft" : pull.ci && pullCi[pull.ci.state] ? pull.ci.state : "unknown");
 
-/** A repository's open PRs, grouped by what they need, in aligned rows (Home). */
+/** A repository's open PRs, grouped by what they need, in aligned rows (Home):
+ * its number, title, branch, when it was last updated and its checks; its
+ * author in the row's tip. */
 function PullGroups({ repo }: { repo: RepoActivityRepository }) {
+  const time = useTimeDisplay();
   const language = useLanguage();
   const t = homeText(language);
   if (repo.pulls.length === 0) return <p className="repo-empty repo-groups-empty">{t.noPulls}</p>;
@@ -291,11 +297,12 @@ function PullGroups({ repo }: { repo: RepoActivityRepository }) {
                   <li key={pull.number}>
                     <Row
                       href={pull.url}
-                      label={`#${pull.number} ${pull.title} · ${pull.author || t.unknownAuthor}${pull.draft ? ` · ${t.draft}` : ""} · ${ci?.label || t.checksUnknown}`}
+                      label={`#${pull.number} ${pull.title} · ${pull.author || t.unknownAuthor}${pull.branch ? ` · ${pull.branch}` : ""}${pull.draft ? ` · ${t.draft}` : ""} · ${ci?.label || t.checksUnknown}${pull.updatedAt ? ` · ${absolute(pull.updatedAt, time)}` : ""}`}
                     >
                       <code className="repo-pull-number">#{pull.number}</code>
                       <span className="repo-row-title">{pull.title}</span>
-                      <small className="repo-pull-author">{pull.author || t.unknown}</small>
+                      <code className="repo-pull-branch">{pull.branch ?? ""}</code>
+                      <small className="repo-pull-time">{pull.updatedAt ? when(pull.updatedAt, language) : ""}</small>
                       <span className={`repo-state repo-pull-ci is-${ci?.tone ?? "neutral"}`} role="img" aria-label={ci?.label || t.checksUnknown}>
                         {CiIcon ? <CiIcon size={11} aria-hidden /> : <CircleDashed size={11} aria-hidden />}
                       </span>
@@ -320,7 +327,8 @@ function RepoFooter({ repo }: { repo: RepoActivityRepository }) {
   const more = (repo.pullsTotal ?? repo.pulls.length) - repo.pulls.length;
   const pullsPage = githubPage(`${repo.url}/pulls`);
   const runsPage = githubPage(`${repo.url}/actions`);
-  const body = `repo-commits-${repo.id}`;
+  // Its own id: one repository can be linked to more than one project on Home (#750 R1).
+  const body = useId();
   return (
     <div className="repo-footer">
       <div className="repo-footer-links">

@@ -1214,7 +1214,8 @@ test("a project's repository: its line, its open PRs grouped by what they need, 
     pulls: [
       pull(71, "Home slice 1", { ci: { state: "success" } }),
       pull(72, "Sketch", { draft: true, ci: { state: "failure" } }),
-      pull(73, "Cache fix", { ci: { state: "failure" } }),
+      // Its branch and when it was last updated (YN-8 S7b); #74 is as an older Core answers, without them.
+      pull(73, "Cache fix", { ci: { state: "failure" }, branch: "fix/cache", updatedAt: at(4) }),
       pull(74, "Docs"),
     ],
     pullsTotal: 6,
@@ -1244,8 +1245,13 @@ test("a project's repository: its line, its open PRs grouped by what they need, 
     assert.deepEqual(groups.map((g) => g.querySelector("h5").textContent), ["Needs attention 1", "Checks passed 1", "Checks unknown 1", "Drafts 1"]);
     const row = groups[0].querySelector("a.repo-row");
     assert.equal(row.getAttribute("href"), "https://github.com/acme/app/pull/73");
-    assert.match(row.textContent, /#73\s*Cache fix\s*kumo/);
+    assert.match(row.textContent, /#73\s*Cache fix\s*fix\/cache/);
+    assert.equal(row.querySelector(".repo-pull-branch").textContent, "fix/cache");
+    assert.ok(row.querySelector(".repo-pull-time").textContent.length > 0, "when it was last updated");
+    assert.match(row.getAttribute("title"), /^#73 Cache fix · kumo · fix\/cache · Checks failed · /, "its author, branch and time in its tip");
     assert.equal(row.querySelector(".repo-pull-ci").getAttribute("aria-label"), "Checks failed");
+    const older = groups[2].querySelector(".repo-row");
+    assert.equal(older.querySelector(".repo-pull-branch").textContent + older.querySelector(".repo-pull-time").textContent, "", "an older Core's PR: no branch or time, its row still aligned");
     assert.equal(groups[2].querySelector(".repo-pull-ci").getAttribute("aria-label"), "checks unknown");
     assert.equal(repos().querySelector(".repo-activity-lists"), null, "no Commits / PRs / Actions columns");
     // More on GitHub; the commits folded; the runs on GitHub.
@@ -1253,6 +1259,9 @@ test("a project's repository: its line, its open PRs grouped by what they need, 
     assert.deepEqual(links, [["2 more open on GitHub", "https://github.com/acme/app/pulls"], ["Runs on GitHub", "https://github.com/acme/app/actions"]]);
     const commits = repos().querySelector(".repo-commits-toggle");
     assert.equal(commits.getAttribute("aria-expanded"), "false");
+    // Its own id, not the repository's: one repository can be linked to more than one project (#750 R1).
+    assert.doesNotMatch(commits.getAttribute("aria-controls"), /^repo-commits-1$/);
+    assert.ok(repos().contains(p.doc.getElementById(commits.getAttribute("aria-controls"))), "the toggle controls its own list");
     assert.equal(p.doc.getElementById(commits.getAttribute("aria-controls")).hidden, true);
     commits.click();
     await pause();

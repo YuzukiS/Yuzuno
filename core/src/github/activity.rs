@@ -30,8 +30,9 @@ pub(crate) const RATE_COOLDOWN: Duration = Duration::from_secs(300);
 pub(crate) const LIMIT: usize = 5;
 
 /// One fixed read-only query: the default branch's latest commits and the
-/// most recently updated open PRs with their head commit's check rollup.
-const QUERY: &str = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){databaseId nameWithOwner defaultBranchRef{name target{... on Commit{history(first:5){nodes{oid messageHeadline committedDate author{name user{login}}}}}}} pullRequests(states:OPEN,first:5,orderBy:{field:UPDATED_AT,direction:DESC}){totalCount nodes{number title isDraft headRefOid author{login} commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}}}}}";
+/// most recently updated open PRs with their branch, when each was last
+/// updated and their head commit's check rollup.
+const QUERY: &str = "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){databaseId nameWithOwner defaultBranchRef{name target{... on Commit{history(first:5){nodes{oid messageHeadline committedDate author{name user{login}}}}}}} pullRequests(states:OPEN,first:5,orderBy:{field:UPDATED_AT,direction:DESC}){totalCount nodes{number title isDraft headRefName headRefOid updatedAt author{login} commits(last:1){nodes{commit{oid statusCheckRollup{state}}}}}}}}";
 
 /// A read that did not answer. `until` ends a rate-limit cooldown.
 pub(crate) struct Failure {
@@ -215,7 +216,9 @@ pub(crate) fn parse_repository(id: i64, data: &Value) -> Result<Value> {
         .flatten()
         .filter_map(|p| {
             let number = p["number"].as_u64().filter(|n| *n > 0 && *n <= i32::MAX as u64)?;
-            let mut pull = json!({"number":number,"title":text(&p["title"],240).unwrap_or_default(),"author":text(&p["author"]["login"],100),"url":format!("https://github.com/{full}/pull/{number}"),"draft":p["isDraft"]==true});
+            let mut pull = json!({"number":number,"title":text(&p["title"],240).unwrap_or_default(),"author":text(&p["author"]["login"],100),"url":format!("https://github.com/{full}/pull/{number}"),"draft":p["isDraft"]==true,
+                // Home's PR rows (YN-8 S7b): its branch and when it was last updated; null when GitHub gave none.
+                "branch":text(&p["headRefName"],120),"updatedAt":time(&p["updatedAt"])});
             // The rollup counts only when it belongs to the PR's current head.
             let head = &p["commits"]["nodes"][0]["commit"];
             if sha(&head["oid"]).is_some() && head["oid"] == p["headRefOid"] {
