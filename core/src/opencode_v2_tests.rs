@@ -280,6 +280,20 @@ fn a_whole_read_gives_the_live_stream_what_its_later_events_do_not_repeat() {
     assert_eq!(next[0]["data"]["info"]["parentID"], "msg_u1");
 }
 
+/// A message delivered whose admission this connection never saw is marked
+/// so (T-61 slice 3): what it was is not known here, so it is no command's
+/// input. One whose admission it saw, a synthetic one too, is not.
+#[test]
+fn a_delivery_whose_admission_was_not_seen_says_so() {
+    let mut c = Cursor::default();
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    let unseen = c.read(&ev("session.inbox.delivered", 1, d(json!({"inboxID": "msg_u0"}))));
+    assert_eq!(unseen[0]["data"]["info"], json!({"id": "msg_u0", "role": "user", "time": {"created": 1}, "_opencodeUnseen": true}));
+    assert!(c.read(&ev("session.inbox.enqueued", 2, d(json!({"inboxID": "msg_s1", "item": {"type": "synthetic"}})))).is_empty());
+    let seen = c.read(&ev("session.inbox.delivered", 3, d(json!({"inboxID": "msg_s1"}))));
+    assert_eq!(seen[0]["data"]["info"], json!({"id": "msg_s1", "role": "user", "time": {"created": 3}}));
+}
+
 /// Text gathered for an answer's entry is written out by the next event of
 /// that answer, by its step's end, and by its execution's end, not only by
 /// a later delta of the same entry or its own end (T-32 slice 4a; R2 and R5

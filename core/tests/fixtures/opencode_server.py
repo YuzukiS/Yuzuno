@@ -32,6 +32,8 @@ Permission requests and forms are 2.x's (T-61 slice 2), in every mode, the 1.19.
 one shutting down (`session.execution.interrupted`, reason `shutdown`, and no idle message); an interrupt drops the
 session's permission requests with nothing said and cancels its forms. Control `forget` drops one with nothing said, as
 if OpenCode no longer held it. 1.19.3's request routes (`/permission`, `/question`) are gone.
+Commands are 2.x's (T-61 slice 3): listed by name and description (`GET /api/command`) and run by `POST
+/api/session/:id/command` (mode `command`); 1.19.3's `POST /session/:id/command` is gone.
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
@@ -92,7 +94,10 @@ PROVIDERS = {'providers': [
 # What `GET /config` answers (T-10): OpenCode's whole configuration. As in
 # OpenCode it holds provider keys and options (here fake) beside the commands
 # (`command`), whose templates may hold paths and shell lines; one command
-# names a model of its own and one an agent that does. `mode` replaces it.
+# names a model of its own (`pinned`) and one is a sub-agent's (`delegate`,
+# `subtask`, its agent naming a model). 2.x lists only their names and
+# descriptions (`GET /api/command`) and runs them by name (`command_v2`).
+# `mode` replaces it.
 TEMPLATE_SECRET = 'fixture-template-secret'
 CONFIG = {
     '$schema': 'https://opencode.ai/config.json',
@@ -116,6 +121,9 @@ sessions, messages, statuses, permissions, forms, mcp = {}, {}, {}, [], [], {}
 # 2.x's MCP servers added at runtime (T-61 slice 1), by name: their configuration, status and folder; and each
 # connection it made of one (a name and why), which the same configuration added again does not make.
 mcp_servers, mcp_connects = {}, []
+# Each command request 2.x's route took (T-61 slice 3), in order: its session, `name`, `text` and the body's keys (control
+# `commands`).
+commands_seen = []
 modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbeat': 0.2, 'abortEvidence': True,
          'abortOrder': 'answer-first', 'refuseEventsUntil': 0, 'providers': PROVIDERS, 'config': CONFIG,
          'command': 'run', 'summarize': 'run', 'defaultModel': None, 'deletePart': 'ok', 'failListOnce': False,
@@ -152,6 +160,22 @@ def new_id(prefix):
     with lock:
         counter[0] += 1
         return f'{prefix}_{counter[0]:06d}'
+
+
+# The last time and count `v2_message_id` made an ID with.
+last_v2_id = [0, 0]
+
+
+def v2_message_id():
+    """A message ID as 2.x makes one for what it admits itself, a command's message among them (schema/src/identifier.ts):
+    `msg_`, 12 hex digits of `ms × 4096 + n`, 14 base62 characters. These ascend with Core's own (opencode.rs MessageId),
+    as 2.x's do, which `new_id`'s counter does not."""
+    chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+    with lock:
+        now = int(time.time() * 1000)
+        last_v2_id[:] = [now, last_v2_id[1] + 1 if last_v2_id[0] == now else 1]
+        value = (now * 0x1000 + last_v2_id[1]) & 0xffff_ffff_ffff
+    return f'msg_{value:012x}' + ''.join(chars[b % 62] for b in os.urandom(14))
 
 
 def publish(kind, properties):
@@ -725,6 +749,43 @@ def last_prompt(session):
     return max(users, key=lambda m: m['info']['time']['created'])['info']['id'] if users else None
 
 
+def admit(session, message_id, text, files=(), model=None, announce=True, answered=None):
+    """A user message admitted as 2.x admits a prompt's or a command's: steered in while a run goes on (delivered at
+    that run's next step, v2_deliver), else queued and delivered at once; stored (`announce` false: with no event Core
+    sees, as when its stream missed it, in the inbox only while a run goes on); `answered`; then the run starts and the
+    session is busy until it ends."""
+    if session in statuses:
+        v2_of(session)['steer'].add(message_id)
+        if not announce:
+            v2_of(session)['pending'].append(message_id)
+    store(session, message_id, text, files, model=model, announce=announce)
+    if answered:
+        answered()
+    statuses[session] = {'type': 'busy'}
+    publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
+
+
+def expand(template, text):
+    """A command's template with its text (core/src/config/plugin/command.ts): `$ARGUMENTS` the whole text, `$1`…`$9` its
+    whitespace-split words, one missing empty; in one pass, so nothing of the text is expanded again."""
+    words = text.split()
+    word = lambda n: words[n - 1] if n <= len(words) else ''
+    return re.sub(r'\$(ARGUMENTS|[1-9])', lambda m: text if m.group(1) == 'ARGUMENTS' else word(int(m.group(1))), template)
+
+
+def select(session, command):
+    """A command's own `model` ("provider/model") and `agent` made the session's (core/src/config/plugin/command.ts), as
+    switchModel makes a model its (`POST …/model`): kept for its next steps. 2.x also publishes `session.model.selected`
+    and `session.agent.selected`; the stand-in sends neither, as it sends nothing for switchModel."""
+    with lock:
+        if isinstance(command.get('model'), str):
+            provider, _, model_id = command['model'].partition('/')
+            sessions[session]['model'] = {'id': model_id, 'providerID': provider}
+        if isinstance(command.get('agent'), str):
+            sessions[session]['agent'] = command['agent']
+    save()
+
+
 def answer_prompt(session, text=None, error=None, completed=True, parent=None, extra=None, files=None, raw_patches=None, raw_parts=None):
     """An assistant message answering the session's last prompt (or `parent`), with a text part.
     `extra` adds to its info what OpenCode reports of an answer: `tokens`, `providerID`/`modelID`, `summary`.
@@ -1025,6 +1086,10 @@ def control(name, body):
         with lock:
             return {'servers': {name: {'status': s['status'], 'location': s['location']} for name, s in mcp_servers.items()},
                     'connects': list(mcp_connects)}
+    if name == 'commands':
+        # What 2.x's command route was sent (T-61 slice 3), read only.
+        with lock:
+            return {'seen': list(commands_seen)}
     if name == 'ask':
         # A permission request as 2.2.5 makes one (core/src/permission.ts), sent as 2.x sends it in every mode, the
         # 1.19.3 mode too: Core reads only 2.x's requests.
@@ -1412,8 +1477,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.mcp_v2(method, parts[3], parts[4:], parse_qs(url.query), body)
         if key == ('GET', 'config', 'providers'):
             return self.reply(200, modes['providers'])
-        if key == ('GET', 'api', 'command') and modes.get('apiCommands'):
-            # 2.x's own list (protocol/src/groups/command.ts, mode `apiCommands`): each command's name and description.
+        if key == ('GET', 'api', 'command'):
+            # 2.x's own list (protocol/src/groups/command.ts): each command's name and description, nothing else of it.
             listed = [{'name': name, **({'description': c['description']} if c.get('description') else {})}
                       for name, c in (modes['config'].get('command') or {}).items()]
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': listed})
@@ -1464,6 +1529,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'data': info})
         if (method, *rest) == ('POST', 'prompt'):
             return self.prompt_v2(session, body or {})
+        if (method, *rest) == ('POST', 'command'):
+            return self.command_v2(session, body)
         if (method, *rest) == ('POST', 'model'):
             # 2.x's switchModel (T-32 slice 4a): the session's model for its next steps; 204.
             with lock:
@@ -1521,8 +1588,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.missing(f'Session {session}')
         if (method, *rest) == ('POST', 'prompt_async'):
             return self.prompt(session, body)
-        if (method, *rest) == ('POST', 'command'):
-            return self.run_command(session, body)
         if (method, *rest) == ('POST', 'summarize'):
             return self.summarize(session, body)
         if (method, *rest) == ('POST', 'revert'):
@@ -1694,17 +1759,8 @@ class Handler(BaseHTTPRequestHandler):
             cleanup(session)
         model = body.get('model') or modes['defaultModel']
         if mode in ('store', 'renamed', 'store-unannounced'):
-            if session in statuses:
-                # Sent while a run goes on: 2.x delivers it at that run's next step (v2_deliver).
-                v2_of(session)['steer'].add(message_id)
-                if mode == 'store-unannounced':
-                    # Admitted into the inbox with no event Core sees (its stream missed it).
-                    v2_of(session)['pending'].append(message_id)
-            store(session, message_id, text, files, model=model, announce=mode != 'store-unannounced')
-            accepted()
-            # The run starts: OpenCode is busy until it ends.
-            statuses[session] = {'type': 'busy'}
-            publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
+            # `store-unannounced`: admitted with no event Core sees (its stream missed it).
+            admit(session, message_id, text, files, model=model, announce=mode != 'store-unannounced', answered=accepted)
             return None
         if mode == 'unstored':
             # Answered, then storing failed; OpenCode's session.error names no message. 2.x says nothing of it.
@@ -1732,49 +1788,52 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         return None
 
-    def run_command(self, session, body):
-        """As OpenCode 1.19.3's command endpoint (`handlers/session.ts`,
-        `session/prompt.ts` command): an unknown command is published as a
-        session error and refused before any message exists; a known one is
-        expanded here, stored under the given ID as a prompt is, and answered
-        only once its run has ended (an answer to it, then idle), with that
-        answer; every failure is a 400. A `subtask` command's run starts a
-        sub-agent session under this one, as the task tool does. Mode
-        `command`: `run`, `fail` (stored, then the run fails: 400),
-        `fail-unannounced` (as `fail`, with no event for the stored message)
-        or `drop` (the connection ends with nothing stored or answered).
-        `failMessageReads` makes reading one message a 500."""
-        command = modes['config'].get('command', {}).get(body.get('command'))
-        if command is None or not isinstance(body.get('arguments'), str) or not isinstance(body.get('model', ''), str):
-            error = {'name': 'UnknownError', 'data': {'message': f'Command not found: "{body.get("command")}".'}}
-            publish('session.error', {'sessionID': session, 'error': error})
-            return self.reply(400, error)
+    def command_v2(self, session, body):
+        """As 2.x's command (2.2.5 protocol/src/groups/session.ts session.command, core/src/config/plugin/command.ts; T-61
+        slice 3): `{name, text}` (`files`, `agents`, `skills`, `delivery` may come too), no message ID and no model; each
+        request is kept in `commands_seen`. A name mode `config` has no command of: 404 CommandNotFoundError. A config
+        command's own `model` and `agent` become the session's (`select`), a revert waiting in the session is applied,
+        and its template, expanded with the text (`expand`), is admitted as a prompt's message is (`admit`), under an ID
+        of the stand-in's own, with the session's model; answered 204 once admitted, the run going on as a prompt's. A
+        `subtask` one starts a sub-agent session under this one instead (control `child`) and admits nothing here. Mode
+        `command`: `run`; `fail` (500 CommandExecutionError, nothing done); `fail-after` (admitted, then that 500);
+        `nothing` (204, nothing done, as `/goal pause`); `unannounced` (admitted with no event for its message or a
+        sub-agent's session, as prompt's `store-unannounced`); `slow` (`run` after `commandDelay` seconds, 3 by default);
+        `drop` (nothing done, and the connection ends with no answer)."""
+        body = body if isinstance(body, dict) else {}
+        name, text = body.get('name'), body.get('text')
+        with lock:
+            commands_seen.append({'sessionID': session, 'name': name, 'text': text, 'keys': sorted(body)})
+        if not isinstance(name, str) or not isinstance(text, str):
+            return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'fixture: a command takes a name and a text'})
+        command = (modes['config'].get('command') or {}).get(name)
+        if command is None:
+            return self.reply(404, {'_tag': 'CommandNotFoundError', 'command': name, 'message': f'Command not found: "{name}"'})
         mode = modes['command']
+        if mode not in ('run', 'fail', 'fail-after', 'nothing', 'unannounced', 'slow', 'drop'):
+            return self.reply(500, {'_tag': 'UnknownError', 'message': f'fixture: no command mode {mode}'})
+        failed = lambda: self.reply(500, {'_tag': 'CommandExecutionError', 'command': name, 'message': 'fixture: the command failed'})
         if mode == 'drop':
             self.close_connection = True
             return None
-        # A command is a prompt: a revert waiting in the session is applied first.
-        cleanup(session)
-        message_id = body.get('messageID') or new_id('msg')
-        arguments = body['arguments'].split()
-        text = command['template'].replace('$ARGUMENTS', body['arguments'])
-        for n in range(1, 10):
-            text = text.replace(f'${n}', arguments[n - 1] if n <= len(arguments) else '')
-        store(session, message_id, text, announce=mode != 'fail-unannounced')
-        statuses[session] = {'type': 'busy'}
-        publish('session.status', {'sessionID': session, 'status': {'type': 'busy'}})
+        if mode == 'fail':
+            return failed()
+        if mode == 'nothing':
+            return self.reply(204)
+        if mode == 'slow':
+            time.sleep(float(modes.get('commandDelay', 3)))
         if command.get('subtask'):
             agent = command.get('agent', 'general')
-            control('child', {'parentID': session, 'title': f'{command.get("description", "")} (@{agent} subagent)', 'agent': agent})
-        if mode in ('fail', 'fail-unannounced'):
-            return self.reply(400, {'name': 'UnknownError', 'data': {'message': 'fixture: the run failed'}})
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            answers = [m for m in messages.get(session, {}).values() if m['info'].get('parentID') == message_id]
-            if answers and session not in statuses:
-                return self.reply(200, answers[-1])
-            time.sleep(0.02)
-        return self.reply(400, {'name': 'UnknownError', 'data': {'message': 'fixture: no answer'}})
+            control('child', {'parentID': session, 'title': f'{command.get("description", "")} (@{agent} subagent)', 'agent': agent,
+                              'announce': mode != 'unannounced'})
+            return failed() if mode == 'fail-after' else self.reply(204)
+        cleanup(session)
+        select(session, command)
+        current = sessions[session].get('model')
+        model = {'providerID': current.get('providerID'), 'modelID': current.get('id')} if current else modes['defaultModel']
+        admit(session, v2_message_id(), expand(command['template'], text), model=model, announce=mode != 'unannounced',
+              answered=None if mode == 'fail-after' else (lambda: self.reply(204)))
+        return failed() if mode == 'fail-after' else None
 
     def summarize(self, session, body):
         """As OpenCode 1.19.3's summarize (`handlers/session.ts`): a body

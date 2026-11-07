@@ -6,7 +6,8 @@
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
 use yuzuno_workspace::opencode::{
-    session_of, Events, HttpStatus, Launch, Mcp, McpRefused, MessageId, Reply, RequestRefused, Server, Submission, EVENT_IDLE_LIMIT,
+    session_of, CommandAnswer, Events, HttpStatus, Launch, Mcp, McpRefused, MessageId, Reply, RequestRefused, Server, Submission,
+    EVENT_IDLE_LIMIT,
 };
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
@@ -744,5 +745,38 @@ async fn an_active_list_of_another_shape_is_refused_never_read_as_idle() {
             "another shape is refused, never read as idle: {read:?}");
     }
     assert!(server.snapshot(&session, &[]).await.is_err(), "nor read into a snapshot");
+    server.shutdown().await.unwrap();
+}
+
+/// A command goes to 2.x by its own route (T-61 slice 3): its name and text
+/// only, no ID and no model, and once for the ID Core keeps of its Turn.
+/// 2.x's 204 is done; its 404 for a name it does not define and its 500 for
+/// what a command does are refusals, in 2.x's own words; no answer is
+/// unknown. 2.x's list names and describes each command, nothing more.
+#[tokio::test]
+async fn a_command_goes_through_2xs_route_with_its_name_and_text_only() {
+    let lab = lab();
+    let server = Server::start(&lab.launch).await.unwrap();
+    let session = session(&server).await;
+    let listed = server.commands().await.unwrap();
+    assert_eq!(listed.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["delegate", "explain", "pinned", "review", "status"]);
+    assert_eq!(listed[1].description, "Explain one thing");
+
+    let id = MessageId::new();
+    assert_eq!(server.command(&session, &id, "explain", "closures").unwrap().await, CommandAnswer::Done);
+    let sent = lab.posts(&format!("/api/session/{session}/command"));
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["body"], json!({"name":"explain","text":"closures"}), "no ID and no model");
+    assert!(server.command(&session, &id, "explain", "closures").is_err(), "an ID it was given before is never sent again");
+    assert_eq!(lab.posts(&format!("/api/session/{session}/command")).len(), 1);
+
+    assert_eq!(server.command(&session, &MessageId::new(), "nope", "").unwrap().await,
+        CommandAnswer::Refused { code: 404, message: "Command not found: \"nope\"".into() });
+    lab.control("mode", json!({"command":"fail"})).await;
+    assert_eq!(server.command(&session, &MessageId::new(), "explain", "x").unwrap().await,
+        CommandAnswer::Refused { code: 500, message: "fixture: the command failed".into() });
+    lab.control("mode", json!({"command":"drop"})).await;
+    assert!(matches!(server.command(&session, &MessageId::new(), "explain", "x").unwrap().await, CommandAnswer::Unknown(_)));
+    assert_eq!(lab.calls().iter().filter(|c| c["path"] == format!("/session/{session}/command")).count(), 0, "never 1.19.3's route");
     server.shutdown().await.unwrap();
 }

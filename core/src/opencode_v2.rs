@@ -577,11 +577,18 @@ impl Open {
             "session.inbox.delivered" => {
                 let Some(id) = d["inboxID"].as_str() else { return vec![] };
                 // Only a user's or a synthetic input is a message a turn's answers can answer.
-                if !matches!(self.inputs.remove(id).as_deref(), None | Some("user" | "synthetic")) {
+                let seen = self.inputs.remove(id);
+                if !matches!(seen.as_deref(), None | Some("user" | "synthetic")) {
                     return vec![];
                 }
                 self.user = Some(id.to_owned());
-                vec![message(user(id, at))]
+                let mut info = user(id, at);
+                // Admitted while this connection did not see it: what it was is not known here, so it is no
+                // command's input (T-61 slice 3).
+                if seen.is_none() {
+                    info["_opencodeUnseen"] = true.into();
+                }
+                vec![message(info)]
             }
             "session.step.started" => {
                 let Some(id) = d["assistantMessageID"].as_str() else { return vec![] };
