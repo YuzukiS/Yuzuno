@@ -323,9 +323,10 @@ pub enum Mcp {
 /// What OpenCode holds for one session now.
 #[derive(Debug)]
 pub struct Snapshot {
-    /// When the read began, in milliseconds since the epoch (#699 R2): what it
-    /// found missing was missing from then on, never before.
-    pub began: i64,
+    /// When the read began, on this process's own clock (`Server::tick`,
+    /// #699 R2 and P3-a): what it found missing was missing from then on,
+    /// never before.
+    pub began: u64,
     /// The inbox as read first, before the messages (#699 R2): an item 2.x
     /// delivers and stores while the read goes on is in this list or in
     /// `messages`, never in neither.
@@ -531,6 +532,9 @@ pub struct Server {
     version: String,
     http: reqwest::Client,
     submitted: Mutex<HashSet<MessageId>>,
+    /// This process's own clock of reads and answers (`tick`): the order in
+    /// which they happened, whatever the wall clock does (#699 P3-a).
+    ticks: std::sync::atomic::AtomicU64,
 }
 
 impl Server {
@@ -607,6 +611,7 @@ impl Server {
             // Never through a proxy: the password goes to loopback only.
             http: reqwest::Client::builder().no_proxy().build()?,
             submitted: Mutex::default(),
+            ticks: std::sync::atomic::AtomicU64::new(0),
         };
         // From here on, an error drops `server`, which ends its group.
         // OpenCode's output is bytes, not necessarily UTF-8; a line is read
@@ -851,8 +856,14 @@ impl Server {
 
     /// The session's messages, status and inbox, read now, with the requests
     /// pending in it and in the sub-agent sessions `children`.
+    /// The next tick of this process's own clock (`ticks`), from 1: a later
+    /// call answers more. A tick of another process means nothing here.
+    pub fn tick(&self) -> u64 {
+        self.ticks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
-        let began = chrono::Utc::now().timestamp_millis();
+        let began = self.tick();
         let path = format!("/api/session/{}/inbox", segment(session)?);
         let inbox_first = self.data(Method::GET, &path, &[], None).await?;
         ensure!(inbox_first.is_array(), "OpenCode's {path} is not a list");
