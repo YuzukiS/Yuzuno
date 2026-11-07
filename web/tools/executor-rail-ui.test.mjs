@@ -72,7 +72,8 @@ const home = () => ({
   needsYou: [
     // Half a minute over: the row's clock is read at most a moment before this.
     { kind: "approval", projectId: "p", agentId: "w", agentName: "YN-w · Design first", requestId: "q1", title: "Approve the design note", since: at(12.5) },
-    { kind: "approval", projectId: "p", agentId: "s", agentName: "Agent s", requestId: "q2", title: "Allow npm test", since: at(3) },
+    // Half a minute over too: the island's clock is to the minute, read when the row first subscribed.
+    { kind: "approval", projectId: "p", agentId: "s", agentName: "Agent s", requestId: "q2", title: "Allow npm test", since: at(3.5) },
   ],
   projects: [{ project: { id: "p", name: "App" }, agents: { working: 1, idle: 2, waiting: 2, error: 0, offline: 0, total: 5 },
     errors: [], pending: [], jobs: [], unseen: 0, missing: [], brief: { version: 1, history: [], sections: [] } }],

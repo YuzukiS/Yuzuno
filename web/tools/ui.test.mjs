@@ -4966,9 +4966,11 @@ test("rail shows attributed current work as plain text; the inspector opens the 
       false,
     );
     assert.match(rail.textContent, /Reported/);
-    // One target opens the card, then its actions (T-184); the machine is
-    // shown, the working folder is not.
-    assert.deepEqual([...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")), ["Open Mori", "Actions for Mori"]);
+    // One target opens the card, then its actions (T-184), then its island
+    // (T-43), which says its state; the machine is shown, the working folder
+    // is not.
+    assert.deepEqual([...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")),
+      ["Open Mori", "Actions for Mori", "Mori · Done · Tests passed according to the agent · 1 unread"]);
     // The name has the row's first line to itself (T-15): a rail this narrow
     // cannot hold an avatar, a whole name and the status word together, so
     // where the Agent runs moved into the actions menu, which a pointer, a
