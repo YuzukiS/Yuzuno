@@ -20,7 +20,7 @@ fn an_idle_budget_grants_the_maximum() {
 }
 
 #[test]
-fn anything_queued_grants_the_minimum() {
+fn a_job_waiting_for_cpu_grants_the_minimum() {
     assert_eq!(grant(ELASTIC, 32000, 1), 2000);
     assert_eq!(grant(ELASTIC, 32000, 7), 2000);
 }
@@ -120,7 +120,7 @@ fn a_raise_goes_only_up_to_the_maximum() {
 }
 
 #[test]
-fn nothing_is_raised_while_anything_is_queued() {
+fn nothing_is_raised_while_a_job_waits_for_cpu() {
     assert!(raises(32000, 1, &[running("a", ELASTIC, 2000)]).is_empty());
 }
 
@@ -247,4 +247,136 @@ fn job_budget_names_what_is_free_of_the_cpu_what_waits_and_what_runs_as_hints() 
     let view = s.job_budget_view(json!({"suggestedBudget":{"cpuMillis":32000,"memoryMiB":32768,"swapMiB":0}})).unwrap();
     assert_eq!((&view["cpuMillisFree"], &view["queueLength"], &view["running"]), (&json!(32000 - 16100), &json!(1), &json!(1)));
     assert!(view["cpuHint"].as_str().unwrap().contains("not an entitlement"));
+}
+
+// ---- YN-6: only a queued Job waiting for CPU holds ranges -----------------
+
+/// Fits the budget alone, not beside a 1088 MiB Job: it waits for RAM.
+fn big() -> Value {
+    json!({"cpuMillis":2000,"memoryMiB":31800,"swapMiB":0})
+}
+/// Fits beside a 2100 mCPU Job in RAM, not in CPU: it waits for CPU.
+fn hog() -> Value {
+    json!({"cpuMillis":30000,"memoryMiB":1024,"swapMiB":0})
+}
+fn id(job: &Value) -> &str {
+    job["id"].as_str().unwrap()
+}
+fn budget_view(s: &Store) -> Value {
+    s.job_budget_view(json!({"suggestedBudget":{"cpuMillis":32000,"memoryMiB":32768,"swapMiB":0}})).unwrap()
+}
+fn queue_exclusive(s: &Store, id: &str) -> Value {
+    let mut request = submit(json!({"cpuMillis":2000,"memoryMiB":1024,"swapMiB":0}), None);
+    request.request_id = id.into();
+    request.exclusive = true;
+    let machine = json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":32000,"memoryMiB":32768,"swapMiB":0}});
+    s.create_job(Some("a"), request, json!({"cwd":"/workspace"}), machine, json!({"bootId":"boot"})).unwrap()
+}
+
+#[test]
+fn a_job_queued_for_ram_does_not_hold_a_starting_range_at_its_minimum() {
+    let (_dir, s) = setup();
+    queue(&s, "build", range());
+    queue(&s, "big", big());
+    let build = start(&s);
+    let inputs = &build["cpuGrant"];
+    assert_eq!(build["cpuGrantedAtStart"], 16000, "a Job queued for RAM holds no range at its minimum: {inputs}");
+    assert_eq!((&inputs["queueLength"], &inputs["cpuWaiting"], &inputs["rule"], &inputs["heldBy"]), (&json!(1), &json!(0), &json!("range"), &Value::Null));
+}
+
+#[test]
+fn running_jobs_are_raised_while_the_queue_waits_only_for_ram() {
+    let (_dir, s) = setup();
+    queue(&s, "build", range());
+    let next = queue(&s, "next", json!({"cpuMillis":2000,"memoryMiB":1024,"swapMiB":0}));
+    let build = start(&s);
+    // One that fits and waits only for its turn holds it, as before.
+    assert_eq!((&build["cpuGrantedAtStart"], &build["cpuGrant"]["rule"], &build["cpuGrant"]["heldBy"]), (&json!(2000), &json!("cpuWaiting"), &next["id"]));
+    s.request_job_cancel(None, id(&next)).unwrap();
+    let ram = queue(&s, "big", big());
+    let (none, _, raises) = s.reserve_next(Some(30000), None, None).unwrap();
+    assert!(none.is_none());
+    let told = s.job(id(&ram)).unwrap()["reason"].as_str().unwrap().to_owned();
+    assert!(told.starts_with("Waiting for shared RAM reservation"), "{told}");
+    assert_eq!(raises.len(), 1, "the build is raised while the queue waits only for RAM: {raises:?}");
+    let (job, raise, free) = &raises[0];
+    assert_eq!((job["id"].clone(), raise.from, raise.to, *free), (build["id"].clone(), 2000, 16000, 32000 - 2100));
+    // The raise records the queue it left, none of it waiting for CPU.
+    let answer = json!({"state":"raised","reason":"read back","evidence":{"cpuMillisBefore":2000,"cpuMillisAfter":16000}});
+    s.record_cpu_raise(raise, &build["attempt"], *free, &answer, None).unwrap();
+    let change = &s.job(id(&build)).unwrap()["cpuChanges"][0];
+    assert_eq!((&change["queueLength"], &change["cpuWaiting"]), (&json!(1), &json!(0)));
+}
+
+#[test]
+fn a_job_waiting_for_a_slot_does_not_hold_a_starting_range_at_its_minimum() {
+    let (_dir, s) = setup();
+    s.set_job_budget_with(Resources { cpu_millis: 32000, memory_mi_b: 32768, swap_mi_b: 0 }, Some(Some(1))).unwrap();
+    queue(&s, "build", range());
+    queue(&s, "next", range());
+    let build = start(&s);
+    assert_eq!(build["cpuGrantedAtStart"], 16000, "the next Job waits for the one slot, not for CPU: {}", build["cpuGrant"]);
+    assert_eq!(build["cpuGrant"]["rule"], "range");
+}
+
+#[test]
+fn a_job_waiting_for_an_exclusive_job_does_not_hold_a_starting_range_at_its_minimum() {
+    let (_dir, s) = setup();
+    queue(&s, "build", range());
+    queue_exclusive(&s, "alone");
+    let build = start(&s);
+    assert_eq!(build["cpuGrantedAtStart"], 16000, "the exclusive Job waits for the build to end, not for CPU: {}", build["cpuGrant"]);
+}
+
+#[test]
+fn a_job_waiting_for_disk_space_does_not_hold_a_starting_range_at_its_minimum() {
+    let (_dir, s) = setup();
+    let build = queue(&s, "build", range());
+    let low = queue(&s, "low disk", range());
+    let verdicts = [
+        DiskCheck { job_id: id(&build).into(), verdict: disk::Verdict::Start },
+        DiskCheck { job_id: id(&low).into(), verdict: disk::Verdict::Wait("Waiting for disk space: test reason".into()) },
+    ];
+    let started = s.reserve_next_job(Some(30000), None, Some(&verdicts)).unwrap().unwrap();
+    assert_eq!(started["id"], build["id"]);
+    assert_eq!(started["cpuGrantedAtStart"], 16000, "the other Job waits for disk space, not for CPU: {}", started["cpuGrant"]);
+}
+
+#[test]
+fn a_job_waiting_for_cpu_holds_the_range_at_its_minimum_and_stops_raises() {
+    let (_dir, s) = setup();
+    queue(&s, "build", range());
+    let waiting = queue(&s, "hog", hog());
+    let build = start(&s);
+    let inputs = &build["cpuGrant"];
+    assert_eq!((&build["cpuGrantedAtStart"], &inputs["cpuWaiting"], &inputs["rule"], &inputs["heldBy"]), (&json!(2000), &json!(1), &json!("cpuWaiting"), &waiting["id"]));
+    let (none, _, raises) = s.reserve_next(Some(30000), None, None).unwrap();
+    assert!(none.is_none() && raises.is_empty(), "nothing is raised while a Job waits for CPU: {raises:?}");
+}
+
+#[test]
+fn job_budget_counts_only_the_jobs_waiting_for_cpu() {
+    let (_dir, s) = setup();
+    assert_eq!(budget_view(&s)["cpuWaiting"], json!({"count":0,"since":null}), "nothing queued");
+    queue(&s, "build", range());
+    let waiting = queue(&s, "hog", hog());
+    start(&s);
+    let counted = budget_view(&s)["cpuWaiting"].clone();
+    assert_eq!(counted["count"], 1, "{counted}");
+    assert!(counted["since"].is_string(), "{counted}");
+    s.request_job_cancel(None, id(&waiting)).unwrap();
+    queue(&s, "big", big());
+    s.reserve_next(Some(30000), None, None).unwrap();
+    assert_eq!(budget_view(&s)["cpuWaiting"], json!({"count":0,"since":null}), "a Job queued for RAM is not counted");
+}
+
+#[test]
+fn jobs_that_all_fit_start_at_their_minimum_but_the_last() {
+    let (_dir, s) = setup();
+    for name in ["one", "two", "three"] {
+        queue(&s, name, range());
+    }
+    let grants: Vec<Value> = (0..3).map(|_| start(&s)["cpuGrantedAtStart"].clone()).collect();
+    // The last: 32000 less the two before it (2100 each) and its collector.
+    assert_eq!(grants, [json!(2000), json!(2000), json!(16000)], "a burst stays within the budget");
 }
