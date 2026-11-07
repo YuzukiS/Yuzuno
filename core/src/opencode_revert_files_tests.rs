@@ -111,6 +111,86 @@ fn the_store_is_data_snapshot_project_and_the_worktrees_sha1() {
     assert!(store("/d/opencode", "abc123", "repo").is_err(), "a relative worktree");
 }
 
+/// On 2.x the store is OpenCode's data folder, as Core starts it for each
+/// Agent (`XDG_DATA_HOME` in Core's own folder for it), then the project and
+/// the SHA-1 of its Git top level, resolved (T-61 slice 5; 2.2.5
+/// core/src/snapshot.ts): the resolving is the caller's, and a relative top
+/// level is refused.
+#[test]
+fn the_store_is_in_cores_own_agent_folder_by_opencodes_project_and_toplevel() {
+    let roots = Roots::of(env(&[("HOME", "/home/someone"), ("XDG_DATA_HOME", "/core/data/opencode/oc/xdg/data")]), || None).unwrap();
+    assert_eq!(roots.data, "/core/data/opencode/oc/xdg/data/opencode");
+    assert_eq!(store(&roots.data, "prj1", "/w/repo").unwrap(),
+        PathBuf::from("/core/data/opencode/oc/xdg/data/opencode/snapshot/prj1/2d98e56dc36b7431b8f668bf4d7715c564698d73"),
+        "in Core's own folder for the Agent, by the project and the SHA-1 of the top level");
+    assert!(store(&roots.data, "prj1", "w/repo").is_err(), "a relative top level");
+}
+
+/// The files a 2.x revert sends back (T-61 slice 5): each step after the
+/// Turn with a snapshot, in the session's order, each file once with the
+/// first such step's `start`; files relative to the Git top level, inside
+/// the Agent's folder.
+#[test]
+fn the_files_a_2x_revert_sends_back_are_each_steps_first_start_after_the_turn() {
+    let user = |id: &str| json!({"id": id, "type": "user", "text": "x"});
+    let step = |id: &str, start: &str, files: &[&str]| json!({"id": id, "type": "assistant", "snapshot": {"start": start, "end": start, "files": files}});
+    let (one, two) = ("a".repeat(40), "b".repeat(40));
+    let messages = vec![
+        user("u1"),
+        step("a1", &one, &["f/a", "f/b"]),
+        json!({"id": "i1", "type": "idle", "outcome": "succeeded"}),
+        user("u2"),
+        step("a2", &two, &["f/a", "f/c"]),
+    ];
+    let target = |rel: &str, hash: &str| Target { file: format!("/w/{rel}"), rel: rel.into(), hash: hash.into() };
+    assert_eq!(targets_v2(&messages, "u1", "/w", "/w/f").unwrap(),
+        vec![target("f/a", &one), target("f/b", &one), target("f/c", &two)], "each file once, its first step's start");
+    assert_eq!(targets_v2(&messages, "u2", "/w", "/w/f").unwrap(), vec![target("f/a", &two), target("f/c", &two)],
+        "nothing before the boundary");
+    assert_eq!(targets_v2(&messages[..4], "u2", "/w", "/w/f").unwrap(), vec![], "no step after it: no file");
+    let off = vec![user("u1"), json!({"id": "a1", "type": "assistant"}), json!({"id": "a2", "type": "assistant"})];
+    assert_eq!(targets_v2(&off, "u1", "/w", "/w/f").unwrap(), vec![], "snapshots off: 2.x sends no file back");
+
+    let one_step = |files: &[&str]| vec![user("u1"), step("a1", &"a".repeat(40), files)];
+    for (messages, boundary, said) in [
+        (messages.clone(), "a1", "goes back to a user message"),
+        (messages.clone(), "u9", "would revert nothing"),
+        (one_step(&["other/x"]), "u1", "outside the Agent's folder"),
+        (one_step(&["f/../other"]), "u1", "not a plain path inside"),
+        (one_step(&["/w/f/a"]), "u1", "not a plain path inside"),
+        (one_step(&["f/x*"]), "u1", "a character Git reads as a pattern"),
+        (one_step(&["f/[ab]"]), "u1", "a character Git reads as a pattern"),
+        (one_step(&["f/sub/.gitattributes"]), "u1", "is a .gitattributes file"),
+        (vec![user("u1"), step("a1", "HEAD", &["f/a"])], "u1", "not an object ID"),
+    ] {
+        let error = targets_v2(&messages, boundary, "/w", "/w/f").unwrap_err().to_string();
+        assert!(error.contains(said), "{boundary}: {error}");
+    }
+    assert!(targets_v2(&messages, "u1", "/w", "/elsewhere").is_err(), "an Agent folder outside the top level");
+    assert!(targets_v2(&messages, "u1", "/", "/w").is_err(), "the root as top level");
+}
+
+/// A step after the Turn that 2.x would pass over in silence refuses the
+/// files (D-24 (a): every file known, or nothing asked): one with a `start`
+/// and no list of its files (2.x skips its files), or one with no snapshot
+/// beside steps that have one (2.x skips the step).
+#[test]
+fn a_step_with_a_start_and_no_file_list_refuses_files() {
+    let one = "a".repeat(40);
+    let user = json!({"id": "u1", "type": "user", "text": "x"});
+    let listed = json!({"id": "a1", "type": "assistant", "snapshot": {"start": one, "files": ["f/a"]}});
+    for (step, said) in [
+        (json!({"id": "a2", "type": "assistant", "snapshot": {"start": one}}), "a snapshot but no list of its files"),
+        (json!({"id": "a2", "type": "assistant"}), "no snapshot though others have"),
+        (json!({"id": "a2", "type": "assistant", "snapshot": {"end": one, "files": ["f/b"]}}), "no snapshot though others have"),
+    ] {
+        let error = targets_v2(&[user.clone(), listed.clone(), step.clone()], "u1", "/w", "/w/f").unwrap_err().to_string();
+        assert!(error.contains(said), "{step}: {error}");
+        let error = targets_v2(&[user.clone(), step.clone(), listed.clone()], "u1", "/w", "/w/f").unwrap_err().to_string();
+        assert!(error.contains(said), "{step}, first: {error}");
+    }
+}
+
 #[test]
 fn a_revert_sends_back_each_file_of_a_later_patch_to_its_first_patchs_snapshot() {
     let message = |id: &str, role: &str, parts: Value| json!({"info": {"id": id, "role": role}, "parts": parts});
@@ -477,10 +557,11 @@ async fn a_capture_ends_within_its_deadline_and_reaps_what_it_started_however_it
     let within = Duration::from_secs(2);
 
     // What it says held open by a process it started in turn: its answer and its own end came, what it says
-    // never ends; the deadline ends that wait, and what it started itself is reaped.
+    // never ends; the deadline ends that wait, and what it started itself is reaped. Its deadline is wider: under
+    // load the shell may not have started what it starts in 2 s (T-61 slice 5; still bounded below at 10 s).
     let held = dir.path().join("held");
     let started = std::time::Instant::now();
-    let error = capture(sh(format!("echo $$ > {0}/self; sh -c 'echo $$ > {1}; exec sleep 30 >/dev/null' & echo answer", dir.path().display(), held.display())), 100, within)
+    let error = capture(sh(format!("echo $$ > {0}/self; sh -c 'echo $$ > {1}; exec sleep 30 >/dev/null' & echo answer", dir.path().display(), held.display())), 100, Duration::from_secs(5))
         .await.unwrap_err().to_string();
     assert!(error.contains("What Git said did not end within"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
