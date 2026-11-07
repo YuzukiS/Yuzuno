@@ -486,8 +486,10 @@ export function ConversationJobs({
           more={ci.runs.length - runs.length}
         />
       )}
-      {/* Its PR reviews, after the runs (T-25), as many as Settings allows. */}
-      {dock.reviews > 0 && <ConversationReviews agentId={agentId} revision={revision} disabled={disabled} limit={dock.reviews} />}
+      {/* Its PR reviews, after the runs (T-25), as many as Settings allows.
+          Mounted at 0 too: it draws nothing then, but it is what tells Work
+          activity about them (#459 R7, P3). */}
+      <ConversationReviews agentId={agentId} revision={revision} disabled={disabled} limit={dock.reviews} />
       {children}
     </WorkDock>
   );
