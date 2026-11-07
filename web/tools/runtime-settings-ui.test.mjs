@@ -65,8 +65,8 @@ test("Runtime & versions opens from Updates & about, reads only once opened and 
   window.eval(bundle);
   window.renderSettings();
   const button = (text) => [...document.querySelectorAll("button")].find((item) => item.textContent.trim() === text);
-  // In Updates & about's row of entries (T-187).
-  const open = await until(() => [...document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === "Runtime"), "Updates & about offers Runtime & versions");
+  // Its page of Settings (YN-8).
+  const open = await until(() => document.querySelector("#settings-tab-runtime"), "Settings has a Runtime page");
   const runtimeReads = () => calls.filter((c) => /\/api\/(health|machines|workspace|jobs\/budget)$/.test(c));
   assert.deepEqual(runtimeReads(), [], "nothing of it is read before it is opened");
   open.click();

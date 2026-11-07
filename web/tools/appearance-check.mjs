@@ -35,10 +35,10 @@ const state = () =>
     width: innerWidth,
     scrollWidth: document.documentElement.scrollWidth,
   }));
-// Appearance is a category of Settings.
+// Appearance is a page of Settings (YN-8).
 async function openAppearance() {
   await page.getByRole("button", { name: "Settings and updates" }).click();
-  await page.getByRole("tab", { name: "Appearance & interaction" }).click();
+  await page.getByRole("tab", { name: "Appearance", exact: true }).click();
 }
 async function closeSettings() {
   await page.getByRole("button", { name: "Close dialog" }).click();

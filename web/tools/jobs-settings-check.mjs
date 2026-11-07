@@ -4,7 +4,7 @@
 // 390 px:
 //  - the Jobs panel's machine card only shows: active against Jobs at once,
 //    the meters, the GPU pause; no editor. Its Edit in Settings closes Jobs
-//    and opens Settings → Jobs & resources at the Core host budget;
+//    and opens Settings → Machines at the Core host budget;
 //  - there, a new Jobs at once is saved with the budget in one POST, and the
 //    number Core reads back is shown; every field fits its width at 390 px;
 //  - Remote budgets lists the SSH machines only; a machine is chosen and its
@@ -206,8 +206,8 @@ try {
       await host.waitFor({ timeout: 10_000 });
       await focusInHostEditor(page);
       assert.equal(await page.getByRole("dialog", { name: "Jobs", exact: true }).count(), 0, "Jobs closed as Settings opened");
-      if (width > 720) assert.equal(await settings.getByRole("tab", { name: "Jobs & resources", exact: true }).getAttribute("aria-selected"), "true");
-      else assert.equal(await settings.getByRole("combobox", { name: "Settings category", exact: true }).inputValue(), "jobs");
+      // The budgets follow the machines on the Machines page (YN-8).
+      assert.equal(await settings.locator("#settings-tab-machines").getAttribute("aria-selected"), "true");
       check(`${tag}: the Jobs card only shows, and its Edit in Settings opens the Core host budget, focused`);
 
       // ---- The Core host budget: a new Jobs at once, saved with the budget.
@@ -233,7 +233,7 @@ try {
       check(`${tag}: Jobs at once ${slots} is saved with the budget and read back; every field fits`, { layout });
 
       // ---- Remote budgets: SSH machines only; one chosen, its editor fits.
-      await settings.locator(".settings-entries").getByRole("button", { name: "Remote budgets", exact: true }).click();
+      // On the same page, after the Core host budget (YN-8).
       const remote = settings.locator("#settings-editor-jobs-remote:not([hidden])");
       const picker = remote.getByLabel("Machine", { exact: true });
       await picker.waitFor({ timeout: 10_000 });
