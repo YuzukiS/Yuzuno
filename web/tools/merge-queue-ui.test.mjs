@@ -186,9 +186,12 @@ test('every state and stop reason of the merge queue doc has its word, in Englis
 });
 
 // The landing tiers docs/merge-queue.md names (T-37 S2b): each repository
-// card says its landing in words, a later Core's included.
+// card says its landing in words, a later Core's included. The table is the
+// Landing section's own, up to the next section (the Policy section's table,
+// YN-18 S2d, names policies, not landings).
 function landingsOf(text) {
-  const table = text.slice(text.indexOf('## Landing'), text.indexOf('## Pauses'));
+  const start = text.indexOf('## Landing');
+  const table = text.slice(start, text.indexOf('\n## ', start + 1));
   return [...table.matchAll(/^\| `([a-z-]+)` \|/gm)].map(m => m[1]);
 }
 
@@ -277,6 +280,44 @@ test('unpause asks a reason, sends it on the unpause route, shows the refusal te
     assert.notEqual(sent[1].body.requestId, sent[0].body.requestId, 'a refusal clears the request id');
     assert.equal(sent[2].body.requestId, sent[1].body.requestId, 'a lost answer keeps the request id');
   } finally { p.close(); }
+});
+
+// YN-18 S2d-2: a merge that turned main red is reverted from the pause banner
+// in one step, once the user allows reverts for the repository.
+test('a merge that turned main red offers Revert on its pause banner only when reverts are allowed', async () => {
+  const bad = entry('e-bad', 'done', { number: 17, reason: 'main_red', url: 'https://github.com/owner/repo/pull/17',
+    merge: { expectedMain: sha('b'), tree: sha('e'), gate: 'slot', head: sha('a'), attempts: 1, sha: sha('f'), mergedAt: at,
+      post: { ok: true }, mainCi: { run: 9002, attempt: 1, conclusion: 'failure' } } });
+  const pause = { reason: 'main_red', at, entryId: 'e-bad', number: 17, main: sha('f'), run: 9002, base: 'main', detail: 'Synthetic main CI run 9002 failed after #17 merged' };
+  const sent = [];
+  for (const allowed of [false, true]) {
+    const p = mount({ entries: [bad, queued], answer: (url, body, init) => {
+      if (url === '/api/merge-queue/repositories/7') return { ...repositories[7], paused: pause, revert: allowed };
+      if (url === '/api/merge-queue/e-bad/revert') { sent.push({ method: init.method, body }); return { id: 'e-revert', kind: 'revert', state: 'queued' }; }
+    } });
+    try {
+      await opened(p);
+      const banner = () => repoCard(p, 'owner/repo').querySelector('.merge-pause');
+      await until(() => banner());
+      if (!allowed) {
+        assert.equal(button(banner(), 'Revert #17'), undefined, 'no Revert while reverts are off');
+        assert.ok(banner().querySelector('.merge-revert-off').textContent.includes('Turn them on in Projects → repositories'), 'it says where reverts are turned on');
+        continue;
+      }
+      const box = banner().querySelector('.merge-action-revert');
+      assert.ok(box.querySelector('.merge-action-who').textContent.startsWith('Who can revert:'), 'who may revert');
+      button(banner(), 'Revert #17').click();
+      await until(() => banner().querySelector('.merge-action-revert textarea'));
+      assert.ok(banner().textContent.includes('queue/revert-'), 'its help names Core\'s revert branch');
+      await type(p, banner().querySelector('.merge-action-revert textarea'), 'Synthetic red main');
+      button(banner(), 'Revert #17').click();
+      await until(() => banner().querySelector('.merge-action-done'));
+      assert.equal(banner().querySelector('.merge-action-done').textContent, 'Revert queued as entry e-revert: Core builds it on its own branch and PR, then merges it.');
+      assert.deepEqual(sent.map(x => [x.method, x.body.reason]), [['POST', 'Synthetic red main']]);
+      assert.match(sent[0].body.requestId, /^[0-9a-f-]{36}$/);
+      assert.equal(p.errors.length, 0, p.errors.join('\n'));
+    } finally { p.close(); }
+  }
 });
 
 test('retry and cancel show by state, each with who may take it', async () => {

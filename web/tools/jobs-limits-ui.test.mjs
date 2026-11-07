@@ -99,6 +99,14 @@ function mount() {
   };
 }
 
+// Settings' Windows ceiling is a slider (YN-8): found by its name, moved as a user drags it.
+const windowsSlider = (page) => page.document.querySelector('[aria-label="Windows jobs"] input[type="range"][name="windowsMaxJobs"]');
+function slideWindows(page, value) {
+  const input = windowsSlider(page);
+  Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(input, String(value));
+  input.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+}
+
 test("Windows shows its jobs against the ceiling it keeps inside this host's budget", async () => {
   const page = mount();
   try {
@@ -114,11 +122,12 @@ test("Windows shows its jobs against the ceiling it keeps inside this host's bud
     assert.equal(!!cell.querySelector("input, details, form, button"), false, "the Windows cell has no editor");
     // Settings' editor of the same ceiling.
     page.window.renderWindowsSettings({ windows: windows(), onSaved: () => {} });
-    await until(() => page.input("At most at once"));
+    await until(() => windowsSlider(page));
     const group = page.document.querySelector('[aria-label="Windows jobs"]');
-    const input = page.input("At most at once");
-    assert.equal(input.value, "", "the default is an empty field");
-    assert.equal(input.placeholder, "Default (2)", "the placeholder names the default");
+    // A slider (YN-8): unset, it shows the default.
+    const input = windowsSlider(page);
+    assert.equal(input.getAttribute("aria-label"), "At most at once");
+    assert.equal(input.value, "2", "the default shows on the slider");
     assert.equal(input.min, "1", "at least one at once");
     assert.equal(input.max, "64", "at most 64 at once");
     assert.equal(group.querySelector(".jobs-settings-now").textContent, "In effect: 2 at once (default).", "the default is said to be in effect");
@@ -144,8 +153,8 @@ test("the Windows ceiling is saved as a number, returns to the default as null, 
     render({ maxJobs: 3, set: true });
     await until(() => page.button("Save"));
     const group = () => page.document.querySelector('[aria-label="Windows jobs"]');
-    assert.equal(page.input("At most at once").value, "3");
-    page.type("At most at once", "5");
+    assert.equal(windowsSlider(page).value, "3");
+    slideWindows(page, 5);
     page.answers.push([200, { maxJobs: 5, set: true, defaultMaxJobs: 2 }]);
     page.button("Save").click();
     await until(() => saved === 1);
@@ -153,28 +162,30 @@ test("the Windows ceiling is saved as a number, returns to the default as null, 
     // Read again, the editor shows what Core saved.
     render({ maxJobs: 5, set: true });
     await until(() => group().querySelector(".jobs-settings-now").textContent === "In effect: 5 at once.");
-    assert.equal(page.input("At most at once").value, "5", "the field follows the saved ceiling");
+    assert.equal(windowsSlider(page).value, "5", "the slider follows the saved ceiling");
     page.answers.push([200, { maxJobs: 2, set: false, defaultMaxJobs: 2 }]);
     page.button("Use default").click();
     await until(() => saved === 2);
     assert.deepEqual(page.calls[1].body, { maxJobs: null });
     render({ maxJobs: 2, set: false });
     await until(() => !page.button("Use default"));
-    assert.equal(page.input("At most at once").value, "", "back at the default, the field is empty");
-    // Out of 1–64 the field itself stops the save; nothing is sent.
-    page.type("At most at once", "65");
-    page.button("Save").click();
+    assert.equal(windowsSlider(page).value, "2", "back at the default, the slider shows it");
+    // Typed past 64, the value is kept to the range; typing sends nothing.
+    const typed = windowsSlider(page).closest(".settings-slider").querySelector('input[type="number"]');
+    Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(typed, "65");
+    typed.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+    typed.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await pause();
-    assert.equal(page.calls.length, 2);
-    assert.equal(page.input("At most at once").validity.rangeOverflow, true);
+    assert.equal(windowsSlider(page).value, "64", "65 is kept to 64");
+    assert.equal(page.calls.length, 2, "nothing is sent by typing");
     const refusal = "workspace_updating: Workspace is preparing an update. Your input was not sent; keep the draft or cancel the update wait.";
-    page.type("At most at once", "6");
+    slideWindows(page, 6);
     page.answers.push([409, { error: refusal }]);
     page.button("Save").click();
     await until(() => group().querySelector("[role=alert]"));
     assert.equal(group().querySelector("[role=alert]").textContent, refusal);
     assert.deepEqual(page.calls[2].body, { maxJobs: 6 });
-    assert.equal(page.input("At most at once").value, "6", "the typed value stays to try again");
+    assert.equal(windowsSlider(page).value, "6", "the value stays to try again");
     assert.equal(saved, 2);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }

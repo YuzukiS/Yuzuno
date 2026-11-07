@@ -1,8 +1,12 @@
 // One way back to the latest messages, never two (T-15). The conversation had
 // three: a bar for the source being read, a link where a loaded window ends,
 // and a floating button. Two could show at once and the floating one covered
-// the text. The bar now carries the only one, and the floating button stands
-// in only when no bar does. Nothing is sent, and nothing jumps to the end.
+// the text. A source's bar carries the only one, and the floating button
+// stands in when no bar does, a window of earlier messages included (YN-19:
+// it has no bar; newer pages load as the reader scrolls). On a desktop the
+// floating one is centred on the column just above the composer, over no
+// text and none of the composer. Nothing is sent, and nothing jumps to the
+// end.
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-one-way-back.mjs
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -63,8 +67,9 @@ const waysBack = (page) => page.evaluate(() => {
       text: (el.textContent || "").trim().slice(0, 24),
     }));
   const scroll = document.querySelector(".conversation-scroll");
-  // Where the floating one sits: it must ride the composer's edge, not lie
-  // over a line of the reply being read (T-15, Dev 7 audit D1).
+  // Where the floating one sits: just above the composer, centred on the
+  // column, not over a line of the reply being read (T-15, Dev 7 audit D1;
+  // YN-19).
   const pill = document.querySelector(".jump-latest");
   const over = (() => {
     if (!pill) return null;
@@ -94,8 +99,10 @@ const waysBack = (page) => page.evaluate(() => {
           return p.left < line.right && p.right > line.left && p.top < bottom && p.bottom > top;
         });
       }).length;
+    const column = document.querySelector(".conversation-inner")?.getBoundingClientRect();
     return { covered, aboveComposerBy: composer ? Math.round(composer.top - p.bottom) : null,
-      straddles: composer ? p.bottom >= composer.top - 1 : null };
+      clearOfComposer: composer ? p.bottom <= composer.top + 0.5 : null,
+      centredOff: column ? Math.round(((p.left + p.right) / 2 - (column.left + column.right) / 2) * 10) / 10 : null };
   })();
   const bar = document.querySelector(".source-navigation");
   const homeAction = document.querySelector(".source-navigation-home");
@@ -158,8 +165,9 @@ const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if
   check(seen.found.length === 1, `one way back while merely scrolled up (${seen.found.length}: ${seen.found.map((f) => f.where).join(", ") || "none"})`);
   check(seen.found[0]?.where === "floating", "and it is the floating one, since no bar is showing");
   check(seen.over?.covered === 0, `and it covers no line of the reply (${seen.over?.covered} covered)`);
-  check(seen.over?.straddles === true,
-    `it rides the composer's edge rather than floating above it (gap ${seen.over?.aboveComposerBy}px)`);
+  check(seen.over?.clearOfComposer === true && seen.over.aboveComposerBy <= 24,
+    `it sits just above the composer, not over it (gap ${seen.over?.aboveComposerBy}px)`);
+  check(Math.abs(seen.over?.centredOff ?? 99) <= 2, `and is centred on the conversation column (${seen.over?.centredOff}px off)`);
   check(seen.atEnd === false, "nothing scrolled the conversation to the end by itself");
   await context.close();
 }
@@ -198,11 +206,12 @@ const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if
   check(!!placed, `a reply line reaches the pill's width, to be put under it (${JSON.stringify(placed)})`);
   check(seen.over?.covered === 0,
     `and with one there on purpose the pill still covers no line (${seen.over?.covered} covered)`);
-  check(seen.over?.straddles === true,
-    `while still riding the composer's edge (gap ${seen.over?.aboveComposerBy}px)`);
+  check(seen.over?.clearOfComposer === true,
+    `while still clear of the composer (gap ${seen.over?.aboveComposerBy}px)`);
   await context.close();
 }
-// A window of earlier messages: the bar carries it, and nothing repeats it.
+// A window of earlier messages: no bar, the floating one, and nothing
+// repeats it (YN-19).
 {
   const { context, page } = await open({ agent, pending: [], messageReceipts: [], artifacts: [], turns,
     conversation: { hasAfter: true, hasBefore: false } });
@@ -210,14 +219,14 @@ const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if
   await page.waitForTimeout(400);
   const seen = await waysBack(page);
   console.log("history window", JSON.stringify(seen));
-  check(seen.bar, "a reading bar shows for a window of earlier messages");
+  check(!seen.bar, "no reading bar for a window of earlier messages");
   check(seen.found.length === 1, `still one way back (${seen.found.length}: ${seen.found.map((f) => f.where).join(", ") || "none"})`);
-  check(seen.found[0]?.where === "reading-bar", "and it is the bar's, not the floating one or the window's");
+  check(seen.found[0]?.where === "floating", "and it is the floating one, not a bar's or the window's");
   check(seen.atEnd === false, "nothing jumped to the end");
   await context.close();
 }
 // A window opened from the rail offers no way back to Home: there is nowhere
-// to go back to, and the bar is for the latest.
+// to go back to.
 {
   const { context, page } = await open({ agent, pending: [], messageReceipts: [], artifacts: [], turns,
     conversation: { hasAfter: true, hasBefore: false } });
@@ -261,12 +270,12 @@ const fromHome = async () => {
   check(seen.homeAction === HOME_LABEL,
     `and going back to Home stands beside it, not in its place (${seen.homeAction})`);
   check(seen.atEnd === false, "nothing jumped to the end on the way in");
-  // Pressing it arrives at the latest and lets the source go. Whether the
-  // bar itself then goes depends on Core no longer reporting a window —
-  // `backToLatest` asks for the latest with `live.navigate({})` — and this
-  // fixture answers every read with the same window, so the bar stays here.
-  // What the conversation itself decides is asserted instead: it is at the
-  // end, the source is let go, and its Home action goes with it.
+  // Pressing it arrives at the latest and lets the source go, and its bar
+  // with it. `backToLatest` asks for the latest with `live.navigate({})`,
+  // and this fixture answers every read with the same window of earlier
+  // messages, so the floating one stands in for the bar here (YN-19).
+  // What the conversation itself decides is asserted: it is at the end, the
+  // source is let go, and its Home action goes with it.
   await page.locator(".source-navigation .quiet-button").first().click();
   await page.waitForTimeout(900);
   const after = await waysBack(page);
@@ -274,8 +283,8 @@ const fromHome = async () => {
   check(after.atEnd === true, `pressing it lands at the latest (atEnd ${after.atEnd})`);
   check(after.homeAction === null,
     `the source is let go, so the way back to Home goes with it (${after.homeAction})`);
-  check(after.found.length === 1 && after.found[0]?.where === "reading-bar",
-    `and the one way back is still the bar's, this fixture keeping its window open (${after.found.length}: ${after.found.map((f) => f.where).join(", ") || "none"})`);
+  check(!after.bar && after.found.length === 1 && after.found[0]?.where === "floating",
+    `the bar goes with it, and the floating one stands in, this fixture keeping its window open (${after.found.length}: ${after.found.map((f) => f.where).join(", ") || "none"})`);
   await context.close();
 }
 // And the other action still goes Home.

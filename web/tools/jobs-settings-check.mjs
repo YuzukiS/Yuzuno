@@ -213,7 +213,9 @@ try {
 
       // ---- The Core host budget: a new Jobs at once, saved with the budget.
       const form = host.locator(`[aria-label="This host's Job budget"]`);
-      const field = form.getByLabel("Jobs at once", { exact: true });
+      // A slider (YN-8), saved with the page's one bar.
+      const field = form.locator('input[type="range"][name="maxActive"]');
+      const bar = settings.locator(".settings-savebar");
       await field.waitFor();
       assert.equal(await field.inputValue(), String(before), "the field shows the number in effect");
       for (const group of ["Disk reserve", "Windows jobs", "GPU 0 · NVIDIA GeForce RTX 5090"])
@@ -223,7 +225,8 @@ try {
       assert.ok(await dialogFits(page), "Settings fits the window");
       await field.fill(String(slots));
       const sent = report.writes.length;
-      await form.getByRole("button", { name: "Save budget", exact: true }).click();
+      assert.equal(await form.getByRole("button", { name: "Save budget", exact: true }).count(), 0, "no Save of its own on the page");
+      await bar.getByRole("button", { name: "Save", exact: true }).click();
       await form.locator(".jobs-settings-now", { hasText: `In effect: ${slots} at once.` }).waitFor({ timeout: 10_000 });
       const post = report.writes.slice(sent).find((w) => w.path === "/api/jobs/budget");
       assert.deepEqual(post?.body, { cpuMillis: 8000, memoryMiB: 16384, swapMiB: 0, maxActive: slots }, "Jobs at once goes in the budget POST");
@@ -233,27 +236,25 @@ try {
       await page.screenshot({ path: resolve(output, `settings-jobs-gpu-${tag}.png`), animations: "disabled" });
       check(`${tag}: Jobs at once ${slots} is saved with the budget and read back; every field fits`, { layout });
 
-      // ---- An SSH machine's Jobs: on its own page, in its editor (YN-8 S3).
-      const name = width > 720 ? "Mac mini" : "Lab box with a long synthetic machine name";
+      // ---- An SSH machine's Jobs: on its own page, its settings saved with the page's bar (YN-8 S3b).
       await settings.locator(".settings-machines .settings-crumb").click();
       await settings.locator(`[data-machine-row="${width > 720 ? "mini" : "lab"}"]`).click();
       const remote = settings.locator(".settings-machines");
-      await remote.getByRole("button", { name: `Edit ${name}`, exact: true }).click();
-      const editor = remote.locator(".remote-machine-editor");
-      await editor.waitFor();
-      const remoteLayout = await fits(remote.locator(`article[data-machine-id="${width > 720 ? "mini" : "lab"}"]`));
-      assert.deepEqual(remoteLayout, { scrolls: false, wider: [] }, `the machine editor fits at ${width} px`);
-      assert.ok(await dialogFits(page), "Settings fits the window with the machine editor");
-      await editor.scrollIntoViewIfNeeded();
+      const editor = remote.locator(".machine-settings");
+      await editor.locator(".machine-settings-jobs").waitFor();
+      const remoteLayout = await fits(editor);
+      assert.deepEqual(remoteLayout, { scrolls: false, wider: [] }, `the machine's settings fit at ${width} px`);
+      assert.ok(await dialogFits(page), "Settings fits the window with the machine's settings");
+      await editor.locator(".machine-settings-jobs").scrollIntoViewIfNeeded();
       await page.screenshot({ path: resolve(output, `settings-jobs-remote-${tag}.png`), animations: "disabled" });
       if (theme === "light" && width > 720) {
-        await editor.getByLabel("Jobs at once", { exact: true }).fill("4");
-        await editor.getByRole("button", { name: "Save changes", exact: true }).click();
-        await editor.waitFor({ state: "detached", timeout: 10_000 });
+        await editor.locator('.machine-settings-jobs input[type="range"][aria-label="Jobs at once"]').fill("4");
+        await bar.getByRole("button", { name: "Save", exact: true }).click();
+        await bar.getByText("All changes saved.").waitFor({ timeout: 10_000 });
         const put = report.writes.find((w) => w.method === "PUT");
         assert.deepEqual(put?.body, { name: "Mac mini", target: "mac-mini", codex: "codex", defaultCwd: "/Users/fixture/projects", maxJobs: 4 }, "only the changed Jobs setting goes in the machine PUT");
       }
-      check(`${tag}: an SSH machine's page has its Jobs in its editor, which fits`, { remoteLayout });
+      check(`${tag}: an SSH machine's page has its Jobs in its own settings, which fit`, { remoteLayout });
       await page.keyboard.press("Escape");
       await settings.waitFor({ state: "detached" });
     } catch (error) {

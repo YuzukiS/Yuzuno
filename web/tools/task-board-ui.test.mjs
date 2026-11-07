@@ -173,7 +173,8 @@ test("a card says where its executor stands: queued with its place, starting wit
     const slot = (id) => p.row(id).querySelector(".collab-executor-slot");
     assert.equal(slot("T-3")?.textContent, "Queued (number 2)", "a queued executor's card says its place");
     assert.equal(slot("T-3").dataset.slotState, "waiting");
-    assert.match(slot("T-3").title, /waits for a free slot and starts in turn/);
+    // Each machine has the only limit (YN-2 S5): the wait is for a slot there.
+    assert.match(slot("T-3").title, /waits for a free slot on its machine and starts in turn\. Settings → Machines sets how many run at once on each machine\./);
     // A start that didn't finish says why on the card itself (R1 1ec1008a P3-2).
     assert.equal(slot("T-5").textContent, "Start not finished: its start was not confirmed");
     assert.equal(slot("T-5").title,

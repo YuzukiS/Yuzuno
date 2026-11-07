@@ -49,6 +49,10 @@
   padding: 12px 16px;
   border-top: 1px solid var(--line);
 }
+/* On the Core host's page the bar saves (YN-8): nothing here until a save says something. */
+.jobs-settings-actions:empty {
+  display: none;
+}
 .jobs-settings-actions .secondary-button {
   display: inline-flex;
   align-items: center;

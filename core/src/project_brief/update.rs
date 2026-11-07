@@ -7,7 +7,7 @@
 //! the two, outside any database lock, and attachment files are copied
 //! there too (see attachments::stage).
 use super::{
-    attachments,
+    attachments, patch,
     sections::{self, Owners, Row},
     writes, *,
 };
@@ -138,12 +138,12 @@ fn preview(rejected: Option<Value>, checked_all: bool, advice: Vec<Value>, repai
 }
 
 /// The validator's advice on change `index` (T-176), added to `advice`
-/// once each and at most MAX_ADVICE in all. A block edit is advised only
-/// on the blocks it replaced, never again on the rest of the section.
+/// once each and at most MAX_ADVICE in all. A block edit or patch is
+/// advised only on the blocks it changed, never again on the rest of the section.
 fn advise(change: &Change, index: usize, found: Vec<Value>, advice: &mut Vec<Value>) {
     for mut one in found.into_iter().filter(Value::is_object) {
         let path = one["path"].as_str().unwrap_or_default().to_owned();
-        if change.op == Op::Edit && !edited_block(change, &path) {
+        if matches!(change.op, Op::Edit | Op::Patch) && !edited_block(change, &path) {
             continue;
         }
         one["path"] = json!(change_path(change, index, &path));
@@ -160,10 +160,24 @@ fn listed(mut repairs: Vec<Value>) -> (Vec<Value>, usize) {
     (repairs, more)
 }
 
-/// Whether `path` (body.elements.<id>…) is in a block the edit replaced.
+/// Whether `path` (body.elements.<id>…) is in a block the edit replaced,
+/// or the patch changed: one its path or from names under /elements/<id>,
+/// or any block when it names /elements or /root as a whole.
 fn edited_block(change: &Change, path: &str) -> bool {
     let Some(rest) = path.strip_prefix("body.elements.") else { return false };
     let id = rest.split('.').next().unwrap_or_default();
+    if change.op == Op::Patch {
+        return change.edit["patch"].as_array().into_iter().flatten().any(|op| {
+            ["path", "from"].iter().filter_map(|field| op[*field].as_str()).any(|pointer| {
+                let mut tokens = pointer.split('/').skip(1).map(|token| token.replace("~1", "/").replace("~0", "~"));
+                match (tokens.next().as_deref(), tokens.next()) {
+                    (Some("elements"), Some(block)) => block == id,
+                    (Some("elements") | Some("root"), None) => true,
+                    _ => false,
+                }
+            })
+        });
+    }
     change.edit["elements"].as_object().is_some_and(|elements| elements.contains_key(id))
 }
 
@@ -172,6 +186,9 @@ pub(super) enum Op {
     Put,
     /// Replaces blocks of an existing section by element id; see `edited`.
     Edit,
+    /// Changes values of an existing section's body by RFC 6902 operations
+    /// (YN-14 A2); see `patched`. Otherwise as Edit.
+    Patch,
     Resolve,
     Remove,
     Claim,
@@ -186,7 +203,7 @@ pub(super) struct Change {
     /// the stored section with the edited blocks in place, built by `start`
     /// from the row the edit reads, and checked the same way.
     pub section: Value,
-    /// edit only: {elements, status?} as sent.
+    /// edit: {elements, status?} as sent; patch: {patch, status?}.
     pub edit: Value,
     /// Stored body for an edit's legacy unused-attachment compatibility.
     /// Set by start, never accepted from the Agent's request.
@@ -319,11 +336,12 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
     let op = match object.get("op").and_then(Value::as_str) {
         Some("put") => Op::Put,
         Some("edit") => Op::Edit,
+        Some("patch") => Op::Patch,
         Some("resolve") => Op::Resolve,
         Some("remove") => Op::Remove,
         Some("claim") => Op::Claim,
         _ => {
-            problems.push(problem("invalid_change", format!("{at}.op"), "op is one of put, edit, resolve, remove or claim.", "sections"));
+            problems.push(problem("invalid_change", format!("{at}.op"), "op is one of put, edit, patch, resolve, remove or claim.", "sections"));
             return None;
         }
     };
@@ -351,6 +369,9 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
         }
         let edit = json!({"elements":elements,"status":object.get("status").cloned().unwrap_or(Value::Null)});
         return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![] });
+    }
+    if op == Op::Patch {
+        return parse_patch(&at, key, object, problems);
     }
     if op != Op::Put {
         if let Some(extra) = object.keys().find(|field| !matches!(field.as_str(), "op" | "key")) {
@@ -382,6 +403,57 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
     let mut section = Value::Object(object.clone());
     section.as_object_mut().unwrap().remove("op");
     Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None, repairs: vec![] })
+}
+
+/// A patch change's shape (YN-14 A2): 1-MAX_OPS RFC 6902 operations, each
+/// {op, path} with value for add, replace and test and from for move and
+/// copy, and nothing else. Whether its paths are in the body is `patched`'s.
+fn parse_patch(at: &str, key: &str, object: &serde_json::Map<String, Value>, problems: &mut Vec<Value>) -> Option<Change> {
+    if let Some(extra) = object.keys().find(|field| !matches!(field.as_str(), "op" | "key" | "patch" | "status")) {
+        problems.push(problem("invalid_change", format!("{at}.{extra}"),
+            "patch takes op, key, patch and, for a status section, status; put the section to change anything else.", "sections"));
+        return None;
+    }
+    let Some(ops) = object.get("patch").and_then(Value::as_array).filter(|ops| (1..=patch::MAX_OPS).contains(&ops.len())) else {
+        problems.push(problem("invalid_change", format!("{at}.patch"),
+            format!("patch is a list of 1-{} RFC 6902 operations on the section's body, e.g. [{{op:\"replace\", path:\"/elements/notes/props/text\", value:\"…\"}}].", patch::MAX_OPS),
+            "sections"));
+        return None;
+    };
+    for (number, op) in ops.iter().enumerate() {
+        let here = format!("{at}.patch[{number}]");
+        let Some(fields) = op.as_object() else {
+            problems.push(problem("invalid_change", here, "Each operation is {op, path, value?, from?}.", "sections"));
+            return None;
+        };
+        let name = fields.get("op").and_then(Value::as_str).filter(|name| patch::OPS.contains(name));
+        let Some(name) = name else {
+            problems.push(problem("invalid_change", format!("{here}.op"), format!("op is one of {}.", patch::OPS.join(", ")), "sections"));
+            return None;
+        };
+        let wants = |field: &str| match field {
+            "value" => matches!(name, "add" | "replace" | "test"),
+            "from" => matches!(name, "move" | "copy"),
+            _ => matches!(field, "op" | "path"),
+        };
+        if let Some(extra) = fields.keys().find(|field| !wants(field)) {
+            problems.push(problem("invalid_change", format!("{here}.{extra}"), format!("{name} takes {}.", match name {
+                "add" | "replace" | "test" => "op, path and value",
+                "move" | "copy" => "op, from and path",
+                _ => "op and path",
+            }), "sections"));
+            return None;
+        }
+        let missing = ["path", "value", "from"].into_iter().find(|field| wants(field) && !fields.contains_key(*field));
+        let bad_pointer = ["path", "from"].into_iter().find(|field| fields.get(*field).is_some_and(|v| !v.as_str().is_some_and(|s| s.len() <= 1000)));
+        if let Some(field) = missing.or(bad_pointer) {
+            problems.push(problem("invalid_change", format!("{here}.{field}"),
+                format!("{name} needs {field}{}.", if field == "value" { "" } else { ": a JSON Pointer into the body, e.g. /elements/notes/props/text" }), "sections"));
+            return None;
+        }
+    }
+    let edit = json!({"patch":ops,"status":object.get("status").cloned().unwrap_or(Value::Null)});
+    Some(Change { op: Op::Patch, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![] })
 }
 
 pub(super) struct Caller {
@@ -529,7 +601,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 Op::Put => change.kind == "ask" && (existing.is_none() || own_ask),
                 // An edit keeps the stored kind: an Ask-only member edits
                 // only its own ask, never a report or status it wrote before.
-                Op::Resolve | Op::Edit => own_ask,
+                Op::Resolve | Op::Edit | Op::Patch => own_ask,
                 // It may take down what it wrote as an editor (YN-2 S4, Q-L5).
                 Op::Remove => own,
                 Op::Claim => false,
@@ -599,8 +671,9 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 }
                 planned.insert(key.into(), Planned { owner: ctx.agent.clone(), open_ask: change.kind == "ask" });
             }
-            // Changes no owner, kind or ask state; the blocks are `edited`'s.
-            Op::Edit => match &existing {
+            // Changes no owner, kind or ask state; the blocks are `edited`'s
+            // (`patched`'s).
+            Op::Edit | Op::Patch => match &existing {
                 None => problems.push(problem("not_found", format!("{at}.key"), match gone()? {
                     note if note.is_empty() => format!("No live section has key {key}; create it with put."),
                     note => format!("No live section has key {key}, so there is nothing to edit.{note}"),
@@ -695,14 +768,15 @@ fn start(store: &Store, actor: &str, id: &str, input: &Value) -> Result<Start> {
     let mut request = request;
     let mut problems = vec![];
     for (index, change) in request.changes.iter_mut().enumerate() {
-        if change.op != Op::Edit {
+        if !matches!(change.op, Op::Edit | Op::Patch) {
             continue;
         }
         // rules found it live and the caller's. The commit only goes ahead
         // while no write to this key came after expectedVersion (conflict),
         // so this row is the one it changes.
         let row = sections::live_key(&db, &ctx.project, &change.key)?.context("the section changed while it was being read")?;
-        match edited(&row, &change.edit, index) {
+        let composed = if change.op == Op::Patch { patched(&row, &change.edit, index) } else { edited(&row, &change.edit, index) };
+        match composed {
             Ok(section) => {
                 change.section = section;
                 change.previous_body = Some(row.data["body"].clone());
@@ -834,6 +908,24 @@ fn edited(row: &Row, edit: &Value, index: usize) -> Result<Value, Vec<Value>> {
     for (id, block) in blocks {
         body["elements"][id] = block;
     }
+    Ok(composed(row, body, &edit["status"]))
+}
+
+/// A patch's section (YN-14 A2): the stored body with the operations
+/// applied in order, otherwise as `edited` composes it. The first operation
+/// that can't be applied refuses the change by its own path.
+fn patched(row: &Row, edit: &Value, index: usize) -> Result<Value, Vec<Value>> {
+    let mut body = row.data["body"].clone();
+    let ops = edit["patch"].as_array().cloned().unwrap_or_default();
+    if let Err(failed) = patch::apply(&mut body, &ops) {
+        return Err(vec![problem(failed.code, format!("changes[{index}].patch[{}].{}", failed.index, failed.field), failed.reason, "sections")]);
+    }
+    Ok(composed(row, body, &edit["status"]))
+}
+
+/// The section a block edit or patch sends the validator: `body` with the
+/// rest as stored, and `status` when the change gives one.
+fn composed(row: &Row, body: Value, status: &Value) -> Value {
     let data = &row.data;
     let mut section = json!({"key":row.key,"kind":row.kind,"title":data["title"],"body":body});
     for name in ["ask", "status", "time"] {
@@ -841,8 +933,8 @@ fn edited(row: &Row, edit: &Value, index: usize) -> Result<Value, Vec<Value>> {
             section[name] = data[name].clone();
         }
     }
-    if !edit["status"].is_null() {
-        section["status"] = edit["status"].clone();
+    if !status.is_null() {
+        section["status"] = status.clone();
     }
     let attachments: Vec<Value> = data["attachments"].as_array().into_iter().flatten().map(|entry| {
         let mut sent = json!({"name":entry["name"]});
@@ -856,7 +948,7 @@ fn edited(row: &Row, edit: &Value, index: usize) -> Result<Value, Vec<Value>> {
     if !attachments.is_empty() {
         section["attachments"] = json!(attachments);
     }
-    Ok(section)
+    section
 }
 
 /// Where a validator problem is in the change: an edit sends blocks, not a
@@ -865,6 +957,7 @@ fn change_path(change: &Change, index: usize, path: &str) -> String {
     let path = match change.op {
         Op::Edit if path == "body" || path == "body.elements" => "elements".to_owned(),
         Op::Edit => path.strip_prefix("body.").unwrap_or(path).to_owned(),
+        // A patch sends operations, not blocks: problems name the patched body.
         _ => path.to_owned(),
     };
     if path.is_empty() { format!("changes[{index}]") } else { format!("changes[{index}].{path}") }
@@ -890,7 +983,7 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
     // Each change's repairs as the section keeps them.
     let mut kept = vec![vec![]; request.changes.len()];
     for (index, change) in request.changes.iter().enumerate() {
-        if !matches!(change.op, Op::Put | Op::Edit) {
+        if !matches!(change.op, Op::Put | Op::Edit | Op::Patch) {
             normalized.push(Value::Null);
             continue;
         }
@@ -1078,8 +1171,8 @@ fn research_rules(
         let current = sections::live_key(tx, &ctx.project, &change.key)?;
         let next = match change.op {
             Op::Put => section_data(&normalized[index], &change.section, &staged[index]),
-            // An edit keeps the section's attachments.
-            Op::Edit => {
+            // An edit or patch keeps the section's attachments.
+            Op::Edit | Op::Patch => {
                 let Some(row) = &current else { continue };
                 let mut data = row.data.clone();
                 data["body"] = normalized[index]["body"].clone();
@@ -1207,7 +1300,7 @@ fn apply(
                 attachments::index(tx, seq, &ctx.project, &staged[index])?;
                 changed.push(json!({"key":change.key,"version":version}));
             }
-            Op::Edit => {
+            Op::Edit | Op::Patch => {
                 let row = row()?;
                 // Only the blocks (and a status section's status) change:
                 // title, time, attachments and the ask's state stay as they

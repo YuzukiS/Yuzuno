@@ -13,7 +13,8 @@
 //! Workspace MCP endpoint on loopback and the stub provider. T-61 slice 2:
 //! its requests answered. T-61 slice 3: its commands, as Core's transport
 //! reads them and through the Workspace's own send path. T-61 slice 4: its
-//! compaction, likewise.
+//! compaction, likewise. T-61 slice 5: its snapshots, where Core's Rewind
+//! reads them, and a Rewind previewed through the Workspace.
 #![cfg(target_os = "linux")]
 
 use serde_json::{json, Value};
@@ -1522,6 +1523,429 @@ async fn a_real_opencode_2x_compacts_through_the_workspace() {
     // 3. The next message goes.
     let next = send("c2", "probe-61 after").await.expect("the next message goes").turn_id.unwrap();
     assert_eq!(ended(next).await["status"], "completed");
+
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
+}
+
+/// A Git repository for the Rewind probes (T-61 slice 5): `repo/work` (the
+/// Agent's folder) holds `a.txt` = "one", `repo/sibling.txt` is in the
+/// worktree but outside the folder, `outside/x.txt` outside the repository,
+/// all committed by a synthetic author; and the stub's provider configured in
+/// the folder, every permission allowed so that `write` asks nothing. The
+/// folder and the repository, resolved.
+fn rewind_repo(dir: &Path, port: u16) -> (PathBuf, PathBuf) {
+    let (repo, outside) = (dir.join("repo"), dir.join("outside"));
+    std::fs::create_dir_all(repo.join("work")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(repo.join("work/a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join("sibling.txt"), "sib\n").unwrap();
+    std::fs::write(outside.join("x.txt"), "x\n").unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").current_dir(&repo).args(["-c", "user.name=Probe", "-c", "user.email=probe@example.invalid"])
+            .args(args).env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "probe"]);
+    let mut config: Value = serde_json::from_str(&commands_config(port)).unwrap();
+    config["permissions"] = json!([{"action": "*", "resource": "*", "effect": "allow"}]);
+    std::fs::write(repo.join("work/opencode.json"), config.to_string()).unwrap();
+    (repo.join("work").canonicalize().unwrap(), repo.canonicalize().unwrap())
+}
+
+/// The sha256 of a file's bytes, as Core's revert check states it.
+fn file_state(bytes: &[u8]) -> yuzuno_workspace::opencode_revert_files::State {
+    use sha2::Digest;
+    yuzuno_workspace::opencode_revert_files::State::File {
+        size: bytes.len() as u64, sha256: sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect(), executable: false,
+    }
+}
+
+/// A real OpenCode 2.x keeps each step's snapshot where Core's Rewind reads
+/// it (T-61 slice 5, D-23 (a)), against the stub provider. A Turn that
+/// writes two files of the folder and one outside it: each of its steps has
+/// `snapshot.start` and `end`, and its files are the folder's two, relative
+/// to the Git top level, never the one outside. The store is in the data
+/// folder Core gives it, by 2.x's location's project and the SHA-1 of the
+/// resolved top level, its `alternates` naming the repository's objects.
+/// From there Core's own check reads each file as the Turn found it, and
+/// writes nothing.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
+async fn a_real_opencode_2x_keeps_each_steps_snapshot_where_cores_rewind_reads_it() {
+    use yuzuno_workspace::opencode_revert_files::{self as files, Root, State, BOUNDS};
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("db");
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, _log) = stub_provider(dir.path());
+    let (folder, repo) = rewind_repo(dir.path(), port);
+    let launch = Launch::new(program, folder.clone(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let model = server.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+
+    let (turn_a, turn_b) = (MessageId::new(), MessageId::new());
+    for (turn, prompt) in [(&turn_a, "probe-61 write"), (&turn_b, "probe-61 three")] {
+        assert_eq!(server.submit(&session, turn, prompt).await.unwrap(), Submission::Accepted);
+        let run = one_run(&mut events, &session).await;
+        println!("probe: {prompt}: its run {:?}", types(&run));
+        assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded", "{prompt}");
+    }
+    let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/new.txt"), read("repo/sibling.txt")),
+        ("three\n".into(), "new\n".into(), "changed".into()), "the tools ran");
+
+    // 1. Each step's snapshot.
+    let messages = server.messages(&session).await.unwrap();
+    let list = messages.as_array().unwrap();
+    for m in list.iter().filter(|m| m["type"] == "assistant") {
+        println!("probe: 1 step {} snapshot {}", m["id"], m["snapshot"]);
+        assert!(m["snapshot"]["start"].is_string() && m["snapshot"]["end"].is_string(), "each step's start and end: {m}");
+    }
+    let from = list.iter().position(|m| m["id"] == turn_a.as_str()).expect("turn A's message");
+    let until = list.iter().position(|m| m["id"] == turn_b.as_str()).expect("turn B's message");
+    let mut changed: Vec<String> = list[from..until].iter().filter(|m| m["type"] == "assistant")
+        .flat_map(|m| m["snapshot"]["files"].as_array().cloned().unwrap_or_default()).filter_map(|f| f.as_str().map(str::to_owned)).collect();
+    changed.sort();
+    changed.dedup();
+    assert_eq!(changed, ["work/a.txt", "work/new.txt"], "the folder's files, relative to the top level, not sibling.txt");
+
+    // 2. Where the store is, and what Core's check reads from it.
+    let location = server.location(folder.to_str().unwrap()).await.unwrap();
+    println!("probe: 2 location {location}");
+    let info = server.session(&session).await.unwrap();
+    let project = location["project"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(info["projectID"], project.as_str(), "the session's project is the location's");
+    let toplevel = PathBuf::from(location["project"]["directory"].as_str().unwrap()).canonicalize().unwrap();
+    assert_eq!(toplevel, repo, "the project's directory is the Git top level");
+    assert_eq!(PathBuf::from(location["directory"].as_str().unwrap()).canonicalize().unwrap(), folder, "the folder, resolved");
+    let data = launch.data.join("opencode");
+    let store = files::store(data.to_str().unwrap(), &project, repo.to_str().unwrap()).unwrap();
+    println!("probe: 2 store {}", store.display());
+    assert!(store.join("HEAD").is_file(), "the store, in the data folder Core gave it: {}", store.display());
+    let alternates = std::fs::read_to_string(store.join("objects/info/alternates")).unwrap_or_default();
+    println!("probe: 2 alternates {alternates:?}");
+    assert!(alternates.lines().any(|l| Path::new(l.trim()) == repo.join(".git/objects")), "the repository's objects: {alternates:?}");
+    let targets = files::targets_v2(list, turn_a.as_str(), repo.to_str().unwrap(), folder.to_str().unwrap()).unwrap();
+    println!("probe: 2 targets {targets:?}");
+    let root_of = folder.clone();
+    let at = tokio::task::spawn_blocking(move || Root::of(&root_of)).await.unwrap().unwrap();
+    let (entries, _) = files::plan(&store, &repo, &[], &targets, &folder, at, BOUNDS).await.unwrap();
+    let seen: Vec<(String, State, State)> = entries.into_iter().map(|e| (e.target.rel, e.expected, e.current)).collect();
+    assert_eq!(seen, vec![
+        ("work/a.txt".to_owned(), file_state(b"one\n"), file_state(b"three\n")),
+        ("work/new.txt".to_owned(), State::Absent, file_state(b"new\n")),
+    ], "each file as the Turn found it, and as it is now");
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/new.txt"), read("repo/sibling.txt"), read("outside/x.txt")),
+        ("three\n".into(), "new\n".into(), "changed".into(), "x\n".into()), "nothing written");
+
+    server.shutdown().await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// The sha256 of every file under `dir` but those under `skip`, by path:
+/// what a revert must leave as it was.
+fn hashes(dir: &Path, skip: &[&Path]) -> std::collections::BTreeMap<PathBuf, String> {
+    use sha2::Digest;
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).unwrap() {
+            let path = entry.unwrap().path();
+            if skip.iter().any(|s| path.starts_with(s)) {
+                continue;
+            }
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file() {
+                let sum = sha2::Sha256::digest(std::fs::read(&path).unwrap()).iter().map(|b| format!("{b:02x}")).collect();
+                out.insert(path, sum);
+            }
+        }
+    }
+    out
+}
+
+/// One prompt of the stub's, under a new ID, run to its end: the ID, and
+/// the run's events.
+async fn prompt_run(server: &Server, events: &mut Events, session: &str, prompt: &str) -> (MessageId, Vec<Value>) {
+    let turn = MessageId::new();
+    assert_eq!(server.submit(session, &turn, prompt).await.unwrap(), Submission::Accepted);
+    let run = one_run(events, session).await;
+    println!("probe: {prompt}: its run {:?}", types(&run));
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded", "{prompt}");
+    (turn, run)
+}
+
+/// A real OpenCode 2.x stages, commits and refuses a revert as Core's
+/// transport reads them (T-61 slice 6, D-24, D-26 (a), D-27 (a)), against
+/// the stub provider.
+/// - Refused before anything changes, and read as refused: a message the
+///   session does not hold (404), and a running session (409).
+/// - A stage sends back each file of the folder's later steps, nothing
+///   else, keeps the revert, and keeps the messages; its answer lists what
+///   changed.
+/// - Its commit deletes the messages from the Turn on, touching no file,
+///   and its `session.revert.committed` is read as Core's own
+///   `opencode.reverted`.
+/// - A prompt, and a compaction, commit a held revert before they are
+///   admitted.
+/// - A restore that fails part way (a folder it cannot remove from)
+///   answers 500, read as unknown: no revert kept, the file checked out
+///   first already back.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
+async fn a_real_opencode_2x_stages_and_commits_a_revert_as_cores_transport_reads_them() {
+    use std::os::unix::fs::PermissionsExt;
+    use yuzuno_workspace::opencode::RevertAnswer;
+    use yuzuno_workspace::opencode_v2::REVERTED;
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("db");
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, _log) = stub_provider(dir.path());
+    let (folder, repo) = rewind_repo(dir.path(), port);
+    let launch = Launch::new(program, folder.clone(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let model = server.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let (turn_a, _) = prompt_run(&server, &mut events, &session, "probe-61 write").await;
+    let (turn_b, _) = prompt_run(&server, &mut events, &session, "probe-61 three").await;
+    let read = |rel: &str| std::fs::read_to_string(dir.path().join(rel)).ok();
+    let some = |text: &str| Some(text.to_owned());
+    // Every file outside the Agent's folder (the repository's own Git folder aside, which Git may refresh).
+    let (outside, git) = (dir.path().join("outside"), repo.join(".git"));
+    let others = || {
+        let mut all = hashes(&repo, &[&folder, &git]);
+        all.extend(hashes(&outside, &[]));
+        all
+    };
+    let before = others();
+    let ids = |list: &Value| list.as_array().unwrap().iter().filter_map(|m| m["id"].as_str().map(str::to_owned)).collect::<Vec<_>>();
+
+    // 6. Refused before anything changes: a message the session does not hold, and a running session.
+    let unknown = MessageId::new();
+    let answer = server.stage(&session, unknown.as_str()).unwrap().await;
+    println!("probe: 6 an unknown message: {answer:?}");
+    assert!(matches!(&answer, RevertAnswer::Refused(s) if s.code == 404), "read as refused: {answer:?}");
+    let busy = server.create_session("probe-busy").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&busy, &model, None).await.unwrap();
+    let slow = MessageId::new();
+    assert_eq!(server.submit(&busy, &slow, "probe-4a slow").await.unwrap(), Submission::Accepted);
+    let (seen, started) = until_kind(&mut events, &busy, &["session.execution.started"], 30).await;
+    assert!(started, "its run started: {:?}", types(&seen));
+    let answer = server.stage(&busy, slow.as_str()).unwrap().await;
+    println!("probe: 6 a running session: {answer:?}");
+    assert!(matches!(&answer, RevertAnswer::Refused(s) if s.code == 409), "read as refused: {answer:?}");
+    server.abort(&busy).await.unwrap();
+    let (seen, ended) = until_kind(&mut events, &busy, &ENDS, 30).await;
+    assert!(ended, "the slow run ended: {:?}", types(&seen));
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/new.txt")), (some("three\n"), some("new\n")), "nothing sent back by a refusal");
+
+    // 3. Staged to Turn A: the folder's files back as A found them, nothing else, the messages kept.
+    let answer = server.stage(&session, turn_a.as_str()).unwrap().await;
+    println!("probe: 3 staged: {answer:?}");
+    let RevertAnswer::Answered(staged) = answer else { panic!("answered: {answer:?}") };
+    assert_eq!(staged["revert"]["messageID"], turn_a.as_str(), "the session holds the revert to A: {staged}");
+    let mut changed: Vec<(String, String)> = staged["revert"]["files"].as_array().unwrap().iter()
+        .map(|f| (f["file"].as_str().unwrap_or_default().to_owned(), f["status"].as_str().unwrap_or_default().to_owned())).collect();
+    changed.sort();
+    assert_eq!(changed, [("work/a.txt".to_owned(), "modified".to_owned()), ("work/new.txt".to_owned(), "deleted".to_owned())], "{staged}");
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/new.txt")), (some("one\n"), None), "sent back");
+    assert_eq!(others(), before, "nothing outside the folder changed (sibling.txt stays as A's shell left it)");
+    assert_eq!(server.session(&session).await.unwrap()["revert"]["messageID"], turn_a.as_str(), "kept in the session");
+    let listed = ids(&server.messages(&session).await.unwrap());
+    assert!(listed.contains(&turn_a.as_str().to_owned()) && listed.contains(&turn_b.as_str().to_owned()), "the messages stay: {listed:?}");
+
+    // 4. Committed: the messages from A on are deleted, no file is touched, and Core reads its event as its own.
+    server.commit(&session).await.unwrap();
+    let (seen, committed) = until_kind(&mut events, &session, &["session.revert.committed"], 10).await;
+    let event = seen.last().unwrap();
+    println!("probe: 4 {} {}", event["type"], event["data"]);
+    assert!(committed, "{:?}", types(&seen));
+    assert_eq!((&event["data"]["sessionID"], &event["data"]["to"]), (&json!(session), &json!(turn_a.as_str())), "{event}");
+    let read_as = Cursor::default().read(event);
+    println!("probe: 4 read as {read_as:?}");
+    assert!(read_as.iter().any(|e| e["type"] == REVERTED && e["data"]["to"] == turn_a.as_str()), "read as Core's own: {read_as:?}");
+    let listed = ids(&server.messages(&session).await.unwrap());
+    println!("probe: 4 left {listed:?}");
+    assert!(!listed.contains(&turn_a.as_str().to_owned()) && !listed.contains(&turn_b.as_str().to_owned()), "deleted: {listed:?}");
+    assert!(server.session(&session).await.unwrap()["revert"].is_null(), "no revert held");
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/new.txt")), (some("one\n"), None), "the commit touches no file");
+
+    // 7. A prompt while a revert is held commits it before it is admitted.
+    let (turn_c, _) = prompt_run(&server, &mut events, &session, "probe-61 three").await;
+    let RevertAnswer::Answered(_) = server.stage(&session, turn_c.as_str()).unwrap().await else { panic!("staged to C") };
+    assert_eq!(read("repo/work/a.txt"), some("one\n"));
+    let (turn_d, run) = prompt_run(&server, &mut events, &session, "probe-61 three").await;
+    let kinds = types(&run);
+    let committed = kinds.iter().position(|t| t == "session.revert.committed").expect("committed by the prompt");
+    let enqueued = kinds.iter().position(|t| t == "session.inbox.enqueued").expect("the prompt admitted");
+    println!("probe: 7 committed at {committed}, admitted at {enqueued}");
+    assert!(committed < enqueued, "committed before admitted: {kinds:?}");
+    let listed = ids(&server.messages(&session).await.unwrap());
+    assert!(!listed.contains(&turn_c.as_str().to_owned()) && listed.contains(&turn_d.as_str().to_owned()), "{listed:?}");
+
+    // 10. A compaction while a revert is held commits it before it is admitted.
+    let RevertAnswer::Answered(_) = server.stage(&session, turn_d.as_str()).unwrap().await else { panic!("staged to D") };
+    let compaction = MessageId::new();
+    assert_eq!(server.compact(&session, &compaction).await.unwrap(), CompactAdmission::Admitted);
+    let (run, ended) = until_kind(&mut events, &session, &ENDS, 60).await;
+    let kinds = types(&run);
+    println!("probe: 10 {kinds:?}");
+    assert!(ended, "its run ended");
+    let committed = kinds.iter().position(|t| t == "session.revert.committed").expect("committed by the compaction");
+    let enqueued = kinds.iter().position(|t| t == "session.inbox.enqueued").expect("the compaction admitted");
+    assert!(committed < enqueued, "committed before admitted: {kinds:?}");
+    assert!(!ids(&server.messages(&session).await.unwrap()).contains(&turn_d.as_str().to_owned()), "D's message deleted");
+
+    // 8. A restore that fails part way: sub/ can't be removed from, so a.txt goes back and sub/b.txt stays.
+    std::fs::create_dir(folder.join("sub")).unwrap();
+    let (turn_e, _) = prompt_run(&server, &mut events, &session, "probe-61 nested").await;
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/sub/b.txt")), (some("four\n"), some("b\n")));
+    std::fs::set_permissions(folder.join("sub"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let answer = server.stage(&session, turn_e.as_str()).unwrap().await;
+    std::fs::set_permissions(folder.join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    println!("probe: 8 a restore that fails part way: {answer:?}");
+    assert!(matches!(&answer, RevertAnswer::Unknown(why) if why.contains("500")), "read as unknown: {answer:?}");
+    assert!(server.session(&session).await.unwrap()["revert"].is_null(), "no revert kept");
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/sub/b.txt")), (some("one\n"), some("b\n")),
+        "a.txt, checked out first, is back; sub/b.txt stays");
+    assert!(ids(&server.messages(&session).await.unwrap()).contains(&turn_e.as_str().to_owned()), "E's message stays");
+
+    server.shutdown().await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// A Rewind through the Workspace on a real OpenCode 2.x (T-61 slices 5
+/// and 6, D-2 (c)), against the stub provider.
+/// - Previewed: the files 2.x would send back, each as the Turn found it
+///   and as it is now, and the Turns that leave; nothing written.
+/// - Confirmed: each file back and checked, the Turns gone from the
+///   record, their messages deleted from 2.x's session, nothing asked of
+///   the model; the Agent goes on.
+/// - A restore that fails part way: unknown, each file listed as it is now,
+///   Core's backup named, the Agent held back while any file differs from
+///   before, and free once all are as before again.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
+async fn a_real_opencode_2x_rewind_is_confirmed_through_the_workspace() {
+    use std::os::unix::fs::PermissionsExt;
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61rewind";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    let (folder, _repo) = rewind_repo(dir.path(), port);
+    let ws = Workspace::new(dir.path().join("data"), folder.to_string_lossy().into(), "unused".into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port);
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":folder, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let send = |client: &str, text: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":text})).unwrap());
+        async move { ws.send_message(ID, input).await }
+    };
+    let ended = |turn: String| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..900 {
+                let d = ws.store.detail(ID).unwrap();
+                if d.agent.status == "idle" && d.turns.iter().any(|t| t["id"] == turn.as_str() && t["status"] != "inProgress") {
+                    return d.turns.iter().find(|t| t["id"] == turn.as_str()).unwrap().clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 90 s");
+        }
+    };
+    let turn_ids = || ws.store.detail(ID).unwrap().turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect::<Vec<_>>();
+    let read = |rel: &str| std::fs::read_to_string(folder.join(rel)).ok();
+    let some = |text: &str| Some(text.to_owned());
+    ws.reconnect(ID).await.unwrap();
+    let a = send("c1", "probe-61 write").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(a.clone()).await["status"], "completed");
+    let b = send("c2", "probe-61 three").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(b.clone()).await["status"], "completed");
+    let requests = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+
+    // Previewed.
+    let preview = ws.opencode_revert_preview(ID, &a).await.expect("a 2.x Rewind is previewed");
+    println!("probe: the preview {preview}");
+    let state = |s: yuzuno_workspace::opencode_revert_files::State| serde_json::to_value(s).unwrap();
+    let path = |rel: &str| folder.join(rel).to_string_lossy().into_owned();
+    assert_eq!(preview["files"], json!([
+        {"path": path("a.txt"), "expected": state(file_state(b"one\n")), "current": state(file_state(b"three\n"))},
+        {"path": path("new.txt"), "expected": state(yuzuno_workspace::opencode_revert_files::State::Absent), "current": state(file_state(b"new\n"))},
+    ]), "the folder's files as the Turn found them and as they are: {preview}");
+    assert_eq!(preview["removedTurns"], 2, "{preview}");
+    assert_eq!((read("a.txt"), read("new.txt")), (some("three\n"), some("new\n")), "nothing written");
+
+    // Confirmed.
+    let outcome = ws.opencode_revert_confirm(ID, preview["previewId"].as_str().unwrap()).await.expect("confirmed");
+    println!("probe: the confirm {outcome}");
+    assert_eq!((&outcome["status"], &outcome["draft"]), (&json!("completed"), &json!("probe-61 write")), "{outcome}");
+    assert_eq!(outcome["files"], json!([{"path": path("a.txt"), "outcome": "verified"}, {"path": path("new.txt"), "outcome": "verified"}]), "{outcome}");
+    assert_eq!((read("a.txt"), read("new.txt")), (some("one\n"), None), "sent back");
+    assert!(turn_ids().is_empty(), "the Turns leave the record: {:?}", turn_ids());
+    assert!(ws.pending_rewind(ID).await.unwrap()["attempt"].is_null(), "none left to check");
+    assert_eq!(std::fs::read_to_string(&log).unwrap_or_default().lines().count(), requests, "nothing asked of the model");
+
+    // The Agent goes on, and 2.x has deleted the reverted messages: the model is sent none of them.
+    std::fs::create_dir(folder.join("sub")).unwrap();
+    let nested = send("c3", "probe-61 nested").await.expect("the Agent goes on").turn_id.unwrap();
+    assert_eq!(ended(nested.clone()).await["status"], "completed");
+    assert_eq!(turn_ids(), vec![nested.clone()]);
+    let sent: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().skip(requests)
+        .map(|line| serde_json::from_str::<Value>(line).unwrap()["messages"].to_string()).collect();
+    assert!(sent.iter().any(|m| m.contains("probe-61 nested")), "the next prompt was asked: {sent:?}");
+    assert!(!sent.iter().any(|m| m.contains("probe-61 write") || m.contains("probe-61 three")), "no reverted message is sent: {sent:?}");
+
+    // A restore that fails part way: sub/ can't be removed from.
+    let preview = ws.opencode_revert_preview(ID, &nested).await.expect("previewed");
+    let key = preview["previewId"].as_str().unwrap().to_owned();
+    std::fs::set_permissions(folder.join("sub"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let outcome = ws.opencode_revert_confirm(ID, &key).await;
+    std::fs::set_permissions(folder.join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let outcome = outcome.expect("answered");
+    println!("probe: a restore that fails part way {outcome}");
+    assert_eq!(outcome["status"], "unknown", "{outcome}");
+    assert_eq!(outcome["files"], json!([{"path": path("a.txt"), "outcome": "verified"}, {"path": path("sub/b.txt"), "outcome": "notRestored"}]),
+        "a.txt back, sub/b.txt not: {outcome}");
+    let backup = dir.path().join("data/opencode").join(ID).join("revert").join(&key);
+    assert!(outcome["message"].as_str().unwrap().contains(&backup.display().to_string()), "Core's backup is named: {outcome}");
+    assert!(ws.send_message(ID, serde_json::from_value(json!({"clientMessageId":"c4","text":"held"})).unwrap()).await.is_err(), "held back");
+    let checked = ws.rewind_check(ID, &key).await.unwrap();
+    println!("probe: checked {checked}");
+    assert_eq!(checked["status"], "unknown", "a.txt differs from before: {checked}");
+    std::fs::write(folder.join("a.txt"), std::fs::read(backup.join("0.bin")).unwrap()).unwrap();
+    let checked = ws.rewind_check(ID, &key).await.unwrap();
+    println!("probe: checked again {checked}");
+    assert_eq!(checked["status"], "unchanged", "all as before: {checked}");
+    assert_eq!(turn_ids(), vec![nested]);
+    assert!(ws.pending_rewind(ID).await.unwrap()["attempt"].is_null(), "the Agent goes on");
 
     ws.close_agent(ID).await.unwrap();
     stub.kill().ok();

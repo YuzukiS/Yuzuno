@@ -364,7 +364,8 @@ const measure = (page) => page.evaluate(() => {
     pane: { scroll: pane.scrollWidth, client: pane.clientWidth, left: Math.round(box.left), right: Math.round(box.right),
       // How much of the pane shows at once, as the dialog leaves it.
       shown: Math.round(Math.max(0, Math.min(box.bottom, innerHeight) - Math.max(box.top, 0))) },
-    choices: [...pane.querySelectorAll(".input-send-choice")].map((el) => Math.round(el.getBoundingClientRect().height)).filter((height) => height > 0),
+    // The sending choices (YN-8: the opening and clock choices share the page).
+    choices: [...pane.querySelectorAll(".input-send-choice:has(input[name=input-send-key])")].map((el) => Math.round(el.getBoundingClientRect().height)).filter((height) => height > 0),
     columns: [...pane.querySelectorAll(".shortcut-group dl")].map((dl) => getComputedStyle(dl).gridTemplateColumns).find((value) => value !== "none") ?? null,
     outside, overlaps, clipped,
   };
@@ -411,9 +412,11 @@ const focused = (page) => page.evaluate(() => {
 });
 const stored = (page) => page.evaluate(() => localStorage.getItem("yuzuno.preferences"));
 const said = (page) => page.evaluate(() => ({
-  status: document.querySelector(".input-preferences .save-status [role=status]")?.textContent.trim() ?? null,
-  alert: document.querySelector(".input-preferences .save-status [role=alert]")?.textContent.trim() ?? null,
-  current: document.querySelector(".input-preferences .settings-current").textContent.trim(),
+  // The sending block's own save (YN-8: other blocks on the page have theirs).
+  status: document.querySelector("fieldset:has(input[name=input-send-key]) .save-status [role=status]")?.textContent.trim() ?? null,
+  alert: document.querySelector("fieldset:has(input[name=input-send-key]) .save-status [role=alert]")?.textContent.trim() ?? null,
+  // What is in effect leads with the send key, then where pages open (YN-8).
+  current: document.querySelector(".input-preferences .settings-current").textContent.trim().split(" · ")[0],
   checked: document.querySelector('input[name="input-send-key"]:checked')?.value ?? null,
 }));
 
@@ -474,9 +477,9 @@ async function refusedCase() {
       alert: "Not saved on this device: this browser’s storage for Yuzuno is full. Your choice applies in this window until you close or reload it.",
     });
     assert.equal(await stored(page), null);
-    await page.locator(".input-preferences .save-status").evaluate((el) => el.scrollIntoView({ block: "center" }));
+    await page.locator("fieldset:has(input[name=input-send-key]) .save-status").evaluate((el) => el.scrollIntoView({ block: "center" }));
     await page.waitForTimeout(100);
-    const buttons = await page.locator(".input-preferences .save-status button").evaluateAll((list) => list.map((b) => {
+    const buttons = await page.locator("fieldset:has(input[name=input-send-key]) .save-status button").evaluateAll((list) => list.map((b) => {
       const r = b.getBoundingClientRect();
       return { text: b.textContent.trim(), left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom) };
     }));
@@ -509,6 +512,12 @@ const SHORTCUTS_ENTRY = { search: "快捷键", title: "Keyboard shortcuts", edit
 
 /** Settings, opened from the bar, at an entry's editor as its search finds it. */
 async function openEditor(page, entry) {
+  // On a phone an open page hides Settings' directory and its search (YN-8): Back to it.
+  const back = page.locator(".settings-center .settings-back");
+  if (await back.isVisible()) {
+    await back.click();
+    await page.getByRole("searchbox", { name: "Search settings" }).waitFor({ timeout: 10_000 });
+  }
   if (!(await page.getByRole("searchbox", { name: "Search settings" }).isVisible())) {
     await page.getByRole("button", { name: "Settings and updates" }).click({ timeout: 10_000 });
     await page.getByRole("searchbox", { name: "Search settings" }).waitFor({ timeout: 10_000 });
@@ -524,9 +533,10 @@ async function closeSettings(page) {
   await page.getByRole("dialog").waitFor({ state: "detached", timeout: 10_000 });
 }
 /** What the send key's editor says and shows. */
+// The sending block's own save (YN-8: where pages open has its own below it).
 const editorState = (editor) => editor.evaluate((el) => ({
-  status: el.querySelector(".save-status [role=status]")?.textContent.trim() ?? null,
-  alert: el.querySelector(".save-status [role=alert]")?.textContent.trim() ?? null,
+  status: el.querySelector(".input-send-key .save-status [role=status]")?.textContent.trim() ?? null,
+  alert: el.querySelector(".input-send-key .save-status [role=alert]")?.textContent.trim() ?? null,
   checked: el.querySelector('input[name="input-send-key"]:checked')?.value ?? null,
 }));
 /** The browser refusing (or again keeping) a preference set, this device's send key by default, from now on in this page. */
@@ -945,7 +955,7 @@ for (const [part, run] of [["composer", composerCases], ["settings", settingsCas
     await run();
   } catch (error) {
     report.failed[part] = String(error?.stack || error).slice(0, 4000);
-    console.log(`FAILED ${part}: ${String(error?.message || error).split("\n")[0]}`);
+    console.log(`FAILED ${part}: ${String(error?.message || error).split("\n").slice(0, 8).join(" | ")}`);
   }
 }
 await browser.close();

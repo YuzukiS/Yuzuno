@@ -40,6 +40,10 @@ Mode `compact`: `run`, `hold` (until control `finishCompaction` or an interrupt)
 `drop-unadmitted`, `refuse-404`, `invalid-400`, `conflict-409`, `500`, `500-admitted`, `other-pending`. Control
 `autoCompact` runs one of 2.x's own; `compacts` lists what the route was sent. 1.19.3's `POST /session/:id/summarize`
 and its part removal (`DELETE /session/:id/message/:id/part/:id`) are gone.
+Reverts are 2.x's too (T-61 slice 6), outside the 1.19.3 mode: staged from each later step's snapshot (`POST
+/api/session/:id/revert/stage`, mode `stage`, `stage_v2`), committed (`POST …/revert/commit`, mode `commit`) or cleared
+(`DELETE …/revert`); new input (a prompt, a command, a compaction) commits a staged one first (`v2_commit`). 1.19.3's
+`POST /session/:id/revert` and `…/unrevert` are still answered, as before.
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
@@ -138,7 +142,7 @@ modes = {'prompt': 'store', 'mcp': 'connected', 'fail': {}, 'slow': {}, 'heartbe
          'command': 'run', 'compact': 'run', 'defaultModel': None, 'failListOnce': False,
          'holdPermission': False, 'revert': 'ok', 'unrevert': 'ok', 'directory': None, 'fork': 'ok', 'history': 'ok',
          'replay': 'ok', 'html': [], 'activeShape': 'object', 'integrations': [], 'oauth': {}, 'loginRefuse': False,
-         'holdOauthStatus': False, 'replyLost': None}
+         'holdOauthStatus': False, 'replyLost': None, 'stage': 'ok', 'commit': 'ok'}
 # 2.x's logins (T-32 slice 4b): its credentials, values included, as its database keeps them; its sign-in attempts;
 # and those cancelled.
 credentials, attempts, cancelled = {}, {}, []
@@ -147,7 +151,8 @@ held_reads = []
 # Compactions held running (`compact` mode `hold`), by session: their message's ID, until `finishCompaction` or an
 # interrupt ends one.
 compacting = {}
-# Reverts or unreverts held (mode `hold`) or answered late (mode `late`), by session: what lets them go on.
+# Reverts, unreverts or 2.x's revert stages held (mode `hold`) or answered late (mode `late`), by session: what lets
+# them go on.
 reverting = {}
 # OpenCode's durable events (T-10 Fork), as its database keeps them (`core/src/event.ts`): every v1
 # session, message and part event, under its session (the aggregate), numbered from 0 in each.
@@ -188,8 +193,8 @@ def v2_message_id():
 
 def publish(kind, properties):
     """An event of the stand-in's own store, kept in 1.19.3's shape: sent as 2.x sends its own (T-32 slice 3b), or as it
-    is in the 1.19.3 mode (switch or mode `v1Messages`), which only the tests of rewind and fork use until their slices
-    move them. Durable ones are kept for `/sync/history` as they are."""
+    is in the 1.19.3 mode (switch or mode `v1Messages`), which only the tests of fork use until its slice moves them
+    (rewind moved in T-61 slice 6). Durable ones are kept for `/sync/history` as they are."""
     if v1():
         sent = send(kind, properties)
     else:
@@ -657,6 +662,8 @@ def v2_view(session):
                     answer[name] = info[name]
             if info.get('error'):
                 answer['error'] = v2_error(info['error'])
+            if stored.get('snapshot'):
+                answer['snapshot'] = stored['snapshot']
             out.append(answer)
         out.extend(v2_shell(shell) for shell in shells.pop(mid, []))
         ending = idles.pop(mid, [])
@@ -835,13 +842,20 @@ def select(session, command):
     save()
 
 
-def answer_prompt(session, text=None, error=None, completed=True, parent=None, extra=None, files=None, raw_patches=None, raw_parts=None):
+UNSET = object()
+
+
+def answer_prompt(session, text=None, error=None, completed=True, parent=None, extra=None, files=None, raw_patches=None, raw_parts=None,
+                  snapshot=UNSET):
     """An assistant message answering the session's last prompt (or `parent`), with a text part.
     `extra` adds to its info what OpenCode reports of an answer: `tokens`, `providerID`/`modelID`, `summary`.
     `files` ({relative path: text, or None to delete}) are changed in the work folder as a run's tools change
     them, and named in a `patch` part whose hash is the snapshot from before (`session/processor.ts`); with
     snapshots off, no part. `raw_patches` are patch parts as they are ({hash, files}), such as one whose snapshot
-    is gone; `raw_parts` any other parts, as they are (such as a `task` tool's, naming its sub-agent)."""
+    is gone; `raw_parts` any other parts, as they are (such as a `task` tool's, naming its sub-agent).
+    With snapshots on, 2.x keeps each step's snapshot on its message (T-61 slice 5; schema/src/session-message.ts
+    Assistant.snapshot): the tree from before its tools ran and the files they changed, relative to the Git top level
+    (here the work folder). `snapshot` sets it as it is instead ({start?, files?}, or None for none)."""
     now = int(time.time() * 1000)
     info = {'id': new_id('msg'), 'sessionID': session, 'role': 'assistant', 'parentID': parent or last_prompt(session),
             'time': {'created': now}, 'finish': 'stop'}
@@ -853,19 +867,23 @@ def answer_prompt(session, text=None, error=None, completed=True, parent=None, e
     parts = []
     if text is not None:
         parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'text', 'text': text})
+    # Each step is snapshotted as it starts, whatever its tools then change (2.2.5 core/src/session/runner/step.ts).
+    before = track()
     if files:
-        before = track()
         for rel, content in files.items():
             write(rel, content)
         if before:
             parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'patch', 'hash': before,
                           'files': [str(WORK / rel) for rel in files]})
+    step = {'start': before, 'files': list(files or {})} if before else None
+    if snapshot is not UNSET:
+        step = snapshot
     for patch in raw_patches or []:
         parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'patch', **patch})
     for part in raw_parts or []:
         parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], **part})
     with lock:
-        messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': parts}
+        messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': parts, **({'snapshot': step} if step is not None else {})}
     save()
     publish('message.updated', {'sessionID': session, 'info': info})
     for part in parts:
@@ -975,7 +993,8 @@ def write(rel, content):
 
 
 def busy(session):
-    """OpenCode 1.19.3's 409 for a busy session (`SessionBusyError`, `packages/sdk/openapi.json`)."""
+    """OpenCode's 409 for a busy session (`SessionBusyError`: 1.19.3's `packages/sdk/openapi.json`, the same in 2.2.5's
+    protocol/src/errors.ts)."""
     return {'_tag': 'SessionBusyError', 'sessionID': session, 'message': f'Session is busy: {session}'}
 
 
@@ -1020,8 +1039,9 @@ def project(event):
 
 def cleanup(session):
     """As OpenCode 1.19.3 applies a revert waiting in the session at its next prompt, command or summarize
-    (`session/revert.ts` cleanup), and 2.x at a compaction it admits: the messages from its boundary on are deleted,
-    each announced, and the revert is cleared; files are left as they are."""
+    (`session/revert.ts` cleanup), here in the 1.19.3 mode and at 1.19.3's own `prompt_async` (2.x commits one instead,
+    `v2_commit`): the messages from its boundary on are deleted, each announced, and the revert is cleared; files are
+    left as they are."""
     revert = sessions[session].get('revert')
     if not revert:
         return
@@ -1042,6 +1062,74 @@ def cleanup(session):
     sessions[session].pop('revert', None)
     save()
     publish('session.updated', {'sessionID': session, 'info': sessions[session]})
+
+
+def v2_commit(session):
+    """As 2.x commits a revert staged in the session (2.2.5 core/src/session/revert.ts `commit`, projected in
+    core/src/session/projector.ts), on its route or before new input is admitted (core/src/session/session.ts `prompt`,
+    `compact`): every stored message from its boundary on, the boundary too, is deleted (an execution's idle message
+    and a shell's after one of them go with it), with what waits in the inbox from it on (a message steered in is one of
+    those stored; a compaction counts from when it was admitted), the revert is cleared, then `session.revert.committed`
+    is sent; files are left as they are. A boundary no longer stored deletes nothing. Whether one was held."""
+    revert = sessions[session].get('revert')
+    if not revert:
+        return False
+    stored = ordered(session)
+    at = next((i for i, m in enumerate(stored) if m['info']['id'] == revert.get('messageID')), None)
+    gone = {m['info']['id'] for m in stored[at:]} if at is not None else set()
+    since = stored[at]['info']['time']['created'] if at is not None else None
+    state = v2_of(session)
+    with lock:
+        for mid in gone:
+            messages[session].pop(mid, None)
+        dropped = {mid for mid, item in state['compacts'].items() if since is not None and item['created'] >= since}
+        for mid in dropped:
+            state['compacts'].pop(mid)
+        state['pending'] = [mid for mid in state['pending'] if mid not in gone and mid not in dropped]
+        state['steer'] -= gone
+        state['shells'] = [s for s in state['shells'] if s['after'] not in gone]
+        sessions[session].pop('revert', None)
+    save()
+    send('session.revert.committed', {'sessionID': session, 'to': revert.get('messageID')})
+    return True
+
+
+def v2_tree_entry(tree, rel):
+    """What the snapshot `tree` lists for the path `rel` (relative to the work folder): its mode, type and object, or
+    None when it lists nothing there. With snapshots off no Git runs: refused as 2.x refuses it."""
+    if not SNAPSHOTS:
+        raise RuntimeError('Snapshots are disabled')
+    listed = git('ls-tree', tree, '--', rel, check=False)
+    line = listed.stdout.decode(errors='replace').strip() if listed.returncode == 0 else ''
+    return line.split('\t', 1)[0] if line else None
+
+
+def v2_restore(files):
+    """As 2.x's Snapshot.restore (2.2.5 core/src/snapshot.ts, core/src/git.ts `tree.restore`): each path ({relative
+    path: tree}) checked out of its tree when that lists it, else deleted. With snapshots off 2.x refuses it ("Snapshots
+    are disabled"), and here no Git runs."""
+    if files and not SNAPSHOTS:
+        raise RuntimeError('Snapshots are disabled')
+    with lock:
+        for rel, tree in files.items():
+            if v2_tree_entry(tree, rel):
+                git('checkout', tree, '--', str(WORK / rel))
+            else:
+                (WORK / rel).unlink(missing_ok=True)
+
+
+def v2_diff(before, after, paths):
+    """As 2.x's Snapshot.diff limited to `paths` (2.2.5 core/src/snapshot.ts `diff`): a FileDiff of each one whose entry
+    differs from tree `before` to tree `after`, by path, `added`, `deleted` or `modified`; its patch and counts are left
+    empty here. No paths: none."""
+    out = []
+    for rel in sorted(set(paths)):
+        old, new = v2_tree_entry(before, rel), v2_tree_entry(after, rel)
+        if old == new:
+            continue
+        status = 'added' if old is None else 'deleted' if new is None else 'modified'
+        out.append({'file': rel, 'patch': '', 'additions': 0, 'deletions': 0, 'status': status})
+    return out
 
 
 def go_idle(session):
@@ -1275,7 +1363,8 @@ def control(name, body):
         return store(body['sessionID'], body['messageID'], body.get('text', ''))
     if name == 'reply':
         info = answer_prompt(body['sessionID'], body.get('text'), body.get('error'), body.get('completed', True), body.get('parentID'),
-                             body.get('info'), body.get('files'), body.get('patches'), body.get('parts'))
+                             body.get('info'), body.get('files'), body.get('patches'), body.get('parts'),
+                             body['snapshot'] if 'snapshot' in body else UNSET)
         if body.get('idle', True):
             go_idle(body['sessionID'])
         return info
@@ -1578,6 +1667,14 @@ class Handler(BaseHTTPRequestHandler):
                                     'directory': modes['directory'] or str(WORK)})
         if key == ('GET', 'project', 'current'):
             return self.reply(200, {'id': current_project[0], 'worktree': str(WORK), 'vcs': 'git'})
+        if key == ('GET', 'api', 'location'):
+            # 2.x's location (server/src/handlers/location.ts, T-61 slice 5): the folder asked for
+            # (`location[directory]`), resolved, and the project held for it now (control `project`), whose directory
+            # is the Git top level its snapshots are of, here the work folder. Mode `directory`: another folder.
+            asked = parse_qs(url.query).get('location[directory]', [None])[0]
+            directory = modes['directory'] or (str(Path(asked).resolve()) if asked else str(WORK))
+            return self.reply(200, {'directory': directory,
+                                    'project': {'id': current_project[0], 'directory': str(WORK), 'canonical': str(WORK)}})
         if key == ('POST', 'api', 'session'):
             # 2.x takes the session's folder from the body (server/src/handlers/session.ts).
             session = {'id': new_id('ses'), 'projectID': PROJECT, 'title': (body or {}).get('title', ''),
@@ -1672,6 +1769,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.command_v2(session, body)
         if (method, *rest) == ('POST', 'compact'):
             return self.compact_v2(session, body)
+        # 2.x's revert routes (T-61 slice 6); 1.19.3 has none of them.
+        if (method, *rest) == ('POST', 'revert', 'stage') and not v1():
+            return self.stage_v2(session, body)
+        if (method, *rest) == ('POST', 'revert', 'commit') and not v1():
+            return self.commit_v2(session)
+        if (method, *rest) == ('DELETE', 'revert') and not v1():
+            return self.clear_v2(session)
         if (method, *rest) == ('POST', 'model'):
             # 2.x's switchModel (T-32 slice 4a): the session's model for its next steps; 204.
             with lock:
@@ -1854,7 +1958,9 @@ class Handler(BaseHTTPRequestHandler):
     def prompt_v2(self, session, body):
         """As 2.x's prompt (protocol/src/groups/session.ts session.prompt, T-32 slice 4a): its text and files, each a
         `data:` URI, under its `id`; answered with the message as admitted, or a ConflictError (409) for an ID the
-        session holds already. Its model is the session's, as switchModel made it. The 1.19.3 prompt's modes apply."""
+        session holds already. Its model is the session's, as switchModel made it. A revert staged in the session is
+        committed before it is admitted (`v2_commit`; applied, `cleanup`, in the 1.19.3 mode). The 1.19.3 prompt's modes
+        apply."""
         files = []
         for f in body.get('files') or []:
             uri = f.get('uri') or ''
@@ -1889,8 +1995,12 @@ class Handler(BaseHTTPRequestHandler):
         files = [{k: f[k] for k in ('type', 'mime', 'filename', 'url') if k in f} for f in files]
         mode = modes['prompt']
         if mode != 'error':
-            # `prompt` applies a revert waiting in the session before its message (`session/prompt.ts`).
-            cleanup(session)
+            # `prompt` applies a revert waiting in the session before its message (`session/prompt.ts`); 2.x's commits a
+            # staged one after its preparation, before it admits the message (2.2.5 core/src/session/session.ts).
+            if admitted and not v1():
+                v2_commit(session)
+            else:
+                cleanup(session)
         model = body.get('model') or modes['defaultModel']
         if mode in ('store', 'renamed', 'store-unannounced'):
             # `store-unannounced`: admitted with no event Core sees (its stream missed it).
@@ -1926,8 +2036,9 @@ class Handler(BaseHTTPRequestHandler):
         """As 2.x's command (2.2.5 protocol/src/groups/session.ts session.command, core/src/config/plugin/command.ts; T-61
         slice 3): `{name, text}` (`files`, `agents`, `skills`, `delivery` may come too), no message ID and no model; each
         request is kept in `commands_seen`. A name mode `config` has no command of: 404 CommandNotFoundError. A config
-        command's own `model` and `agent` become the session's (`select`), a revert waiting in the session is applied,
-        and its template, expanded with the text (`expand`), is admitted as a prompt's message is (`admit`), under an ID
+        command's own `model` and `agent` become the session's (`select`), a staged revert is committed (`v2_commit`;
+        applied, `cleanup`, in the 1.19.3 mode), and its template, expanded with the text (`expand`), is admitted as a
+        prompt's message is (`admit`), under an ID
         of the stand-in's own, with the session's model; answered 204 once admitted, the run going on as a prompt's. A
         `subtask` one starts a sub-agent session under this one instead (control `child`) and admits nothing here. Mode
         `command`: `run`; `fail` (500 CommandExecutionError, nothing done); `fail-after` (admitted, then that 500);
@@ -1962,7 +2073,11 @@ class Handler(BaseHTTPRequestHandler):
             control('child', {'parentID': session, 'title': f'{command.get("description", "")} (@{agent} subagent)', 'agent': agent,
                               'announce': mode != 'unannounced'})
             return failed() if mode == 'fail-after' else self.reply(204)
-        cleanup(session)
+        # 2.x runs a command as a prompt (core/src/config/plugin/command.ts), which commits a staged revert first.
+        if v1():
+            cleanup(session)
+        else:
+            v2_commit(session)
         select(session, command)
         current = sessions[session].get('model')
         model = {'providerID': current.get('providerID'), 'modelID': current.get('id')} if current else modes['defaultModel']
@@ -1973,7 +2088,8 @@ class Handler(BaseHTTPRequestHandler):
     def compact_v2(self, session, body):
         """As 2.x's compaction (2.2.5 protocol/src/groups/session.ts session.compact, core/src/session/inbox.ts; T-61 slice
         4): `{id?, delivery?}` and no model (it runs on the session's, `compaction_model`); each request is kept in
-        `compacts_seen`. A revert waiting in the session is applied (`cleanup`), then it is admitted into the inbox at
+        `compacts_seen`. A staged revert is committed (`v2_commit`; applied, `cleanup`, in the 1.19.3 mode), then it is
+        admitted into the inbox at
         once under its `id` (else a 2.x ID, `v2_message_id`), `delivery` by default `steer` while a run goes on, else
         `queue`: `session.inbox.enqueued`, answered 200 with the item, then run (`compact_run`), or once the run going
         on ends (`compact_later`). Its `id` again: the same item while it waits in the inbox, a ConflictError (409) once
@@ -2030,7 +2146,11 @@ class Handler(BaseHTTPRequestHandler):
             mid = mid or v2_message_id()
             return self.reply(200, {'data': {'id': mid, 'sessionID': session, 'time': {'created': int(time.time() * 1000)},
                                              'type': 'compaction', 'payload': {}, 'delivery': delivery or 'queue'}})
-        cleanup(session)
+        # 2.x commits a staged revert before it admits a compaction (2.2.5 core/src/session/session.ts `compact`).
+        if v1():
+            cleanup(session)
+        else:
+            v2_commit(session)
         mid, running = mid or v2_message_id(), session in statuses
         delivery = delivery or ('steer' if running else 'queue')
         with lock:
@@ -2056,6 +2176,143 @@ class Handler(BaseHTTPRequestHandler):
         if not later:
             compact_run(session, mid, runs)
         return None
+
+    def stage_v2(self, session, body):
+        """As 2.x stages a revert (2.2.5 protocol/src/groups/session.ts session.revert.stage, core/src/session/revert.ts
+        `stage`; T-61 slice 6): `{messageID, files?}`; a body 2.x can't read is refused (400 InvalidRequestError, kind
+        `Payload`), a busy session too (409 SessionBusyError), nothing done. The folder is captured first (`track`, best
+        effort: a capture that fails is none), or the held revert's snapshot is taken instead; then the plan is made:
+        each file a step stored after the boundary changed (its message's `snapshot`), from the first such step's
+        `start`. A boundary the session does not store: 404 MessageNotFoundError, only the capture done. The held
+        revert's files go back as that capture holds them, then each planned file as its tree does (`v2_restore`; none of
+        the plan's with `files` false); the revert kept is {messageID, snapshot (none without a capture), files}, its
+        files what changed from the capture to the folder now among the plan's (`v2_diff`; none without a capture or
+        with `files` false); then `session.revert.staged`, and 200 {data: revert}. A restore or a diff that fails (with
+        snapshots off, any restore): 500 UnknownError, nothing kept or sent. Mode `stage`: `ok`; `restore-fail` (only
+        the plan's first file restored, then 500 UnknownError, nothing kept or sent); `diff-fail` (every file restored,
+        then that 500); `capture-fail` (no capture: the plan's files restored, a revert kept with no snapshot and no
+        files); `drop` (done, then the connection ends with no answer); `late` (done, answered only on `goOn`); `hold`
+        (nothing done until `goOn`, then as `ok`); `body-400` (done, then 400 InvalidRequestError of kind `Body`, as 2.x
+        before 2.2.0 answered a response it could not encode); `busy-409` (409 SessionBusyError, idle or not),
+        `conflict-409` (409 ConflictError), `500` (500 UnknownError): each answered before anything is captured or
+        restored, nothing kept or sent."""
+        mid = body.get('messageID') if isinstance(body, dict) else None
+        if not isinstance(body, dict) or not (isinstance(mid, str) and mid.startswith('msg')) \
+                or not isinstance(body.get('files', False), bool):
+            return self.reply(400, {'_tag': 'InvalidRequestError', 'kind': 'Payload',
+                                    'message': 'fixture: a revert stage takes an object, its messageID a message ID'})
+        mode = modes['stage']
+        if mode not in ('ok', 'restore-fail', 'diff-fail', 'capture-fail', 'drop', 'late', 'hold', 'body-400', 'busy-409',
+                        'conflict-409', '500'):
+            return self.reply(500, {'_tag': 'UnknownError', 'message': f'fixture: no stage mode {mode}'})
+        if mode == 'busy-409':
+            return self.reply(409, busy(session))
+        if mode == 'conflict-409':
+            return self.reply(409, {'_tag': 'ConflictError', 'message': 'fixture: not a busy session'})
+        if mode == '500':
+            return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: the stage failed', 'ref': 'err_fixture'})
+        if mode == 'hold':
+            go_on = threading.Event()
+            reverting[session] = go_on
+            go_on.wait(60)
+        if statuses.get(session, {}).get('type') == 'busy':
+            return self.reply(409, busy(session))
+        failed = lambda why: self.reply(500, {'_tag': 'UnknownError', 'message': f'fixture: {why}', 'ref': 'err_fixture'})
+
+        def capture():
+            # 2.x's capture is best effort (core/src/snapshot.ts `capture`): one that fails is none.
+            if mode == 'capture-fail':
+                return None
+            try:
+                return track()
+            except RuntimeError:
+                return None
+        held = sessions[session].get('revert') or {}
+        original = held.get('snapshot') or capture()
+        # The messages 2.x stores: one steered in is only in the inbox until it is delivered.
+        listed = [m for m in ordered(session) if m['info']['id'] not in v2_of(session)['pending']]
+        at = next((i for i, m in enumerate(listed) if m['info']['id'] == mid), None)
+        if at is None:
+            return self.reply(404, {'_tag': 'MessageNotFoundError', 'sessionID': session, 'messageID': mid,
+                                    'message': f'Message not found: {mid}'})
+        plan = {}
+        for message in listed[at + 1:]:
+            step = message.get('snapshot') or {}
+            if message['info'].get('role') != 'assistant' or message['info'].get('summary') or not step.get('start'):
+                continue
+            for rel in step.get('files') or []:
+                plan.setdefault(rel, step['start'])
+        files = body.get('files') is not False
+        # One restore, as 2.x's: a file both held and planned goes back as the plan has it.
+        restore = {f['file']: original for f in held.get('files') or [] if isinstance(f, dict) and f.get('file')} if original else {}
+        if files:
+            restore.update(plan)
+        try:
+            if mode == 'restore-fail':
+                v2_restore(dict(list(plan.items())[:1]))
+                return failed('the restore failed')
+            v2_restore(restore)
+            if mode == 'diff-fail':
+                return failed('the diff failed')
+            changed = v2_diff(original, capture() or original, plan if files else []) if original else []
+        except RuntimeError as error:
+            return failed(error)
+        revert = {'messageID': mid, **({'snapshot': original} if original else {}), 'files': changed}
+        with lock:
+            sessions[session]['revert'] = revert
+        save()
+        send('session.revert.staged', {'sessionID': session, 'revert': revert})
+        if mode == 'drop':
+            self.close_connection = True
+            return None
+        if mode == 'body-400':
+            return self.reply(400, {'_tag': 'InvalidRequestError', 'kind': 'Body', 'message': 'fixture: the response could not be encoded'})
+        if mode == 'late':
+            go_on = threading.Event()
+            reverting[session] = go_on
+            go_on.wait(60)
+        return self.reply(200, {'data': revert})
+
+    def commit_v2(self, session):
+        """As 2.x commits a staged revert on its route (2.2.5 protocol/src/groups/session.ts session.revert.commit,
+        core/src/session/session.ts; T-61 slice 6): refused while the session runs (409 SessionBusyError), nothing done;
+        else what `v2_commit` does, and 204; with none held, 204 and nothing sent. Mode `commit`: `ok`; `drop` (done,
+        then the connection ends with no answer); `500` (nothing done, 500 UnknownError)."""
+        if statuses.get(session, {}).get('type') == 'busy':
+            return self.reply(409, busy(session))
+        mode = modes['commit']
+        if mode not in ('ok', 'drop', '500'):
+            return self.reply(500, {'_tag': 'UnknownError', 'message': f'fixture: no commit mode {mode}'})
+        if mode == '500':
+            return self.reply(500, {'_tag': 'UnknownError', 'message': 'fixture: the commit failed', 'ref': 'err_fixture'})
+        v2_commit(session)
+        if mode == 'drop':
+            self.close_connection = True
+            return None
+        return self.reply(204)
+
+    def clear_v2(self, session):
+        """As 2.x clears a staged revert (2.2.5 protocol/src/groups/session.ts session.revert.clear,
+        core/src/session/revert.ts `clear`; T-61 slice 6): refused while the session runs (409 SessionBusyError), nothing
+        done; else the held revert's files go back as its snapshot holds them (`v2_restore`; none without one), the
+        revert is cleared, then `session.revert.cleared`, and 204. None held: 204, nothing done. A restore that fails
+        (with snapshots off, any): 500 UnknownError, the revert kept and nothing sent."""
+        if statuses.get(session, {}).get('type') == 'busy':
+            return self.reply(409, busy(session))
+        held = sessions[session].get('revert')
+        if not held:
+            return self.reply(204)
+        original = held.get('snapshot')
+        try:
+            if original:
+                v2_restore({f['file']: original for f in held.get('files') or [] if isinstance(f, dict) and f.get('file')})
+        except RuntimeError as error:
+            return self.reply(500, {'_tag': 'UnknownError', 'message': f'fixture: {error}', 'ref': 'err_fixture'})
+        with lock:
+            sessions[session].pop('revert', None)
+        save()
+        send('session.revert.cleared', {'sessionID': session})
+        return self.reply(204)
 
     def revert(self, session, body):
         """As OpenCode 1.19.3's revert (`session/revert.ts`), refused while the session runs (409): the

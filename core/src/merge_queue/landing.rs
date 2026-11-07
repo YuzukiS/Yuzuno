@@ -1,8 +1,8 @@
 //! How a repository's checked entries land on its base branch. Each
 //! repository names its landing; this Core has one, `core-merge`, the
 //! default: Core sends the merge itself (`remote::merge`). Two more are
-//! planned for core.25, behind `land`, without changing the queue around it:
-//! `github-auto-merge` (GitHub merges once the required checks pass) and
+//! named for a later Core, behind `land`, without changing the queue around
+//! it: `github-auto-merge` (GitHub merges once the required checks pass) and
 //! `github-merge-queue` (GitHub's own merge queue, where the repository has
 //! it). This Core names them and refuses them.
 use super::remote::{self, MergeOutcome};
@@ -36,7 +36,7 @@ impl Landing {
         match Self::named(&json!(name)) {
             Some(landing) => Ok(landing),
             None if PLANNED.contains(&name) => {
-                bail!("invalid_input: the {name} landing comes in core.25; this Core lands with core-merge only")
+                bail!("invalid_input: this Core has no {name} landing; it lands with core-merge only")
             }
             None => bail!("invalid_input: unknown landing {name:?}; this Core lands with core-merge"),
         }

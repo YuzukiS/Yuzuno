@@ -1801,7 +1801,8 @@ impl Workspace {
         let input = MessageId::new();
         let turn = format!("compact_{}", uuid::Uuid::new_v4());
         let item = format!("{turn}:compaction");
-        let attempt = json!({"state":"pending","session":c.session,"generation":c.generation,"input":input.as_str(),
+        // `askedBy`: the Server whose clock this attempt's `answered` will be (#707 R1 44d3157b).
+        let attempt = json!({"state":"pending","session":c.session,"generation":c.generation,"askedBy":c.server.id(),"input":input.as_str(),
             "model":model.as_ref().map(ModelChoice::id).or_else(|| session["model"]["providerID"].as_str()
                 .zip(session["model"]["id"].as_str()).map(|(p, m)| format!("{p}/{m}"))),"variant":variant});
         let (requested, data) = (turn.clone(), json!({"turnId":turn,"attempt":attempt}));
@@ -1819,8 +1820,9 @@ impl Workspace {
             Ok(admission) => admission,
             Err(error) => opencode::CompactAdmission::Refused { code: 0, message: format!("没有发送：{error}") },
         };
-        // When 2.x's answer to it was known (#699 R2 f4dafc6c): only a whole read begun after it can find it missing.
-        let answered = chrono::Utc::now().timestamp_millis();
+        // When 2.x's answer to it was known, on this process's clock (#699 R2 f4dafc6c, P3-a): only a whole read
+        // begun after it can find it missing.
+        let answered = c.server.tick();
         let refused = |message: String| {
             let (failed, error) = (turn.clone(), message.clone());
             let data = json!({"turnId":&failed,"error":message});
@@ -1885,7 +1887,8 @@ impl Workspace {
             return true;
         }
         let Ok(snapshot) = c.server.snapshot(&c.session, &[]).await else { return false };
-        let waiting = snapshot.inbox.as_array().into_iter().flatten().any(|item| item["id"] == input);
+        // In either inbox the read took: before the messages, or after them (#699 P3-c).
+        let waiting = [&snapshot.inbox_first, &snapshot.inbox].iter().any(|inbox| inbox.as_array().into_iter().flatten().any(|item| item["id"] == input));
         let stored = crate::opencode_v2::read_messages(&snapshot.messages).compactions.iter().any(|m| m["id"] == input);
         if stored {
             let _ = self.opencode_resync(id, c).await;
@@ -2209,6 +2212,7 @@ fn journaled(event: &Value) -> Cow<'_, Value> {
 /// Event types this module applies to the record.
 fn projected(kind: &str) -> bool {
     matches!(kind, "message.updated" | "message.part.updated" | "session.status" | "session.error" | crate::opencode_v2::COMPACTION
+        | crate::opencode_v2::REVERTED
         | "permission.asked" | "permission.replied" | "question.asked" | "question.replied" | "question.rejected")
 }
 
@@ -2228,6 +2232,7 @@ fn project(d: &mut AgentDetail, generation: u64, session: &str, event: &Value) {
         }
         "session.status" => status(d, &p["status"]),
         crate::opencode_v2::COMPACTION => compaction_event(d, p),
+        crate::opencode_v2::REVERTED => reverted(d, p),
         "session.error" => {
             // It names no message, so it decides no Turn: the idle that
             // follows does, from what the Turn's own messages say, or from
@@ -2438,7 +2443,7 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
         }
     }
     status(d, &snapshot.status);
-    settle_compactions(d, &compactions, [&snapshot.inbox_first, &snapshot.inbox], snapshot.status["type"] == "idle", snapshot.began);
+    settle_compactions(d, &compactions, [&snapshot.inbox_first, &snapshot.inbox], snapshot.status["type"] == "idle", snapshot.began, &snapshot.by);
 }
 
 /// What a whole read of the session (T-61 slice 4) says of each compaction
@@ -2447,17 +2452,27 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
 /// after its messages), whatever its events could tell, by this process or
 /// one before it. It is missing from 2.x only by a read that `began` after
 /// 2.x's answer to it was known (`answered`, #699 R2 f4dafc6c): an earlier
-/// read may predate its admission. One asked of OpenCode 1.19.3 (T-10, no
+/// read may predate its admission. Both are ticks of the Server named `by`
+/// (`Server::tick`, `Server::id`); one asked of another Server (`askedBy`,
+/// or none recorded: an earlier process, before Core restarted or not) was
+/// answered before any read of this one began (#699 P3-a, P3-b; #707 R1
+/// 44d3157b: a generation restarts with Core). One asked of OpenCode 1.19.3 (T-10, no
 /// input ID: an empty 2.x session read as 1.19.3's before slice 4) has an
 /// answer this Core no longer reads, so nothing more of it can come.
-pub(crate) fn settle_compactions(d: &mut AgentDetail, compactions: &[Value], inboxes: [&Value; 2], idle: bool, began: i64) {
+pub(crate) fn settle_compactions(d: &mut AgentDetail, compactions: &[Value], inboxes: [&Value; 2], idle: bool, began: u64, by: &str) {
     for turn in d.turns.iter_mut().filter(|t| matches!(t["_opencodeCompact"]["state"].as_str(), Some("pending" | "unknown"))) {
         let Some(input) = turn["_opencodeCompact"]["input"].as_str().map(str::to_owned) else {
             compaction_lost(turn);
             continue;
         };
-        // One whose answer came before this Core kept the time of it (unknown already) counts as answered long ago.
-        let answered = turn["_opencodeCompact"]["answered"].as_i64().or_else(|| (turn["_opencodeCompact"]["state"] == "unknown").then_some(0));
+        // One asked of another Server, or whose answer came before this Core kept the time of it (unknown already),
+        // counts as answered long ago.
+        let attempt = &turn["_opencodeCompact"];
+        let answered = if attempt["askedBy"].as_str() != Some(by) {
+            Some(0)
+        } else {
+            attempt["answered"].as_u64().or_else(|| (attempt["state"] == "unknown").then_some(0))
+        };
         let waiting = inboxes.iter().any(|inbox| inbox.as_array().into_iter().flatten().any(|item| item["id"] == input.as_str()));
         if let Some(stored) = compactions.iter().find(|m| m["id"] == input.as_str()) {
             compaction_seen(turn, stored);
@@ -2650,6 +2665,20 @@ fn compaction_seen(turn: &mut Value, compaction: &Value) {
             item["text"] = summary.into();
         }
     }
+}
+
+/// A revert 2.x committed (T-61 slice 6, R2-7), Core's own or another
+/// client's: 2.x deleted the message it went back to and every later one,
+/// so the Turn of that message and every later Turn leave this record,
+/// with their requests. A Core revert has archived them already, and
+/// removed them; another client's is seen here only.
+fn reverted(d: &mut AgentDetail, revert: &Value) {
+    let Some(to) = revert["to"].as_str() else { return };
+    let Some(at) = d.turns.iter().position(|t| t["id"] == to || t["_opencodeCommand"]["native"] == to) else { return };
+    let gone: Vec<String> = d.turns[at..].iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+    d.turns.truncate(at);
+    d.pending.retain(|p| !p.params["turnId"].as_str().is_some_and(|turn| gone.iter().any(|g| g == turn)));
+    refresh_status(d);
 }
 
 /// What 2.x says of one of the session's compactions, live (T-61 slice 4):

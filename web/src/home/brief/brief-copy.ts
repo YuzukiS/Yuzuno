@@ -341,6 +341,8 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
           const number = Number.isNaN(value) ? "—" : `${item.prefix ?? ""}${item.digits === undefined ? Number(value.toFixed(2)) : value.toFixed(item.digits)}${item.unit ? ` ${item.unit}` : ""}`;
           return [`- ${inline(item.label)}: ${inline(number)}`];
         });
+        // Nothing shown at the starting values: nothing copied, not even its title (S2 R1 P3).
+        if (!lines.length) return [];
         return [...heading(depth, title), `_${w.fromStart}_`, lines.join("\n")];
       }
       // A Diagram copies as its nodes and the connections between them (YN-16 S3).

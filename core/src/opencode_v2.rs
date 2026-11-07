@@ -241,6 +241,11 @@ fn answer(id: &str, parent: Option<&str>, created: &Value, completed: &Value, fi
 /// Core's own event of a compaction 2.x ran (T-61 slice 4).
 pub const COMPACTION: &str = "opencode.compaction";
 
+/// Core's own event of a revert 2.x committed (T-61 slice 6), by Core or by
+/// another client: `{sessionID, to}`, the message it went back to, which
+/// with every later one 2.x has deleted (2.2.5 core/src/session/revert.ts).
+pub const REVERTED: &str = "opencode.reverted";
+
 /// A compaction, as Core's record took one from 1.19.3: an answer marked as
 /// the summary, answering nothing of a turn.
 fn compacted(id: &str, at: &Value) -> Value {
@@ -734,6 +739,11 @@ impl Open {
                 }
                 read
             }
+            // A revert committed, whoever asked for it (T-61 slice 6, R2-7): the messages from `to` on are gone.
+            "session.revert.committed" => match d["to"].as_str() {
+                Some(to) => vec![made(REVERTED, json!({"sessionID": session, "to": to}))],
+                None => vec![],
+            },
             // One compaction, started and ended, is the one message 2.x stores for it (T-32 slice 4a, R3
             // notes): its input's ID, else its start event's (core/src/session/message-updater.ts).
             // Each also as Core's own `opencode.compaction` (T-61 slice 4): its message's ID, which for one Core asked

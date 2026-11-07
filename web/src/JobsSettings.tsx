@@ -92,6 +92,8 @@ export function JobsBudgetEditor({ active }: { active: boolean }) {
             suggested={view.machine.suggestedBudget}
             collector={view.collectorOverhead}
             maxActive={maxActiveOf(view)}
+            reserved={view.reserved}
+            active={view.activeCount}
             onSaved={refresh}
           />
           {view.disk && <DiskReserveSettings disk={view.disk} onSaved={refresh} />}
