@@ -1653,6 +1653,9 @@ test("YN-16 R1 P3: a NumberInput shows as many decimals as a value it can take, 
   assert.equal(field().getAttribute("aria-valuetext"), "1.25");
   document.querySelectorAll(".brief-step")[1].click();
   await until(() => field().value === "2.25", "one step of 1 from 1.25");
+  assert.deepEqual(page.errors, []);
+});
+
 // YN-16 S2: a Calc works its numbers out from the variables as they change;
 // a Button sets them back. No request; nothing but the variables changes.
 const bill = () => ({
