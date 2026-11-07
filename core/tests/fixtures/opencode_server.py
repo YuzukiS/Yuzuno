@@ -657,6 +657,8 @@ def v2_view(session):
                     answer[name] = info[name]
             if info.get('error'):
                 answer['error'] = v2_error(info['error'])
+            if stored.get('snapshot'):
+                answer['snapshot'] = stored['snapshot']
             out.append(answer)
         out.extend(v2_shell(shell) for shell in shells.pop(mid, []))
         ending = idles.pop(mid, [])
@@ -835,13 +837,20 @@ def select(session, command):
     save()
 
 
-def answer_prompt(session, text=None, error=None, completed=True, parent=None, extra=None, files=None, raw_patches=None, raw_parts=None):
+UNSET = object()
+
+
+def answer_prompt(session, text=None, error=None, completed=True, parent=None, extra=None, files=None, raw_patches=None, raw_parts=None,
+                  snapshot=UNSET):
     """An assistant message answering the session's last prompt (or `parent`), with a text part.
     `extra` adds to its info what OpenCode reports of an answer: `tokens`, `providerID`/`modelID`, `summary`.
     `files` ({relative path: text, or None to delete}) are changed in the work folder as a run's tools change
     them, and named in a `patch` part whose hash is the snapshot from before (`session/processor.ts`); with
     snapshots off, no part. `raw_patches` are patch parts as they are ({hash, files}), such as one whose snapshot
-    is gone; `raw_parts` any other parts, as they are (such as a `task` tool's, naming its sub-agent)."""
+    is gone; `raw_parts` any other parts, as they are (such as a `task` tool's, naming its sub-agent).
+    With snapshots on, 2.x keeps each step's snapshot on its message (T-61 slice 5; schema/src/session-message.ts
+    Assistant.snapshot): the tree from before its tools ran and the files they changed, relative to the Git top level
+    (here the work folder). `snapshot` sets it as it is instead ({start?, files?}, or None for none)."""
     now = int(time.time() * 1000)
     info = {'id': new_id('msg'), 'sessionID': session, 'role': 'assistant', 'parentID': parent or last_prompt(session),
             'time': {'created': now}, 'finish': 'stop'}
@@ -853,19 +862,23 @@ def answer_prompt(session, text=None, error=None, completed=True, parent=None, e
     parts = []
     if text is not None:
         parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'text', 'text': text})
+    # Each step is snapshotted as it starts, whatever its tools then change (2.2.5 core/src/session/runner/step.ts).
+    before = track()
     if files:
-        before = track()
         for rel, content in files.items():
             write(rel, content)
         if before:
             parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'patch', 'hash': before,
                           'files': [str(WORK / rel) for rel in files]})
+    step = {'start': before, 'files': list(files or {})} if before else None
+    if snapshot is not UNSET:
+        step = snapshot
     for patch in raw_patches or []:
         parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], 'type': 'patch', **patch})
     for part in raw_parts or []:
         parts.append({'id': new_id('prt'), 'sessionID': session, 'messageID': info['id'], **part})
     with lock:
-        messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': parts}
+        messages.setdefault(session, {})[info['id']] = {'info': info, 'parts': parts, **({'snapshot': step} if step is not None else {})}
     save()
     publish('message.updated', {'sessionID': session, 'info': info})
     for part in parts:
@@ -1275,7 +1288,8 @@ def control(name, body):
         return store(body['sessionID'], body['messageID'], body.get('text', ''))
     if name == 'reply':
         info = answer_prompt(body['sessionID'], body.get('text'), body.get('error'), body.get('completed', True), body.get('parentID'),
-                             body.get('info'), body.get('files'), body.get('patches'), body.get('parts'))
+                             body.get('info'), body.get('files'), body.get('patches'), body.get('parts'),
+                             body['snapshot'] if 'snapshot' in body else UNSET)
         if body.get('idle', True):
             go_idle(body['sessionID'])
         return info
@@ -1578,6 +1592,14 @@ class Handler(BaseHTTPRequestHandler):
                                     'directory': modes['directory'] or str(WORK)})
         if key == ('GET', 'project', 'current'):
             return self.reply(200, {'id': current_project[0], 'worktree': str(WORK), 'vcs': 'git'})
+        if key == ('GET', 'api', 'location'):
+            # 2.x's location (server/src/handlers/location.ts, T-61 slice 5): the folder asked for
+            # (`location[directory]`), resolved, and the project held for it now (control `project`), whose directory
+            # is the Git top level its snapshots are of, here the work folder. Mode `directory`: another folder.
+            asked = parse_qs(url.query).get('location[directory]', [None])[0]
+            directory = modes['directory'] or (str(Path(asked).resolve()) if asked else str(WORK))
+            return self.reply(200, {'directory': directory,
+                                    'project': {'id': current_project[0], 'directory': str(WORK), 'canonical': str(WORK)}})
         if key == ('POST', 'api', 'session'):
             # 2.x takes the session's folder from the body (server/src/handlers/session.ts).
             session = {'id': new_id('ses'), 'projectID': PROJECT, 'title': (body or {}).get('title', ''),

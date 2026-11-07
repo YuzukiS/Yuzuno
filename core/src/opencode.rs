@@ -974,6 +974,15 @@ impl Server {
         self.json(Method::GET, "/path", None).await
     }
 
+    /// Where 2.x holds `directory` (T-61 slice 5: `GET /api/location`, its
+    /// `location[directory]` as a deepObject query, protocol/src/groups/
+    /// location.ts): `{directory, project: {id, directory, canonical}}`, the
+    /// folder as 2.x resolved it and the project it holds it for, whose
+    /// `directory` is the Git top level its snapshots are taken from.
+    pub async fn location(&self, directory: &str) -> Result<Value> {
+        self.json_with(Method::GET, "/api/location", &[(LOCATION, directory)], None).await
+    }
+
     /// The project OpenCode holds this instance's folder for (`GET /project/current`).
     pub async fn project(&self) -> Result<Value> {
         self.json(Method::GET, "/project/current", None).await
