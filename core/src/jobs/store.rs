@@ -1263,13 +1263,9 @@ impl Store {
             |r| r.get(0),
         )?;
         // Jobs that exist but wait for an earlier stage of their run or for
-        // its analysis (T-69): in neither the queue nor the running count.
-        let waiting: i64 = db.query_row(
-            "SELECT COUNT(*) FROM local_jobs WHERE status IN ('waiting','waiting_analysis')
-             AND json_extract(data,'$.executor') IS NULL AND json_extract(data,'$.cancelRequestedAt') IS NULL",
-            [],
-            |r| r.get(0),
-        )?;
+        // its analysis (T-69): in neither the queue nor the running count. Not
+        // those stuck behind a failed or unknown stage or the cost limit.
+        let waiting = super::runs::waiting_count(&db)?;
         let available = limit.available(&used);
         // Hints for choosing a CPU range (T-64), as the grant rule reads them now.
         let cpu_free = limit.cpu_millis.saturating_sub(super::cpu::held(&db)?);

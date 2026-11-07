@@ -57,6 +57,7 @@ That count doesn't depend on how long the attempt runs or how many Jobs run besi
 - `activeCount`: those holding one of the `maxActive` slots;
 - `queuedCount`: those waiting in the queue;
 - `waitingCount`: those that exist but wait for an earlier stage of their run, or for its analysis (T-69). They are not in the queue until that stage succeeds, so neither of the other two counts them.
+  A stage that can't start until someone retries or cancels is not counted: one behind a stage that failed, was cancelled or has an unknown outcome (directly or through another waiting stage), or one held back by the run's cost limit. Its run shows it as failed, unknown or blocked.
 
 ## A Job's CPU: the grant and the raise
 

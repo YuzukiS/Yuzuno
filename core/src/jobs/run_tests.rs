@@ -194,6 +194,56 @@ fn job_budget_counts_a_stage_waiting_for_its_upstream_apart_from_the_queue() {
 }
 
 #[test]
+fn job_budget_leaves_out_stages_that_cannot_start_until_a_retry_or_a_cancel() {
+    // T-69 R1: a stage behind a stage that failed, directly or through another
+    // waiting stage, or held back by the run's cost limit stays "waiting" until
+    // someone retries or cancels. waitingCount (the badge's third number) leaves
+    // it out; a stage of the same run that can still start is counted.
+    let (_dir, s) = setup();
+    let waiting = |s: &Store| {
+        let view = s.job_budget_view(machine()).unwrap();
+        view["waitingCount"].as_i64().unwrap_or_else(|| panic!("no waitingCount: {view}"))
+    };
+    let run = create(
+        &s,
+        "stalled",
+        json!([stage("first", &[]), stage("second", &["first"]), stage("third", &["second"]),
+            stage("other", &[]), stage("after", &["other"])]),
+    );
+    assert_eq!(waiting(&s), 3, "second, third and after wait while first and other are queued");
+    let first = start(&s);
+    assert_eq!(first["run"]["stage"], "first");
+    assert!(finish(&s, &first, "failed", exit("1"), json!({})));
+    let view = s.run(run["id"].as_str().unwrap()).unwrap();
+    assert_eq!(view["status"], "running", "other is still queued, so the run as a whole runs");
+    assert_eq!(waiting(&s), 1, "only after, behind other, can still start; second and third are stuck behind first");
+    s.retry_stage(Some("a"), "again", run["id"].as_str().unwrap(), "first").unwrap();
+    assert_eq!(waiting(&s), 3, "with first retried, second and third wait for it again");
+
+    // Another run whose recorded cost reached its limit: its next stage never starts.
+    let (_dir, s) = setup();
+    let mut request = input("limit", json!([stage("api", &[]), stage("judge", &["api"])]));
+    request = serde_json::from_value({
+        let mut v = serde_json::to_value(&request).unwrap();
+        v["costLimitUsd"] = json!(0.5);
+        v
+    })
+    .unwrap();
+    let prepared = prepare(&request);
+    let run = s.create_run(Some("a"), request, prepared, machine(), json!({})).unwrap();
+    assert_eq!(waiting(&s), 1, "judge waits while api is queued");
+    let api = start(&s);
+    let cost = json!({"knownUsd":0.6,"entries":1,"unknownEntries":0,"invalidLines":0,"incompleteLines":0,
+        "truncated":false,"sources":["fixture"],"complete":true});
+    assert!(finish(&s, &api, "succeeded", json!({"Result":"success","ExecMainStatus":"0"}),
+        json!({"artifacts":[artifact("api.json", "aa")],"cost":cost})));
+    let judge = latest(&s, &run, "judge");
+    assert_eq!(judge["status"], "waiting");
+    assert!(judge["reason"].as_str().unwrap().contains("soft limit"), "{}", judge["reason"]);
+    assert_eq!(waiting(&s), 0, "a stage the cost limit holds back is not counted");
+}
+
+#[test]
 fn only_a_verified_success_releases_the_next_stage_with_the_digests_it_read() {
     let (dir, s) = setup();
     let run = create(
