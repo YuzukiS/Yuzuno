@@ -109,7 +109,6 @@ pub(crate) use update::TOOL as UPDATE_TOOL;
 
 pub(crate) const MAX_TOPICS: usize = 12;
 pub(crate) const MAX_SUBTOPICS: usize = 4;
-pub(crate) const MAX_OPEN_ASKS: usize = 3;
 pub(crate) const MAX_ATTACHMENTS: usize = 12;
 /// A file up to this size is kept as it was; a larger one is referenced.
 pub(crate) const SNAPSHOT_FILE_BYTES: u64 = 25 * 1024 * 1024;
@@ -162,7 +161,7 @@ At most 12 topics with 4 sub-topics each. Only the owner changes a section; add 
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
 put: {op:'put', key, kind:'ask'|'report'|'status', title, body, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root.\n\
 edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else.\n\
-ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. At most 3 unresolved asks per Agent. \
+ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. \
 A user's reply marks it replied (out of Needs you, listed in brief_get you.repliedAsks); resolve it once handled: a preference when taken in, \
 an authorized action only after it is done, with its result on the Task or Brief. While it runs or after it fails, keep it replied and report progress.\n\
 status: status.asOf (ISO time) and status.validFor (seconds); it greys out when stale.\n\
@@ -259,7 +258,7 @@ fn limits() -> Value {
     if let Some(limits) = brief_contract().map(|brief| &brief["limits"]).filter(|limits| limits.is_object()) {
         return limits.clone();
     }
-    json!({"topics":MAX_TOPICS,"subtopicsPerTopic":MAX_SUBTOPICS,"openAsksPerAgent":MAX_OPEN_ASKS,
+    json!({"topics":MAX_TOPICS,"subtopicsPerTopic":MAX_SUBTOPICS,
         "attachments":MAX_ATTACHMENTS,"snapshotFileBytes":SNAPSHOT_FILE_BYTES,
         "snapshotBriefBytes":SNAPSHOT_BRIEF_BYTES,"historyDays":HISTORY_DAYS,"recentlyLeft":sections::RECENTLY_LEFT})
 }
