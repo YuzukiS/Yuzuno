@@ -47,33 +47,10 @@ async fn content_editors(State(ws): State<Arc<Workspace>>, Path(id): Path<String
     Ok(Json(ws.stored(move |store| Ok(serde_json::to_value(editors::get(store, &id)?)?)).await?))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct EditorsInput {
-    expected_version: i64,
-    // With a custom deserializer omission cannot silently become null.
-    #[serde(deserialize_with = "required_editor_ids")]
-    editor_agent_ids: Value,
-}
-
-fn required_editor_ids<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Value, D::Error> {
-    Value::deserialize(de)
-}
-
-#[test]
-fn editor_list_requires_an_explicit_value_including_null() {
-    assert!(serde_json::from_value::<EditorsInput>(json!({"expectedVersion":0})).is_err());
-    for ids in [Value::Null, json!([]), json!(["agent"])] {
-        assert!(serde_json::from_value::<EditorsInput>(json!({"expectedVersion":0,"editorAgentIds":ids})).is_ok());
-    }
-}
-
-async fn save_content_editors(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(input): Json<EditorsInput>) -> ApiResult<Json<Value>> {
-    let ids: Option<Vec<String>> = serde_json::from_value(input.editor_agent_ids)?;
-    let project = id.clone();
-    let saved = ws.stored(move |store| editors::save(store, &project, input.expected_version, ids)).await?;
-    super::announce(&ws, Some(&id));
-    Ok(Json(serde_json::to_value(saved)?))
+/// An older page's save of the Home editors (YN-2 S4): refused, whatever it
+/// sends; nothing is written.
+async fn save_content_editors() -> ApiResult<Json<Value>> {
+    Err(anyhow::anyhow!(editors::SETTING_REMOVED).into())
 }
 
 #[derive(Deserialize)]

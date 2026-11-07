@@ -503,7 +503,11 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /keys: omit for every section with its body; \[\] for an index/);
   assert.match(briefGuide("sections"), new RegExp(`What goes where: ${BRIEF_OUTCOME_HINT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.match(BRIEF_HARD_RULES, /editContent is false.*only your own Asks/);
-  assert.match(briefGuide("errors"), /ask_only.*Only the user/);
+  assert.match(briefGuide("errors"), /ask_only.*removing your own older sections.*A Project's leads edit Home; the user chooses them\./);
+  // YN-2 S4: the leads edit Home; an Ask-only member may also take down its own older sections.
+  assert.match(rules[3], /^3\. Leads edit Home; the user chooses leads\. If editContent is false and writeOwnAsk is true, write only your own Asks\./);
+  assert.match(briefGuide(), /When editContent is false and writeOwnAsk is true, only create\/update\/resolve\/remove your own Asks, remove your own older sections, or send noChange/);
+  assert.doesNotMatch(BRIEF_HARD_RULES, /selects Home content editors/);
   for (const phrase of [/expectedVersion/, /version_conflict.*re-read.*merge/, /only their own sections.*topic\/sub/, /question plus .*options, freeText, a form or a choice/, /Resolve your asks explicitly/, /never executes actions/, /brief_guide/])
     assert.match(BRIEF_HARD_RULES, phrase);
   assert.ok(rules.findIndex((line) => /never executes actions/.test(line)) < rules.findIndex((line) => /brief_guide for formats/.test(line)));
@@ -551,6 +555,59 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(guide, /^- Plan \{title\?≤\d+, steps\[1-30\]\{id, text≤\d+, state="todo"\|"doing"\|"done"\|"blocked"\}\}: /m);
   assert.ok(briefGuide("content").includes(SIGNATURE_LEGEND), "the content part explains the notation");
   assert.match(guide, /^- Columns \{widths\?\[2-4\]\(integer\)\}: Lays out its children side by side.* Children: 2-4, one per column\.$/m);
+});
+
+test("a report the user marks seen leaves brief_get, and you.recentlyLeft says which, why and when (YN-7)", () => {
+  assert.equal(BRIEF_LIMITS.recentlyLeft, 20);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /recentlyLeft \(your sections that left lately and why: a report the user marked seen is no longer among the sections\), recentlyLeftMore/);
+  const sections = briefGuide("sections");
+  assert.match(sections, /a report the user marks seen at its latest version leaves brief_get's sections and your ownsKeys at once \(a newer version stays, unseen\) .* put it again under its key to continue it on Home, as edit needs a live section/);
+  assert.match(sections, /you\.recentlyLeft lists your sections that left the live Brief in the last 30 days and are not live again, newest first, at most 20: \{key, kind, title, version, reason, at\}, reason seen \(the user marked that version seen\), removed or resolved; recentlyLeftMore counts the rest\./);
+  assert.match(sections, /An edit, resolve, remove or claim naming one of them is refused with not_found, saying why it left; put writes it again\./);
+});
+
+test("a LiveRefs item and a ResearchDesk plan's link may name a run of stages, and the guide says what it shows (YN-7)", () => {
+  const refs = { key: "sweep", kind: "status", title: "Sweep", status: { asOf: "2026-11-07T00:00:00Z", validFor: 3600 },
+    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["refs"] },
+      refs: { type: "LiveRefs", props: { items: [{ kind: "run", id: "0c2b5486-e986-4a30-864d-d3b03e73e07b", label: "lr sweep" }] } } } } };
+  assert.doesNotThrow(() => checkBriefSection(refs), "a LiveRefs item may name a run of stages");
+  assert.equal(checkBriefSection(refs).body.elements.refs.props.items[0].kind, "run");
+  const desk = structuredClone(benchmark);
+  desk.body.elements.desk.props.plans[0].links = [{ kind: "run", id: "0c2b5486-e986-4a30-864d-d3b03e73e07b" }];
+  assert.doesNotThrow(() => checkBriefSection(desk), "a plan's link may name a run of stages");
+  assert.equal(checkBriefSection(desk).body.elements.desk.props.plans[0].links[0].kind, "run");
+  assert.match(BRIEF_COMPONENT_DESCRIPTIONS.LiveRefs, /run \(a run of stages: the runId job_run_submit returned; Yuzuno shows its status and how many stages are done\)/);
+  assert.match(briefGuide("research"), /links name existing tasks, Jobs or runs of stages \(kind run, the runId job_run_submit returned\)/);
+});
+
+// YN-7 item 3: a number may be a CSV or TSV row's cell, the row named by the
+// text its key columns hold; each read form only from its own kind of file.
+test("a ResearchDesk number may be a CSV row's cell named by its key columns, and the guide says how it matches (YN-7)", () => {
+  const cell = { from: "table.csv", row: { sport: "alpha", d: "2" }, column: "auc" };
+  const withCsv = (number, path = "/home/me/study/table.csv") => {
+    const copy = structuredClone(doseStudy);
+    copy.attachments.push({ name: "table.csv", path });
+    copy.body.elements.desk.props.plots[0].rows[0].estimate.value = number;
+    return copy;
+  };
+  assert.doesNotThrow(() => checkBriefSection(withCsv(cell)), "a row's cell from a .csv");
+  assert.doesNotThrow(() => checkBriefSection(withCsv(cell, "/home/me/study/table.TSV")), "a row's cell from a .tsv");
+  assert.deepEqual(researchReads(checkBriefSection(withCsv(cell)).body.elements.desk.props)[0], { at: "low-v2.value", ...cell });
+  // table.csv then holds no read and is flagged too; the read's own problem is the one here.
+  const fromJson = problems(withCsv({ ...cell, from: "results.json" })).find((found) => found.code === "research_attachment");
+  assert.equal(fromJson.code, "research_attachment");
+  assert.match(fromJson.reason, /reads a row's cell from CSV or TSV files only/);
+  assert.equal(first(withCsv({ from: "table.csv", pointer: "/0/auc" })).code, "research_attachment", "a JSON Pointer is not a CSV read");
+  const wide = first(withCsv({ ...cell, row: { a: "1", b: "2", c: "3", d: "4", e: "5" } }));
+  assert.equal(wide.code, "invalid_field");
+  assert.match(wide.reason, /Name 1 to 4 columns/);
+  assert.equal(first(withCsv({ ...cell, row: {} })).code, "invalid_field", "a row names at least one column");
+  assert.equal(first(withCsv({ ...cell, column: " " })).code, "invalid_field", "a column has a name");
+  assert.equal(first(withCsv({ ...cell, pointer: "/0" })).code, "invalid_field", "a pointer or a row, not both");
+  assert.equal(BRIEF_PROBLEM_CODES.research_attachment, "A ResearchDesk number read from an attachment of the wrong kind: a JSON Pointer needs a .json file, a CSV row a .csv or .tsv file, each with a path.");
+  const guide = briefGuide("research");
+  assert.match(guide, /\{from, row, column\} for one whose path ends in \.csv or \.tsv/);
+  assert.match(guide, /Cells compare as text as written, without the spaces around them: "2" does not match "2\.0"\. No matching row shows as missing, two or more as ambiguous, never a guess/);
 });
 
 test("contract.json carries the brief, generated from this file", async () => {
@@ -628,7 +685,7 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   assert.equal(rejected((p) => { p.definitions[0].versions[1].version = 1; }).code, "duplicate_id");
   assert.equal(rejected((p) => { p.revisions[0].definition = { id: "recovery", from: 2, to: 1 }; }).code, "definition_order");
   assert.equal(rejected((p) => { p.revisions[0].claim = "nowhere"; }).code, "missing_reference");
-  // Numbers come only from this section's JSON attachments.
+  // Numbers come only from this section's attachments; a JSON Pointer only from a JSON file.
   const unregistered = rejected((p) => { p.plots[0].rows[0].estimate.value.from = "other.json"; });
   assert.equal(unregistered.code, "missing_attachment");
   assert.equal(unregistered.path, "body.elements.desk.props.plots.0.rows.0.estimate.value.from");
@@ -658,6 +715,28 @@ test("a ResearchDesk: two different desks render from one contract, and every re
 // T-29: two rules a desk is refused for are stated in the guide an Agent reads
 // before writing one, as the check applies them: a source's revision is a
 // commit hash, and row and part ids are one namespace across the whole desk.
+test("the guide says when to pre-check, how a settled claim leaves a status for a report, and what a claim's primary names (YN-7 S1)", () => {
+  // Item 2: the write makes the same checks, so a section sent now needs no pre-check.
+  const sections = briefGuide("sections");
+  assert.match(sections, /brief_update itself makes the same checks and writes nothing when it refuses, so a section you mean to send now needs no pre-check: send it, fix what the rejection lists and send again with a new requestId\. Use validateOnly to check without writing, e\.g\. a draft you will not send in this Turn\./);
+  assert.doesNotMatch(briefGuide(), /Use it for a complex section/);
+  // Item 5: a moving conclusion in a status, a settled claim in a report.
+  assert.match(sections, /While a conclusion still moves, keep it in a status and refresh it with new facts; once a claim settles, write it as a report under its own key linked to its Task, which the user marks seen and history keeps, and let the status point to it or drop it\. A status keeps only its current version: putting it again replaces the earlier wording\./);
+  // Item 6: primary is a row id, and the rejection says so, naming a plot or part id given instead.
+  assert.match(briefGuide("research"), /Claims: primary is the id of one row of the desk's plots \(plots\[\]\.rows\[\]\.id\), the row the claim leads with; not a plot or part id\. plots lists plot ids\./);
+  const primary = (id) => {
+    const copy = structuredClone(doseStudy);
+    copy.body.elements.desk.props.claims[0].primary = id;
+    return first(copy);
+  };
+  for (const [id, said] of [["recovery-v2", `; "recovery-v2" is a plot id.`], ["low-v2-arm", `; "low-v2-arm" is a part id.`], ["nowhere", "."]]) {
+    const found = primary(id);
+    assert.equal(found.code, "missing_reference", id);
+    assert.equal(found.path, "body.elements.desk.props.claims.0.primary", id);
+    assert.ok(found.reason.includes(`primary "${id}" is not a row of its plots: primary is a row id (plots[].rows[].id)${said}`), found.reason);
+  }
+});
+
 test("the research guide states the revision form and the desk-wide row and part ids, as checked (T-29)", () => {
   const guide = briefGuide("research");
   assert.match(guide, /revision is a commit hash, 7 to 64 lowercase hexadecimal characters \(not a branch, tag or other name\)/);
@@ -677,4 +756,12 @@ test("the research guide states the revision form and the desk-wide row and part
     assert.equal(found.code, "duplicate_id", id);
     assert.match(found.reason, new RegExp(`row and part id "${id}" is used twice`), id);
   }
+});
+
+// YN-3 PR C2: Agents read on the guide that an attached HTML page shows on its card, and when a card is the whole report.
+test("YN-3 the guide says a card with no visual shows its first kept image or HTML page, working, and that a card holding all its body is the whole report", () => {
+  const content = briefGuide("content");
+  assert.match(content, /A card with no visual shows instead the first kept image or single HTML page \(\.html or \.htm\) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there\./);
+  assert.match(content, /A report whose body holds only its lead \(one paragraph\), the card's picture and files, and its conditions is the whole report: its card has no Open report\./);
+  assert.match(content, /large \(two columns, two rows: an image, a scatter chart, an HTML page\)/);
 });

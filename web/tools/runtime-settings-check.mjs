@@ -126,8 +126,8 @@ try {
     await page.waitForTimeout(300);
     await shot(page, `${label}-updates-about`);
     if (!before) {
-      // In Updates & about's row of entries (T-187).
-      const open = page.locator(".settings-entries").getByRole("button", { name: "Runtime", exact: true });
+      // Its page of Settings (YN-8).
+      const open = page.locator("#settings-tab-runtime");
       await open.waitFor();
       // The app itself reads the Workspace and machines; that nothing of the
       // section is read before it opens is checked in runtime-settings-ui.
@@ -186,7 +186,7 @@ try {
       await section.getByRole("button", { name: "Read again" }).click();
       await page.waitForTimeout(300);
       await section.getByRole("button", { name: "Check machines" }).click();
-      await page.locator(".machines-page").waitFor();
+      await page.locator(".settings-machines").waitFor();
       await shot(page, `${label}-machines`);
       // Every request of this window, kept before anything is asserted. The
       // app's own views (an open conversation's inspector, for one) read too;

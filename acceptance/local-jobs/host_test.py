@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 MODULE = importlib.util.spec_from_file_location('job_host', Path(__file__).resolve().parents[2] / 'core/src/jobs/host.py')
@@ -91,6 +92,47 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(host.classify(self.spec,self.folder,state),'succeeded')
         with patch.object(host,'group_empty',return_value=False):
             self.assertIsNone(host.classify(self.spec,self.folder,state))
+
+    @patch.object(host, 'group_empty', return_value=True)
+    def test_a_leftover_attempt_ends_as_the_worker_left_the_unit_not_as_the_stop_did(self, _):
+        # YN-6 S4 probe 1: a clean stop unloads the unit (InvocationID and
+        # ExecMainCode empty); one that needed SIGKILL reads Result timeout.
+        at_exit = {'MainPID':'0','SubState':'exited','ActiveState':'active','Result':'success','ExecMainCode':'1',
+                   'ExecMainStatus':'0','InvocationID':'invocation'}
+        unloaded = {'MainPID':'0','SubState':'dead','ActiveState':'inactive','Result':'success','ExecMainCode':'0','ExecMainStatus':'0','InvocationID':''}
+        killed = {'MainPID':'0','SubState':'failed','ActiveState':'failed','Result':'timeout','ExecMainCode':'1','ExecMainStatus':'0','InvocationID':'invocation'}
+        self.assertIsNone(host.classify(self.spec,self.folder,unloaded))
+        self.assertEqual(host.classify(self.spec,self.folder,killed),'failed')
+        host.atomic(self.folder / host.LEFTOVER, {'attempt':'attempt','count':2,'graceSeconds':5,
+            'processes':[{'pid':11,'comm':'sleep'},{'pid':12,'comm':None}],'unitAtExit':at_exit})
+        self.assertEqual(host.classify(self.spec,self.folder,unloaded),'succeeded')
+        self.assertEqual(host.classify(self.spec,self.folder,killed),'succeeded')
+        self.assertEqual(host.ended_state(self.spec,self.folder,killed),at_exit)
+        self.assertEqual(host.terminal_reason(self.spec,self.folder,'succeeded',at_exit,None),
+                         'success; 2 process(es) still in its cgroup 5 s after it exited were stopped (sleep, 12)')
+        # Another attempt's record is not this one's.
+        host.atomic(self.folder / host.LEFTOVER, {'attempt':'other','unitAtExit':at_exit})
+        self.assertIsNone(host.classify(self.spec,self.folder,unloaded))
+
+    @patch.object(host, 'group_empty', return_value=False)
+    def test_leftovers_are_recorded_by_pid_and_name_then_the_unit_is_stopped(self, _):
+        state = {'MainPID':'0','SubState':'exited','ControlGroup':'/fake','InvocationID':'invocation','Result':'success'}
+        with patch.object(host,'show',return_value=state), patch.object(host,'command') as command, \
+                patch.object(host,'cgroup_procs',return_value=list(range(100, 125))), \
+                patch.object(host,'process_name',side_effect=lambda pid: None if pid == 101 else 'sleep'):
+            after = host.stop_leftovers(self.spec,self.folder)
+        self.assertEqual(after,state)
+        command.assert_called_once_with(['systemctl','--user','stop','worker'],timeout=15,check=False)
+        record = host.read(self.folder / host.LEFTOVER)
+        self.assertEqual((record['count'],len(record['processes']),record['unitAtExit']),(25,host.LEFTOVER_NAMES,state))
+        self.assertEqual(record['processes'][:2],[{'pid':100,'comm':'sleep'},{'pid':101,'comm':None}])
+        # Still running, or another invocation: nothing is recorded or stopped.
+        (self.folder / host.LEFTOVER).unlink()
+        for other in ({**state,'MainPID':'7'},{**state,'SubState':'running'},{**state,'InvocationID':'other'}):
+            with patch.object(host,'show',return_value=other), patch.object(host,'command') as command:
+                self.assertIsNone(host.stop_leftovers(self.spec,self.folder))
+                command.assert_not_called()
+        self.assertFalse((self.folder / host.LEFTOVER).exists())
 
     @patch.object(host, 'group_empty', return_value=True)
     def test_unknown_can_cancel_but_reused_units_cannot_be_stopped(self, _):
@@ -531,6 +573,11 @@ class WorkerLaunchTests(unittest.TestCase):
         evidence = self.recorded()['evidence']
         self.assertNotIn('notLaunched', evidence)
         self.assertNotIn('command', evidence)
+        # The command did start and may still be writing ran.txt: wait for it,
+        # so that tearDown never removes work/ under it (a race, YN-6 S4).
+        deadline = time.monotonic() + 5
+        while not (self.work/'ran.txt').exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
 
     def test_a_live_reading_carries_only_this_attempts_command_record(self):
         state = {'InvocationID':'invocation','MainPID':'42','SubState':'running','ActiveState':'active','Result':'success'}

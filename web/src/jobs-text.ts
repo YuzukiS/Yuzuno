@@ -48,8 +48,12 @@ export const jobsText = strings({
   // The conversation's dock.
   dock: "Jobs and CI in this conversation",
   // The dialog.
-  counts: (active: number, queued: number) => `${active} active jobs, ${queued} queued jobs`,
-  countsTitle: (active: number, queued: number) => `${active} active · ${queued} queued`,
+  // With `waiting` (T-69): the Jobs that wait for an earlier stage of their
+  // run, in neither of the other two. A Core before it says nothing of them.
+  counts: (active: number, queued: number, waiting?: number) =>
+    `${active} active jobs, ${queued} queued jobs${waiting === undefined ? "" : `, ${waiting} jobs waiting for an earlier stage`}`,
+  countsTitle: (active: number, queued: number, waiting?: number) =>
+    `${active} active · ${queued} queued${waiting === undefined ? "" : ` · ${waiting} waiting for an earlier stage of their run`}`,
   title: "Jobs",
   description: "Local commands, watched GitHub Actions and PR reviews. Results return to the requesting Agent.",
   scope: "Job scope",
@@ -58,8 +62,9 @@ export const jobsText = strings({
   task: (id: string) => `Task ${id}`,
   close: "Close jobs",
   source: "Job source",
-  sources: { local: "Local", github_actions: "GitHub Actions", reviews: "Reviews" } as Record<"local" | "github_actions" | "reviews", string>,
-  onMachine: (active: number, queued: number) => `${active} active · ${queued} queued on this machine`,
+  sources: { local: "Local", github_actions: "GitHub Actions", reviews: "Reviews", merge_queue: "Merge queue" } as Record<"local" | "github_actions" | "reviews" | "merge_queue", string>,
+  onMachine: (active: number, queued: number, waiting?: number) =>
+    `${active} active · ${queued} queued${waiting === undefined ? "" : ` · ${waiting} waiting for an earlier stage`} on this machine`,
   // Local jobs.
   local: "Local jobs",
   refresh: "Refresh jobs",
@@ -79,9 +84,11 @@ export const jobsText = strings({
   envObject: "Environment must be a JSON object of string values.",
   unconfirmed: "A previous submission reply is unconfirmed. Keep its command unchanged and retry to retrieve the same Job ID.",
   // The budget at a glance.
-  activeQueued: (active: number, queued: number) => `${active} active · ${queued} queued`,
+  activeQueued: (active: number, queued: number, waiting?: number) =>
+    `${active} active · ${queued} queued${waiting === undefined ? "" : ` · ${waiting} waiting`}`,
   // How many hold a slot, of how many may (T-55).
-  activeOf: (active: number, max: number, queued: number) => `${active} of ${max} active · ${queued} queued`,
+  activeOf: (active: number, max: number, queued: number, waiting?: number) =>
+    `${active} of ${max} active · ${queued} queued${waiting === undefined ? "" : ` · ${waiting} waiting`}`,
   slotsTitle: (max: number, set: boolean) =>
     `At most ${max} of this host's jobs run at once${set ? "" : " (the default)"}; one more waits in the queue.`,
   editInSettings: "Edit in Settings",
@@ -140,6 +147,12 @@ export const jobsText = strings({
   notLowered: (reason: string) => `Not lowered: ${reason}`,
   memoryLimit: "Memory limit",
   loweredLine: (from: string, to: string, by: string, at: string) => `Lowered from ${from} to ${to} by ${by}, ${at}`,
+  suggestedRam: "Suggested RAM",
+  keptSuggestion: (asked: string, memory: string, runs: number, peak: string, project: boolean, limit: boolean) =>
+    `Asked ${asked} · suggested ${memory} from ${runs === 1 ? "1 earlier run" : `${runs} earlier runs`}${project ? " of this command in this Project's other tasks" : ""} (peak ${peak}${limit ? "; one was stopped at its memory limit" : ""})`,
+  farAboveSuggestion:
+    "More than 1.5 × the suggestion: all of it is held in the shared budget while the job waits and runs. To ask less, cancel and submit again, or lower its memory limit once it runs.",
+  belowPeak: "Below the peak of those runs: it may be stopped at its memory limit.",
   notReserved: "; not reserved",
   onDevices: (devices: string) => ` on ${devices}`,
   currentRam: "Current RAM",
@@ -171,8 +184,8 @@ export const jobsText = strings({
   ramLimit: "RAM limit (MiB)",
   swapLimit: "Swap limit (MiB)",
   timeLimit: "Time limit (seconds)",
-  suggestion: (runs: number, peak: string, cores: string | null, memory: string, cpu: string | null) =>
-    `${runs === 1 ? "The last measured run" : `The last ${runs} measured runs`} of this name or command in this task peaked at ${peak} RAM${cores ? ` and ${cores} CPU cores` : ""}. Suggested: ${memory} RAM${cpu ? ` and ${cpu} CPU` : ""} (peak × 1.5, rounded up). Your limits stay as you set them.`,
+  suggestion: (runs: number, peak: string, cores: string | null, memory: string, cpu: string | null, project: boolean) =>
+    `${runs === 1 ? "The last measured run" : `The last ${runs} measured runs`} ${project ? "of this command in this Project's other tasks" : "of this name or command in this task"} peaked at ${peak} RAM${cores ? ` and ${cores} CPU cores` : ""}. Suggested: ${memory} RAM${cpu ? ` and ${cpu} CPU` : ""} (RAM: peak × 1.3 or peak + 1 GiB, whichever is more; CPU: × 1.5; rounded up). Your limits stay as you set them.`,
   useSuggestion: "Use suggestion",
   exclusiveRun: "Exclusive execution",
   exclusiveNote:
@@ -231,8 +244,10 @@ export const jobsText = strings({
   started: (when) => `开始于 ${when}`,
   finished: (when) => `完成于 ${when}`,
   dock: "此会话中的 Job 与 CI",
-  counts: (active, queued) => `${active} 个活跃 Job，${queued} 个排队 Job`,
-  countsTitle: (active, queued) => `${active} 个活跃 · ${queued} 个排队`,
+  counts: (active, queued, waiting) =>
+    `${active} 个活跃 Job，${queued} 个排队 Job${waiting === undefined ? "" : `，${waiting} 个等待上游阶段的 Job`}`,
+  countsTitle: (active, queued, waiting) =>
+    `${active} 个活跃 · ${queued} 个排队${waiting === undefined ? "" : ` · ${waiting} 个等待所在运行的上游阶段`}`,
   title: "Job",
   description: "本地命令、受监视的 GitHub Actions 与 PR 审查。结果会返回给发出请求的 Agent。",
   scope: "Job 范围",
@@ -240,8 +255,9 @@ export const jobsText = strings({
   task: (id) => `任务 ${id}`,
   close: "关闭 Job",
   source: "Job 来源",
-  sources: { local: "本地", github_actions: "GitHub Actions", reviews: "审查" },
-  onMachine: (active, queued) => `此机器上 ${active} 个活跃 · ${queued} 个排队`,
+  sources: { local: "本地", github_actions: "GitHub Actions", reviews: "审查", merge_queue: "合并队列" },
+  onMachine: (active, queued, waiting) =>
+    `此机器上 ${active} 个活跃 · ${queued} 个排队${waiting === undefined ? "" : ` · ${waiting} 个等待上游阶段`}`,
   local: "本地 Job",
   refresh: "刷新 Job",
   back: "返回 Job 列表",
@@ -258,8 +274,10 @@ export const jobsText = strings({
   updatedCore: "本地 Job 需要更新的 Core。",
   envObject: "环境必须是值为字符串的 JSON 对象。",
   unconfirmed: "上一次提交的回复尚未确认。请保持其命令不变并重试，以取回同一个 Job ID。",
-  activeQueued: (active, queued) => `${active} 个活跃 · ${queued} 个排队`,
-  activeOf: (active, max, queued) => `${active} / ${max} 个活跃 · ${queued} 个排队`,
+  activeQueued: (active, queued, waiting) =>
+    `${active} 个活跃 · ${queued} 个排队${waiting === undefined ? "" : ` · ${waiting} 个等待上游`}`,
+  activeOf: (active, max, queued, waiting) =>
+    `${active} / ${max} 个活跃 · ${queued} 个排队${waiting === undefined ? "" : ` · ${waiting} 个等待上游`}`,
   slotsTitle: (max, set) => `此主机的 Job 同时最多运行 ${max} 个${set ? "" : "（默认）"}；超出的在队列中等待。`,
   editInSettings: "在设置中编辑",
   editInSettingsTitle: "在设置中更改此主机的预算、同时运行的 Job 数、磁盘保留、Windows 上限和 GPU 设置",
@@ -315,6 +333,11 @@ export const jobsText = strings({
   notLowered: (reason) => `未降低：${reason}`,
   memoryLimit: "内存上限",
   loweredLine: (from, to, by, at) => `${at} 由 ${by} 从 ${from} 降到 ${to}`,
+  suggestedRam: "建议内存",
+  keptSuggestion: (asked, memory, runs, peak, project, limit) =>
+    `申请 ${asked} · 按${project ? "本项目其他任务中同命令的" : ""}之前 ${runs} 次运行建议 ${memory}（峰值 ${peak}${limit ? "；其中一次在内存上限处被停止" : ""}）`,
+  farAboveSuggestion: "超过建议值的 1.5 倍：排队和运行期间，申请的全部内存都占着共享预算。要少申请，可取消后重新提交，或在它运行后降低内存上限。",
+  belowPeak: "低于这些运行的峰值：可能在内存上限处被停止。",
   notReserved: "；未预留",
   onDevices: (devices) => `，位于 ${devices}`,
   currentRam: "当前内存",
@@ -345,8 +368,8 @@ export const jobsText = strings({
   ramLimit: "内存上限（MiB）",
   swapLimit: "交换空间上限（MiB）",
   timeLimit: "时间上限（秒）",
-  suggestion: (runs, peak, cores, memory, cpu) =>
-    `该任务中同名或同命令的${runs === 1 ? "上次有完整测量的运行" : `最近 ${runs} 次有完整测量的运行`}峰值为 ${peak} 内存${cores ? `、${cores} 个 CPU 核` : ""}。建议申请 ${memory} 内存${cpu ? `、${cpu} CPU` : ""}（峰值 × 1.5 向上取整）。你填写的限制不会被改动。`,
+  suggestion: (runs, peak, cores, memory, cpu, project) =>
+    `${project ? "本项目其他任务中同命令的" : "该任务中同名或同命令的"}${runs === 1 ? "上次有完整测量的运行" : `最近 ${runs} 次有完整测量的运行`}峰值为 ${peak} 内存${cores ? `、${cores} 个 CPU 核` : ""}。建议申请 ${memory} 内存${cpu ? `、${cpu} CPU` : ""}（内存：峰值 × 1.3 与峰值 + 1 GiB 取较大者；CPU：× 1.5；向上取整）。你填写的限制不会被改动。`,
   useSuggestion: "采用建议",
   exclusiveRun: "独占执行",
   exclusiveNote: "等待更早的 Job 完成，然后在此 Core 托管的本地 Job 中单独运行。之后的 Job 会排队，直到清理完成。其他应用继续运行；资源限制仍然适用。未勾选的 Job 使用普通的共享容量。",

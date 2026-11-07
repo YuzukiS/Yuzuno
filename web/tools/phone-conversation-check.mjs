@@ -249,9 +249,35 @@ async function probeRun(fixture) {
     for (let wait = 0; wait < 60 && !(await probed()).some((line) => line.why === "drive" && line.state === "closed-again" && line.n > 3); wait++)
       await page.waitForTimeout(250);
     await page.waitForTimeout(2500);
-    await page.evaluate(() => { document.documentElement.dataset.keyboard = ""; });
+    // The keyboard as the page meets one: the composer focused and the visual
+    // viewport short while 100dvh stays as it was. keyboard-viewport.ts marks
+    // the root itself from those two facts.
+    //
+    // Setting data-keyboard by hand instead asked the app to hold a state it
+    // refuses to, and rightly: it re-reads on the next focus change, finds
+    // 100dvh and the visual viewport the same height, and clears the mark.
+    // That went unnoticed while nothing moved focus in the window between —
+    // on #459 something does, because closing a phone dock gives focus back
+    // to the button that opened it (PhoneDocks.tsx's own intent, which used
+    // to leave it on `body`), and the mark hides that button, so focus moves
+    // and the app answers correctly. The probe asks for the real thing now.
+    await page.evaluate((short) => {
+      const input = document.querySelector(".main-panel [data-composer-input]");
+      if (input instanceof HTMLElement) input.focus();
+      const viewport = window.visualViewport;
+      window.__probeViewportHeight = window.innerHeight - short;
+      Object.defineProperty(viewport, "height", {
+        configurable: true,
+        get: () => window.__probeViewportHeight,
+      });
+      viewport.dispatchEvent(new Event("resize"));
+    }, 420);
     await page.waitForTimeout(2800);
-    await page.evaluate(() => { delete document.documentElement.dataset.keyboard; });
+    await page.evaluate(() => {
+      window.__probeViewportHeight = window.innerHeight;
+      window.visualViewport.dispatchEvent(new Event("resize"));
+      document.querySelector(".main-panel [data-composer-input]")?.blur?.();
+    });
     await page.waitForTimeout(800);
     await page.screenshot({ path: resolve(output, `${report.mode}-probe-${fixture}-mori.png`) });
     await context.close();
@@ -470,7 +496,27 @@ try {
     for (const state of ["closed", "work-open", "closed-again", "turns-open", "keyboard"])
       assert.ok(states.includes(state), `the probe measured ${state} on ${fixture}: ${states}`);
     assert.deepEqual(probe.lines.filter((line) => line.failed.length), [], `every probe measurement meets its criteria on ${fixture}`);
-    assert.deepEqual(probe.lines.filter((line) => line.unmeasured?.length), [], "and measures them all, at the latest");
+    // Everything measured, at the latest — but for the one excuse the probe
+    // names itself: the composer's focus glow, 4px at the inline end of the
+    // focused composer, which reaches into scrollWidth without the page
+    // scrolling. It only arises while the composer has the focus, which is
+    // what the keyboard means, so nothing reached it until the keyboard here
+    // was simulated as a page meets one rather than by hand. It is excused
+    // on exactly the probe's terms: that line and no other, the composer and
+    // no other selector, 4px and no more.
+    const GLOW = "nothing runs off the side (composer focus glow (4px))";
+    for (const line of probe.lines.filter((line) => line.unmeasured?.length)) {
+      assert.deepEqual(line.unmeasured, [GLOW],
+        `nothing but the focus glow goes unmeasured on ${fixture}: ${JSON.stringify(line)}`);
+      assert.equal(line.state, "keyboard", `and only with the keyboard up: ${JSON.stringify(line)}`);
+      assert.ok(line.glow?.length, `with the glow it was excused for: ${JSON.stringify(line)}`);
+      for (const each of line.glow) {
+        const [selector, sizes] = each.split(" ");
+        const [scroll, client] = sizes.split(">").map(Number);
+        assert.equal(selector, ".composer", `the composer's own glow: ${each}`);
+        assert.ok(scroll - client <= 4, `and 4px of it at most: ${each}`);
+      }
+    }
     assert.deepEqual(probe.refused, [], "the fixture server refused no write");
     check(`the Safari probe meets its criteria here, on the fixture server's ${fixture}`, { states, measurements: probe.lines.length });
   }

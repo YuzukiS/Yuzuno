@@ -336,6 +336,24 @@ async function fromScopeMenu(page, text) {
   page.document.querySelector(".workspace-scope").click();
   (await waitFor(() => button(page, text), `the Workspace menu offers ${text}`)).click();
 }
+// Settings › Projects opens at its list unless a project is in scope (YN-8);
+// a row opens its page.
+const projectsTitle = (page) => page.document.querySelector("#settings-projects-title")?.textContent;
+const projectRows = (page) => [...page.document.querySelectorAll(".settings-projects .settings-list-row.is-open")];
+async function openProject(page, name) {
+  const row = await waitFor(() => projectRows(page).find((item) => item.querySelector(".settings-list-title")?.textContent === name), `the ${name} row`);
+  row.click();
+  await waitFor(() => projectsTitle(page) === name, `${name}'s page`);
+}
+async function openUnassigned(page) {
+  const row = await waitFor(() => projectRows(page).find((item) => /in no project|不属于任何项目/.test(item.textContent)), "the Agents without a project row");
+  row.click();
+  await waitFor(() => /Agents without a project|无项目的 Agent/.test(projectsTitle(page) ?? ""), "the Agents without a project page");
+}
+async function backToProjects(page) {
+  page.document.querySelector(".settings-projects .settings-crumb").click();
+  await waitFor(() => page.document.querySelector(".settings-projects .settings-list"), "the projects list");
+}
 
 test("a remembered project scopes the rail and an out-of-scope remembered agent starts on Home", async () => {
   const page = await mount({
@@ -447,8 +465,10 @@ test("projects are created explicitly and folder groups are only suggestions", a
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
     assert.match(dialog.textContent, /App/);
     assert.match(dialog.textContent, /Old study/, "archived projects are listed separately");
-    button(page, "Without a project", dialog).click();
-    await waitFor(() => button(page, "Without a project", dialog)?.classList.contains("selected"), "Without a project is shown");
+    // The list opens with no project chosen (YN-8).
+    assert.equal(projectsTitle(page), "Projects");
+    assert.equal(dialog.querySelector('input[aria-label^="Default folder on"]'), null, "no project's page is shown");
+    await openUnassigned(page);
     assert.match(dialog.textContent, /\/home\/u\/scratch/);
     assert.match(dialog.textContent, /Nothing is assigned until you choose/);
     assert.equal(page.calls.filter((call) => call.url.endsWith("/project")).length, 0);
@@ -594,6 +614,7 @@ test("unsaved default folders survive workspace refreshes", async () => {
   const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
   try {
     await fromScopeMenu(page, "Manage projects");
+    await openProject(page, "App");
     // The field is named for a machine, so it appears once machines are read.
     const input = await waitFor(() => page.document.querySelector('input[aria-label="Default folder on Core host"]'),
       "the default folder field for Core host");
@@ -618,6 +639,7 @@ test("T-56 a project's task key prefix is changed in its window: Core decides, s
   try {
     await fromScopeMenu(page, "Manage projects");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+    await openProject(page, "App");
     const field = () => [...dialog.querySelectorAll("label")].find((label) => label.textContent.startsWith("Task key prefix"))?.querySelector("input");
     const input = await waitFor(field, "the task key prefix field");
     assert.equal(input.value, "APP");
@@ -658,6 +680,7 @@ test("T-56 a project's task key prefix is changed in its window: Core decides, s
   try {
     await fromScopeMenu(older, "Manage projects");
     const dialog = await waitFor(() => dialogOf(older), "the project dialog opens");
+    await openProject(older, "App");
     await waitFor(() => [...dialog.querySelectorAll("label")].some((label) => label.textContent.startsWith("Project name")), "the project is shown");
     assert.equal([...dialog.querySelectorAll("label")].some((label) => label.textContent.startsWith("Task key prefix")), false, "no prefix field without a key");
   } finally {
@@ -670,8 +693,7 @@ test("a project with linked tasks cannot be deleted from the dialog", async () =
   try {
     await fromScopeMenu(page, "Manage projects");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
-    button(page, "Docs", dialog).click();
-    await waitFor(() => button(page, "Docs", dialog)?.getAttribute("aria-current") === "true", "Docs is shown");
+    await openProject(page, "Docs");
     const remove = button(page, "Delete", dialog);
     assert.equal(remove.disabled, true);
     assert.match(remove.title, /0 agents and 1 task; archive it instead/);
@@ -738,8 +760,7 @@ test("a partly failed folder suggestion still refreshes and explains what is lef
   try {
     await fromScopeMenu(page, "Manage projects");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
-    button(page, "Without a project", dialog).click();
-    await waitFor(() => button(page, "Without a project", dialog)?.classList.contains("selected"), "Without a project is shown");
+    await openUnassigned(page);
     const before = workspaceReads(page);
     button(page, "Create project", dialog).click();
     await waitFor(() => /scratch was created, but not every agent joined it/.test(dialog.textContent) && workspaceReads(page) > before,
@@ -751,13 +772,59 @@ test("a partly failed folder suggestion still refreshes and explains what is lef
   }
 });
 
+// YN-8 S2a: Settings › Projects is a list first, with no project chosen for
+// you; a row opens its project's page (four cards), Back returns to the
+// list, and the Workspace menu opens the project in scope, or New project.
+test("Settings › Projects lists the projects first, and the Workspace menu opens the one in scope or a new one", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+  try {
+    await fromScopeMenu(page, "Manage projects");
+    const dialog = await waitFor(() => dialogOf(page), "Settings opens");
+    await waitFor(() => projectRows(page).length, "the projects list");
+    assert.equal(projectsTitle(page), "Projects");
+    assert.equal(page.document.querySelector("#settings-tab-projects").getAttribute("aria-selected"), "true");
+    assert.equal(page.document.querySelector(".settings-projects .settings-current").textContent, "3 · 1 archived");
+    const rows = () => projectRows(page).map((row) => [row.querySelector(".settings-list-title")?.textContent, row.querySelector(".settings-list-sub")?.textContent ?? ""]);
+    assert.deepEqual(rows().map(([title]) => title), ["App", "Research", "Docs", "New project", "1 Agent is in no project", "Old study"]);
+    assert.match(rows()[0][1], /^\d+ Agents? · \d+ leads?$/, "a project row counts its Agents and leads");
+    assert.equal(rows().at(-1)[1], "Archived · its files stay where they are");
+    assert.equal(dialog.querySelector(".settings-crumb"), null, "the list has no Back");
+    // A row opens the project's page: its four cards, then Back to the list.
+    await openProject(page, "Research");
+    assert.equal(page.document.activeElement, page.document.querySelector("#settings-projects-title"), "the page's title takes focus");
+    assert.deepEqual([...dialog.querySelectorAll(".settings-projects .settings-group-title")].map((h) => h.textContent), ["Members & leads", "This project’s defaults"]);
+    assert.deepEqual([...dialog.querySelectorAll(".settings-projects legend")].map((legend) => legend.textContent.replace(/\s*\d+$/, "")),
+      ["Name & task keys", "Default folders", "Agents", "Archive or delete"]);
+    assert.equal(dialog.querySelectorAll(".settings-projects > .settings-group").length, 4, "four cards");
+    await backToProjects(page);
+    assert.equal(projectsTitle(page), "Projects");
+    // Closed and opened again from the menu with a project in scope: its page.
+    for (const close of page.document.querySelectorAll('[aria-label="Close dialog"]')) close.click();
+    await waitFor(() => !dialogOf(page), "Settings closes");
+    await openScope(page, "Docs");
+    await fromScopeMenu(page, "Manage projects");
+    await waitFor(() => projectsTitle(page) === "Docs", "the project in scope");
+    for (const close of page.document.querySelectorAll('[aria-label="Close dialog"]')) close.click();
+    await waitFor(() => !dialogOf(page), "Settings closes again");
+    await fromScopeMenu(page, "New project");
+    await waitFor(() => projectsTitle(page) === "A new project", "the new project's page");
+    assert.ok(dialogOf(page).querySelector(".settings-crumb"), "with Back to the list");
+    assert.equal(page.calls.filter((call) => call.method !== "GET" && /\/api\/projects/.test(call.url)).length, 0, "browsing writes no project");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("Machines opens from the Workspace menu, reads nothing while open, and opens an agent where it lives", async () => {
   const page = await mount({ storage: { "yuzuno.selected.ws-1": "a", "yuzuno.projectScope.ws-1": "project:p-app" },
     agents: { a: { unreadCount: 2, reviewedSeq: 3 } } });
   try {
     await fromScopeMenu(page, "Machines");
-    // The page says "Loading machines…" until /api/machines is answered.
-    const dialog = await waitFor(() => /Core host/.test(dialogOf(page)?.textContent || "") && dialogOf(page), "the Machines page lists Core host");
+    // Settings › Machines (YN-8). The page says "Loading machines…" until
+    // /api/machines is answered; Settings' other pages say "Core host" too.
+    const machinesPage = () => page.document.querySelector("#settings-editor-machines:not([hidden])");
+    const dialog = await waitFor(() => /Not checked yet/.test(machinesPage()?.textContent || "") && machinesPage(), "the Machines page lists Core host");
     assert.match(dialog.textContent, /Machines/);
     assert.match(dialog.textContent, /Core host/);
     assert.match(dialog.textContent, /Not checked yet/);
@@ -766,7 +833,10 @@ test("Machines opens from the Workspace menu, reads nothing while open, and open
     // dwell is what the menu click must beat.
     await pause(DWELL_PLUS);
     assert.equal(page.reads().length, 0, "Mori's unread stays while the page covers it");
-    const sora = [...dialog.querySelectorAll(".machine-agent")].find((b) => b.textContent.includes("Sora"));
+    // Machines lists the machines first (YN-8 S3); Sora's is the Core host's page.
+    dialog.querySelector('[data-machine-row="local"]').click();
+    await waitFor(() => [...page.document.querySelectorAll(".machine-agent")].some((b) => b.textContent.includes("Sora")), "the Core host's page");
+    const sora = [...page.document.querySelectorAll(".machine-agent")].find((b) => b.textContent.includes("Sora"));
     sora.click();
     await waitFor(() => dialogOf(page) === null && /Sora/.test(page.document.querySelector(".conversation-heading h1")?.textContent || ""),
       "Sora opens in place of the page");
@@ -779,53 +849,17 @@ test("Machines opens from the Workspace menu, reads nothing while open, and open
 });
 
 
-test("Home content editor settings save stable IDs, explicit none and compatibility per project", async () => {
-  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
-  try {
-    await fromScopeMenu(page, "Manage projects");
-    const settings = await waitFor(() => page.document.querySelector('.home-editor-settings input'), "editor setting loads");
-    assert.equal(settings.checked, true, "unconfigured is all-members compatibility");
-    settings.click(); await pause();
-    let checks = [...page.document.querySelectorAll('.home-editor-members input')];
-    assert.equal(checks.length, 2, "only this project's open members are choices");
-    assert.ok(checks.every(box => box.checked));
-    checks[1].click(); await pause();
-    button(page, "Save content editors").click();
-    const saves = () => page.calls.filter(call => call.method === "PUT" && call.url.endsWith('/home-editors'));
-    await waitFor(() => saves().length === 1, "selected editor saved");
-    assert.deepEqual(saves()[0].body, { expectedVersion: 0, editorAgentIds: ['a'] });
-    await waitFor(() => !page.document.querySelector('.home-editor-members input').disabled
-      && !page.document.querySelector('.home-editor-actions').textContent.includes('Unsaved changes'), "save finished");
-    page.document.querySelector('.home-editor-members input').click(); await pause();
-    assert.match(page.document.querySelector('.home-editor-settings').textContent, /Members can only ask questions or request approval/);
-    button(page, "Save content editors").click();
-    await waitFor(() => saves().length === 2, "empty list saved");
-    assert.deepEqual(saves()[1].body.editorAgentIds, []);
-    await waitFor(() => !page.document.querySelector('.home-editor-members input').disabled
-      && !page.document.querySelector('.home-editor-actions').textContent.includes('Unsaved changes'), "second save finished");
-    button(page, "Research", dialogOf(page)).click();
-    await waitFor(() => page.document.querySelector('.home-editor-mode input')?.checked === true, "different project retains compatibility");
-    button(page, "App", dialogOf(page)).click();
-    await waitFor(() => page.document.querySelector('.home-editor-mode input')?.checked === false, "saved empty list restored");
-    assert.ok([...page.document.querySelectorAll('.home-editor-members input')].every(box => !box.checked));
-    page.document.querySelector('.home-editor-mode input').click(); await pause();
-    button(page, "Save content editors").click();
-    await waitFor(() => saves().length === 3, "compatibility restored");
-    assert.equal(saves()[2].body.editorAgentIds, null);
-    assert.equal(page.errors.length, 0, page.errors.join('\n'));
-  } finally { page.close(); }
-});
-
 test("a project's settings have no executors block: how many run at once is each machine's (YN-2 S5)", async () => {
   const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
   try {
     await fromScopeMenu(page, "Manage projects");
+    await openProject(page, "App"); // its own page (YN-8)
     await waitFor(() => page.document.querySelector(".project-leads"), "the project's settings load");
     await pause();
     // A boolean, never the element: a failing assert would inspect a whole jsdom node.
     assert.equal(Boolean(page.document.querySelector('[role="group"][aria-label="How many executors run at once"]')), false,
       "a project's settings have no executors block");
-    assert.doesNotMatch(page.document.querySelector('[role="dialog"]').textContent, /how many of this project’s executors run at once/);
+    assert.doesNotMatch(dialogOf(page).textContent, /how many of this project’s executors run at once/);
     assert.equal(page.errors.length, 0, page.errors.join("\n"));
   } finally { page.close(); }
 });
@@ -851,6 +885,7 @@ test("a Project's leads are the user's to set, from its open members that are no
     assert.doesNotMatch(hana.getAttribute("aria-description"), /Lead/);
 
     await fromScopeMenu(page, "Manage projects");
+    await openProject(page, "App");
     const section = await waitFor(() => page.document.querySelector(".project-leads-members"), "leads load");
     const choices = () => [...section.querySelectorAll("label")].map(label => [label.textContent, label.querySelector("input").checked]);
     // The executor is no choice; nothing in another Project is.
@@ -858,7 +893,7 @@ test("a Project's leads are the user's to set, from its open members that are no
     const save = () => button(page, "Save leads");
     assert.equal(save().disabled, true, "nothing to save yet");
     section.querySelector("input").click(); await pause();
-    assert.match(page.document.querySelector(".project-leads").textContent, /No lead\. The Project works as before\./);
+    assert.match(page.document.querySelector(".project-leads").textContent, /No lead: every Agent here can only ask on Home\./);
     save().click();
     const saves = () => page.calls.filter(call => call.method === "PUT" && call.url.endsWith("/leads"));
     await waitFor(() => saves().length === 1, "the cleared list is saved");
@@ -879,8 +914,8 @@ test("a Project's leads are the user's to set, from its open members that are no
   } finally { page.close(); }
 });
 
-test("Home content editors follow a language change from another window, an unsaved choice kept (T-189)", async () => {
-  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+test("a Project's settings have no Home editors setting: its leads edit Home, which the Leads intro says in both languages (YN-2 S4)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, agents: { a: { kind: "lead" } }, leads: { "p-app": { version: 1, leadAgentIds: ["a"] } } });
   const language = async (value) => {
     page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: value }));
     page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
@@ -888,41 +923,18 @@ test("Home content editors follow a language change from another window, an unsa
   };
   try {
     await fromScopeMenu(page, "Manage projects");
-    const all = await waitFor(() => page.document.querySelector(".home-editor-mode input"), "editor setting loads");
-    all.click(); await pause();
-    page.document.querySelectorAll(".home-editor-members input")[1].click(); await pause();
-    const settings = () => page.document.querySelector(".home-editor-settings");
-    const chosen = () => [...page.document.querySelectorAll(".home-editor-members input")].map((box) => box.checked);
-    const names = () => [...page.document.querySelectorAll(".home-editor-members span")].map((span) => span.textContent);
-    const english = { text: settings().textContent, chosen: chosen(), names: names() };
-    assert.match(english.text, /Home content editors.*Only selected members maintain reports and status.*Save content editors.*Unsaved changes/s);
-    assert.deepEqual(english.chosen, [true, false]);
-    const before = page.calls.length;
+    await openProject(page, "App"); // its own page (YN-8)
+    await waitFor(() => page.document.querySelector(".project-leads-members"), "leads load");
+    // A boolean, never the element: a failing assert would inspect a whole jsdom node.
+    assert.equal(Boolean(page.document.querySelector(".home-editor-settings")), false, "the Project's settings have no Home editors setting");
+    assert.deepEqual(page.calls.filter((call) => call.url.endsWith("/home-editors")), [], "nothing reads or writes the old setting");
+    const leads = () => page.document.querySelector(".project-leads").textContent;
+    assert.match(leads(), /Leads answer for this Project's tasks: they dispatch executors, edit Home and write the handover\. Other Agents can only ask\./);
+    assert.match(leads(), /An Agent you create in this Project or add to it leads it; you never have to set one, and you can remove a lead here\. Executors never lead\./);
     await language("zh-Hans");
-    assert.match(settings().textContent, /Home 内容编辑者.*所有成员，包括以后加入的成员.*只有所选成员维护报告和状态.*保存内容编辑者.*有未保存的更改/s);
-    assert.deepEqual([chosen(), names()], [english.chosen, english.names], "the unsaved choice and the Agent names as they were");
+    assert.match(leads(), /负责人为这个 Project 的任务负责：派发执行者、编辑 Home、写交接文档。其他 Agent 只能提问。/);
+    assert.match(leads(), /你在这个 Project 里新建或加入的 Agent 就是负责人；你不必设置，也可以在这里移除负责人。/);
     await language("en");
-    assert.equal(settings().textContent, english.text);
-    assert.deepEqual(chosen(), english.chosen);
-    assert.deepEqual(page.calls.slice(before).filter((call) => call.method === "PUT"), [], "changing the language saves nothing");
-    assert.equal(page.errors.length, 0, page.errors.join("\n"));
-  } finally { page.close(); }
-});
-
-test("a task executor is never offered as a Home content editor; all members means all but executors (T-36)", async () => {
-  // Hana is an executor in App, Mori a standing member.
-  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, agents: { b: { kind: "executor" } } });
-  try {
-    await fromScopeMenu(page, "Manage projects");
-    const all = await waitFor(() => page.document.querySelector(".home-editor-mode input"), "editor setting loads");
-    assert.match(page.document.querySelector(".home-editor-mode").textContent, /^All members but task executors, including future members$/);
-    all.click(); await pause();
-    const names = [...page.document.querySelectorAll(".home-editor-members span")].map((span) => span.textContent);
-    assert.deepEqual(names, ["Mori"], "only the standing member can be chosen");
-    button(page, "Save content editors").click();
-    await waitFor(() => page.calls.some((call) => call.method === "PUT" && call.url.endsWith("/home-editors")), "the list is saved");
-    assert.deepEqual(page.calls.find((call) => call.method === "PUT" && call.url.endsWith("/home-editors")).body,
-      { expectedVersion: 0, editorAgentIds: ["a"] }, "turning off all members selects every member but the executor");
     assert.equal(page.errors.length, 0, page.errors.join("\n"));
   } finally { page.close(); }
 });
@@ -932,7 +944,7 @@ test("a project's service opens only once this computer proves it reaches Core's
   try {
     await fromScopeMenu(page, "Manage projects");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
-    button(page, "App", dialog).click();
+    await openProject(page, "App");
     const panel = await waitFor(() => dialog.querySelector('[aria-label="Services"]'), "the Services panel is shown");
     await waitFor(() => /No services yet/.test(panel.textContent), "no services yet");
     button(page, "Add", panel).click();
@@ -984,7 +996,7 @@ test("a page not opened on a loopback address says only that its connection reac
   try {
     await fromScopeMenu(page, "Manage projects");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
-    button(page, "App", dialog).click();
+    await openProject(page, "App");
     const panel = await waitFor(() => dialog.querySelector('[aria-label="Services"]'), "the Services panel is shown");
     await waitFor(() => /No services yet/.test(panel.textContent), "no services yet");
     button(page, "Add", panel).click();
@@ -1033,10 +1045,12 @@ test("the Projects window reads in Chinese; names, folders and Core's words stay
     await fromScopeMenu(page, "管理项目");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
     assert.match(dialog.textContent, /把长期工作分组/);
-    assert.ok(button(page, "无项目", dialog) && button(page, "新建项目", dialog));
-    assert.match(dialog.querySelector(".project-archived-list").textContent, /已归档.*Old study/, "the archived list, its project named as given");
-    button(page, "App", dialog).click();
-    await waitFor(() => button(page, "App", dialog)?.getAttribute("aria-current") === "true", "App is shown");
+    // The list in Chinese (YN-8): its groups, the rows as given.
+    const legends = [...dialog.querySelectorAll(".settings-projects legend")].map((legend) => legend.textContent);
+    assert.deepEqual(legends, ["项目", "无项目的 Agent", "已归档"]);
+    assert.ok(projectRows(page).some((row) => row.textContent === "新建项目"), "the new project row");
+    assert.match(projectRows(page).find((row) => /Old study/.test(row.textContent)).textContent, /已归档 · 文件留在原处/, "the archived row, its project named as given");
+    await openProject(page, "App");
     await waitFor(() => /还没有服务。/.test(dialog.textContent), "the services section has loaded");
     const text = dialog.textContent;
     assert.match(text, /项目名称/);
@@ -1056,16 +1070,17 @@ test("the Projects window reads in Chinese; names, folders and Core's words stay
     assert.match(button(page, "删除", dialog).title, /仍关联 2 个 Agent 和 1 个任务；请改为归档/);
     assert.doesNotMatch(text, /Default folders|Rename|No services yet|Archive project|Repositories/);
 
-    button(page, "无项目", dialog).click();
-    await waitFor(() => /无项目的 Agent/.test(dialog.textContent), "Without a project is shown");
+    await backToProjects(page);
+    await openUnassigned(page);
     assert.match(dialog.textContent, /在你选择之前不会分配任何项目。/);
     assert.match(dialog.textContent, /\/home\/u\/scratch/);
     assert.match(dialog.textContent, /Core 主机 · Loose/);
     assert.ok(button(page, "创建项目", dialog));
     assert.equal(dialog.querySelector(".project-suggestion select").options[0].textContent, "加入现有项目…");
 
-    button(page, "新建项目", dialog).click();
-    await waitFor(() => /新项目/.test(dialog.textContent), "the new project form");
+    await backToProjects(page);
+    projectRows(page).find((row) => row.textContent === "新建项目").click();
+    await waitFor(() => projectsTitle(page) === "新项目", "the new project form");
     assert.match(dialog.textContent, /Core host 上的默认文件夹/);
     assert.match(dialog.textContent, /可选/);
     assert.ok(button(page, "创建项目", dialog));
@@ -1080,13 +1095,13 @@ test("a partly failed suggestion and a service read in Chinese, with Core's reas
   try {
     await fromScopeMenu(page, "管理项目");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
-    button(page, "无项目", dialog).click();
-    await waitFor(() => /无项目的 Agent/.test(dialog.textContent), "Without a project is shown");
+    await openUnassigned(page);
     button(page, "创建项目", dialog).click();
     await waitFor(() => /并非所有 Agent 都已加入/.test(dialog.textContent), "the partial result is explained");
     assert.match(dialog.textContent, /已创建 scratch，但并非所有 Agent 都已加入（Loose: Agent is gone）。请在下方把它们加入 scratch。/);
 
-    button(page, "App", dialog).click();
+    await backToProjects(page);
+    await openProject(page, "App");
     const panel = await waitFor(() => dialog.querySelector('[aria-label="服务"]'), "the services panel");
     await waitFor(() => /还没有服务。/.test(panel.textContent), "no services yet");
     button(page, "添加", panel).click();
@@ -1118,7 +1133,7 @@ test("switching the language while a project's repositories are open keeps what 
   try {
     await fromScopeMenu(page, "管理项目");
     const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
-    button(page, "App", dialog).click();
+    await openProject(page, "App");
     const panel = await waitFor(() => dialog.querySelector('[aria-label="GitHub 仓库"]'), "the repositories section");
     await waitFor(() => panel.querySelector('[role="alert"]'), "its first answer (this Core lists no links)");
     const input = panel.querySelector(".github-link-form input");
@@ -1136,3 +1151,105 @@ test("switching the language while a project's repositories are open keeps what 
   }
 });
 
+
+// T-37: each repository of a project has the merge queue switch, the user's
+// only. Turning it on names every write Core may then make; off saves at
+// once; a paused queue says why and offers Unpause.
+function queueCore(page, queue, { unpauseFails = 0 } = {}) {
+  const respond = (body, status = 200) => {
+    const text = JSON.stringify(body);
+    return { ok: status === 200, status, json: async () => JSON.parse(text), text: async () => text };
+  };
+  page.window.fetch = ((fetch) => async (url, init = {}) => {
+    if (url.includes("/api/collaboration/github_")) {
+      page.calls.push({ url, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : undefined });
+      return respond({ links: [], repositories: [{ id: 7, fullName: "owner/repo", url: "https://github.com/owner/repo", syncedAt: new Date().toISOString(), error: null }], refreshing: false });
+    }
+    if (url.includes("/api/merge-queue/repositories/7")) {
+      const body = init.body ? JSON.parse(init.body) : undefined;
+      page.calls.push({ url, method: init.method || "GET", body });
+      if (url.endsWith("/unpause")) {
+        if (unpauseFails > 0) { unpauseFails--; return respond({ error: "unavailable: GitHub is unreachable" }, 400); }
+        queue.paused = null;
+        return respond({ repositoryId: 7, unpaused: true });
+      }
+      if (init.method === "PUT") queue.enabled = body.enabled;
+      return respond(queue);
+    }
+    return fetch(url, init);
+  })(page.window.fetch);
+}
+async function openQueue(page, manage) {
+  await fromScopeMenu(page, manage);
+  const dialog = await waitFor(() => dialogOf(page), "the project dialog opens");
+  await openProject(page, "App");
+  return waitFor(() => dialog.querySelector(".merge-queue-switch input[role='switch']") && dialog.querySelector(".merge-queue-switch"),
+    "the repository shows its merge queue switch");
+}
+const queueWrites = (page) => page.calls.filter((call) => call.method === "PUT" && call.url.includes("/api/merge-queue/"));
+const within = (root, text) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
+
+test("the merge queue switch names every write before it turns on, and turns off at once (T-37)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+  try {
+    const queue = { repositoryId: 7, enabled: false, paused: null, landing: "core-merge" };
+    queueCore(page, queue);
+    const row = await openQueue(page, "Manage projects");
+    const toggle = () => row.querySelector("input[role='switch']");
+    assert.equal(row.getAttribute("aria-label"), "Merge queue for owner/repo");
+    assert.ok(row.textContent.includes("Off: Core writes nothing to GitHub here."), "off says Core writes nothing");
+    assert.ok(row.textContent.includes("Lands with core-merge: Core sends the merge itself. GitHub auto-merge and GitHub's merge queue come in core.25."), "the landing and the tiers to come");
+    toggle().click(); await pause();
+    const confirm = row.querySelector(".merge-queue-confirm");
+    assert.ok(confirm, "turning it on asks first");
+    for (const words of ["Turn on the merge queue for owner/repo?", "a merge commit pinned to the released head",
+      "Never a squash, a rebase or an admin merge", "queue/merge-", "a draft PR from it", "closing that draft PR and deleting its branch",
+      "never force-pushes", "never starts, reruns or cancels a workflow"])
+      assert.ok(confirm.textContent.includes(words), words);
+    assert.equal(queueWrites(page).length, 0, "nothing is saved before the confirmation");
+    assert.equal(toggle().checked, false, "the switch stays off while it asks");
+    within(row, "Cancel").click(); await pause();
+    assert.ok(!row.querySelector(".merge-queue-confirm"), "Cancel closes the confirmation");
+    assert.equal(queueWrites(page).length, 0, "and saves nothing");
+    toggle().click(); await pause();
+    within(row, "Turn on").click();
+    await waitFor(() => row.textContent.includes("On: Core merges PRs released for merge in this repository."), "the switch is on");
+    assert.deepEqual(queueWrites(page).map((call) => call.body), [{ enabled: true }]);
+    assert.equal(toggle().checked, true);
+    toggle().click();
+    await waitFor(() => row.textContent.includes("Off: Core writes nothing to GitHub here."), "the switch is off again");
+    assert.deepEqual(queueWrites(page).map((call) => call.body), [{ enabled: true }, { enabled: false }], "off saves at once");
+    assert.ok(!row.querySelector(".merge-queue-confirm"), "with no confirmation");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
+test("a paused merge queue says why and unpauses with one request id until answered, in Chinese (T-37)", async () => {
+  const page = await mount({ storage: chinese });
+  try {
+    const queue = { repositoryId: 7, enabled: true, paused: { reason: "main_red", detail: "Main CI run 91 concluded failure", main: "b".repeat(40) }, landing: "core-merge" };
+    queueCore(page, queue, { unpauseFails: 1 });
+    const row = await openQueue(page, "管理项目");
+    const box = () => row.querySelector(".merge-queue-paused");
+    assert.equal(row.getAttribute("aria-label"), "owner/repo 的合并队列");
+    assert.ok(row.textContent.includes("已开启：Core 合并此仓库中已放行合并的 PR。"), "on, in Chinese");
+    assert.ok(row.textContent.includes("落地方式 core-merge"), "the landing, in Chinese");
+    assert.ok(box().textContent.includes("已暂停：main_red"), "the reason, as Core gave it");
+    assert.ok(box().textContent.includes("Main CI run 91 concluded failure"), "and Core's detail, as written");
+    within(row, "解除暂停").click();
+    await waitFor(() => row.querySelector("[role='alert']"), "the failed unpause says so");
+    assert.ok(box(), "the queue still shows paused");
+    within(row, "解除暂停").click();
+    await waitFor(() => !box(), "the second unpause is answered");
+    const sent = page.calls.filter((call) => call.url.endsWith("/api/merge-queue/repositories/7/unpause"));
+    assert.equal(sent.length, 2);
+    assert.match(sent[0].body.requestId, /^[0-9a-f-]{36}$/);
+    assert.equal(sent[1].body.requestId, sent[0].body.requestId, "the retry keeps its request id");
+    assert.ok(!row.querySelector("[role='alert']"), "the error clears once answered");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});

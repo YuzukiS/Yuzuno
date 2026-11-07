@@ -84,7 +84,7 @@ test("a Codex MCP call's capsule names its server and tool", async () => {
 
     // The heading keeps only an overview; each call is its own capsule.
     assert.equal(page.document.querySelectorAll(".tool-activity .tool-count").length, 0);
-    assert.equal(page.document.querySelector(".tool-activity .tool-overview").textContent, "5 tool steps1 failed");
+    assert.equal(page.document.querySelector(".tool-activity .tool-overview").textContent, "5 tool steps4 returned1 failed");
 
     // A long name is whole in the text; only the capsule cuts it short.
     const m4 = row(page, "m4");

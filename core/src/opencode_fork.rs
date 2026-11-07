@@ -462,6 +462,10 @@ impl Workspace {
         row.state = "completed".into();
         self.changed(&row.source_agent_id);
         self.changed(&agent.id);
+        if project_kept {
+            // The fork leads the source's Project (YN-2 S4).
+            self.projects_changed();
+        }
         // Attached to the very process the fork was replayed into. A failed
         // attach leaves the registered Agent offline; nothing is retried here.
         if let Err(error) = self.opencode_ensure_on(&agent.id, Some(started)).await {
@@ -865,6 +869,9 @@ impl crate::store::Store {
         let kept = match project {
             Some(project) if !crate::projects::is_archived(&tx, project)? => {
                 crate::projects::set_agent_project_in(&tx, &detail.agent.id, Some(project))?;
+                // The user's fork leads the source's Project, even when the
+                // source is an executor: the fork is a standing Agent (YN-2 S4).
+                crate::agent_roles::user_added(&tx, &detail.agent.id, project)?;
                 true
             }
             _ => false,

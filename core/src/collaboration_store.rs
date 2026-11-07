@@ -244,28 +244,33 @@ impl Store {
                AND NOT EXISTS(
                SELECT 1 FROM collaboration_message_reads seen WHERE seen.message_seq=older.seq AND seen.reader_id=older.recipient_id))
             ,COALESCE(json_extract(m.data,'$.priority'),'normal') AS priority
+            -- Mail that rings: all but Core's session notices, which join (YN-5).
+            ,SUM(COALESCE(json_extract(m.data,'$.metadata.kind'),'')!=?1) AS ringing
             FROM collaboration_messages m
             WHERE delivery_state='pending' AND COALESCE(json_extract(m.data,'$.metadata.kind'),'')!='update_wait'
               AND NOT EXISTS(SELECT 1 FROM collaboration_message_reads r
                 WHERE r.message_seq=m.seq AND r.reader_id=m.recipient_id)
             GROUP BY recipient_id,priority ORDER BY CASE priority WHEN 'urgent' THEN 0 ELSE 1 END,MIN(seq)")?;
-        let rows = q.query_map([], |r| {
+        let rows = q.query_map([crate::session_baseline::KIND], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
                 r.get::<_, i64>(2)?,
                 r.get::<_, i64>(3)?,
                 r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })?;
         let mut batches = Vec::new();
         for row in rows {
-            let (id, through, count, after, priority) = row?;
+            let (id, through, count, after, priority, ringing) = row?;
             // The listed view: parsing whole records here, on every wake-up
             // while mail waits, held back every other Agent's events.
             if let Some(brief) = self.brief_in(&db, &id)? {
                 if brief.agent.closed_at.is_none() {
-                    batches.push(json!({"agentId":id,"priority":priority,"throughSeq":through,"afterSeq":after,"messageCount":count}));
+                    // joinOnly: nothing in it may start a Turn (YN-5).
+                    batches.push(json!({"agentId":id,"priority":priority,"throughSeq":through,"afterSeq":after,
+                        "messageCount":count,"joinOnly":ringing == 0}));
                 }
             }
         }
@@ -1121,10 +1126,13 @@ fn task_submit_result(
             "invalid_input: result links must use http or https"
         );
     }
+    // doing: one step of work that goes on, such as a plan for approval or
+    // one slice of several. Its task stays in progress, so its executor is
+    // not shown as delivered (YN-4); review is the last result.
     let status = optional_text(input, "status", 32)?.unwrap_or_else(|| "review".into());
     ensure!(
-        matches!(status.as_str(), "review" | "done"),
-        "invalid_input: result status must be review or done"
+        matches!(status.as_str(), "doing" | "review" | "done"),
+        "invalid_input: result status must be doing, review or done"
     );
     if status == "done" {
         // Nor through its result: its dispatcher, or the user, decides (T-36, #622 R2).
@@ -1632,6 +1640,9 @@ fn peer_read(db: &Connection, actor: Option<&str>, input: &Value) -> Result<Valu
         messages.push(load_message(db, &id)?);
         next = seq;
     }
+    // Core's session notice first: it says what the rest is read with (YN-5).
+    // Only the order within this page changes; its cursor does not.
+    messages.sort_by_key(|m| m["metadata"]["kind"] != crate::session_baseline::KIND);
     Ok(json!({"messages":messages,"nextAfterSeq":next,"hasMore":has_more}))
 }
 
@@ -1659,7 +1670,7 @@ pub fn tool_definitions() -> Vec<Value> {
         "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})
     };
     vec![
-        definition("peers_list", "List existing Workspace Agents, their project, kind and native runtime state. kind is lead (a lead of its Project, set by the user), executor (made by Core for one task) or standing (made by the user); kind filters by it. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false},"kind":{"type":"string","enum":["lead","executor","standing"]}}), &[]),
+        definition("peers_list", "List existing Workspace Agents, their project, kind and native runtime state. kind is lead (the user's Agent that leads its Project and edits its Home), executor (made by Core for one task) or standing (the user's, leading no Project); kind filters by it. Runtime state is not shared task status. Agents in different projects can still message and help each other.", json!({"includeClosed":{"type":"boolean","default":false},"kind":{"type":"string","enum":["lead","executor","standing"]}}), &[]),
         definition("projects_list", "List this Workspace's projects with their IDs, including projects without agents. Archived projects are marked and accept no new tasks. Each has a key, the prefix of its tasks' keys: a task created in or moved into a project is <KEY>-<n> there, and a task in no project, or numbered before keys came, is T-<n>. T-<n> names every task forever, as does every key a task or project had. The user changes a project's key in the Projects window (Manage projects…), as its task key prefix.", json!({}), &[]),
         definition("peer_send", "Send durable correspondence to another existing Agent. The sender is authenticated by Core. Normal mail waits for the current turn to finish; choose urgent only when the recipient needs a reminder during current work. Delivery does not prove it was read or acted on. A released executor takes no more mail (executor_archived): write to its dispatcher. Use taskId for an existing shared goal and replyTo for a reply.", json!({"requestId":request,"toAgentId":string,"body":string,"taskId":nullable_task_reference,"replyTo":nullable_string,"priority":priority}), &["requestId","toAgentId","body"]),
         definition("peer_read", "Fetch your durable inbox after an explicit sequence. Retrying the same cursor returns the same messages; Core never silently advances your cursor. Keep a notification's priority filter while paging so urgent reads do not consume normal mail. firstReadAt means fetched, not understood or completed.", json!({"afterSeq":after,"limit":limit,"priority":read_priority}), &[]),
@@ -1670,15 +1681,15 @@ pub fn tool_definitions() -> Vec<Value> {
         definition("task_claim", "Atomically become the principal assignee of an unassigned task. A competing claim fails; collaborators may still read, comment, and submit review results. start optionally changes task state to doing; it does not spawn a process or acquire a lease.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"start":{"type":"boolean","default":false}}), &["requestId","taskId","expectedVersion"]),
         definition("task_comment", "Append useful discussion or a progress note to an existing task. Does not change its definition, current result, semantic version, or board order. Optional research makes the comment a fixed research record (a method, a claim or an observation, with its sources): it notifies no one and never replaces task_submit_result for a formal outcome. Job sources must match this task's retained checked Job attempt; task sources keep their producer; external sources stay as stated. task_research_get reads a record with its sources' current state.", json!({"requestId":request,"taskId":task_reference,"body":string,"research":research::schema()}), &["requestId","taskId","body"]),
         definition("task_research_get", "Read one research record of a task by its activitySeq: the record as written, its version among the records with its id and the newest one, the method version it cites, and each source's identity as recorded beside its state now. Job sources compare retained Job records only, no file is read; task sources keep their original producer; external sources are as stated and never checked. A claim's status is its author's judgement, not a verdict or acceptance.", json!({"taskId":task_reference,"activitySeq":{"type":"integer","minimum":1}}), &["taskId","activitySeq"]),
-        definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references and this task's research records. Defaults to review; choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification. On a task nobody holds (no assignee, no active dispatch) your result also claims it for you, as claimNotice in the receipt says; an archived or cancelled one then takes no result. An executor submits its own task's result with status review: done is refused (executor_done_refused), and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":string,"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
+        definition("task_submit_result", "Publish a concise outcome on the existing task with optional http/https deliverable links and criterion reports with Job artifact references and this task's research records. Defaults to review. Use doing for an intermediate result of work that goes on (a plan awaiting approval, one slice of several): the task stays doing and its executor running, and review for the last. Choose done only when explicitly reporting completion. The author and execution source are recorded by Core, not independently verified by another model. outcome is the author's report; its artifact references must match this task's retained checked Job attempts. Suggested nextAgentId does not assign or notify. Each submission keeps its own result ID, task version and acceptance context; task_result_get reads it later. For dispatched work pass dispatchId from your original assignment message: Core automatically notifies the fixed dispatching Agent, so no extra peer_send is needed. Never substitute a newer dispatchId after reassignment. Old clients omitting it are rejected for tracked executors. GUI/unbound collaborators and legacy untracked work remain supported without automatic notification. On a task nobody holds (no assignee, no active dispatch) your result also claims it for you, as claimNotice in the receipt says; an archived or cancelled one then takes no result. An executor submits its own task's results with status doing or review: done is refused (executor_done_refused), and its dispatcher or the user decides.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"dispatchId":{"type":"string","description":"Identity from your original task_dispatch message, independent of expectedVersion. Required for tracked executors; stale or invalidated assignments are rejected without changing the task."},"delivery":crate::delivery::submission_schema(),"summary":string,"outcome":result_outcome::schema(),"links":{"type":"array","maxItems":30,"items":{"type":"object","properties":{"label":string,"url":string},"required":["label","url"],"additionalProperties":false}},"status":{"type":"string","enum":["doing","review","done"],"default":"review"}}), &["requestId","taskId","expectedVersion","summary"]),
         definition("task_result_get", "Read one immutable task result and a page of its result history, newest first. Omit resultId for the current result; an explicit ID must belong to this task. Follow nextBefore as before while hasMore; result selection is independent of the history page. Legacy results without IDs remain readable by default and in history. Artifact states compare only retained Job records; no file or remote machine is read, current file availability stays unknown, and downloadable only names eligibility for the existing checked-download route. Reports, Job checks, independent verification and acceptance are separate; task status or acknowledgment never establishes acceptance.", json!({"taskId":task_reference,"resultId":string,"before":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":20,"default":10}}), &["taskId"]),
         definition("task_result_ack", "Record that you have handled a task result Core notified you about, by its exact resultId and dispatchId from that result message. Only the Agent the result notified can acknowledge it; repeats are idempotent. If that notification's wake-up has not been sent yet, Core skips it; one already in flight or delivered is not withdrawn. The message stays in your mailbox and the task is not changed. Reading mail, task_get, setting done or commenting never acknowledges a result.", json!({"requestId":request,"taskId":task_reference,"resultId":{"type":"string","description":"resultId from the result message."},"dispatchId":{"type":"string","description":"dispatchId from the same result message."}}), &["requestId","taskId","resultId","dispatchId"]),
         // Project Briefs; served by `project_brief`, not here.
         crate::project_brief::tool_definition("brief_get"),
         crate::project_brief::tool_definition("brief_update"),
         crate::project_brief::tool_definition("brief_guide"),
-        crate::handover_proposals::tool_definition("handover_get"),
-        crate::handover_proposals::tool_definition("handover_propose"),
+        crate::handover_tools::tool_definition("handover_get"),
+        crate::handover_tools::tool_definition("handover_update"),
         definition("task_dispatch", "Assign an existing task to an Agent, or reassign it: atomically set doing, record a new stable dispatchId and fixed result recipient, and send an associated durable message. Give toAgentId for an existing open Agent, or executor for a new one Core creates: executor {} makes a general executor from the defaults for new Agents (the Project's, else the Workspace's), executor {templateId} makes it from that executor template. Only a lead of the task's Project, or the user, may, and not while Core prepares an update. The answer's agentId is the Agent; a retry with the same requestId returns the same one. The executor must retain message.dispatchId for task_submit_result; each dispatch supersedes the previous one even for the same Agent, so further instructions within the same assignment go by peer_send with taskId instead. Results automatically notify the dispatching Agent; GUI dispatch has no Agent recipient. Does not create another task or restart a closed Agent. Normal delivery waits for the current turn (a new executor's, until it has started; it waits for a free executor slot first, and task_get's executorSlot says its place in the queue); urgent requests an earlier native reminder. Automatic materials include the saved goal, explicit acceptance, repositories and GitHub snapshots, registered worktree/references and return requirements. Read full fixed material fields with task_get using the original dispatchId; body is only a supplement. Missing facts stay unspecified. A queued message is not proof that execution has begun.", json!({"requestId":request,"taskId":task_reference,"expectedVersion":version,"toAgentId":{"type":"string","description":"An existing open Agent. Give this or executor."},
             "executor":{"type":"object","additionalProperties":false,"description":"Create the Agent: with no templateId a general executor, with the harness, model and permissions of a new Agent in the task's Project and no instructions of its own beyond the handover and the task's materials; with templateId, from that executor template of the task's Project, else the Workspace's. On the Core host it works in the dispatch's worktree folder, else the Project's folder there; on another machine, in the Project's folder on that machine. An Agent's dispatch may name only the worktree the user registered on the task or a folder inside the Project's: a path an Agent gives in materials is information, not permission. It starts when its machine has a free executor slot (each machine's limit, set by the user). If its start fails, Core rebuilds it once as a new dispatch from you (task_get with the first dispatchId says so); if that fails too, Core blocks the task and mails you. Give this or toAgentId.",
                 "properties":{"templateId":{"type":["string","null"],"maxLength":48,"description":"An executor template's id; leave it out for a general executor."},"machineId":{"type":["string","null"],"description":"Where it runs: a machine's id from the Machines list, local for the Core host, or auto for Core to choose one now (a free executor slot first, then the most spare Jobs memory, then CPU; recorded as task_get executorSlot.choice). Unset: the template's machine, else the Core host (a general executor has none of its own). A worktree is a path on the Core host, so a dispatch to another machine can't carry one, and one under auto runs on the Core host."}}},

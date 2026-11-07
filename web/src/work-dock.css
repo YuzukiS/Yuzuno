@@ -2,13 +2,21 @@
   --work-dock-width: 40px;
 }
 /* Jobs and CI float over the conversation's left edge, as the turn dock
-   does on the right; the column keeps clear of both (turn-dock.css). */
-.conversation-body:has(> .work-dock:not(:empty)) {
+   does on the right; the column keeps clear of both (turn-dock.css).
+   Keyed on the scrolling box's contents, not on the nav being `:empty`:
+   the nav always holds that box, which an earlier finding here put inside
+   it so each item's tip could escape the clip (#459 new pair, P2). While
+   these rules asked the nav, they matched every conversation — one with no
+   Jobs, no runs and no sub-agents gave up 22px of its text and, on a phone,
+   showed the button that opens the empty drawer, for a dock that is not
+   drawn at all (#459 R4, P2). The other eight keys that read this live in
+   turn-dock.css, phone-docks.css and conversation-strips.css. */
+.conversation-body:has(> .work-dock > .work-dock-scroll:not(:empty)) {
   --gutter-left: calc(var(--work-dock-width) + 2px);
 }
 /* The request pin spans the column between the two docks, as it already
    stops short of the turn dock on the right. */
-.conversation-body:has(> .work-dock:not(:empty)) > .current-turn-prompt {
+.conversation-body:has(> .work-dock > .work-dock-scroll:not(:empty)) > .current-turn-prompt {
   left: calc(var(--work-dock-width) + 2px);
 }
 /* The status colours, shared with the status marks of the Jobs panel. */
@@ -37,14 +45,33 @@
   padding-block: 8px;
   color: var(--text-quiet);
 }
+/* max-height alone only capped the box: a conversation with jobs, runs and
+   sub-agents all at their Appearance limits draws more than fits, and the
+   entries spilled out of the bottom of the conversation and over the composer
+   — measured, the last one took 2px of the "+" beside the input area, so a
+   press aimed at "+" landed on a Job (#459 round 1, P2a).
+   The scrolling is this inner box, not the dock: a scroll container on the
+   dock itself also clipped what belongs outside its 40px — each item's tip
+   and the hover strip below — because a non-visible overflow on one axis
+   makes the other non-visible too (#459 new pair, P2). */
+.work-dock-scroll {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Nothing to show: the dock's own hover strip should not be there either. */
+.work-dock:has(> .work-dock-scroll:empty) {
+  display: none;
+}
 /* A little room above and below counts as coming near the dock. */
 .work-dock::before {
   content: "";
   position: absolute;
   inset: -20px 0;
-}
-.work-dock:empty {
-  display: none;
 }
 .work-dock-group {
   position: relative;
@@ -253,15 +280,16 @@
 
 /* Each node names itself beside the dock while pointed at or focused. */
 .work-dock-tip {
-  position: absolute;
-  z-index: 12;
-  left: calc(100% + 8px);
-  top: 50%;
+  /* Drawn into the body (WorkDock.tsx), so its place is set from the item's
+     own rect and its width from the room beside it: the container units it
+     used have no container there, and the dock's scrolling box would clip it
+     wherever it sat inside. */
+  position: fixed;
+  z-index: 60;
   translate: 0 -50%;
   display: grid;
   gap: 2px;
   width: max-content;
-  max-width: min(280px, calc(100cqw - 70px));
   padding: 8px 11px;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -273,12 +301,7 @@
   text-align: left;
   white-space: normal;
   overflow-wrap: anywhere;
-  opacity: 0;
-  visibility: hidden;
   pointer-events: none;
-  transition:
-    opacity var(--motion-micro) var(--ease-standard),
-    visibility var(--motion-micro);
 }
 .work-dock-tip > span {
   color: var(--text-secondary);
@@ -287,10 +310,7 @@
   color: var(--text-quiet);
   font-size: 0.92em;
 }
-.work-dock-item:is(:hover, :focus-visible) .work-dock-tip {
-  opacity: 1;
-  visibility: visible;
-}
+
 
 /* A wide conversation has room for a narrow column: each run reads its
    status, and coming near the dock unfolds the names. The tip keeps the
@@ -305,6 +325,11 @@
     align-items: stretch;
     padding-left: 4px;
   }
+  /* The groups are the scrolling box's children, not the dock's, since the
+     box went in (#459). Centred there, each group was only as wide as its own
+     names, so one with shorter names stood a few pixels right of the others
+     (YN-17). */
+  .work-dock-scroll,
   .work-dock-group {
     align-items: stretch;
   }
@@ -361,10 +386,15 @@
   .work-dock:is(:hover, :focus-within) .work-dock-item .work-dock-label .work-dock-when {
     opacity: 0.8;
   }
-  /* Beside the node already; the tip need not say it twice. */
-  .work-dock-tip > small.work-dock-when {
-    display: none;
-  }
+}
+/* Beside the node already; the tip need not say it twice. Keyed on the tip's
+   own flag, not on `@container conversation`: the tip is drawn into the page
+   so that it can escape the dock's scroll box, and there it has no
+   conversation container at all — this rule simply stopped matching, and a
+   wide conversation said the time twice (#459 R6, P3). WorkDock.tsx measures
+   the conversation where the container query reads it and sets `data-wide`. */
+.work-dock-tip[data-wide] > small.work-dock-when {
+  display: none;
 }
 /* The narrowest conversations keep a slimmer column. */
 @container conversation (max-width: 480px) {
@@ -398,4 +428,193 @@
   :is(.work-dock, .status-mark) .work-dock-node::after {
     animation: none;
   }
+}
+
+/* One line for everything the conversation has running, beside its name:
+   how many are running. The dock's own column keeps the detail, so this
+   says the counts and opens the list (T-15). */
+.work-activity-entry {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 24px;
+  margin: 0;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 11px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.work-activity-entry:hover,
+.work-activity-entry:focus-visible {
+  border-color: color-mix(in srgb, var(--ink) 26%, transparent);
+  color: var(--ink);
+}
+.work-activity-entry:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+.work-activity-name {
+  font-weight: 600;
+}
+/* A finger needs more than a line of text is tall. */
+@media (hover: none) and (pointer: coarse) {
+  .work-activity-entry {
+    min-height: 40px;
+    padding-inline: 11px;
+  }
+  /* Each of these is 28x24 — eighteen of them on a full dock, which no
+     finger can tell apart and which 40px rows could not fit in a 594px
+     panel either. By touch the dock is the glance and the entry above is the
+     way in, the same division the turn dock on the other side already makes
+     (turn-dock.css, V8). They keep their place in the page for a keyboard
+     and a mouse, and what they say is still read aloud. */
+  /* The whole dock, not only its entries: its group boxes reach 2px into the
+     "+" beside the input area, and measured by hit test that "+" came back
+     38px wide instead of its own 40 — the dock was taking presses meant for
+     it. Nothing in the dock needs a press by touch, so none of it takes one. */
+  .app:not(.phone) .work-dock {
+    pointer-events: none;
+  }
+}
+
+/* The way into where the reader is, beside what the conversation is doing:
+   the rail takes the index where there is a rail, a phone opens its drawer.
+   Same size as the entry beside it, so the two read as one row (T-15). */
+.conversation-index-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  margin: 0;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 11px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.conversation-index-entry:hover,
+.conversation-index-entry:focus-visible {
+  border-color: color-mix(in srgb, var(--ink) 26%, transparent);
+  color: var(--ink);
+}
+.conversation-index-entry:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+.conversation-index-entry[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent-ink, var(--ink)) 45%, transparent);
+  color: var(--accent-ink, var(--ink));
+}
+@media (hover: none) and (pointer: coarse) {
+  .conversation-index-entry {
+    min-height: 40px;
+    padding-inline: 11px;
+  }
+}
+
+/* This Agent's work in the rail, in place of the Agents (T-15, V9). */
+.work-activity-column {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+}
+.work-activity-column-top {
+  flex: none;
+}
+.work-activity-column-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 40px;
+  padding: 0 6px;
+}
+.work-activity-column-title {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.work-activity-column-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 8px;
+}
+.work-activity-column-list section + section {
+  margin-top: 10px;
+}
+.work-activity-column-list h3 {
+  margin: 0 0 4px;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  font-weight: 650;
+}
+.work-activity-column-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.work-activity-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-height: 44px;
+  margin: 0 0 2px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.work-activity-row:hover,
+.work-activity-row:focus-visible {
+  border-color: color-mix(in srgb, var(--ink) 14%, transparent);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.work-activity-row:focus-visible {
+  outline: 2px solid var(--focus, #9caa76);
+  outline-offset: 1px;
+}
+.work-activity-row[data-state="exception"] {
+  border-color: color-mix(in srgb, var(--error-ink, var(--coral)) 35%, transparent);
+}
+.work-activity-row-name {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.work-activity-row-says {
+  color: var(--text-secondary);
+  font-size: calc(8px + var(--font-adjust, 3px));
+}
+.work-activity-column-empty {
+  margin: 0;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
 }

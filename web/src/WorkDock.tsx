@@ -4,8 +4,14 @@
 // reads its status, and its name once the pointer or focus comes to the dock;
 // otherwise it names itself in a small tip. Jobs and runs open their details
 // in the Jobs panel; sub-agents open a card beside the dock.
-import { useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import {
+  createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
+  type ReactNode, type RefObject,
+} from "react";
+import { createPortal } from "react-dom";
+import {
+  ArrowLeft,
+  BriefcaseBusiness,
   Check,
   CircleHelp,
   CircleMinus,
@@ -17,9 +23,49 @@ import {
 } from "lucide-react";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { animates } from "./motion";
+import { byAttention, workActivity, workKinds, type WorkItem, type WorkKind } from "./work-activity.ts";
 import "./work-dock.css";
 
 // The dock's own words (T-189); labels and names come from its callers.
+const column = strings({
+  title: "Work activity",
+  back: "Back to Agents",
+  jobs: "Jobs",
+  runs: "CI",
+  subAgents: "Sub-agents",
+  backgroundTasks: "Background tasks",
+  reviews: "Reviews",
+  unknown: "Not recognised",
+  openList: (what: string) => `Open ${what}`,
+  empty: "Nothing is running for this Agent.",
+}, {
+  title: "工作活动",
+  back: "返回 Agent 列表",
+  jobs: "Jobs",
+  runs: "CI",
+  subAgents: "子 Agent",
+  backgroundTasks: "后台任务",
+  reviews: "审查",
+  unknown: "无法识别",
+  openList: (what) => `打开${what}`,
+  empty: "这个 Agent 没有在进行的工作。",
+});
+
+const entry = strings({
+  label: "Work activity",
+  // Each kind says its own thing; there is never a total across them.
+  running: (n: number) => `${n} running`,
+  unknown: (n: number) => `${n} not recognised`,
+  quiet: "nothing running",
+  open: "Open the list",
+}, {
+  label: "工作活动",
+  running: (n) => `${n} 个在进行`,
+  unknown: (n) => `${n} 个无法识别`,
+  quiet: "没有在进行的工作",
+  open: "打开列表",
+});
+
 const text = strings({
   open: (label: string) => `${label} · open the list`,
   openLabel: (label: string) => `${label}: open the list`,
@@ -78,6 +124,129 @@ export function StatusMark({
   );
 }
 
+/**
+ * What each kind of work the dock holds has to say about itself (T-15). The
+ * dock nests its groups -- jobs and runs hold the sub-agents as children --
+ * so no one of them can see the others. They leave their work here instead,
+ * and the dock says it once, rather than each kind summing itself and the
+ * reader counting three summaries as one.
+ */
+/**
+ * A piece of work as the column shows it: what it is, what it is doing, and
+ * how to open what already exists for it. Each kind supplies its own opener,
+ * so a Job reaches the Jobs panel and a sub-agent reaches its card without
+ * this knowing how either is done (T-15, V9).
+ */
+export type WorkEntry = WorkItem & {
+  name: string;
+  /** Its state in words, as its own kind says it. */
+  says?: string;
+  onOpen?: (from: HTMLElement) => void;
+};
+/** How a kind opens the list it belongs to: the dock's heading and "+N more". */
+export type OpenList = (from: HTMLElement) => void;
+type Register = (id: string, kind: WorkKind, items: readonly WorkEntry[], openList?: OpenList, present?: boolean) => void;
+const Registry = createContext<Register | null>(null);
+
+/**
+ * Hands this instance's work to the dock, and takes it back when it goes.
+ *
+ * Keyed by the instance, not by the kind. Two docks of the same kind are
+ * ordinary — Claude's background tasks and the conversation's sub-agents are
+ * both drawn by SubAgentDock — and with one slot per kind they overwrote each
+ * other, while either one's cleanup wrote `[]` and cleared the other's work
+ * as well. The counts in the entry and the column were then whichever
+ * mounted last (#459 round 1, P1).
+ *
+ * `present` says this instance has work of its kind at all, counted or not.
+ * Some of what the dock draws is deliberately left out of the count — a Job
+ * the reader cancelled, a run a later one replaced (row 14) — and with only
+ * such work there was nothing here, so the entry and the kind's "Open …" row
+ * went with it. On a touched screen wider than a phone the dock takes no
+ * press, so that work was drawn and out of reach (#459 R8, P3). Present, the
+ * kind keeps its way into its list, without anything being counted.
+ */
+export function useWorkActivity(kind: WorkKind, items: readonly WorkEntry[], openList?: OpenList, present = false) {
+  const register = useContext(Registry);
+  // Stable for the life of this component, and different per instance.
+  const id = useId();
+  // The identity of the array changes on every render; what it says does not.
+  const key = JSON.stringify(items);
+  // The opener is a new function on every render; registering it directly
+  // would re-register on each one. A stable wrapper calls the latest.
+  const latest = useRef(openList);
+  latest.current = openList;
+  const has = !!openList;
+  const open = useCallback<OpenList>((from) => latest.current?.(from), []);
+  useEffect(() => {
+    register?.(id, kind, items, has ? open : undefined, present);
+    return () => register?.(id, kind, [], undefined, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [register, id, kind, key, has, open, present]);
+}
+
+/**
+ * Holds what the dock's kinds report, above both the dock and the head of
+ * the conversation, so the one entry can stand where there is room to read
+ * it rather than in the dock's own narrow column (T-15).
+ */
+const Activity = createContext<ReturnType<typeof workActivity> | null>(null);
+/** The same work, in the order it should be looked at. */
+const Entries = createContext<readonly WorkEntry[]>([]);
+/** Each kind's way into its own whole list, where it offered one. */
+const Lists = createContext<Partial<Record<WorkKind, OpenList>>>({});
+/** Kinds with work and none of it counted: only their list is offered. */
+const Held = createContext<readonly WorkKind[]>([]);
+
+export function WorkActivityProvider({ children }: { children: ReactNode }) {
+  const [work, setWork] = useState<Record<string, { kind: WorkKind; items: readonly WorkEntry[]; openList?: OpenList; present: boolean }>>({});
+  const register = useCallback<Register>((id, kind, items, openList, present = false) => {
+    setWork((was) => {
+      // Nothing at all is this instance going away, or having nothing: its
+      // own slot goes, and no other.
+      if (!items.length && !present) {
+        if (!(id in was)) return was;
+        const next = { ...was };
+        delete next[id];
+        return next;
+      }
+      const had = was[id];
+      if (had && had.kind === kind && had.items === items && had.openList === openList && had.present === present) return was;
+      return { ...was, [id]: { kind, items, openList, present } };
+    });
+  }, []);
+  const sorted = useMemo(() => {
+    const slots = Object.values(work);
+    // Every instance of a kind together, kinds in the order they are read.
+    const ofKind = (kind: WorkKind) =>
+      slots.filter((slot) => slot.kind === kind).flatMap((slot) => slot.items);
+    return byAttention(workKinds.flatMap(ofKind)) as WorkEntry[];
+  }, [work]);
+  const lists = useMemo(() => {
+    const found: Partial<Record<WorkKind, OpenList>> = {};
+    for (const slot of Object.values(work))
+      if (slot.openList && !found[slot.kind]) found[slot.kind] = slot.openList;
+    return found;
+  }, [work]);
+  // A kind with work and nothing of it counted, which can still be opened.
+  const held = useMemo(() => workKinds.filter((kind) => {
+    const slots = Object.values(work).filter((slot) => slot.kind === kind);
+    return slots.some((slot) => slot.present && slot.openList) && !slots.some((slot) => slot.items.length);
+  }), [work]);
+  const activity = useMemo(() => workActivity(sorted), [sorted]);
+  return (
+    <Registry.Provider value={register}>
+      <Activity.Provider value={activity}>
+        <Entries.Provider value={sorted}>
+          <Lists.Provider value={lists}>
+            <Held.Provider value={held}>{children}</Held.Provider>
+          </Lists.Provider>
+        </Entries.Provider>
+      </Activity.Provider>
+    </Registry.Provider>
+  );
+}
+
 /** Statuses a run ends in; "unknown" is not one: it must never look settled. */
 const ENDED = new Set(["succeeded", "passed", "ended", "failed", "rejected", "interrupted", "cancelled", "skipped"]);
 /** Of those, the ones drawn as a filled node; cancelled and skipped are a ring. */
@@ -125,6 +294,96 @@ function useSettleOnEnd(node: RefObject<HTMLElement | null>, status: string) {
   }, [node, status]);
 }
 
+/**
+ * This Agent's work in the rail, in place of the Agents: the Jobs, the
+ * checks, the sub-agents, the background tasks and the reviews, each opening
+ * the detail it already has. What went wrong stays in its own kind's group,
+ * with its state, ahead of the rest of that group; there is no group of its
+ * own for it (user decision, YN-17 S2). The entry in the head counts what is
+ * running here, so the number on it and what opens here are the same work
+ * (T-15, V9).
+ */
+export function WorkActivityColumn({ onBack }: { onBack: () => void }) {
+  const t = useStrings(column);
+  const language = useLanguage();
+  const entries = useContext(Entries);
+  // Work this build has no word for is shown apart rather than folded into
+  // a kind, as the entry counts it apart. Everything else is in its kind's
+  // group, in the order `byAttention` gave the entries: what went wrong
+  // first, then what is going on, then what ended well.
+  const unknown = entries.filter((e) => e.state === "unrecognized");
+  const ofKind = (kind: WorkKind) => entries.filter((e) => e.kind === kind && e.state !== "unrecognized");
+  // Each kind's own way into its whole list, which by touch the dock itself
+  // no longer offers: its heading and its "+N more" are 28x24 and the dock
+  // takes no presses there, so the column carries them instead (#459 round
+  // 1, P2a). The mixed groups have no single list to open.
+  const lists = useContext(Lists);
+  // A kind whose work is all uncounted still has its group, holding only the
+  // way into its list: nothing in it is counted, and it is still reachable.
+  const held = useContext(Held);
+  const every: { id: string; kind?: WorkKind; label: string; items: readonly WorkEntry[]; openList?: OpenList }[] = [
+    { id: "jobs", kind: "job", label: t.jobs, items: ofKind("job"), openList: lists.job },
+    { id: "runs", kind: "run", label: t.runs, items: ofKind("run"), openList: lists.run },
+    { id: "subAgents", kind: "subAgent", label: t.subAgents, items: ofKind("subAgent"), openList: lists.subAgent },
+    { id: "backgroundTasks", kind: "backgroundTask", label: t.backgroundTasks, items: ofKind("backgroundTask"), openList: lists.backgroundTask },
+    { id: "reviews", kind: "review", label: t.reviews, items: ofKind("review"), openList: lists.review },
+    { id: "unknown", label: t.unknown, items: unknown, openList: undefined },
+  ];
+  const groups = every.filter((group) => group.items.length > 0 || (!!group.kind && held.includes(group.kind) && !!group.openList));
+  return (
+    <div className="work-activity-column" lang={langTag(language)}>
+      <div className="work-activity-column-top">
+        <button type="button" className="quiet-button work-activity-column-back" onClick={onBack}>
+          <ArrowLeft size={13} aria-hidden="true" />
+          {t.back}
+        </button>
+      </div>
+      <h2 className="work-activity-column-title">
+        <BriefcaseBusiness size={13} aria-hidden="true" />
+        {t.title}
+      </h2>
+      {groups.length === 0 ? (
+        <p className="work-activity-column-empty">{t.empty}</p>
+      ) : (
+        <div className="work-activity-column-list">
+          {groups.map((group) => (
+            <section key={group.id} aria-label={group.label}>
+              <h3>{group.label}</h3>
+              <ul>
+                {group.items.map((item) => (
+                  <li key={`${item.kind}:${item.id}`}>
+                    <button
+                      type="button"
+                      className="work-activity-row"
+                      data-state={item.state}
+                      disabled={!item.onOpen}
+                      onClick={(event) => item.onOpen?.(event.currentTarget)}
+                    >
+                      <span className="work-activity-row-name">{item.name}</span>
+                      {item.says && <span className="work-activity-row-says">{item.says}</span>}
+                    </button>
+                  </li>
+                ))}
+                {group.openList && (
+                  <li>
+                    <button
+                      type="button"
+                      className="work-activity-row work-activity-row-list"
+                      onClick={(event) => group.openList?.(event.currentTarget)}
+                    >
+                      <span className="work-activity-row-name">{t.openList(group.label)}</span>
+                    </button>
+                  </li>
+                )}
+              </ul>
+            </section>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WorkDock({
   label,
   children,
@@ -132,10 +391,78 @@ export function WorkDock({
   label: string;
   children: ReactNode;
 }) {
+  // The scrolling is an inner box, so the dock itself clips nothing: its
+  // hover strip (`.work-dock::before`, inset -20px) and each item's tip live
+  // outside the dock's 40px, and a scroll container on the dock clipped both
+  // — a non-visible overflow on one axis makes the other non-visible too, so
+  // `overflow-y: auto` cost the tip its place (#459 new pair, P2).
   return (
     <nav className="work-dock" aria-label={label} lang={langTag(useLanguage())}>
-      {children}
+      <div className="work-dock-scroll">{children}</div>
     </nav>
+  );
+}
+
+/**
+ * One line for everything the conversation has running, instead of a column
+ * of every piece of it: how many are running, and how many this build has no
+ * word for, else "nothing running". What went wrong is not counted here; it
+ * is in its own kind's group in the list this opens, which is where the
+ * detail stays (user decision, YN-17 S2).
+ */
+export function WorkActivityEntry({
+  onOpen,
+  expanded,
+  drawer = false,
+}: {
+  onOpen: (from: HTMLElement) => void;
+  /** Whether the view it opens is on screen, which is not the same as having
+   * been asked for: the rail it lives in can be collapsed (#459 R1, P2). */
+  expanded?: boolean;
+  /** What it opens is the dock itself, as a phone's drawer, rather than the column. */
+  drawer?: boolean;
+}) {
+  const t = useStrings(entry);
+  const activity = useContext(Activity);
+  const entries = useContext(Entries);
+  const lists = useContext(Lists);
+  const held = useContext(Held);
+  if (!activity || (!activity.any && !held.length)) return null;
+  // A phone's drawer is the dock, which draws what Appearance lets it and
+  // nothing more, while this counts everything. With the counted work's kinds
+  // set to 0 there, the press opened a drawer with nothing in it. It opens the
+  // list of what it counted instead, the most pressing kind first (#459 R8,
+  // P3). The dock's own box is the one the drawer shows.
+  const open = (from: HTMLElement) => {
+    const dock = document.querySelector(".conversation-body > .work-dock > .work-dock-scroll");
+    if (drawer && !expanded && (!dock || dock.childElementCount === 0)) {
+      const kind = entries[0]?.kind ?? held[0];
+      const list = (kind && lists[kind]) || Object.values(lists)[0];
+      if (list) return list(from);
+    }
+    onOpen(from);
+  };
+  // Said apart, never added up: these are different kinds of fact.
+  const parts = [
+    activity.current > 0 ? t.running(activity.current) : null,
+    activity.unrecognized > 0 ? t.unknown(activity.unrecognized) : null,
+  ].filter(Boolean);
+  return (
+    <button
+      type="button"
+      className="work-activity-entry"
+      // The name is read from what is inside, so the counts a reader can see
+      // are the counts a screen reader says and the words voice control
+      // listens for. An aria-label would be a second copy of them, free to
+      // drift from the first (T-15, Dev 7).
+      title={t.label}
+      aria-expanded={expanded}
+      onClick={(event) => open(event.currentTarget)}
+    >
+      <BriefcaseBusiness size={13} aria-hidden="true" />
+      <span className="sr-only">{t.label}: </span>
+      <span className="work-activity-counts">{parts.join(" · ") || t.quiet}</span>
+    </button>
   );
 }
 
@@ -196,13 +523,67 @@ export function WorkDockItem({
   onOpen: (from: HTMLElement) => void;
 }) {
   const Mark = marks[status] || CircleHelp;
+  const language = useLanguage();
   const node = useRef<HTMLSpanElement>(null);
+  const self = useRef<HTMLButtonElement>(null);
   useSettleOnEnd(node, status);
+  // Where the tip goes, in the page's own coordinates. It is drawn into the
+  // body because the dock's scrolling box would clip it, and because the
+  // dock's `translate` makes it a containing block, so `position: fixed`
+  // inside the dock would not escape either.
+  const [tip, setTip] = useState<{
+    top: number;
+    left?: number;
+    right?: number;
+    maxWidth: number;
+    /** Whether the conversation is wide enough to say the time beside the
+     * node already, so the tip need not repeat it. A flag, because the tip
+     * is drawn into the page: `@container conversation` cannot reach it
+     * there, and the rule that used to hide it simply stopped matching
+     * (#459 R6, P3). */
+    wide: boolean;
+  } | null>(null);
+  const place = useCallback(() => {
+    const button = self.current;
+    if (!button) return;
+    // The phone shows this dock as a drawer with the names already on it, and
+    // hid the tip with a descendant rule the page-level tip escapes.
+    if (button.closest('.app.phone .conversation-body[data-phone-dock="work"]')) return setTip(null);
+    const r = button.getBoundingClientRect();
+    const room = window.innerWidth - r.right - 20;
+    const top = Math.round(r.top + r.height / 2);
+    // The conversation's own width, read where the container query reads it
+    // (`.main-panel` carries `container-name: conversation`). 760px is that
+    // query's own threshold, kept in one place by being measured here rather
+    // than asked of a stylesheet the tip cannot see.
+    const wide = (button.closest(".main-panel")?.getBoundingClientRect().width ?? 0) >= 760;
+    // Beside the dock where there is room for it; on its other side where
+    // there is not, so the tip is always wholly on screen.
+    setTip(room >= 140
+      ? { top, wide, left: Math.round(r.right + 8), maxWidth: Math.min(280, Math.floor(room)) }
+      : { top, wide, right: Math.round(window.innerWidth - r.left + 8), maxWidth: Math.min(280, Math.max(120, Math.floor(r.left - 20))) });
+  }, []);
+  // While it shows, the dock may scroll under it and the window may change.
+  useEffect(() => {
+    if (!tip) return;
+    const again = () => place();
+    window.addEventListener("scroll", again, true);
+    window.addEventListener("resize", again);
+    return () => {
+      window.removeEventListener("scroll", again, true);
+      window.removeEventListener("resize", again);
+    };
+  }, [tip, place]);
   return (
     <button
+      ref={self}
       type="button"
       className={`work-dock-item state-${status} ${className}`.trim()}
       aria-label={[name, state, detail, when].filter(Boolean).join(" · ")}
+      onPointerEnter={place}
+      onPointerLeave={() => setTip(null)}
+      onFocus={place}
+      onBlur={() => setTip(null)}
       onClick={(event) => onOpen(event.currentTarget)}
     >
       <span className="work-dock-node" aria-hidden="true" ref={node}>
@@ -216,12 +597,26 @@ export function WorkDockItem({
         <small>{sub ?? state}</small>
         {when && <small className="work-dock-when">{when}</small>}
       </span>
-      <span className="work-dock-tip" aria-hidden="true">
-        <strong>{name}</strong>
-        <span>{state}</span>
-        {detail && <small>{detail}</small>}
-        {when && <small className="work-dock-when">{when}</small>}
-      </span>
+      {tip &&
+        createPortal(
+          <span
+            className="work-dock-tip"
+            aria-hidden="true"
+            // Both of these are the nav's, and the body is not inside it:
+            // the language so CJK breaks and renders as the reader's own,
+            // and the width so the rule below knows what the container
+            // query can no longer tell it (#459 R6, P3).
+            lang={langTag(language)}
+            data-wide={tip.wide ? "" : undefined}
+            style={{ top: tip.top, left: tip.left, right: tip.right, maxWidth: tip.maxWidth }}
+          >
+            <strong>{name}</strong>
+            <span>{state}</span>
+            {detail && <small>{detail}</small>}
+            {when && <small className="work-dock-when">{when}</small>}
+          </span>,
+          document.body,
+        )}
     </button>
   );
 }

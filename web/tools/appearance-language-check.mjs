@@ -149,7 +149,7 @@ try {
   await page.getByRole("button", { name: "Settings and updates" }).waitFor({ timeout: 10_000 });
 
   // English: export, then import and untick Theme.
-  let box = await toAppearance("Appearance & interaction");
+  let box = await toAppearance("Appearance");
   assert.equal(await box.locator("#settings-appearance-title").textContent(), "Appearance");
   assert.equal(await box.getAttribute("lang"), "en");
   await box.locator(".appearance-preset-status", { hasText: "revision 2" }).waitFor({ timeout: 10_000 });
@@ -166,7 +166,7 @@ try {
 
   // 简体中文, chosen elsewhere in Settings: the open preview is Chinese, with the same file and ticks.
   await chooseLanguage("zh-Hans", "language", "Language");
-  box = await toAppearance("外观与交互");
+  box = await toAppearance("外观");
   assert.equal(await box.getAttribute("lang"), "zh-Hans");
   assert.equal(await box.locator("#settings-appearance-title").textContent(), "外观");
   const after = await preview(box);

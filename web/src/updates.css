@@ -4,18 +4,23 @@
    answers "am I up to date, and what is the next step". */
 /* One size whichever category is open: the dialog keeps its height and
    only the category's own column scrolls. */
+/* At least the Tasks / Messages panel's size (collaboration.css): its width,
+   and a fixed height no shorter than that panel (YN-8). */
 .modal.settings-modal {
   display: flex;
   flex-direction: column;
-  height: min(720px, calc(var(--safe-dvh) - 52px));
+  width: min(1280px, calc(var(--safe-vw) - 40px));
+  height: min(900px, calc(var(--safe-dvh) - 48px));
+  max-height: calc(var(--safe-dvh) - 48px);
   overflow: hidden;
 }
+/* One sidebar of pages in four groups beside the page shown (YN-8). */
 .settings-layout {
   display: grid;
-  grid-template-columns: 9.5rem minmax(0, 1fr);
+  grid-template-columns: 15rem minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
-  gap: 28px;
-  margin-top: 22px;
+  gap: 0 28px;
+  margin-top: 14px;
 }
 .settings-modal .settings-layout {
   flex: 1;
@@ -27,12 +32,31 @@
   padding-right: 6px;
   overscroll-behavior: contain;
 }
+.settings-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 6px 12px 0;
+}
 .settings-nav {
-  position: sticky;
-  top: 0;
-  align-self: start;
+  display: grid;
+  gap: 14px;
+}
+.settings-nav [role="tablist"] {
   display: grid;
   gap: 2px;
+}
+.settings-nav-heading {
+  margin: 0 0 4px;
+  padding: 0 10px;
+  color: var(--text-quiet);
+  font-size: calc(8.5px + min(var(--font-adjust, 3px), 4px));
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .settings-nav [role="tab"] {
   display: flex;
@@ -776,5 +800,522 @@
 @media (max-width: 520px) {
   .toolbar-actions > .icon-button.workspace-settings {
     display: inline-flex;
+  }
+}
+
+/* Narrow, not a phone: the sidebar keeps its place, a little narrower. */
+@media (max-width: 720px) {
+  .settings-center .settings-layout {
+    grid-template-columns: 11.5rem minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0 16px;
+    margin-top: 10px;
+  }
+  .settings-center .settings-nav {
+    display: grid;
+    position: static;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+  }
+  .settings-center .settings-nav [role="tab"] {
+    width: 100%;
+  }
+}
+/* A phone (usePhone): Settings fills the screen; the list of pages comes
+   first, a page has Back to it, and search runs from the list. */
+@media (max-width: 520px) {
+  .modal.settings-modal {
+    width: var(--safe-vw);
+    height: var(--safe-dvh);
+    max-height: var(--safe-dvh);
+    border-radius: 0;
+    padding: 14px 14px 0;
+  }
+}
+.settings-center.is-phone .settings-layout {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.settings-center.is-phone:not(.is-root) .settings-side,
+.settings-center.is-phone.is-root:not(.is-searching) .settings-pane {
+  display: none;
+}
+.settings-center.is-phone.is-root.is-searching .settings-layout {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.settings-center.is-phone .settings-nav [role="tablist"] {
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-soft) 38%, var(--surface-raised));
+  overflow: hidden;
+}
+.settings-center.is-phone .settings-nav [role="tab"] {
+  min-height: 44px;
+  border-radius: 0;
+  color: var(--ink);
+}
+.settings-center.is-phone .settings-nav [role="tab"] + [role="tab"] {
+  border-top: 1px solid var(--line);
+}
+.settings-center.is-phone .settings-nav [role="tab"] svg {
+  display: inline;
+}
+.settings-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  margin: -6px 0 6px -6px;
+  padding: 0 10px 0 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-back:hover {
+  background: var(--accent-wash);
+}
+/* On a phone's page, Back takes the dialog title's place in its row, as in
+   the design; the page's own heading follows. */
+.modal.settings-modal:has(.settings-center.is-phone:not(.is-root)) .modal-heading h2 {
+  visibility: hidden;
+}
+.settings-center.is-phone .settings-back {
+  position: absolute;
+  z-index: 1;
+  /* Centred on the Close button's row (14px padding, a 27px button). */
+  top: 2px;
+  left: 6px;
+  margin: 0;
+}
+
+/* ---- Shared parts for Settings' pages (YN-8), in the Appearance card's
+   type and density; later slices use them in place of each editor's own. */
+/* A row of a list inside a block: a project, a machine, a template, a member. */
+.settings-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  overflow: hidden;
+}
+.settings-list-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px 12px;
+  color: var(--ink);
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}
+.settings-list-row + .settings-list-row {
+  border-top: 1px solid var(--line);
+}
+.settings-list-row small {
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+/* A row that opens its own page: a project, a machine, a template. */
+.settings-list-row.is-open {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--motion-micro) var(--ease-standard);
+}
+.settings-list li + li > .settings-list-row {
+  border-top: 1px solid var(--line);
+}
+.settings-list-row.is-open:hover {
+  background: color-mix(in srgb, currentColor 4%, transparent);
+}
+.settings-list-row.is-open:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.settings-list-icon {
+  flex: none;
+  color: var(--text-secondary);
+}
+.settings-list-main {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+  min-width: 0;
+}
+.settings-list-title,
+.settings-list-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-list-title {
+  color: var(--ink);
+  font-weight: 550;
+}
+.settings-list-sub {
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.settings-list-meta {
+  flex: none;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.settings-list-chev {
+  flex: none;
+  color: var(--text-quiet);
+}
+.settings-list-row.is-add,
+.settings-list-row.is-add .settings-list-title,
+.settings-list-row.is-add .settings-list-icon {
+  color: var(--accent-ink);
+}
+.settings-list-row.is-quiet .settings-list-title {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+/* A short fact beside a row: a project's task key. */
+.settings-tag {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  white-space: nowrap;
+}
+.settings-tag.is-mono {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+/* A block's one or two lines under its legend. */
+.settings-block-help {
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+/* Back to the page a page was opened from: a project's to Projects. */
+.settings-crumb {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 2px;
+  margin: -4px 0 -6px;
+  padding: 2px 8px 2px 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.settings-crumb:hover {
+  background: var(--accent-wash);
+}
+/* A card's title, when a page has more than one card. */
+.settings-group-title {
+  margin: 6px 0 -4px 2px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  font-weight: 600;
+}
+.settings-section-heading h3:focus {
+  outline: none;
+}
+.settings-section-heading h3:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* A labelled field at the settings row's size. */
+.settings-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  align-content: start;
+}
+.settings-field > span {
+  color: var(--ink);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  font-weight: 550;
+}
+.settings-field :is(input, select, textarea) {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  color: var(--ink);
+  background: var(--input);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 10px;
+}
+/* An on/off choice. */
+.settings-switch {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 21px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-quiet) 45%, transparent);
+  cursor: pointer;
+  transition: background-color var(--motion-micro) var(--ease-standard);
+}
+.settings-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px #0003;
+  transition: transform var(--motion-micro) var(--ease-standard);
+}
+.settings-switch[aria-checked="true"] {
+  background: var(--green);
+}
+.settings-switch[aria-checked="true"]::after {
+  transform: translateX(15px);
+}
+.settings-switch:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* One save for a Workspace page, once something on it differs from Core's. */
+.settings-savebar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-raised) 92%, transparent);
+  backdrop-filter: blur(6px);
+}
+.settings-savebar > span {
+  flex: 1;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+
+/* The slider (SettingsSlider, design A): a drawn track whose fill is the
+   value under a native range, a round thumb with hover, pressed and focus
+   states, light ticks on a short range, the value and unit beside it. */
+.settings-slider {
+  --settings-slider-share: 0%;
+  display: grid;
+  grid-template-columns: 9em minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 14px;
+  min-height: 40px;
+  color: var(--ink);
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.settings-slider.is-bare {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.settings-slider-rail {
+  position: relative;
+  min-width: 0;
+  height: 36px;
+}
+.settings-slider-track {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 50%;
+  height: 8px;
+  transform: translateY(-50%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-quiet) 24%, var(--paper));
+  overflow: hidden;
+  pointer-events: none;
+}
+.settings-slider-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--settings-slider-share);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-ink) 78%, transparent);
+}
+.settings-slider-ticks {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: calc(50% + 8px);
+  height: 5px;
+  pointer-events: none;
+}
+.settings-slider-ticks i {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 5px;
+  background: color-mix(in srgb, var(--text-quiet) 55%, transparent);
+}
+.settings-slider-rail input[type="range"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.settings-slider-rail input[type="range"]::-webkit-slider-runnable-track {
+  height: 8px;
+  background: transparent;
+  border: 0;
+}
+.settings-slider-rail input[type="range"]::-moz-range-track {
+  height: 8px;
+  background: transparent;
+  border: 0;
+}
+.settings-slider-rail input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  border: 2px solid var(--accent-ink);
+  box-shadow: 0 1px 3px #0003;
+  transition: transform var(--motion-micro) var(--ease-standard), box-shadow var(--motion-micro) var(--ease-standard);
+}
+.settings-slider-rail input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  border: 2px solid var(--accent-ink);
+  box-shadow: 0 1px 3px #0003;
+}
+.settings-slider-rail input[type="range"]:hover::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+.settings-slider-rail input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1.22);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-ink) 18%, transparent);
+}
+.settings-slider-rail input[type="range"]:focus-visible {
+  outline: none;
+}
+.settings-slider-rail input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--paper), 0 0 0 5px var(--focus);
+}
+.settings-slider-rail input[type="range"]:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px var(--paper), 0 0 0 5px var(--focus);
+}
+.settings-slider-value {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 5.5em;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+.settings-slider-value:hover,
+.settings-slider-value:focus-within {
+  border-color: var(--line);
+  background: var(--input);
+}
+.settings-slider-value input {
+  width: 3em;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  -moz-appearance: textfield;
+}
+.settings-slider-value input::-webkit-inner-spin-button,
+.settings-slider-value input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.settings-slider-value input:focus {
+  outline: none;
+}
+.settings-slider-value span {
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.settings-slider-note:empty {
+  display: none;
+}
+.settings-slider-note {
+  grid-column: 2 / -1;
+  margin-top: -6px;
+  color: var(--text-secondary);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.settings-slider.is-bare .settings-slider-note {
+  grid-column: 1 / -1;
+}
+.settings-slider-ends {
+  display: flex;
+  justify-content: space-between;
+  grid-column: 2;
+  margin-top: -6px;
+  padding: 0 4px;
+  color: var(--text-quiet);
+  line-height: 1;
+}
+.settings-slider.is-bare .settings-slider-ends {
+  grid-column: 1;
+}
+@media (max-width: 520px) {
+  .settings-slider {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .settings-slider-rail {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    height: 44px;
+  }
+  .settings-slider.is-bare .settings-slider-rail {
+    grid-row: 1;
+    grid-column: 1;
+  }
+  .settings-slider-rail input[type="range"]::-webkit-slider-thumb {
+    width: 26px;
+    height: 26px;
+    margin-top: -9px;
+  }
+  .settings-slider-value {
+    min-height: 44px;
+    align-items: center;
+  }
+  .settings-slider-note,
+  .settings-slider-ends {
+    grid-column: 1 / -1;
   }
 }

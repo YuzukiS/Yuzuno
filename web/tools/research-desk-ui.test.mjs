@@ -363,6 +363,19 @@ test("selection follows pointer and keys across the desk, and survives a new ver
   }
 });
 
+// YN-7 item 3: a CSV row's key that Core found in two or more rows is shown as such, not as a number.
+test("a number whose row Core found more than once says so (YN-7)", async () => {
+  const page = mount(serve(doseStudy, { 3: { "low-v2.value": { status: "ambiguous", from: "results.json" } } }));
+  try {
+    page.window.renderSection(section(page, doseStudy, 3, { refs: {} }), PROJECT, "ws-1");
+    await until(() => page.document.querySelector('.research-origin[data-origin="ambiguous"]'), "a row found more than once");
+    assert.ok(page.document.querySelector('.research-origin[data-origin="ambiguous"]').textContent.includes("More than one row of the snapshot matches"));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("definitions keep every version, show what a change moved, and plans only preview", async () => {
   const page = mount(serve(doseStudy, { 3: { "low-v2.value": { status: "missing", from: "results.json" } } }));
   try {
@@ -380,7 +393,16 @@ test("definitions keep every version, show what a change moved, and plans only p
     assert.ok(aside.textContent.includes("SHA-256 aaaaaaaaaaaa"));
     assert.ok(aside.textContent.includes("The source file has not been checked again since."));
     assert.ok(aside.textContent.includes("Differs from the SHA-256 the Agent gave"), "the paper's stated hash differs");
-    assert.ok(aside.textContent.includes("As described by the Agent"));
+    // YN-7: the desk's own list of sources says once that locations and revisions are the Agent's, and its lines
+    // show them without saying it again; a source cited on its own (the evidence view) still says it.
+    const listed = [...aside.querySelectorAll(".research-panel")].find((panel) => panel.querySelector("h5")?.textContent === "Sources");
+    assert.equal(listed.querySelectorAll(".research-described-note").length, 1, "said once above the list");
+    assert.equal(listed.querySelector(".research-described-note").textContent, "Locations and revisions below are as described by the Agent; they were not read.");
+    const described = [...listed.querySelectorAll(".research-sources .research-described")].map((line) => line.textContent);
+    assert.deepEqual(described, ["study/results.json · Revision 0f3a9c1"], "each line without the prefix");
+    radio(page.document, "Views of this desk", "Evidence & limits").click();
+    const cited = await until(() => page.document.querySelector(".research-main .research-described"), "a source cited on its own");
+    assert.equal(cited.textContent, "As described by the Agent: Location study/results.json · Revision 0f3a9c1");
     // History: both versions, before and after, the affected claim and an unapplied draft.
     radio(page.document, "Views of this desk", "Definitions").click();
     const history = await until(() => page.document.querySelector(".research-versions") && page.document.querySelector(".research-main"), "the definitions view");

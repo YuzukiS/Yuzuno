@@ -81,10 +81,21 @@ function mount(handler) {
   return { window, document: window.document, calls, errors, close: () => window.close() };
 }
 const card = (page, id) => page.document.querySelector(`[data-machine-id="${id}"]`);
+// Settings › Machines lists the machines first (YN-8 S3); a row opens that
+// machine's page, Back returns to the list.
+const row = (page, id) => page.document.querySelector(`[data-machine-row="${id}"]`);
 async function loaded(page) {
   const deadline = Date.now() + 3000;
-  while (!card(page, "mini") && Date.now() < deadline) await tick(20);
-  assert.ok(card(page, "mini"), "machines loaded");
+  while (!row(page, "mini") && Date.now() < deadline) await tick(20);
+  assert.ok(row(page, "mini"), "machines loaded");
+}
+async function show(page, id) {
+  if (card(page, id)) return card(page, id);
+  page.document.querySelector(".settings-machines .settings-crumb")?.click();
+  await until(() => row(page, id), `the ${id} row`);
+  row(page, id).click();
+  await until(() => card(page, id), `${id}'s page`);
+  return card(page, id);
 }
 // Waits for what a step should lead to, not for a fixed time; fails if it
 // never happens.
@@ -108,10 +119,16 @@ test("machines list their stored checks honestly and their agents' live state se
   try {
     render(page);
     await loaded(page);
-    const host = card(page, "local");
+    // The list says each machine's kind and last check, and how many Agents are there.
+    assert.match(row(page, "local").textContent, /Core host.*Local · runs your Workspace Core.*Not checked yet.*2 Agents/);
+    assert.match(row(page, "mini").textContent, /Mac mini.*SSH · mac-mini.*Couldn’t reach.*1 Agent/);
+    const host = await show(page, "local");
     assert.match(host.textContent, /Local · runs your Workspace Core/);
     assert.match(host.querySelector(".last-check").textContent, /Not checked yet/);
-    const remote = card(page, "mini");
+    // Agents are grouped by where they run, with their own current state.
+    assert.match(host.querySelector(".machine-agents").textContent, /Mori.*App.*Working/);
+    assert.match(host.querySelector(".machine-agents").textContent, /Hana.*Closed/);
+    const remote = await show(page, "mini");
     const check = remote.querySelector(".last-check").textContent;
     assert.match(check, /Couldn’t reach/);
     assert.match(check, /Last check 3 h ago/);
@@ -119,9 +136,6 @@ test("machines list their stored checks honestly and their agents' live state se
     assert.match(check, /Operation timed out/);
     assert.match(check, /Claude Code · Core host only/);
     assert.doesNotMatch(page.document.body.textContent, /\bonline\b/i, "a check is never presented as live status");
-    // Agents are grouped by where they run, with their own current state.
-    assert.match(host.querySelector(".machine-agents").textContent, /Mori.*App.*Working/);
-    assert.match(host.querySelector(".machine-agents").textContent, /Hana.*Closed/);
     assert.match(remote.querySelector(".machine-agents").textContent, /Kaze.*Ready · Not connected/);
     // A small tile each: name, project and state; the folder is in its tip, not on the page.
     const kaze = [...remote.querySelectorAll(".machine-agent")].find((b) => b.textContent.includes("Kaze"));
@@ -130,6 +144,44 @@ test("machines list their stored checks honestly and their agents' live state se
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
+  }
+});
+
+// YN-8 S3: a request opens Settings › Machines at a machine's page (the
+// Core host's has its Job budget, T-55) or at Add SSH machine; Back returns
+// to the list, which chooses none.
+test("a request opens a machine's page, the Core host's with its Job budget, or Add SSH machine", async () => {
+  const page = mount((url) => (url.endsWith("/jobs/budget") ? { budget: null } : undefined));
+  try {
+    render(page, { initialMachineId: "local", initialBlock: "jobs" });
+    await until(() => card(page, "local"), "the Core host's page");
+    const title = () => page.document.querySelector("#settings-machines-title").textContent;
+    assert.equal(title(), "Core host");
+    assert.equal(page.document.querySelector(".settings-machines .settings-current").textContent, "This PC");
+    assert.match(page.document.querySelector(".settings-machines .settings-section-heading p").textContent, /can’t be removed; its Job budget is the Core host’s/);
+    const jobs = page.document.querySelector("#settings-block-jobs");
+    assert.ok(jobs?.querySelector("#settings-jobs-budget"), "the Core host's Job budget is on its page");
+    assert.ok(page.calls.some((c) => c.url.endsWith("/jobs/budget")), "and reads it");
+    page.document.querySelector(".settings-machines .settings-crumb").click();
+    await until(() => row(page, "mini"), "the list");
+    assert.equal(title(), "Machines");
+    assert.equal(page.document.querySelector("#settings-block-jobs"), null, "the list has no budget");
+    assert.equal(card(page, "local"), null, "no machine is chosen in the list");
+    await show(page, "mini");
+    assert.equal(page.document.querySelector("#settings-block-jobs"), null, "an SSH machine's Jobs are in its own editor");
+    assert.equal(page.document.querySelector(".settings-machines .settings-current").textContent, "SSH");
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+  const adding = mount();
+  try {
+    render(adding, { initialMachineId: "new" });
+    await until(() => adding.document.querySelector("#machines-new-ssh"), "the new machine form");
+    assert.equal(adding.document.querySelector("#settings-machines-title").textContent, "Add SSH machine");
+    assert.deepEqual(adding.errors, []);
+  } finally {
+    adding.close();
   }
 });
 
@@ -149,7 +201,7 @@ test("testing a machine stores and shows the new result, and opening an agent le
   try {
     const opened = render(page);
     await loaded(page);
-    const host = card(page, "local");
+    const host = await show(page, "local");
     button(host, "Test connection").click();
     await until(() => button(host, "Checking…"), "the check to start");
     assert.ok(button(host, "Checking…").disabled, "one check at a time per machine");
@@ -166,9 +218,10 @@ test("testing a machine stores and shows the new result, and opening an agent le
     assert.match(shown, /Claude Code unavailable/);
     assert.match(shown, /Claude Code: Claude Code was not found on Core's PATH/);
     assert.equal(host.querySelector(".harness-chip.found").title, "The CLI answered --version. Sign-in is not checked.");
-    assert.match(card(page, "mini").querySelector(".last-check").textContent, /Couldn’t reach/, "other machines keep their own result");
     button(host.querySelector(".machine-agents"), "Mori").click();
     assert.deepEqual(opened, ["a"]);
+    // Back in the list, the other machine keeps its own result.
+    assert.match((await show(page, "mini")).querySelector(".last-check").textContent, /Couldn’t reach/, "other machines keep their own result");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
@@ -187,6 +240,7 @@ test("the Core host's Claude Code sign-in check: signed in, unknown, and signed 
   try {
     render(page);
     await loaded(page);
+    await show(page, "local");
     assert.equal(chip().textContent, "Claude Code found · 2.1.295 (Claude Code)");
     assert.equal(chip().title, "The CLI answered --version and reports it is signed in (claude.ai).");
     // A check that could not tell stays usable and says why, never "not signed in".
@@ -220,6 +274,7 @@ test("a failed request keeps the stored result, and a workspace change reloads t
   try {
     render(page);
     await loaded(page);
+    await show(page, "mini");
     button(card(page, "mini"), "Test connection").click();
     await until(
       () => /Core restarted/.test(card(page, "mini").querySelector('[role="alert"]')?.textContent || "")
@@ -230,6 +285,7 @@ test("a failed request keeps the stored result, and a workspace change reloads t
     // Another window checked the Core host; Core broadcasts a change.
     checkedElsewhere = true;
     render(page, { revision: 1 });
+    await show(page, "local");
     await until(() => /Last check 1 min ago/.test(card(page, "local").querySelector(".last-check").textContent), "the reloaded list");
     assert.equal(page.calls.filter((c) => c.url.endsWith("/machines")).length, 2);
     assert.deepEqual(page.errors, []);
@@ -265,9 +321,13 @@ test("SSH machines are added, edited and removed here; the Core host is only che
   try {
     render(page);
     await loaded(page);
+    await show(page, "local");
     assert.ok(page.document.querySelector('[aria-label="Edit Core host"]') === null, "the Core host is not edited");
     assert.ok(page.document.querySelector('[aria-label="Remove Core host"]') === null, "nor removed");
 
+    // Adding is a page of its own, from the list.
+    page.document.querySelector(".settings-machines .settings-crumb").click();
+    await until(() => row(page, "mini"), "the list");
     button(page.document, "Add SSH machine").click();
     await until(() => page.document.querySelector("#machines-new-ssh"), "the new machine form");
     type(page, "Machine name", "Studio");
@@ -279,8 +339,10 @@ test("SSH machines are added, edited and removed here; the Core host is only che
     assert.deepEqual(page.calls.find((c) => c.method === "POST").body,
       { name: "Studio", target: "me@studio.local", codex: "codex", defaultCwd: "/Users/me/studio" });
     assert.ok(page.document.querySelector("#machines-new-ssh") === null, "the form closes");
+    assert.equal(page.document.querySelector("#settings-machines-title").textContent, "Studio", "the new machine's page");
 
     // Editing starts from what is saved and reads the list again after.
+    await show(page, "mini");
     page.document.querySelector('[aria-label="Edit Mac mini"]').click();
     await until(() => field(page, "SSH destination") === "mac-mini", "the edit form, filled in");
     assert.equal(field(page, "Codex executable"), "/opt/homebrew/bin/codex");
@@ -304,10 +366,12 @@ test("SSH machines are added, edited and removed here; the Core host is only che
     button(card(page, "mini"), "OK").click();
     await until(() => !card(page, "mini").querySelector(".machine-remove"), "the remove step to close");
 
+    await show(page, "studio");
     page.document.querySelector('[aria-label="Remove Studio"]').click();
     await until(() => button(card(page, "studio"), "Remove machine"), "the confirmation");
     button(card(page, "studio"), "Remove machine").click();
-    await until(() => card(page, "studio") === null, "the removed machine to go");
+    await until(() => card(page, "studio") === null && row(page, "mini"), "the removed machine to go, back to the list");
+    assert.equal(row(page, "studio"), null, "and off the list");
     assert.deepEqual(page.calls.filter((c) => c.method === "DELETE").map((c) => c.url), ["/api/machines/studio"]);
     assert.deepEqual(page.errors, []);
   } finally {
@@ -330,6 +394,7 @@ test("an edit Core saved shows its new values even if the list can't be read aga
   try {
     render(page);
     await loaded(page);
+    await show(page, "mini");
     page.document.querySelector('[aria-label="Edit Mac mini"]').click();
     await until(() => field(page, "SSH destination") === "mac-mini", "the edit form");
     type(page, "SSH destination", "mini.local");
@@ -353,6 +418,7 @@ test("a removal Core refuses says why and keeps the machine", async () => {
   try {
     render(page, { agents: agents.filter((a) => a.id !== "c") });
     await loaded(page);
+    await show(page, "mini");
     page.document.querySelector('[aria-label="Remove Mac mini"]').click();
     await until(() => button(card(page, "mini"), "Remove machine"), "the confirmation");
     assert.match(card(page, "mini").querySelector(".machine-remove").textContent, /Remove Mac mini from this workspace\?/);
@@ -380,11 +446,16 @@ test("the Machines page reads in Chinese; names, destinations, paths and Core's 
     assert.match(body, /机器/);
     assert.match(body, /后台不会自动检查/);
     assert.ok(button(page.document, "添加 SSH 机器"));
-    const host = card(page, "local");
+    assert.match(row(page, "mini").textContent, /Mac mini.*无法连通.*1 个 Agent/, "the list in Chinese, names as written");
+    const host = await show(page, "local");
+    assert.equal(page.document.querySelector(".settings-machines .settings-current").textContent, "本机");
     assert.match(host.textContent, /本机 · 运行你的 Workspace Core/);
     assert.match(host.querySelector(".last-check").textContent, /尚未检查/);
     assert.match(host.querySelector(".last-check").textContent, /测试连接，看看 Core 能访问到什么。/);
-    const remote = card(page, "mini");
+    assert.match(host.querySelector(".machine-agents").textContent, /当前在此的 Agent/);
+    assert.match(host.querySelector(".machine-agents").textContent, /Mori.*App.*工作中/);
+    assert.match(host.querySelector(".machine-agents").textContent, /Hana.*已关闭/);
+    const remote = await show(page, "mini");
     const check = remote.querySelector(".last-check").textContent;
     assert.match(check, /无法连通/);
     assert.match(check, /上次检查：3 小时前/);
@@ -398,9 +469,6 @@ test("the Machines page reads in Chinese; names, destinations, paths and Core's 
     const facts = remote.querySelector(".machine-facts").textContent;
     assert.match(facts, /默认文件夹\/Users\/me\/projects/);
     assert.match(facts, /Codex 可执行文件\/opt\/homebrew\/bin\/codex/);
-    assert.match(host.querySelector(".machine-agents").textContent, /当前在此的 Agent/);
-    assert.match(host.querySelector(".machine-agents").textContent, /Mori.*App.*工作中/);
-    assert.match(host.querySelector(".machine-agents").textContent, /Hana.*已关闭/);
     assert.match(remote.querySelector(".machine-agents").textContent, /Kaze.*就绪 · 未连接/);
     const kaze = [...remote.querySelectorAll(".machine-agent")].find((b) => b.textContent.includes("Kaze"));
     assert.equal(kaze.title, "打开 Kaze\n/Users/me/projects/x");
@@ -442,6 +510,7 @@ test("adding, editing and removing read in Chinese; a saved edit stays shown whe
     button(form, "取消").click();
     await until(() => !page.document.querySelector("#machines-new-ssh"), "the form to close");
 
+    await show(page, "mini");
     page.document.querySelector('[aria-label="编辑 Mac mini"]').click();
     await until(() => field(page, "SSH 目标") === "mac-mini", "the edit form, filled in");
     assert.match(card(page, "mini").textContent, /编辑 Mac mini/);
@@ -473,6 +542,7 @@ test("a removal Core refuses says why in Core's words, inside the Chinese confir
     chinese(page);
     render(page, { agents: agents.filter((a) => a.id !== "c") });
     await loaded(page);
+    await show(page, "mini");
     page.document.querySelector('[aria-label="移除 Mac mini"]').click();
     await until(() => button(card(page, "mini"), "移除机器"), "the confirmation");
     assert.match(card(page, "mini").querySelector(".machine-remove").textContent, /要从此 Workspace 移除 Mac mini 吗？/);
@@ -532,6 +602,7 @@ test("the executor limit of a machine is saved with its version after the machin
   try {
     render(page);
     await loaded(page);
+    await show(page, "mini");
     await edit();
     await until(() => field(page, "Executors at once") === "3", "the saved limit in the editor");
     type(page, "Executors at once", "65");
@@ -585,6 +656,7 @@ test("a machine executor limit changed meanwhile is read again and said so; the 
   try {
     render(page);
     await loaded(page);
+    await show(page, "mini");
     page.document.querySelector('[aria-label="Edit Mac mini"]').click();
     await until(() => field(page, "Executors at once") === "3", "the saved limit");
     type(page, "Executors at once", "5");
@@ -655,7 +727,6 @@ test("a new machine whose executor limit fails to save is listed at once and edi
     await until(() => form()?.querySelector('[role="alert"]'), "the limit failure");
     // What the page shows at once, checked after the next save.
     const alert = form().querySelector('[role="alert"]').textContent;
-    const listedAtOnce = !!card(page, "studio");
     const heading = form().querySelector(".remote-editor-heading").textContent.trim();
     const kept = field(page, "Executors at once");
     save().click();
@@ -667,11 +738,13 @@ test("a new machine whose executor limit fails to save is listed at once and edi
       ["/api/machines/studio/executor-slots", { expectedVersion: 0, slots: 4 }],
     ], "its limit is sent again with the next save");
     assert.match(alert, /The machine is saved; its executor limit is not\. executor slots are not available right now/, "the limit failure says the machine is saved");
-    assert.ok(listedAtOnce, "the list has the machine as soon as it is saved");
     assert.equal(heading, "Edit Studio", "the form edits the machine it saved");
     assert.equal(kept, "4", "the value typed is kept");
     await until(() => !form(), "the form to close once both are saved");
-    assert.equal(page.document.querySelectorAll('[data-machine-id="studio"]').length, 1, "listed once");
+    assert.equal(page.document.querySelectorAll('[data-machine-id="studio"]').length, 1, "its page");
+    page.document.querySelector(".settings-machines .settings-crumb").click();
+    await until(() => row(page, "mini"), "the list");
+    assert.equal(page.document.querySelectorAll('[data-machine-row="studio"]').length, 1, "listed once");
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();
@@ -701,6 +774,7 @@ test("the Core host card sets its own executor limit, through the route for loca
   try {
     render(page);
     await loaded(page);
+    await show(page, "local");
     await until(() => localLimit(page), "the Core host card control");
     assert.match(localLimit(page).textContent, /2 on this machine now/);
     assert.match(localLimit(page).textContent, /Lowering it stops no running executor/);
@@ -742,9 +816,11 @@ test("the executor limit field says a failed read until a later read succeeds, a
   try {
     render(page);
     await loaded(page);
+    await show(page, "local");
     await until(() => localLimit(page), "the Core host card control, read");
     // The editor's own read fails once.
     failNext = true;
+    await show(page, "mini");
     page.document.querySelector('[aria-label="Edit Mac mini"]').click();
     await until(() => /executor slots are not available right now/.test(hint(page)), "the failed read under the field");
     type(page, "Executors at once", "5");
@@ -770,6 +846,7 @@ test("the executor limit field says a failed read until a later read succeeds, a
   try {
     render(host);
     await loaded(host);
+    await show(host, "local");
     await until(() => localLimit(host), "the Core host card control");
     typeLocal(host, "2");
     await tick();
@@ -791,6 +868,7 @@ test("the executor limit reads in Chinese on the Machines page (T-189)", async (
     chinese(page);
     render(page);
     await loaded(page);
+    await show(page, "local");
     await until(() => localLimit(page), "the Core host card control");
     assert.match(localLimit(page).textContent, /同时运行的执行者/);
     assert.match(localLimit(page).textContent, /调低不会停止正在运行的执行者/);

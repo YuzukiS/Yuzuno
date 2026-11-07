@@ -324,6 +324,7 @@ else: raise AssertionError(endpoint)
             client: Client {
                 program: script.to_string_lossy().into(),
                 deadline: Duration::from_secs(10),
+                ..Default::default()
             },
             transfers: Semaphore::new(1),
         };

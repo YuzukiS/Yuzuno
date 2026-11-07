@@ -68,6 +68,8 @@ export interface WorkspaceChangedEvent {
   scope: "collaboration" | "projects" | "machines" | "runtime" | string;
   /** A collaboration change that may have changed a task's row (T-9). */
   tasks?: boolean;
+  /** The merge queue changed: an entry, a repository's switch or its pause (T-65). */
+  mergeQueue?: boolean;
 }
 /** Refetch everything shown: Core said so, live updates may have been
  * missed, or the stream is not open (polling). */

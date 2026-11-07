@@ -179,9 +179,17 @@ test("without a visual viewport nothing happens", () => {
   assert.equal(dom.window.document.documentElement.getAttribute("style"), null);
 });
 
-test("the phone shell uses it, and only the phone shell, with the short layout while the keyboard is up", async () => {
+test("a touched shell uses it, and only a touched one, with the short layout while the keyboard is up", async () => {
   const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
-  assert.match(app, /useEffect\(\(\) => \(phone \? followVisualViewport\(\) : undefined\), \[phone\]\);/);
+  // T-15: the keyboard covers the bottom of a tablet, or of a folding phone
+  // opened, exactly as it covers a phone's, and those keep the side-by-side
+  // layout. Gated on the phone layout alone, their input area was left under
+  // the keyboard. Still gated, though: a screen with a mouse has no on-screen
+  // keyboard and must not follow the visual viewport at all.
+  assert.match(
+    app,
+    /useEffect\(\(\) => \(phone \|\| touchInput \? followVisualViewport\(\) : undefined\), \[phone, touchInput\]\);/,
+  );
   const css = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
   const shell = css.match(/\.app\.phone,\s*\.app\.phone\.rail-hidden \{[^}]*\}/)?.[0] ?? "";
   assert.match(shell, /height:\s*min\(100dvh,\s*var\(--visual-height,\s*100dvh\)\)/, shell);
@@ -190,4 +198,11 @@ test("the phone shell uses it, and only the phone shell, with the short layout w
   // Simulator Safari showed the turn dock drawn over the composer and Send at 377 px.
   assert.match(css, /:root\[data-keyboard\] \.app\.phone \{\s*grid-template-rows:\s*57px minmax\(0, 1fr\) 0;\s*\}/);
   assert.match(css, /:root\[data-keyboard\] \.app\.phone \.statusbar,\s*:root\[data-keyboard\] \.app\.phone \.composer-footnote,\s*:root\[data-keyboard\] \.app\.phone \.turn-dock \{\s*display:\s*none;\s*\}/);
+  // A workbench that is not a phone fits what the keyboard leaves as well.
+  // Only its height moves — the rest of that layout has the room to stay —
+  // and the desktop minimum has to give way, or it floors the shell at 500px
+  // and puts the input area back under the keyboard.
+  const wide = css.match(/:root\[data-keyboard\] \.app:not\(\.phone\) \{[^}]*\}/)?.[0] ?? "";
+  assert.match(wide, /min-height:\s*0;/, wide);
+  assert.match(wide, /height:\s*min\(100dvh,\s*var\(--visual-height,\s*100dvh\)\)/, wide);
 });

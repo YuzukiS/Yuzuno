@@ -66,6 +66,13 @@ pub const LOGIN_MIN: &str = "2.0.20";
 const USERNAME: &str = "opencode";
 const START_LIMIT: Duration = Duration::from_secs(30);
 const REQUEST_LIMIT: Duration = Duration::from_secs(15);
+/// How long OpenCode may take to connect an MCP server Core adds and to list
+/// its tools, each (`timeout.startup`, `timeout.catalog`; 2.x's own are 30 s).
+pub const MCP_STARTUP: Duration = Duration::from_secs(10);
+/// An MCP add answers once OpenCode has tried to connect the server.
+const MCP_LIMIT: Duration = Duration::from_secs(25);
+/// The query that names the folder a 2.x request is for (protocol/src/groups/location.ts).
+const LOCATION: &str = "location[directory]";
 /// How long `shutdown` waits after SIGTERM before SIGKILL: longer than the
 /// 10 s 2.x gives its own teardown, which ends what its tools run, before it
 /// exits (cli/src/shutdown-deadline.ts). The watcher (`WATCHED`) waits as long.
@@ -173,13 +180,56 @@ impl std::fmt::Display for LoginRefused {
 
 impl std::error::Error for LoginRefused {}
 
+/// An MCP request OpenCode refused (T-61 slice 1): its status and kind,
+/// never its answer, which may quote the request and so its bearer.
+#[derive(Debug, PartialEq)]
+pub struct McpRefused {
+    pub code: u16,
+    pub kind: Option<String>,
+}
+
+impl std::fmt::Display for McpRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.kind {
+            Some(kind) => write!(f, "OpenCode refused the MCP server (HTTP {}, {kind})", self.code),
+            None => write!(f, "OpenCode refused the MCP server (HTTP {})", self.code),
+        }
+    }
+}
+
+impl std::error::Error for McpRefused {}
+
+/// One of 2.x's requests (a permission or a form) whose answer OpenCode
+/// refused (T-61 slice 2).
+#[derive(Debug, PartialEq)]
+pub enum RequestRefused {
+    /// 400: it can't take this answer (a form's, checked as 2.x checks it);
+    /// the request is still pending. 2.x's own message, which names fields.
+    Invalid { message: String },
+    /// 404 or 409: it no longer holds the request pending for this session
+    /// (answered, ended, or another session's); nothing was answered.
+    Gone { code: u16, kind: Option<String> },
+    Other { code: u16, kind: Option<String> },
+}
+
+impl std::fmt::Display for RequestRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid { message } => write!(f, "OpenCode can't take this answer: {message}"),
+            Self::Gone { code, kind } => write!(f, "OpenCode no longer holds this request (HTTP {code}{})", kind.as_ref().map(|k| format!(", {k}")).unwrap_or_default()),
+            Self::Other { code, kind } => write!(f, "OpenCode refused the answer (HTTP {code}{})", kind.as_ref().map(|k| format!(", {k}")).unwrap_or_default()),
+        }
+    }
+}
+
+impl std::error::Error for RequestRefused {}
+
 /// What a prompt submission is known to have done.
 #[derive(Debug, PartialEq)]
 pub enum Submission {
     /// OpenCode took it: 2.x's prompt answers with the message as it
     /// durably admitted it, under the ID it was sent with, or says the ID is
-    /// one it holds already (T-32 slice 4a). A command's answer (1.19.3's
-    /// route) says only that the run started.
+    /// one it holds already (T-32 slice 4a).
     Accepted,
     /// A 4xx: OpenCode refused the request before taking it (an unknown
     /// session, an invalid body, wrong credentials).
@@ -189,19 +239,22 @@ pub enum Submission {
     Unknown(String),
 }
 
-/// What a compaction request (`summarize`) is known to have done (T-10).
+/// What 2.x answered a compaction with (`POST /api/session/:id/compact`,
+/// T-61 slice 4). 2.x admits a compaction and answers at once, before it
+/// runs: what became of it is its message's, under the ID Core asked for.
 #[derive(Debug, PartialEq)]
-pub enum CompactAnswer {
-    /// 200 with the whole body the JSON `true`: OpenCode's handler returned,
-    /// so its run has ended there, however the compaction went (an abort
-    /// ends it too: the run is cancelled and the waiting request answered,
-    /// `effect/runner.ts`). Not that it compacted anything.
-    Ended,
-    /// A 4xx, as OpenCode gave it.
-    Refused(HttpStatus),
-    /// Anything else: no answer, a lost connection, a 5xx (OpenCode's proxy
-    /// turns a broken upstream into a 500, `middleware/proxy.ts`), another
-    /// body. Whether the run has ended is not known.
+pub enum CompactAdmission {
+    /// 200 with the compaction 2.x admitted under the ID asked for.
+    Admitted,
+    /// 200 with another compaction already pending in the session (2.2.5
+    /// core/src/session/inbox.ts): the one asked for was not admitted.
+    OtherPending(String),
+    /// Refused before it was admitted: 404 for a session or folder 2.x does
+    /// not hold, 400 for a request it can't read. 2.x's words of why.
+    Refused { code: u16, message: String },
+    /// Anything else (409 for an ID already a message, a 5xx, no answer, a
+    /// lost connection, another body): it may or may not have been admitted.
+    /// Look for its ID; never send it again.
     Unknown(String),
 }
 
@@ -243,26 +296,40 @@ const HISTORY_LIMIT: Duration = Duration::from_secs(60);
 const REPLAY_LIMIT: Duration = Duration::from_secs(120);
 
 /// An answer to a permission request. OpenCode's third answer, `always`,
-/// is not offered: it would allow later requests of this process by patterns
-/// the tool chooses.
+/// is not offered (T-61 D-12): 2.x would keep it as a saved rule of the
+/// Agent's database, allowing later requests of the project by patterns the
+/// tool chooses.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Reply {
     Once,
     Reject,
 }
 
-/// Whether OpenCode reached an MCP server.
+/// Whether OpenCode reached an MCP server, as it lists it for the Agent's
+/// folder (`GET /api/mcp`, T-61 slice 1).
 #[derive(Debug, PartialEq)]
 pub enum Mcp {
     Connected,
-    /// Any other status (`failed`, `needs_auth`, `disabled`, …) or none, as
-    /// OpenCode reported it.
+    /// Still connecting (`pending`): 2.x may answer the add of a folder's
+    /// first server before it has connected it.
+    Pending,
+    /// Not listed: never added to the folder, or gone with it.
+    Absent,
+    /// Any other status (`failed`, `needs_auth`, `disabled`), as OpenCode
+    /// reported it (`{status, error?}`).
     NotConnected(Value),
 }
 
 /// What OpenCode holds for one session now.
 #[derive(Debug)]
 pub struct Snapshot {
+    /// When the read began, in milliseconds since the epoch (#699 R2): what it
+    /// found missing was missing from then on, never before.
+    pub began: i64,
+    /// The inbox as read first, before the messages (#699 R2): an item 2.x
+    /// delivers and stores while the read goes on is in this list or in
+    /// `messages`, never in neither.
+    pub inbox_first: Value,
     /// The session's messages, oldest first, as `GET /api/session/:id/message`
     /// pages them (`messages`).
     pub messages: Value,
@@ -327,29 +394,48 @@ impl FilePart {
     }
 }
 
-/// A command OpenCode's configuration defines (`/config`'s `command`, T-10),
-/// and only what lists and runs it. Its template, which may hold shell lines
-/// (`!`) or paths, and everything else of `/config` (provider keys and
-/// options among it) are never kept.
+/// A command OpenCode offers (`GET /api/command`, T-10, T-61 slice 3): its
+/// name and description, all 2.x lists of one. Its template, which may
+/// hold shell lines (`!`) or paths, its agent and its model stay
+/// OpenCode's: 2.x says nothing of them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CommandChoice {
     pub name: String,
     pub description: String,
-    /// Whether its template takes arguments (`$ARGUMENTS`, `$1`–`$9`).
-    pub takes_arguments: bool,
-    /// Whether it runs as a sub-agent (`subtask`).
-    pub subtask: bool,
-    /// The model it runs with by its own configuration, which OpenCode uses
-    /// over the caller's (`session/prompt.ts` command): its own `model`,
-    /// else that of the agent it names.
-    pub model: Option<String>,
 }
 
-/// Whether a command template takes arguments: OpenCode replaces
-/// `$ARGUMENTS` and `$1`–`$9` in it.
-fn takes_arguments(template: &str) -> bool {
-    template.contains("$ARGUMENTS") || (1..=9).any(|n| template.contains(&format!("${n}")))
+/// What 2.x answered a command with (`POST /api/session/:id/command`, T-61
+/// slice 3). It answers once it has admitted what the command makes of its
+/// text, or done what the command does, not at the end of any run.
+#[derive(Debug, PartialEq)]
+pub enum CommandAnswer {
+    /// 204: done. What it admitted, if anything, is under an ID of 2.x's
+    /// own, as its events and record show: the request carries no ID.
+    Done,
+    /// A 4xx, with which 2.x ran nothing (404 `CommandNotFoundError` for a
+    /// name it does not define, or the session's), or a 500
+    /// (`CommandExecutionError`): what the command does failed, possibly
+    /// after it admitted a message, which only the session's record tells.
+    /// 2.x's words of why, as `command_words` keeps them.
+    Refused { code: u16, message: String },
+    /// No answer, a lost connection or an unexpected status: it may or may
+    /// not have run. It is never sent again.
+    Unknown(String),
 }
+
+/// 2.x's own words of why it refused or failed a command (`message`), at
+/// most `COMMAND_WORDS` characters; else its status.
+async fn command_words(response: Response) -> String {
+    let code = response.status().as_u16();
+    let answered: Value = response.json().await.unwrap_or_default();
+    let message = answered["message"].as_str().or(answered["data"]["message"].as_str()).unwrap_or_default();
+    if message.trim().is_empty() {
+        return format!("HTTP {code}");
+    }
+    message.chars().take(COMMAND_WORDS).collect()
+}
+
+const COMMAND_WORDS: usize = 500;
 
 /// Variant names mildest first, as OpenCode derives them (`none`, `low`, …,
 /// `max`, `provider/transform.ts`); other names after them, by name.
@@ -766,13 +852,18 @@ impl Server {
     /// The session's messages, status and inbox, read now, with the requests
     /// pending in it and in the sub-agent sessions `children`.
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
+        let began = chrono::Utc::now().timestamp_millis();
+        let path = format!("/api/session/{}/inbox", segment(session)?);
+        let inbox_first = self.data(Method::GET, &path, &[], None).await?;
+        ensure!(inbox_first.is_array(), "OpenCode's {path} is not a list");
         let messages = self.messages(session).await?;
         let status = self.session_status(session).await?;
-        let path = format!("/api/session/{}/inbox", segment(session)?);
         let inbox = self.data(Method::GET, &path, &[], None).await?;
         ensure!(inbox.is_array(), "OpenCode's {path} is not a list");
         let sessions: Vec<&str> = std::iter::once(session).chain(children.iter().map(String::as_str)).collect();
         Ok(Snapshot {
+            began,
+            inbox_first,
             messages,
             status,
             inbox,
@@ -816,71 +907,45 @@ impl Server {
         Ok(models)
     }
 
-    /// The commands OpenCode's configuration defines now, by name. Nothing
-    /// else of `/config` is kept, not even a command's template.
-    ///
-    /// 2.x lists its own (`GET /api/command`, T-32 slice 4a), naming and
-    /// describing each only; 1.19.3's `/config` is read where that route is
-    /// not there, as the stand-in keeps it until the commands slice. Running
-    /// one is still 1.19.3's route (`command`), which 2.x refuses.
+    /// The commands OpenCode offers now, by name (`GET /api/command`, T-32
+    /// slice 4a): its configuration's, its own (`init`, `review`, `goal`, …)
+    /// and its MCP servers' prompts. Each is named and described only.
     pub async fn commands(&self) -> Result<Vec<CommandChoice>> {
-        match self.data(Method::GET, "/api/command", &[], None).await {
-            Ok(listed) => {
-                let mut commands: Vec<CommandChoice> = listed.as_array().context("OpenCode's commands is not a list")?.iter()
-                    .filter_map(|command| Some(CommandChoice {
-                        name: command["name"].as_str()?.to_owned(),
-                        description: command["description"].as_str().unwrap_or_default().into(),
-                        // 2.x's list says nothing of a command's template, agent or model.
-                        takes_arguments: true,
-                        subtask: false,
-                        model: None,
-                    })).collect();
-                commands.sort_by(|a, b| a.name.cmp(&b.name));
-                return Ok(commands);
-            }
-            Err(error) if error.downcast_ref::<HttpStatus>().is_some_and(|s| s.code == 404) => {}
-            Err(error) => return Err(error),
-        }
-        let config = self.json(Method::GET, "/config", None).await?;
-        let named = |model: &Value| model.as_str().filter(|m| !m.is_empty()).map(str::to_owned);
-        let mut commands: Vec<CommandChoice> = config["command"].as_object().into_iter().flatten().map(|(name, info)| CommandChoice {
-            name: name.clone(),
-            description: info["description"].as_str().unwrap_or_default().into(),
-            takes_arguments: takes_arguments(info["template"].as_str().unwrap_or_default()),
-            subtask: info["subtask"] == true,
-            model: named(&info["model"]).or_else(|| info["agent"].as_str().and_then(|agent| named(&config["agent"][agent]["model"]))),
-        }).collect();
+        let listed = self.data(Method::GET, "/api/command", &[], None).await?;
+        let mut commands: Vec<CommandChoice> = listed.as_array().context("OpenCode's commands is not a list")?.iter()
+            .filter_map(|command| Some(CommandChoice {
+                name: command["name"].as_str()?.to_owned(),
+                description: command["description"].as_str().unwrap_or_default().into(),
+            })).collect();
         commands.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(commands)
     }
 
-    /// The request that runs the command `name` with `arguments` under `id`,
-    /// once: an ID this server was given before is refused here, whatever
-    /// became of it. `model` is `"provider/model"`, as the command endpoint
-    /// takes it. OpenCode 1.19.3 answers only once the run has ended, and
-    /// every failure as 400 (`handlers/session.ts` command), so the request
-    /// has no time limit of its own, and holds nothing of this server: it
-    /// does not keep OpenCode from being stopped. Its answer says nothing a
-    /// caller can wait for about delivery.
-    pub fn command(&self, session: &str, id: &MessageId, name: &str, arguments: &str, model: Option<&str>, variant: Option<&str>)
-        -> Result<impl std::future::Future<Output = Submission> + Send + 'static> {
-        let path = format!("/session/{}/command", segment(session)?);
+    /// The request that runs the command `name` with `text` in the session
+    /// (`POST /api/session/:id/command {name, text}`, T-61 slice 3), once
+    /// for `id`, Core's ID of its Turn: an ID this server was given before
+    /// is refused here, whatever became of it. 2.x's request carries no ID
+    /// and no model: what it admits gets an ID of 2.x's own, with the
+    /// session's model unless the command names one. 2.x answers once the
+    /// command has admitted its message, which can wait on the template's
+    /// shell lines or an MCP server, so the request has no time limit of
+    /// its own, and holds nothing of this server: it does not keep OpenCode
+    /// from being stopped.
+    pub fn command(&self, session: &str, id: &MessageId, name: &str, text: &str)
+        -> Result<impl std::future::Future<Output = CommandAnswer> + Send + 'static> {
+        let path = format!("/api/session/{}/command", segment(session)?);
         ensure!(self.submitted.lock().unwrap().insert(id.clone()),
             "Message {} was submitted already; it is never sent again", id.as_str());
-        let mut body = json!({"messageID": id.as_str(), "command": name, "arguments": arguments});
-        if let Some(model) = model {
-            body["model"] = model.into();
-        }
-        if let Some(variant) = variant {
-            body["variant"] = variant.into();
-        }
-        let request = self.request(Method::POST, &path).json(&body);
+        let request = self.request(Method::POST, &path).json(&json!({"name": name, "text": text}));
         Ok(async move {
             match request.send().await {
-                Err(error) => Submission::Unknown(format!("OpenCode did not answer: {error}")),
-                Ok(response) if response.status().is_success() => Submission::Accepted,
-                Ok(response) if response.status().is_client_error() => Submission::Refused(status(response).await),
-                Ok(response) => Submission::Unknown(status(response).await.to_string()),
+                Err(error) => CommandAnswer::Unknown(format!("OpenCode did not answer: {error}")),
+                Ok(response) if response.status().is_success() => CommandAnswer::Done,
+                Ok(response) if response.status().is_client_error() || response.status().as_u16() == 500 => {
+                    let code = response.status().as_u16();
+                    CommandAnswer::Refused { code, message: command_words(response).await }
+                }
+                Ok(response) => CommandAnswer::Unknown(status(response).await.to_string()),
             }
         })
     }
@@ -910,27 +975,41 @@ impl Server {
         Ok(Value::Array(self.all(&format!("/api/session/{}/message", segment(session)?), &[("order", "asc")]).await?))
     }
 
-    /// The request that compacts the session with `provider`'s `model`
-    /// (T-10), as its own `/compact` does (`POST /session/:id/summarize`,
-    /// `auto: false`). OpenCode 1.19.3 writes the compaction's own user
-    /// message, under an ID of its choosing, then runs the compaction and
-    /// answers only once that run ends (`handlers/session.ts` summarize); it
-    /// takes no variant. So, as a command's, the request has no time limit of
-    /// its own and holds nothing of this server, and its answer alone says
-    /// nothing a caller can wait for.
-    pub fn summarize(&self, session: &str, provider: &str, model: &str) -> Result<impl std::future::Future<Output = CompactAnswer> + Send + 'static> {
-        let path = format!("/session/{}/summarize", segment(session)?);
-        let request = self.request(Method::POST, &path).json(&json!({"providerID": provider, "modelID": model, "auto": false}));
-        Ok(async move {
-            match request.send().await {
-                Err(error) => CompactAnswer::Unknown(format!("OpenCode did not answer: {error}")),
-                Ok(response) if response.status().as_u16() == 200 => match response.text().await {
-                    Ok(body) if serde_json::from_str::<Value>(&body).is_ok_and(|v| v == Value::Bool(true)) => CompactAnswer::Ended,
-                    Ok(body) => CompactAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
-                    Err(error) => CompactAnswer::Unknown(format!("OpenCode's answer broke off: {error}")),
-                },
-                Ok(response) if response.status().is_client_error() => CompactAnswer::Refused(status(response).await),
-                Ok(response) => CompactAnswer::Unknown(status(response).await.to_string()),
+    /// Compacts the session under `id` (T-61 slice 4: `POST
+    /// /api/session/:id/compact {id}`), once: an ID this server was given
+    /// before is refused here, whatever became of it. The request carries no
+    /// model: 2.x compacts with the session's, as a prompt runs. 2.x commits a
+    /// revert the session holds first, then admits the compaction and answers
+    /// at once; it has no busy guard (a compaction admitted while a run goes
+    /// on is taken up at its next step), so callers ask only while idle.
+    pub async fn compact(&self, session: &str, id: &MessageId) -> Result<CompactAdmission> {
+        let path = format!("/api/session/{}/compact", segment(session)?);
+        ensure!(self.submitted.lock().unwrap().insert(id.clone()),
+            "Message {} was submitted already; it is never sent again", id.as_str());
+        let sent = self.request(Method::POST, &path).timeout(REQUEST_LIMIT).json(&json!({"id": id.as_str()})).send().await;
+        Ok(match sent {
+            Err(error) => CompactAdmission::Unknown(format!("OpenCode did not answer: {error}")),
+            Ok(response) if response.status().as_u16() == 200 => match response.json::<Value>().await {
+                Ok(answer) if answer["data"]["type"] == "compaction" && answer["data"]["id"] == id.as_str() => CompactAdmission::Admitted,
+                Ok(answer) if answer["data"]["type"] == "compaction" && answer["data"]["id"].is_string() =>
+                    CompactAdmission::OtherPending(answer["data"]["id"].as_str().unwrap_or_default().to_owned()),
+                Ok(_) => CompactAdmission::Unknown("OpenCode answered 200 with no compaction".into()),
+                Err(error) => CompactAdmission::Unknown(format!("OpenCode's answer was not read: {error}")),
+            },
+            Ok(response) => {
+                let code = response.status().as_u16();
+                let answered: Value = response.json().await.unwrap_or_default();
+                let kind = answered["_tag"].as_str().unwrap_or_default();
+                let words = || answered["message"].as_str().unwrap_or("").chars().take(500).collect::<String>();
+                // Only what 2.x refuses before it admits anything: an unknown session or folder, a request it can't read.
+                let refused = matches!((code, kind), (404, "SessionNotFoundError" | "LocationNotFoundError"))
+                    || (code == 400 && kind == "InvalidRequestError"
+                        && matches!(answered["kind"].as_str(), Some("Params" | "Headers" | "Query" | "Payload")));
+                if refused {
+                    CompactAdmission::Refused { code, message: if words().is_empty() { format!("HTTP {code}") } else { words() } }
+                } else {
+                    CompactAdmission::Unknown(format!("OpenCode answered HTTP {code} {kind}"))
+                }
             }
         })
     }
@@ -1033,18 +1112,6 @@ impl Server {
         success(response).await?.json().await.context("OpenCode's answer to /sync/replay is not JSON")
     }
 
-    /// Removes one part of a message (`DELETE
-    /// /session/:id/message/:message/part/:part`, T-10). OpenCode 1.19.3 only
-    /// announces the removal (`session.ts` removePart) and deletes the part
-    /// by its ID and session alone (`core/src/session/projector.ts`), with no
-    /// check that it exists, is that message's, or that the session is idle:
-    /// its `true` says none of that. Only a read after it does.
-    pub async fn delete_part(&self, session: &str, message: &str, part: &str) -> Result<()> {
-        let path = format!("/session/{}/message/{}/part/{}", segment(session)?, segment(message)?, segment(part)?);
-        self.json(Method::DELETE, &path, None).await?;
-        Ok(())
-    }
-
     /// The sessions OpenCode started under `session` (its sub-agents,
     /// `parentID` = `session`), as `GET /api/session?parentID=` lists them,
     /// every page.
@@ -1052,29 +1119,53 @@ impl Server {
         self.all("/api/session", &[("parentID", segment(session)?), ("order", "asc")]).await
     }
 
-    /// Answers a permission request pending in `session`. A request of
-    /// another session, or no longer pending, is refused without an answer.
-    /// OpenCode's rule: rejecting one rejects every other request then
-    /// pending in the same session (`permission/index.ts`).
+    /// Answers a permission request pending in `session` (T-61 slice 2:
+    /// `POST /api/session/:id/permission/:request/reply`, 204). 2.x refuses
+    /// one no longer pending, or of another session, with 404, having
+    /// answered nothing (`RequestRefused::Gone`). Its rule: rejecting one
+    /// rejects every other request then pending in the same session
+    /// (2.2.5 core/src/permission.ts).
     pub async fn reply_permission(&self, session: &str, request: &str, reply: Reply) -> Result<()> {
-        self.ensure_pending("/permission", session, request).await?;
-        let reply = match reply { Reply::Once => "once", Reply::Reject => "reject" };
-        self.json(Method::POST, &format!("/permission/{}/reply", segment(request)?), Some(&json!({"reply": reply}))).await?;
-        Ok(())
+        let decision = match reply { Reply::Once => "once", Reply::Reject => "reject" };
+        let path = format!("/api/session/{}/permission/{}/reply", segment(session)?, segment(request)?);
+        self.request_call(Method::POST, &path, Some(&json!({"decision": decision}))).await
     }
 
-    /// Answers a question pending in `session`: for each of its questions,
-    /// the labels chosen (or typed).
-    pub async fn reply_question(&self, session: &str, request: &str, answers: &[Vec<String>]) -> Result<()> {
-        self.ensure_pending("/question", session, request).await?;
-        self.json(Method::POST, &format!("/question/{}/reply", segment(request)?), Some(&json!({"answers": answers}))).await?;
-        Ok(())
+    /// Answers a form pending in `session` (T-61 slice 2: `POST
+    /// /api/session/:id/form/:form/reply`, 204): each field's value by its
+    /// key. 2.x checks the answer first and refuses one it can't take with
+    /// 400, leaving the form pending (`RequestRefused::Invalid`).
+    pub async fn reply_form(&self, session: &str, form: &str, answer: &Value) -> Result<()> {
+        let path = format!("/api/session/{}/form/{}/reply", segment(session)?, segment(form)?);
+        self.request_call(Method::POST, &path, Some(&json!({"answer": answer}))).await
     }
 
-    pub async fn reject_question(&self, session: &str, request: &str) -> Result<()> {
-        self.ensure_pending("/question", session, request).await?;
-        self.json(Method::POST, &format!("/question/{}/reject", segment(request)?), None).await?;
-        Ok(())
+    /// Declines a form pending in `session` (`DELETE
+    /// /api/session/:id/form/:form`, 204), with no message: the tool that
+    /// asked fails as a declined one does.
+    pub async fn cancel_form(&self, session: &str, form: &str) -> Result<()> {
+        let path = format!("/api/session/{}/form/{}", segment(session)?, segment(form)?);
+        self.request_call(Method::DELETE, &path, None).await
+    }
+
+    /// An answer to one of 2.x's requests: 204, or what it refused it as.
+    async fn request_call(&self, method: Method, path: &str, body: Option<&Value>) -> Result<()> {
+        let mut request = self.request(method, path).timeout(REQUEST_LIMIT);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.with_context(|| format!("OpenCode did not answer {path}"))?;
+        let code = response.status().as_u16();
+        if response.status().is_success() {
+            return Ok(());
+        }
+        let answered: Value = response.json().await.unwrap_or_default();
+        let kind = answered["_tag"].as_str().or(answered["name"].as_str()).map(str::to_owned);
+        bail!(match code {
+            400 => RequestRefused::Invalid { message: answered["message"].as_str().unwrap_or_default().chars().take(300).collect() },
+            404 | 409 => RequestRefused::Gone { code, kind },
+            _ => RequestRefused::Other { code, kind },
+        })
     }
 
     /// Asks OpenCode to interrupt the session's run (`POST
@@ -1172,27 +1263,62 @@ impl Server {
             }
             return Ok(Some(response.json().await.context("OpenCode's answer to the login request is not JSON")?));
         }
-        let answered: Value = response.json().await.unwrap_or_default();
-        let kind = answered["kind"].as_str().or(answered["_tag"].as_str()).filter(|kind| kind.len() <= 64
-            && kind.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.'));
-        bail!(LoginRefused { code: code.as_u16(), kind: kind.map(str::to_owned) })
+        bail!(LoginRefused { code: code.as_u16(), kind: refusal_kind(response).await })
     }
 
-    /// Adds a remote MCP server to this instance, held in OpenCode's memory
-    /// only (no config file), with OAuth discovery off.
-    pub async fn add_mcp(&self, name: &str, url: &str, bearer: &str) -> Result<Mcp> {
-        let config = json!({"type": "remote", "url": url, "oauth": false,
-            "headers": {"Authorization": format!("Bearer {bearer}")}});
-        let statuses = self.json(Method::POST, "/mcp", Some(&json!({"name": name, "config": config}))).await?;
-        Ok(mcp_state(&statuses[name]))
+    /// Adds a remote MCP server to the Agent's folder (T-61 slice 1:
+    /// `PUT /api/experimental/mcp/:server`, 204), held in OpenCode's memory
+    /// only (no config file), with OAuth off and its tools offered to the
+    /// model as tools of their own (`codemode: false`; 2.x's default puts
+    /// them behind its single `execute` tool). The same configuration again
+    /// changes nothing while the server is there, a failed one included; a
+    /// server OpenCode dropped with the folder is added again. 2.x answers
+    /// once it has tried to connect it, except a folder's first, which may
+    /// still be `pending` (2.2.5 core/src/mcp/index.ts).
+    pub async fn add_mcp(&self, name: &str, url: &str, bearer: &str) -> Result<()> {
+        let config = json!({"type": "remote", "url": url, "oauth": false, "codemode": false,
+            "headers": {"Authorization": format!("Bearer {bearer}")},
+            "timeout": {"startup": MCP_STARTUP.as_millis() as u64, "catalog": MCP_STARTUP.as_millis() as u64}});
+        self.mcp_call(Method::PUT, &format!("/api/experimental/mcp/{}", segment(name)?), Some(&json!({"config": config}))).await
     }
 
+    /// Has OpenCode connect a server it holds again (`…/connect`, 204): a
+    /// failed one is not tried again by adding it unchanged.
+    pub async fn connect_mcp(&self, name: &str) -> Result<()> {
+        self.mcp_call(Method::POST, &format!("/api/experimental/mcp/{}/connect", segment(name)?), None).await
+    }
+
+    /// The server `name` as OpenCode lists it for the Agent's folder
+    /// (`GET /api/mcp`): its status only, as 2.x lists no configuration.
     pub async fn mcp(&self, name: &str) -> Result<Mcp> {
-        Ok(mcp_state(&self.json(Method::GET, "/mcp", None).await?[name]))
+        let listed = self.data(Method::GET, "/api/mcp", &[(LOCATION, &self.directory)], None).await?;
+        let listed = listed.as_array().context("OpenCode's /api/mcp is not a list")?;
+        Ok(match listed.iter().find(|server| server["name"] == name) {
+            None => Mcp::Absent,
+            Some(server) => match server["status"]["status"].as_str() {
+                Some("connected") => Mcp::Connected,
+                Some("pending") => Mcp::Pending,
+                _ => Mcp::NotConnected(server["status"].clone()),
+            },
+        })
     }
 
-    async fn pending(&self, path: &str, session: &str) -> Result<Vec<Value>> {
-        self.pending_in(path, &[session]).await
+    /// An MCP request that answers 204, naming the Agent's folder as its
+    /// sessions do (`location[directory]`): 2.x keeps a server added at
+    /// runtime per folder, and takes its own working directory, resolved,
+    /// for a request that names none. A refusal says its status and kind
+    /// only (`McpRefused`).
+    async fn mcp_call(&self, method: Method, path: &str, body: Option<&Value>) -> Result<()> {
+        let mut request = self.request_with(method, path, &[(LOCATION, &self.directory)]).timeout(MCP_LIMIT);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.map_err(|error| anyhow!("OpenCode did not answer {path} ({})", error.without_url()))?;
+        let code = response.status();
+        if code.is_success() {
+            return Ok(());
+        }
+        bail!(McpRefused { code: code.as_u16(), kind: refusal_kind(response).await })
     }
 
     /// What waits in each of `sessions`: its permission requests
@@ -1208,19 +1334,6 @@ impl Server {
         Ok(all)
     }
 
-    async fn pending_in(&self, path: &str, sessions: &[&str]) -> Result<Vec<Value>> {
-        let all = self.json(Method::GET, path, None).await?;
-        let all = all.as_array().with_context(|| format!("OpenCode's {path} is not a list"))?;
-        Ok(all.iter().filter(|r| r["sessionID"].as_str().is_some_and(|s| sessions.contains(&s))).cloned().collect())
-    }
-
-    async fn ensure_pending(&self, path: &str, session: &str, request: &str) -> Result<()> {
-        let pending = self.pending(path, session).await?;
-        ensure!(pending.iter().any(|r| r["id"] == request),
-            "Request {request} is not pending in session {session}; it was not answered");
-        Ok(())
-    }
-
     fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
         self.request_with(method, path, &[])
     }
@@ -1228,7 +1341,8 @@ impl Server {
     /// A request of `path` with `query`. 1.19.3's routes, used until their
     /// slices move them (T-32), also name the instance by the query (a
     /// folder need not be a valid header value); 2.x's under `/api` name
-    /// none here: a session's folder is its own, given when it is made.
+    /// none here: a session's folder is its own, given when it is made. The
+    /// MCP ones name it in their `query` (`LOCATION`).
     fn request_with(&self, method: Method, path: &str, query: &[(&str, &str)]) -> reqwest::RequestBuilder {
         let mut url = Url::parse(&format!("{}{path}", self.base)).expect("an OpenCode path");
         url.query_pairs_mut().extend_pairs(query);
@@ -1576,8 +1690,12 @@ fn segment(id: &str) -> Result<&str> {
     Ok(id)
 }
 
-fn mcp_state(status: &Value) -> Mcp {
-    if status["status"] == "connected" { Mcp::Connected } else { Mcp::NotConnected(status.clone()) }
+/// The kind (`kind`, else `_tag`) of a refusal, when it is a plain name: the
+/// rest of OpenCode's answer is never kept.
+async fn refusal_kind(response: Response) -> Option<String> {
+    let answered: Value = response.json().await.unwrap_or_default();
+    answered["kind"].as_str().or(answered["_tag"].as_str()).filter(|kind| kind.len() <= 64
+        && kind.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')).map(str::to_owned)
 }
 
 async fn success(response: Response) -> Result<Response> {
