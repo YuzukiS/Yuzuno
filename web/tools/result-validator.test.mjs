@@ -58,3 +58,25 @@ test("the bundle runs alone, outside this checkout, and answers in order", async
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("the bundle accepts a Brief section it can repair, says how, and refuses one it cannot as sent (YN-14)", async () => {
+  const child = spawn(process.execPath, [fileURLToPath(new URL("validator.mjs", outputDir))], { env: {}, stdio: ["pipe", "pipe", "inherit"] });
+  const answers = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  const ask = async (request) => {
+    child.stdin.write(`${JSON.stringify(request)}\n`);
+    return JSON.parse((await answers.next()).value);
+  };
+  const section = (elements) => ({ key: "demo", kind: "report", title: "Demo",
+    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: Object.keys(elements) }, ...elements } } });
+  const repaired = await ask({ id: 1, op: "briefSection", section: section({ log: { type: "Code", props: { code: "FAIL x" } } }) });
+  assert.equal(repaired.ok, true, JSON.stringify(repaired));
+  assert.deepEqual(repaired.normalized.body.elements.log, { type: "Markdown", props: { text: "```\nFAIL x\n```" } });
+  assert.deepEqual(repaired.repairs.map((repair) => [repair.code, repair.path]), [["component_to_markdown", "body.elements.log"]]);
+  const valid = await ask({ id: 2, op: "briefSection", section: section({ a: { type: "Markdown", props: { text: "A." } } }) });
+  assert.deepEqual([valid.ok, valid.repairs], [true, []]);
+  const refused = await ask({ id: 3, op: "briefSection", section: section({ f: { type: "Findings", props: { items: [{ id: "f1", severity: "low", text: "X." }] } } }) });
+  assert.equal(refused.ok, false);
+  assert.deepEqual(refused.problems.map((problem) => problem.code), ["missing_field"]);
+  child.stdin.end();
+  assert.equal(await new Promise((resolve) => child.on("exit", resolve)), 0);
+});

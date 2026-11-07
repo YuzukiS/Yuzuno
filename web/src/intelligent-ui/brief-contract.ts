@@ -67,6 +67,8 @@ export const BRIEF_LIMITS = {
   problems: MAX_PROBLEMS,
   // One brief_update's rejection, across its sections; Core enforces it.
   callProblems: 10,
+  // Repairs Core makes on one section before it refuses it as sent (YN-14 A1).
+  repairsPerSection: 8,
   keyPattern: BRIEF_KEY_PATTERN.source,
   // Advice only (T-176, brief-advice.ts): adjustable hints in characters
   // (Unicode code points) and references, never a limit; Core sends at most
@@ -539,6 +541,24 @@ export const BRIEF_ADVICE_CODES = {
   summary_may_be_missing: "A Table or chart and no non-empty Markdown, Findings or Metrics block.",
   duplicate_ref: "One LiveRefs or Sources block that names the same target twice.",
   many_refs: `Over ${L.advice.refs} LiveRefs and Sources entries in one section, each target counted once per block.`,
+} as const;
+
+/**
+ * What Core may repair in a section the strict check refuses (YN-14 A1,
+ * brief-repair.ts): it then accepts the repaired section and lists each repair.
+ */
+export const BRIEF_REPAIR_CODES = {
+  component_to_markdown: "An unknown component without children became a Markdown block of its text, HTML-escaped; one with no text was removed.",
+  component_to_group: "An unknown component with children, or a BriefBody below the root, became a Group.",
+  renamed_field: "A field given another name, or put outside props, was moved to the name the component uses (e.g. Findings file to source).",
+  dropped_field: "A field the component does not have was removed.",
+  filled_id: "A missing id was filled in, or one used twice was made unique.",
+  normalized_value: "A value in another letter case, or a listed synonym (Plan in_progress, completed, pending), became the value the component uses.",
+  filled_default: "A Finding without severity got info; a Table row's missing cell became empty.",
+  reply_options: "Ask reply options given as text, or with other field names, became {id, label}.",
+  fixed_tree: "A child naming no element was removed; an element nothing showed was added at the end of the root (removed, for an edit that unlinked it); or the root was set to the body's BriefBody.",
+  dropped_layout: "Columns widths, a BriefBody summary slot or a details entry that did not fit was removed.",
+  showed_attachment: "A put's registered attachment that nothing showed was added to an Attachments block under the root.",
 } as const;
 
 export const BRIEF_GUIDE_PARTS = ["sections", "ask", "content", "charts", "research", "attachments", "limits", "errors", "examples"] as const;
@@ -1630,6 +1650,8 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `A rejected brief_update lists problems {code, path, reason, guide}: at most ${MAX_PROBLEMS} for each section's format and at most ${L.callProblems} in all. moreProblems says how many more Core found past ${L.callProblems}; problems past a section's ${MAX_PROBLEMS} are not found or counted. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `- ask_only: Your current Project permission allows only your own valid asks and optional noChange. Only the user can select content editors. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
+    `Repairs: when a section fails these checks for a slip Core can fix without guessing, Core repairs it and accepts the update instead: the answer (and a validateOnly check that passes) lists repairs {code, path, reason, guide}, at most ${L.callProblems} in all (moreRepairs counts the rest), a section that needs more than ${L.repairsPerSection} is refused as sent, and Home marks the section until a put replaces it or an edit replaces the repaired blocks. Send it right next time: the repairs say what Core changed. Core never repairs the envelope (key, kind, title, ask, status, time, attachments), an ask without a usable reply, anything over a limit, a reference to a file, source or research record, a ResearchDesk or Sources block, or content a component needs and you did not give (a Finding's source). When the repaired section still fails, the rejection lists the problems of the section as you sent it. Codes:`,
+    ...Object.entries(BRIEF_REPAIR_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
     `Core also rejects version_conflict (a section you change was written after the version you read, or expectedVersion is ahead of the Brief; other sections' writes don't count; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), definition_changed (a ResearchDesk definition version whose text, citation or cited file or record differs from the section's previous version; see research), unsaved_definition also when Core kept no snapshot of a definition's cited file or the cited Task record is not a method record it can read, and changes that break owner, topic or open-ask rules.`,
   ],
   examples: [
@@ -1683,16 +1705,16 @@ export const BRIEF_TOOL_DESCRIPTIONS = {
     `Pass its version to brief_update as expectedVersion. projectId defaults to your own Project. Nothing requires reading or updating the Brief each turn. Formats: brief_guide.`,
   brief_update:
     `Write Brief changes when something changed; nothing requires a call each turn. Ask-only members may write only their own Asks. Pass expectedVersion (from ` +
-    `brief_get) and a new requestId (reuse it only to retry the same call). Send changes:[...] (noChange:true ` +
+    `brief_get) and a new requestId (reuse it only to retry). Send changes:[...] (noChange:true ` +
     `changes nothing). Changes: put {op:"put", key, kind, title, body, ask?, status?, time?, attachments?} ` +
     `creates or replaces a section you own; edit {op:"edit", key, elements:{<id>: block}} replaces only those ` +
     `blocks; resolve {op:"resolve", key} resolves your ask; remove {op:"remove", key} ` +
-    `removes your section; claim {op:"claim", key} takes an orphaned section of your Project (change it in a later call). ` +
+    `removes your section; claim {op:"claim", key} takes an orphaned section (change it in a later call). ` +
     `key is topic or topic/sub ` +
-    `(a-z, 0-9, -); add to another Agent's section with a topic/sub key of your own. kind ask needs ask {question, reply} ` +
-    `with reply options, freeText, form or choice; kind status needs status {asOf, validFor}. body is {root, elements} ` +
-    `with a BriefBody root. A rejection lists problems {code, path, reason, guide}: fix them and retry with a new ` +
-    `requestId; on version_conflict merge with the latest it returns. validateOnly:true pre-checks without writing. ` +
+    `(a-z, 0-9, -); add to another Agent's section with a topic/sub key of your own. kind ask needs ask {question, reply: ` +
+    `options, freeText, form or choice}; kind status needs status {asOf, validFor}. body is {root, elements} ` +
+    `with a BriefBody root. Small slips are repaired and listed in repairs. A rejection lists problems {code, path, reason, guide}: fix them and retry with a new ` +
+    `requestId; on version_conflict merge the latest it returns. validateOnly:true pre-checks without writing. ` +
     `Content never executes actions. Formats: brief_guide.`,
   brief_guide:
     `The Project Brief format guide, generated from the contract: sections and their kinds, ask replies, body components ` +

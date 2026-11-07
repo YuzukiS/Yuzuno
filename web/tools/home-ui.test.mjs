@@ -1303,6 +1303,31 @@ test("a summary card says what it is, when its data is from and that nobody keep
   }
 });
 
+test("a section Core repaired is marked on its card, and its page says what Core changed (YN-14)", async () => {
+  const home = readingFixture();
+  const docs = home.projects.find((entry) => entry.project.id === "p-docs");
+  const reason = (n) => `Element "log${n}": the unknown component "Code" became Markdown of its text. (brief_guide content)`;
+  docs.brief.sections.find((one) => one.key === "evidence").repairs =
+    [1, 2, 3, 4].map((n) => ({ code: "component_to_markdown", path: `body.elements.log${n}`, reason: reason(n) }));
+  const p = await mount({ home });
+  try {
+    await waitFor(() => card(p, "p-docs", "evidence"), "the Docs cards are drawn");
+    const mark = card(p, "p-docs", "evidence").querySelector(".home-repaired");
+    assert.ok(mark, "the repaired card is marked");
+    assert.equal(mark.textContent, "Repaired");
+    assert.match(mark.title, /Core repaired small slips in what Hana sent/);
+    assert.ok(!card(p, "p-docs", "overview").querySelector(".home-repaired"), "a card kept as sent is not marked");
+    const page = await openReport(p, "p-docs", "evidence");
+    assert.equal(page.querySelector(".report-head .home-repaired").textContent, "Repaired");
+    const items = [...page.querySelectorAll(".home-repaired-note li")].map((li) => li.textContent);
+    assert.deepEqual(items, [1, 2, 3].map((n) => reason(n).replace(" (brief_guide content)", "")), "the first three, in Core's words");
+    assert.match(page.querySelector(".home-repaired-note").textContent, /and 1 more/);
+    await closeReport(p);
+  } finally {
+    p.close();
+  }
+});
+
 test("a sub-topic without its topic's section stands as its own card; several get a readable heading (T-173)", async () => {
   const p = await mount({ home: readingFixture() });
   try {

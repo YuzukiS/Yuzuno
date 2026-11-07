@@ -270,6 +270,7 @@ export function ReportPage({
                       <span className={`home-kind kind-${shown.kind}`}>{home.kind[shown.kind]}</span>
                       {live && changedSinceSeen(shown) && <span className="home-changed">{shown.seen ? home.updated : home.new}</span>}
                       {unmaintained(shown) && <span className="home-unmaintained">{home.notMaintained}</span>}
+                      {!!shown.repairs?.length && <span className="home-repaired">{home.repaired}</span>}
                       {panel && <span>{panel.project.name}</span>}
                     </p>
                     <h1 id={headingId} ref={heading} tabIndex={-1}>
@@ -292,6 +293,8 @@ export function ReportPage({
                       <SectionTime label={home.nextUpdate} iso={shown.time?.nextUpdate} />
                       {changes && changes.size > 0 && <span className="report-changes">{t.blocksUpdated(changes.size)}</span>}
                     </p>
+                    {/* What Core repaired to keep it, in Core's words (YN-14). */}
+                    {!!shown.repairs?.length && <RepairedNote section={shown} />}
                     {/* Who left it and that it can be claimed, in words, not only in the card's tip (T-173). */}
                     {unmaintained(shown) && (
                       <p className="home-note home-unmaintained-note">
@@ -393,6 +396,24 @@ type Node = { type?: string; props?: Record<string, unknown> };
 const nodeOf = (section: Section, id: string) => (section.body as { elements?: Record<string, Node> } | null)?.elements?.[id];
 const nodeType = (section: Section, id: string) => nodeOf(section, id)?.type;
 const groupTitle = (section: Section, id: string) => String(nodeOf(section, id)?.props?.title ?? "");
+
+/** What Core repaired to keep this version (YN-14): its first few repairs, in Core's words. */
+function RepairedNote({ section }: { section: Section }) {
+  const home = useStrings(homeText);
+  const repairs = section.repairs ?? [];
+  const listed = repairs.slice(0, 3);
+  return (
+    <div className="home-note home-repaired-note">
+      <p>{home.repairedNote(section.owner.name)}</p>
+      <ul>
+        {listed.map((repair, index) => (
+          <li key={`${repair.code} ${repair.path} ${index}`}>{repair.reason.replace(/ \(brief_guide \w+\)$/, "")}</li>
+        ))}
+      </ul>
+      {repairs.length > listed.length && <p>{home.moreRepairs(repairs.length - listed.length)}</p>}
+    </div>
+  );
+}
 
 function Notice({ children, actions }: { children: ReactNode; actions: ReactNode }) {
   return (

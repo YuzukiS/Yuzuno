@@ -165,6 +165,11 @@ export const SummaryCard = memo(function SummaryCard({
             {home.notMaintained}
           </span>
         )}
+        {!!section.repairs?.length && (
+          <span className="home-repaired" title={home.repairedTitle(section.owner.name)}>
+            {home.repaired}
+          </span>
+        )}
         <span className="home-summary-actions">
           {replyable && (
             <button
