@@ -489,7 +489,8 @@ test("schema problems name the field, the component's props and the guide part",
 test("hard rules, tool descriptions and the guide are generated within their caps", () => {
   assert.ok(BRIEF_HARD_RULES.length <= 1500, `${BRIEF_HARD_RULES.length} characters`);
   for (const [name, description] of Object.entries(BRIEF_TOOL_DESCRIPTIONS)) {
-    assert.ok(description.length <= 1200, `${name}: ${description.length} characters`);
+    // brief_update grows with its ops (YN-14: patch); every tool stays within DESCRIPTION_CAP.
+    assert.ok(description.length <= (name === "brief_update" ? 1400 : 1200), `${name}: ${description.length} characters`);
     assert.ok(description.length <= DESCRIPTION_CAP);
     assert.match(description, /brief_guide/, `${name} names the guide`);
   }
@@ -520,7 +521,10 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(briefGuide("ask"), /only after that action is confirmed done.*A green CI or a whole Task being done is not that action/);
   assert.match(briefGuide("ask"), /edit keeps it replied, while put asks it again/);
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /expectedVersion.*requestId.*noChange:true/);
-  for (const op of ["put", "edit", "resolve", "remove", "claim"]) assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, new RegExp(`op:"${op}"`));
+  for (const op of ["put", "edit", "patch", "resolve", "remove", "claim"]) assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, new RegExp(`op:"${op}"`));
+  // patch, as Core applies it (YN-14 A2): RFC 6902 on the body, the whole section checked again.
+  assert.match(briefGuide("sections"), /^patch \{op:"patch", key, patch:\[\.\.\.\], status\?\} changes single values .* RFC 6902 operations .* Core checks the whole section again/m);
+  assert.match(briefGuide("errors"), /patch_path and patch_test/);
   // edit, as Core applies it: blocks by id, the rest kept, the root left to put.
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /edit \{op:"edit", key, elements:\{<id>: block\}\} replaces only those blocks;/);
   assert.match(briefGuide("sections"), /^edit \{op:"edit", key, elements:\{<id>: \{type, props, children\?\}\}, status\?\} replaces blocks .* the root is not edited \(rearrange with put\)\./m);

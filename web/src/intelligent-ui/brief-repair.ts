@@ -332,11 +332,16 @@ function unreachable(body: Json): string[] {
   return Object.keys(elements).filter((key) => !seen.has(key));
 }
 
+/** Whether an element carries a field a later contract may give meaning to (KEPT_ELEMENT_FIELDS): no fix touches it. */
+const held = (node: unknown) => object(node) && Object.keys(node).some((name) => KEPT_ELEMENT_FIELDS.has(name));
+
 /**
  * Fixes for what the strict check reported, by code; whether any applied.
  * `edit` is a block edit (Core gave the stored body): an element it left
  * unreachable is removed, as the edit unlinked it; a put's is shown at the
- * end of the root. An edit never registers or shows an attachment.
+ * end of the root. An edit never registers or shows an attachment. An
+ * element that `held` names is never changed, moved or removed by a fix,
+ * nor a container of it changed for it (YN-14 S2): its section is refused.
  */
 function fixProblems(section: Json, problems: BriefProblem[], edit: boolean, repairs: Repairs): boolean {
   const body = section.body as Json;
@@ -349,6 +354,7 @@ function fixProblems(section: Json, problems: BriefProblem[], edit: boolean, rep
   for (const found of problems) {
     const path = found.path.split(".");
     const key = path[0] === "body" && path[1] === "elements" ? path[2] : undefined;
+    if (key !== undefined && held(elements[key])) continue;
     switch (found.code) {
       case "root": {
         const roots = Object.keys(elements).filter((name) => object(elements[name]) && (elements[name] as Json).type === "BriefBody");
@@ -377,7 +383,7 @@ function fixProblems(section: Json, problems: BriefProblem[], edit: boolean, rep
         if (key) {
           let removed = false;
           for (const node of Object.values(elements))
-            if (object(node) && Array.isArray(node.children) && node.children.includes(key)) {
+            if (object(node) && !held(node) && Array.isArray(node.children) && node.children.includes(key)) {
               node.children = node.children.filter((child) => child !== key);
               removed = true;
             }
@@ -387,7 +393,7 @@ function fixProblems(section: Json, problems: BriefProblem[], edit: boolean, rep
         break;
       case "unused_component": {
         const orphans = unreachable(body);
-        if (!orphans.length || !rootNode) break;
+        if (!orphans.length || !rootNode || orphans.some((name) => held(elements[name]))) break;
         if (edit) {
           for (const name of orphans) delete elements[name];
           repairs.add("fixed_tree", "body.elements", "The body", `removed ${orphans.map((name) => `"${name}"`).join(", ")}, which the edit no longer shows`);
@@ -482,7 +488,7 @@ function fixProblems(section: Json, problems: BriefProblem[], edit: boolean, rep
         if (typeof name !== "string") break;
         // Shown in an Attachments block directly under the root, or a new one at its end.
         const kids = Array.isArray(rootNode.children) ? (rootNode.children as unknown[]) : [];
-        let filesKey = kids.find((child): child is string => typeof child === "string" && object(elements[child]) && (elements[child] as Json).type === "Attachments"
+        let filesKey = kids.find((child): child is string => typeof child === "string" && object(elements[child]) && !held(elements[child]) && (elements[child] as Json).type === "Attachments"
           && object((elements[child] as Json).props) && Array.isArray(((elements[child] as Json).props as Json).items));
         if (filesKey === undefined) {
           if (kids.length >= BRIEF_LIMITS.bodyChildren) break;
@@ -544,4 +550,12 @@ export function acceptBriefSection(envelope: unknown, previousBody?: unknown): {
     if (!fixProblems(section, problems, edit, repairs)) break;
   }
   throw original;
+}
+
+/** The second pass alone, for its tests (brief-repair.test.mjs): the fixes `problems` lead to, on a copy. */
+export function fixReported(section: unknown, problems: BriefProblem[], previousBody?: unknown): { section: unknown; repairs: BriefRepair[]; fixed: boolean } {
+  const copy = structuredClone(section) as Json;
+  const repairs = new Repairs();
+  const fixed = fixProblems(copy, problems, previousBody !== undefined, repairs);
+  return { section: copy, repairs: repairs.list(), fixed };
 }

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import {
   BRIEF_EXAMPLES, BRIEF_LIMITS, BRIEF_REPAIR_CODES, BriefError, briefGuide, checkBriefSection,
 } from "../src/intelligent-ui/brief-contract.ts";
-import { acceptBriefSection, MAX_REPAIRS } from "../src/intelligent-ui/brief-repair.ts";
+import { acceptBriefSection, fixReported, MAX_REPAIRS } from "../src/intelligent-ui/brief-repair.ts";
 
 const md = (text) => ({ type: "Markdown", props: { text } });
 /** A report whose root has `elements` as children, or `children` when given. */
@@ -188,4 +188,21 @@ test("brief_guide errors lists every repair code and what is never repaired", ()
   assert.match(attachments, /An edit is never repaired that way/);
   assert.doesNotMatch(attachments, /must be used by a reachable/);
   assert.match(errors, new RegExp(`more than ${BRIEF_LIMITS.repairsPerSection} is refused as sent`));
+});
+
+test("no fix touches an element that carries visible, on, watch, state or repeat, nor its container (YN-14 S2)", () => {
+  const reported = (code, path) => [{ code, path, reason: "", guide: "" }];
+  const table = { type: "Table", props: { id: "t", title: "T", columns: [{ key: "a", label: "A" }, { key: "b", label: "B" }], rows: [{ id: "r1", cells: { a: "1" } }] } };
+  for (const field of ["visible", "on", "watch", "state", "repeat"]) {
+    const sent = report({ t: { ...table, [field]: { $state: "/open" } } });
+    const { section, fixed } = fixReported(sent, reported("row_mismatch", "body.elements.t.props.rows.0.cells"));
+    assert.equal(fixed, false, field);
+    assert.deepEqual(section, sent, `${field}: nothing changed`);
+  }
+  const group = report({ g: { type: "Group", props: {}, children: ["ghost"], visible: { $state: "/open" } } }, {}, ["g"]);
+  assert.equal(fixReported(group, reported("missing_component", "body.elements.ghost")).fixed, false, "a container that holds a condition keeps its children");
+  const unlinked = report({ a: md("A."), b: { ...md("B."), visible: { $state: "/open" } } }, {}, ["a"]);
+  assert.equal(fixReported(unlinked, reported("unused_component", "body.elements"), report({ a: md("A.") }).body).fixed, false, "an edit never removes one");
+  // The same fix applies without the field.
+  assert.equal(fixReported(report({ t: table }), reported("row_mismatch", "body.elements.t.props.rows.0.cells")).fixed, true);
 });

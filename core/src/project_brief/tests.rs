@@ -1803,6 +1803,8 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
 mod editors_tests;
 #[path = "release_handover_tests.rs"]
 mod release_handover_tests;
+#[path = "patch_tests.rs"]
+mod patch_tests;
 #[path = "executor_needs_tests.rs"]
 mod executor_needs_tests;
 #[path = "recently_left_tests.rs"]
