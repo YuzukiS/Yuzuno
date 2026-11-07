@@ -72,7 +72,11 @@ export function useSaveBarPart(id: string, part: SaveBarPart | null): boolean {
  * on its own, one after another, each against its own version; a block Core
  * refuses keeps its change and says why, and the others are saved. Explicit
  * commands (Archive, Link, Check) don't wait for it. */
-export function SaveBarScope({ children }: { children: ReactNode }) {
+export function SaveBarScope({ children, hidden = false }: {
+  children: ReactNode;
+  /** While its page isn't shown (Settings keeps visited pages mounted). */
+  hidden?: boolean;
+}) {
   const t = useStrings(text);
   const [parts, setParts] = useState<ReadonlyMap<string, SaveBarPart>>(() => new Map());
   const [busy, setBusy] = useState(false);
@@ -129,7 +133,7 @@ export function SaveBarScope({ children }: { children: ReactNode }) {
   return (
     <SaveBarContext.Provider value={registry}>
       {children}
-      <div className="settings-savebar" role="region" aria-label={t.label} hidden={!shown}>
+      <div className="settings-savebar" role="region" aria-label={t.label} hidden={hidden || !shown}>
         <span ref={line} tabIndex={-1} role="status">
           {count > 0 ? t.changes(count) : outcome?.failed === 0 ? t.saved : ""}
           {count > 0 && !ready && <small> · {t.notReady}</small>}

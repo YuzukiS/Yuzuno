@@ -85,7 +85,8 @@ export function SettingsSlider({
           aria-label={label}
           aria-valuetext={shown}
           disabled={disabled}
-          onChange={(event) => onChange(Number(event.target.value))}
+          // A drag stops at the limit too, where the track runs past it (#730 R1 P3).
+          onChange={(event) => onChange(Math.min(limit ?? Infinity, Number(event.target.value)))}
         />
       </span>
       <label className="settings-slider-value">

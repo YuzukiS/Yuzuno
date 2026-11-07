@@ -1150,6 +1150,23 @@ input[type="checkbox"].settings-toggle:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+/* Forced colors (Windows high contrast) drop backgrounds: the switch keeps a
+   border, a knob in the system's colors, and its on side filled (#731 R1 P3). */
+@media (forced-colors: active) {
+  input[type="checkbox"].settings-toggle {
+    forced-color-adjust: none;
+    border: 1px solid ButtonText;
+    background: radial-gradient(circle at 10.5px 50%, ButtonText 0 6px, transparent 6.5px), Canvas;
+  }
+  input[type="checkbox"].settings-toggle:checked {
+    border-color: Highlight;
+    background: radial-gradient(circle at 25.5px 50%, HighlightText 0 6px, transparent 6.5px), Highlight;
+  }
+  input[type="checkbox"].settings-toggle:disabled {
+    border-color: GrayText;
+    opacity: 1;
+  }
+}
 /* One save for a Workspace page, once something on it differs from Core's. */
 .settings-savebar {
   position: sticky;

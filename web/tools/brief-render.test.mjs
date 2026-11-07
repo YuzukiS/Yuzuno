@@ -2004,3 +2004,29 @@ test("YN-16 S2 R1 P3: Copy report leaves out a Calc that shows nothing at the st
   assert.match(copied, /#+ Shares\n+_Worked out from the starting values_\n+- Total: ¥660\.00\n- Each: ¥165\.00/);
   assert.deepEqual(page.errors, []);
 });
+
+test("YN-16 S4 R1 P3: walking Steps stays within a list a later version shortens: the counter, the dots and Next agree", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const put = bikeShot();
+  window.renderSection(readSection(page, put, { attachments: [keptPng()] }), PROJECT);
+  const steps = () => document.querySelector('.brief-steps[data-mode="walk"]');
+  const next = () => steps().querySelectorAll(".brief-step-move")[1];
+  // One press at a time, as a reader's taps arrive: each is drawn before the next.
+  next().click();
+  await until(() => /Step 2 of 3/.test(steps().textContent), "on the second of three");
+  next().click();
+  await until(() => /Step 3 of 3/.test(steps().textContent), "on the last of three");
+  // A later version has two steps: the reader is on the last there is.
+  const shorter = bikeShot();
+  shorter.body.elements.how.props.steps = shorter.body.elements.how.props.steps.slice(0, 2);
+  window.renderSection({ ...readSection(page, shorter, { attachments: [keptPng()] }), version: 4 }, PROJECT);
+  await until(() => /Step 2 of 2/.test(steps().textContent), "the counter within the list");
+  assert.match(steps().querySelector(".brief-step-card").textContent, /Oil each link/);
+  assert.ok(next().disabled, "Next stops at the end");
+  assert.deepEqual([...steps().querySelectorAll(".brief-step-dot")].map((d) => d.getAttribute("aria-current")), [null, "step"]);
+  steps().querySelectorAll(".brief-step-move")[0].click();
+  await until(() => /Step 1 of 2/.test(steps().textContent), "Back from the clamped step");
+  assert.deepEqual(page.errors, []);
+});

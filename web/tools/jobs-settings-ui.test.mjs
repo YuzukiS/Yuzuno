@@ -66,7 +66,7 @@ const GIB = 1073741824;
  * budget POST answers the budget only, and the view names maxActive. `old`
  * is a Core before T-55, which says nothing of maxActive. Each POST takes
  * the next refusal queued, if any. */
-function fixtureCore({ old = false, activeCount = 1 } = {}) {
+function fixtureCore({ old = false, activeCount = 1, cpuMaxMillis = 4096000 } = {}) {
   const state = {
     budget: { cpuMillis: 2000, memoryMiB: 2048, swapMiB: 0 },
     maxActive: null,
@@ -92,7 +92,7 @@ function fixtureCore({ old = false, activeCount = 1 } = {}) {
       hostHeadroomMiB: 2048, suggestedBudget: { cpuMillis: 4000, memoryMiB: 8192, swapMiB: 0 } },
     collectorOverhead: { cpuMillis: 100, memoryMiB: 64, swapMiB: 0 },
     budget: state.budget,
-    budgetBounds: { minimum: { cpuMillis: 200, memoryMiB: 128, swapMiB: 0 }, maximum: { cpuMillis: 4096000, memoryMiB: 67108864, swapMiB: 67108864 } },
+    budgetBounds: { minimum: { cpuMillis: 200, memoryMiB: 128, swapMiB: 0 }, maximum: { cpuMillis: cpuMaxMillis, memoryMiB: 67108864, swapMiB: 67108864 } },
     reserved: { cpuMillis: 600, memoryMiB: 192, swapMiB: 0 },
     activeCount,
     queuedCount: 1,
@@ -492,6 +492,25 @@ test("Settings opens the Core host's page of Machines at its budget, and an unsa
     await until(() => shown().includes("settings-editor-machines"), "back at the Machines page");
     assert.equal(field().value, "7", "an unsaved Jobs at once survives switching pages");
     assert.equal(p.posts().length, 0, "browsing writes nothing");
+    assert.deepEqual(p.errors, [], "no page errors");
+  } finally { p.close(); }
+});
+
+// #730 R1 P3: the track is the whole host, but Core's bound can be lower: the
+// track then ends at the bound, and a drag past it stops there, as a typed value does.
+test("a budget slider ends at Core's bound where that is below the host, and a drag stops there", async () => {
+  const p = mount(fixtureCore({ cpuMaxMillis: 16000 }));
+  try {
+    p.window.renderHost();
+    await until(() => p.doc.querySelector('input[type="range"][name="cpu"]'), "the budget is read");
+    const form = p.group("This host's Job budget");
+    const cpu = form.querySelector('input[type="range"][name="cpu"]');
+    assert.equal(cpu.max, "16", "the track ends at Core's 16, not the host's 32");
+    await type(p, cpu, "24");
+    assert.equal(cpu.value, "16", "a drag to 24 CPUs stops at Core's 16");
+    button(form, "Save budget").click();
+    await until(() => p.posts("/api/jobs/budget").length === 1, "the save");
+    assert.equal(p.posts("/api/jobs/budget")[0].body.cpuMillis, 16000, "what is sent is within Core's bound");
     assert.deepEqual(p.errors, [], "no page errors");
   } finally { p.close(); }
 });
