@@ -838,7 +838,8 @@ test("a Project's settings have no Home editors setting: its leads edit Home, wh
   try {
     await fromScopeMenu(page, "Manage projects");
     await waitFor(() => page.document.querySelector(".project-leads-members"), "leads load");
-    assert.equal(page.document.querySelector(".home-editor-settings"), null, "the Project's settings have no Home editors setting");
+    // A boolean, never the element: a failing assert would inspect a whole jsdom node.
+    assert.equal(Boolean(page.document.querySelector(".home-editor-settings")), false, "the Project's settings have no Home editors setting");
     assert.deepEqual(page.calls.filter((call) => call.url.endsWith("/home-editors")), [], "nothing reads or writes the old setting");
     const leads = () => page.document.querySelector(".project-leads").textContent;
     assert.match(leads(), /Leads answer for this Project's tasks: they dispatch executors, edit Home and write the handover\. Other Agents can only ask\./);
