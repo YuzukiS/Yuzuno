@@ -152,7 +152,9 @@ class Lab:
         section = next(s for s in self.mcp("tools/call", {"name": "brief_get", "arguments": {}})["sections"] if s["key"] == "designs")
         kept = section["attachments"][0]
         page = self.report["facts"]["page"]
-        self.check("Core kept it as a snapshot, byte for byte", kept.get("snapshot") is True and kept.get("sha256") == page["sha256"], kept)
+        # brief_get shows a kept file's size, not its SHA-256: the preview's reply
+        # (browser.mjs) is checked against the page's SHA-256 instead.
+        self.check("Core kept it as a snapshot, all of it", kept.get("snapshot") is True and kept.get("size") == page["bytes"], kept)
 
     def browser(self):
         page = self.report["facts"]["page"]
