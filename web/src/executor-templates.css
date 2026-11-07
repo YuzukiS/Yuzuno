@@ -1,25 +1,39 @@
 /* Executor templates (T-34), in Settings; a project's page has only its
-   Executors at once (YN-2 S2). One group per template, its fields as
-   settings rows, with classes of its own. */
+   Executors at once (YN-2 S2). */
+/* YN-8 S5b: the templates are a list, and each has a page of cards: its
+   name and purpose and how it runs, its delivery and steps, where it runs
+   and its instructions, then removing it. A block of settings rows keeps the
+   rows' own padding; its title lines up with them. */
 .executor-templates-settings .executor-template {
-  margin: 0 0 12px;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.executor-templates-settings .executor-template > fieldset {
+  min-width: 0;
+  margin: 0;
   padding: 0;
 }
-/* YN-23: a template is a settings card (YN-8): its name, then a block for
-   what it is, one for its delivery, one for its steps, then the rest folded. */
-.executor-templates-settings .executor-template > .executor-template-name {
-  padding: 12px 16px 0;
-  color: var(--ink);
-  font-weight: 600;
+.executor-templates-settings :is(.executor-template-basics, .executor-template-runs, .executor-template-where) {
+  padding: 14px 0 6px;
 }
-.executor-templates-settings .executor-template > .executor-template-name + * { border-top: 0; }
-.executor-templates-settings .executor-template-basics { padding: 4px 0 6px; }
-/* Who changed it last (YN-24), a quiet line under its name. */
-.executor-templates-settings .executor-template-changed { margin: 2px 16px 0; overflow-wrap: anywhere; }
-.executor-templates-settings .executor-template-changed + .executor-template-basics { border-top: 0; }
-.executor-templates-settings .executor-template-basics > .settings-row { padding-block: 8px; }
+.executor-templates-settings :is(.executor-template-basics, .executor-template-runs, .executor-template-where) > legend {
+  padding: 0 16px;
+}
+.executor-templates-settings :is(.executor-template-basics, .executor-template-runs, .executor-template-where) > .settings-row {
+  padding-block: 8px;
+}
+.executor-templates-settings .executor-template-note { margin: 0; padding: 4px 16px 8px; }
 .executor-templates-settings .executor-template-when { width: min(28rem, 100%); }
-.executor-templates-settings .executor-template-footer { padding: 4px 16px 12px; }
+.executor-templates-settings .executor-template-instructions .settings-textarea { width: 100%; box-sizing: border-box; }
+/* Who changed it last (YN-24), a quiet line under the page's title. */
+.executor-templates-settings > .executor-template-changed { margin: -6px 0 0; overflow-wrap: anywhere; }
+/* A list row's tag for a template that can't be saved as it stands. */
+.executor-template-row .settings-tag.is-error {
+  border-color: color-mix(in srgb, var(--danger, #b42318) 45%, transparent);
+  color: var(--danger, #b42318);
+}
+.executor-templates-actions:empty { display: none; }
 /* Steps: a numbered row each, its kind, label and per-kind setting, then
    its moves; wrapped under its number on a narrow page. */
 .executor-steps {
@@ -70,7 +84,6 @@
   font: inherit;
   font-size: calc(10.5px + var(--font-adjust, 3px));
 }
-.executor-templates-settings .executor-template-instructions { flex-wrap: wrap; }
 .executor-templates-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 /* Executors at once (T-35), above the templates and saved apart from them. */
 .executor-templates-settings .executor-slots { margin: 0 0 12px; }
@@ -78,11 +91,3 @@
 .executor-templates-settings .executor-slots-actions { padding: 0 16px 12px; }
 .executor-templates-settings .executor-slots > .inline-error,
 .executor-templates-settings .executor-slots > .quiet-button { margin: 0 16px 12px; }
-/* YN-2 S2: a template's label and harness up front, the rest folded. */
-.executor-templates-settings .executor-template-more { margin: 0 16px 8px; }
-.executor-templates-settings .executor-template-more > summary {
-  cursor: pointer;
-  padding: 6px 0;
-  color: var(--muted, var(--ink));
-}
-.executor-templates-settings .executor-template-more > .settings-row { margin-inline: -16px; }
