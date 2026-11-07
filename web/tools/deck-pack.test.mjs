@@ -97,3 +97,17 @@ test("YN-3 a deck's columns are read from its grid as laid out, and are not know
   assert.equal(deckColumns({ gridTemplateColumns: "" }), null);
   assert.equal(deckColumns(null), null);
 });
+
+test("YN-3 the cards of a row that ends short share what is left, from the last back; a row a large card reaches is filled as before", () => {
+  // Two answer cards, or two small cards, on four columns: two columns each.
+  assert.deepEqual(packDeck([kinds.small, kinds.small], 4), [{ cols: 2, rows: 1 }, { cols: 2, rows: 1 }]);
+  assert.deepEqual(packDeck([kinds.small, kinds.small, kinds.small], 4), [{ cols: 1, rows: 1 }, { cols: 1, rows: 1 }, { cols: 2, rows: 1 }]);
+  // A heading between two groups: each group's row is shared on its own.
+  assert.deepEqual(packDeck([kinds.wide, kinds.full, kinds.small, kinds.small], 4),
+    [{ cols: 4, rows: 1 }, { cols: 4, rows: 1 }, { cols: 2, rows: 1 }, { cols: 2, rows: 1 }]);
+  // A lone card still takes its row: no hole.
+  assert.deepEqual(packDeck([kinds.small], 4), [{ cols: 4, rows: 1 }]);
+  // Beside a large card that keeps two rows, the cells left are filled as before.
+  assert.deepEqual(packDeck([kinds.large, kinds.small, kinds.wide], 4),
+    [{ cols: 2, rows: 2 }, { cols: 2, rows: 1 }, { cols: 2, rows: 1 }]);
+});
