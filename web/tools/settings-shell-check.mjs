@@ -381,6 +381,46 @@ try {
     }
   }
 
+  // ---- This device's other pages (S4b): Shortcuts, Notifications and Move to
+  // another device in Appearance's cards; notification on/offs are switches.
+  for (const [width, height, phone] of [[1440, 900, false], [951, 669, false], [390, 844, true]]) {
+    for (const [language, theme] of [["en", "light"], ["zh-Hans", "dark"]]) {
+      const label = `device b ${width}x${height} ${language} ${theme}`;
+      const { page, context } = await open({ width, height, language, theme, phone });
+      await openSettings(page);
+      const dialog = settings(page);
+      for (const [tab, editor] of [["shortcuts", "shortcuts"], ["notifications", "notifications"], ["transfer", "transfer"]]) {
+        await dialog.locator(`#settings-tab-${tab}`).click();
+        const shown = dialog.locator(`#settings-editor-${editor}:not([hidden])`);
+        await shown.waitFor();
+        await page.waitForTimeout(150);
+        const cards = await shown.locator(".settings-group").evaluateAll((list) => list.map((el) => el.classList.contains("appearance-group")));
+        assert.ok(cards.length > 0 && cards.every(Boolean), `${label} ${tab}: every group is one of Appearance's cards (${cards})`);
+        if (tab === "shortcuts") {
+          assert.equal(await shown.locator("fieldset.shortcut-keys > legend").count(), 1, `${label}: the letters' block has its legend`);
+          assert.equal(await shown.locator(".shortcut-groups > .shortcut-group").count(), 5, `${label}: the five lists in one card`);
+        }
+        if (tab === "notifications")
+          assert.equal(await shown.locator('input[type="checkbox"]:not(.settings-toggle)').count(), 0, `${label}: every on/off is a switch`);
+        await noOverflow(page, `${label} ${tab}`);
+        const pane = dialog.locator("#settings-page");
+        const wide = await pane.evaluate((el) => {
+          const right = el.getBoundingClientRect().right + 1;
+          return [...el.querySelectorAll(".settings-editor:not([hidden]) :is(label, select, button, input, kbd)")]
+            .filter((c) => c.getBoundingClientRect().width && c.getBoundingClientRect().right > right).map((c) => c.textContent.trim().slice(0, 40) || c.tagName);
+        });
+        assert.deepEqual(wide, [], `${label} ${tab}: nothing wider than the page`);
+        await page.screenshot({ path: resolve(output, `device-${tab}-${width}x${height}-${language}-${theme}.png`) });
+        if (phone) {
+          await dialog.locator(".settings-back").click();
+          await dialog.locator(".settings-center.is-root").waitFor();
+        }
+      }
+      await context.close();
+      check(`${label}: Shortcuts, Notifications and Move to another device are Appearance's cards and fit; the on/offs are switches`);
+    }
+  }
+
   // ---- Deep links: the Workspace menu and the status bar open their pages.
   {
     const { page, context } = await open({ width: 1440, height: 900, scope: JSON.stringify("project:garden") });

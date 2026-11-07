@@ -1,9 +1,6 @@
 /* This device's preferences (T-189). Sending, opening, the clock and the
    language are Appearance's cards and blocks (YN-8: SettingsChoices.tsx,
    appearance.css); what follows is the keyboard shortcuts' group. */
-.settings-group.shortcut-group {
-  padding: 14px 16px;
-}
 .shortcut-group h4,
 .shortcut-keys h4 {
   color: var(--ink);
@@ -76,14 +73,13 @@
   }
 }
 
-/* The three this device may change (T-189 P2): settings rows, each a letter. */
-.shortcut-keys h4 {
-  margin: 0;
-  padding: 14px 16px 0;
-}
+/* The three this device may change (T-189 P2): rows in their block, each a
+   letter (YN-8: the block is Appearance's, so the rows lose their own inset). */
 .shortcut-keys > .shortcut-note {
-  margin: 6px 0 0;
-  padding: 0 16px 4px;
+  margin: 0 0 4px;
+}
+.shortcut-keys > .settings-row {
+  padding-inline: 0;
 }
 .shortcut-key-choice {
   display: inline-flex;
@@ -97,7 +93,7 @@
 }
 .shortcut-refused {
   margin: 0;
-  padding: 0 16px 14px;
+  padding: 0 0 10px;
   color: var(--danger, #b55d53);
 }
 
