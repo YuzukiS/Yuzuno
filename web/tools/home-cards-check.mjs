@@ -10,6 +10,10 @@
 //  - a card whose author named no summary shows its first paragraph;
 //  - a replied Ask is one line with its reply in short, never New; unfolded,
 //    its reply and Reply again;
+//  - the deck in its order (open Asks, current status, reports, Asks put off;
+//    the answered Asks under their heading; status out of date last, closed),
+//    and with no hole: every cell of its grid, and of Out of date's once
+//    opened, is a card's (PR B; 1920 px too, where the deck has four columns);
 //  - nothing is wider than the window, and nothing is sent but reads.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/home-cards-check.mjs
 import assert from "node:assert/strict";
@@ -93,6 +97,12 @@ const sections = [
     updatedAt: at(80),
     ask: { question: "Keep the old tokenizer until the rebuild?", state: "replied", repliedAt: at(60), replyText: "Keep it until the shard rebuild, then switch.", reply: { freeText: true } },
   }),
+  section("progress", "status", "Current progress", spec({}, ["a"], { a: md("Week 44: the old plan.") }), {
+    status: { asOf: at(3 * 24 * 60), validFor: 86400, stale: true },
+  }),
+  section("plan", "ask", "Which tokenizer plan?", spec({}, ["q"], { q: md("Plan A or B.") }), {
+    ask: { question: "Plan A or B?", state: "open", deferredUntil: new Date(Date.now() + 86_400_000).toISOString(), reply: { freeText: true } },
+  }),
   section("draft", "ask", "Publish the 0.4 draft?", spec({}, ["q"], { q: md("Draft notes are written; CI pending.") }), {
     updatedAt: at(5),
     ask: { question: "Publish the 0.4 draft once CI is green?", state: "replied", repliedAt: at(40), replyText: "Yes, once main CI is green.", reply: { freeText: true } },
@@ -114,14 +124,16 @@ const home = () => ({
 });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { viewImage: "View image", replied: "Replied · waiting for lead-1", updated: "Updated", replyAgain: "Reply again", openImage: "Open image loss.png" },
-  "zh-Hans": { viewImage: "查看图片", replied: "已回复 · 等 lead-1 处理", updated: "已更新", replyAgain: "再次回复", openImage: "打开图片 loss.png" },
+  en: { viewImage: "View image", replied: "Replied · waiting for lead-1", updated: "Updated", replyAgain: "Reply again", openImage: "Open image loss.png",
+    repliedGroup: "Replied, waiting · 2", outOfDate: /^Out of date · 1 status · newest data as of / },
+  "zh-Hans": { viewImage: "查看图片", replied: "已回复 · 等 lead-1 处理", updated: "已更新", replyAgain: "再次回复", openImage: "打开图片 loss.png",
+    repliedGroup: "已回复，等处理 · 2", outOfDate: /^已过期 · 1 个状态 · 最新数据 / },
 };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
 const runs = [];
 for (const language of ["en", "zh-Hans"])
-  for (const [name, viewport, phone] of [["1440", { width: 1440, height: 1000 }, false], ["820", { width: 820, height: 1100 }, false], ["phone-390", { width: 390, height: 844 }, true]])
+  for (const [name, viewport, phone] of [["1920", { width: 1920, height: 1100 }, false], ["1440", { width: 1440, height: 1000 }, false], ["820", { width: 820, height: 1100 }, false], ["phone-390", { width: 390, height: 844 }, true]])
     runs.push({ name: `${language}-${name}`, language, phone, viewport });
 try {
   for (const run of runs) await check(run);
@@ -278,6 +290,53 @@ async function check(run) {
       "The tokenizer drops one character in 0.02 % of lines; the fix lands with the next shard rebuild.");
     assert.doesNotMatch(await card("notes").innerText(), /No summary named|未指定摘要|Details follow|second paragraph/);
     pass("the card with no summary shows its first paragraph only");
+
+    // ---- The deck: its order, the heading, Out of date closed at the end, and no hole (PR B).
+    const deck = page.locator('[data-home-project="p-orch"] .home-brief').first();
+    assert.deepEqual(await deck.locator("[data-section-key]").evaluateAll((els) => els.map((el) => el.dataset.sectionKey)),
+      ["overnight", "release", "loss", "eval", "notes", "plan", "tokenizer", "draft", "progress"]);
+    assert.equal(await deck.locator(":scope > .home-deck-heading").innerText(), w.repliedGroup);
+    const closed = deck.locator(":scope > details.home-out-of-date");
+    assert.equal(await closed.evaluate((el) => el.open), false, "out of date, closed");
+    assert.match(await closed.locator("summary").innerText(), w.outOfDate);
+    // Every cell of the grid, as laid out, is a card's, a heading's or Out of date's.
+    const holes = (grid) => grid.evaluate((el) => {
+      const style = getComputedStyle(el);
+      const columns = style.gridTemplateColumns.split(" ").map(parseFloat), rows = style.gridTemplateRows.split(" ").map(parseFloat);
+      const gapX = parseFloat(style.columnGap) || 0, gapY = parseFloat(style.rowGap) || 0;
+      const box = el.getBoundingClientRect();
+      const items = [];
+      const walk = (parent) => {
+        for (const child of parent.children)
+          if (child.classList.contains("home-topic") || child.classList.contains("home-subs")) walk(child);
+          else items.push(child.getBoundingClientRect());
+      };
+      walk(el);
+      const missing = [];
+      let y = box.top + (parseFloat(style.paddingTop) || 0);
+      rows.forEach((height, row) => {
+        let x = box.left + (parseFloat(style.paddingLeft) || 0);
+        columns.forEach((width, column) => {
+          const cx = x + width / 2, cy = y + height / 2;
+          if (!items.some((r) => cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom)) missing.push([row + 1, column + 1]);
+          x += width + gapX;
+        });
+        y += height + gapY;
+      });
+      return { columns: columns.length, rows: rows.length, missing };
+    });
+    const main = await holes(deck);
+    assert.deepEqual(main.missing, [], `no hole in the deck: ${JSON.stringify(main)}`);
+    await closed.locator("summary").click();
+    await deck.locator(".home-brief-sub [data-section-key=\"progress\"]").waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(150);
+    const sub = await holes(deck.locator(".home-brief-sub"));
+    assert.deepEqual(sub.missing, [], `no hole in Out of date: ${JSON.stringify(sub)}`);
+    await deck.scrollIntoViewIfNeeded();
+    await deck.screenshot({ path: join(output, `${run.name}-deck.png`) });
+    result.shots.push(`${run.name}-deck.png`);
+    await closed.locator("summary").click();
+    pass("the deck in its order, the answered Asks under their heading, Out of date closed at the end; no hole in either", { columns: main.columns, rows: main.rows });
 
     // ---- Replied Asks in short: one line where the pane is wide, the reply in short, never New; unfolded, the reply and Reply again.
     const rows = {};

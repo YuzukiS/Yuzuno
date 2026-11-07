@@ -2921,3 +2921,128 @@ test("the tab title, the app badge and Home's count are Needs you's rows, an exe
     p.close();
   }
 });
+
+// YN-3 PR B: a project's deck in its order, with no holes (deck-order.ts, deck-pack.ts).
+const deckBody = (text, size) => ({ root: "body", elements: {
+  body: { type: "BriefBody", props: { summary: { lead: "lead", size } }, children: ["lead"] },
+  lead: { type: "Markdown", props: { text } },
+} });
+const deckStatus = (stale) => ({ asOf: at(stale ? 3 * 24 * 60 : 30), validFor: 86400, stale });
+function deckFixture() {
+  const home = homeFixture();
+  const mori = owner("a", "Mori");
+  // In the order they were first written (Core's order), not the deck's.
+  home.projects.find((entry) => entry.project.id === "p-app").brief.sections = [
+    section("progress", "status", "Old progress", 2, mori, { id: 501, status: deckStatus(true) }),
+    section("notes", "report", "Notes", 2, mori, { id: 502, body: deckBody("Notes lead.", "small") }),
+    section("release", "ask", "Ship today?", 3, mori, {
+      id: 503, ask: { question: "Ship the release today?", state: "open", reply: { options: [{ id: "ship", label: "Ship today" }], freeText: true } },
+    }),
+    section("train", "status", "Release train", 2, mori, { id: 504, status: deckStatus(false), body: deckBody("Two changes wait.", "wide") }),
+    section("tokenizer", "ask", "Keep the old tokenizer?", 2, mori, {
+      id: 505, updatedAt: at(90), ask: { question: "Keep it?", state: "replied", repliedAt: at(60), replyText: "Keep it.", reply: { freeText: true } },
+    }),
+    section("later", "ask", "Which plan?", 1, owner("b", "Hana"), {
+      id: 506, ask: { question: "Plan A or B?", state: "open", deferredUntil: new Date(Date.now() + 86_400_000).toISOString(), reply: { freeText: true } },
+    }),
+    section("eval", "report", "Eval", 1, mori, { id: 507, body: deckBody("Eval lead.", "large") }),
+  ];
+  return home;
+}
+const deckKeys = (p) => [...p.panel("p-app").querySelectorAll(".home-brief [data-section-key]")].map((el) => el.dataset.sectionKey);
+
+test("YN-3 a project's deck stands in its order: open Asks, current status, reports, Asks put off; the Asks answered under their heading; status out of date last, closed", async () => {
+  for (const [language, heading, outOfDate] of [
+    ["en", "Replied, waiting · 1", /^Out of date · 1 status · newest data as of /],
+    ["zh-Hans", "已回复，等处理 · 1", /^已过期 · 1 个状态 · 最新数据 /],
+  ]) {
+    const p = await mount({ home: deckFixture(), storage: { "yuzuno.language": JSON.stringify({ language }) } });
+    try {
+      await waitFor(() => card(p, "p-app", "eval"), `the deck is drawn (${language})`);
+      assert.deepEqual(deckKeys(p), ["release", "train", "notes", "eval", "later", "tokenizer", "progress"], `the deck's order (${language})`);
+      const brief = p.panel("p-app").querySelector(".home-brief");
+      const head = brief.querySelector(":scope > .home-deck-heading");
+      assert.equal(head?.textContent ?? null, heading);
+      const after = (a, b) => (a.compareDocumentPosition(b) & p.w.Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+      assert.ok(after(card(p, "p-app", "later"), head) && after(head, card(p, "p-app", "tokenizer")), "the heading stands over the answered Ask");
+      const closed = brief.querySelector(":scope > details.home-out-of-date");
+      assert.ok(!!closed && !closed.open, "status out of date, at the end, closed");
+      assert.ok(closed.contains(card(p, "p-app", "progress")));
+      assert.match(closed.querySelector("summary").textContent, outOfDate);
+      assert.deepEqual(p.errors, []);
+    } finally {
+      p.close();
+    }
+  }
+});
+
+test("YN-3 a status that goes out of date while Home is read keeps its place until the next visit; a card new in the visit stands before the answered Asks, then takes its own place", async () => {
+  const p = await mount({ home: deckFixture() });
+  try {
+    await waitFor(() => card(p, "p-app", "eval"), "the deck is drawn");
+    const app = p.state.home.projects.find((entry) => entry.project.id === "p-app").brief;
+    // While Home is read, the release train goes out of date and a new Ask comes in.
+    app.sections.find((s) => s.key === "train").status = deckStatus(true);
+    app.sections.push(section("budget", "ask", "Raise the budget?", 1, owner("a", "Mori"), {
+      id: 508, ask: { question: "Raise it?", state: "open", reply: { freeText: true } },
+    }));
+    p.doc.querySelector('[aria-label="Refresh Home"]').click();
+    await waitFor(() => card(p, "p-app", "budget"), "the new Ask");
+    assert.deepEqual(deckKeys(p), ["release", "train", "notes", "eval", "later", "budget", "tokenizer", "progress"],
+      "nothing moves: the release train stays, the new Ask stands before the answered ones");
+    // The next visit to Home: each in its own place.
+    p.doc.querySelector('.agent-row[data-agent-id="b"] .agent-select').click();
+    await waitFor(() => p.doc.querySelector(".conversation-title h1")?.textContent === "Hana", "away from Home");
+    p.button("Home").click();
+    await waitFor(() => card(p, "p-app", "budget") && deckKeys(p)[1] === "budget", "the next visit");
+    assert.deepEqual(deckKeys(p), ["release", "budget", "notes", "eval", "later", "tokenizer", "progress", "train"]);
+    assert.ok(p.panel("p-app").querySelector("details.home-out-of-date").contains(card(p, "p-app", "train")), "out of date at the next visit");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("YN-3 the deck and My widgets are laid out with no holes, in order: each card spans its own size and the cells the grid's flow would leave empty", async () => {
+  const home = homeFixture();
+  const mori = owner("a", "Mori");
+  home.projects.find((entry) => entry.project.id === "p-app").brief.sections = [
+    section("release", "ask", "Ship today?", 3, mori, {
+      id: 511, ask: { question: "Ship the release today?", state: "open", reply: { options: [{ id: "ship", label: "Ship today" }], freeText: true } },
+    }),
+    section("train", "status", "Release train", 2, mori, { id: 512, status: deckStatus(false), body: deckBody("Two changes wait.", "wide") }),
+    section("gpu", "status", "GPU queue", 2, mori, { id: 513, status: deckStatus(false), body: deckBody("Three queued.", "small") }),
+    section("eval", "report", "Eval", 1, mori, { id: 514, body: deckBody("Eval lead.", "large") }),
+    section("notes", "report", "Notes", 1, mori, { id: 515, body: deckBody("Notes lead.", "small") }),
+  ];
+  const pins = [{ projectId: "p-app", key: "gpu", id: 513, title: "GPU queue", projectName: "App" }, { projectId: "p-app", key: "eval", id: 514, title: "Eval", projectName: "App" }];
+  const p = await mount({
+    home,
+    storage: { "yuzuno.homeWidgets.ws-home": JSON.stringify({ order: [], hidden: [], pins }) },
+    // Four columns as a browser lays the grids out; JSDOM lays out nothing.
+    before: (w) => {
+      const own = w.getComputedStyle.bind(w);
+      w.getComputedStyle = (element, pseudo) => {
+        const style = own(element, pseudo);
+        if (!element?.classList?.contains("home-brief") && !element?.classList?.contains("home-widget-grid")) return style;
+        return new Proxy(style, { get: (target, key) => (key === "gridTemplateColumns" ? "300px 300px 300px 300px" : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+      };
+    },
+  });
+  try {
+    await waitFor(() => card(p, "p-app", "notes")?.dataset.deckCols, "the deck is laid out");
+    const span = (el) => [el.dataset.deckCols ?? null, el.dataset.deckRows ?? null];
+    // The Ask takes its row. Wide, small; the large card cannot follow on the row, nothing reaches its second row:
+    // one row; each card that would leave the row's end empty grows to it.
+    assert.deepEqual(["train", "gpu", "eval", "notes"].map((key) => span(card(p, "p-app", key))), [["2", "1"], ["2", "1"], ["2", "1"], ["2", "1"]]);
+    assert.equal(card(p, "p-app", "release").dataset.deckCols, undefined, "the Ask is its CSS's full row");
+    assert.equal(card(p, "p-app", "eval").style.getPropertyValue("--deck-cols"), "2");
+    // My widgets: Machines takes its row; the small pin, then the large one, which takes the row's end.
+    const slot = (pin) => p.doc.querySelector(`.home-widget-grid > [data-widget="pin:p-app:${pin.id}:${pin.key}"]`);
+    await waitFor(() => slot(pins[1])?.dataset.deckCols, "the widgets are laid out");
+    assert.deepEqual(pins.map((pin) => span(slot(pin))), [["1", "1"], ["3", "1"]]);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
