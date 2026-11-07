@@ -294,8 +294,9 @@ const HISTORY_LIMIT: Duration = Duration::from_secs(60);
 const REPLAY_LIMIT: Duration = Duration::from_secs(120);
 
 /// An answer to a permission request. OpenCode's third answer, `always`,
-/// is not offered: it would allow later requests of this process by patterns
-/// the tool chooses.
+/// is not offered (T-61 D-12): 2.x would keep it as a saved rule of the
+/// Agent's database, allowing later requests of the project by patterns the
+/// tool chooses.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Reply {
     Once,
@@ -1158,20 +1159,6 @@ impl Server {
         })
     }
 
-    /// Answers a question pending in `session`: for each of its questions,
-    /// the labels chosen (or typed).
-    pub async fn reply_question(&self, session: &str, request: &str, answers: &[Vec<String>]) -> Result<()> {
-        self.ensure_pending("/question", session, request).await?;
-        self.json(Method::POST, &format!("/question/{}/reply", segment(request)?), Some(&json!({"answers": answers}))).await?;
-        Ok(())
-    }
-
-    pub async fn reject_question(&self, session: &str, request: &str) -> Result<()> {
-        self.ensure_pending("/question", session, request).await?;
-        self.json(Method::POST, &format!("/question/{}/reject", segment(request)?), None).await?;
-        Ok(())
-    }
-
     /// Asks OpenCode to interrupt the session's run (`POST
     /// /api/session/:id/interrupt`, T-32 slice 4a). Its answer is not the
     /// end of the run: that is its `execution.interrupted`, by event or
@@ -1325,10 +1312,6 @@ impl Server {
         bail!(McpRefused { code: code.as_u16(), kind: refusal_kind(response).await })
     }
 
-    async fn pending(&self, path: &str, session: &str) -> Result<Vec<Value>> {
-        self.pending_in(path, &[session]).await
-    }
-
     /// What waits in each of `sessions`: its permission requests
     /// (`permission`) or forms (`form`), from 2.x's own list of each session
     /// (`GET /api/session/:id/<kind>`).
@@ -1340,19 +1323,6 @@ impl Server {
             all.extend(listed.as_array().with_context(|| format!("OpenCode's {path} is not a list"))?.iter().cloned());
         }
         Ok(all)
-    }
-
-    async fn pending_in(&self, path: &str, sessions: &[&str]) -> Result<Vec<Value>> {
-        let all = self.json(Method::GET, path, None).await?;
-        let all = all.as_array().with_context(|| format!("OpenCode's {path} is not a list"))?;
-        Ok(all.iter().filter(|r| r["sessionID"].as_str().is_some_and(|s| sessions.contains(&s))).cloned().collect())
-    }
-
-    async fn ensure_pending(&self, path: &str, session: &str, request: &str) -> Result<()> {
-        let pending = self.pending(path, session).await?;
-        ensure!(pending.iter().any(|r| r["id"] == request),
-            "Request {request} is not pending in session {session}; it was not answered");
-        Ok(())
     }
 
     fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {

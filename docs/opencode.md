@@ -45,12 +45,7 @@ yet; 2.x keeps a note of each change in the session. The models come from
 2.x's list (`/api/model`), and interrupting is 2.x's interrupt. A session's
 status is read from the sessions 2.x lists as running (`/api/session/active`).
 
-Still to move: permission requests and questions, commands, compaction,
-rewind and fork.
-- **Permission requests and questions:** answered in 1.19.3's shape until
-  their part. One of 2.x's own is shown at once with "not yet on OpenCode
-  2.x", and can't be answered in Yuzuno: its run waits on it until you
-  interrupt the turn, which ends the request too.
+Still to move: commands, compaction, rewind and fork.
 - **Commands:** listed from 2.x's own list (names and descriptions), but
   running one is still 1.19.3's route, which 2.x doesn't have, so a command
   is refused with "not yet on OpenCode 2.x".
@@ -130,11 +125,23 @@ a new one.
   reconnecting the Agent has OpenCode try it again, on the same process.
   Nothing OpenCode answers about it is shown or kept with the credential in
   it.
-- **Requests:** a permission OpenCode asks for is answered **Allow once** or
-  **Reject**; nothing lasting is offered. OpenCode rejects the session's other
-  waiting requests along with a rejected one. Its questions are answered in
-  its own form. On OpenCode 2.x not yet: its own requests are shown with
-  "not yet on OpenCode 2.x" and no answer.
+- **Requests:** a permission OpenCode asks for (the tool and what it acts
+  on, as OpenCode names them) is answered **Allow once** or **Reject**;
+  nothing lasting is offered, and Yuzuno never saves a permission rule in
+  OpenCode. A reject ends the turn, which shows as declined, and OpenCode
+  rejects the session's other waiting requests with it. OpenCode's
+  questions are answered in their card, each with one of its choices or, where
+  it takes it, text of your own; declining one ends the turn the same way. A
+  form Yuzuno can't fill (one that isn't a question or a web search
+  provider's choice, or that asks for a secret, something done outside
+  OpenCode, or an answer the card doesn't take) says why and can only be
+  declined, or the turn interrupted. An answer OpenCode can't take is refused
+  with its reason and can be given again. Only a question's answer is kept in
+  Yuzuno's journal. A request asked by a sub-agent is answered in its own
+  session. OpenCode ends a declined turn as it ends one when it stops, with
+  no end of its own: Yuzuno tells it declined only as it sees that end
+  happen. Read afterwards (its event stream broke meanwhile, or Core
+  restarted), such a turn shows its outcome as unknown.
 - **Images:** a message can carry images, as for Codex and Claude, when the
   Agent has a model chosen in its settings that OpenCode lists as reading
   images. With OpenCode's own default, or a model that doesn't read images,

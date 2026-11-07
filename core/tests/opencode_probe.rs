@@ -16,7 +16,7 @@
 use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
 use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Reply, RequestRefused, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
-use yuzuno_workspace::opencode_v2::{admitted, is_v2, is_v2_request, read_messages, Cursor};
+use yuzuno_workspace::opencode_v2::{admitted, is_v2, read_messages, Cursor};
 use yuzuno_workspace::store::whole::WholeRecord;
 
 fn ended(pid: u64) -> bool {
@@ -457,8 +457,8 @@ async fn a_real_opencode_2x_runs_prompts_against_a_stub_provider_read_through_co
     assert!(pictured_turn.iter().any(|c| c.contains("image")), "the image reached the provider");
     second.iter().for_each(|e| { cursor.read(e); });
 
-    // 2.x's own permission request and form (until slice 5): told from 1.19.3's, as Core marks them not yet
-    // answerable, and read as Core's; each run waits on it until it is interrupted.
+    // 2.x's own permission request and form, read as Core's; each run waits on it until it is interrupted
+    // (answering them is T-61 slice 2's probe).
     for (prompt, kind, as_core) in [("probe-4a ask", "permission.asked", "permission.asked"), ("probe-4a form", "form.created", "question.asked")] {
         let asking = MessageId::new();
         assert_eq!(server.submit(&session, &asking, prompt).await.unwrap(), Submission::Accepted);
@@ -476,7 +476,7 @@ async fn a_real_opencode_2x_runs_prompts_against_a_stub_provider_read_through_co
         }).await.unwrap_or_else(|_| panic!("no {kind} within 30 s"));
         println!("probe: {kind} {}", asked["data"]);
         let request = if kind == "form.created" { &asked["data"]["form"] } else { &asked["data"] };
-        assert!(is_v2_request(request), "{kind}: told from 1.19.3's shape");
+        assert!(request["action"].is_string() || request["fields"].is_array(), "{kind}: 2.x's shape");
         assert_eq!(read.iter().map(|e| e["type"].clone()).collect::<Vec<_>>(), [json!(as_core)], "{kind}: read as Core's {as_core}");
         assert_eq!(server.session_status(&session).await.unwrap(), json!({"type": "busy"}), "{kind}: its run waits on it");
         server.abort(&session).await.unwrap();
@@ -916,9 +916,139 @@ async fn a_real_opencode_2x_takes_answers_to_its_requests_and_says_how_a_refused
     let last = read.messages.as_array().and_then(|m| m.last()).cloned().unwrap_or_default();
     println!("probe: F status {}; the whole read's last message: type {} {}", read.status, last["type"], last["error"]);
 
+    // H: OpenCode started again on the same database after a declined run: whether it takes that run up again (a fact).
+    let pid = u64::from(server.pid().unwrap());
+    server.shutdown().await.unwrap();
+    assert!(ended(pid), "OpenCode ended and was reaped");
+    let server = Server::start(&launch).await.unwrap();
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let (seen, resumed) = until_kind(&mut events, &session, &["session.execution.started"], 15).await;
+    println!("probe: H after a restart, the declined run {} ({:?})", if resumed { "was taken up again" } else { "was not taken up again within 15 s" }, types(&seen));
+    if resumed {
+        let (run, _) = until_kind(&mut events, &session, &["permission.asked", "form.created", ENDS[0], ENDS[1], ENDS[2]], 60).await;
+        println!("probe: H the run taken up again {:?}", types(&run));
+        server.abort(&session).await.ok();
+    }
     let pid = u64::from(server.pid().unwrap());
     server.shutdown().await.unwrap();
     assert!(ended(pid), "OpenCode ended and was reaped");
     stub.kill().ok();
     stub.wait().ok();
+}
+
+/// T-61 slice 2 through the Workspace (D-2 (a)): a real OpenCode 2.x Agent,
+/// connected and sent messages as the UI does, with the Workspace MCP on
+/// against Yuzuno's own endpoint, asks for a permission and a question
+/// (stub provider), and Yuzuno answers each by 2.x's routes: allowed once,
+/// the tool runs and the turn completes; rejected, the turn ends declined
+/// and the next message goes; a question answered, the model has the
+/// answer; declined, the turn ends declined.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_asks_and_yuzuno_answers_through_the_workspace() {
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61requests";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let work = work.canonicalize().unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    std::fs::write(work.join("opencode.json"), json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"},
+        "models": {"fake": {"name": "Fake", "capabilities": {"tools": true}}}}},
+        "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}).to_string()).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port);
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":work, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let tool_results = || -> Vec<String> { std::fs::read_to_string(&log).unwrap_or_default().lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|r| r["messages"].as_array().and_then(|m| m.last()).cloned())
+        .filter(|m| m["role"] == "tool").map(|m| m["content"].to_string()).collect() };
+    let send = |client: &str, text: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":text})).unwrap());
+        async move { ws.send_message(ID, input).await.unwrap_or_else(|refused| panic!("the message was refused: {refused}")).turn_id.unwrap() }
+    };
+    let asked = |method: &'static str| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..300 {
+                if let Some(p) = ws.store.detail(ID).unwrap().pending.into_iter().find(|p| p.method == method && !p.stale) {
+                    return p;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("no {method} within 30 s");
+        }
+    };
+    let ended = |turn: String| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..600 {
+                let d = ws.store.detail(ID).unwrap();
+                if let Some(t) = d.turns.iter().find(|t| t["id"] == turn.as_str()).filter(|t| t["status"] != "inProgress") {
+                    return t.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 60 s");
+        }
+    };
+    let d = ws.reconnect(ID).await.unwrap();
+    assert!(ws.collaboration_status(ID).await.unwrap().ready, "connected and ready: {}", d.agent.connection_state);
+
+    // A. A permission request allowed once: the tool runs, the turn completes.
+    let first = send("p1", "probe-4a ask").await;
+    let p = asked("opencode/permission").await;
+    println!("probe: A the request as Core keeps it {}", p.params);
+    assert_eq!((&p.params["action"], &p.params["resources"]), (&json!("shell"), &json!(["echo probe-4a"])), "2.x's request, as it sent it");
+    ws.respond(&p.id, json!({"decision":"once"})).await.expect("allowed once");
+    assert_eq!(ended(first).await["status"], "completed", "the tool ran and the turn completed");
+    assert!(tool_results().iter().any(|t| t.contains("probe-4a")), "the shell's output reached the model");
+
+    // B. Rejected: the turn ends declined, and the next message goes.
+    let second = send("p2", "probe-4a ask").await;
+    let p = asked("opencode/permission").await;
+    ws.respond(&p.id, json!({"decision":"reject"})).await.expect("rejected");
+    let t = ended(second).await;
+    println!("probe: B the turn after a reject: {} {}", t["status"], t["error"]);
+    assert!(t["status"] == "interrupted" && t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"), "ended declined");
+    let d = ws.store.detail(ID).unwrap();
+    assert!(d.pending.is_empty() && d.agent.status != "working", "nothing left waiting: {}", d.agent.status);
+    let third = send("p3", "hello").await;
+    assert_eq!(ended(third).await["status"], "completed", "the next message goes and completes");
+
+    // D. A question answered: the model has the answer.
+    let fourth = send("p4", "probe-4a form").await;
+    let q = asked("opencode/question").await;
+    println!("probe: D the question as Core keeps it {}", q.params["questions"]);
+    assert_eq!(q.params["questions"][0]["question"], "Which one?", "read as Core's question");
+    ws.respond(&q.id, json!({"answers":[["A"]]})).await.expect("answered");
+    assert_eq!(ended(fourth).await["status"], "completed");
+    let said = tool_results().last().cloned().unwrap_or_default();
+    println!("probe: D the question tool's result {said}");
+    assert!(said.contains("Which one?") && said.contains("A"), "the answer reached the model");
+
+    // F. A question declined: the turn ends declined.
+    let fifth = send("p5", "probe-4a form").await;
+    let q = asked("opencode/question").await;
+    ws.respond(&q.id, json!({"decision":"reject"})).await.expect("declined");
+    let t = ended(fifth).await;
+    println!("probe: F the turn after a decline: {} {}", t["status"], t["error"]);
+    assert!(t["status"] == "interrupted" && t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"), "ended declined");
+
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
 }

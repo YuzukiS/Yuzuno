@@ -25,6 +25,13 @@ with their status only (`GET /api/mcp`), connected again (`…/connect`), kept i
 after it is added, as 2.x may for a folder's first, before its status settles; `mcpRefuse` answers an add with 400
 quoting the request, as a schema rejection may; `mcpErrorEcho` puts the request's Authorization in a failed one's
 error. 1.19.3's `POST /mcp` and `GET /mcp` are answered only in the 1.19.3 mode (`v1Messages`).
+Permission requests and forms are 2.x's (T-61 slice 2), in every mode, the 1.19.3 mode too: made by controls `ask` and
+`question`, listed per session (`GET /api/session/:id/permission`, `…/form`) and answered by 2.x's routes (`POST
+…/permission/:id/reply`, `POST …/form/:id/reply`, `DELETE …/form/:id`): 204, 404 for one not pending in that session,
+400 for a form answer 2.x can't take (the form stays pending). A reject or a declined form ends the run as 2.2.5 ends
+one shutting down (`session.execution.interrupted`, reason `shutdown`, and no idle message); an interrupt drops the
+session's permission requests with nothing said and cancels its forms. Control `forget` drops one with nothing said, as
+if OpenCode no longer held it. 1.19.3's request routes (`/permission`, `/question`) are gone.
 Sessions and messages are kept in state.json there, as OpenCode keeps them
 in its database; pending requests, as in OpenCode, live only in the process. Routes under
 /__fixture/ are the test's own controls and need no password.
@@ -104,7 +111,8 @@ lock = threading.Lock()
 # The connections of the requests being served, for a teardown that cuts them (`closeStreamsFirst`).
 active = set()
 counter = [0]
-sessions, messages, statuses, permissions, questions, mcp = {}, {}, {}, [], [], {}
+# `permissions` and `forms`: 2.x's pending permission requests and forms (T-61 slice 2), in the order asked.
+sessions, messages, statuses, permissions, forms, mcp = {}, {}, {}, [], [], {}
 # 2.x's MCP servers added at runtime (T-61 slice 1), by name: their configuration, status and folder; and each
 # connection it made of one (a name and why), which the same configuration added again does not make.
 mcp_servers, mcp_connects = {}, []
@@ -190,8 +198,10 @@ v2_state = {}
 
 
 def v2_of(session):
+    # `shutdown`: the execution ending now ends as one shutting down (`shut_down`).
     return v2_state.setdefault(session, {'delivered': set(), 'started': set(), 'ended': set(), 'parts': set(),
-                                         'error': None, 'idles': [], 'pending': [], 'steer': set(), 'shells': []})
+                                         'error': None, 'idles': [], 'pending': [], 'steer': set(), 'shells': [],
+                                         'shutdown': False})
 
 
 def v2_models():
@@ -258,13 +268,45 @@ def v2_answer_refused(method, answer, kind):
         if key not in {field['key'] for field in form}:
             return f'Unknown form field: {key}'
     for field in form:
-        active = all(answer.get(w['key']) is not None and (answer.get(w['key']) == w['value']) == (w['op'] == 'eq')
-                     for w in field.get('when') or [])
+        active = field_active(field, answer)
         if field['key'] not in answer:
             if field.get('required') and active:
                 return f'Missing required form field: {field["key"]}'
         elif not active:
             return f'Form field is not active: {field["key"]}'
+    return None
+
+
+def field_active(field, answer):
+    # A form field's `when` conditions hold (2.2.5 core/src/form.ts): each names another field's value, equal or not.
+    return all(answer.get(w['key']) is not None and (answer.get(w['key']) == w['value']) == (w['op'] == 'eq')
+               for w in field.get('when') or [])
+
+
+def form_answer_refused(form, answer):
+    """Why 2.2.5 refuses an answer to a session's form (core/src/form.ts:235-255 validateAnswer), or None: a key the
+    form has no field for; then, field by field, a required one missing, one answered while its conditions don't hold,
+    or a value it can't take. A `string` field takes a string: one of its options' values, or any when `custom` is not
+    false; a `multiselect` a list of such strings. A field not required may go unanswered. The stand-in's forms have
+    only those two types; a value of any other is taken as it is."""
+    for key in answer:
+        if key not in {field['key'] for field in form['fields']}:
+            return f'Unknown form field: {key}'
+    for field in form['fields']:
+        key, active = field['key'], field_active(field, answer)
+        if key not in answer:
+            if field.get('required') and active:
+                return f'Missing required form field: {key}'
+            continue
+        if not active:
+            return f'Form field is not active: {key}'
+        values = {option.get('value') for option in field.get('options') or []}
+        one = lambda value: isinstance(value, str) and (field.get('custom') is not False or value in values)
+        value = answer[key]
+        if field.get('type') == 'string' and not one(value):
+            return f'Invalid value for form field: {key}'
+        if field.get('type') == 'multiselect' and not (isinstance(value, list) and all(one(v) for v in value)):
+            return f'Invalid value for form field: {key}'
     return None
 
 
@@ -449,6 +491,11 @@ def v2_events(kind, p):
             return [('session.retry.scheduled', {'sessionID': session, 'assistantMessageID': '', 'attempt': 1, 'at': 0,
                                                  'error': {'type': 'retry', 'message': (p.get('status') or {}).get('message', '')}})]
         if status == 'idle':
+            if state['shutdown']:
+                # An execution 2.x ended as one shutting down (`shut_down`): no idle message (probe p0), and what was
+                # steered in waits in the inbox for the next execution.
+                state['shutdown'], state['error'] = False, None
+                return [('session.execution.interrupted', {'sessionID': session, 'reason': 'shutdown'})]
             # An execution's end, and the idle message 2.x writes for it (core/src/session/projector.ts); what was
             # steered in and not yet taken up is delivered into this turn first.
             ahead = v2_deliver(session)
@@ -896,6 +943,41 @@ def without(pending, gone):
     pending[:] = [r for r in pending if all(r is not g for g in gone)]
 
 
+def pending_in(pending, session, request_id):
+    # 2.x answers a request only as one pending in the session the route names. Called with `lock` held.
+    return next((r for r in pending if r['id'] == request_id and r['sessionID'] == session), None)
+
+
+def end_requests(session):
+    """A run's requests ending with it, as 2.2.5's interrupt ends them: each permission request dropped with no event
+    (probe p3), each form cancelled with `form.cancelled`."""
+    with lock:
+        dropped = [r for r in permissions if r['sessionID'] == session]
+        ended = [f for f in forms if f['sessionID'] == session]
+        without(permissions, dropped)
+        without(forms, ended)
+    for form in ended:
+        send('form.cancelled', {'id': form['id'], 'sessionID': session})
+
+
+# The error 2.2.5 leaves on the answer of a run it ended as one shutting down (probe p0: `{type: aborted}`).
+STEP_INTERRUPTED = {'name': 'aborted', 'data': {'message': 'Step interrupted'}}
+
+
+def shut_down(session):
+    """As 2.2.5 ends a run once a permission request of it is rejected or its form declined (probe p0), as the
+    interrupt ends one (the abort below) but as a shutdown: the requests left go with it, its answer is marked aborted
+    ("Step interrupted"), and the execution ends with `session.execution.interrupted`, reason `shutdown`, the session
+    idle and no idle message written. In the 1.19.3 mode, as the interrupt there: the aborted answer, then idle."""
+    end_requests(session)
+    if session in statuses and modes['abortEvidence']:
+        answer_prompt(session, error=STEP_INTERRUPTED)
+    if not v1():
+        with lock:
+            v2_of(session)['shutdown'] = True
+    go_idle(session)
+
+
 def mcp_settled(config):
     # The status an MCP server ends in (switch or mode `mcp`), with 2.x's error for one not connected.
     status = modes['mcp']
@@ -944,20 +1026,35 @@ def control(name, body):
             return {'servers': {name: {'status': s['status'], 'location': s['location']} for name, s in mcp_servers.items()},
                     'connects': list(mcp_connects)}
     if name == 'ask':
-        request = {'id': new_id('per'), 'sessionID': body['sessionID'], 'permission': 'bash', 'patterns': ['ls'],
-                   'metadata': {}, 'always': ['ls *'], 'tool': {'messageID': 'msg_fixture', 'callID': 'call_1'}}
+        # A permission request as 2.2.5 makes one (core/src/permission.ts), sent as 2.x sends it in every mode, the
+        # 1.19.3 mode too: Core reads only 2.x's requests.
+        request = {'id': new_id('per'), 'sessionID': body['sessionID'], 'action': body.get('action', 'shell'),
+                   'resources': body.get('resources', ['ls']), 'save': body.get('save', ['ls *']),
+                   'source': {'type': 'tool', 'id': 'call_1', 'messageID': 'msg_fixture'}}
+        if body.get('message') is not None:
+            request['message'] = body['message']
         with lock:
             permissions.append(request)
-        publish('permission.asked', request)
+        send('permission.asked', request)
         return request
     if name == 'question':
-        request = {'id': new_id('que'), 'sessionID': body['sessionID'],
-                   'questions': [{'question': 'Which one?', 'header': 'Pick',
-                                  'options': [{'label': 'A', 'description': 'the first'}]}]}
+        # A form as 2.2.5's question tool makes one (core/src/form.ts), in every mode; `kind` another form's.
+        form = {'id': new_id('frm'), 'sessionID': body['sessionID'], 'title': body.get('title', 'Questions'),
+                'metadata': {'kind': body.get('kind', 'question'), 'tool': {'id': 'call_1', 'messageID': 'msg_fixture'}},
+                'fields': body.get('fields', [{'key': 'q0', 'type': 'string', 'custom': True, 'title': 'Pick',
+                                               'description': 'Which one?',
+                                               'options': [{'value': 'A', 'label': 'A', 'description': 'the first'}]}])}
         with lock:
-            questions.append(request)
-        publish('question.asked', request)
-        return request
+            forms.append(form)
+        send('form.created', {'form': form})
+        return form
+    if name == 'forget':
+        # A request OpenCode no longer holds, with nothing said: an answer to it then meets 2.x's 404.
+        with lock:
+            gone = [r for r in permissions + forms if r['id'] == body['id']]
+            without(permissions, gone)
+            without(forms, gone)
+        return {'forgotten': bool(gone)}
     if name == 'seed':
         # `count` stored messages and no event: a session long enough to page through, oldest first by creation.
         base, made = int(time.time() * 1000), []
@@ -1019,7 +1116,7 @@ def control(name, body):
         # A session's run ending: its pending requests go, and nothing says so.
         with lock:
             without(permissions, [r for r in permissions if r['sessionID'] == body['sessionID']])
-            without(questions, [r for r in questions if r['sessionID'] == body['sessionID']])
+            without(forms, [r for r in forms if r['sessionID'] == body['sessionID']])
         return True
     if name == 'busy':
         statuses[body['sessionID']] = {'type': 'busy'}
@@ -1302,10 +1399,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.login(method, parts[1], parts[2:], body or {})
         if len(parts) >= 3 and parts[:2] == ['api', 'session']:
             return self.api_session(method, parts[2], parts[3:], parse_qs(url.query), body)
-        if key == ('GET', 'permission'):
-            return self.reply(200, permissions)
-        if key == ('GET', 'question'):
-            return self.reply(200, questions)
         if key == ('GET', 'mcp') and v1():
             return self.reply(200, mcp)
         if key == ('GET', 'api', 'mcp'):
@@ -1342,10 +1435,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.replay(body)
         if len(parts) >= 2 and parts[0] == 'session':
             return self.session(method, parts[1], parts[2:], body)
-        if method == 'POST' and len(parts) == 3 and parts[0] == 'permission' and parts[2] == 'reply':
-            return self.answer(permissions, parts[1], body['reply'], body)
-        if method == 'POST' and len(parts) == 3 and parts[0] == 'question' and parts[2] in ('reply', 'reject'):
-            return self.answer(questions, parts[1], parts[2], body)
         if parts[:1] == ['api']:
             # An /api route 2.x does not have: an empty 404 (cli/src/services/web-ui.ts).
             return self.reply(404)
@@ -1414,7 +1503,13 @@ class Handler(BaseHTTPRequestHandler):
                 waiter.wait(30)
             return self.reply(200, {'data': [p for p in permissions if p['sessionID'] == session]})
         if (method, *rest) == ('GET', 'form'):
-            return self.reply(200, {'data': [q for q in questions if q['sessionID'] == session]})
+            return self.reply(200, {'data': [f for f in forms if f['sessionID'] == session]})
+        if method == 'POST' and len(rest) == 3 and rest[0] == 'permission' and rest[2] == 'reply':
+            return self.permission_reply(session, rest[1], body)
+        if method == 'POST' and len(rest) == 3 and rest[0] == 'form' and rest[2] == 'reply':
+            return self.form_reply(session, rest[1], body)
+        if method == 'DELETE' and len(rest) == 2 and rest[0] == 'form':
+            return self.form_cancel(session, rest[1], query)
         if (method, *rest) == ('GET', 'inbox'):
             listed = [] if v1() else v2_inbox(session)
             between_reads(session)
@@ -1444,12 +1539,10 @@ class Handler(BaseHTTPRequestHandler):
             found = messages.get(session, {}).get(rest[1])
             return self.reply(200, found) if found else self.missing(f'Message {rest[1]}')
         if (method, *rest) == ('POST', 'abort'):
-            # The run ends; its pending requests go with it, and (as OpenCode
-            # does) its answer is marked aborted.
+            # The run ends; its pending requests go with it (as 2.2.5's interrupt ends them: `end_requests`), and
+            # (as OpenCode does) its answer is marked aborted.
             running = session in statuses
-            with lock:
-                without(permissions, [p for p in permissions if p['sessionID'] == session])
-                without(questions, [q for q in questions if q['sessionID'] == session])
+            end_requests(session)
             self.reply(200, {'interrupted': running} if interrupt else True)
             aborted = {'name': 'MessageAbortedError', 'data': {'message': 'The operation was aborted.'}}
             if session in held:
@@ -2027,24 +2120,69 @@ class Handler(BaseHTTPRequestHandler):
             go_on.wait(60)
         return self.reply(200, info)
 
-    def answer(self, pending, request_id, reply, body):
+    def permission_reply(self, session, request_id, body):
+        """2.x's answer to a permission request (2.2.5 core/src/permission.ts): `decision` `once` or `reject`, 204. One
+        not pending in this session (unknown, answered, another session's) is a 404 that answers nothing. A reject
+        rejects every other request pending in the session too, then the run ends as one shutting down (`shut_down`).
+        Core never sends `always` or a `message`: each is refused (400) here, answering nothing."""
+        body = body if isinstance(body, dict) else {}
+        decision = body.get('decision')
+        if decision == 'always':
+            return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'fixture: always is not expected'})
+        if decision not in ('once', 'reject'):
+            return self.reply(400, {'_tag': 'InvalidRequestError', 'message': f'Invalid decision: {decision}'})
+        if 'message' in body:
+            return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'fixture: a message is not expected'})
         with lock:
-            found = next((r for r in pending if r['id'] == request_id), None)
-            # OpenCode: rejecting a permission rejects the rest pending in its session.
-            cascade = found is not None and pending is permissions and reply == 'reject'
-            gone = [r for r in pending if r is found or (cascade and r['sessionID'] == found['sessionID'])]
-            without(pending, gone)
+            found = pending_in(permissions, session, request_id)
+            gone = [found] if found else []
+            if found and decision == 'reject':
+                # 2.x rejects every other request pending in the session with it, each after it.
+                gone += [r for r in permissions if r is not found and r['sessionID'] == session]
+            without(permissions, gone)
         if found is None:
-            return self.missing(f'Request {request_id}')
+            return self.reply(404, {'_tag': 'PermissionNotFoundError', 'requestID': request_id, 'message': 'Permission request not found'})
         for request in gone:
-            properties = {'sessionID': request['sessionID'], 'requestID': request['id']}
-            if pending is permissions:
-                publish('permission.replied', {**properties, 'reply': reply if request is found else 'reject'})
-            elif reply == 'reply':
-                publish('question.replied', {**properties, 'answers': body['answers']})
-            else:
-                publish('question.rejected', properties)
-        return self.reply(200, True)
+            send('permission.replied', {'sessionID': session, 'requestID': request['id'], 'reply': decision})
+        self.reply(204)
+        if decision == 'reject':
+            shut_down(session)
+        return None
+
+    def form_reply(self, session, form_id, body):
+        """2.x's answer to a form (2.2.5 core/src/form.ts): `answer`, each field's value by its key, 204 and
+        `form.replied`. One not pending in this session is a 404; an answer it can't take (`form_answer_refused`) a 400,
+        the form still pending."""
+        answer = body.get('answer') if isinstance(body, dict) else None
+        if not isinstance(answer, dict):
+            return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'Invalid answer'})
+        with lock:
+            found = pending_in(forms, session, form_id)
+            why = form_answer_refused(found, answer) if found else None
+            if found and not why:
+                without(forms, [found])
+        if found is None:
+            return self.reply(404, {'_tag': 'FormNotFoundError', 'id': form_id, 'message': 'Form not found'})
+        if why:
+            return self.reply(400, {'_tag': 'FormInvalidAnswerError', 'id': form_id, 'message': why})
+        send('form.replied', {'id': form_id, 'sessionID': session, 'answer': answer})
+        return self.reply(204)
+
+    def form_cancel(self, session, form_id, query):
+        """2.x's decline of a form (2.2.5 core/src/form.ts): 204 and `form.cancelled`, then the run ends as after a
+        reject (`shut_down`). One not pending in this session is a 404. Core sends no `message`: one is refused (400)."""
+        if 'message' in query:
+            return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'fixture: a message is not expected'})
+        with lock:
+            found = pending_in(forms, session, form_id)
+            if found:
+                without(forms, [found])
+        if found is None:
+            return self.reply(404, {'_tag': 'FormNotFoundError', 'id': form_id, 'message': 'Form not found'})
+        send('form.cancelled', {'id': form_id, 'sessionID': session})
+        self.reply(204)
+        shut_down(session)
+        return None
 
     def stream(self):
         mine = queue.Queue()

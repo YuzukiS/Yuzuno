@@ -1070,10 +1070,16 @@ impl Workspace {
             return;
         }
         let journal = format!("opencode/{kind}");
-        let kept = match &read[..] {
+        let mut kept = match &read[..] {
             [gathered] if streamed => journaled(gathered),
             _ => journaled(event),
         };
+        // What a form other than a question was answered with is not kept (T-61 slice 2, D-11 (a)).
+        if kind == "form.replied" && !read.iter().any(|one| one["data"]["question"] == true) {
+            if let Some(data) = kept.to_mut()["data"].as_object_mut() {
+                data.remove("answer");
+            }
+        }
         if session != c.session {
             // A sub-agent's requests are the Agent's to answer; nothing else
             // of it changes the record. Any other session's is not the Agent's.
@@ -1862,9 +1868,6 @@ impl Workspace {
             let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
             ensure!(p.params["_runtimeGeneration"] == c.generation && c.owns(asked),
                 "这个请求属于已经结束的 OpenCode 连接；不会把回答发给新的进程");
-            if let Some(not_yet) = p.params["_opencodeNotYet"].as_str() {
-                bail!("{not_yet}");
-            }
             let answer = answer(&p, &reply)?;
             store.update_meta(&agent, "request/replied", &json!({"requestId":request}), |m| {
                 if let Some(p) = m.pending.iter_mut().find(|p| p.id == request) {
@@ -1875,13 +1878,44 @@ impl Workspace {
         }).await?;
         let Some((p, c, answer)) = checked else { return Ok(false) };
         let native = p.params["id"].as_str().unwrap_or_default();
-        // OpenCode checks it is pending in that same session before answering.
+        // 2.x answers only a request pending in the session named (404 otherwise, answering nothing).
         let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
+        // A refusal ends the run as a shutdown does (D-7): marked first, as the end can come before the answer to it.
+        if answer.declines() {
+            c.cursor.lock().unwrap().declining(asked, true);
+        }
         let sent = match &answer {
             Answer::Permission(reply) => c.server.reply_permission(asked, native, *reply).await,
-            Answer::Question(answers) => c.server.reply_question(asked, native, answers).await,
-            Answer::RejectQuestion => c.server.reject_question(asked, native).await,
+            Answer::Form(value) => c.server.reply_form(asked, native, value).await,
+            Answer::Decline => c.server.cancel_form(asked, native).await,
         };
+        if sent.is_err() && answer.declines() {
+            c.cursor.lock().unwrap().declining(asked, false);
+        }
+        let request = request_id.to_owned();
+        // What 2.x refused: an answer it can't take leaves the request
+        // pending and answerable (D-9 (a)); one it no longer holds is gone.
+        let refused = sent.as_ref().err().and_then(|e| e.downcast_ref::<opencode::RequestRefused>()).map(|r| match r {
+            opencode::RequestRefused::Invalid { .. } => "invalid",
+            opencode::RequestRefused::Gone { .. } => "gone",
+            opencode::RequestRefused::Other { .. } => "other",
+        });
+        if let (Err(error), Some(kind @ ("invalid" | "gone"))) = (&sent, refused) {
+            let message = error.to_string();
+            let journal = if kind == "invalid" { "opencode/requestAnswerRefused" } else { "opencode/requestGone" };
+            self.record_update(id, journal, json!({"requestId":request_id,"error":message}), Sel::Open, move |d| {
+                if kind == "invalid" {
+                    if let Some(p) = d.pending.iter_mut().find(|p| p.id == request) {
+                        p.params["_responseSent"] = false.into();
+                    }
+                } else {
+                    d.pending.retain(|p| p.id != request);
+                }
+                refresh_status(d);
+            }).await?;
+            self.changed(id);
+            return Err(sent.unwrap_err());
+        }
         let request = request_id.to_owned();
         match sent {
             Ok(()) => {
@@ -2767,7 +2801,13 @@ fn settle(turn: &mut Value) {
             return;
         }
     }
-    if let Some(error) = answers.iter().map(|a| &a["error"]).find(|e| e.is_object()) {
+    // A run 2.x stopped as Core refused one of its requests (T-61 slice 2,
+    // D-7 (a)): declined, whatever its answer's own error says ("Step interrupted").
+    let declined = turn["_opencodeSessionError"]["data"]["message"] == crate::opencode_v2::DECLINED;
+    if declined {
+        turn["status"] = "interrupted".into();
+        turn["error"] = json!({"message": crate::opencode_v2::DECLINED, "native": turn["_opencodeSessionError"].clone()});
+    } else if let Some(error) = answers.iter().map(|a| &a["error"]).find(|e| e.is_object()) {
         let interrupted = error["name"] == "MessageAbortedError";
         turn["status"] = if interrupted { "interrupted" } else { "failed" }.into();
         turn["error"] = json!({"message":error_text(error),"native":error});
@@ -2866,7 +2906,7 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
     if d.pending.iter().any(|p| !p.stale && p.params["id"] == native && p.params["_runtimeGeneration"] == generation) {
         return;
     }
-    let mut params = request.clone();
+    let mut params = crate::opencode_v2::request_of(request);
     params["_runtimeGeneration"] = generation.into();
     params["_opencodeSession"] = session.into();
     if let Some(child) = child {
@@ -2874,11 +2914,6 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
         params["_opencodeChild"] = child.clone();
     }
     params["_responseSent"] = false.into();
-    // 2.x's own request: shown with why it can't be answered here yet, so its
-    // run is seen to wait on it (T-32 slice 4a, until slice 5).
-    if crate::opencode_v2::is_v2_request(request) {
-        params["_opencodeNotYet"] = format!("{}；这个请求还不能在 Yuzuno 里回答，只能中断这一轮", crate::opencode_v2::NOT_YET).into();
-    }
     if let Some(turn) = d.turns.iter().rev().find(|t| t["status"] == "inProgress").and_then(|t| t["id"].as_str()) {
         params["turnId"] = turn.into();
     }
@@ -2894,24 +2929,38 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
 
 enum Answer {
     Permission(Reply),
-    Question(Vec<Vec<String>>),
-    RejectQuestion,
+    /// A form's answer as 2.x takes it, by field key (`form_answer`).
+    Form(Value),
+    /// The form declined: its tool fails, and its run ends (D-7).
+    Decline,
+}
+
+impl Answer {
+    /// Whether it ends the run that asked (D-7 (a)): a rejected permission
+    /// request (2.x rejects the session's others with it) or a declined form.
+    fn declines(&self) -> bool {
+        matches!(self, Answer::Permission(Reply::Reject) | Answer::Decline)
+    }
 }
 
 /// `{"decision":"once"|"reject"}` for a permission; `{"answers":[[label…]…]}`
-/// (one list per question) or `{"decision":"reject"}` for a question.
+/// (one list per question) or `{"decision":"reject"}` for a question (T-61
+/// slice 2: 2.x's form). A form Yuzuno can't fill takes only the decline.
 fn answer(p: &PendingRequest, response: &Value) -> Result<Answer> {
     match (p.method.as_str(), response["decision"].as_str()) {
         (PERMISSION, Some("once")) => Ok(Answer::Permission(Reply::Once)),
         (PERMISSION, Some("reject")) => Ok(Answer::Permission(Reply::Reject)),
         (PERMISSION, _) => bail!("OpenCode 权限请求只接受 once 或 reject"),
-        (QUESTION, Some("reject")) => Ok(Answer::RejectQuestion),
+        (QUESTION, Some("reject")) => Ok(Answer::Decline),
         (QUESTION, None) => {
+            if let Some(why) = p.params["_opencodeUnfillable"].as_str() {
+                bail!("Yuzuno 填不了这个 OpenCode 表单（{why}）；只能拒绝，或中断这一轮");
+            }
             let answers: Vec<Vec<String>> = serde_json::from_value(response["answers"].clone())
                 .map_err(|_| anyhow!("回答应为每个问题一组选项文字"))?;
             let asked = p.params["questions"].as_array().map_or(0, Vec::len);
             ensure!(answers.len() == asked, "这个请求有 {asked} 个问题，回答了 {} 个", answers.len());
-            Ok(Answer::Question(answers))
+            Ok(Answer::Form(crate::opencode_v2::form_answer(&p.params, &answers)?))
         }
         _ => bail!("不是可以回答的 OpenCode 请求"),
     }

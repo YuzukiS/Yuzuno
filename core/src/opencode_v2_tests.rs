@@ -358,28 +358,135 @@ fn a_shell_command_is_read_whole_and_live_as_the_same_command_item() {
     assert_eq!(ended[0]["data"]["part"], whole, "live as whole");
 }
 
-/// 2.x's own permission request and form are told apart from 1.19.3's,
-/// which Core answers until slice 5 (T-32 slice 4a), and a 2.x form is read
-/// as Core's question.
+/// The question tool's form, as 2.2.5 makes it (probe p4/p0).
+fn question_form(id: &str) -> Value {
+    json!({"id": id, "sessionID": "ses_1", "title": "Questions", "metadata": {"kind": "question", "tool": {"id": "call_1", "messageID": "msg_1"}},
+        "fields": [{"key": "q0", "type": "string", "custom": true, "title": "Pick", "description": "Which one?",
+            "options": [{"value": "A", "label": "A", "description": "the first"}]}]})
+}
+
+/// A 2.x question form is read as Core's question, keeping its fields, the
+/// same live and from a whole read (T-61 slice 2): one function reads both.
 #[test]
-fn a_2x_request_is_told_from_a_1_19_3_one_and_a_2x_form_is_read_as_a_question() {
-    assert!(is_v2_request(&json!({"id": "per_1", "sessionID": "s", "action": "bash", "resources": ["ls"]})));
-    assert!(is_v2_request(&json!({"id": "frm_1", "sessionID": "s", "title": "Pick", "fields": [{"key": "a", "type": "string"}]})));
-    assert!(!is_v2_request(&json!({"id": "per_1", "sessionID": "s", "permission": "bash", "patterns": ["ls"]})));
-    assert!(!is_v2_request(&json!({"id": "que_1", "sessionID": "s", "questions": [{"question": "?"}]})));
+fn a_2x_question_form_is_read_as_cores_question_keeping_its_fields() {
+    let form = question_form("frm_1");
+    let read = request_of(&form);
+    assert_eq!(read["questions"], json!([{"question": "Which one?", "header": "Pick", "multiple": false, "custom": true,
+        "options": [{"label": "A", "description": "the first"}]}]), "Core's question, read from its field");
+    assert_eq!(read["fields"], form["fields"], "its fields kept, to answer it by");
+    assert!(read.get("_opencodeUnfillable").is_none());
     let mut c = Cursor::default();
-    let form = json!({"id": "frm_1", "sessionID": "ses_1", "title": "Pick", "fields": [{"key": "a", "type": "string"}]});
     let asked = c.read(&ev("form.created", 1, json!({"form": form})));
-    assert_eq!((kinds(&asked), asked.first().map(|e| &e["data"])), (vec!["question.asked"], Some(&form)), "a 2.x form is read as Core's question");
-    let replied = c.read(&ev("form.cancelled", 2, json!({"id": "frm_1", "sessionID": "ses_1"})));
-    assert_eq!((kinds(&replied), &replied[0]["data"]), (vec!["question.replied"], &json!({"sessionID": "ses_1", "requestID": "frm_1"})));
+    assert_eq!((kinds(&asked), &asked[0]["data"]), (vec!["question.asked"], &read), "a form asked live reads as one a whole read lists");
+    let permission = json!({"id": "per_1", "sessionID": "ses_1", "action": "shell", "resources": ["ls"], "save": ["ls *"]});
+    assert_eq!(request_of(&permission), permission, "a permission request as 2.x sent it");
+}
+
+/// A form Yuzuno can't fill says why, by the rule 2.x's own ACP client
+/// keeps (D-8 (a)): not a question's or a web search provider's; a field
+/// external, conditional, hidden and required with no default, named as a
+/// secret, or of a kind Yuzuno's card doesn't take.
+#[test]
+fn a_form_yuzuno_cannot_fill_says_why() {
+    let with = |change: &dyn Fn(&mut Value)| { let mut form = question_form("frm_1"); change(&mut form); request_of(&form) };
+    for (why, change) in [
+        ("not a question", Box::new(|f: &mut Value| f["metadata"]["kind"] = "mcp".into()) as Box<dyn Fn(&mut Value)>),
+        ("a secret", Box::new(|f: &mut Value| f["fields"][0]["title"] = "Your API key".into())),
+        ("a secret", Box::new(|f: &mut Value| f["fields"][0]["key"] = "access_token".into())),
+        ("outside OpenCode", Box::new(|f: &mut Value| f["fields"][0]["type"] = "external".into())),
+        ("a kind of answer", Box::new(|f: &mut Value| f["fields"][0]["type"] = "boolean".into())),
+        ("depend on each other", Box::new(|f: &mut Value| f["fields"][0]["when"] = json!([{"key": "q1", "equals": "x"}]))),
+        ("doesn't show", Box::new(|f: &mut Value| { f["fields"][0]["hidden"] = true.into(); f["fields"][0]["required"] = true.into(); })),
+    ] {
+        let read = with(&*change);
+        let said = read["_opencodeUnfillable"].as_str().unwrap_or_default();
+        assert!(said.contains(why), "a form Yuzuno can't fill says why ({why}): {said:?}");
+        assert!(read.get("questions").is_none(), "and asks nothing: {why}");
+    }
+    let provider = with(&|f: &mut Value| { f["metadata"]["kind"] = "websearch.provider".into(); f["fields"][0]["custom"] = false.into(); });
+    assert!(provider.get("_opencodeUnfillable").is_none() && provider["questions"][0]["custom"] == false, "a web search provider's is filled");
+}
+
+/// Core's answers become 2.x's answer by field key and option value (T-61
+/// slice 2): a label is its option's value (a web search provider's differ),
+/// typed text only where the field takes it, one value for a text field, a
+/// list for a multiselect, an empty list unanswered, a hidden field its
+/// default; anything else is refused before it is sent.
+#[test]
+fn answers_become_2xs_answer_by_field_key_and_option_value() {
+    let form = request_of(&json!({"id": "frm_1", "sessionID": "s", "title": "Q", "metadata": {"kind": "websearch.provider"}, "fields": [
+        {"key": "provider", "type": "string", "custom": false, "title": "Provider", "options": [{"value": "allow", "label": "Allow searches"}]},
+        {"key": "tags", "type": "multiselect", "title": "Tags", "options": [{"value": "a", "label": "Alpha"}, {"value": "b", "label": "Beta"}]},
+        {"key": "note", "type": "string", "title": "Note"},
+        {"key": "region", "type": "string", "hidden": true, "default": "eu"}]}));
+    let answered = form_answer(&form, &[vec!["Allow searches".into()], vec!["Alpha".into(), "Beta".into()], vec!["my own".into()]]).unwrap();
+    assert_eq!(answered, json!({"provider": "allow", "tags": ["a", "b"], "note": "my own", "region": "eu"}), "by key and value");
+    let unanswered = form_answer(&form, &[vec!["Allow searches".into()], vec![], vec![]]).unwrap();
+    assert_eq!(unanswered, json!({"provider": "allow", "region": "eu"}), "an empty list leaves a field unanswered");
+    let typed = form_answer(&form, &[vec!["something else".into()], vec![], vec![]]).unwrap_err().to_string();
+    assert!(typed.contains("not one of the choices"), "typed text where the field takes none is refused: {typed}");
+    let two = form_answer(&form, &[vec!["Allow searches".into(), "Allow searches".into()], vec![], vec![]]).unwrap_err().to_string();
+    assert!(two.contains("takes one answer"), "two answers to a text field are refused: {two}");
+    let short = form_answer(&form, &[vec![]]).unwrap_err().to_string();
+    assert!(short.contains("3 questions, 1 answered"), "every shown question answered or left empty: {short}");
+    let unfillable = request_of(&json!({"id": "frm_2", "sessionID": "s", "metadata": {"kind": "mcp"}, "fields": []}));
+    assert!(form_answer(&unfillable, &[]).is_err(), "a form Yuzuno can't fill takes no answer");
+    assert_eq!(form_answer(&request_of(&question_form("frm_3")), &[vec!["A".into()]]).unwrap(), json!({"q0": "A"}));
+}
+
+/// A run Core declined a request of ends its turn as declined (D-7 (a)):
+/// 2.x ends it as a shutdown (`interrupted`, reason `shutdown`, probe p0),
+/// which for any other run leaves the turn open (it resumes). The mark
+/// lives for that run only, and an answer that failed takes it back.
+#[test]
+fn a_run_core_declined_a_request_of_ends_its_turn_as_declined_and_another_shutdown_leaves_it_open() {
+    let mut c = Cursor::default();
+    c.read(&ev("permission.asked", 1, json!({"id": "per_1", "sessionID": "ses_1", "action": "shell", "resources": ["ls"]})));
+    let shutdown = c.read(&ev("session.execution.interrupted", 2, json!({"sessionID": "ses_1", "reason": "shutdown"})));
+    assert!(shutdown.is_empty(), "a shutdown Core did not cause leaves the turn open: {shutdown:?}");
+
+    let mut c = Cursor::default();
+    c.read(&ev("permission.asked", 1, json!({"id": "per_1", "sessionID": "ses_1", "action": "shell", "resources": ["ls"]})));
+    c.declining("ses_1", true);
+    c.read(&ev("permission.replied", 2, json!({"sessionID": "ses_1", "requestID": "per_1", "reply": "reject"})));
+    let end = c.read(&ev("session.execution.interrupted", 3, json!({"sessionID": "ses_1", "reason": "shutdown"})));
+    assert_eq!(kinds(&end), ["session.error", "session.status"], "the run Core declined a request of ends its turn");
+    assert_eq!(end[0]["data"]["error"]["data"]["message"], DECLINED, "as declined");
+    assert_eq!(end[0]["data"]["error"]["name"], ABORTED);
+    assert!(c.sessions.is_empty(), "the mark lives for that run only");
+
+    let mut c = Cursor::default();
+    c.read(&ev("form.created", 1, json!({"form": question_form("frm_1")})));
+    c.declining("ses_1", true);
+    c.declining("ses_1", false);
+    assert!(c.read(&ev("session.execution.interrupted", 2, json!({"sessionID": "ses_1", "reason": "shutdown"}))).is_empty(),
+        "a decline that failed takes the mark back");
+}
+
+/// Only a question's answer is kept with its event (D-11 (a)): Core's
+/// `question.replied` says whether the form was a question, live or one a
+/// whole read listed.
+#[test]
+fn a_replied_form_says_whether_it_was_a_question() {
+    let mut c = Cursor::default();
+    c.read(&ev("form.created", 1, json!({"form": question_form("frm_1")})));
+    let provider = json!({"id": "frm_2", "sessionID": "ses_1", "title": "Q", "metadata": {"kind": "websearch.provider"}, "fields": []});
+    c.read(&ev("form.created", 2, json!({"form": provider})));
+    let first = c.read(&ev("form.replied", 3, json!({"id": "frm_1", "sessionID": "ses_1", "answer": {"q0": "A"}})));
+    let second = c.read(&ev("form.replied", 4, json!({"id": "frm_2", "sessionID": "ses_1", "answer": {"provider": "allow"}})));
+    assert_eq!((&first[0]["data"]["question"], &second[0]["data"]["question"]), (&json!(true), &json!(false)), "a question, and not");
+    let mut c = Cursor::default();
+    c.resumed("ses_1", &read_messages(&json!([])), &json!([]));
+    c.asked(&question_form("frm_3"));
+    let replied = c.read(&ev("form.replied", 5, json!({"id": "frm_3", "sessionID": "ses_1", "answer": {"q0": "A"}})));
+    assert_eq!(replied[0]["data"]["question"], true, "one a whole read listed too");
 }
 
 /// A 2.x request lives only while its run does: the run's end ends each of
 /// its own still open in Core too, as 2.2.5 sends no reply for a permission
 /// request its interrupt ended (T-32 slice 4a, probe p3). One answered or
-/// cancelled before is not ended again, nor one of 1.19.3's shape, and one a
-/// whole read found pending ends as one asked live.
+/// cancelled before is not ended again, and one a whole read found pending
+/// ends as one asked live.
 #[test]
 fn a_runs_end_ends_its_2x_requests_still_open() {
     let mut c = Cursor::default();
@@ -387,16 +494,14 @@ fn a_runs_end_ends_its_2x_requests_still_open() {
     assert_eq!(kinds(&asked), ["permission.asked"]);
     c.read(&ev("form.created", 2, json!({"form": {"id": "frm_1", "sessionID": "ses_1", "title": "Pick", "fields": []}})));
     c.read(&ev("form.cancelled", 3, json!({"id": "frm_1", "sessionID": "ses_1"})));
-    c.read(&ev("permission.asked", 4, json!({"id": "per_old", "sessionID": "ses_1", "permission": "bash", "patterns": ["ls"]})));
     let end = c.read(&ev("session.execution.interrupted", 5, json!({"sessionID": "ses_1", "reason": "user"})));
     assert_eq!((kinds(&end), &end[0]["data"]), (vec!["permission.replied", "session.error", "session.status"],
-        &json!({"sessionID": "ses_1", "requestID": "per_1"})), "a run's end ends its 2.x requests still open, and only those");
+        &json!({"sessionID": "ses_1", "requestID": "per_1"})), "a run's end ends its requests still open, and only those");
     assert!(c.sessions.is_empty());
 
     let mut c = Cursor::default();
     c.resumed("ses_1", &read_messages(&json!([])), &json!([]));
     c.asked(&json!({"id": "frm_2", "sessionID": "ses_1", "title": "Pick", "fields": []}));
-    c.asked(&json!({"id": "per_old", "sessionID": "ses_1", "permission": "bash", "patterns": ["ls"]}));
     let end = c.read(&ev("session.execution.succeeded", 6, json!({"sessionID": "ses_1"})));
     assert_eq!((kinds(&end), &end[0]["data"]["requestID"]), (vec!["question.replied", "session.status"], &json!("frm_2")),
         "one a whole read found pending ends with its run");
