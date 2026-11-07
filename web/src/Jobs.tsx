@@ -176,6 +176,10 @@ type Log = {
  * job's details and output no longer change (T-60). An unknown job is not
  * one: Core holds its reservation and checks the attempt again. */
 const FINISHED = new Set(["succeeded", "failed", "cancelled", "interrupted", "rejected"]);
+/** The Jobs that wait for an earlier stage of their run (T-69), in neither
+ * the running nor the queued count; undefined from a Core that does not
+ * count them. */
+const waitingOf = (budget: JobsBudgetView) => (Number.isFinite(budget.waitingCount) ? budget.waitingCount : undefined);
 /** Still to finish: holding capacity, queued, or a stage waiting for its upstream. */
 const active = (job: Job) =>
   job.reserved || job.status === "queued" || job.status === "waiting";
@@ -893,7 +897,8 @@ export function Jobs({
   }, [open]);
   const overlay = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
-  const waiting = budget ? budget.activeCount + budget.queuedCount : 0;
+  const upstream = budget ? waitingOf(budget) : undefined;
+  const waiting = budget ? budget.activeCount + budget.queuedCount + (upstream ?? 0) : 0;
   return (
     <Dialog.Root
       open={open}
@@ -922,10 +927,11 @@ export function Jobs({
           {budget && (
             <span
               className="nav-count"
-              aria-label={t.counts(budget.activeCount, budget.queuedCount)}
-              title={t.countsTitle(budget.activeCount, budget.queuedCount)}
+              aria-label={t.counts(budget.activeCount, budget.queuedCount, upstream)}
+              title={t.countsTitle(budget.activeCount, budget.queuedCount, upstream)}
             >
               {budget.activeCount} / {budget.queuedCount}
+              {upstream !== undefined && ` / ${upstream}`}
             </span>
           )}
         </button>
@@ -1019,7 +1025,7 @@ export function Jobs({
                   {id === "local" && waiting > 0 && (
                     <span
                       className="jobs-rail-count"
-                      title={t.onMachine(budget!.activeCount, budget!.queuedCount)}
+                      title={t.onMachine(budget!.activeCount, budget!.queuedCount, upstream)}
                     >
                       {waiting}
                     </span>
@@ -1295,10 +1301,10 @@ function JobsBudget({
           <strong>{budget.machine.name}</strong>
           {slots ? (
             <span className="jobs-budget-counts" title={t.slotsTitle(slots.value, slots.set)}>
-              {t.activeOf(budget.activeCount, slots.value, budget.queuedCount)}
+              {t.activeOf(budget.activeCount, slots.value, budget.queuedCount, waitingOf(budget))}
             </span>
           ) : (
-            <span className="jobs-budget-counts">{t.activeQueued(budget.activeCount, budget.queuedCount)}</span>
+            <span className="jobs-budget-counts">{t.activeQueued(budget.activeCount, budget.queuedCount, waitingOf(budget))}</span>
           )}
         </div>
         <div className="jobs-budget-side">
