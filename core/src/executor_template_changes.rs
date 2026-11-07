@@ -371,7 +371,7 @@ fn tell_leads(tx: &Connection, actor: &str, name: &str, project: &str, version: 
     let labels = quoted(changes.iter().map(|c| c["label"].as_str().unwrap_or_default().to_owned()));
     for lead in leads.iter().filter(|l| l.as_str() != actor) {
         let open: Option<String> = tx.query_row(
-            "SELECT json_extract(data,'$.name') FROM agents WHERE id=?1 AND json_extract(data,'$.agent.closedAt') IS NULL",
+            "SELECT json_extract(data,'$.agent.name') FROM agents WHERE id=?1 AND json_extract(data,'$.agent.closedAt') IS NULL",
             [lead], |r| r.get(0)).optional()?.flatten();
         let Some(recipient) = open else { continue };
         let id = uuid::Uuid::new_v4().to_string();
