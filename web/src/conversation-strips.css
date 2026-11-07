@@ -9,7 +9,7 @@
   left: 0;
   right: var(--conversation-scrollbar);
 }
-.conversation-body:has(> .work-dock:not(:empty)) > .conversation-strips {
+.conversation-body:has(> .work-dock > .work-dock-scroll:not(:empty)) > .conversation-strips {
   left: calc(var(--work-dock-width) + 2px);
 }
 .conversation-body:has(.turn-dock) > .conversation-strips {

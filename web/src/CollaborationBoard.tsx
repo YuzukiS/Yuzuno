@@ -44,6 +44,7 @@ import { settleWhenLanded } from "./settle";
 import { useLanguage, useStrings } from "./i18n";
 import { boardText } from "./collaboration-text";
 import { readExecutorTemplates, type ExecutorTemplatesView } from "./executor-templates";
+import { harnessNames } from "./storage-overview";
 import { executorChoiceText, type ExecutorChoice } from "./executor-choice";
 import { lifecycleText, stateDetail, stateLabel, type ExecutorLifecycle } from "./executor-lifecycle";
 
@@ -1414,10 +1415,11 @@ function TaskPane({
   const [dispatching, setDispatching] = useState(false);
   const [reporting, setReporting] = useState(false);
   const [toAgentId, setToAgentId] = useState("");
-  // Or a new executor Core creates from a template (T-34).
+  // Or a new executor Core creates (T-34): a general one ("", YN-2) or from a template.
   const [from, setFrom] = useState<"agent" | "template">("agent");
   const [templateId, setTemplateId] = useState("");
   const [templates, setTemplates] = useState<ExecutorTemplatesView["available"] | null>(null);
+  const [general, setGeneral] = useState<ExecutorTemplatesView["general"]>(undefined);
   const [templatesError, setTemplatesError] = useState("");
   const [instruction, setInstruction] = useState("");
   const [urgent, setUrgent] = useState(false);
@@ -1510,9 +1512,13 @@ function TaskPane({
     if (templatesFor === null) return;
     const read = new AbortController();
     setTemplates(null);
+    setGeneral(undefined);
     setTemplatesError("");
     readExecutorTemplates(read.signal, templatesFor || undefined)
-      .then((view) => setTemplates(view.available))
+      .then((view) => {
+        setTemplates(view.available);
+        setGeneral(view.general);
+      })
       .catch((error) => {
         if (read.signal.aborted) return;
         setTemplates([]);
@@ -1548,13 +1554,13 @@ function TaskPane({
   };
   const dispatch = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!task || (from === "agent" ? !toAgentId : !templateId)) return;
+    if (!task || (from === "agent" && !toAgentId)) return;
     const answer = await mutation.execute<{ task: SharedTask }>(
       "task_dispatch",
       {
         taskId: id,
         expectedVersion: task.version,
-        ...(from === "agent" ? { toAgentId } : { executor: { templateId } }),
+        ...(from === "agent" ? { toAgentId } : { executor: templateId ? { templateId } : {} }),
         priority: urgent ? "urgent" : "normal",
         ...(instruction.trim() ? { body: instruction.trim() } : {}),
       },
@@ -1880,7 +1886,7 @@ function TaskPane({
                 </label>
                 <label>
                   <input type="radio" name="dispatch-from" checked={from === "template"} onChange={() => setFrom("template")} />
-                  <span>{t.fromTemplate}</span>
+                  <span>{t.newExecutor}</span>
                 </label>
               </fieldset>
               {from === "agent" ? (
@@ -1895,8 +1901,8 @@ function TaskPane({
                 <>
                   <label className="collab-field">
                     <span>{t.template}</span>
-                    <select value={templateId} onChange={(event) => setTemplateId(event.target.value)} disabled={!templates?.length}>
-                      <option value="">{t.chooseTemplate}</option>
+                    <select value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
+                      <option value="">{general ? t.generalAs(harnessNames[general.harness] ?? general.harness, general.harnessSource) : t.general}</option>
                       {templates?.map(({ template, source }) => (
                         <option key={template.id} value={template.id}>
                           {source === "project" ? `${template.label} · ${t.projectTemplate}` : template.label}
@@ -1935,7 +1941,7 @@ function TaskPane({
                   mutation.pending ||
                   (from === "agent"
                     ? !toAgentId || !activeAgents(agents).some((agent) => agent.id === toAgentId)
-                    : !templates?.some(({ template }) => template.id === templateId))
+                    : templateId !== "" && !templates?.some(({ template }) => template.id === templateId))
                 }
               >
                 <Send size={14} />

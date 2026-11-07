@@ -40,6 +40,13 @@ const REFRESH_WATCHES: usize = 5;
 pub(crate) async fn shared_read(ws: &Arc<Workspace>, endpoint: String) -> Result<Value> {
     Ok(client::read(ws, endpoint, 0).await?["value"].clone())
 }
+/// Page `page` of a shared read, and the next page's endpoint when GitHub
+/// names one (same endpoint and filters only).
+pub(crate) async fn shared_page(ws: &Arc<Workspace>, endpoint: String, page: u64) -> Result<(Value, Option<String>)> {
+    let cached = client::read(ws, endpoint.clone(), 0).await?;
+    let next = client::next_page(cached["link"].as_str().unwrap_or(""), &endpoint, page)?;
+    Ok((cached["value"].clone(), next))
+}
 /// When shared GitHub reads may start again, in epoch seconds.
 pub(crate) fn read_cooldown(store: &crate::store::Store) -> Result<i64> {
     store.ci_cooldown_until()
