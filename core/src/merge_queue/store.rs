@@ -17,6 +17,10 @@ const WAIT_LIMIT: i64 = 6 * 3600;
 const READ_FAILURES: i64 = 8;
 /// Consecutive merge requests that could not be sent before an entry stops.
 const NOT_SENT_LIMIT: i64 = 5;
+/// The next check of an entry that waits for the user, not for a time: one
+/// that passed every check while the switch is off. Turning the switch on
+/// makes it due (`merge_set_enabled`).
+const UNTIL_SWITCHED_ON: i64 = i64::MAX;
 /// What a switch and a release mean: 2 since Core merges. The dry-run build
 /// (1, no `queueVersion`) wrote the same tables, but there a switch that was
 /// on only let Core check, and `ready` was final.
@@ -772,7 +776,7 @@ impl Store {
                             )
                             .optional()?;
                         let (state, detail, next) = if r["enabled"] != true {
-                            ("ready", format!("Every check held, but the merge queue is off for {}; Core writes nothing to GitHub until the user turns it on.", e["repository"].as_str().unwrap_or("?")), now_epoch + 300)
+                            ("ready", format!("Every check held, but the merge queue is off for {}; Core writes nothing to GitHub, and checks it again once the user turns it on.", e["repository"].as_str().unwrap_or("?")), UNTIL_SWITCHED_ON)
                         } else if !r["paused"].is_null() {
                             ("waiting", format!("Every check held, but the repository's queue is paused ({}).", r["paused"]["reason"].as_str().unwrap_or("?")), now_epoch + 60)
                         } else if super::landing::Landing::named(&r["landing"]).is_none() {

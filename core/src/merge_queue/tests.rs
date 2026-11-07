@@ -2061,3 +2061,25 @@ async fn turning_the_switch_on_makes_a_ready_entry_due_at_once() {
     let e = lab.entry().await;
     assert_eq!(e["state"], "merged", "turning the switch on makes a ready entry due at once: {e}");
 }
+
+/// An entry that passed every check while the switch is off waits for the
+/// switch: however long the switch stays off, it is not checked again, and
+/// Core reads nothing from GitHub for it (no job pages or logs every five
+/// minutes).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_ready_entry_is_not_checked_again_while_the_switch_stays_off() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    lab.ws.store.merge_set_enabled(7, false).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["checks"].clone()), (json!("ready"), json!(1)), "every check held, with the switch off: {e}");
+    let reads = calls(lab.dir.path()).len();
+    // A day goes by with the switch off.
+    lab.ws.store.db.write().unwrap().execute("UPDATE merge_entries SET next_check=next_check-86400", []).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["checks"].clone()), (json!("ready"), json!(1)), "while the switch stays off, a ready entry is not checked again: {e}");
+    assert_eq!(calls(lab.dir.path()).len(), reads, "nor read from GitHub");
+}

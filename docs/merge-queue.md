@@ -220,7 +220,7 @@ run.
 | --- | --- |
 | `queued` | Released, not yet checked. |
 | `waiting` | A check could not decide yet. `detail` says why. |
-| `ready` | Every check held, but the entry cannot merge yet: the switch is off, or another merge of the repository is in flight or has not had its post-check yet. It is checked again before it merges; turning the switch on makes it due at once. |
+| `ready` | Every check held, but the entry cannot merge yet: the switch is off, or another merge of the repository is in flight or has not had its post-check yet. It is checked again before it merges. While the switch is off it is not checked at all; turning the switch on makes it due at once. |
 | `merging` | The merge request is journaled or sent. |
 | `merged` | GitHub merged it; Core follows main's push CI. |
 | `done` | Main's push CI on the merge commit finished. |
