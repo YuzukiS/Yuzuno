@@ -179,6 +179,13 @@ test(`a section that needs more than ${MAX_REPAIRS} repairs is refused as sent`,
 test("brief_guide errors lists every repair code and what is never repaired", () => {
   const errors = briefGuide("errors");
   for (const code of Object.keys(BRIEF_REPAIR_CODES)) assert.ok(errors.includes(`- ${code}: `), code);
-  assert.match(errors, /Core never repairs the envelope/);
+  assert.match(errors, /Outside the body Core repairs only an ask's reply options \(reply_options\)/);
+  assert.match(errors, /it never repairs key, kind, title, the ask's question or its other replies, status, time or an attachment's registration/);
+  assert.match(errors, /an edit removes those of the blocks it replaces, and those of the section as a whole .* stay until a put/);
+  // What the attachments part says matches: a put's unused registration is shown, an edit's refused.
+  const attachments = briefGuide("attachments");
+  assert.match(attachments, /a put's registration nothing uses is added to an Attachments block at the end of the root and listed in repairs \(showed_attachment\), never refused/);
+  assert.match(attachments, /An edit is never repaired that way/);
+  assert.doesNotMatch(attachments, /must be used by a reachable/);
   assert.match(errors, new RegExp(`more than ${BRIEF_LIMITS.repairsPerSection} is refused as sent`));
 });
