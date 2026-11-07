@@ -468,8 +468,20 @@ async fn a_lead_lists_the_templates_to_choose_one() {
     assert_eq!(general["general"]["harnessSource"], "builtin", "the user's read: the Workspace's general executor");
     let extra = ws.collaboration_call(Some("lead"), LIST_TOOL, json!({"templates":[]})).await.unwrap_err().to_string();
     assert_eq!(extra, "invalid_input: unknown field templates", "it takes nothing to save");
+    // YN-24: with full, each template as saved, for a lead's change to send back whole.
+    let full = ws.collaboration_call(Some("lead"), LIST_TOOL, json!({"full":true})).await.unwrap();
+    assert_eq!(full["templates"][0]["template"], memo_saved(&ws.store), "{full}");
+    assert_eq!(full["templates"][0]["template"]["instructions"], "列出选项。");
+    assert_eq!(full["templates"][1]["instructionsBytes"], 0, "the listed fields stay");
+    let wrong = ws.collaboration_call(Some("lead"), LIST_TOOL, json!({"full":"yes"})).await.unwrap_err().to_string();
+    assert_eq!(wrong, "invalid_input: full is true or false");
 
     let tool = crate::collaboration_store::tool_definitions().into_iter().find(|t| t["name"] == LIST_TOOL).expect("offered to Agents");
     assert!(tool["description"].as_str().unwrap().encode_utf16().count() <= crate::results::max_description_length());
-    assert_eq!(tool["inputSchema"]["properties"], json!({}));
+    assert_eq!(tool["inputSchema"]["properties"].as_object().unwrap().keys().collect::<Vec<_>>(), ["full"]);
+}
+
+/// The Workspace's `memo` template as stored.
+fn memo_saved(store: &Store) -> Value {
+    raw_at(store, KEY)["templates"][0].clone()
 }
