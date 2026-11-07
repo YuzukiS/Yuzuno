@@ -2752,6 +2752,8 @@ export function App() {
     setSourceJump(false);
     setJumpToTurn(null);
     stickToBottom.current = true;
+    // The reader's place is the latest from the press on (T-166).
+    noteReading(true);
     pinLatest();
   }
   /** One press of Back to latest ends at the very end (YN-19). Each frame
@@ -4134,8 +4136,13 @@ export function App() {
                     const moved = el.scrollTop - lastTop.current;
                     lastTop.current = el.scrollTop;
                     // Back to latest's own scrolling on its way to the end
-                    // says nothing about the reader (pinLatest).
-                    if (latestPin.current) return;
+                    // says nothing about the reader (pinLatest), whose place
+                    // is the latest from the press on: noted so, should they
+                    // leave before it ends.
+                    if (latestPin.current) {
+                      noteReading(true);
+                      return;
+                    }
                     if (draggingScrollbar.current && Math.abs(moved) >= 1) readerWay.current = moved > 0 ? "down" : "up";
                     // Still scrolling while a page is on its way: the place
                     // to hold is where the reader is now (pageHold).
