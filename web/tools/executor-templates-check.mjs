@@ -106,12 +106,13 @@ try {
 
   // ---- An empty list; a template added and saved.
   let box = await openEditor(page);
-  await box.getByText("No template yet.").waitFor({ timeout: 10_000 });
+  await box.getByText("No template yet: a dispatch makes a general executor.").waitFor({ timeout: 10_000 });
   assert.equal(await box.getByRole("button", { name: "Save templates" }).isDisabled(), true, "nothing to save yet");
   await box.getByRole("button", { name: "Add template" }).click();
   await box.locator('input[aria-label="Label"]').fill("Code reviewer");
   assert.equal(await box.locator('input[aria-label="Id"]').inputValue(), "code-reviewer", "a new template's id follows its label");
   await box.locator('select[aria-label="Harness"]').selectOption("claude");
+  await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
   await box.locator('select[aria-label="Permissions"]').selectOption("auto");
   await box.locator('textarea[aria-label="Instructions"]').fill("Read the acceptance first, then the linked PR.");
   await box.getByText("Unsaved changes").waitFor({ timeout: 10_000 });
@@ -127,6 +128,7 @@ try {
   check("a template added, its id following its label, and saved as the whole list against version 0", { body: put.body });
 
   // ---- In Chinese after a language change elsewhere; unsaved text kept.
+  await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
   await box.locator('textarea[aria-label="Instructions"]').fill("Read the acceptance first.");
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
   await box.locator("h3", { hasText: "执行者模板" }).waitFor({ timeout: 10_000 });

@@ -60,9 +60,14 @@ executor by you only.
 
 ## Executor templates
 
-A template says what an executor is made of. You keep the Workspace's
-templates in Settings, under **Executor templates**, and a Project's own in
-its settings.
+A template says what an executor is made of: a named kind of executor that
+a dispatch can ask for. Without one, a dispatch makes a
+[general executor](#the-general-executor). Templates are the Workspace's,
+for every Project: you keep them in Settings, under **Executor templates**.
+A new template needs only a **Label** and a **Harness**; the other fields
+are under **More settings**, and left unset each inherits as described
+below. A Project's page has no templates of its own, only its own
+[Executors at once](#executors-at-once).
 
 | Field | What it is |
 | --- | --- |
@@ -72,11 +77,31 @@ its settings.
 | **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
-| **At most at once** | At most this many of the template's executors run at once, a whole number from 1 to 64; empty, it has no limit of its own. See [Executors at once](#executors-at-once). |
 
-- **Which template a dispatch gets.** A dispatch of a task in a Project uses
-  that Project's template of the named id, else the Workspace's. A task in no
-  Project uses the Workspace's.
+- **Which template a dispatch gets.** The Workspace's template of the named
+  id, whatever the task's Project. A dispatch naming an id the Workspace
+  doesn't have is refused with `template_not_found`, naming the ids it has.
+- **Presets.** Where Core ships template presets, Settings offers them under
+  **Add from a preset**. Choosing one adds an unsaved template filled from
+  it, with a free id if its id is taken; **Save templates** saves it as any
+  other edit. No Agent saves templates or presets.
+- **Templates a Project had.** Before this version, a Project could keep
+  templates of its own, used before the Workspace's of the same id. When this
+  Core first opens a Workspace, it copies each Project's own templates into
+  the Workspace's list, once, and leaves the Project's list as it was, so an
+  older Core opened later still finds it:
+  - a template the Workspace already has as it is is not copied;
+  - one whose id the Workspace uses for another template gets the first free
+    id (`reviewer-2`, `reviewer-3`, …) and its Project's name in its label,
+    such as "Reviewer (Lab)". A dispatch naming `reviewer` in that Project
+    then gets the Workspace's `reviewer`;
+  - each copy says where it came from, shown under its label as "Copied from
+    the project Lab, where its id was reviewer";
+  - a template this Core can't read stays in its Project's list.
+
+  If an older Core saves a Project's list again, the next open copies what
+  changed in it. The copies may take the list past 50 templates: a save
+  then keeps what the list holds, but can't add more.
 - **Where executors run.** On the machine the dispatch names, else the one
   its template names, else this Core host. A machine is one from the
   Machines list, or `auto`, for Core to choose one at each dispatch (see
@@ -197,22 +222,24 @@ makes a general executor: an executor with no template.
 At most this many executors run at the same time in the Workspace: 3 unless
 you change it, a whole number from 1 to 64, in Settings under **Executor
 templates**. A Project can have a limit of its own, on its page, and so can
-a template (its **At most at once**; a general executor has none of its
-own) and a machine: in **Machines**, a
+a machine: in **Machines**, a
 registered machine's in its editor and this Core host's on its card
 (`PUT /api/machines/{id}/executor-slots`, `local` for this Core host); left
 empty, only the Workspace's applies. Only you change them. Lowering a limit
 under the executors running there stops none of them: no more start there
 until fewer hold a slot.
 
+- **A template has no limit of its own** (T-43: the user's decision of
+  2026-11-07 leaves one limit per machine). The editor shows none, and the
+  next save of the templates drops an **At most at once** saved before.
+  Until then Core still holds that template's executors to it.
 - **The queue.** An executor dispatched while every slot is taken waits.
   Core starts the next one as soon as a slot is free, in the Jobs queue's
   order: any waiting more than 30 minutes first, then Projects in turn, each
   Project's in the order they were dispatched. Executors in no Project take
   their turn together. One whose Project or template is at its own limit is
-  passed by the next that has room. A Project's own template of an id has
-  its own limit; a task in a Project without one uses the Workspace's
-  template, and counts with it.
+  passed by the next that has room. A template's limit counts its executors
+  in every Project together; a general executor has no template limit.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
   whether its executor is queued, with its place (`position`, 1 first),
   starting (with `reason` when its start did not finish), or running. On a
