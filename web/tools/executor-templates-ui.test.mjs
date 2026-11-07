@@ -204,25 +204,171 @@ test("a template needs only a label and a harness; the rest is folded, a copied 
   assert.deepEqual(page.errors, []);
 });
 
-test("a preset is adopted into an unsaved draft, with a free id, and saved only by Save (YN-2 S2, presets from T-43)", async () => {
-  const preset = { id: "design-first", label: "Design first", harness: "claude", instructions: "Write the design note first.",
-    description: "When a change needs a design note approved before code." };
+// As Core serves presets (executor_templates.rs `presets`, YN-23): each in each language, with no harness.
+const presetPair = (id, en, zh, extra = {}) => [
+  { id, language: "en", label: en, whenToChoose: `When ${en}`, modelHint: "A strong model.", instructions: `Do ${en}.`, deliveryMode: "pr", ...extra },
+  { id, language: "zh-Hans", label: zh, whenToChoose: `何时${zh}`, modelHint: "强模型。", instructions: `做${zh}。`, deliveryMode: "pr", ...extra },
+];
+const presetList = [
+  ...presetPair("design-first", "Design first", "设计先行", { steps: [{ kind: "materials" }, { kind: "work", label: "Design note" },
+    { kind: "gate", approver: "either" }, { kind: "pr" }, { kind: "review" }, { kind: "ci" }, { kind: "merge" }] }),
+  ...presetPair("investigation", "Read-only investigation", "只读调查", { deliveryMode: "none", steps: [{ kind: "materials" }, { kind: "work" }, { kind: "result", label: "Memo" }] }),
+  ...presetPair("runbook", "Gated runbook", "人工把关的运行手册", { deliveryMode: "none", permissions: { codex: "ask", claude: "default" } }),
+];
+const choices = (page) => [...page.document.querySelectorAll(".executor-preset-choice")];
+const choose = async (page, label) => {
+  choices(page).find((c) => c.querySelector(".theme-choice-name").textContent.trim() === label).querySelector("input").click();
+  await tick();
+};
+
+test("presets (YN-23): the user picks which to add, each an unsaved template in the page's language, saved only by Save", async () => {
   let workspace = { version: 1, templates: [{ id: "design-first", label: "Design first", harness: "codex" }] };
   const page = mount((url, method, body) => {
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
-    return [200, view(workspace, false, [preset])];
+    return [200, { ...view(workspace, false, presetList), general: { label: "Executor", harness: "claude", harnessSource: "workspace" } }];
   });
   page.window.renderTemplates();
-  await until(() => field(page, "Add from a preset"), "the preset picker");
-  assert.deepEqual([...field(page, "Add from a preset").options].map((o) => o.textContent), ["Add from a preset", "Design first"]);
-  await type(page, "Add from a preset", "design-first");
-  assert.equal(page.document.querySelectorAll("fieldset").length, 2, "a draft from the preset");
-  assert.deepEqual(puts(page), [], "nothing is saved by adopting");
+  await until(() => button(page, "Add presets"), "the presets button");
+  assert.equal(choices(page).length, 0, "the presets are offered on request");
+  button(page, "Add presets").click();
+  await tick();
+  assert.deepEqual(choices(page).map((c) => c.querySelector(".theme-choice-name").textContent.trim()),
+    ["Design first", "Read-only investigation", "Gated runbook"], "the presets in English only");
+  const picker = page.document.querySelector(".executor-presets");
+  assert.match(picker.textContent, /an unsaved template for Claude Code, the default for new Agents/);
+  assert.match(choices(page)[1].textContent, /When Read-only investigation.*No repository change · Read the materials → Work → Submit a result/);
+  assert.match(choices(page)[0].textContent, /One with this id is in the list/, "a preset whose id is taken says so");
+  assert.equal(button(page, "Add 0 presets").disabled, true, "nothing chosen, nothing to add");
+  await choose(page, "Design first");
+  await choose(page, "Gated runbook");
+  button(page, "Add 2 presets").click();
+  await tick();
+  assert.equal(page.document.querySelectorAll(".executor-template").length, 3, "two drafts from the presets");
+  assert.equal(page.document.querySelector(".executor-presets"), null, "the picker closes");
+  assert.deepEqual(puts(page), [], "nothing is saved by adding");
+  assert.match(page.document.querySelectorAll(".executor-template")[1].textContent, /The preset suggests: A strong model\./);
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
-  assert.deepEqual(puts(page)[0].body.templates[1],
-    { id: "design-first-2", label: "Design first", harness: "claude", instructions: "Write the design note first." },
-    "a free id, and the preset's fields without its description");
+  assert.deepEqual(puts(page)[0].body.templates.slice(1), [
+    { id: "design-first-2", label: "Design first", harness: "claude", instructions: "Do Design first.", deliveryMode: "pr",
+      steps: [{ kind: "materials" }, { kind: "work", label: "Design note" }, { kind: "gate", approver: "either" },
+        { kind: "pr" }, { kind: "review" }, { kind: "ci" }, { kind: "merge" }], whenToChoose: "When Design first" },
+    { id: "runbook", label: "Gated runbook", harness: "claude", permissionMode: "default", instructions: "Do Gated runbook.",
+      deliveryMode: "none", whenToChoose: "When Gated runbook" },
+  ], "a free id, the default harness, the preset's permission for it, and none of its hint");
+  assert.deepEqual(page.errors, []);
+});
+
+test("presets (YN-23) are offered in Chinese on a Chinese page, and a harness change takes the preset's own permission", async () => {
+  const page = mount(() => [200, view({ version: 0, templates: [] }, false, presetList)]);
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.renderTemplates();
+  await until(() => button(page, "添加预设"), "the presets button");
+  button(page, "添加预设").click();
+  await tick();
+  assert.deepEqual(choices(page).map((c) => c.querySelector(".theme-choice-name").textContent.trim()), ["设计先行", "只读调查", "人工把关的运行手册"]);
+  await choose(page, "人工把关的运行手册");
+  button(page, "添加 1 个预设").click();
+  await tick();
+  assert.equal(field(page, "标签").value, "人工把关的运行手册");
+  assert.equal(field(page, "Harness").value, "codex", "no default read: Codex");
+  assert.equal(field(page, "权限").value, "ask");
+  await type(page, "Harness", "claude");
+  assert.equal(field(page, "权限").value, "default", "the preset's permission for Claude Code");
+  assert.deepEqual(page.errors, []);
+});
+
+test("presets (YN-23, #742 R1 3ec18555): no more can be chosen than the list has room for, and the picker says so", async () => {
+  const workspace = { version: 1, templates: [{ id: "dev", label: "Dev", harness: "codex" }] };
+  const page = mount(() => [200, { ...view(workspace, false, presetList), limits: { templates: 3, instructionsBytes: 8192 } }]);
+  page.window.renderTemplates();
+  await until(() => button(page, "Add presets"), "the presets button");
+  button(page, "Add presets").click();
+  await tick();
+  assert.match(page.document.querySelector(".executor-presets-room").textContent, /^Room for 2 more templates: the list holds at most 3\.$/);
+  await choose(page, "Design first");
+  await choose(page, "Read-only investigation");
+  const runbook = choices(page).find((c) => /Gated runbook/.test(c.textContent)).querySelector("input");
+  assert.equal(runbook.disabled, true, "a third can't be chosen");
+  await choose(page, "Read-only investigation");
+  assert.equal(runbook.disabled, false, "one unchosen makes room again");
+  await choose(page, "Gated runbook");
+  button(page, "Add 2 presets").click();
+  await tick();
+  assert.deepEqual([...page.document.querySelectorAll('[aria-label="Label"]')].map((i) => i.value), ["Dev", "Design first", "Gated runbook"],
+    "both chosen were added, none left out");
+  assert.equal(button(page, "Add presets").disabled, true, "the list is full");
+  assert.deepEqual(page.errors, []);
+});
+
+test("delivery and steps (YN-23): chosen on the card, a step its delivery can't have is shown at its row, the default steps restored", async () => {
+  let workspace = { version: 1, templates: [{ id: "probe", label: "Probe", harness: "codex" }] };
+  const page = mount((url, method, body) => {
+    if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+    return [200, view(workspace)];
+  });
+  page.window.renderTemplates();
+  await until(() => field(page, "Label"), "the template");
+  const card = () => page.document.querySelector(".executor-template");
+  const radio = (value) => card().querySelector(`.executor-delivery-choice input[value="${value}"]`);
+  assert.equal(radio("pr").checked, true, "unset delivery is a pull request");
+  assert.match(card().textContent, /default steps: Read the materials → Work → Run a Job → Pull request → Review → CI → Merge/);
+  button(page, "Change the steps").click();
+  await tick();
+  assert.equal(card().querySelectorAll(".executor-step").length, 7, "the default steps to change");
+  assert.equal(button(page, "Save templates").disabled, false, "the steps are now its own");
+  radio("none").click();
+  await tick();
+  const errors = () => [...card().querySelectorAll(".executor-step")].map((row, i) => row.querySelector(".executor-step-error") ? i + 1 : 0).filter(Boolean);
+  assert.deepEqual(errors(), [4, 5, 6, 7], "pr, review, ci and merge are refused at their rows under no repository change");
+  assert.equal(field(page, "Step 4: kind").getAttribute("aria-invalid"), "true");
+  assert.equal(button(page, "Save templates").disabled, true, "nothing invalid is saved");
+  for (let n = 0; n < 4; n++) {
+    field(page, "Remove step 4").click();
+    await tick();
+  }
+  assert.deepEqual(errors(), []);
+  await type(page, "Step 3: kind", "result");
+  await type(page, "Step 3: label", "Memo");
+  button(page, "Add a step").click();
+  await tick();
+  await type(page, "Step 4: kind", "gate");
+  await type(page, "Step 4: approver", "lead");
+  field(page, "Move step 4 up").click();
+  await tick();
+  await type(page, "When to choose it", "A read-only question");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1, "the save");
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "probe", label: "Probe", harness: "codex", deliveryMode: "none",
+    steps: [{ kind: "materials" }, { kind: "work" }, { kind: "gate", approver: "lead" }, { kind: "result", label: "Memo" }],
+    whenToChoose: "A read-only question" }], "the delivery, the steps in their order and when to choose it");
+  await until(() => /Saved\./.test(page.document.querySelector("#settings-executor-templates").textContent), "saved");
+  button(page, "Use the default steps").click();
+  await tick();
+  assert.match(card().textContent, /default steps: Read the materials → Work → Submit a result/, "the default for no repository change");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 2, "the second save");
+  assert.deepEqual(puts(page)[1].body.templates[0].steps, undefined, "the default steps are sent as unset");
+  assert.deepEqual(page.errors, []);
+});
+
+test("each saved template says who changed it last, when and why (YN-24's lastModified); a new one says nothing", async () => {
+  const workspace = { version: 4, templates: [{ id: "dev", label: "Dev", harness: "codex" }, { id: "plain", label: "Plain", harness: "claude" }] };
+  const lastModified = {
+    dev: { version: 4, at: "2026-11-07T20:30:00Z", reason: "Say how to test", by: { kind: "agent", id: "lead", name: "Agent lead" } },
+    plain: { version: 3, at: "2026-11-07T19:00:00Z", reason: null, by: { kind: "user", id: null, name: "You" } },
+  };
+  const page = mount(() => [200, { ...view(workspace), lastModified }]);
+  page.window.renderTemplates();
+  await until(() => page.document.querySelectorAll(".executor-template-changed").length === 2, "the two lines");
+  const lines = [...page.document.querySelectorAll(".executor-template-changed")].map((p) => p.textContent);
+  assert.match(lines[0], /^Last changed: Agent lead · .*2026.* · Say how to test$/, lines[0]);
+  assert.match(lines[1], /^Last changed: You · .*2026[^·]*$/, "your save: no reason");
+  assert.equal(page.document.querySelectorAll(".executor-template-changed time")[0].getAttribute("datetime"), "2026-11-07T20:30:00.000Z");
+  button(page, "Add template").click();
+  await tick();
+  assert.equal(page.document.querySelectorAll(".executor-template").length, 3);
+  assert.equal(page.document.querySelectorAll(".executor-template-changed").length, 2, "a new template has no last change");
   assert.deepEqual(page.errors, []);
 });
 

@@ -144,10 +144,44 @@ not a template's or a Project's.
 - **Which template a dispatch gets.** The Workspace's template of the named
   id, whatever the task's Project. A dispatch naming an id the Workspace
   doesn't have is refused with `template_not_found`, naming the ids it has.
-- **Presets.** Where Core ships template presets, Settings offers them under
-  **Add from a preset**. Choosing one adds an unsaved template filled from
-  it, with a free id if its id is taken; **Save templates** saves it as any
-  other edit. No Agent saves presets; a lead changes templates as below.
+- **Presets.** Core ships ten presets, in English and Chinese:
+
+  | Id | Preset | Delivery | For |
+  | --- | --- | --- | --- |
+  | `design-first` | Design first · 设计先行 | `pr` | A design note approved before any code, then a PR per slice |
+  | `red-test-fix` | Red test first · 红测先行修复 | `pr` | A reproducible bug: a failing test first, then the fix |
+  | `batch-change` | Mechanical batch · 机械批量改动 | `pr` | One mechanical change in many places, no behaviour change |
+  | `investigation` | Read-only investigation · 只读调查 | `none` | A question answered in a memo, each claim with its source |
+  | `decision-memo` | Decision memo · 决策备忘 | `none` | Options with cost and risk, and a gate for your choice |
+  | `verification` | Independent check · 独立核查 | `none` | Named checks run in Jobs, a verdict each |
+  | `sliced-feature` | Sliced long task · 切片长任务 | `pr` | A large feature in slices, with a progress file across sessions |
+  | `runbook` | Gated runbook · 人工把关的运行手册 | `none` | Irreversible steps, each approved; asks before each action |
+  | `small-fix` | Small fix · 小修快路径 | `pr` | A small fix whose cause is clear |
+  | `test-hygiene` | Test hygiene · 测试卫生修复 | `pr` | A flaky or wrong test, fixed in the test alone |
+
+  In Settings, **Add presets** shows them in the page's language, each
+  with when to choose it, its delivery and its steps. You pick which to
+  add. Each becomes an unsaved template, under a free id if its id is
+  taken, for the harness of the defaults for new Agents (Codex unless you
+  set another). Each has its instructions, delivery, steps and when to
+  choose it. The gated runbook also has its permission: Codex **ask**,
+  Claude Code **default**. A preset names no model, since Core has no model
+  tiers; the template shows the preset's suggestion beside **Model**, which
+  isn't saved. Saving (the page's save bar, or **Save templates** where the
+  editor stands alone) saves the new templates like any other edit. A
+  preset is never stored as one. No Agent saves presets; a lead changes
+  templates as below. "Read-only" in the investigation, decision memo and
+  design-note steps is an instruction only: no permission enforces it.
+- **The editor.** Each template is a card: its label, harness and when to
+  choose it; its delivery, chosen from three cards; its steps, shown as its
+  delivery's default until you choose **Change the steps**, then one row
+  each (kind, label, a review's rounds or a gate's approver, moved up or
+  down, removed). A step the delivery can't have is marked at its row, and
+  nothing is saved until it's fixed. **Use the default steps** sets them
+  back to unset. The other settings stay under **More settings**. A saved
+  template's card shows who last changed it, from `lastModified` (see
+  **History** below), as one line under its name: "Last changed: who ·
+  when · why", "You" for your own save.
 - **Templates a Project had.** Before this version, a Project could keep
   templates of its own, used before the Workspace's of the same id. When this
   Core first opens a Workspace, it copies each Project's own templates into

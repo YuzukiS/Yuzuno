@@ -68,7 +68,7 @@ async fn templates_are_the_workspaces_saved_against_the_version_read() {
     assert_eq!(ids(&seen), [("reviewer".into(), "workspace".into()), ("writer".into(), "workspace".into())],
         "a Project's view offers the Workspace's templates");
     assert!(seen.get("project").is_none(), "and no list of its own: {seen}");
-    assert_eq!(seen["presets"], json!([]), "presets come from T-43");
+    assert_eq!(seen["presets"].as_array().map(Vec::len), Some(20), "ten presets in two languages (YN-23)");
     assert_eq!(ws.store.executor_template("reviewer").unwrap().map(|t| t.label), Some("Label reviewer".into()));
     assert_eq!(ws.store.executor_template("absent").unwrap(), None);
     let (status, missing) = call(&ws, "GET", "/api/executor-templates?projectId=nope", None).await;
@@ -200,6 +200,52 @@ fn a_template_is_checked_strictly_and_read_leniently() {
     assert_eq!((read.version, read.later_templates), (3, 2));
     assert_eq!(read.templates, vec![serde_json::from_value::<Template>(template("a", "codex").clone()).unwrap()]);
     assert_eq!(read_list(None).unwrap(), Templates::default());
+}
+
+/// YN-23: Core offers the ten presets of T-43's plan in English and Chinese,
+/// each a template once the page gives it a harness: every one passes a
+/// save's checks for Codex and for Claude Code, with its permission for that
+/// harness, and its instructions fit the 8 KiB a template has. The view
+/// serves them; nothing stores them.
+#[tokio::test]
+async fn the_ten_presets_are_templates_in_both_languages() {
+    let presets = presets();
+    let ids = ["design-first", "red-test-fix", "batch-change", "investigation", "decision-memo", "verification",
+        "sliced-feature", "runbook", "small-fix", "test-hygiene"];
+    for language in PRESET_LANGUAGES {
+        let these: Vec<&Value> = presets.iter().filter(|p| p["language"] == language).collect();
+        assert_eq!(these.iter().map(|p| p["id"].as_str().unwrap()).collect::<Vec<_>>(), ids, "{language}: the ten, in order");
+    }
+    for preset in &presets {
+        let (id, language) = (preset["id"].as_str().unwrap(), preset["language"].as_str().unwrap());
+        let instructions = preset["instructions"].as_str().unwrap();
+        assert!(instructions.len() <= MAX_INSTRUCTIONS, "{id} {language}: {} bytes", instructions.len());
+        assert!(!preset["modelHint"].as_str().unwrap().trim().is_empty(), "{id} {language}: a model hint");
+        let steps = preset["steps"].as_array().map(|steps| steps.iter().map(|s| s["label"].clone()).collect::<Vec<_>>()).unwrap_or_default();
+        assert!(steps.iter().all(|label| label.is_null() || label.is_string()), "{id} {language}: step labels in its language: {steps:?}");
+        for harness in ["codex", "claude"] {
+            let mut template = json!({"id": id, "label": preset["label"], "harness": harness, "instructions": instructions,
+                "whenToChoose": preset["whenToChoose"], "deliveryMode": preset["deliveryMode"]});
+            if let Some(steps) = preset.get("steps") {
+                template["steps"] = steps.clone();
+            }
+            if let Some(permission) = preset["permissions"][harness].as_str() {
+                template[if harness == "codex" { "permissionPreset" } else { "permissionMode" }] = json!(permission);
+            }
+            let saved = parse_save(&[template.clone()], false, &[]);
+            assert!(saved.is_ok(), "{id} {language} {harness}: {saved:?}");
+        }
+    }
+    let runbook = presets.iter().find(|p| p["id"] == "runbook").unwrap();
+    assert_eq!(runbook["permissions"], json!({"codex":"ask","claude":"default"}), "the gated runbook asks before each action");
+    let zh = presets.iter().find(|p| p["id"] == "design-first" && p["language"] == "zh-Hans").unwrap();
+    assert_eq!((zh["label"].clone(), zh["steps"][1]["label"].clone()), (json!("设计先行"), json!("设计说明")));
+
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let (_, view) = call(&ws, "GET", "/api/executor-templates", None).await;
+    assert_eq!(view["presets"], json!(presets), "the view serves them");
+    assert_eq!(view["workspace"]["templates"], json!([]), "and stores none");
 }
 
 /// T-34 S1: a model a template names is confirmed by this Core host's

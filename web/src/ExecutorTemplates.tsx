@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
-import { LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, LoaderCircle, Plus, Trash2, X } from "lucide-react";
 import { api, errorText } from "./api";
 import { CLAUDE_MODES, CODEX_PRESETS, claudeModeText, codexPermissionText } from "./agent-defaults";
 import {
-  readExecutorTemplates, saveExecutorTemplates,
-  type ExecutorHarness, type ExecutorTemplate, type ExecutorTemplatesView,
+  MAX_STEPS, PR_STEP_KINDS, STEP_KINDS, defaultSteps, presetsIn, readExecutorTemplates, saveExecutorTemplates,
+  type DeliveryMode, type ExecutorHarness, type ExecutorPreset, type ExecutorTemplate, type ExecutorTemplatesView,
+  type StepKind, type TemplateChange, type TemplateStep,
 } from "./executor-templates";
 import { ExecutorSlots } from "./ExecutorSlots";
-import { langTag, strings, useLanguage } from "./i18n";
+import { moment } from "./conversation-time";
+import { langTag, strings, useLanguage, type Language } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
+import { ChoiceCards } from "./SettingsChoices";
+import { timeFormatter, useTimeDisplay } from "./time-preferences";
 import "./executor-templates.css";
 
 const text = strings({
@@ -18,10 +22,18 @@ const text = strings({
   intro: "Named kinds of executor for every project: what an Agent that Core creates for one task is made of. A dispatch can name one; without one, Core makes a general executor from the defaults for new Agents. Only you change them.",
   reading: "Reading templates…",
   none: "No template yet: a dispatch makes a general executor.",
-  fromPreset: "Add from a preset",
+  addPresets: "Add presets",
+  presetsTitle: "Add presets",
+  presetsHelp: (harness: string) => `Choose the presets to add. Each becomes an unsaved template for ${harness}, the default for new Agents, that you can change; nothing is saved until you save.`,
+  presetTaken: "One with this id is in the list: it is added under another id.",
+  addChosen: (n: number) => (n === 1 ? "Add 1 preset" : `Add ${n} presets`),
+  room: (n: number, limit: number) => `Room for ${n} more ${n === 1 ? "template" : "templates"}: the list holds at most ${limit}.`,
+  cancel: "Cancel",
   more: "More settings",
   moreSet: (n: number) => `More settings (${n} set)`,
   origin: (project: string, id: string) => `Copied from the project ${project}, where its id was ${id}.`,
+  lastChanged: "Last changed: ",
+  you: "You",
   labelNeeded: "A template needs a label.",
   projectTitle: "Executors",
   projectIntro: "Executor templates are kept for the whole Workspace, in Settings under Executor templates. Here: how many of this project’s executors run at once.",
@@ -40,8 +52,11 @@ const text = strings({
   id: "Id",
   idHelp: "Lowercase letters, digits and hyphens. A dispatch names the template by it.",
   harness: "Harness",
+  whenToChoose: "When to choose it",
+  whenToChooseHelp: "One line a lead reads to choose this template. Not sent to the executor.",
   model: "Model",
   inheritModel: "Inherit the default for new Agents",
+  modelHint: (hint: string) => `The preset suggests: ${hint}`,
   effort: "Reasoning effort",
   inheritEffort: "The model’s own",
   permission: "Permissions",
@@ -51,6 +66,36 @@ const text = strings({
   namePatternHelp: (pattern: string) => `{task} is the task’s ID, {label} this label. Empty: ${pattern}.`,
   instructions: "Instructions",
   instructionsHelp: (used: number, limit: number) => `Given to the executor with its task’s materials. ${used} of ${limit} bytes.`,
+  delivery: "Delivery",
+  deliveryHelp: "How the work is delivered. The executor is told in its materials and mail; Core doesn’t hold it to it.",
+  deliveries: {
+    pr: ["Pull request", "Review, CI and merge follow."],
+    "direct-commit": ["Direct commit", "Committed without a pull request, as to a results repository."],
+    none: ["No repository change", "The result is the deliverable: an answer, a memo, a check."],
+  } as Record<DeliveryMode, [string, string]>,
+  steps: "Steps",
+  stepsHelp: "What its executors do, in order. Descriptive for now: the executor reads them, and Core doesn’t track them.",
+  defaultSteps: "Its delivery’s default steps:",
+  customize: "Change the steps",
+  useDefault: "Use the default steps",
+  addStep: "Add a step",
+  step: (n: number) => `Step ${n}`,
+  stepKind: (n: number) => `Step ${n}: kind`,
+  stepLabel: (n: number) => `Step ${n}: label`,
+  stepRounds: (n: number) => `Step ${n}: rounds`,
+  stepApprover: (n: number) => `Step ${n}: approver`,
+  moveUp: (n: number) => `Move step ${n} up`,
+  moveDown: (n: number) => `Move step ${n} down`,
+  removeStep: (n: number) => `Remove step ${n}`,
+  oneRound: "1 round",
+  twoRounds: "2 rounds",
+  approvers: { user: "You", lead: "A lead", either: "You or a lead" } as Record<"user" | "lead" | "either", string>,
+  kinds: {
+    materials: "Read the materials", work: "Work", result: "Submit a result", gate: "Wait for approval", job: "Run a Job",
+    pr: "Pull request", review: "Review", ci: "CI", merge: "Merge",
+  } as Record<StepKind, string>,
+  kindNeedsPr: "Only for delivery by pull request.",
+  stepsNeeded: "Add a step, or use the default steps.",
   add: "Add template",
   remove: (label: string) => `Remove ${label}`,
   save: "Save templates",
@@ -63,10 +108,18 @@ const text = strings({
   intro: "所有项目共用的、有名字的执行者种类：Core 为单个任务创建的 Agent 由什么组成。派发时可以指定一个；不指定时，Core 按新 Agent 的默认设置创建通用执行者。只有你能更改。",
   reading: "正在读取模板…",
   none: "还没有模板：派发时会创建通用执行者。",
-  fromPreset: "从预设添加",
+  addPresets: "添加预设",
+  presetsTitle: "添加预设",
+  presetsHelp: (harness) => `选择要添加的预设。每个都会成为一个未保存的 ${harness} 模板（新 Agent 的默认 Harness），可以再改；保存之前什么都不会写入。`,
+  presetTaken: "列表里已有这个 id：添加时会换一个 id。",
+  addChosen: (n) => `添加 ${n} 个预设`,
+  room: (n, limit) => `还能添加 ${n} 个模板：列表最多 ${limit} 个。`,
+  cancel: "取消",
   more: "更多设置",
   moreSet: (n) => `更多设置（已设 ${n} 项）`,
   origin: (project, id) => `从项目 ${project} 复制而来，原 id 是 ${id}。`,
+  lastChanged: "上次修改：",
+  you: "你",
   labelNeeded: "模板需要一个标签。",
   projectTitle: "执行者",
   projectIntro: "执行者模板对整个 Workspace 通用，在设置的“执行者模板”中。这里设置此项目的执行者同时最多运行几个。",
@@ -85,8 +138,11 @@ const text = strings({
   id: "Id",
   idHelp: "小写字母、数字和连字符。派发时用它指名模板。",
   harness: "Harness",
+  whenToChoose: "何时选它",
+  whenToChooseHelp: "一行字，负责人据此选模板。不会发给执行者。",
   model: "模型",
   inheritModel: "沿用新 Agent 默认值",
+  modelHint: (hint) => `预设建议：${hint}`,
   effort: "推理强度",
   inheritEffort: "模型自己的",
   permission: "权限",
@@ -96,6 +152,36 @@ const text = strings({
   namePatternHelp: (pattern) => `{task} 是任务 ID，{label} 是此标签。留空：${pattern}。`,
   instructions: "说明",
   instructionsHelp: (used, limit) => `与任务材料一起交给执行者。已用 ${used} / ${limit} 字节。`,
+  delivery: "交付方式",
+  deliveryHelp: "工作怎么交付。执行者会在材料和派发邮件里看到；Core 不强制。",
+  deliveries: {
+    pr: ["通过 PR", "之后是审查、CI 和合并。"],
+    "direct-commit": ["直接提交", "不开 PR 直接提交，例如提交到结果仓库。"],
+    none: ["不改仓库", "结果本身就是交付物：一个回答、一份备忘录、一次核查。"],
+  },
+  steps: "步骤",
+  stepsHelp: "执行者按顺序做的事。目前只是说明：执行者会读到，Core 不跟踪。",
+  defaultSteps: "按交付方式的默认步骤：",
+  customize: "修改步骤",
+  useDefault: "使用默认步骤",
+  addStep: "添加步骤",
+  step: (n) => `第 ${n} 步`,
+  stepKind: (n) => `第 ${n} 步：类型`,
+  stepLabel: (n) => `第 ${n} 步：说明`,
+  stepRounds: (n) => `第 ${n} 步：轮数`,
+  stepApprover: (n) => `第 ${n} 步：批准人`,
+  moveUp: (n) => `第 ${n} 步上移`,
+  moveDown: (n) => `第 ${n} 步下移`,
+  removeStep: (n) => `移除第 ${n} 步`,
+  oneRound: "1 轮",
+  twoRounds: "2 轮",
+  approvers: { user: "你", lead: "负责人", either: "你或负责人" },
+  kinds: {
+    materials: "读材料", work: "工作", result: "提交结果", gate: "等批准", job: "跑 Job",
+    pr: "PR", review: "审查", ci: "CI", merge: "合并",
+  },
+  kindNeedsPr: "只用于通过 PR 交付。",
+  stepsNeeded: "添加一个步骤，或使用默认步骤。",
   add: "添加模板",
   remove: (label) => `移除 ${label}`,
   save: "保存模板",
@@ -103,6 +189,10 @@ const text = strings({
   unsaved: "有未保存的更改",
   reload: "重新读取已保存的模板",
 });
+type Text = ReturnType<typeof text>;
+
+/** A step as the editor holds it: "" for an unset field. */
+type DraftStep = { key: string; kind: StepKind; label: string; rounds: "" | "1" | "2"; approver: "" | "user" | "lead" | "either" };
 
 type Draft = {
   key: string;
@@ -120,23 +210,32 @@ type Draft = {
   machine: string;
   /** Kept as saved: where a copied template came from (YN-2 S2). */
   origin?: ExecutorTemplate["origin"];
-  /** Kept as saved, so a save of another edit doesn't drop them (YN-23). */
-  workflow: Pick<ExecutorTemplate, "deliveryMode" | "steps" | "whenToChoose">;
+  /** The id it was saved under, whose last change it shows (YN-24's `lastModified`); none for a new one. */
+  savedId?: string;
+  /** YN-23: "" is unset, which is "pr". */
+  deliveryMode: "" | DeliveryMode;
+  /** null: its delivery's default steps. */
+  steps: DraftStep[] | null;
+  whenToChoose: string;
+  /** From the preset it was made from, never saved: its model hint, and its permission per harness. */
+  preset?: { modelHint?: string; permissions?: ExecutorPreset["permissions"] };
 };
-const workflowOf = (t: ExecutorTemplate): Draft["workflow"] => ({
-  ...(t.deliveryMode ? { deliveryMode: t.deliveryMode } : {}),
-  ...(t.steps ? { steps: t.steps } : {}),
-  ...(t.whenToChoose ? { whenToChoose: t.whenToChoose } : {}),
-});
 
 let keys = 0;
+const stepOf = (s: TemplateStep): DraftStep => ({
+  key: `s${++keys}`, kind: s.kind, label: s.label ?? "",
+  rounds: s.rounds === 1 || s.rounds === 2 ? String(s.rounds) as "1" | "2" : "",
+  approver: s.approver ?? "",
+});
 const draftOf = (t: ExecutorTemplate): Draft => ({
   key: `t${++keys}`, id: t.id, idTouched: true, label: t.label, harness: t.harness, model: t.model ?? "",
   reasoningEffort: t.reasoningEffort ?? "", permission: t.permissionPreset ?? t.permissionMode ?? "",
   namePattern: t.namePattern ?? "", instructions: t.instructions ?? "",
   machine: t.machineId && t.machineId !== "local" ? t.machineId : "",
   ...(t.origin ? { origin: t.origin } : {}),
-  workflow: workflowOf(t),
+  deliveryMode: t.deliveryMode ?? "",
+  steps: t.steps ? t.steps.map(stepOf) : null,
+  whenToChoose: t.whenToChoose ?? "",
 });
 const slug = (label: string) => label.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
 /** A new template's id: its label's, or the first free `template-N` for a
@@ -148,7 +247,20 @@ const idFor = (label: string, taken: string[]) => {
   while (taken.includes(`template-${n}`)) n++;
   return `template-${n}`;
 };
+/** `id`, or the first `id-2`, `id-3`… no other template has. */
+const freeId = (id: string, taken: string[]) => {
+  let free = id;
+  for (let n = 2; taken.includes(free); n++) free = `${id.slice(0, 48 - String(n).length - 1)}-${n}`;
+  return free;
+};
 const set = (value: string) => (value.trim() ? value.trim() : undefined);
+const stepTemplate = (s: DraftStep): TemplateStep => ({
+  kind: s.kind,
+  ...(set(s.label) ? { label: set(s.label) } : {}),
+  // Only where Core takes them: rounds on a review, an approver on a gate.
+  ...(s.kind === "review" && s.rounds ? { rounds: Number(s.rounds) } : {}),
+  ...(s.kind === "gate" && s.approver ? { approver: s.approver } : {}),
+});
 /** As Core takes it: only what this harness uses, unset left out. A
  * template has no limit of its own (T-43, the user's 2026-11-07 decision:
  * one limit per machine), so one saved before is dropped at the next save. */
@@ -165,8 +277,14 @@ const templateOf = (d: Draft): ExecutorTemplate => {
   // Kept as saved (T-35 S3): an OpenCode template runs on this Core host.
   if (d.machine && d.harness !== "opencode") template.machineId = d.machine;
   if (d.origin) template.origin = d.origin;
-  return { ...template, ...d.workflow };
+  if (d.deliveryMode) template.deliveryMode = d.deliveryMode;
+  if (d.steps) template.steps = d.steps.map(stepTemplate);
+  if (set(d.whenToChoose)) template.whenToChoose = set(d.whenToChoose);
+  return template;
 };
+/** A step this template's delivery can't have: pr, review, ci and merge are for pull requests only. */
+const stepRefused = (d: Draft, s: DraftStep) => (d.deliveryMode || "pr") !== "pr" && PR_STEP_KINDS.includes(s.kind);
+const stepsInvalid = (d: Draft) => !!d.steps && (d.steps.length === 0 || d.steps.some((s) => stepRefused(d, s)));
 /** How many of the folded settings a draft sets, said on the fold. */
 const setCount = (d: Draft) =>
   [d.model, d.reasoningEffort, d.permission, d.machine, d.namePattern, d.instructions].filter((v) => v.trim()).length;
@@ -177,6 +295,24 @@ const setCount = (d: Draft) =>
 const machineOptions = (harness: ExecutorHarness, machines: WorkspaceMachine[]) =>
   harness === "opencode" ? [] : machines.filter((m) => m.kind === "ssh" && !(harness === "codex" && m.contained));
 const bytes = (value: string) => new TextEncoder().encode(value).length;
+const harnessName = (h: ExecutorHarness) => (h === "codex" ? "Codex" : h === "claude" ? "Claude Code" : "OpenCode");
+/** A preset's permission for `harness`, if it has one. */
+const presetPermission = (preset: Draft["preset"], harness: ExecutorHarness) =>
+  harness === "opencode" ? "" : (preset?.permissions?.[harness] ?? "");
+/** A template made from a preset, for `harness`, under a free id. */
+const draftFromPreset = (p: ExecutorPreset, harness: ExecutorHarness, id: string): Draft => ({
+  ...draftOf({
+    id, label: p.label, harness,
+    ...(p.instructions ? { instructions: p.instructions } : {}),
+    ...(p.deliveryMode ? { deliveryMode: p.deliveryMode } : {}),
+    ...(p.steps ? { steps: p.steps } : {}),
+    ...(p.whenToChoose ? { whenToChoose: p.whenToChoose } : {}),
+  }),
+  permission: presetPermission({ permissions: p.permissions }, harness),
+  preset: { modelHint: p.modelHint, permissions: p.permissions },
+});
+/** A step line as the default steps show it. */
+const stepsLine = (steps: TemplateStep[], t: Text) => steps.map((s) => t.kinds[s.kind]).join(" → ");
 
 /** A project's executors on its page (YN-2 S2): its own Executors at once.
  * Templates are the Workspace's, in Settings. */
@@ -196,6 +332,132 @@ export function ProjectExecutors({ projectId, disabled = false }: { projectId: s
   );
 }
 
+/** Choose presets to add (YN-23): each chosen one becomes an unsaved draft.
+ * `room` is how many more templates the list takes; no more can be chosen
+ * (#742 R1 3ec18555: past it, chosen presets were left out unsaid). */
+function PresetPicker({ presets, taken, room, limit, harness, t, onAdd, onCancel }: {
+  presets: ExecutorPreset[]; taken: string[]; room: number; limit: number; harness: ExecutorHarness; t: Text;
+  onAdd: (chosen: ExecutorPreset[]) => void; onCancel: () => void;
+}) {
+  const [chosen, setChosen] = useState<string[]>([]);
+  const full = chosen.length >= room;
+  const toggle = (id: string) => setChosen((list) => (list.includes(id) ? list.filter((c) => c !== id) : [...list, id]));
+  return (
+    <div className="settings-group appearance-group executor-presets" role="group" aria-label={t.presetsTitle}>
+      <fieldset className="appearance-field">
+        <legend>{t.presetsTitle}</legend>
+        <p className="appearance-help">{t.presetsHelp(harnessName(harness))}</p>
+        {room < presets.length && <p className="appearance-help executor-presets-room" role="status">{t.room(Math.max(room, 0), limit)}</p>}
+        <div className="theme-options settings-choice-cards executor-preset-options">
+          {presets.map((p) => (
+            <label key={p.id} className="theme-choice settings-choice executor-preset-choice">
+              <input type="checkbox" value={p.id} checked={chosen.includes(p.id)} disabled={full && !chosen.includes(p.id)}
+                onChange={() => toggle(p.id)} />
+              <span className="theme-choice-name">
+                {p.label}
+                <Check size={13} className="theme-selected" aria-hidden="true" />
+              </span>
+              {p.whenToChoose && <small>{p.whenToChoose}</small>}
+              <small className="executor-preset-meta">
+                {t.deliveries[p.deliveryMode ?? "pr"][0]} · {stepsLine(p.steps ?? defaultSteps(p.deliveryMode), t)}
+              </small>
+              {taken.includes(p.id) && <small className="executor-preset-meta">{t.presetTaken}</small>}
+            </label>
+          ))}
+        </div>
+        <div className="executor-templates-actions executor-presets-actions">
+          <button type="button" className="secondary-button" disabled={chosen.length === 0}
+            onClick={() => onAdd(presets.filter((p) => chosen.includes(p.id)))}>
+            <Plus size={13} /> {t.addChosen(chosen.length)}
+          </button>
+          <button type="button" className="quiet-button" onClick={onCancel}><X size={13} /> {t.cancel}</button>
+        </div>
+      </fieldset>
+    </div>
+  );
+}
+
+/** A template's steps (YN-23): its delivery's default, or its own rows. */
+function StepsField({ d, t, edit }: { d: Draft; t: Text; edit: (change: Partial<Draft>) => void }) {
+  const steps = d.steps;
+  const change = (key: string, next: Partial<DraftStep>) =>
+    edit({ steps: (steps ?? []).map((s) => (s.key === key ? { ...s, ...next } : s)) });
+  const move = (from: number, to: number) => {
+    const list = [...(steps ?? [])];
+    const [step] = list.splice(from, 1);
+    list.splice(to, 0, step);
+    edit({ steps: list });
+  };
+  return (
+    <fieldset className="appearance-field executor-template-steps">
+      <legend>{t.steps}</legend>
+      <p className="appearance-help">{t.stepsHelp}</p>
+      {!steps ? (
+        <div className="executor-steps-default">
+          <p className="settings-row-help">{t.defaultSteps} {stepsLine(defaultSteps(d.deliveryMode || "pr"), t)}</p>
+          <button type="button" className="quiet-button" onClick={() => edit({ steps: defaultSteps(d.deliveryMode || "pr").map(stepOf) })}>
+            {t.customize}
+          </button>
+        </div>
+      ) : (
+        <>
+          <ol className="executor-steps">
+            {steps.map((s, i) => {
+              const n = i + 1;
+              const refused = stepRefused(d, s);
+              return (
+                <li key={s.key} className="executor-step">
+                  <span className="executor-step-number" aria-hidden="true">{n}</span>
+                  <select className="settings-select" aria-label={t.stepKind(n)} value={s.kind} aria-invalid={refused || undefined}
+                    onChange={(e) => change(s.key, { kind: e.target.value as StepKind })}>
+                    {STEP_KINDS.map((kind) => <option key={kind} value={kind}>{t.kinds[kind]}</option>)}
+                  </select>
+                  <input className="settings-input" aria-label={t.stepLabel(n)} value={s.label} maxLength={60} placeholder={t.kinds[s.kind]}
+                    onChange={(e) => change(s.key, { label: e.target.value })} />
+                  {s.kind === "review" && (
+                    <select className="settings-select" aria-label={t.stepRounds(n)} value={s.rounds || "1"}
+                      onChange={(e) => change(s.key, { rounds: e.target.value as "1" | "2" })}>
+                      <option value="1">{t.oneRound}</option>
+                      <option value="2">{t.twoRounds}</option>
+                    </select>
+                  )}
+                  {s.kind === "gate" && (
+                    <select className="settings-select" aria-label={t.stepApprover(n)} value={s.approver || "user"}
+                      onChange={(e) => change(s.key, { approver: e.target.value as DraftStep["approver"] })}>
+                      {(["user", "lead", "either"] as const).map((a) => <option key={a} value={a}>{t.approvers[a]}</option>)}
+                    </select>
+                  )}
+                  <span className="executor-step-actions">
+                    <button type="button" className="icon-button" aria-label={t.moveUp(n)} title={t.moveUp(n)} disabled={i === 0} onClick={() => move(i, i - 1)}>
+                      <ArrowUp size={13} />
+                    </button>
+                    <button type="button" className="icon-button" aria-label={t.moveDown(n)} title={t.moveDown(n)} disabled={i === steps.length - 1} onClick={() => move(i, i + 1)}>
+                      <ArrowDown size={13} />
+                    </button>
+                    <button type="button" className="icon-button" aria-label={t.removeStep(n)} title={t.removeStep(n)}
+                      onClick={() => edit({ steps: steps.filter((x) => x.key !== s.key) })}>
+                      <Trash2 size={13} />
+                    </button>
+                  </span>
+                  {refused && <span className="inline-error executor-step-error">{t.kindNeedsPr}</span>}
+                </li>
+              );
+            })}
+          </ol>
+          {steps.length === 0 && <p className="inline-error">{t.stepsNeeded}</p>}
+          <div className="executor-templates-actions">
+            <button type="button" className="quiet-button" disabled={steps.length >= MAX_STEPS}
+              onClick={() => edit({ steps: [...steps, stepOf({ kind: "work" })] })}>
+              <Plus size={13} /> {t.addStep}
+            </button>
+            <button type="button" className="quiet-button" onClick={() => edit({ steps: null })}>{t.useDefault}</button>
+          </div>
+        </>
+      )}
+    </fieldset>
+  );
+}
+
 /** The Workspace's executor templates (T-34; the only list since YN-2 S2).
  * The user's setting only: no Agent tool changes templates. */
 export function ExecutorTemplates({ active, disabled = false }: { active: boolean; disabled?: boolean }) {
@@ -207,6 +469,7 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
   const [reload, setReload] = useState(0);
+  const [picking, setPicking] = useState(false);
   // The registered machines a template may name; none read, only this Core host and auto.
   const [machines, setMachines] = useState<WorkspaceMachine[]>([]);
   // Whether that list has been read: a saved machine is called missing only
@@ -225,7 +488,7 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   };
   const adopt = (next: ExecutorTemplatesView) => {
     setView(next);
-    setDrafts(own(next).templates.map(draftOf));
+    setDrafts(own(next).templates.map(saved => ({ ...draftOf(saved), savedId: saved.id })));
   };
   useEffect(() => {
     if (!active) return;
@@ -251,15 +514,16 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   const changed = !!view && JSON.stringify(drafts.map(templateOf)) !== JSON.stringify(own(view).templates.map(saved => templateOf(draftOf(saved))));
   const locked = disabled || busy;
   const noLabel = (d: Draft) => !d.label.trim();
-  const invalid = drafts.some(noLabel);
+  const invalid = drafts.some(d => noLabel(d) || stepsInvalid(d));
   const edit = (key: string, change: Partial<Draft>) => {
     setDone(false);
     setDrafts(list => list.map(d => {
       if (d.key !== key) return d;
       const next = { ...d, ...change };
       if (change.label !== undefined && !d.idTouched) next.id = idFor(change.label, list.filter(o => o.key !== key).map(o => o.id));
-      // Permissions differ per harness: a change of harness starts them over.
-      if (change.harness && change.harness !== d.harness) next.permission = "";
+      // Permissions differ per harness: a change of harness starts them over,
+      // with a preset's own for the new harness if it has one.
+      if (change.harness && change.harness !== d.harness) next.permission = presetPermission(d.preset, change.harness);
       // A machine the new harness can't run on goes back to this Core host:
       // OpenCode runs only there, Codex on no machine that keeps Agents contained.
       if (change.harness === "opencode"
@@ -281,23 +545,31 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
     finally { setBusy(false); }
   }
   // On Settings › Executors the change joins the page's save bar (YN-8),
-  // held while a template's label or limit can't be saved; alone it keeps its Save.
+  // held while a template's label or steps can't be saved; alone it keeps its Save.
   const inBar = useSaveBarPart("executor-templates", changed && view && !disabled ? {
     ready: !invalid,
     save,
-    discard: () => { setError(""); setDone(false); adopt(view); },
+    discard: () => { setError(""); setDone(false); setPicking(false); adopt(view); },
   } : null);
-  // A preset becomes an unsaved draft; Save writes it, as any edit (T-43 fills the list).
-  const addPreset = (id: string) => {
-    const preset = view?.presets.find(p => p.id === id);
-    if (!preset) return;
-    const taken = drafts.map(d => d.id.trim());
-    let free = preset.id;
-    for (let n = 2; taken.includes(free); n++) free = `${preset.id.slice(0, 48 - String(n).length - 1)}-${n}`;
-    setDone(false);
-    // Only a template's fields are kept: a preset's description is not one.
-    setDrafts(list => [...list, { ...draftOf({ ...preset, id: free }), idTouched: true }]);
+  // The harness a preset's template gets: the default for new Agents, as a general executor's.
+  const presetHarness = (): ExecutorHarness => {
+    const harness = view?.general?.harness;
+    return harness === "codex" || harness === "claude" || (harness === "opencode" && view?.opencodeEnabled) ? harness : "codex";
   };
+  // Each chosen preset becomes an unsaved draft, under a free id; Save writes them, as any edit.
+  const addPresets = (chosen: ExecutorPreset[]) => {
+    const taken = drafts.map(d => d.id.trim());
+    const harness = presetHarness();
+    const made = chosen.map(p => {
+      const id = freeId(p.id, taken);
+      taken.push(id);
+      return draftFromPreset(p, harness, id);
+    });
+    setDone(false);
+    setPicking(false);
+    setDrafts(list => [...list, ...made].slice(0, view?.limits.templates ?? 50));
+  };
+  const presets = view ? presetsIn(view.presets, language) : [];
   return (
     <section
       id="settings-executor-templates"
@@ -316,117 +588,26 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
       {view && <>
         {(own(view).laterTemplates ?? 0) > 0 && <p className="settings-row-help">{t.later(own(view).laterTemplates ?? 0)}</p>}
         {drafts.length === 0 && <p className="settings-row-help">{t.none}</p>}
-        {drafts.map(d => {
-          const name = d.label.trim() || t.newTemplate;
-          return (
-            <fieldset key={d.key} className="settings-group executor-template" aria-label={name} disabled={locked}>
-              <legend>{name}</legend>
-              <label className="settings-row">
-                <span className="settings-row-main">
-                  <span className="settings-row-title">{t.label}</span>
-                  {noLabel(d) && <span className="inline-error">{t.labelNeeded}</span>}
-                  {d.origin && <span className="settings-row-help">{t.origin(d.origin.projectName, d.origin.id)}</span>}
-                </span>
-                <input className="settings-input" aria-label={t.label} value={d.label} maxLength={80} aria-invalid={noLabel(d) || undefined}
-                  onChange={e => edit(d.key, { label: e.target.value })} />
-              </label>
-              <label className="settings-row">
-                <span className="settings-row-title">{t.harness}</span>
-                <select className="settings-select" aria-label={t.harness} value={d.harness}
-                  onChange={e => edit(d.key, { harness: e.target.value as ExecutorHarness })}>
-                  <option value="codex">Codex</option>
-                  <option value="claude">Claude Code</option>
-                  {(view.opencodeEnabled || d.harness === "opencode") && <option value="opencode">OpenCode</option>}
-                </select>
-              </label>
-              <details className="executor-template-more">
-              <summary>{setCount(d) ? t.moreSet(setCount(d)) : t.more}</summary>
-              <label className="settings-row">
-                <span className="settings-row-main">
-                  <span className="settings-row-title">{t.id}</span>
-                  <span className="settings-row-help">{t.idHelp}</span>
-                </span>
-                <input className="settings-input" aria-label={t.id} value={d.id} maxLength={48}
-                  onChange={e => edit(d.key, { id: e.target.value, idTouched: true })} />
-              </label>
-              {d.harness === "opencode" ? <p className="settings-row-help">{t.opencodeNative}</p> : <>
-                <label className="settings-row">
-                  <span className="settings-row-title">{t.model}</span>
-                  <input className="settings-input" aria-label={t.model} value={d.model} placeholder={t.inheritModel}
-                    onChange={e => edit(d.key, { model: e.target.value })} />
-                </label>
-                {d.harness === "codex" && (
-                  <label className="settings-row">
-                    <span className="settings-row-title">{t.effort}</span>
-                    <input className="settings-input" aria-label={t.effort} value={d.reasoningEffort} placeholder={t.inheritEffort}
-                      disabled={locked || !d.model.trim()} onChange={e => edit(d.key, { reasoningEffort: e.target.value })} />
-                  </label>
-                )}
-                <label className="settings-row">
-                  <span className="settings-row-title">{t.permission}</span>
-                  <select className="settings-select" aria-label={t.permission} value={d.permission}
-                    onChange={e => edit(d.key, { permission: e.target.value })}>
-                    <option value="">{t.inheritPermission}</option>
-                    {(d.harness === "codex" ? CODEX_PRESETS : CLAUDE_MODES).map(value => (
-                      <option key={value} value={value}>
-                        {d.harness === "codex" ? codexPermissionText(value, language) : claudeModeText(value, language)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </>}
-              <label className="settings-row">
-                <span className="settings-row-main">
-                  <span className="settings-row-title">{t.runsOn}</span>
-                  <span className="settings-row-help">
-                    {d.harness === "opencode" ? t.opencodeHost : d.machine === "auto" ? t.autoHelp : t.machineHelp}
-                  </span>
-                </span>
-                <select className="settings-select" aria-label={t.runsOn} value={d.harness === "opencode" ? "" : d.machine}
-                  disabled={locked || d.harness === "opencode"} onChange={e => edit(d.key, { machine: e.target.value })}>
-                  <option value="">{t.thisHost}</option>
-                  {machineOptions(d.harness, machines).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                  {d.harness !== "opencode" && d.machine && d.machine !== "auto" && !machineOptions(d.harness, machines).some(m => m.id === d.machine) && (
-                    // Kept as saved, and named for what is known of it.
-                    <option value={d.machine}>{savedMachine(d.machine)}</option>
-                  )}
-                  {d.harness !== "opencode" && <option value="auto">{t.auto}</option>}
-                </select>
-              </label>
-              <label className="settings-row">
-                <span className="settings-row-main">
-                  <span className="settings-row-title">{t.namePattern}</span>
-                  <span className="settings-row-help">{t.namePatternHelp(view.defaultNamePattern)}</span>
-                </span>
-                <input className="settings-input" aria-label={t.namePattern} value={d.namePattern} maxLength={120}
-                  placeholder={view.defaultNamePattern} onChange={e => edit(d.key, { namePattern: e.target.value })} />
-              </label>
-              <label className="settings-row executor-template-instructions">
-                <span className="settings-row-main">
-                  <span className="settings-row-title">{t.instructions}</span>
-                  <span className="settings-row-help">{t.instructionsHelp(bytes(d.instructions), view.limits.instructionsBytes)}</span>
-                </span>
-                <textarea className="settings-textarea" aria-label={t.instructions} rows={4} value={d.instructions}
-                  onChange={e => edit(d.key, { instructions: e.target.value })} />
-              </label>
-              </details>
-              <button type="button" className="quiet-button" onClick={() => { setDone(false); setDrafts(list => list.filter(x => x.key !== d.key)); }}>
-                <Trash2 size={13} /> {t.remove(name)}
-              </button>
-            </fieldset>
-          );
-        })}
+        {drafts.map(d => (
+          <TemplateCard key={d.key} d={d} t={t} language={language} view={view} locked={locked} machines={machines}
+            savedMachine={savedMachine} edit={(change) => edit(d.key, change)}
+            remove={() => { setDone(false); setDrafts(list => list.filter(x => x.key !== d.key)); }} />
+        ))}
+        {picking && (
+          <PresetPicker presets={presets} taken={drafts.map(d => d.id.trim())} room={view.limits.templates - drafts.length}
+            limit={view.limits.templates} harness={presetHarness()} t={t}
+            onAdd={addPresets} onCancel={() => setPicking(false)} />
+        )}
         <div className="executor-templates-actions">
           <button type="button" className="quiet-button" disabled={locked || drafts.length >= view.limits.templates}
             onClick={() => { setDone(false); setDrafts(list => [...list, { ...draftOf({ id: "", label: "", harness: "codex" }), idTouched: false }]); }}>
             <Plus size={13} /> {t.add}
           </button>
-          {view.presets.length > 0 && (
-            <select className="settings-select" aria-label={t.fromPreset} value="" disabled={locked || drafts.length >= view.limits.templates}
-              onChange={e => addPreset(e.target.value)}>
-              <option value="">{t.fromPreset}</option>
-              {view.presets.map(p => <option key={p.id} value={p.id} title={p.description}>{p.label}</option>)}
-            </select>
+          {presets.length > 0 && !picking && (
+            <button type="button" className="quiet-button" disabled={locked || drafts.length >= view.limits.templates}
+              onClick={() => setPicking(true)}>
+              <Plus size={13} /> {t.addPresets}
+            </button>
           )}
           {!inBar && (
             <button type="button" className="secondary-button" disabled={locked || !changed || invalid} onClick={() => void save()}>
@@ -439,5 +620,158 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
       {error && <p className="inline-error" role="alert">{error}</p>}
       {error && <button type="button" className="quiet-button" disabled={busy} onClick={() => setReload(n => n + 1)}>{t.reload}</button>}
     </section>
+  );
+}
+
+const changedAt = timeFormatter({ year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+/** Who last changed a template, when and why (YN-24): leads change templates
+ * directly, so this line is where you see their changes. */
+function LastChange({ change, t }: { change: TemplateChange; t: Text }) {
+  const time = useTimeDisplay();
+  const ms = Date.parse(change.at);
+  const who = change.by.kind === "user" ? t.you : change.by.name;
+  const reason = change.reason?.trim();
+  return (
+    <p className="settings-row-help executor-template-changed">
+      {t.lastChanged}{who}
+      {Number.isFinite(ms) && <> · <time dateTime={moment(ms, time).dateTime} title={moment(ms, time).title}>{changedAt(time).format(ms)}</time></>}
+      {reason && <> · {reason}</>}
+    </p>
+  );
+}
+
+/** One template, in Settings' card style (YN-8): what it is, how its work is
+ * delivered, its steps, then the rest folded. */
+function TemplateCard({ d, t, language, view, locked, machines, savedMachine, edit, remove }: {
+  d: Draft; t: Text; language: Language; view: ExecutorTemplatesView; locked: boolean; machines: WorkspaceMachine[];
+  savedMachine: (id: string) => string; edit: (change: Partial<Draft>) => void; remove: () => void;
+}) {
+  const name = d.label.trim() || t.newTemplate;
+  const noLabel = !d.label.trim();
+  const change = d.savedId ? view.lastModified?.[d.savedId] : undefined;
+  const deliveries = (["pr", "direct-commit", "none"] as const).map((value) => ({
+    value, label: t.deliveries[value][0], note: t.deliveries[value][1],
+  }));
+  return (
+    <fieldset className="settings-group appearance-group executor-template" aria-label={name} disabled={locked}>
+      <legend className="executor-template-name">{name}</legend>
+      {change && <LastChange change={change} t={t} />}
+      <div className="appearance-field executor-template-basics">
+        <label className="settings-row">
+          <span className="settings-row-main">
+            <span className="settings-row-title">{t.label}</span>
+            {noLabel && <span className="inline-error">{t.labelNeeded}</span>}
+            {d.origin && <span className="settings-row-help">{t.origin(d.origin.projectName, d.origin.id)}</span>}
+          </span>
+          <input className="settings-input" aria-label={t.label} value={d.label} maxLength={80} aria-invalid={noLabel || undefined}
+            onChange={e => edit({ label: e.target.value })} />
+        </label>
+        <label className="settings-row">
+          <span className="settings-row-main">
+            <span className="settings-row-title">{t.harness}</span>
+          </span>
+          <select className="settings-select" aria-label={t.harness} value={d.harness}
+            onChange={e => edit({ harness: e.target.value as ExecutorHarness })}>
+            <option value="codex">Codex</option>
+            <option value="claude">Claude Code</option>
+            {(view.opencodeEnabled || d.harness === "opencode") && <option value="opencode">OpenCode</option>}
+          </select>
+        </label>
+        <label className="settings-row">
+          <span className="settings-row-main">
+            <span className="settings-row-title">{t.whenToChoose}</span>
+            <span className="settings-row-help">{t.whenToChooseHelp}</span>
+          </span>
+          <input className="settings-input executor-template-when" aria-label={t.whenToChoose} value={d.whenToChoose} maxLength={200}
+            onChange={e => edit({ whenToChoose: e.target.value })} />
+        </label>
+      </div>
+      <fieldset className="appearance-field executor-template-delivery">
+        <legend>{t.delivery}</legend>
+        <p className="appearance-help">{t.deliveryHelp}</p>
+        <ChoiceCards<DeliveryMode> name={`delivery-${d.key}`} value={d.deliveryMode || "pr"} choices={deliveries}
+          className="executor-delivery-choice" onChange={(deliveryMode) => edit({ deliveryMode })} />
+      </fieldset>
+      <StepsField d={d} t={t} edit={edit} />
+      <details className="executor-template-more">
+        <summary>{setCount(d) ? t.moreSet(setCount(d)) : t.more}</summary>
+        <label className="settings-row">
+          <span className="settings-row-main">
+            <span className="settings-row-title">{t.id}</span>
+            <span className="settings-row-help">{t.idHelp}</span>
+          </span>
+          <input className="settings-input" aria-label={t.id} value={d.id} maxLength={48}
+            onChange={e => edit({ id: e.target.value, idTouched: true })} />
+        </label>
+        {d.harness === "opencode" ? <p className="settings-row-help">{t.opencodeNative}</p> : <>
+          <label className="settings-row">
+            <span className="settings-row-main">
+              <span className="settings-row-title">{t.model}</span>
+              {d.preset?.modelHint && <span className="settings-row-help">{t.modelHint(d.preset.modelHint)}</span>}
+            </span>
+            <input className="settings-input" aria-label={t.model} value={d.model} placeholder={t.inheritModel}
+              onChange={e => edit({ model: e.target.value })} />
+          </label>
+          {d.harness === "codex" && (
+            <label className="settings-row">
+              <span className="settings-row-title">{t.effort}</span>
+              <input className="settings-input" aria-label={t.effort} value={d.reasoningEffort} placeholder={t.inheritEffort}
+                disabled={locked || !d.model.trim()} onChange={e => edit({ reasoningEffort: e.target.value })} />
+            </label>
+          )}
+          <label className="settings-row">
+            <span className="settings-row-title">{t.permission}</span>
+            <select className="settings-select" aria-label={t.permission} value={d.permission}
+              onChange={e => edit({ permission: e.target.value })}>
+              <option value="">{t.inheritPermission}</option>
+              {(d.harness === "codex" ? CODEX_PRESETS : CLAUDE_MODES).map(value => (
+                <option key={value} value={value}>
+                  {d.harness === "codex" ? codexPermissionText(value, language) : claudeModeText(value, language)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </>}
+        <label className="settings-row">
+          <span className="settings-row-main">
+            <span className="settings-row-title">{t.runsOn}</span>
+            <span className="settings-row-help">
+              {d.harness === "opencode" ? t.opencodeHost : d.machine === "auto" ? t.autoHelp : t.machineHelp}
+            </span>
+          </span>
+          <select className="settings-select" aria-label={t.runsOn} value={d.harness === "opencode" ? "" : d.machine}
+            disabled={locked || d.harness === "opencode"} onChange={e => edit({ machine: e.target.value })}>
+            <option value="">{t.thisHost}</option>
+            {machineOptions(d.harness, machines).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+            {d.harness !== "opencode" && d.machine && d.machine !== "auto" && !machineOptions(d.harness, machines).some(m => m.id === d.machine) && (
+              // Kept as saved, and named for what is known of it.
+              <option value={d.machine}>{savedMachine(d.machine)}</option>
+            )}
+            {d.harness !== "opencode" && <option value="auto">{t.auto}</option>}
+          </select>
+        </label>
+        <label className="settings-row">
+          <span className="settings-row-main">
+            <span className="settings-row-title">{t.namePattern}</span>
+            <span className="settings-row-help">{t.namePatternHelp(view.defaultNamePattern)}</span>
+          </span>
+          <input className="settings-input" aria-label={t.namePattern} value={d.namePattern} maxLength={120}
+            placeholder={view.defaultNamePattern} onChange={e => edit({ namePattern: e.target.value })} />
+        </label>
+        <label className="settings-row executor-template-instructions">
+          <span className="settings-row-main">
+            <span className="settings-row-title">{t.instructions}</span>
+            <span className="settings-row-help">{t.instructionsHelp(bytes(d.instructions), view.limits.instructionsBytes)}</span>
+          </span>
+          <textarea className="settings-textarea" aria-label={t.instructions} rows={4} value={d.instructions}
+            onChange={e => edit({ instructions: e.target.value })} />
+        </label>
+      </details>
+      <div className="executor-template-footer">
+        <button type="button" className="quiet-button" onClick={remove}>
+          <Trash2 size={13} /> {t.remove(name)}
+        </button>
+      </div>
+    </fieldset>
   );
 }
