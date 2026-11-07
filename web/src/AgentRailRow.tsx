@@ -9,10 +9,10 @@ import { useAgentCI, waitingSummary } from "./live-ci";
 import { useHandoffDrop } from "./SendToAgent";
 import { strings, useLanguage, type Language } from "./i18n";
 import { lifecycleText, stateDetail } from "./executor-lifecycle";
-import { REVIEW_ROUNDS, executorView, type ExecutorPR } from "./executor-display";
+import { executorView, type ExecutorPR } from "./executor-display";
 import { executorRowText, rowFactsLabel, stateText } from "./ExecutorRowState";
-import { AgentIsland, clockShort, islandActivity, islandText, lineText, useIslandShell, type IslandPill } from "./AgentIsland";
-import { islandView, type IslandAction, type IslandForm, type IslandState } from "./agent-island";
+import { AgentIsland, clockShort, islandText, lineText, stayText, stayTone, useIslandShell, type IslandPill } from "./AgentIsland";
+import { islandView, type IslandAction, type IslandForm } from "./agent-island";
 import { useExecutorPR, useMinute } from "./live-executors";
 import "./reading.css";
 
@@ -161,7 +161,7 @@ export function AgentRailRow({
   /** Where its ring goes (T-43 v10.2): Home's Needs you, at its item; its task. */
   onOpenHome?: (agentId: string) => void;
   onOpenTask?: (taskId: string) => void;
-  /** Its actions (T-184): a "…" button, a right-click or a long-press. */
+  /** Its actions (T-184): a right-click, a long-press, or the context-menu key (rail v11: no "…" button). */
   actions?: AgentActionHandlers;
 }) {
   const language = useLanguage();
@@ -202,36 +202,43 @@ export function AgentRailRow({
             ...(lifecycle ? stateDetail(lifecycle, states) : [])].join("\n"),
         }
       : null;
-  const description = t.description(shown, executor ? null : waiting?.detail ?? null, machine, agent.unreadCount);
-  // Its island (T-43, 灵动环 v10.2, the user's design): a ring at the row's
-  // top right that is the state itself. A click on the row opens the
+  // Updates unread are a lead's only (the user, rail v11).
+  const unread = agent.kind === "lead" ? agent.unreadCount : 0;
+  const description = t.description(shown, executor ? null : waiting?.detail ?? null, machine, unread);
+  // Its island (T-43, rail v11, the user's answers): a ring at the row's
+  // top right says one of five states; every other state is a pill beside
+  // it that stays while it holds. A click on the row opens the
   // conversation; a click on the ring goes straight to its state's place
   // (Home for what it asks, its task, or the conversation). Needs you and
-  // failed are row islands until handled; a passing event grows a pill.
+  // failed are row islands until handled.
   const island = islandView({ agent, executor, lifecycle, unseen, waiting: waiting?.label ?? null, statusLabel: label, compacting, waitingSince });
   const words = islandText(language);
   const now = useMinute();
-  const rest: IslandForm = island.auto ? "row" : "ring";
-  const pill = usePassingEvent({ unread: agent.unreadCount, state: island.state, pr: pr ?? null, language, quiet: rest !== "ring" });
-  const form: IslandForm = pill ? "pill" : rest;
+  const stay: IslandPill | null = island.stay && !island.auto
+    ? { text: stayText(island.stay, language), ring: null, tone: stayTone(island.stay), event: false } : null;
+  const rest: IslandForm = island.auto ? "row" : stay ? "pill" : "ring";
+  // A passing event takes the pill's place for a few seconds; then what stays comes back.
+  const queued = island.stay?.kind === "queued" || island.stay?.kind === "starting";
+  const event = usePassingEvent({ state: queued ? "queued" : island.state, pr: pr ?? null, language, quiet: island.auto });
+  const pill = event ?? stay;
+  const form: IslandForm = island.auto ? "row" : pill ? "pill" : rest;
   const row = useRef<HTMLElement>(null);
   const shell = useRef<HTMLSpanElement>(null);
-  useIslandShell(row, shell, form);
+  useIslandShell(row, shell, form, pill?.text ?? null);
   // An executor's template, PR and task, for its ring's title.
   const factsLabel = executor ? rowFactsLabel(executor, template, executorRowText(language)) : null;
   const go = (action: IslandAction) => {
     if (action === "answer") onOpenHome?.(agent.id);
-    else if (action === "turn" || action === "unread") onSelect();
+    else if (action === "turn" || action === "reply") onSelect();
     else if (island.task) onOpenTask?.(island.task);
   };
-  // Line one: a standing Agent's name, an executor's activity (the user,
-  // v7: what it is doing matters, not its name). Line two: what a standing
-  // Agent last said; an executor's task key and its clock.
-  const activity = executor ? islandActivity(island, language) : null;
+  // Line one: a standing Agent's name; an executor's task, by its short
+  // name, else its title (the user, v11: what task it is doing, in words a
+  // person reads at a glance; no keys or PR numbers). Line two, small: what
+  // it is doing now, then its clock; for a standing Agent what it last said.
   const time = island.clock ? clockShort(island.clock, now, language) : null;
   const alert = !executor && (island.state === "waiting" || island.state === "failed");
-  // An executor's line two: its task's key, then its clock.
-  const taskKey = lifecycle?.task?.id ?? null;
+  const progress = executor ? lineText(island.line, language) : "";
   const summaryLine = summary && (
     <div
       className={`agent-work-summary kind-${summary.kind}`}
@@ -283,14 +290,17 @@ export function AgentRailRow({
         aria-label={t.open(agent.name)}
         aria-description={kind ? `${kind.name} · ${description}` : description}
         aria-current={selected ? "true" : undefined}
-        title={`${t.title(agent.name, shown, executor ? null : waiting?.detail ?? null, agent.unreadCount)}${kind ? ` · ${kind.name}` : ""}`}
+        title={`${t.title(agent.name, shown, executor ? null : waiting?.detail ?? null, unread)}${kind ? ` · ${kind.name}` : ""}${lifecycle?.task ? `\n${lifecycle.task.id} · ${lifecycle.task.title}` : ""}`}
+        onKeyDown={actions ? (event) => {
+          // The keyboard's way to the actions (rail v11, no "…" button): the context-menu key or Shift+F10.
+          if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+          event.preventDefault();
+          const box = event.currentTarget.getBoundingClientRect();
+          menu.current?.openAt({ x: box.left + 12, y: box.bottom }, event.currentTarget);
+        } : undefined}
       >
-        {activity ? (
-          <span className="agent-line-one agent-activity" data-state={island.state}>
-            {activity.word && <span className="island-word">{activity.word}</span>}
-            {activity.sep}
-            {activity.text}
-          </span>
+        {executor ? (
+          <span className="agent-line-one agent-task-name" data-state={island.state}>{island.title ?? agent.name}</span>
         ) : (
           <span className="agent-line-one agent-identity">
             <span className="agent-name">{agent.name}</span>
@@ -300,14 +310,15 @@ export function AgentRailRow({
       </button>
       {executor ? (
         <div className="agent-row-meta">
-          <span className="agent-task-key">{taskKey ?? agent.name}</span>
-          {time && <>{words.gap}<span className="island-clock">{time}</span></>}
+          {progress && <span className="agent-progress">{progress}</span>}
+          {progress && time && words.gap}
+          {time && <span className="island-clock">{time}</span>}
         </div>
       ) : alert ? (
         // A standing Agent that needs you or failed says so in words, then what it said.
         <div className="agent-row-state is-alert">
           <span className="island-word">{words.word[island.state]}</span>
-          {summaryLine ?? <span className="agent-row-said">{lineText(island.line, island.state, language)}</span>}
+          {summaryLine ?? <span className="agent-row-said">{lineText(island.line, language)}</span>}
         </div>
       ) : summary && (
         <div className="agent-row-state">{summaryLine}</div>
@@ -318,8 +329,8 @@ export function AgentRailRow({
         data-jobs={waiting ? jobs?.active : undefined}
         data-ci={waiting && ci ? ci.running + ci.discovering + (ci.waitingForRun ?? 0) + ci.check : undefined}
         data-combined={combined || !!unseen || undefined} />
-      {/* After the island in focus order; beside the ring, where the reader is (T-15). */}
-      {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} className="agent-row-menu" />}
+      {/* No "…" (rail v11): the menu opens at a right-click, a long-press or the context-menu key. */}
+      {actions && <AgentActionsMenu ref={menu} agent={agent} handlers={actions} trigger={false} />}
       {drop.state && (
         <p className="handoff-hint" role="status">
           {drop.state === "accept" ? t.drop(agent.name) : drop.refusal}
@@ -337,49 +348,40 @@ export function AgentRailRow({
   );
 }
 
-/** A passing event for the ring's pill (T-43 v10.2): what changed since the
- * row last showed, said for a few seconds in a pill grown left out of the
- * ring, the latest replacing one shown. Its PR merged, a review asked for
- * changes or passed, its checks failed or turned green; it handed in, or
- * started after queuing; new messages came. Nothing on the row's first
- * showing or a PR's first reading (where things stand is not news), and
- * nothing while the row is the island (needs you, failed): it says more. */
-type Passing = "merged" | "reviewChanges" | "reviewOk" | "ciFailed" | "ciGreen" | "handedIn" | "started" | "messages";
-function usePassingEvent({ unread, state, pr, language, quiet }: { unread: number; state: IslandState; pr: ExecutorPR | null; language: Language; quiet: boolean }): IslandPill | null {
-  const [pill, setPill] = useState<{ kind: Passing; n: number; pr: number | null } | null>(null);
-  const seen = useRef<{ unread: number; state: IslandState; pr: ExecutorPR | null } | null>(null);
+/** A passing event for the pill (T-43 rail v11): what changed since the
+ * row last showed, said for a few seconds in the pill's place, the latest
+ * replacing one shown; then the state that stays comes back. Its PR merged,
+ * its checks failed or turned green, it started after queuing. Review news
+ * is the staying pill's own ("审查中", "要改", "等合并"), and new messages are
+ * no event (the user, v11). Nothing on the row's first showing or a PR's
+ * first reading, and nothing while the row is the island (needs you, failed). */
+type Passing = "merged" | "ciFailed" | "ciGreen" | "started";
+function usePassingEvent({ state, pr, language, quiet }: { state: string; pr: ExecutorPR | null; language: Language; quiet: boolean }): IslandPill | null {
+  const [pill, setPill] = useState<Passing | null>(null);
+  const seen = useRef<{ state: string; pr: ExecutorPR | null } | null>(null);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => {
     const was = seen.current;
-    seen.current = { unread, state, pr };
+    seen.current = { state, pr };
     if (!was || quiet) return;
     const before = was.pr && pr && was.pr.number === pr.number ? was.pr : null;
-    const reviews = (p: ExecutorPR | null) => p?.reviews ?? { approved: 0, changesRequested: false, running: false };
     const kind: Passing | null =
       before && pr!.state === "merged" && before.state !== "merged" ? "merged"
-        : before && reviews(pr).changesRequested && !reviews(before).changesRequested ? "reviewChanges"
-          : before && reviews(pr).approved >= REVIEW_ROUNDS && reviews(before).approved < REVIEW_ROUNDS ? "reviewOk"
-            : before && before.ci != null && pr!.ci !== before.ci && (pr!.ci === "failure" || pr!.ci === "success") ? (pr!.ci === "failure" ? "ciFailed" : "ciGreen")
-              : state === "handed" && was.state === "working" ? "handedIn"
-                : state === "working" && was.state === "queued" ? "started"
-                  : unread > was.unread ? "messages" : null;
+        : before && before.ci != null && pr!.ci !== before.ci && (pr!.ci === "failure" || pr!.ci === "success") ? (pr!.ci === "failure" ? "ciFailed" : "ciGreen")
+          : state === "working" && was.state === "queued" ? "started" : null;
     if (!kind) return;
-    setPill({ kind, n: unread - was.unread, pr: pr?.number ?? null });
+    setPill(kind);
     window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => setPill(null), kind === "reviewChanges" || kind === "ciFailed" ? BAD_PILL_MS : PILL_MS);
-  }, [unread, state, pr, quiet]);
+    timer.current = window.setTimeout(() => setPill(null), kind === "ciFailed" ? BAD_PILL_MS : PILL_MS);
+  }, [state, pr, quiet]);
   useEffect(() => () => window.clearTimeout(timer.current), []);
   if (!pill || quiet) return null;
   const t = islandText(language).pill;
-  switch (pill.kind) {
-    case "merged": return { text: t.merged(pill.pr), ring: "green", tone: "ok" };
-    case "reviewChanges": return { text: t.reviewChanges, ring: null, tone: "bad" };
-    case "reviewOk": return { text: t.reviewOk, ring: "green", tone: "ok" };
-    case "ciFailed": return { text: t.ciFailed, ring: "red", tone: "bad" };
-    case "ciGreen": return { text: t.ciGreen, ring: "green", tone: "ok" };
-    case "handedIn": return { text: t.handedIn(pill.pr), ring: null, tone: "ok" };
-    case "started": return { text: t.started, ring: null, tone: "working" };
-    case "messages": return { text: t.messages(Math.max(1, pill.n)), ring: null, tone: "info" };
+  switch (pill) {
+    case "merged": return { text: t.merged, ring: "green", tone: "ok", event: true };
+    case "ciFailed": return { text: t.ciFailed, ring: "red", tone: "bad", event: true };
+    case "ciGreen": return { text: t.ciGreen, ring: "green", tone: "ok", event: true };
+    case "started": return { text: t.started, ring: null, tone: "working", event: true };
   }
 }
 /** How long a passing event's pill stays before it shrinks into the ring;

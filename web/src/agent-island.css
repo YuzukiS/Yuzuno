@@ -22,12 +22,14 @@
 .agent-row[data-island] {
   --tone: var(--island-quiet);
 }
+/* The ring's five states (rail v11): working green, needs you orange, done
+   ✓ green, failed ✕ red, idle grey. */
 .agent-row[data-island="working"] { --tone: var(--island-working); }
-.agent-row:is([data-island="handed"], [data-island="done"]) { --tone: var(--island-ok); }
+.agent-row[data-island="done"] { --tone: var(--island-ok); }
 .agent-row[data-island="waiting"] { --tone: var(--island-attention); }
 .agent-row[data-island="failed"] { --tone: var(--island-error); }
 .island-ringbox[data-ring] { color: var(--tone); }
-.island-ringbox:is([data-ring="green"], [data-ring="done"], [data-ring="handed"]) { color: var(--island-ok); }
+.island-ringbox:is([data-ring="green"], [data-ring="done"]) { color: var(--island-ok); }
 .island-ringbox[data-ring="red"] { color: var(--island-error); }
 
 /* The ring: a button where it goes somewhere of its own, else part of the
@@ -102,45 +104,32 @@ button.agent-island:is(:hover, :focus-visible) .island-ringbox {
 .island-ring .r-idle { stroke-width: calc(1.5px + var(--thick, 0px)); opacity: 0.55; }
 .island-ring .r-track { stroke-width: calc(1.5px + var(--thick, 0px)); opacity: 0.22; }
 .island-ring .r-arc { stroke-width: calc(2.4px + var(--thick, 0px)); }
-.island-ring .r-faint { stroke-width: calc(1.4px + var(--thick, 0px)); opacity: 0.35; }
-.island-ring :is(.r-rounds, .r-inner) { stroke-width: calc(1.6px + var(--thick, 0px)); }
 .island-ring .r-breathe { stroke-width: calc(2.6px + var(--thick, 0px)); animation: island-breathe 2.4s ease-in-out infinite; }
-.island-ring .r-dots { stroke-width: calc(2.4px + var(--thick, 0px)); }
-.island-ring .r-dashed { stroke-width: calc(1.6px + var(--thick, 0px)); opacity: 0.75; }
 .island-ring :is(.r-full, .r-mark) { stroke-width: calc(2.2px + var(--thick, 0px)); }
-.island-ring .r-archived { stroke-width: calc(1.2px + var(--thick, 0px)); }
-.island-ring .r-box { stroke-width: calc(1.5px + var(--thick, 0px)); opacity: 0.75; }
 .island-ring .r-spin { transform-origin: 12px 12px; animation: island-turn 1.4s linear infinite; }
-.island-ring .r-march { transform-origin: 12px 12px; animation: island-turn 9s linear infinite; }
 @keyframes island-turn {
   to { transform: rotate(360deg); }
 }
 @keyframes island-breathe {
   50% { stroke-width: 3.4px; }
 }
-/* Unread: a count outside the ring's top left, clear of its stroke. */
-.island-notch {
+/* A lead's updates unread: a small dot at the ring's top left, no count
+   (the user, v11); no other Agent has one. */
+.island-dot {
   position: absolute;
-  top: -7px;
-  right: calc(100% - 2px);
-  min-width: 14px;
-  height: 14px;
-  box-sizing: border-box;
-  padding: 0 3px;
+  top: -1px;
+  left: -1px;
+  width: 7px;
+  height: 7px;
   border-radius: 999px;
   background: var(--island-unread);
-  color: var(--paper);
   box-shadow: 0 0 0 2px var(--cream, var(--paper));
-  font-size: 9px;
-  font-weight: 800;
-  line-height: 14px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
 }
-/* A passing event: a few words left of the ring, in the pill's outline.
-   They take their width from line one, whose words wrap rather than being
-   covered (the user, v10.2): the row may grow while they show, and settles
-   back after; the ring's right edge stays. */
+/* A pill: a short phrase left of the ring, in the pill's outline, for a
+   state that stays (as long as it holds) or a passing event (a few seconds
+   in its place). It takes its width from line one, whose words wrap rather
+   than being covered: the row may grow while it shows; the ring's right
+   edge stays. */
 .island-pill {
   margin-right: 6px;
   color: var(--pill-tone);
@@ -154,6 +143,7 @@ button.agent-island:is(:hover, :focus-visible) .island-ringbox {
 .agent-row:has(.island-pill[data-tone="bad"]) { --pill-tone: var(--island-error); }
 .agent-row:has(.island-pill[data-tone="info"]) { --pill-tone: var(--island-unread); }
 .agent-row:has(.island-pill[data-tone="working"]) { --pill-tone: var(--island-working); }
+.agent-row:has(.island-pill[data-tone="quiet"]) { --pill-tone: var(--island-quiet); }
 
 /* The outline: under the row's content, the row's own box while the row is
    the island, a pill's box (set by the script) over line one's end for a

@@ -2602,6 +2602,12 @@ test("a message link in a reply or pasted into agent search opens here, not as a
 const changes = (page) => page.calls.filter((c) => (c.init.method || "GET") !== "GET" && !c.url.endsWith("/reading")).map((c) => `${c.init.method} ${c.url}`);
 const linkDraft = (text) => JSON.stringify({ version: 1, nextNumber: 1, parts: [{ kind: "text", text }] });
 
+// A sidebar row's actions open at its link's context-menu key (T-43 rail v11: no "…").
+function openRowActions(page, name) {
+  page.document.querySelector(`[aria-label="Open ${name}"]`)
+    .dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "ContextMenu", bubbles: true, cancelable: true }));
+}
+
 test("an Agent link is copied from its menu and opens that Agent only, changing nothing; another Workspace or a removed Agent is said (T-184)", async () => {
   const page = await mount({
     workspaceIdentity: "ws-1",
@@ -2613,7 +2619,7 @@ test("an Agent link is copied from its menu and opens that Agent only, changing 
     const toast = () => page.document.querySelector(".toast")?.textContent || "";
     const alert = () => page.document.querySelector(".toast-error")?.textContent || "";
     await until(() => shown() === "a", "Mori is open");
-    page.document.querySelector('[aria-label="Actions for Hana"]').click();
+    openRowActions(page, "Hana");
     await pause();
     page.document.querySelector('[role="menuitem"][data-action="copyLink"]').click();
     await until(() => page.copied.length, "the link is copied");
@@ -4979,11 +4985,11 @@ test("rail shows attributed current work as plain text; the inspector opens the 
       false,
     );
     assert.match(rail.textContent, /Reported/);
-    // One target opens the card, then its ring (T-43), which goes to its
-    // unread update, then its actions beside it (T-184); the machine is
-    // shown, the working folder is not.
-    assert.deepEqual([...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")),
-      ["Open Mori", "Mori · Read 1 unread", "Actions for Mori"]);
+    // One target opens the card. Its ring has nowhere of its own: updates
+    // unread are no state for an Agent that isn't a lead, and its actions
+    // have no "…" (T-43 rail v11); the machine is shown, the working folder
+    // is not.
+    assert.deepEqual([...rail.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")), ["Open Mori"]);
     // The name has the row's first line to itself (T-15): a rail this narrow
     // cannot hold an avatar, a whole name and the status word together, so
     // where the Agent runs moved into the actions menu, which a pointer, a
@@ -4997,7 +5003,7 @@ test("rail shows attributed current work as plain text; the inspector opens the 
     assert.doesNotMatch(identity?.textContent || "", /Core host/, "not beside the name any more");
     assert.match(rail.querySelector(".agent-select").getAttribute("aria-description"), /on Core host/);
     // Said as words in the menu, not only in a label on the button that opens it.
-    rail.querySelector('button[aria-label="Actions for Mori"]').click();
+    openRowActions(page, "Mori");
     await pause();
     const where = page.document.querySelector(".agent-actions-where");
     assert.ok(where, "the menu says where the Agent runs");
@@ -7151,7 +7157,7 @@ test("the decision on its way shows the spinner the answer form has, on its own 
 test("Actions → Close agent swaps in its confirmation in place, and Keep agent takes focus as the card that had it goes (T-19 ST:AG2)", async () => {
   const page = await mount({});
   try {
-    page.document.querySelector('[aria-label="Actions for Mori"]').click();
+    openRowActions(page, "Mori");
     await until(() => [...page.document.querySelectorAll('[role="menuitem"]')].some((m) => m.textContent.trim() === "Manage…"), "the Agent's menu");
     [...page.document.querySelectorAll('[role="menuitem"]')].find((m) => m.textContent.trim() === "Manage…").click();
     await until(() => page.document.querySelector('[role="dialog"] .agent-action-card'), "Conversation actions");

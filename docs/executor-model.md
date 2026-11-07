@@ -696,74 +696,63 @@ has the blocker (`blocked`); its state stays what it is.
   blocked on it; a released one, under Archived and in Closed. While some
   wait for a slot, the group's heading says how many are queued and how
   many run.
-- **Every Agent's row** has no avatar. Line one is a standing Agent's or a
-  lead's name, and an executor's activity: what it is doing, after its
-  state's word ("Needs you: approve the design note", "Handed in #688 ·
-  waiting for the lead"; Working has no word). Line two is what a standing
-  Agent last said, or an executor's task key and its clock, small and grey.
-  At the row's top right is its ring (灵动环, `AgentIsland.tsx` over
-  `agent-island.ts`), then the "…" of its actions where you are (the row
-  selected, or the keyboard on its link or on the "…"). The executor's name,
-  template and PR are in its ring's title. A row is never more than three
-  lines, and its height follows what it says.
-  The states are 空闲 Idle, 在做 Working, 已交 · 等负责人 Handed in, 等你
-  Needs you, 排队 Queued, 离线 Offline, 完成 Done, 出错 Failed and 已归档
-  Archived.
-  - An executor's comes from its one state, the first of these that holds:
-    released or archiving (archived, with what an archiving one waits for);
-    its start failed (failed, with why); closed (archived); queued or
-    starting (queued, with its place); a request or question waiting for
-    you (needs you: what it asks is its work summary); its Turn failed
-    (failed); offline or disconnected (offline); delivering (handed in, or
-    working while a Turn runs: it is on its next slice); otherwise working.
-    Its activity is its task's blocker, else its work summary, else what
-    its state is at (a result to check, its unfinished Jobs and CI), else
-    its task's title.
-  - A standing Agent's comes from its runtime: closed; offline; a request
-    waiting; an error, or a Turn that failed and this device hasn't shown;
-    working (compacting too, and an idle Agent's unfinished Jobs or CI); a
-    Turn ended with updates unread (done); otherwise idle.
+- **Every Agent's row** has no avatar (rail v11, the user's answers to
+  design/ask-rail-readability). Line one is a standing Agent's or a lead's
+  name, and an executor's task in plain words: its short name, else its
+  title, with no key or PR number. Line two, small and grey, is what a
+  standing Agent last said, or what an executor is doing now (its task's
+  blocker, its work summary, what its state is at) and then its clock. The
+  task's key and title are in the row link's title; the executor's name,
+  template and PR in its ring's title. A row is never more than three
+  lines, and its height follows what it says. The open Agent's row looks as
+  a row under the pointer does: its background only, no border or fill of
+  its own. No row has a "…": a right-click, a long-press, or the
+  context-menu key or Shift+F10 on its link opens its actions.
+- **The ring says one of five states** (22 px, strokes only, at the row's
+  top right; `AgentIsland.tsx` over `agent-island.ts`): working, an arc
+  that turns; needs you, a bold orange ring that breathes; done, ✓; failed,
+  ✕; idle, a thin grey ring. Under reduced motion nothing turns or
+  breathes. Only a lead shows updates unread, as a small dot at the ring's
+  top left with no count; other Agents show none.
+  - An executor's: working while it runs (handed in too, while a Turn runs
+    on its next slice); needs you while a request or question waits; ✕ when
+    its start or its Turn failed; ✓ once released or archiving (what an
+    archiving one waits for is line two); otherwise grey.
+  - A standing Agent's: working while a Turn runs (compacting too, and an
+    idle Agent's unfinished Jobs or CI); needs you; ✕ for an error or a
+    failed Turn not yet shown; ✓ for a Turn it ended that this device
+    hasn't shown; otherwise grey (offline and closed too).
+- **Every other state is a pill** left of the ring, with a short phrase that
+  stays while the state holds: 排队 · 第 2 位 Queued · 2 in line, 启动中
+  Starting, 等负责人 Lead's turn (handed in, its review not under way), 审查中
+  In review, 要改 Changes asked, CI 红了 CI failed, 等合并 Ready to merge, 已合入
+  Merged, and 离线 Offline. A passing event takes the pill's place for about
+  three seconds (five for bad news), then the state's pill comes back: its
+  PR merged, its checks failed or turned green, it started after queuing.
+  Review news is the staying pill's own, and new messages are no event.
+  Nothing on the row's first showing or its PR's first reading. The pill
+  takes its width from line one, whose words wrap rather than being covered
+  (two lines at most while a state's pill stays). Needs you and failed are
+  the row as the island (its outline round the whole row) until handled,
+  with no pill.
 - **Its clock** runs while it works (an executor's time on its task since
   its dispatch), needs you (since its oldest wait in Home's Needs you), is
   handed in (since it handed in) and is queued. For idle, offline, done and
   failed it says how long ago, and for an archived executor its whole time,
   which no longer runs. A standing Agent's runtime gives no start for its
   Turn, so its Working shows no clock.
-- **The ring is the state** (22 px, strokes only): Working is an arc that
-  turns, its length the progress (a fixed quarter until templates carry
-  their steps); Handed in, an outer arc of its review rounds (k of 2) round
-  an inner ring; Needs you, a bold ring that breathes; Queued, dots that
-  turn slowly; Offline, dashes; Idle, a thin ring; Done ✓, Failed ✕ and
-  Archived (a box) carry a mark inside. Unread updates are a count beside
-  its top left. Under reduced motion nothing turns or breathes.
-- **Its forms.** One outline grows out of the ring and shrinks back into it.
-  - At rest a ring, except needs you and failed, which are the row as the
-    island (the outline round the whole row) until handled. A row is three
-    lines at most.
-  - A passing event grows a pill left out of the ring for about three
-    seconds (five for bad news): its PR merged, a review asked for changes
-    or passed, its checks failed or turned green, it handed in, it started
-    after queuing, new messages came. The pill takes its width from line
-    one, whose words wrap rather than being covered, so the row may grow
-    while it shows; the ring keeps its place. Nothing on the row's first
-    showing or its PR's first reading, and nothing while the row is the
-    island. A Job's end grows none yet: the rail reads how many Jobs run,
-    not how each ended.
-  - Each change animates the outline from the ring's circle, or from where
-    it was, in 320 ms, and back into the ring in 300 ms; nothing moves under
-    reduced motion.
 - **A click on the row** opens the Agent's conversation, the text of a row
   island included, and changes no island. **A click on the ring** goes
   straight to its state's place: needs you, to its item in Home's Needs you,
   scrolled to and highlighted; an executor's, to its task (why its start
   failed, its result, its place in the queue, or the task); a Turn that
-  failed, or updates unread, to the conversation. Its label says where
-  ("Answer its question on Home"). A ring with nowhere of its own (idle,
-  offline, a standing Agent at work) is no button: the row's click is its.
-  The ring's button takes presses 28 px wide with a mouse and 40 px on
-  touch, with nothing drawn; on hover or focus the ring grows a little (its
-  strokes thicken under reduced motion), and hover on the rest of the row
-  only darkens its background, with no border. There are no cards.
+  failed, or one that ended unseen, to the conversation. Its label says
+  where ("Answer its question on Home"). A ring with nowhere of its own
+  (idle, offline, a standing Agent at work) is no button: the row's click
+  is its. The ring's button takes presses 28 px wide with a mouse and 40 px
+  on touch, with nothing drawn; on hover or focus the ring grows a little
+  (its strokes thicken under reduced motion), and hover on the rest of the
+  row only darkens its background, with no border. There are no cards.
 - With the compact Agent list (Settings → Appearance), every row is line
   one and its ring; needs you and failed keep their word on line two.
 - **Its PR** comes from `GET /api/executors/live`: for each open executor
