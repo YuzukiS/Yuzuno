@@ -28,6 +28,7 @@ mod refs;
 mod research;
 mod sections;
 mod update;
+mod patch;
 mod writes;
 #[cfg(test)]
 mod preview_tests;
@@ -164,11 +165,12 @@ Write conclusions, decisions and asks for the user, not a transcript; the Brief 
 Details and examples: brief_guide.";
 
 const FALLBACK_GUIDE: &str = "Project Brief guide.\n\
-Sections: brief_update changes take op put, edit, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
+Sections: brief_update changes take op put, edit, patch, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
 At most 12 topics with 4 sub-topics each. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
 put: {op:'put', key, kind:'ask'|'report'|'status', title, body, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root.\n\
 edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else.\n\
+patch: {op:'patch', key, patch:[RFC 6902 operations on the body], status?} changes single values and keeps what edit keeps; the whole section is checked again.\n\
 ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. \
 A user's reply marks it replied (out of Needs you, listed in brief_get you.repliedAsks); resolve it once handled: a preference when taken in, \
 an authorized action only after it is done, with its result on the Task or Brief. While it runs or after it fails, keep it replied and report progress.\n\
@@ -242,12 +244,14 @@ fn update_properties(project: Value) -> Value {
         "noChange":{"type":"boolean","description":"true, with no changes: nothing of yours changed in this Turn."},
         "validateOnly":{"type":"boolean","description":"true: only pre-check this update: the checks before its write, nothing written or reserved, not this Turn's update. The write itself checks again and can still refuse it."},
         "changes":{"type":"array","maxItems":update::MAX_CHANGES,"items":{"type":"object","required":["op","key"],"properties":{
-            "op":{"type":"string","enum":["put","edit","resolve","remove","claim"]},
+            "op":{"type":"string","enum":["put","edit","patch","resolve","remove","claim"]},
             "key":{"type":"string","description":"topic or topic/sub: lowercase letters, digits and -, each part up to 48 characters."},
             "kind":{"type":"string","enum":["ask","report","status"]},
             "title":{"type":"string","minLength":1,"maxLength":120},
             "body":{"type":"object","description":"A json-render spec {root, elements} with a BriefBody root; see brief_guide content."},
             "elements":{"type":"object","description":"For edit: block ids mapped to their new {type, props, children?}; the section's other blocks, title, attachments and ask state are kept. See brief_guide sections."},
+            "patch":{"type":"array","minItems":1,"maxItems":patch::MAX_OPS,"description":"For patch: RFC 6902 operations on the section's body, paths being JSON Pointers into it, e.g. [{op:\"replace\", path:\"/elements/refs/props/items/3/note\", value:\"Merged.\"}]. Kept as an edit keeps; the whole section is checked again. See brief_guide sections.",
+                "items":{"type":"object","required":["op","path"],"properties":{"op":{"type":"string","enum":patch::OPS},"path":{"type":"string"},"from":{"type":"string"},"value":{}}}},
             "ask":{"type":"object","description":"For kind ask: {question, reply:{options?, freeText?, form?, choice?}}."},
             "status":{"type":"object","description":"For kind status: {asOf: ISO time, validFor: seconds}."},
             "time":{"type":"object","description":"{due?, eta?, nextUpdate?} as ISO times."},
