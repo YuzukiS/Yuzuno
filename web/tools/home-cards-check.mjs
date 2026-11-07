@@ -128,9 +128,9 @@ const home = () => ({
 });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 const words = {
-  en: { viewImage: "View image", replied: "Replied · waiting for lead-1", updated: "Updated", replyAgain: "Reply again", openImage: "Open image loss.png",
+  en: { viewImage: "View image", replied: "Replied · waiting for lead-1", updated: "Updated", replyAgain: "Reply again", openImage: "Open image loss.png", next: "Next: lead-1 acts on your reply",
     repliedGroup: "Replied, waiting · 2", outOfDate: /^Out of date · 1 status · newest data as of / },
-  "zh-Hans": { viewImage: "查看图片", replied: "已回复 · 等 lead-1 处理", updated: "已更新", replyAgain: "再次回复", openImage: "打开图片 loss.png",
+  "zh-Hans": { viewImage: "查看图片", replied: "已回复 · 等 lead-1 处理", updated: "已更新", replyAgain: "再次回复", openImage: "打开图片 loss.png", next: "下一步：lead-1 按你的回复处理",
     repliedGroup: "已回复，等处理 · 2", outOfDate: /^已过期 · 1 个状态 · 最新数据 / },
 };
 
@@ -349,57 +349,58 @@ async function check(run) {
     await closed.locator("summary").click();
     pass("the deck in its order, the answered Asks under their heading, Out of date closed at the end; no hole in either", { columns: main.columns, rows: main.rows });
 
-    // ---- Replied Asks in short: one line where the pane is wide, the reply in short, never New; unfolded, the reply and Reply again.
-    const rows = {};
+    // ---- Answered Asks are answer cards (YN-3, the user's D3): small cards the deck packs, two sharing a row;
+    // whom each waits for, its title, the reply quoted (three lines at most), who acts next or its owner's update.
+    const answers = {};
     for (const key of ["tokenizer", "draft"]) {
-      const row = card(key);
-      rows[key] = await row.evaluate((el) => {
-        const top = (selector) => Math.round(el.querySelector(selector)?.getBoundingClientRect().top ?? NaN);
-        return { short: el.classList.contains("is-short"), height: Math.round(el.getBoundingClientRect().height),
+      answers[key] = await card(key).evaluate((el) => {
+        const quote = el.querySelector(".home-answer-reply");
+        const line = quote ? parseFloat(getComputedStyle(quote).lineHeight) || 20 : 0;
+        const box = el.getBoundingClientRect();
+        return { answer: el.classList.contains("is-answer"), size: el.dataset.cardSize ?? null, cols: el.dataset.deckCols ?? null,
           kind: el.querySelector(".home-kind")?.textContent.trim(), changed: el.querySelector(".home-changed")?.textContent.trim() ?? null,
-          reply: el.querySelector(".home-replied-short")?.textContent ?? null,
-          // The reply in short beside the title, or on a line of its own where the pane is narrow (home.css).
-          replyBelow: top(".home-replied-short") > top("h3") + 4,
-          pane: Math.round(document.querySelector(".home-view")?.getBoundingClientRect().width ?? 0),
-          // Lines the row's head takes: its shown parts grouped by their middles.
-          lines: (() => {
-            const middles = [...el.querySelector(".home-section-head").children]
-              .map((child) => child.getBoundingClientRect()).filter((r) => r.height > 0)
-              .map((r) => (r.top + r.bottom) / 2).sort((a, b) => a - b);
-            let lines = 0, last = -Infinity;
-            for (const y of middles) {
-              if (y - last > 10) lines++;
-              last = y;
-            }
-            return lines;
-          })(),
-          cut: (() => { const r = el.querySelector(".home-replied-short"); return r ? r.scrollWidth > r.clientWidth : null; })() };
+          title: el.querySelector(".home-answer-title h3")?.textContent ?? null, reply: quote?.textContent ?? null,
+          quoteLines: quote ? Math.round(quote.clientHeight / line) : null,
+          next: el.querySelector(".home-answer-next")?.textContent ?? null, update: el.querySelector(".home-answer-update")?.textContent ?? null,
+          top: Math.round(box.top), width: Math.round(box.width), height: Math.round(box.height) };
       });
     }
-    // Pictured before the rules below, so a failure still shows the rows.
-    await cardShot("tokenizer", "replied-row");
-    await cardShot("draft", "replied-updated-row");
+    // Pictured before the rules below, so a failure still shows the cards.
+    await cardShot("tokenizer", "answer-card");
+    await cardShot("draft", "answer-card-updated");
+    const sharing = main.columns >= 2 ? String(main.columns / 2) : "1";
     for (const key of ["tokenizer", "draft"]) {
-      assert.ok(rows[key].short, `${key}: in short`);
-      assert.equal(rows[key].kind, w.replied);
-      // One line where the pane is wide. Where it is narrow (640 px or less): whom it waits for and when,
-      // the title and its marks, the reply in short: three short lines, never more.
-      const narrow = rows[key].pane <= 640 + 80;
-      assert.equal(rows[key].replyBelow, narrow, `${key}: the reply ${narrow ? "below" : "beside"} the title: ${JSON.stringify(rows[key])}`);
-      if (narrow) assert.ok(rows[key].lines <= 3 && rows[key].height <= 120, `${key}: ${JSON.stringify(rows[key])}`);
-      else assert.ok(rows[key].lines === 1 && rows[key].height <= 56, `${key}: ${JSON.stringify(rows[key])}`);
+      const a = answers[key];
+      assert.ok(a.answer && a.size === "small", `${key}: an answer card, small: ${JSON.stringify(a)}`);
+      assert.equal(a.kind, w.replied);
+      assert.equal(a.cols, sharing, `${key}: ${main.columns} columns, two answer cards share the row: ${JSON.stringify(a)}`);
+      assert.ok(a.quoteLines <= 3, `${key}: the reply in three lines at most: ${JSON.stringify(a)}`);
     }
-    assert.equal(rows.tokenizer.changed, null, "answered, not New");
-    assert.equal(rows.draft.changed, w.updated, "changed by its owner after the reply: Updated");
-    assert.equal(rows.tokenizer.reply, "Keep it until the shard rebuild, then switch.");
+    if (main.columns >= 2) assert.equal(answers.tokenizer.top, answers.draft.top, "side by side");
+    assert.equal(answers.tokenizer.changed, null, "answered, not New");
+    assert.equal(answers.draft.changed, w.updated, "changed by its owner after the reply: Updated");
+    assert.match(answers.tokenizer.reply, /Keep it until the shard rebuild, then switch\.$/);
+    assert.equal(answers.tokenizer.next, w.next);
+    assert.ok(answers.draft.update && answers.draft.next === null, "its owner's update in place of who acts next");
+    // Opened: the question and details, its row its own; the other takes the row it is left alone on; still no hole.
     const tokenizer = card("tokenizer");
-    await tokenizer.locator(".home-fold").click();
-    await tokenizer.locator(".home-ask-replied").waitFor({ timeout: 10_000 });
-    assert.ok(await tokenizer.getByRole("button", { name: w.replyAgain }).isVisible());
-    await cardShot("tokenizer", "replied-open");
-    await tokenizer.locator(".home-fold").click();
-    await tokenizer.locator(".home-card-body").waitFor({ state: "hidden", timeout: 10_000 });
-    pass("replied Asks in short (one line where the pane is wide), the reply in short, Updated only after the owner's change; unfolded, Reply again", rows);
+    await tokenizer.locator(".home-answer-details").click();
+    await tokenizer.locator(".home-card-body .home-question").waitFor({ timeout: 10_000 });
+    await page.waitForFunction(() => {
+      const grid = document.querySelector('[data-home-project="p-orch"] .home-brief');
+      const draft = document.querySelector("#home-section-p-orch-draft");
+      return grid && draft && Math.abs(draft.getBoundingClientRect().width - (grid.clientWidth - parseFloat(getComputedStyle(grid).paddingLeft || 0) - parseFloat(getComputedStyle(grid).paddingRight || 0))) < 4;
+    }, null, { timeout: 5000 }).catch(() => {});
+    const opened = await holes(deck);
+    assert.deepEqual(opened.missing, [], `no hole with an answer card open: ${JSON.stringify(opened)}`);
+    await cardShot("tokenizer", "answer-open");
+    // Reply again, on the card: the reply field, in the card.
+    await tokenizer.locator(".home-answer-again").click();
+    await tokenizer.locator(".home-card-body textarea").waitFor({ timeout: 10_000 });
+    await cardShot("tokenizer", "answer-again");
+    await tokenizer.locator(".home-answer-details").click();
+    await tokenizer.locator(":scope > .home-card-body").waitFor({ state: "hidden", timeout: 10_000 });
+    pass("answered Asks are small answer cards sharing a row: the reply quoted, who acts next or the owner's update, Updated only after the owner's change; opened, its own row with no hole; Reply again on the card", answers);
 
     // ---- Enter sends a reply from Home, in Chinese (the user's item): Shift+Enter a new line, nothing while composing.
     if (run.language === "zh-Hans") {

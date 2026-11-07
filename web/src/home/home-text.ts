@@ -190,6 +190,9 @@ export const homeText = strings({
   copyText: "Copy text",
   discard: "Discard",
   repliedWaiting: (agent: string) => `Replied · waiting for ${agent}`,
+  // The answer card (YN-3): whose words are quoted, and who acts next.
+  you: "You",
+  nextActs: (agent: string) => `Next: ${agent} acts on your reply`,
   updatedAfterReply: (owner: string, when: string) => `${owner} updated it ${when}, after your reply`,
   replyAgain: "Reply again",
   replyOptions: "Reply options",
@@ -462,6 +465,8 @@ export const homeText = strings({
   copyText: "复制文字",
   discard: "丢弃",
   repliedWaiting: (agent) => `已回复 · 等 ${agent} 处理`,
+  you: "你",
+  nextActs: (agent) => `下一步：${agent} 按你的回复处理`,
   updatedAfterReply: (owner, when) => `${owner} 在你回复后更新了它（${when}）`,
   replyAgain: "再次回复",
   replyOptions: "回复选项",
