@@ -248,7 +248,8 @@ test("a request opens its page, and an older caller's editor opens the page it i
   // The rail's New project (YN-8): the Projects page, asked for a new one.
   p.w.renderSettings({ ...p.props, openAt: { page: "projects", sub: "new", nonce: 1 } });
   await until(() => shown().join() === "settings-editor-projects");
-  assert.equal(p.doc.getElementById("settings-editor-projects").textContent, "Existing projects editor at new");
+  // Opened at the page, its request reaches the page a render later.
+  await until(() => p.doc.getElementById("settings-editor-projects").textContent === "Existing projects editor at new");
   await until(() => p.doc.activeElement?.id === "settings-editor-projects");
   // The status bar's Machines.
   p.w.renderSettings({ ...p.props, openAt: { page: "machines", nonce: 2 } });
