@@ -625,6 +625,7 @@ export const BRIEF_PROBLEM_CODES = {
   unsaved_definition: "A ResearchDesk definition version citing a source with neither a snapshot nor a Task method record.",
   definition_order: "A ResearchDesk revision whose definition versions do not go from older to newer.",
   too_many_values: `A ResearchDesk reading over ${L.research.values} numbers from attachments.`,
+  formula: "A Calc expr or when that does not parse, names something that is neither a variable of the section nor an earlier item, gives the wrong type, or is over its limits; the reason says at which character (see interactive).",
 } as const;
 type ProblemCode = keyof typeof BRIEF_PROBLEM_CODES;
 
@@ -1074,8 +1075,8 @@ function checkResearch(
 
 /** The components brief_guide interactive describes (YN-16). */
 const INTERACTIVE_TYPES = [...INPUT_TYPES, "Calc", "Button"] as const;
-/** The code a formula Core cannot keep is refused with: a field of the wrong format (YN-16 S2). */
-const FORMULA_CODE: ProblemCode = "invalid_field";
+/** The code a formula Core cannot keep is refused with (YN-16 S2): fix the expression, not the block. */
+const FORMULA_CODE: ProblemCode = "formula";
 const COMPARISONS = ["eq", "neq", "gt", "gte", "lt", "lte"] as const;
 const CONDITION_KEYS = new Set<string>(["$state", "not", ...COMPARISONS]);
 

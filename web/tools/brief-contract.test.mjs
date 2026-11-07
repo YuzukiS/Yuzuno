@@ -1027,11 +1027,12 @@ test("YN-16 S2 a Calc's formulas read the section's variables and its earlier it
     ["guests +", /the formula ends where a value is expected/],
   ]) {
     const found = refusedAt({ id: "x", label: "X", expr }, "expr");
-    assert.equal(found.code, "invalid_field", expr);
+    assert.equal(found.code, "formula", expr);
     assert.match(found.reason, reason, expr);
   }
   assert.match(refusedAt({ id: "x", label: "X", expr: "1", when: "guests" }, "when").reason, /when gives a number; when gives true or false/);
-  assert.equal(refusedAt({ id: "x", label: "X", expr: "1", when: "later > 1" }, "when").code, "invalid_field");
+  assert.equal(refusedAt({ id: "x", label: "X", expr: "1", when: "later > 1" }, "when").code, "formula");
+  assert.match(briefGuide("errors"), /^- formula: A Calc expr or when that does not parse.*the reason says at which character \(see interactive\)\.$/m);
   // An item reads only earlier items: a later one, or one of another Calc, is unknown.
   const order = problems(inGroup({ guests, sums: calc([{ id: "a", label: "A", expr: "b + 1" }, { id: "b", label: "B", expr: "2" }]) }));
   assert.match(order[0].reason, /"b" is neither a variable of this section nor an earlier item/);
