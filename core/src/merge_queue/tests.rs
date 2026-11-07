@@ -1942,6 +1942,38 @@ fn the_checkout_line_and_the_newest_run_of_each_workflow_are_read_exactly() {
     );
 }
 
+/// The merge ref decides the slot only when it is the merge of the current
+/// main and the head. A ref on an older main goes to the batch at once; any
+/// other ref, or none, waits the grace, then goes too (YN-18 S2c). A PR GitHub
+/// reports as conflicting stops; one it is still computing does not.
+#[test]
+fn the_merge_ref_and_githubs_conflict_verdict_are_decided_exactly() {
+    use checks::Slot;
+    let commit = |parents: Vec<String>| json!({"sha":merge_sha(),"tree":{"sha":tree()},"parents":parents.iter().map(|p| json!({"sha":p})).collect::<Vec<_>>()});
+    let (main, head) = (main_sha(), head());
+    assert_eq!(checks::slot(Some(&commit(vec![main.clone(), head.clone()])), &main, &head), Slot::Fresh(tree()));
+    assert_eq!(checks::slot(Some(&commit(vec![old_main(), head.clone()])), &main, &head), Slot::Stale(old_main()));
+    assert!(matches!(checks::slot(None, &main, &head), Slot::Missing(_)));
+    assert!(matches!(checks::slot(Some(&commit(vec![main.clone(), sha('a')])), &main, &head), Slot::Missing(_)), "a ref of another head is no merge of this one");
+    let stale = Slot::Stale(old_main());
+    assert!(checks::batch_now(&stale, true, 0, &main).unwrap().contains("older main"), "an older main batches at once");
+    assert!(matches!(checks::batch_now(&stale, false, checks::SLOT_GRACE - 1, &main), Err(Hold::Wait(_))), "a main not known to be older waits");
+    assert!(checks::batch_now(&stale, false, checks::SLOT_GRACE, &main).is_ok(), "until the grace ends");
+    let missing = Slot::Missing("GitHub has not computed the PR's merge ref yet".into());
+    match checks::batch_now(&missing, false, 0, &main) {
+        Err(Hold::Wait(detail)) => assert!(detail.contains("within 2 minutes"), "the wait names its end: {detail}"),
+        other => panic!("a missing ref waits first: {other:?}"),
+    }
+    assert!(checks::batch_now(&missing, false, checks::SLOT_GRACE, &main).is_ok());
+    let pr = |mergeable: Value, state: &str| json!({"mergeable":mergeable,"mergeable_state":state,"base":{"ref":"main"}});
+    for (mergeable, state) in [(json!(false), "dirty"), (json!(false), "unknown"), (json!(true), "dirty")] {
+        assert!(matches!(checks::conflicting(&pr(mergeable.clone(), state)), Err(Hold::Stop("conflict", _))), "{mergeable} {state} stops");
+    }
+    for (mergeable, state) in [(Value::Null, "unknown"), (json!(true), "clean"), (json!(true), "unstable"), (json!(true), "blocked")] {
+        assert_eq!(checks::conflicting(&pr(mergeable.clone(), state)), Ok(()), "{mergeable} {state} is decided later");
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_job_log_read_stops_at_its_limit() {
@@ -2133,8 +2165,8 @@ async fn a_merge_begun_with_a_landing_this_core_lacks_is_not_sent() {
 }
 
 /// The user sets a repository's landing on its route: `core-merge`, the only
-/// one this Core has. The two planned for core.25 are refused by name, and a
-/// refused request saves nothing, its switch change included.
+/// one this Core has. The two named for a later Core are refused by name, and
+/// a refused request saves nothing, its switch change included.
 #[cfg(unix)]
 #[tokio::test]
 async fn the_landing_is_core_merge_and_the_planned_ones_are_refused_by_name() {
@@ -2155,7 +2187,7 @@ async fn the_landing_is_core_merge_and_the_planned_ones_are_refused_by_name() {
     for name in ["github-auto-merge", "github-merge-queue"] {
         let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"landing":name,"enabled":false}))).await.unwrap()).await;
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "a planned landing is refused: {body}");
-        assert!(body["error"].as_str().unwrap().contains(&format!("the {name} landing comes in core.25")), "{name} is refused by name: {body}");
+        assert!(body["error"].as_str().unwrap().contains(&format!("this Core has no {name} landing")), "{name} is refused by name, with no release promised: {body}");
     }
     let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"landing":"bors"}))).await.unwrap()).await;
     assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");

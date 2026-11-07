@@ -10,9 +10,7 @@ Core writes to GitHub only while the repository's switch is on. The switch is
 off by default, and only the user can turn it on: in Projects, each linked
 repository has the switch (`PUT /api/merge-queue/repositories/{id}` with
 `{"enabled": true}`; there is no MCP tool). Turning it on first lists these
-writes; turning it off saves at once. On YuzukiS/Yuzuno it stays off until a
-Core with the queue is installed and the user turns it on; until then merges
-happen by hand.
+writes; turning it off saves at once.
 
 In the dry-run build of the queue, a switch that was on only let Core check.
 That consent does not carry over: the first time this build opens a Workspace,
@@ -69,7 +67,11 @@ entry's check that ended a pause re-anchored it, the outcome is dropped and the
 entry is checked again from the new anchor.
 
 1. The PR is open, not a draft, at the released head, and on the base branch it
-   was released for.
+   was released for. If GitHub already reports that the PR cannot merge into
+   its base (`mergeable` false, or merge state `dirty`), the entry stops with
+   `conflict` at once: GitHub runs no CI for a PR with conflicts, so waiting
+   for its runs would only end at the six-hour limit. While GitHub is still
+   computing whether the PR can merge, nothing is decided here.
 2. The last completed review round still passes at that head. If a round is
    running, Core waits for it.
 3. Two reads of the base branch name the same commit.
@@ -99,6 +101,18 @@ entry is checked again from the new anchor.
 If the PR's own CI tested the head on an older main, Core builds a batch on the
 current main and waits for CI on it. A batch on a main that has since moved is
 removed, and a new one is built.
+
+The batch is Core's own merge of the head into the current main, so it needs
+nothing from GitHub's merge ref, and Core does not wait for GitHub to move it:
+- If the merge ref is the merge of an older main and the head, CI on the PR
+  checked out that ref (GitHub only moves it forward), so it cannot have tested
+  the current main. Core builds the batch in that check, without reading job
+  logs. GitHub may leave such a ref unmoved for a long time: in the lab it
+  stayed on the older main for over 19 minutes. One compare read shows that
+  the ref's main is an ancestor of the current main.
+- If GitHub has not computed a merge ref for the head, or the ref's main is not
+  known to be older, Core waits two minutes from the first check that saw it,
+  checks again when they end, and then builds the batch.
 
 Once every check holds, the entry merges, one merge at a time per repository:
 
@@ -172,8 +186,8 @@ There are three tiers:
 | Landing | What lands the merge | In this Core |
 | --- | --- | --- |
 | `core-merge` | Core sends the merge request itself, as described above. Any repository can use it; it needs no branch protection or paid plan. | Yes, the default. |
-| `github-auto-merge` | GitHub, once the repository's required checks pass; Core queues and updates the branch. For repositories with branch protection. | No: refused with "comes in core.25". |
-| `github-merge-queue` | GitHub's own merge queue, where the repository has one (organization-owned repositories). | No: refused with "comes in core.25". |
+| `github-auto-merge` | GitHub, once the repository's required checks pass; Core queues and updates the branch. For repositories with branch protection. | No: refused, naming the landing. |
+| `github-merge-queue` | GitHub's own merge queue, where the repository has one (organization-owned repositories). | No: refused, naming the landing. |
 
 A refused landing saves nothing. Setting the landing leaves the switch as it
 is, and the switch journal records the change. A merge records the landing it
@@ -250,7 +264,11 @@ version.
 
 When an entry merges, ends or stops, Core writes a comment to the task as
 Yuzuno Core, with the evidence record attached as `mergeEvidence`. It also
-mails the Agent that released the entry and the task's executor.
+mails the Agent that released the entry and the task's executor. A `conflict`
+stop says what comes next: the executor merges the current main into the PR
+branch, resolves and pushes, one review round runs at the new head, and the
+lead releases that head. `merge_retry` cannot help there, since the head
+changes.
 
 The record holds:
 
@@ -258,7 +276,9 @@ The record holds:
 - the review round;
 - main at release and at the check, with the CI runs examined;
 - the gate: the merge ref or the batch (its branch, commit, PR and tree), and
-  each CI job's checkout and log sha256;
+  each CI job's checkout and log sha256; when the merge ref was not the slot,
+  `mergeRef` says what it was (stale or missing), since when, and whether its
+  main was an older one;
 - the merge: each request sent, the merge commit, and the post-check of its
   parents and tree;
 - the batch's removal;

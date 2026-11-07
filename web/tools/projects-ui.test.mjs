@@ -1246,7 +1246,7 @@ test("the merge queue switch names every write before it turns on, and turns off
     const toggle = () => row.querySelector("input[role='switch']");
     assert.equal(row.getAttribute("aria-label"), "Merge queue for owner/repo");
     assert.ok(row.textContent.includes("Off: Core writes nothing to GitHub here."), "off says Core writes nothing");
-    assert.ok(row.textContent.includes("Lands with core-merge: Core sends the merge itself. GitHub auto-merge and GitHub's merge queue come in core.25."), "the landing and the tiers to come");
+    assert.ok(row.textContent.includes("Lands with core-merge: Core sends the merge itself. This Core has no GitHub auto-merge or GitHub merge queue landing."), "the landing, with no release promised for the others");
     toggle().click(); await pause();
     const confirm = row.querySelector(".merge-queue-confirm");
     assert.ok(confirm, "turning it on asks first");

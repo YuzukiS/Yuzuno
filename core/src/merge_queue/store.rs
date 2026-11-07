@@ -247,7 +247,7 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue) ->
     ensure!(linked, "This PR is not linked to the task; link it with github_links first");
     ensure!(
         enabled(db, repository_id)?,
-        "merge_queue_disabled: the merge queue is off for {repository}; only the user can turn it on, through PUT /api/merge-queue/repositories/{{id}} on this Core (a Settings switch comes in T-37 S2b)"
+        "merge_queue_disabled: the merge queue is off for {repository}; only the user can turn it on, in Projects → repositories"
     );
     let (latest, running) = review(db, &link)?;
     match checks::review(&json!({"headSha":input.head_sha}), latest.as_ref(), running) {
@@ -319,7 +319,7 @@ fn short(sha: &Value) -> String {
 fn record(e: &Value) -> Value {
     let last = &e["lastEvidence"];
     json!({"entry":e["id"],"repository":e["repository"],"pr":e["number"],"head":e["headSha"],"state":e["state"],
-        "release":e["release"],"review":last["review"],"main":last["main"],"gate":last["gate"],"checkedAt":last["checkedAt"],
+        "release":e["release"],"review":last["review"],"main":last["main"],"gate":last["gate"],"mergeRef":last["mergeRef"],"checkedAt":last["checkedAt"],
         "batch":e["batch"],"merge":e["merge"],
         "stop":if e["state"] == "stopped" { json!({"reason":e["reason"],"detail":e["detail"]}) } else { Value::Null }})
 }
@@ -351,6 +351,10 @@ fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
             "Merge queue: main's push CI on {} (#{n}) concluded {}.{} Entry {id}.",
             short(&m["sha"]), m["mainCi"]["conclusion"].as_str().unwrap_or("?"),
             if e["reason"] == "main_red" { " The repository's queue is paused until a lead or the user unpauses it, or CI on a newer main is green." } else { "" }),
+        (_, Some("conflict")) => format!(
+            "Merge queue: #{n} at {head} stopped (conflict): {}. Core merged nothing{}. Next: the task's executor merges the current main into the PR branch, resolves the conflict and pushes; one review round at the new head; then the lead releases the new head (merge_enqueue with its headSha). merge_retry cannot help, since the head changes. Entry {id}.",
+            e["detail"].as_str().unwrap_or(""),
+            if e["batch"].is_object() { " and removes its own batch branch" } else { "" }),
         (_, Some("post_check_failed")) => format!(
             "Merge queue: #{n} at {head} was merged as {}, but the post-check failed: {}. The repository's queue is paused; a person has to look. Entry {id}.",
             short(&m["sha"]), e["detail"].as_str().unwrap_or("")),
@@ -805,7 +809,12 @@ impl Store {
                         if !repository(&tx, e["repositoryId"].as_i64().unwrap_or(0))?["paused"].is_null() {
                             e["waitingSince"] = Value::Null;
                         }
-                        wait(&mut e, detail, 0, now_epoch)
+                        wait(&mut e, detail, 0, now_epoch);
+                        // A wait for GitHub's merge ref is checked again when its
+                        // grace ends, not later after the backoff (S2c).
+                        if let Some(at) = evidence["mergeRef"]["checkAgainAt"].as_i64().filter(|_| e["state"] == "waiting") {
+                            e["nextCheck"] = json!(e["nextCheck"].as_i64().unwrap_or(at).min(at.max(now_epoch)));
+                        }
                     }
                     Err(Hold::Stop(reason, detail)) => {
                         if reason == "main_red" {
