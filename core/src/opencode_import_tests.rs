@@ -357,20 +357,35 @@ async fn a_lost_create_is_continued_to_one_session_and_a_failed_or_changed_one_f
     ws.close_agent("oc").await.unwrap();
 }
 
-/// I4: the upload's cap is its own, past the JSON limit: a file of 1 MiB is
-/// taken, one past CAP refused; a file Core can't import is refused, keeping
-/// nothing.
+/// I4: the upload's cap is its own, past the JSON limit: through the route,
+/// under the server's 128 KiB body limit, a file of 1 MiB is taken and one
+/// past CAP refused; a file Core can't import is refused, keeping nothing.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn the_upload_cap_is_the_routes_and_a_refused_file_keeps_nothing() {
+    use tower::ServiceExt;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let (ws, data, _, _, file) = source(&root).await;
+    // As server.rs layers every route.
+    let app = router().with_state(ws.clone()).layer(axum::extract::DefaultBodyLimit::max(128 * 1024));
+    let post = |body: Vec<u8>| {
+        let request = axum::http::Request::builder().method("POST").uri("/api/opencode/sessions/import/file")
+            .header("content-type", "application/octet-stream").body(axum::body::Body::from(body)).unwrap();
+        let app = app.clone();
+        async move {
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null))
+        }
+    };
     let mut big = serde_json::to_vec(&file).unwrap();
     big.resize(1 << 20, b' ');
-    ws.opencode_import_upload(big).await.expect("1 MiB is taken");
-    let error = ws.opencode_import_upload(vec![b' '; CAP + 1]).await.unwrap_err().to_string();
-    assert!(error.contains("64 MiB"), "{error}");
+    let (status, preview) = post(big).await;
+    assert_eq!((status.as_u16(), &preview["sourceSession"]), (200, &file["info"]["id"]), "1 MiB is taken: {preview}");
+    let (status, error) = post(vec![b' '; CAP + 1]).await;
+    assert!(!status.is_success() && error.to_string().contains("64 MiB"), "{status} {error}");
     let before = std::fs::read_dir(data.join("opencode/imports")).unwrap().count();
     let mut child = file.clone();
     child["info"]["parentID"] = json!("ses_parent");

@@ -2225,9 +2225,10 @@ async fn exported_session(program: &Path, dir: &Path, port: u16) -> (Server, Lau
 /// slice 8), against the stub provider: the export of a session, under a
 /// new ID and Core's marker, is imported into a second OpenCode on an empty
 /// database and reads back as written; the same again is refused (409).
-/// Facts for Core's own refusals, printed: a `?sanitize=true` export is
-/// imported too; a 1.x-shaped body is refused; and how 2.x answers a body
-/// with an unsettled answer, and one with a ~20 MiB inline image.
+/// Facts for Core's own refusals, printed, each asked of an OpenCode on an
+/// empty database of its own: how 2.x answers a `?sanitize=true` export, a
+/// 1.x-shaped body (refused), an unsettled answer and a ~20 MiB inline image;
+/// and the same messages again into one database, which Core never does.
 #[tokio::test]
 #[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
 async fn a_real_opencode_2x_takes_an_export_as_cores_import_writes_it() {
@@ -2241,7 +2242,7 @@ async fn a_real_opencode_2x_takes_an_export_as_cores_import_writes_it() {
     println!("probe: the export's messages {:?}", file["messages"].as_array().unwrap().iter().map(|m| format!("{} {}", m["type"], m["id"])).collect::<Vec<_>>());
     let second = dir.path().join("db-import");
     std::fs::create_dir_all(&second).unwrap();
-    let target = Server::start(&Launch::new(program, launch.directory.clone(), &second, dir.path().join("cache"))).await.unwrap();
+    let target = Server::start(&Launch::new(program.clone(), launch.directory.clone(), &second, dir.path().join("cache"))).await.unwrap();
     let project = target.location(&folder).await.unwrap()["project"]["id"].as_str().unwrap().to_owned();
     let payload_of = |file: &Value, marker: &str| {
         let info = &file["info"];
@@ -2261,33 +2262,52 @@ async fn a_real_opencode_2x_takes_an_export_as_cores_import_writes_it() {
     println!("probe: again: {again:?}");
     assert!(matches!(again, ImportAnswer::Exists), "{again:?}");
     transfer::read_copy(&target, &payload, &project).await.unwrap().expect("the copy as written");
+    // Facts. The same messages again, under another session ID, into the same
+    // database: Core never does this (each Agent's OpenCode has a database of
+    // its own), and it explains why each fact below is asked of an OpenCode
+    // on an empty database of its own.
+    let answer = target.import(&payload_of(&file, "probe-twice"), limit).await;
+    println!("probe: the same messages under another session in the same database: {answer:?}");
+    target.shutdown().await.unwrap();
+    let fresh = |name: &str| {
+        let db = dir.path().join(name);
+        std::fs::create_dir_all(&db).unwrap();
+        Launch::new(program.clone(), launch.directory.clone(), &db, dir.path().join("cache"))
+    };
     // Facts: a sanitized export.
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
     let sanitized: Value = http.get(format!("{}/api/experimental/session/{session}/export?sanitize=true", source.base())).basic_auth("opencode", Some(&password))
         .send().await.unwrap().json().await.unwrap();
+    let target = Server::start(&fresh("db-sanitized")).await.unwrap();
     let answer = target.import(&payload_of(&sanitized["data"], "probe-sanitized"), limit).await;
     println!("probe: a sanitized export: {answer:?}");
+    target.shutdown().await.unwrap();
     // Facts: a 1.x-shaped body.
     let old = Payload { info: json!({"id": transfer::session_id(), "directory": folder, "projectID": project, "title": "Old", "time": {"created": 1, "updated": 1}}),
         messages: vec![json!({"info": {"id": "msg_old", "role": "user", "time": {"created": 1}}, "parts": []})], directory: folder.clone() };
+    let target = Server::start(&fresh("db-old")).await.unwrap();
     let answer = target.import(&old, limit).await;
     println!("probe: a 1.x-shaped body: {answer:?}");
     assert!(!matches!(answer, ImportAnswer::Imported(_)), "a 1.x body is not imported");
+    target.shutdown().await.unwrap();
     // Facts: an answer not settled.
     let mut unsettled = payload_of(&file, "probe-unsettled");
     let open = unsettled.messages.iter().rposition(|m| m["type"] == "assistant").unwrap();
     unsettled.messages[open]["time"].as_object_mut().unwrap().remove("completed");
     let kept_id = unsettled.messages[open]["id"].clone();
+    let target = Server::start(&fresh("db-unsettled")).await.unwrap();
     let answer = target.import(&unsettled, limit).await;
     println!("probe: an unsettled answer: {answer:?}");
     if matches!(answer, ImportAnswer::Imported(_)) {
         let read = target.messages(unsettled.id()).await.unwrap();
         println!("probe: the unsettled answer in the copy: {}", read.as_array().unwrap().iter().any(|m| m["id"] == kept_id));
     }
+    target.shutdown().await.unwrap();
     // Facts: a ~20 MiB inline image.
     let mut big = payload_of(&file, "probe-big");
     let first = big.messages.iter().position(|m| m["type"] == "user").unwrap();
     big.messages[first]["files"] = json!([{"data": "A".repeat(20 << 20), "mime": "image/png", "source": {"type": "inline"}, "name": "big.png"}]);
+    let target = Server::start(&fresh("db-big")).await.unwrap();
     let answer = target.import(&big, limit).await;
     println!("probe: a ~20 MiB inline image: {}", format!("{answer:?}").chars().take(300).collect::<String>());
     if matches!(answer, ImportAnswer::Imported(_)) {
