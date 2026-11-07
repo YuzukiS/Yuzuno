@@ -1,9 +1,9 @@
 //! OpenCode Agents (T-110): an Agent's record driven by its own `opencode
-//! serve` (see `opencode`). Local Agents only. One is created only by a Core
-//! started with `YUZUNO_EXPERIMENTAL_OPENCODE=1`, which is off by default
-//! until this is checked against a real OpenCode; otherwise HTTP create and
-//! models refuse the harness and the UI offers none. The switch decides only
-//! creation: an existing OpenCode Agent works either way.
+//! serve` (see `opencode`). Local Agents only. Every Core creates and imports
+//! them (YN-27), and the UI marks them experimental. A Core started with
+//! `YUZUNO_EXPERIMENTAL_OPENCODE=0` creates and imports none: HTTP create and
+//! models refuse the harness and the UI offers none. That decides only new
+//! ones: an existing OpenCode Agent works either way, and can still be forked.
 //!
 //! A Turn is one prompt, named by the message ID it is sent under and
 //! recorded before it is sent. What became of it is taken from OpenCode's own
@@ -376,9 +376,16 @@ fn program() -> PathBuf {
     std::env::var_os("YUZUNO_OPENCODE_BIN").map(PathBuf::from).unwrap_or_else(|| "opencode".into())
 }
 
-/// Whether this Core creates OpenCode Agents. The UI reads it from Core.
+/// Whether this Core creates OpenCode Agents: yes, unless it was started with
+/// `YUZUNO_EXPERIMENTAL_OPENCODE=0` (YN-27). The UI reads it from Core.
 pub fn enabled() -> bool {
-    std::env::var_os("YUZUNO_EXPERIMENTAL_OPENCODE").is_some_and(|v| v == "1")
+    switched_on(std::env::var_os("YUZUNO_EXPERIMENTAL_OPENCODE").as_deref())
+}
+
+/// What `YUZUNO_EXPERIMENTAL_OPENCODE` says: only `0` turns OpenCode off; unset,
+/// `1` (what turned it on before YN-27) or anything else leaves it on.
+fn switched_on(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_none_or(|v| v != "0")
 }
 
 /// What `/api/models?harness=opencode` answers: no list, since an Agent
@@ -591,7 +598,7 @@ impl Workspace {
         // d51396b7): asking for another here would let an update that starts
         // meanwhile fail a dispatch its refusal says can be retried.
         let permit = if birth.is_some() { None } else { Some(self.admission.enter_work()?) };
-        ensure!(enabled(), "OpenCode Agent 尚未开放");
+        ensure!(enabled(), "此 Core 启动时关闭了 OpenCode Agent（YUZUNO_EXPERIMENTAL_OPENCODE=0）");
         if name.trim().is_empty() || name.len() > 100 {
             bail!("请填写名称（最多 100 字节）");
         }

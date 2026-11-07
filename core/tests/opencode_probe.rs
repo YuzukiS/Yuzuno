@@ -2332,7 +2332,8 @@ async fn a_real_opencode_2x_session_is_imported_through_the_workspace() {
     use yuzuno_workspace::{model::MessageInput, workspace::Workspace};
     let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
     std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
-    std::env::set_var("YUZUNO_EXPERIMENTAL_OPENCODE", "1");
+    // As a Core started without the switch: OpenCode Agents are on (YN-27).
+    std::env::remove_var("YUZUNO_EXPERIMENTAL_OPENCODE");
     let dir = tempfile::tempdir().unwrap();
     let (mut stub, port, log) = stub_provider(dir.path());
     let (source, launch, _, _, prompts, file) = exported_session(&program, dir.path(), port).await;

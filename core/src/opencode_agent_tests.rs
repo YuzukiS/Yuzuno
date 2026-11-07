@@ -10,6 +10,18 @@ fn agent(cwd: &str) -> AgentDetail {
     },"turns":[],"pending":[],"artifacts":[]})).unwrap()
 }
 
+/// OpenCode Agents are on unless Core was started with the switch at `0`
+/// (YN-27): unset and the `1` that turned them on before both leave them on.
+#[test]
+fn only_a_switch_of_0_turns_opencode_agents_off() {
+    use std::ffi::OsStr;
+    assert!(switched_on(None), "on without the switch");
+    for on in ["1", "", "true", "00", " 0"] {
+        assert!(switched_on(Some(OsStr::new(on))), "{on:?} leaves it on");
+    }
+    assert!(!switched_on(Some(OsStr::new("0"))), "0 turns it off");
+}
+
 /// One `opencode` for the whole test process: YUZUNO_OPENCODE_BIN is the
 /// process's, and every Agent's stand-in keeps its state in its own folder.
 #[cfg(target_os = "linux")]

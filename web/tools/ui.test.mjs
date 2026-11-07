@@ -6347,9 +6347,20 @@ test("an OpenCode Agent at work takes a message into its running turn, not while
     // Its Agent settings choose only its model (T-10); permissions stay OpenCode's own.
     assert.ok(page.document.querySelector('[aria-label="Agent settings"]') !== null, "its model is chosen in its Agent settings");
     const fact = (name) => [...page.document.querySelectorAll("dt")].find((dt) => dt.textContent === name)?.nextElementSibling?.textContent.trim();
-    assert.equal(fact("Harness"), "OpenCode");
+    assert.equal(fact("Harness"), "OpenCode Experimental", "marked experimental (YN-27)");
     assert.equal(fact("Session"), "ses_0123");
     assert.equal(page.calls.some((call) => /codex\/usage/.test(call.url)), false);
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+test("an OpenCode Agent's harness is marked experimental in Chinese too (YN-27)", async () => {
+  const page = await mount({ harness: "opencode", agentFields: { opencodeSessionId: "ses_0123456789", opencodeVersion: "2.2.5", opencodeMajor: "2", connectionState: "connected" },
+    stored: { "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } });
+  try {
+    const fact = (name) => [...page.document.querySelectorAll("dt")].find((dt) => dt.textContent === name)?.nextElementSibling?.textContent.trim();
+    assert.equal(fact("Harness"), "OpenCode 实验性");
+    assert.equal(fact("会话"), "ses_0123", "the panel is in Chinese");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

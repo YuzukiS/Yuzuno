@@ -314,7 +314,7 @@ impl Workspace {
     /// is named. Refused, keeping nothing, if it is not an export Core can
     /// import, or is larger than CAP.
     pub async fn opencode_import_upload(self: &Arc<Self>, bytes: Vec<u8>) -> Result<Value> {
-        ensure!(enabled(), "OpenCode Agent 目前是实验功能，需要在 Core 启动时设置 YUZUNO_EXPERIMENTAL_OPENCODE=1；没有导入");
+        ensure!(enabled(), "此 Core 启动时关闭了 OpenCode Agent（YUZUNO_EXPERIMENTAL_OPENCODE=0）；没有导入");
         ensure!(bytes.len() <= CAP, "文件超过 {} MiB；没有导入", CAP >> 20);
         let (file, classified) = tokio::task::spawn_blocking(move || -> Result<(Value, Classified)> {
             let file: Value = serde_json::from_slice(&bytes).context(NOT_EXPORT)?;
@@ -362,7 +362,7 @@ impl Workspace {
     /// never writes twice.
     pub async fn opencode_import_create(self: &Arc<Self>, create: Create) -> Result<Value> {
         let permit = self.admission.enter_work()?;
-        ensure!(enabled(), "OpenCode Agent 目前是实验功能，需要在 Core 启动时设置 YUZUNO_EXPERIMENTAL_OPENCODE=1；没有导入");
+        ensure!(enabled(), "此 Core 启动时关闭了 OpenCode Agent（YUZUNO_EXPERIMENTAL_OPENCODE=0）；没有导入");
         ensure!(uuid::Uuid::parse_str(&create.request_id).is_ok(), "导入请求编号无效");
         let name = create.name.trim().to_owned();
         ensure!(!name.is_empty() && name.len() <= 100, "请填写名称（最多 100 字节）");

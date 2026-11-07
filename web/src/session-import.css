@@ -21,6 +21,14 @@
   font-size: calc(10px + var(--font-adjust, 3px));
   line-height: 1.5;
 }
+/* An experimental tab says so under its name (YN-27). */
+.agent-create-mode-note {
+  display: block;
+  color: var(--text-quiet);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-weight: 400;
+  line-height: 1.3;
+}
 .agent-create-modes button[aria-pressed="true"] {
   background: var(--surface-raised);
   border-color: var(--line);

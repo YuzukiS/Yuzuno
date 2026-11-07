@@ -275,7 +275,9 @@ fn a_template_dispatch_is_refused_before_anything_is_written() {
     let store = Store::open(&dir.path().join("workspace.db")).unwrap();
     let p = project(&store);
     let empty = store.create_project("No folder", BTreeMap::new()).unwrap().id;
-    templates(&store, json!([reviewer(), {"id":"opencode","label":"OpenCode","harness":"opencode"}]));
+    // An OpenCode template is no longer refused here: OpenCode Agents are on
+    // unless Core was started with them off (YN-27; executor_templates_tests).
+    templates(&store, json!([reviewer()]));
     let t = task(&store, "Review", Some(&p), Some("/synthetic/worktree"));
     let homeless = task(&store, "No folder", Some(&empty), None);
     let archived = task(&store, "Archived", Some(&p), None);
@@ -293,7 +295,6 @@ fn a_template_dispatch_is_refused_before_anything_is_written() {
         (with(json!({"executor":{"templateId":"reviewer","cwd":"/elsewhere"}})), "invalid_input: unknown field cwd"),
         (with(json!({"executor":"reviewer"})), "invalid_input: executor is"),
         (with(json!({"expectedVersion":7})), "version_conflict:"),
-        (with(json!({"executor":{"templateId":"opencode"}})), "OpenCode Agents aren't enabled on this Core"),
         (json!({"requestId":"refused","taskId":archived,"expectedVersion":2,"executor":{"templateId":"reviewer"}}), "task_archived:"),
         (dispatch(&homeless, "refused"), "no_folder:"),
     ] {

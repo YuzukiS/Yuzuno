@@ -1,8 +1,8 @@
-//! Creating an OpenCode Agent (T-110 S1c) over HTTP, in a Core that turned
-//! `YUZUNO_EXPERIMENTAL_OPENCODE` on, against the stand-in `opencode serve`
-//! (tests/fixtures/opencode_server.py, run by /usr/bin/python3). The switch is
-//! this test process's own; tests/opencode_agent.rs checks a Core without it.
-//! No OpenCode, account, model or network service is used.
+//! Creating an OpenCode Agent (T-110 S1c) over HTTP, in a Core started
+//! without `YUZUNO_EXPERIMENTAL_OPENCODE` (on by default, YN-27), against the
+//! stand-in `opencode serve` (tests/fixtures/opencode_server.py, run by
+//! /usr/bin/python3). tests/opencode_agent.rs checks a Core started with it at
+//! `0`. No OpenCode, account, model or network service is used.
 #![cfg(target_os = "linux")]
 
 #[allow(unused_imports)]
@@ -15,16 +15,16 @@ use yuzuno_workspace::{model::AgentDetail, server, workspace::Workspace};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 
-fn turned_on() {
-    static ON: OnceLock<tempfile::TempDir> = OnceLock::new();
-    ON.get_or_init(|| {
+fn stand_in() {
+    static STAND_IN: OnceLock<tempfile::TempDir> = OnceLock::new();
+    STAND_IN.get_or_init(|| {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("opencode");
         std::fs::write(&program, format!("#!/bin/sh\nexec /usr/bin/python3 {FIXTURE} \"$@\"\n")).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
-        std::env::set_var("YUZUNO_EXPERIMENTAL_OPENCODE", "1");
+        std::env::remove_var("YUZUNO_EXPERIMENTAL_OPENCODE");
         dir
     });
 }
@@ -51,8 +51,8 @@ async fn until(ws: &Workspace, id: &str, what: &str, done: impl Fn(&AgentDetail)
 }
 
 #[tokio::test]
-async fn a_core_that_turned_opencode_on_creates_a_local_agent_and_keeps_its_session_when_deleted() {
-    turned_on();
+async fn a_core_started_without_the_switch_creates_a_local_opencode_agent_and_keeps_its_session_when_deleted() {
+    stand_in();
     let dir = tempfile::tempdir().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir(&work).unwrap();
