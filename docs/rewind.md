@@ -121,6 +121,16 @@ too: their turns leave this Agent's conversation as well.
 OpenCode's undo of a staged revert is not offered: Core commits each revert
 once its files are checked.
 
+Known limits:
+
+- While the session holds a staged revert, `/compact` is refused, asking for a
+  message first: OpenCode's compaction would commit it. That includes Core's
+  own revert whose commit answer was lost, which the next message commits.
+- Core marks a revert whose request is still waiting for OpenCode's answer
+  only in memory. Checked right after Core restarts, a revert OpenCode is still
+  staging may be taken as not reverted if its files and messages still read as
+  before.
+
 ## Protocol evidence
 
 The installed Codex 0.162.1 schema and an isolated real app-server probe confirm
