@@ -49,6 +49,42 @@ pub(crate) async fn attachment_file(ws: &Arc<Workspace>, project: &str, section:
     found.map(|(path, _)| path).map_err(|missing| anyhow::anyhow!("{}: {}", missing.code, missing.message))
 }
 
+/// For other modules' tests (previews.rs): Agent `agent` puts section `key`
+/// with the file at `file` as its one attachment, as its brief_update would
+/// in a Turn of its own (it joins a new Project if it is in none). Returns
+/// the Project, section, name and version, and the attachment as kept.
+#[cfg(test)]
+pub(crate) async fn attach_for_test(ws: &Arc<Workspace>, agent: &str, key: &str, file: &std::path::Path) -> Value {
+    let own = crate::projects::agent_project(&ws.store.db.read().unwrap(), agent).unwrap();
+    let project = match own {
+        Some(project) => project,
+        None => {
+            let project = ws.store.create_project("Previews", Default::default()).unwrap().id;
+            ws.store.set_agent_project(agent, Some(&project)).unwrap();
+            project
+        }
+    };
+    ws.store.update(agent, "test/running", &json!({}), |d| {
+        if !d.turns.iter().any(|t| t["status"] == "inProgress") {
+            d.turns.push(json!({"id":"t-attach","status":"inProgress","items":[]}));
+        }
+        d.agent.status = "working".into();
+        d.agent.connection_state = "connected".into();
+    }).unwrap();
+    let expected = sections::brief_version(&ws.store.db.read().unwrap(), &project).unwrap();
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
+    let body = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["note"]},
+        "note":{"type":"Markdown","props":{"text":"A page."}}}});
+    let change = json!({"op":"put","key":key,"kind":"report","title":"Designs","body":body,"attachments":[{"name":name,"path":file}]});
+    let input = json!({"requestId":format!("attach-{key}-{expected}"),"expectedVersion":expected,"changes":[change]});
+    let answer = update::update(ws, &update::Checker::Fake(|section| Ok(section.clone())), agent, input).await.unwrap();
+    assert!(answer.is_ok(), "{answer:?}");
+    let row = sections::find(&ws.store.db.read().unwrap(), &project, key, None).unwrap().unwrap();
+    let attachment = &row.data["attachments"][0];
+    json!({"projectId":project,"section":key,"name":name,"version":row.version,
+        "sha256":attachment["sha256"],"snapshot":attachment["snapshot"],"size":attachment["size"]})
+}
+
 pub(crate) use update::TOOL as UPDATE_TOOL;
 
 pub(crate) const MAX_TOPICS: usize = 12;

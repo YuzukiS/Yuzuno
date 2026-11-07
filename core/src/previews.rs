@@ -652,6 +652,30 @@ async fn read_bounded(path: &std::path::Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// A single-file page of exactly `size` bytes (at least 512) for tests:
+/// text with characters of every UTF-8 length, and a script at its very
+/// end that says the whole page ran (YN-10).
+#[cfg(test)]
+pub(crate) fn synthetic_page(size: usize) -> Vec<u8> {
+    let head = "<!doctype html><meta charset=\"utf-8\"><title>Large page</title><p id=\"end\">not run</p>\n";
+    let tail = "\n<script>document.getElementById(\"end\").textContent=\"ran to the end\"</script>\n";
+    let line = "<p>Plain ASCII, é ü ß, 中文字, 🙂 and more filler.</p>\n";
+    assert!(size >= 512, "{size} bytes is too small a page");
+    let mut page = String::with_capacity(size);
+    page.push_str(head);
+    // Whole lines while they fit, then a comment padded to the exact size.
+    while page.len() + line.len() + "<!---->".len() + tail.len() <= size {
+        page.push_str(line);
+    }
+    let pad = size - page.len() - "<!---->".len() - tail.len();
+    page.push_str("<!--");
+    page.push_str(&"a".repeat(pad));
+    page.push_str("-->");
+    page.push_str(tail);
+    assert_eq!(page.len(), size);
+    page.into_bytes()
+}
+
 #[cfg(test)]
 #[path = "previews_tests.rs"]
 mod tests;

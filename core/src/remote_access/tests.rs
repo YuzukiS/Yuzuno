@@ -706,10 +706,15 @@ impl Lab {
 /// A preview asked for through the phone entry on `port`, as Serve passes a
 /// phone's request: its Host, the login, the page's origin and client header.
 async fn mint(port: u16, login: &str) -> (u16, Value) {
+    mint_source(port, login, json!({"kind": "artifact", "agentId": "a", "path": "proto.html"})).await
+}
+
+/// The same for the preview of `source`.
+async fn mint_source(port: u16, login: &str, source: Value) -> (u16, Value) {
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let response = client.post(format!("http://127.0.0.1:{port}/api/previews")).header("host", format!("{DNS}:8444"))
         .header("tailscale-user-login", login).header("origin", format!("https://{DNS}:8444")).header("x-yuzuno-client", "desktop")
-        .json(&json!({"kind": "artifact", "agentId": "a", "path": "proto.html"})).send().await.unwrap();
+        .json(&source).send().await.unwrap();
     let code = response.status().as_u16();
     (code, response.json().await.unwrap_or(Value::Null))
 }
@@ -764,6 +769,35 @@ fn as_serve() -> String {
 /// As `as_serve`, for a change from the phone page itself.
 fn from_page() -> String {
     format!("{}Origin: https://{DNS}:8444\r\nX-Yuzuno-Client: desktop\r\n", as_serve())
+}
+
+#[tokio::test]
+async fn a_6_6_mb_home_attachment_opens_whole_through_the_phone_entry() {
+    use sha2::Digest;
+    let lab = lab("wsl");
+    lab.with_page();
+    let file = lab.dir.path().join("work/large.html");
+    let page = crate::previews::synthetic_page(6_606_144);
+    std::fs::write(&file, &page).unwrap();
+    let kept = crate::project_brief::attach_for_test(&lab.ws, "a", "designs", &file).await;
+    let phone = free_port();
+    lab.on_with_previews(phone).await;
+    let source = json!({"kind": "briefAttachment", "projectId": kept["projectId"], "section": "designs", "name": "large.html"});
+    let (code, minted) = mint_source(phone, OWNER, source).await;
+    assert_eq!(code, 200, "a 6.6 MB Home attachment opens through the phone entry: {minted}");
+    // The page as Serve passes a phone's request for it (`as_serve`).
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let response = client.get(format!("http://127.0.0.1:{phone}{}", after_origin(&minted["url"])))
+        .header("host", format!("{DNS}:8444")).header("tailscale-user-login", OWNER).header("x-forwarded-for", "100.64.0.2")
+        .send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let policy = crate::previews::page_policy(Some(&format!("https://{DNS}:8444")));
+    assert_eq!(response.headers().get("content-security-policy").and_then(|v| v.to_str().ok()), Some(policy.as_str()));
+    assert!(response.headers().get("x-frame-options").is_none(), "{:?}", response.headers());
+    let body = response.bytes().await.unwrap();
+    let sha = format!("{:x}", sha2::Sha256::digest(&page));
+    assert_eq!(minted["sha256"].as_str(), Some(sha.as_str()), "{minted}");
+    assert_eq!(format!("{:x}", sha2::Sha256::digest(&body)), sha, "the page as it was kept, whole ({} bytes came)", body.len());
 }
 
 #[tokio::test]

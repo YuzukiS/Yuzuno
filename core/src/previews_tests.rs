@@ -26,10 +26,13 @@ fn ports(uid: u32) -> (std::fs::File, u16) {
     panic!("every block of preview test ports is held");
 }
 
-/// A Core with one Agent "a" whose working directory is `work`.
+/// A Core with one Agent "a" whose working directory is `work`, on disk
+/// next to the build (/tmp is memory here, and pages can be large).
 fn lab() -> Lab {
     use std::os::unix::fs::MetadataExt;
-    let dir = tempfile::tempdir().unwrap();
+    let parent = concat!(env!("CARGO_MANIFEST_DIR"), "/../target");
+    std::fs::create_dir_all(parent).unwrap();
+    let dir = tempfile::tempdir_in(parent).unwrap();
     let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
     let (ports, first) = ports(std::fs::metadata(dir.path()).unwrap().uid());
     ws.services.use_ports(first..=first + 3);
@@ -68,6 +71,18 @@ async fn ask_with(port: u16, method: &str, path: &str, headers: &str) -> (u16, S
     let status = text.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
     let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
     (status, head.to_owned(), body.to_owned())
+}
+
+/// A GET of `path` on the previews' port, its body as bytes, however long.
+async fn ask_bytes(port: u16, path: &str) -> (u16, String, Vec<u8>) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut bytes = Vec::new();
+    let _ = timeout(Duration::from_secs(20), stream.read_to_end(&mut bytes)).await;
+    let end = bytes.windows(4).position(|w| w == b"\r\n\r\n").map_or(bytes.len(), |end| end + 4);
+    let head = String::from_utf8_lossy(&bytes[..end]).into_owned();
+    let status = head.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+    (status, head, bytes[end..].to_vec())
 }
 
 fn has(head: &str, name: &str, value: &str) -> bool {
@@ -197,6 +212,32 @@ async fn only_one_html_file_of_this_agent_up_to_the_limit_is_previewed() {
     // A source of no known kind is not read at all.
     assert!(serde_json::from_value::<Source>(json!({"kind":"url","url":"http://x"})).is_err());
     assert!(serde_json::from_value::<Source>(json!({"kind":"artifact","agentId":"a","path":"p.html","extra":1})).is_err());
+}
+
+/// The size of the page that would not open on Home (YN-10), in bytes.
+const LARGE: usize = 6_606_144;
+
+#[tokio::test]
+async fn a_6_6_mb_home_attachment_opens_whole_on_the_previews_port() {
+    let lab = lab();
+    let file = lab.dir.path().join("large.html");
+    let page = synthetic_page(LARGE);
+    std::fs::write(&file, &page).unwrap();
+    let kept = crate::project_brief::attach_for_test(&lab.ws, "a", "designs", &file).await;
+    let sha = format!("{:x}", Sha256::digest(&page));
+    assert_eq!((&kept["snapshot"], &kept["sha256"]), (&json!(true), &json!(sha)), "kept as a snapshot: {kept}");
+    let source: Source = serde_json::from_value(json!({"kind":"briefAttachment","projectId":kept["projectId"],
+        "section":"designs","name":"large.html"})).unwrap();
+    let view = lab.ws.open_preview(source, Asker::Local(Some(CORE))).await;
+    assert!(view.is_ok(), "a 6.6 MB Home attachment opens as a preview: {view:?}");
+    let view = view.unwrap();
+    assert_eq!((view["size"].as_u64(), view["sha256"].as_str()), (Some(LARGE as u64), Some(sha.as_str())), "{view}");
+    let port = view["port"].as_u64().unwrap() as u16;
+    let (status, head, body) = ask_bytes(port, &path_of(&view["url"])).await;
+    assert_eq!(status, 200, "{head}");
+    assert!(has(&head, "Content-Length", &LARGE.to_string()), "{head}");
+    assert!(has(&head, "Content-Security-Policy", &page_policy(Some(CORE))), "{head}");
+    assert_eq!(format!("{:x}", Sha256::digest(&body)), sha, "the page as it was kept, whole ({} bytes came)", body.len());
 }
 
 #[tokio::test]
