@@ -231,8 +231,9 @@ try {
 
   // ---- 3. The template editor: Runs on, auto explained, and kept on save.
   let box = await openTemplates(page);
+  // A template's own page (YN-8 S5b), from its row.
+  await box.locator(".executor-template-row").first().click({ timeout: 10_000 });
   await box.locator('input[aria-label="Label"]').first().waitFor({ timeout: 10_000 });
-  await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
   const runsOn = box.locator('select[aria-label="Runs on"]');
   await runsOn.waitFor({ timeout: 10_000 });
   await page.waitForFunction(() => document.querySelector('#settings-editor-executor-templates select[aria-label="Runs on"]')?.options.length === 4, null, { timeout: 10_000 });
@@ -283,8 +284,8 @@ try {
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "detached", timeout: 10_000 });
     box = await openTemplates(page);
+    await box.locator(".executor-template-row").first().click({ timeout: 10_000 });
     await box.locator('input[aria-label="Label"]').first().waitFor({ timeout: 10_000 });
-    await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
     await box.locator('select[aria-label="Runs on"]').waitFor({ timeout: 10_000 });
     assert.deepEqual(await fits(box), { box: true, wider: [] }, `${at}: the template editor fits`);
     await box.locator("label.settings-row", { has: page.locator('select[aria-label="Runs on"]') }).first()

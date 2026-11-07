@@ -146,7 +146,18 @@ try {
         page.on("pageerror", (error) => report.errors.push(`${tag}: ${error.message}`));
         await page.goto(`https://${HOST}/`);
         const box = await openEditor(page, w);
-        await box.locator(".executor-template").first().waitFor({ timeout: 10_000 });
+        // The templates are a list, each with a page of its own (YN-8 S5b).
+        const rowAt = (n) => box.locator(".executor-template-row").nth(n);
+        const openAt = async (n) => {
+          await rowAt(n).click();
+          await box.locator(".executor-template").waitFor({ timeout: 10_000 });
+          return box.locator(".executor-template");
+        };
+        const back = async () => {
+          await box.locator(".settings-crumb").click();
+          await box.locator(".executor-template").waitFor({ state: "detached", timeout: 10_000 });
+        };
+        await rowAt(0).waitFor({ timeout: 10_000 });
         assert.equal(await box.getAttribute("lang"), language === "en" ? "en" : "zh-Hans");
         await box.getByRole("button", { name: w.addPresets }).click();
         const picker = box.locator(".executor-presets");
@@ -158,23 +169,27 @@ try {
         await picker.locator(".executor-preset-choice", { hasText: w.first }).click();
         await picker.locator(".executor-preset-choice", { hasText: w.second }).click();
         await box.getByRole("button", { name: w.add2 }).click();
-        await box.locator(".executor-template").nth(2).waitFor({ timeout: 10_000 });
+        await rowAt(2).waitFor({ timeout: 10_000 });
         assert.equal(await box.locator(".executor-presets").count(), 0, `${tag}: the picker closes`);
-        const design = box.locator(".executor-template").nth(1);
+        assert.deepEqual(await fits(box), { box: true, wider: [] }, `${tag}: the list fits`);
+        await shot(page, box.locator(".executor-template-list"), `${tag}-2-list`);
+        const design = await openAt(1);
         assert.equal(await design.locator('input[aria-label]').first().inputValue(), w.first);
         assert.equal(await design.locator(".executor-step").count(), 10, `${tag}: design-first's ten steps`);
         assert.equal(await design.locator('.executor-delivery-choice input[value="pr"]').isChecked(), true);
-        assert.deepEqual(await fits(box), { box: true, wider: [] }, `${tag}: the template cards fit`);
+        assert.deepEqual(await fits(box), { box: true, wider: [] }, `${tag}: the template's page fits`);
         await shot(page, design, `${tag}-2-design-first`);
-        const dev = box.locator(".executor-template").first();
-        assert.match(await dev.locator(".executor-template-changed").textContent(), language === "en"
+        await back();
+        const dev = await openAt(0);
+        assert.match(await box.locator(".executor-template-changed").textContent(), language === "en"
           ? /^Last changed: Dev Lead · .+ · Say how to test before review$/ : /^上次修改：Dev Lead · .+ · Say how to test before review$/, `${tag}: its last change`);
         await shot(page, dev, `${tag}-3-saved-template`);
-        check(`${tag}: the ten presets in the page's language, two added as unsaved templates, each card fitting its width`);
+        check(`${tag}: the ten presets in the page's language, two added as unsaved templates; the list and each template's page fit their width`);
 
         if (tag === "en-light-desktop") {
           // A step its delivery can't have, marked at its row; then the presets' fields saved as one list.
-          const investigation = box.locator(".executor-template").nth(2);
+          await back();
+          const investigation = await openAt(2);
           assert.equal(await investigation.locator('.executor-delivery-choice input[value="none"]').isChecked(), true);
           assert.equal(await investigation.locator(".executor-step").count(), 3);
           assert.equal(await investigation.locator(".executor-step-error").count(), 0, "its own steps fit no repository change");

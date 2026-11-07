@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, Check, LoaderCircle, Plus, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, Bot, Check, ChevronLeft, ChevronRight, LoaderCircle, Plus, Trash2, X } from "lucide-react";
 import { api, errorText } from "./api";
 import { CLAUDE_MODES, CODEX_PRESETS, claudeModeText, codexPermissionText } from "./agent-defaults";
 import {
@@ -29,8 +29,15 @@ const text = strings({
   addChosen: (n: number) => (n === 1 ? "Add 1 preset" : `Add ${n} presets`),
   room: (n: number, limit: number) => `Room for ${n} more ${n === 1 ? "template" : "templates"}: the list holds at most ${limit}.`,
   cancel: "Cancel",
-  more: "More settings",
-  moreSet: (n: number) => `More settings (${n} set)`,
+  list: "Templates",
+  backTo: "Back to Executor templates",
+  needsFix: "Needs a fix",
+  pageIntro: "A kind of executor a dispatch can name by its id.",
+  nameAndPurpose: "Name and purpose",
+  howItRuns: "How it runs",
+  whereItRuns: "Where it runs",
+  removeTitle: "Remove this template",
+  removeHelp: "It leaves the list when the page is saved; a dispatch can no longer name it.",
   origin: (project: string, id: string) => `Copied from the project ${project}, where its id was ${id}.`,
   lastChanged: "Last changed: ",
   you: "You",
@@ -115,8 +122,15 @@ const text = strings({
   addChosen: (n) => `添加 ${n} 个预设`,
   room: (n, limit) => `还能添加 ${n} 个模板：列表最多 ${limit} 个。`,
   cancel: "取消",
-  more: "更多设置",
-  moreSet: (n) => `更多设置（已设 ${n} 项）`,
+  list: "模板",
+  backTo: "返回执行者模板",
+  needsFix: "需要修改",
+  pageIntro: "派发时可以用 id 指名的一种执行者。",
+  nameAndPurpose: "名称与用途",
+  howItRuns: "运行方式",
+  whereItRuns: "运行在哪里",
+  removeTitle: "移除此模板",
+  removeHelp: "保存此页后它就从列表中移除；派发时不能再指名它。",
   origin: (project, id) => `从项目 ${project} 复制而来，原 id 是 ${id}。`,
   lastChanged: "上次修改：",
   you: "你",
@@ -285,9 +299,6 @@ const templateOf = (d: Draft): ExecutorTemplate => {
 /** A step this template's delivery can't have: pr, review, ci and merge are for pull requests only. */
 const stepRefused = (d: Draft, s: DraftStep) => (d.deliveryMode || "pr") !== "pr" && PR_STEP_KINDS.includes(s.kind);
 const stepsInvalid = (d: Draft) => !!d.steps && (d.steps.length === 0 || d.steps.some((s) => stepRefused(d, s)));
-/** How many of the folded settings a draft sets, said on the fold. */
-const setCount = (d: Draft) =>
-  [d.model, d.reasoningEffort, d.permission, d.machine, d.namePattern, d.instructions].filter((v) => v.trim()).length;
 /** The machines a template's executors may run on, by harness: this Core
  * host always; an SSH machine for Codex unless it keeps its Agents contained,
  * and for Claude Code; `auto` for both. OpenCode runs on this Core host only,
@@ -458,7 +469,9 @@ function StepsField({ d, t, edit }: { d: Draft; t: Text; edit: (change: Partial<
   );
 }
 
-/** The Workspace's executor templates (T-34; the only list since YN-2 S2).
+/** The Workspace's executor templates (T-34; the only list since YN-2 S2):
+ * a list, and a page for each template (YN-8 S5b). The whole list is still
+ * saved at once, against the version read, by the page's save bar.
  * The user's setting only: no Agent tool changes templates. */
 export function ExecutorTemplates({ active, disabled = false }: { active: boolean; disabled?: boolean }) {
   const language = useLanguage();
@@ -470,6 +483,10 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   const [done, setDone] = useState(false);
   const [reload, setReload] = useState(0);
   const [picking, setPicking] = useState(false);
+  // The template whose page is shown, by its draft's key; none: the list.
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const shown = useRef(false);
   // The registered machines a template may name; none read, only this Core host and auto.
   const [machines, setMachines] = useState<WorkspaceMachine[]>([]);
   // Whether that list has been read: a saved machine is called missing only
@@ -486,9 +503,14 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
     const listed = machines.find(m => m.id === id);
     return listed ? t.containedNoCodex(listed.name) : t.unknownMachine(id);
   };
+  // A template saved under the id of one in the list keeps its key, so its
+  // page stays open across a save; one no longer there closes it.
   const adopt = (next: ExecutorTemplatesView) => {
     setView(next);
-    setDrafts(own(next).templates.map(saved => ({ ...draftOf(saved), savedId: saved.id })));
+    setDrafts(old => own(next).templates.map(saved => {
+      const was = old.find(d => d.id.trim() === saved.id);
+      return { ...draftOf(saved), savedId: saved.id, ...(was ? { key: was.key } : {}) };
+    }));
   };
   useEffect(() => {
     if (!active) return;
@@ -514,7 +536,19 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   const changed = !!view && JSON.stringify(drafts.map(templateOf)) !== JSON.stringify(own(view).templates.map(saved => templateOf(draftOf(saved))));
   const locked = disabled || busy;
   const noLabel = (d: Draft) => !d.label.trim();
-  const invalid = drafts.some(d => noLabel(d) || stepsInvalid(d));
+  const needsFix = (d: Draft) => noLabel(d) || stepsInvalid(d);
+  const invalid = drafts.some(needsFix);
+  const open = openKey ? drafts.find(d => d.key === openKey) : undefined;
+  // Another view starts at its top, its title focused; the first keeps the focus Settings gave the page.
+  const shownKey = open?.key ?? null;
+  useEffect(() => {
+    if (!shown.current) {
+      shown.current = true;
+      return;
+    }
+    heading.current?.closest(".settings-pane")?.scrollTo?.({ top: 0 });
+    heading.current?.focus();
+  }, [shownKey]);
   const edit = (key: string, change: Partial<Draft>) => {
     setDone(false);
     setDrafts(list => list.map(d => {
@@ -569,7 +603,29 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
     setPicking(false);
     setDrafts(list => [...list, ...made].slice(0, view?.limits.templates ?? 50));
   };
+  // A new template opens on its own page.
+  const addNew = () => {
+    const made = { ...draftOf({ id: "", label: "", harness: "codex" }), idTouched: false };
+    setDone(false);
+    setPicking(false);
+    setDrafts(list => [...list, made]);
+    setOpenKey(made.key);
+  };
+  const runsOnText = (d: Draft) =>
+    d.harness === "opencode" || !d.machine ? t.thisHost
+      : d.machine === "auto" ? t.auto
+        : machines.find(m => m.id === d.machine)?.name ?? savedMachine(d.machine);
   const presets = view ? presetsIn(view.presets, language) : [];
+  const saveLine = view && (
+    <div className="executor-templates-actions">
+      {!inBar && (
+        <button type="button" className="secondary-button" disabled={locked || !changed || invalid} onClick={() => void save()}>
+          {busy && <LoaderCircle size={13} className="spin" />} {t.save}
+        </button>
+      )}
+      {changed ? !inBar && <span className="settings-row-help">{t.unsaved}</span> : done && <span className="settings-row-help" role="status">{t.saved}</span>}
+    </div>
+  );
   return (
     <section
       id="settings-executor-templates"
@@ -577,46 +633,82 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
       aria-label={t.section}
       lang={langTag(language)}
     >
+      {open && (
+        <button type="button" className="settings-crumb" aria-label={t.backTo} onClick={() => setOpenKey(null)}>
+          <ChevronLeft size={14} aria-hidden="true" />
+          {t.title}
+        </button>
+      )}
       <header className="settings-section-heading">
         <div>
-          <h3>{t.title}</h3>
-          <p>{t.intro}</p>
+          <h3 ref={heading} tabIndex={-1}>{open ? open.label.trim() || t.newTemplate : t.title}</h3>
+          <p>{open ? open.whenToChoose.trim() || t.pageIntro : t.intro}</p>
         </div>
+        {open?.id.trim() && <span className="settings-current">{open.id.trim()}</span>}
       </header>
-      <ExecutorSlots active={active} disabled={disabled} />
-      {active && !view && !error && <p className="settings-row-help" role="status">{t.reading}</p>}
-      {view && <>
-        {(own(view).laterTemplates ?? 0) > 0 && <p className="settings-row-help">{t.later(own(view).laterTemplates ?? 0)}</p>}
-        {drafts.length === 0 && <p className="settings-row-help">{t.none}</p>}
-        {drafts.map(d => (
-          <TemplateCard key={d.key} d={d} t={t} language={language} view={view} locked={locked} machines={machines}
-            savedMachine={savedMachine} edit={(change) => edit(d.key, change)}
-            remove={() => { setDone(false); setDrafts(list => list.filter(x => x.key !== d.key)); }} />
-        ))}
-        {picking && (
-          <PresetPicker presets={presets} taken={drafts.map(d => d.id.trim())} room={view.limits.templates - drafts.length}
-            limit={view.limits.templates} harness={presetHarness()} t={t}
-            onAdd={addPresets} onCancel={() => setPicking(false)} />
-        )}
-        <div className="executor-templates-actions">
-          <button type="button" className="quiet-button" disabled={locked || drafts.length >= view.limits.templates}
-            onClick={() => { setDone(false); setDrafts(list => [...list, { ...draftOf({ id: "", label: "", harness: "codex" }), idTouched: false }]); }}>
-            <Plus size={13} /> {t.add}
-          </button>
-          {presets.length > 0 && !picking && (
-            <button type="button" className="quiet-button" disabled={locked || drafts.length >= view.limits.templates}
-              onClick={() => setPicking(true)}>
-              <Plus size={13} /> {t.addPresets}
-            </button>
-          )}
-          {!inBar && (
-            <button type="button" className="secondary-button" disabled={locked || !changed || invalid} onClick={() => void save()}>
-              {busy && <LoaderCircle size={13} className="spin" />} {t.save}
-            </button>
-          )}
-          {changed ? !inBar && <span className="settings-row-help">{t.unsaved}</span> : done && <span className="settings-row-help" role="status">{t.saved}</span>}
-        </div>
-      </>}
+      {open && view ? (
+        <>
+          {open.savedId && view.lastModified?.[open.savedId] && <LastChange change={view.lastModified[open.savedId]} t={t} />}
+          <TemplatePage key={open.key} d={open} t={t} language={language} view={view} locked={locked} machines={machines}
+            savedMachine={savedMachine} edit={(change) => edit(open.key, change)}
+            remove={() => { setDone(false); setOpenKey(null); setDrafts(list => list.filter(x => x.key !== open.key)); }} />
+          {saveLine}
+        </>
+      ) : (
+        <>
+          <ExecutorSlots active={active} disabled={disabled} />
+          {active && !view && !error && <p className="settings-row-help" role="status">{t.reading}</p>}
+          {view && <>
+            <div className="settings-group appearance-group executor-template-list">
+              <fieldset className="appearance-field" disabled={locked}>
+                <legend>{t.list}</legend>
+                {(own(view).laterTemplates ?? 0) > 0 && <p className="settings-block-help">{t.later(own(view).laterTemplates ?? 0)}</p>}
+                {drafts.length === 0 && <p className="settings-block-help">{t.none}</p>}
+                <ul className="settings-list">
+                  {drafts.map(d => (
+                    <li key={d.key}>
+                      <button type="button" className="settings-list-row is-open executor-template-row" data-template={d.id.trim() || undefined}
+                        onClick={() => setOpenKey(d.key)}>
+                        <Bot size={15} className="settings-list-icon" aria-hidden="true" />
+                        <span className="settings-list-main">
+                          <span className="settings-list-title">{d.label.trim() || t.newTemplate}</span>
+                          <span className="settings-list-sub">
+                            {harnessName(d.harness)} · {t.deliveries[d.deliveryMode || "pr"][0]} · {runsOnText(d)}
+                          </span>
+                        </span>
+                        {needsFix(d) && <span className="settings-tag is-error">{t.needsFix}</span>}
+                        {d.id.trim() && <span className="settings-tag is-mono">{d.id.trim()}</span>}
+                        <ChevronRight size={15} className="settings-list-chev" aria-hidden="true" />
+                      </button>
+                    </li>
+                  ))}
+                  <li>
+                    <button type="button" className="settings-list-row is-open is-add" disabled={drafts.length >= view.limits.templates} onClick={addNew}>
+                      <Plus size={15} className="settings-list-icon" aria-hidden="true" />
+                      <span className="settings-list-main"><span className="settings-list-title">{t.add}</span></span>
+                    </button>
+                  </li>
+                  {presets.length > 0 && !picking && (
+                    <li>
+                      <button type="button" className="settings-list-row is-open is-add" disabled={drafts.length >= view.limits.templates}
+                        onClick={() => setPicking(true)}>
+                        <Plus size={15} className="settings-list-icon" aria-hidden="true" />
+                        <span className="settings-list-main"><span className="settings-list-title">{t.addPresets}</span></span>
+                      </button>
+                    </li>
+                  )}
+                </ul>
+              </fieldset>
+            </div>
+            {picking && (
+              <PresetPicker presets={presets} taken={drafts.map(d => d.id.trim())} room={view.limits.templates - drafts.length}
+                limit={view.limits.templates} harness={presetHarness()} t={t}
+                onAdd={addPresets} onCancel={() => setPicking(false)} />
+            )}
+            {saveLine}
+          </>}
+        </>
+      )}
       {error && <p className="inline-error" role="alert">{error}</p>}
       {error && <button type="button" className="quiet-button" disabled={busy} onClick={() => setReload(n => n + 1)}>{t.reload}</button>}
     </section>
@@ -640,138 +732,153 @@ function LastChange({ change, t }: { change: TemplateChange; t: Text }) {
   );
 }
 
-/** One template, in Settings' card style (YN-8): what it is, how its work is
- * delivered, its steps, then the rest folded. */
-function TemplateCard({ d, t, language, view, locked, machines, savedMachine, edit, remove }: {
+/** One template's page (YN-8 S5b), in the design's order: its name and
+ * purpose and how it runs, its delivery and steps, where it runs and its
+ * instructions, then removing it on a card of its own. */
+function TemplatePage({ d, t, language, view, locked, machines, savedMachine, edit, remove }: {
   d: Draft; t: Text; language: Language; view: ExecutorTemplatesView; locked: boolean; machines: WorkspaceMachine[];
   savedMachine: (id: string) => string; edit: (change: Partial<Draft>) => void; remove: () => void;
 }) {
   const name = d.label.trim() || t.newTemplate;
   const noLabel = !d.label.trim();
-  const change = d.savedId ? view.lastModified?.[d.savedId] : undefined;
   const deliveries = (["pr", "direct-commit", "none"] as const).map((value) => ({
     value, label: t.deliveries[value][0], note: t.deliveries[value][1],
   }));
   return (
-    <fieldset className="settings-group appearance-group executor-template" aria-label={name} disabled={locked}>
-      <legend className="executor-template-name">{name}</legend>
-      {change && <LastChange change={change} t={t} />}
-      <div className="appearance-field executor-template-basics">
-        <label className="settings-row">
-          <span className="settings-row-main">
-            <span className="settings-row-title">{t.label}</span>
-            {noLabel && <span className="inline-error">{t.labelNeeded}</span>}
-            {d.origin && <span className="settings-row-help">{t.origin(d.origin.projectName, d.origin.id)}</span>}
-          </span>
-          <input className="settings-input" aria-label={t.label} value={d.label} maxLength={80} aria-invalid={noLabel || undefined}
-            onChange={e => edit({ label: e.target.value })} />
-        </label>
-        <label className="settings-row">
-          <span className="settings-row-main">
-            <span className="settings-row-title">{t.harness}</span>
-          </span>
-          <select className="settings-select" aria-label={t.harness} value={d.harness}
-            onChange={e => edit({ harness: e.target.value as ExecutorHarness })}>
-            <option value="codex">Codex</option>
-            <option value="claude">Claude Code</option>
-            {(view.opencodeEnabled || d.harness === "opencode") && <option value="opencode">OpenCode</option>}
-          </select>
-        </label>
-        <label className="settings-row">
-          <span className="settings-row-main">
-            <span className="settings-row-title">{t.whenToChoose}</span>
-            <span className="settings-row-help">{t.whenToChooseHelp}</span>
-          </span>
-          <input className="settings-input executor-template-when" aria-label={t.whenToChoose} value={d.whenToChoose} maxLength={200}
-            onChange={e => edit({ whenToChoose: e.target.value })} />
-        </label>
-      </div>
-      <fieldset className="appearance-field executor-template-delivery">
-        <legend>{t.delivery}</legend>
-        <p className="appearance-help">{t.deliveryHelp}</p>
-        <ChoiceCards<DeliveryMode> name={`delivery-${d.key}`} value={d.deliveryMode || "pr"} choices={deliveries}
-          className="executor-delivery-choice" onChange={(deliveryMode) => edit({ deliveryMode })} />
-      </fieldset>
-      <StepsField d={d} t={t} edit={edit} />
-      <details className="executor-template-more">
-        <summary>{setCount(d) ? t.moreSet(setCount(d)) : t.more}</summary>
-        <label className="settings-row">
-          <span className="settings-row-main">
-            <span className="settings-row-title">{t.id}</span>
-            <span className="settings-row-help">{t.idHelp}</span>
-          </span>
-          <input className="settings-input" aria-label={t.id} value={d.id} maxLength={48}
-            onChange={e => edit({ id: e.target.value, idTouched: true })} />
-        </label>
-        {d.harness === "opencode" ? <p className="settings-row-help">{t.opencodeNative}</p> : <>
+    <div className="executor-template" aria-label={name}>
+      <fieldset className="settings-group appearance-group" disabled={locked}>
+        <fieldset className="appearance-field executor-template-basics">
+          <legend>{t.nameAndPurpose}</legend>
           <label className="settings-row">
             <span className="settings-row-main">
-              <span className="settings-row-title">{t.model}</span>
-              {d.preset?.modelHint && <span className="settings-row-help">{t.modelHint(d.preset.modelHint)}</span>}
+              <span className="settings-row-title">{t.label}</span>
+              {noLabel && <span className="inline-error">{t.labelNeeded}</span>}
+              {d.origin && <span className="settings-row-help">{t.origin(d.origin.projectName, d.origin.id)}</span>}
             </span>
-            <input className="settings-input" aria-label={t.model} value={d.model} placeholder={t.inheritModel}
-              onChange={e => edit({ model: e.target.value })} />
+            <input className="settings-input" aria-label={t.label} value={d.label} maxLength={80} aria-invalid={noLabel || undefined}
+              onChange={e => edit({ label: e.target.value })} />
           </label>
-          {d.harness === "codex" && (
-            <label className="settings-row">
-              <span className="settings-row-title">{t.effort}</span>
-              <input className="settings-input" aria-label={t.effort} value={d.reasoningEffort} placeholder={t.inheritEffort}
-                disabled={locked || !d.model.trim()} onChange={e => edit({ reasoningEffort: e.target.value })} />
-            </label>
-          )}
           <label className="settings-row">
-            <span className="settings-row-title">{t.permission}</span>
-            <select className="settings-select" aria-label={t.permission} value={d.permission}
-              onChange={e => edit({ permission: e.target.value })}>
-              <option value="">{t.inheritPermission}</option>
-              {(d.harness === "codex" ? CODEX_PRESETS : CLAUDE_MODES).map(value => (
-                <option key={value} value={value}>
-                  {d.harness === "codex" ? codexPermissionText(value, language) : claudeModeText(value, language)}
-                </option>
-              ))}
+            <span className="settings-row-main">
+              <span className="settings-row-title">{t.whenToChoose}</span>
+              <span className="settings-row-help">{t.whenToChooseHelp}</span>
+            </span>
+            <input className="settings-input executor-template-when" aria-label={t.whenToChoose} value={d.whenToChoose} maxLength={200}
+              onChange={e => edit({ whenToChoose: e.target.value })} />
+          </label>
+          <label className="settings-row">
+            <span className="settings-row-main">
+              <span className="settings-row-title">{t.id}</span>
+              <span className="settings-row-help">{t.idHelp}</span>
+            </span>
+            <input className="settings-input" aria-label={t.id} value={d.id} maxLength={48}
+              onChange={e => edit({ id: e.target.value, idTouched: true })} />
+          </label>
+        </fieldset>
+        <fieldset className="appearance-field executor-template-runs">
+          <legend>{t.howItRuns}</legend>
+          <label className="settings-row">
+            <span className="settings-row-main">
+              <span className="settings-row-title">{t.harness}</span>
+            </span>
+            <select className="settings-select" aria-label={t.harness} value={d.harness}
+              onChange={e => edit({ harness: e.target.value as ExecutorHarness })}>
+              <option value="codex">Codex</option>
+              <option value="claude">Claude Code</option>
+              {(view.opencodeEnabled || d.harness === "opencode") && <option value="opencode">OpenCode</option>}
             </select>
           </label>
-        </>}
-        <label className="settings-row">
-          <span className="settings-row-main">
-            <span className="settings-row-title">{t.runsOn}</span>
-            <span className="settings-row-help">
-              {d.harness === "opencode" ? t.opencodeHost : d.machine === "auto" ? t.autoHelp : t.machineHelp}
-            </span>
-          </span>
-          <select className="settings-select" aria-label={t.runsOn} value={d.harness === "opencode" ? "" : d.machine}
-            disabled={locked || d.harness === "opencode"} onChange={e => edit({ machine: e.target.value })}>
-            <option value="">{t.thisHost}</option>
-            {machineOptions(d.harness, machines).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-            {d.harness !== "opencode" && d.machine && d.machine !== "auto" && !machineOptions(d.harness, machines).some(m => m.id === d.machine) && (
-              // Kept as saved, and named for what is known of it.
-              <option value={d.machine}>{savedMachine(d.machine)}</option>
+          {d.harness === "opencode" ? <p className="settings-row-help executor-template-note">{t.opencodeNative}</p> : <>
+            <label className="settings-row">
+              <span className="settings-row-main">
+                <span className="settings-row-title">{t.model}</span>
+                {d.preset?.modelHint && <span className="settings-row-help">{t.modelHint(d.preset.modelHint)}</span>}
+              </span>
+              <input className="settings-input" aria-label={t.model} value={d.model} placeholder={t.inheritModel}
+                onChange={e => edit({ model: e.target.value })} />
+            </label>
+            {d.harness === "codex" && (
+              <label className="settings-row">
+                <span className="settings-row-title">{t.effort}</span>
+                <input className="settings-input" aria-label={t.effort} value={d.reasoningEffort} placeholder={t.inheritEffort}
+                  disabled={locked || !d.model.trim()} onChange={e => edit({ reasoningEffort: e.target.value })} />
+              </label>
             )}
-            {d.harness !== "opencode" && <option value="auto">{t.auto}</option>}
-          </select>
-        </label>
-        <label className="settings-row">
-          <span className="settings-row-main">
-            <span className="settings-row-title">{t.namePattern}</span>
-            <span className="settings-row-help">{t.namePatternHelp(view.defaultNamePattern)}</span>
-          </span>
-          <input className="settings-input" aria-label={t.namePattern} value={d.namePattern} maxLength={120}
-            placeholder={view.defaultNamePattern} onChange={e => edit({ namePattern: e.target.value })} />
-        </label>
-        <label className="settings-row executor-template-instructions">
-          <span className="settings-row-main">
-            <span className="settings-row-title">{t.instructions}</span>
-            <span className="settings-row-help">{t.instructionsHelp(bytes(d.instructions), view.limits.instructionsBytes)}</span>
-          </span>
-          <textarea className="settings-textarea" aria-label={t.instructions} rows={4} value={d.instructions}
+            <label className="settings-row">
+              <span className="settings-row-title">{t.permission}</span>
+              <select className="settings-select" aria-label={t.permission} value={d.permission}
+                onChange={e => edit({ permission: e.target.value })}>
+                <option value="">{t.inheritPermission}</option>
+                {(d.harness === "codex" ? CODEX_PRESETS : CLAUDE_MODES).map(value => (
+                  <option key={value} value={value}>
+                    {d.harness === "codex" ? codexPermissionText(value, language) : claudeModeText(value, language)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>}
+        </fieldset>
+      </fieldset>
+      <fieldset className="settings-group appearance-group" disabled={locked}>
+        <fieldset className="appearance-field executor-template-delivery">
+          <legend>{t.delivery}</legend>
+          <p className="appearance-help">{t.deliveryHelp}</p>
+          <ChoiceCards<DeliveryMode> name={`delivery-${d.key}`} value={d.deliveryMode || "pr"} choices={deliveries}
+            className="executor-delivery-choice" onChange={(deliveryMode) => edit({ deliveryMode })} />
+        </fieldset>
+        <StepsField d={d} t={t} edit={edit} />
+      </fieldset>
+      <fieldset className="settings-group appearance-group" disabled={locked}>
+        <fieldset className="appearance-field executor-template-where">
+          <legend>{t.whereItRuns}</legend>
+          <label className="settings-row">
+            <span className="settings-row-main">
+              <span className="settings-row-title">{t.runsOn}</span>
+              <span className="settings-row-help">
+                {d.harness === "opencode" ? t.opencodeHost : d.machine === "auto" ? t.autoHelp : t.machineHelp}
+              </span>
+            </span>
+            <select className="settings-select" aria-label={t.runsOn} value={d.harness === "opencode" ? "" : d.machine}
+              disabled={locked || d.harness === "opencode"} onChange={e => edit({ machine: e.target.value })}>
+              <option value="">{t.thisHost}</option>
+              {machineOptions(d.harness, machines).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+              {d.harness !== "opencode" && d.machine && d.machine !== "auto" && !machineOptions(d.harness, machines).some(m => m.id === d.machine) && (
+                // Kept as saved, and named for what is known of it.
+                <option value={d.machine}>{savedMachine(d.machine)}</option>
+              )}
+              {d.harness !== "opencode" && <option value="auto">{t.auto}</option>}
+            </select>
+          </label>
+          <label className="settings-row">
+            <span className="settings-row-main">
+              <span className="settings-row-title">{t.namePattern}</span>
+              <span className="settings-row-help">{t.namePatternHelp(view.defaultNamePattern)}</span>
+            </span>
+            <input className="settings-input" aria-label={t.namePattern} value={d.namePattern} maxLength={120}
+              placeholder={view.defaultNamePattern} onChange={e => edit({ namePattern: e.target.value })} />
+          </label>
+        </fieldset>
+        <fieldset className="appearance-field executor-template-instructions">
+          <legend>{t.instructions}</legend>
+          <p className="appearance-help">{t.instructionsHelp(bytes(d.instructions), view.limits.instructionsBytes)}</p>
+          <textarea className="settings-textarea" aria-label={t.instructions} rows={6} value={d.instructions}
             onChange={e => edit({ instructions: e.target.value })} />
-        </label>
-      </details>
-      <div className="executor-template-footer">
-        <button type="button" className="quiet-button" onClick={remove}>
-          <Trash2 size={13} /> {t.remove(name)}
-        </button>
+        </fieldset>
+      </fieldset>
+      {/* What removes is last, on its own card (YN-8). */}
+      <div className="settings-group appearance-group">
+        <div className="settings-row executor-template-remove">
+          <span className="settings-row-main">
+            <span className="settings-row-title">{t.removeTitle}</span>
+            <span className="settings-row-help">{t.removeHelp}</span>
+          </span>
+          <span className="settings-row-action">
+            <button type="button" className="secondary-button" disabled={locked} onClick={remove}>
+              <Trash2 size={13} /> {t.remove(name)}
+            </button>
+          </span>
+        </div>
       </div>
-    </fieldset>
+    </div>
   );
 }

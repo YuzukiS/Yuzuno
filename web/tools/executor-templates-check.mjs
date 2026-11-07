@@ -115,7 +115,6 @@ try {
   await box.locator('input[aria-label="Label"]').fill("Code reviewer");
   assert.equal(await box.locator('input[aria-label="Id"]').inputValue(), "code-reviewer", "a new template's id follows its label");
   await box.locator('select[aria-label="Harness"]').selectOption("claude");
-  await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
   await box.locator('select[aria-label="Permissions"]').selectOption("auto");
   await box.locator('textarea[aria-label="Instructions"]').fill("Read the acceptance first, then the linked PR.");
   await bar.getByText("1 change not saved").waitFor({ timeout: 10_000 });
@@ -131,17 +130,17 @@ try {
   check("a template added, its id following its label, and saved as the whole list against version 0", { body: put.body });
 
   // ---- In Chinese after a language change elsewhere; unsaved text kept.
-  await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
+  // The template's page (YN-8 S5b) stays open: its way back names the list.
   await box.locator('textarea[aria-label="Instructions"]').fill("Read the acceptance first.");
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
-  await box.locator("h3", { hasText: "执行者模板" }).waitFor({ timeout: 10_000 });
+  await box.locator(".settings-crumb", { hasText: "执行者模板" }).waitFor({ timeout: 10_000 });
   assert.equal(await box.getAttribute("lang"), "zh-Hans");
   assert.equal(await box.locator('textarea[aria-label="说明"]').inputValue(), "Read the acceptance first.", "the unsaved text stays");
   await bar.getByText("1 处更改还没保存").waitFor({ timeout: 10_000 });
   await page.screenshot({ path: join(output, "3-zh.png") });
   check("in Chinese after a language change in another window, the unsaved text kept");
   await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" })));
-  await box.locator("h3", { hasText: "Executor templates" }).waitFor({ timeout: 10_000 });
+  await box.locator(".settings-crumb", { hasText: "Executor templates" }).waitFor({ timeout: 10_000 });
 
   // ---- On a phone: the editor fits.
   // The same fixture, at a phone's width.
@@ -149,10 +148,15 @@ try {
   await page.reload();
   await page.getByRole("button", { name: "Settings and updates" }).waitFor({ timeout: 10_000 });
   box = await openEditor(page);
+  // The list, then a template's page (YN-8 S5b).
+  await box.locator(".executor-template-row").first().waitFor({ timeout: 10_000 });
+  assert.deepEqual(await fits(box), { box: true, wider: [] }, "on a phone the list fits its width");
+  await page.screenshot({ path: join(output, "4-phone-list.png"), fullPage: false });
+  await box.locator(".executor-template-row").first().click();
   await box.locator('input[aria-label="Label"]').waitFor({ timeout: 10_000 });
   assert.deepEqual(await fits(box), { box: true, wider: [] }, "on a phone the editor fits its width");
   await page.screenshot({ path: join(output, "4-phone.png"), fullPage: false });
-  check("at 390 px the editor and each field fit their width");
+  check("at 390 px the list, the template's page and each field fit their width");
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);

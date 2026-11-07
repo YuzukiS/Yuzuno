@@ -107,6 +107,19 @@ async function type(page, label, value) {
 }
 const button = (page, text) => [...page.document.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
 const puts = (page) => page.calls.filter((c) => c.method === "PUT" && !isSlots(c.url));
+// The list of templates, and each one's page (YN-8 S5b).
+const rows = (page) => [...page.document.querySelectorAll(".executor-template-row")];
+const rowTitles = (page) => rows(page).map((r) => r.querySelector(".settings-list-title").textContent.trim());
+const row = (page, title) => rows(page).find((r) => r.querySelector(".settings-list-title").textContent.trim() === title);
+async function openTemplate(page, title) {
+  await until(() => row(page, title), `the row of ${title}`);
+  row(page, title).click();
+  await until(() => page.document.querySelector(".executor-template"), `the page of ${title}`);
+}
+async function back(page) {
+  page.document.querySelector(".settings-crumb").click();
+  await until(() => !page.document.querySelector(".executor-template"), "the list again");
+}
 const slotPuts = (page) => page.calls.filter((c) => c.method === "PUT" && isSlots(c.url));
 
 test("Executor templates: a new template is added, said as written and saved as a whole list against the version read", async () => {
@@ -127,6 +140,7 @@ test("Executor templates: a new template is added, said as written and saved as 
 
   button(page, "Add template").click();
   await tick();
+  assert.ok(page.document.querySelector(".executor-template"), "a new template opens on its own page");
   // A label with no Latin letter or digit still gives an id (R2 70093e91).
   await type(page, "Label", "代码审查");
   assert.equal(field(page, "Id").value, "template-1", "a label in another script gives a numbered id");
@@ -144,7 +158,7 @@ test("Executor templates: a new template is added, said as written and saved as 
     { id: "code-reviewer", label: "Code reviewer", harness: "claude", permissionMode: "auto", instructions: "Read the acceptance first." },
   ] } });
   assert.equal(button(page, "Save templates").disabled, true, "what was saved is what is shown");
-  assert.equal(page.document.querySelector("fieldset").getAttribute("aria-label"), "Code reviewer");
+  assert.equal(page.document.querySelector(".executor-template").getAttribute("aria-label"), "Code reviewer", "its page stays open across the save");
 
   // Another harness starts its permissions over; a Codex effort needs its model.
   await type(page, "Harness", "codex");
@@ -172,7 +186,7 @@ test("Executor templates: a new template is added, said as written and saved as 
   assert.deepEqual(page.errors, []);
 });
 
-test("a template needs only a label and a harness; the rest is folded, a copied one says where it came from (YN-2 S2)", async () => {
+test("a template needs only a label and a harness; its row says what it is, a copied one says where it came from (YN-2 S2)", async () => {
   const copied = { id: "reviewer-2", label: "Reviewer (Lab)", harness: "claude", instructions: "Lab's way.",
     origin: { projectId: "p1", projectName: "Lab", id: "reviewer" } };
   let workspace = { version: 2, templates: [copied] };
@@ -182,20 +196,20 @@ test("a template needs only a label and a harness; the rest is folded, a copied 
   });
   page.window.renderTemplates();
   const section = () => page.document.querySelector("#settings-executor-templates");
-  await until(() => field(page, "Label"), "the list");
+  await until(() => row(page, "Reviewer (Lab)"), "the list");
+  assert.equal(row(page, "Reviewer (Lab)").querySelector(".settings-list-sub").textContent, "Claude Code · Pull request · This Core host");
+  assert.equal(row(page, "Reviewer (Lab)").querySelector(".settings-tag.is-mono").textContent, "reviewer-2");
+  await openTemplate(page, "Reviewer (Lab)");
   assert.match(section().textContent, /Copied from the project Lab, where its id was reviewer\./);
-  const folds = () => [...page.document.querySelectorAll("details.executor-template-more")];
-  assert.ok(folds().length === 1 && !folds()[0].open, "a template's other settings are folded");
-  assert.equal(folds()[0].querySelector("summary").textContent, "More settings (1 set)", "the fold says how many it sets");
+  await back(page);
   button(page, "Add template").click();
   await tick();
   assert.equal(button(page, "Save templates").disabled, true, "a template needs a label");
   assert.match(section().textContent, /A template needs a label\./);
-  const labels = () => [...page.document.querySelectorAll('[aria-label="Label"]')];
-  const proto = page.window.HTMLInputElement.prototype;
-  Object.getOwnPropertyDescriptor(proto, "value").set.call(labels()[1], "Builder");
-  labels()[1].dispatchEvent(new page.window.Event("input", { bubbles: true }));
-  await tick();
+  await back(page);
+  assert.equal(row(page, "New template").querySelector(".settings-tag.is-error").textContent, "Needs a fix", "its row says it needs a fix");
+  await openTemplate(page, "New template");
+  await type(page, "Label", "Builder");
   assert.equal(button(page, "Save templates").disabled, false, "a label and the default harness are enough");
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
@@ -243,10 +257,12 @@ test("presets (YN-23): the user picks which to add, each an unsaved template in 
   await choose(page, "Gated runbook");
   button(page, "Add 2 presets").click();
   await tick();
-  assert.equal(page.document.querySelectorAll(".executor-template").length, 3, "two drafts from the presets");
+  assert.deepEqual(rowTitles(page), ["Design first", "Design first", "Gated runbook"], "two drafts from the presets");
   assert.equal(page.document.querySelector(".executor-presets"), null, "the picker closes");
   assert.deepEqual(puts(page), [], "nothing is saved by adding");
-  assert.match(page.document.querySelectorAll(".executor-template")[1].textContent, /The preset suggests: A strong model\./);
+  rows(page)[1].click();
+  await until(() => page.document.querySelector(".executor-template"), "the preset's page");
+  assert.match(page.document.querySelector(".executor-template").textContent, /The preset suggests: A strong model\./);
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
   assert.deepEqual(puts(page)[0].body.templates.slice(1), [
@@ -270,6 +286,7 @@ test("presets (YN-23) are offered in Chinese on a Chinese page, and a harness ch
   await choose(page, "人工把关的运行手册");
   button(page, "添加 1 个预设").click();
   await tick();
+  await openTemplate(page, "人工把关的运行手册");
   assert.equal(field(page, "标签").value, "人工把关的运行手册");
   assert.equal(field(page, "Harness").value, "codex", "no default read: Codex");
   assert.equal(field(page, "权限").value, "ask");
@@ -295,8 +312,7 @@ test("presets (YN-23, #742 R1 3ec18555): no more can be chosen than the list has
   await choose(page, "Gated runbook");
   button(page, "Add 2 presets").click();
   await tick();
-  assert.deepEqual([...page.document.querySelectorAll('[aria-label="Label"]')].map((i) => i.value), ["Dev", "Design first", "Gated runbook"],
-    "both chosen were added, none left out");
+  assert.deepEqual(rowTitles(page), ["Dev", "Design first", "Gated runbook"], "both chosen were added, none left out");
   assert.equal(button(page, "Add presets").disabled, true, "the list is full");
   assert.deepEqual(page.errors, []);
 });
@@ -308,7 +324,7 @@ test("delivery and steps (YN-23): chosen on the card, a step its delivery can't 
     return [200, view(workspace)];
   });
   page.window.renderTemplates();
-  await until(() => field(page, "Label"), "the template");
+  await openTemplate(page, "Probe");
   const card = () => page.document.querySelector(".executor-template");
   const radio = (value) => card().querySelector(`.executor-delivery-choice input[value="${value}"]`);
   assert.equal(radio("pr").checked, true, "unset delivery is a pull request");
@@ -360,15 +376,18 @@ test("each saved template says who changed it last, when and why (YN-24's lastMo
   };
   const page = mount(() => [200, { ...view(workspace), lastModified }]);
   page.window.renderTemplates();
-  await until(() => page.document.querySelectorAll(".executor-template-changed").length === 2, "the two lines");
-  const lines = [...page.document.querySelectorAll(".executor-template-changed")].map((p) => p.textContent);
-  assert.match(lines[0], /^Last changed: Agent lead · .*2026.* · Say how to test$/, lines[0]);
-  assert.match(lines[1], /^Last changed: You · .*2026[^·]*$/, "your save: no reason");
-  assert.equal(page.document.querySelectorAll(".executor-template-changed time")[0].getAttribute("datetime"), "2026-11-07T20:30:00.000Z");
+  const line = () => page.document.querySelector(".executor-template-changed");
+  await openTemplate(page, "Dev");
+  assert.match(line().textContent, /^Last changed: Agent lead · .*2026.* · Say how to test$/, line().textContent);
+  assert.equal(line().querySelector("time").getAttribute("datetime"), "2026-11-07T20:30:00.000Z");
+  await back(page);
+  await openTemplate(page, "Plain");
+  assert.match(line().textContent, /^Last changed: You · .*2026[^·]*$/, "your save: no reason");
+  await back(page);
   button(page, "Add template").click();
   await tick();
-  assert.equal(page.document.querySelectorAll(".executor-template").length, 3);
-  assert.equal(page.document.querySelectorAll(".executor-template-changed").length, 2, "a new template has no last change");
+  assert.ok(page.document.querySelector(".executor-template"));
+  assert.equal(line(), null, "a new template has no last change");
   assert.deepEqual(page.errors, []);
 });
 
@@ -376,9 +395,10 @@ test("OpenCode is offered only where this Core creates OpenCode Agents, with no 
   for (const enabled of [false, true]) {
     const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex" }], laterTemplates: 1 }, enabled)]);
     page.window.renderTemplates();
-    await until(() => field(page, "Harness"), "the list");
+    await until(() => row(page, "A"), "the list");
     assert.match(page.document.querySelector(".executor-templates-settings").textContent,
       /This list also holds 1 template saved by a newer Core\. This Core can’t show it; saving here keeps it as it is\./);
+    await openTemplate(page, "A");
     const options = [...field(page, "Harness").options].map((o) => o.value);
     assert.deepEqual(options, enabled ? ["codex", "claude", "opencode"] : ["codex", "claude"], String(enabled));
     if (enabled) {
@@ -454,11 +474,10 @@ test("a template has no limit of its own (T-43: one limit per machine); one save
     return [200, view(workspace)];
   });
   page.window.renderTemplates();
-  await until(() => field(page, "Name"), "the template");
+  await openTemplate(page, "Reviewer");
   const section = () => page.document.querySelector("#settings-executor-templates");
   assert.equal(field(page, "At most at once"), null, "no At most at once field");
   assert.doesNotMatch(section().textContent, /At most at once|no limit of its own/);
-  assert.match(section().querySelector(".executor-template summary").textContent, /^More settings$/, "an old limit isn't counted on the fold");
   assert.equal(button(page, "Save templates").disabled, true, "an old limit alone is nothing to save");
   await type(page, "Name", "{task} · review");
   button(page, "Save templates").click();
@@ -476,7 +495,7 @@ test("a template's delivery, steps and when to choose it are kept by a save of a
     return [200, view(workspace)];
   });
   page.window.renderTemplates();
-  await until(() => field(page, "Name"), "the template");
+  await openTemplate(page, "Probe");
   assert.equal(button(page, "Save templates").disabled, true, "nothing to save as read");
   await type(page, "Name", "{task} · probe");
   button(page, "Save templates").click();
@@ -507,6 +526,8 @@ test("Runs on (T-35 S3): a template names this Core host, a registered machine o
   });
   page.window.renderTemplates();
   const section = () => page.document.querySelector("#settings-executor-templates").textContent;
+  await until(() => row(page, "Reviewer")?.querySelector(".settings-list-sub").textContent === "Claude Code · Pull request · Lab box", "its row names the machine");
+  await openTemplate(page, "Reviewer");
   await until(() => runsOn(page)?.value === "lab" && offered(page).length === 4, "the saved machine, with the machines read");
   assert.deepEqual(offered(page), ["", "lab", "boxed", "auto"], "Claude Code: this Core host, each registered machine, and auto");
   assert.deepEqual(shown(page), ["This Core host", "Lab box", "Boxed", "Choose automatically"]);
@@ -543,6 +564,7 @@ test("Runs on (T-35 S3): a machine the list no longer has is shown as unknown an
     return [200, view(workspace)];
   });
   page.window.renderTemplates();
+  await openTemplate(page, "Reviewer");
   await until(() => runsOn(page)?.value === "gone" && offered(page).length === 5, "the unknown machine, with the machines read");
   assert.equal(runsOn(page).selectedOptions[0].textContent, "gone (not in the Machines list)");
   await type(page, "Label", "Lead reviewer");
@@ -560,6 +582,7 @@ test("Runs on (T-35 S3): a Codex template saved with a machine that keeps its Ag
     return [200, view(workspace)];
   });
   page.window.renderTemplates();
+  await openTemplate(page, "Coder");
   await until(() => runsOn(page)?.value === "boxed" && offered(page).length === 4, "the saved machine, with the machines read");
   assert.deepEqual(offered(page), ["", "lab", "boxed", "auto"]);
   assert.equal(runsOn(page).selectedOptions[0].textContent, "Boxed (keeps Agents contained: no Codex)", "the machine is named with why Codex cannot run there");
@@ -580,6 +603,7 @@ test("Runs on (T-35 S3): a saved machine reads as its id until the Machines list
   const later = new Promise((resolve) => { answer = resolve; });
   const page = mount((url) => (url.endsWith("/machines") ? later : [200, view(workspace)]));
   page.window.renderTemplates();
+  await openTemplate(page, "Reviewer");
   await until(() => runsOn(page)?.value === "lab", "the saved machine, before the list");
   await tick();
   assert.deepEqual(shown(page), ["This Core host", "lab", "Choose automatically"], "before the list is read, the saved machine is named without saying it is missing");
@@ -590,6 +614,7 @@ test("Runs on (T-35 S3): a saved machine reads as its id until the Machines list
 
   const failing = mount((url) => (url.endsWith("/machines") ? [503, { error: "machines are not available right now" }] : [200, view(workspace)]));
   failing.window.renderTemplates();
+  await openTemplate(failing, "Reviewer");
   await until(() => runsOn(failing)?.value === "lab" && failing.calls.some((c) => c.url.endsWith("/machines")), "the saved machine, with the list asked for");
   await tick();
   await tick();
@@ -602,8 +627,44 @@ test("Runs on (T-35 S3) reads in Chinese (T-189)", async () => {
   const page = mount((url) => [200, url.endsWith("/machines") ? machineList : view(workspace)]);
   page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
   page.window.renderTemplates();
+  await openTemplate(page, "Reviewer");
   await until(() => runsOn(page, "运行于")?.value === "auto" && offered(page, "运行于").length === 4, "the select, in Chinese");
   assert.deepEqual(shown(page, "运行于"), ["此 Core 主机", "Lab box", "Boxed", "自动选择"]);
   assert.match(page.document.querySelector("#settings-executor-templates").textContent, /Core 在每次派发时选择：先选有空闲执行者槽位的机器/);
+  assert.deepEqual(page.errors, []);
+});
+
+test("each template has a page of its own (YN-8 S5b): opened from its row, an edit kept across pages, removed from its last card, saved as one list", async () => {
+  let workspace = { version: 3, templates: [{ id: "dev", label: "Dev", harness: "codex" }, { id: "probe", label: "Probe", harness: "claude", deliveryMode: "none" }] };
+  const page = mount((url, method, body) => {
+    if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+    return [200, view(workspace)];
+  });
+  page.window.renderTemplates();
+  const section = () => page.document.querySelector("#settings-executor-templates");
+  await until(() => rows(page).length === 2, "the list");
+  assert.deepEqual(rowTitles(page), ["Dev", "Probe"]);
+  assert.equal(row(page, "Probe").querySelector(".settings-list-sub").textContent, "Claude Code · No repository change · This Core host");
+  assert.equal(field(page, "Label"), null, "the list shows no template's fields");
+  assert.ok(field(page, "Start time limit (seconds)"), "the list keeps the start time limit");
+  await openTemplate(page, "Dev");
+  assert.equal(section().querySelector("h3").textContent, "Dev", "the page is titled by its template");
+  assert.equal(field(page, "Start time limit (seconds)"), null, "the start time limit stays on the list");
+  const legends = [...section().querySelectorAll(".executor-template legend")].map((l) => l.textContent);
+  assert.deepEqual(legends, ["Name and purpose", "How it runs", "Delivery", "Steps", "Where it runs", "Instructions"], "the page's blocks in the design's order");
+  const cards = [...section().querySelectorAll(".executor-template > .settings-group")];
+  assert.match(cards.at(-1).textContent, /Remove this template/, "removing is on the last card");
+  await type(page, "Label", "Developer");
+  await back(page);
+  assert.deepEqual(rowTitles(page), ["Developer", "Probe"], "the edit is kept on the list");
+  assert.match(section().textContent, /Unsaved changes/);
+  await openTemplate(page, "Probe");
+  button(page, "Remove Probe").click();
+  await until(() => rows(page).length === 1, "back on the list without it");
+  assert.deepEqual(puts(page), [], "nothing saved by removing");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1, "the save");
+  assert.deepEqual(puts(page)[0].body, { expectedVersion: 3, templates: [{ id: "dev", label: "Developer", harness: "codex" }] }, "the whole list, as edited");
+  await until(() => /Saved\./.test(section().textContent), "saved");
   assert.deepEqual(page.errors, []);
 });
