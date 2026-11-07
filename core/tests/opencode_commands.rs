@@ -500,6 +500,34 @@ async fn a_sub_agent_command_ends_its_turn_at_once_and_its_requests_still_come_t
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// What 2.x hands the session from a sub-agent later (a synthetic
+/// `<subagent>` message, D-15 (a)) is never a command's input, even while a
+/// command Turn still waits for what 2.x admitted for it: the message 2.x
+/// admits for the command is (T-61 slice 3).
+#[tokio::test]
+async fn a_sub_agents_result_is_never_taken_as_a_commands_input() {
+    let lab = lab(false).await;
+    let session = lab.session();
+    lab.control("mode", json!({"command":"drop"})).await;
+    let waiting = lab.send("c1", "/explain x", &[]).await.unwrap();
+    assert_eq!(waiting.status, "uncertain", "{waiting:?}");
+    let ran = waiting.turn_id.unwrap();
+    // A sub-agent's result, admitted and delivered by 2.x as 2.2.5 sends it (probe p1 fecf3048), then the command's own message.
+    let result = yuzuno_workspace::opencode::MessageId::new();
+    let now = chrono::Utc::now().timestamp_millis();
+    lab.control("event", json!({"type":"session.inbox.enqueued","created":now,"properties":{"sessionID":session,"inboxID":result.as_str(),
+        "item":{"type":"synthetic","delivery":"steer","payload":{"text":"<subagent state=\"completed\">Seen.</subagent>",
+        "metadata":{"source":"subagent","state":"completed"}}}}})).await;
+    lab.control("event", json!({"type":"session.inbox.delivered","created":now + 1,"properties":{"sessionID":session,"inboxID":result.as_str()}})).await;
+    let own = yuzuno_workspace::opencode::MessageId::new();
+    lab.control("store", json!({"sessionID":session,"messageID":own.as_str(),"text":"Explain x briefly."})).await;
+    lab.until("the command's message", |d| d.message_receipts.iter().any(|r| r.input.client_message_id == "c1" && r.status == "accepted")).await;
+    assert_eq!(turn(&lab.detail(), &ran)["_opencodeCommand"]["native"], own.as_str(), "the command's own message, not the sub-agent's result");
+    lab.control("mode", json!({"command":"run"})).await;
+    lab.complete(&ran).await;
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 fn png() -> Vec<u8> {
     let mut out = std::io::Cursor::new(Vec::new());
     image::RgbImage::from_pixel(4, 4, image::Rgb([10, 0, 0])).write_to(&mut out, image::ImageFormat::Png).unwrap();

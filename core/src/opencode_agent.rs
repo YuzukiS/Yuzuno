@@ -2633,12 +2633,15 @@ fn answers_to(turn: &Value, message: &str) -> bool {
 /// D-13 (a)): the first user's or synthetic message after it in the
 /// Agent's session, under an ID of 2.x's own, as its events or a whole read
 /// show it; never one this connection saw delivered without its admission
-/// (`_opencodeUnseen`), which could be anything 2.x queued. The Turn answers
+/// (`_opencodeUnseen`), which could be anything 2.x queued, nor a sub-agent's
+/// result (`SUB_AGENTS_RESULT`), which 2.x hands the session in a run of its
+/// own and can deliver before Core has seen that a command ran as a sub-agent
+/// (probe p1 fecf3048: 200 ms after the answer, with the stub). The Turn answers
 /// to it from then on, as a prompt's to its own (`answers_to`), and it was
 /// delivered.
 fn command_input(d: &mut AgentDetail, info: &Value) {
     let Some(id) = info["id"].as_str() else { return };
-    if info["_opencodeUnseen"] == true || d.turns.iter().any(|t| answers_to(t, id)) {
+    if info["_opencodeUnseen"] == true || info[crate::opencode_v2::SUB_AGENTS_RESULT] == true || d.turns.iter().any(|t| answers_to(t, id)) {
         return;
     }
     let Some(turn) = running(d).filter(|t| t["_opencodeCommand"]["awaiting"] == true) else { return };

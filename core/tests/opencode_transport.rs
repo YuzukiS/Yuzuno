@@ -771,7 +771,7 @@ async fn a_command_goes_through_2xs_route_with_its_name_and_text_only() {
     assert_eq!(lab.posts(&format!("/api/session/{session}/command")).len(), 1);
 
     assert_eq!(server.command(&session, &MessageId::new(), "nope", "").unwrap().await,
-        CommandAnswer::Refused { code: 404, message: "Command not found: \"nope\"".into() });
+        CommandAnswer::Refused { code: 404, message: "Command not found: nope".into() });
     lab.control("mode", json!({"command":"fail"})).await;
     assert_eq!(server.command(&session, &MessageId::new(), "explain", "x").unwrap().await,
         CommandAnswer::Refused { code: 500, message: "fixture: the command failed".into() });

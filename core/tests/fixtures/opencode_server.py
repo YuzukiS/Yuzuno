@@ -1808,7 +1808,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, {'_tag': 'InvalidRequestError', 'message': 'fixture: a command takes a name and a text'})
         command = (modes['config'].get('command') or {}).get(name)
         if command is None:
-            return self.reply(404, {'_tag': 'CommandNotFoundError', 'command': name, 'message': f'Command not found: "{name}"'})
+            # 2.2.5's own words for it (probe T-61 S3 p1 fecf3048).
+            return self.reply(404, {'_tag': 'CommandNotFoundError', 'command': name, 'message': f'Command not found: {name}'})
         mode = modes['command']
         if mode not in ('run', 'fail', 'fail-after', 'nothing', 'unannounced', 'slow', 'drop'):
             return self.reply(500, {'_tag': 'UnknownError', 'message': f'fixture: no command mode {mode}'})

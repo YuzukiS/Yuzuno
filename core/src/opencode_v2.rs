@@ -206,6 +206,16 @@ fn content_part(assistant: &str, ordinal: usize, entry: &Value) -> Option<Value>
     }
 }
 
+/// Marks a user message Core's record takes from a synthetic one that is a
+/// sub-agent's result, which 2.x hands the session later in a run of its own
+/// (T-61 slice 3, D-15 (a)): never a command's input.
+pub const SUB_AGENTS_RESULT: &str = "_opencodeSubAgentsResult";
+
+/// Whether an inbox item is a sub-agent's result (2.2.5 core/src/session/subagent-completion.ts).
+fn sub_agents_result(item: &Value) -> bool {
+    item["type"] == "synthetic" && item["payload"]["metadata"]["source"] == "subagent"
+}
+
 /// A user's or a synthetic message as Core's record takes one.
 fn user(id: &str, created: &Value) -> Value {
     json!({"id": id, "role": "user", "time": {"created": created}})
@@ -317,7 +327,12 @@ pub fn read_messages(messages: &Value) -> Read {
         match message["type"].as_str() {
             Some("user" | "synthetic") => {
                 user = Some(id.to_owned());
-                read.push(json!({"info": self::user(id, &message["time"]["created"]), "parts": []}));
+                let mut info = self::user(id, &message["time"]["created"]);
+                // 2.x keeps a synthetic message's metadata as its inbox item had it (core/src/session/message-updater.ts).
+                if message["type"] == "synthetic" && message["metadata"]["source"] == "subagent" {
+                    info[SUB_AGENTS_RESULT] = true.into();
+                }
+                read.push(json!({"info": info, "parts": []}));
             }
             Some("assistant") => {
                 let failed = if message["error"].is_object() { error(&message["error"], None) } else { Value::Null };
@@ -441,8 +456,10 @@ impl Cursor {
             .collect();
         let inputs = inbox.as_array().into_iter().flatten()
             .filter_map(|item| Some((item["id"].as_str()?.to_owned(), item["type"].as_str()?.to_owned()))).collect();
+        let results = inbox.as_array().into_iter().flatten().filter(|item| sub_agents_result(item))
+            .filter_map(|item| item["id"].as_str().map(str::to_owned)).collect();
         self.sessions.insert(session.to_owned(), Open { user: read.open.clone(), inputs, steps, tools, compaction: read.compaction.clone(),
-            shells: read.shells.iter().cloned().collect(), ..Open::default() });
+            shells: read.shells.iter().cloned().collect(), results, ..Open::default() });
     }
 
     /// A request a whole read found pending (after `resumed`): it ends with
@@ -492,12 +509,17 @@ struct Open {
     /// The forms open now that are questions (their answer is the
     /// conversation's, kept in Core's journal; another form's is not, D-11).
     questions: HashSet<String>,
+    /// Synthetic inputs admitted and not yet delivered that are a sub-agent's
+    /// result (`metadata.source` `subagent`, 2.2.5 core/src/session/subagent-completion.ts):
+    /// what 2.x runs of them is its own, never a command's (T-61 slice 3, D-15).
+    results: HashSet<String>,
 }
 
 impl Open {
     fn is_empty(&self) -> bool {
         self.user.is_none() && self.inputs.is_empty() && self.steps.is_empty() && self.tools.is_empty() && self.gathered.is_empty()
             && self.shells.is_empty() && self.compaction.is_none() && self.requests.is_empty() && self.questions.is_empty()
+            && self.results.is_empty()
             // Kept until the run Core declined a request of ends (D-7), after the request's own reply.
             && !self.declined
     }
@@ -571,6 +593,9 @@ impl Open {
             "session.inbox.enqueued" => {
                 let (Some(id), Some(item)) = (d["inboxID"].as_str(), d["item"]["type"].as_str()) else { return vec![] };
                 self.inputs.insert(id.to_owned(), item.to_owned());
+                if sub_agents_result(&d["item"]) {
+                    self.results.insert(id.to_owned());
+                }
                 // Admitted: a user's message is stored (`admitted`), and answers nothing until delivered.
                 if item == "user" { vec![message(user(id, at))] } else { vec![] }
             }
@@ -584,9 +609,12 @@ impl Open {
                 self.user = Some(id.to_owned());
                 let mut info = user(id, at);
                 // Admitted while this connection did not see it: what it was is not known here, so it is no
-                // command's input (T-61 slice 3).
+                // command's input (T-61 slice 3); nor is a sub-agent's result.
                 if seen.is_none() {
                     info["_opencodeUnseen"] = true.into();
+                }
+                if self.results.remove(id) {
+                    info[SUB_AGENTS_RESULT] = true.into();
                 }
                 vec![message(info)]
             }

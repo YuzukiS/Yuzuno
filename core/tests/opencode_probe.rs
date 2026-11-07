@@ -1202,6 +1202,13 @@ async fn a_real_opencode_2x_runs_commands_as_cores_transport_reads_them() {
         let run = one_run(&mut events, &session).await;
         println!("probe: 6 that run {:?}, ended after {:?}", types(&run), asked.elapsed());
     }
+    // As 2.x stores the result, and as Core's whole read takes it: never a command's input.
+    let messages = server.messages(&session).await.unwrap();
+    let stored = messages.as_array().unwrap().iter().filter(|m| m["type"] == "synthetic").cloned().collect::<Vec<_>>();
+    println!("probe: 6 the stored synthetic messages {stored:?}");
+    assert!(stored.iter().any(|m| m["metadata"]["source"] == "subagent"), "the result is stored with its source");
+    let read = read_messages(&messages);
+    assert!(read.messages.iter().any(|m| m["info"][yuzuno_workspace::opencode_v2::SUB_AGENTS_RESULT] == true), "read as a sub-agent's result");
 
     server.shutdown().await.unwrap();
     stub.kill().ok();

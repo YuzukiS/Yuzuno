@@ -294,6 +294,39 @@ fn a_delivery_whose_admission_was_not_seen_says_so() {
     assert_eq!(seen[0]["data"]["info"], json!({"id": "msg_s1", "role": "user", "time": {"created": 3}}));
 }
 
+/// A sub-agent's result, which 2.x hands the session as a synthetic message
+/// (`metadata.source` `subagent`), is marked so wherever Core reads it (T-61
+/// slice 3, D-15): delivered live, delivered after a whole read found it in
+/// the inbox, and stored. Another synthetic message, and a user's, is not.
+#[test]
+fn a_sub_agents_result_is_marked_live_after_a_whole_read_and_stored() {
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    let result = |id: &str| json!({"id": id, "type": "synthetic", "delivery": "steer",
+        "payload": {"text": "<subagent>Seen.</subagent>", "metadata": {"source": "subagent", "state": "completed"}}});
+    let mut c = Cursor::default();
+    let item = result("msg_r1");
+    c.read(&ev("session.inbox.enqueued", 1, d(json!({"inboxID": "msg_r1", "item": item}))));
+    let live = c.read(&ev("session.inbox.delivered", 2, d(json!({"inboxID": "msg_r1"}))));
+    assert_eq!(live[0]["data"]["info"][SUB_AGENTS_RESULT], true, "delivered live: {}", live[0]);
+    let shell = json!({"type": "synthetic", "payload": {"text": "ls", "metadata": {"source": "shell"}}});
+    c.read(&ev("session.inbox.enqueued", 3, d(json!({"inboxID": "msg_s1", "item": shell}))));
+    let other = c.read(&ev("session.inbox.delivered", 4, d(json!({"inboxID": "msg_s1"}))));
+    assert_eq!(other[0]["data"]["info"].get(SUB_AGENTS_RESULT), None, "a shell's output is not");
+
+    let mut c = Cursor::default();
+    c.resumed("ses_1", &read_messages(&json!([])), &json!([result("msg_r2")]));
+    let after = c.read(&ev("session.inbox.delivered", 5, d(json!({"inboxID": "msg_r2"}))));
+    assert_eq!(after[0]["data"]["info"][SUB_AGENTS_RESULT], true, "found in the inbox by a whole read, then delivered");
+
+    let stored = read_messages(&json!([
+        {"id": "msg_u1", "type": "user", "text": "hi", "time": {"created": 1}},
+        {"id": "msg_r3", "type": "synthetic", "text": "<subagent>Seen.</subagent>", "metadata": {"source": "subagent"}, "time": {"created": 2}},
+        {"id": "msg_s2", "type": "synthetic", "text": "ls", "metadata": {"source": "shell"}, "time": {"created": 3}},
+    ]));
+    let marked: Vec<bool> = stored.messages.iter().map(|m| m["info"][SUB_AGENTS_RESULT] == true).collect();
+    assert_eq!(marked, [false, true, false], "stored: {:?}", stored.messages);
+}
+
 /// Text gathered for an answer's entry is written out by the next event of
 /// that answer, by its step's end, and by its execution's end, not only by
 /// a later delta of the same entry or its own end (T-32 slice 4a; R2 and R5
