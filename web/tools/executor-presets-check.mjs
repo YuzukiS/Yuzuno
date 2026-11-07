@@ -189,7 +189,7 @@ try {
           assert.equal(await barSave.isDisabled(), true, "nothing invalid is saved");
           await shot(page, investigation, `${tag}-4-refused-step`);
           await investigation.getByRole("button", { name: "Remove step 4" }).click();
-          assert.equal(await barSave.isDisabled(), false);
+          await bar.locator("button:enabled", { hasText: "Save" }).first().waitFor({ timeout: 5_000 }); // re-rendered: the step is gone
           assert.deepEqual(report.writes, [], "nothing is written before Save");
           await shot(page, bar, `${tag}-5-save-bar`);
           await barSave.click();
