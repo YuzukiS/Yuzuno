@@ -30,10 +30,10 @@ const long = { server: "a-very-long-mcp-server-name-for-checking", tool: "an_ext
 const turn = {
   id: "t1", status: "completed",
   items: [
-    { id: "u", type: "userMessage", content: [{ type: "text", text: "Read T-1 and T-2, then list the files." }] },
-    { id: "m1", type: "mcpToolCall", server: "yuzuno", tool: "task_get", status: "completed", arguments: { taskId: "T-1" },
-      result: { content: [{ type: "text", text: "T-1 is in review." }] } },
-    { id: "m2", type: "mcpToolCall", server: "yuzuno", tool: "task_get", status: "completed", arguments: { taskId: "T-2" } },
+    { id: "u", type: "userMessage", content: [{ type: "text", text: "Read jobs j1 and j2, then list the files." }] },
+    { id: "m1", type: "mcpToolCall", server: "yuzuno", tool: "job_get", status: "completed", arguments: { jobId: "j1" },
+      result: { content: [{ type: "text", text: "j1 succeeded." }] } },
+    { id: "m2", type: "mcpToolCall", server: "yuzuno", tool: "job_get", status: "completed", arguments: { jobId: "j2" } },
     { id: "m3", type: "mcpToolCall", server: "yuzuno", status: "failed" },
     { id: "m4", type: "mcpToolCall", ...long, status: "completed" },
     { id: "ls", type: "commandExecution", command: "ls", aggregatedOutput: "Cargo.toml\n", status: "completed", exitCode: 0 },
@@ -115,7 +115,7 @@ try {
     const background = await page.evaluate(() => getComputedStyle(document.querySelector(".tool-activity")).backgroundColor);
     report.shots.push({ name, rows, counts, overflow, background });
 
-    assert.equal(rows.m1.text, "yuzuno/task_get");
+    assert.equal(rows.m1.text, "yuzuno/job_get");
     assert.ok(rows.m1.strong);
     assert.equal(rows.m1.result, "returned");
     // The heading counts the steps; each call is its own capsule (T-9).
