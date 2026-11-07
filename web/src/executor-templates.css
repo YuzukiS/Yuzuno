@@ -50,6 +50,9 @@
 .executor-templates-settings .executor-presets { margin: 0 0 12px; }
 .executor-preset-options { margin-bottom: 12px; }
 .theme-choice.executor-preset-choice small.executor-preset-meta { color: var(--text-quiet, var(--text-secondary)); }
+/* Past the list's room, the presets not chosen can't be. */
+.theme-choice.executor-preset-choice:has(input:disabled) { cursor: not-allowed; opacity: 0.55; }
+.theme-choice.executor-preset-choice:has(input:disabled):hover { border-color: var(--line); }
 @media (max-width: 520px) {
   .executor-step { grid-template-columns: 1.6em minmax(0, 1fr) auto; }
   .executor-step > .settings-input { grid-column: 2 / -1; grid-row: 2; }

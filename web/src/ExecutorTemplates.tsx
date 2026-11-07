@@ -27,6 +27,7 @@ const text = strings({
   presetsHelp: (harness: string) => `Choose the presets to add. Each becomes an unsaved template for ${harness}, the default for new Agents, that you can change; nothing is saved until you save.`,
   presetTaken: "One with this id is in the list: it is added under another id.",
   addChosen: (n: number) => (n === 1 ? "Add 1 preset" : `Add ${n} presets`),
+  room: (n: number, limit: number) => `Room for ${n} more ${n === 1 ? "template" : "templates"}: the list holds at most ${limit}.`,
   cancel: "Cancel",
   more: "More settings",
   moreSet: (n: number) => `More settings (${n} set)`,
@@ -112,6 +113,7 @@ const text = strings({
   presetsHelp: (harness) => `选择要添加的预设。每个都会成为一个未保存的 ${harness} 模板（新 Agent 的默认 Harness），可以再改；保存之前什么都不会写入。`,
   presetTaken: "列表里已有这个 id：添加时会换一个 id。",
   addChosen: (n) => `添加 ${n} 个预设`,
+  room: (n, limit) => `还能添加 ${n} 个模板：列表最多 ${limit} 个。`,
   cancel: "取消",
   more: "更多设置",
   moreSet: (n) => `更多设置（已设 ${n} 项）`,
@@ -330,22 +332,27 @@ export function ProjectExecutors({ projectId, disabled = false }: { projectId: s
   );
 }
 
-/** Choose presets to add (YN-23): each chosen one becomes an unsaved draft. */
-function PresetPicker({ presets, taken, harness, t, onAdd, onCancel }: {
-  presets: ExecutorPreset[]; taken: string[]; harness: ExecutorHarness; t: Text;
+/** Choose presets to add (YN-23): each chosen one becomes an unsaved draft.
+ * `room` is how many more templates the list takes; no more can be chosen
+ * (#742 R1 3ec18555: past it, chosen presets were left out unsaid). */
+function PresetPicker({ presets, taken, room, limit, harness, t, onAdd, onCancel }: {
+  presets: ExecutorPreset[]; taken: string[]; room: number; limit: number; harness: ExecutorHarness; t: Text;
   onAdd: (chosen: ExecutorPreset[]) => void; onCancel: () => void;
 }) {
   const [chosen, setChosen] = useState<string[]>([]);
+  const full = chosen.length >= room;
   const toggle = (id: string) => setChosen((list) => (list.includes(id) ? list.filter((c) => c !== id) : [...list, id]));
   return (
     <div className="settings-group appearance-group executor-presets" role="group" aria-label={t.presetsTitle}>
       <fieldset className="appearance-field">
         <legend>{t.presetsTitle}</legend>
         <p className="appearance-help">{t.presetsHelp(harnessName(harness))}</p>
+        {room < presets.length && <p className="appearance-help executor-presets-room" role="status">{t.room(Math.max(room, 0), limit)}</p>}
         <div className="theme-options settings-choice-cards executor-preset-options">
           {presets.map((p) => (
             <label key={p.id} className="theme-choice settings-choice executor-preset-choice">
-              <input type="checkbox" value={p.id} checked={chosen.includes(p.id)} onChange={() => toggle(p.id)} />
+              <input type="checkbox" value={p.id} checked={chosen.includes(p.id)} disabled={full && !chosen.includes(p.id)}
+                onChange={() => toggle(p.id)} />
               <span className="theme-choice-name">
                 {p.label}
                 <Check size={13} className="theme-selected" aria-hidden="true" />
@@ -587,7 +594,8 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
             remove={() => { setDone(false); setDrafts(list => list.filter(x => x.key !== d.key)); }} />
         ))}
         {picking && (
-          <PresetPicker presets={presets} taken={drafts.map(d => d.id.trim())} harness={presetHarness()} t={t}
+          <PresetPicker presets={presets} taken={drafts.map(d => d.id.trim())} room={view.limits.templates - drafts.length}
+            limit={view.limits.templates} harness={presetHarness()} t={t}
             onAdd={addPresets} onCancel={() => setPicking(false)} />
         )}
         <div className="executor-templates-actions">

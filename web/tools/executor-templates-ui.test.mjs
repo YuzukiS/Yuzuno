@@ -278,6 +278,29 @@ test("presets (YN-23) are offered in Chinese on a Chinese page, and a harness ch
   assert.deepEqual(page.errors, []);
 });
 
+test("presets (YN-23, #742 R1 3ec18555): no more can be chosen than the list has room for, and the picker says so", async () => {
+  const workspace = { version: 1, templates: [{ id: "dev", label: "Dev", harness: "codex" }] };
+  const page = mount(() => [200, { ...view(workspace, false, presetList), limits: { templates: 3, instructionsBytes: 8192 } }]);
+  page.window.renderTemplates();
+  await until(() => button(page, "Add presets"), "the presets button");
+  button(page, "Add presets").click();
+  await tick();
+  assert.match(page.document.querySelector(".executor-presets-room").textContent, /^Room for 2 more templates: the list holds at most 3\.$/);
+  await choose(page, "Design first");
+  await choose(page, "Read-only investigation");
+  const runbook = choices(page).find((c) => /Gated runbook/.test(c.textContent)).querySelector("input");
+  assert.equal(runbook.disabled, true, "a third can't be chosen");
+  await choose(page, "Read-only investigation");
+  assert.equal(runbook.disabled, false, "one unchosen makes room again");
+  await choose(page, "Gated runbook");
+  button(page, "Add 2 presets").click();
+  await tick();
+  assert.deepEqual([...page.document.querySelectorAll('[aria-label="Label"]')].map((i) => i.value), ["Dev", "Design first", "Gated runbook"],
+    "both chosen were added, none left out");
+  assert.equal(button(page, "Add presets").disabled, true, "the list is full");
+  assert.deepEqual(page.errors, []);
+});
+
 test("delivery and steps (YN-23): chosen on the card, a step its delivery can't have is shown at its row, the default steps restored", async () => {
   let workspace = { version: 1, templates: [{ id: "probe", label: "Probe", harness: "codex" }] };
   const page = mount((url, method, body) => {
