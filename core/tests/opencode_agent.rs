@@ -2644,25 +2644,32 @@ async fn a_rejected_permission_ends_its_turn_as_declined_and_the_next_message_go
     lab.ws.close_agent(ID).await.unwrap();
 }
 
-/// A reject whose answer never came back (a cut connection, a timeout) may
+/// A reject whose answer never came back, or came back a server error, may
 /// have been taken: the run 2.x then ends as a shutdown still ends its turn
-/// as declined, and is never left in progress (S2 R1 55c8cdcb).
+/// as declined, and is never left in progress; the mark goes only when 2.x
+/// refused the answer (S2 R1 55c8cdcb).
 #[tokio::test]
 async fn a_reject_whose_answer_was_lost_still_ends_its_turn_as_declined() {
     let lab = lab(&[], false).await;
     let session = lab.session();
-    let running = lab.send("c1", "work").await.unwrap().turn_id.unwrap();
-    lab.control("ask", json!({"sessionID":session})).await;
-    let d = lab.until("the request", |d| d.pending.len() == 1).await;
-    lab.control("mode", json!({"replyDrop":true})).await;
-    let lost = lab.ws.respond(&d.pending[0].id, json!({"decision":"reject"})).await;
-    assert!(lost.is_err(), "its answer did not come back: {lost:?}");
-    assert_eq!(lab.replies().last().unwrap()["body"], json!({"decision":"reject"}), "sent, and taken");
-    let d = lab.until("the end of a turn whose reject's answer was lost", |d| turn(d, &running)["status"] != "inProgress").await;
-    let t = turn(&d, &running);
-    assert!(t["status"] == "interrupted" && t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"),
-        "a lost answer's reject still ends its turn as declined: {t:#}");
-    lab.control("mode", json!({"replyDrop":false})).await;
+    let mut first = None;
+    for (client, lost, what) in [("c1", json!("cut"), "the end of a turn whose reject's answer was lost"),
+        ("c2", json!(500), "the end of a turn whose reject 2.x answered with a server error")] {
+        let running = lab.send(client, "work").await.unwrap().turn_id.unwrap();
+        lab.control("ask", json!({"sessionID":session})).await;
+        let d = lab.until("the request", |d| d.pending.iter().any(|p| !p.stale && Some(&p.id) != first.as_ref())).await;
+        let asked = d.pending.iter().find(|p| !p.stale && Some(&p.id) != first.as_ref()).unwrap().id.clone();
+        lab.control("mode", json!({"replyLost":lost})).await;
+        let answer = lab.ws.respond(&asked, json!({"decision":"reject"})).await;
+        lab.control("mode", json!({"replyLost":null})).await;
+        assert!(answer.is_err(), "{lost}: no answer to it: {answer:?}");
+        assert_eq!(lab.replies().last().unwrap()["body"], json!({"decision":"reject"}), "{lost}: sent, and taken");
+        let d = lab.until(what, |d| turn(d, &running)["status"] != "inProgress").await;
+        let t = turn(&d, &running);
+        assert!(t["status"] == "interrupted" && t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"),
+            "{lost}: a lost answer's reject still ends its turn as declined: {t:#}");
+        first = Some(asked);
+    }
     lab.ws.close_agent(ID).await.unwrap();
 }
 
