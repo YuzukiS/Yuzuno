@@ -1651,3 +1651,110 @@ p.brief-preview-frame {
   min-height: 40px;
   touch-action: manipulation;
 }
+
+/* Diagram (YN-16 S3): laid out by Yuzuno, drawn in the theme's own colours.
+ * A node the reader can select is a button: a pointer, a focus ring, and a
+ * stronger outline once selected; its detail shows under the drawing. */
+.brief-diagram {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+.brief-diagram-frame {
+  min-width: 0;
+  overflow: hidden;
+}
+.brief-diagram-loading {
+  min-height: 80px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.brief-diagram-svg {
+  display: block;
+  font-family: inherit;
+  font-size: 13px;
+}
+.brief-diagram-edge path {
+  fill: none;
+  stroke: var(--text-secondary, var(--muted));
+  stroke-width: 1.4;
+}
+.brief-diagram-edge[data-dashed] path {
+  stroke-dasharray: 5 4;
+}
+.brief-diagram-arrow {
+  fill: var(--text-secondary, var(--muted));
+}
+.brief-diagram-edge-label rect {
+  fill: var(--paper);
+  stroke: var(--line);
+}
+.brief-diagram-edge-label text {
+  fill: var(--text-secondary, var(--ink));
+  font-size: 11.5px;
+}
+.brief-diagram-shape {
+  fill: var(--paper);
+  stroke: var(--line);
+  stroke-width: 1.2;
+}
+.brief-diagram-node text {
+  fill: var(--ink);
+  pointer-events: none;
+}
+.brief-diagram-node[data-tone="accent"] .brief-diagram-shape {
+  fill: color-mix(in srgb, var(--accent-ink, var(--green)) 14%, var(--paper));
+  stroke: var(--accent-ink, var(--green));
+}
+.brief-diagram-node[data-tone="ok"] .brief-diagram-shape {
+  fill: color-mix(in srgb, var(--green) 16%, var(--paper));
+  stroke: var(--green);
+}
+.brief-diagram-node[data-tone="warn"] .brief-diagram-shape {
+  fill: color-mix(in srgb, var(--brief-working, #c19465) 18%, var(--paper));
+  stroke: var(--brief-working, #c19465);
+}
+.brief-diagram-node[data-tone="muted"] .brief-diagram-shape {
+  fill: var(--surface-soft, var(--cream));
+  stroke-dasharray: 4 3;
+}
+.brief-diagram-node[data-tone="muted"] text {
+  fill: var(--muted);
+}
+.brief-diagram-node[role="button"] {
+  cursor: pointer;
+  outline: none;
+  /* A tap selects the node and outlines it; the browser's own tap colour would paint over its fill. */
+  -webkit-tap-highlight-color: transparent;
+}
+.brief-diagram-node[role="button"]:hover .brief-diagram-shape {
+  stroke: var(--ink);
+}
+.brief-diagram-node[role="button"]:focus-visible .brief-diagram-shape {
+  stroke: var(--focus, var(--green));
+  stroke-width: 3;
+}
+.brief-diagram-node[data-selected] .brief-diagram-shape {
+  stroke: var(--accent-ink, var(--ink));
+  stroke-width: 2.4;
+}
+.brief-diagram-detail {
+  min-height: 1.4em;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-soft, var(--cream));
+  font-size: 0.84rem;
+}
+.brief-diagram-detail p {
+  margin: 2px 0 0;
+}
+.brief-diagram-hint {
+  color: var(--muted);
+}
+.brief-diagram figcaption {
+  color: var(--muted);
+  font-size: 0.76rem;
+}

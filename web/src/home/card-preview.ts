@@ -118,7 +118,8 @@ export function figureOf(section: Section, id: string): CardFigure | null {
   const props = node.props ?? {};
   // A Calc is worked out from its section's variables as the card holds them (YN-16 S2).
   if (CHARTS.has(node.type ?? "") || node.type === "Metrics" || node.type === "Calc") return { kind: "block", id };
-  if (interactiveGroup(tree(section)?.elements, id)) return { kind: "interactive", id };
+  // A Diagram works on the card too: the reader selects its nodes there (YN-16 S3).
+  if (node.type === "Diagram" || interactiveGroup(tree(section)?.elements, id)) return { kind: "interactive", id };
   if (node.type === "Table") {
     const columns = (Array.isArray(props.columns) ? props.columns : []) as { key: string; label: string }[];
     const rows = (Array.isArray(props.rows) ? props.rows : []) as { id: string; cells: Record<string, unknown> }[];

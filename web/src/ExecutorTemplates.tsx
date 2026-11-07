@@ -50,9 +50,6 @@ const text = strings({
   namePatternHelp: (pattern: string) => `{task} is the task’s ID, {label} this label. Empty: ${pattern}.`,
   instructions: "Instructions",
   instructionsHelp: (used: number, limit: number) => `Given to the executor with its task’s materials. ${used} of ${limit} bytes.`,
-  maxConcurrent: "At most at once",
-  maxConcurrentHelp: "At most this many of this template’s executors run at once, within Executors at once. Empty: no limit of its own.",
-  maxConcurrentInvalid: (max: number) => `At most at once is a whole number from 1 to ${max}.`,
   add: "Add template",
   remove: (label: string) => `Remove ${label}`,
   save: "Save templates",
@@ -98,9 +95,6 @@ const text = strings({
   namePatternHelp: (pattern) => `{task} 是任务 ID，{label} 是此标签。留空：${pattern}。`,
   instructions: "说明",
   instructionsHelp: (used, limit) => `与任务材料一起交给执行者。已用 ${used} / ${limit} 字节。`,
-  maxConcurrent: "同时最多",
-  maxConcurrentHelp: "此模板的执行者同时最多运行这么多个，且不超过“同时运行的执行者”。留空：没有自己的上限。",
-  maxConcurrentInvalid: (max) => `同时最多 是 1 到 ${max} 之间的整数。`,
   add: "添加模板",
   remove: (label) => `移除 ${label}`,
   save: "保存模板",
@@ -121,7 +115,6 @@ type Draft = {
   permission: string;
   namePattern: string;
   instructions: string;
-  maxConcurrent: string;
   /** Where its executors run (T-35 S3): "" for this Core host, "auto", or a machine's id. */
   machine: string;
   /** Kept as saved: where a copied template came from (YN-2 S2). */
@@ -132,7 +125,7 @@ let keys = 0;
 const draftOf = (t: ExecutorTemplate): Draft => ({
   key: `t${++keys}`, id: t.id, idTouched: true, label: t.label, harness: t.harness, model: t.model ?? "",
   reasoningEffort: t.reasoningEffort ?? "", permission: t.permissionPreset ?? t.permissionMode ?? "",
-  namePattern: t.namePattern ?? "", instructions: t.instructions ?? "", maxConcurrent: t.maxConcurrent ? String(t.maxConcurrent) : "",
+  namePattern: t.namePattern ?? "", instructions: t.instructions ?? "",
   machine: t.machineId && t.machineId !== "local" ? t.machineId : "",
   ...(t.origin ? { origin: t.origin } : {}),
 });
@@ -147,17 +140,9 @@ const idFor = (label: string, taken: string[]) => {
   return `template-${n}`;
 };
 const set = (value: string) => (value.trim() ? value.trim() : undefined);
-/** A template's own limit as the editor takes it: empty (none), or a whole
- * number from 1 to `max`; anything else (a negative number, a fraction) is
- * no limit Core would take (null). */
-const atOnce = (value: string, max: number): number | undefined | null => {
-  const v = value.trim();
-  if (!v) return undefined;
-  if (!/^\d+$/.test(v)) return null;
-  const n = Number(v);
-  return n >= 1 && n <= max ? n : null;
-};
-/** As Core takes it: only what this harness uses, unset left out. */
+/** As Core takes it: only what this harness uses, unset left out. A
+ * template has no limit of its own (T-43, the user's 2026-11-07 decision:
+ * one limit per machine), so one saved before is dropped at the next save. */
 const templateOf = (d: Draft): ExecutorTemplate => {
   const template: ExecutorTemplate = { id: d.id.trim(), label: d.label.trim(), harness: d.harness };
   const pattern = set(d.namePattern);
@@ -168,8 +153,6 @@ const templateOf = (d: Draft): ExecutorTemplate => {
   if (d.harness === "codex" && d.permission) template.permissionPreset = d.permission;
   if (d.harness === "claude" && d.permission) template.permissionMode = d.permission;
   if (d.instructions.trim()) template.instructions = d.instructions;
-  const limit = atOnce(d.maxConcurrent, Number.MAX_SAFE_INTEGER);
-  if (limit) template.maxConcurrent = limit;
   // Kept as saved (T-35 S3): an OpenCode template runs on this Core host.
   if (d.machine && d.harness !== "opencode") template.machineId = d.machine;
   if (d.origin) template.origin = d.origin;
@@ -177,7 +160,7 @@ const templateOf = (d: Draft): ExecutorTemplate => {
 };
 /** How many of the folded settings a draft sets, said on the fold. */
 const setCount = (d: Draft) =>
-  [d.model, d.reasoningEffort, d.permission, d.machine, d.namePattern, d.instructions, d.maxConcurrent].filter((v) => v.trim()).length;
+  [d.model, d.reasoningEffort, d.permission, d.machine, d.namePattern, d.instructions].filter((v) => v.trim()).length;
 /** The machines a template's executors may run on, by harness: this Core
  * host always; an SSH machine for Codex unless it keeps its Agents contained,
  * and for Claude Code; `auto` for both. OpenCode runs on this Core host only,
@@ -258,10 +241,8 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
   // Compared as this client writes them: Core's field order may differ.
   const changed = !!view && JSON.stringify(drafts.map(templateOf)) !== JSON.stringify(own(view).templates.map(saved => templateOf(draftOf(saved))));
   const locked = disabled || busy;
-  // A template's own limit Core wouldn't take holds the save, said at its field.
-  const badLimit = (d: Draft) => !!view && atOnce(d.maxConcurrent, view.limits.maxConcurrent) === null;
   const noLabel = (d: Draft) => !d.label.trim();
-  const invalid = drafts.some(badLimit) || drafts.some(noLabel);
+  const invalid = drafts.some(noLabel);
   const edit = (key: string, change: Partial<Draft>) => {
     setDone(false);
     setDrafts(list => list.map(d => {
@@ -410,17 +391,6 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
                 </span>
                 <textarea className="settings-textarea" aria-label={t.instructions} rows={4} value={d.instructions}
                   onChange={e => edit(d.key, { instructions: e.target.value })} />
-              </label>
-              <label className="settings-row">
-                <span className="settings-row-main">
-                  <span className="settings-row-title">{t.maxConcurrent}</span>
-                  <span className={badLimit(d) ? "inline-error" : "settings-row-help"}>
-                    {badLimit(d) ? t.maxConcurrentInvalid(view.limits.maxConcurrent) : t.maxConcurrentHelp}
-                  </span>
-                </span>
-                <input className="settings-input" aria-label={t.maxConcurrent} type="number" inputMode="numeric" step={1}
-                  min={1} max={view.limits.maxConcurrent} aria-invalid={badLimit(d) || undefined}
-                  value={d.maxConcurrent} onChange={e => edit(d.key, { maxConcurrent: e.target.value })} />
               </label>
               </details>
               <button type="button" className="quiet-button" onClick={() => { setDone(false); setDrafts(list => list.filter(x => x.key !== d.key)); }}>

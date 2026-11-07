@@ -68,8 +68,10 @@ export function ShortcutHelpSection() {
           <p>{t.intro}</p>
         </div>
       </header>
-      <div className="settings-group shortcut-keys">
-        <h4>{t.change}</h4>
+      {/* Appearance's cards and blocks (YN-8): the three letters this device may change, then the list. */}
+      <div className="settings-group appearance-group">
+       <fieldset className="appearance-field shortcut-keys">
+        <legend>{t.change}</legend>
         <p className="shortcut-note">{t.changeNote(shortcutModifier)}</p>
         {rebindable.map((action) => (
           <label key={action} className="settings-row">
@@ -91,21 +93,23 @@ export function ShortcutHelpSection() {
           </label>
         ))}
         {refused && <p className="shortcut-refused" role="alert">{t.taken(shortcutModifier, refused.key, t.names[refused.other])}</p>}
+        <SaveStatus
+          outcome={write?.outcome ?? null}
+          action={write?.action}
+          attempt={write?.attempt}
+          stored={shortcutKeysStored()}
+          scope="this device"
+          onRetry={retryShortcutKeysWrite}
+          onRestoreDefaults={() => {
+            setRefused(null);
+            restoreDefaultShortcutKeys();
+          }}
+        />
+       </fieldset>
       </div>
-      <SaveStatus
-        outcome={write?.outcome ?? null}
-        action={write?.action}
-        attempt={write?.attempt}
-        stored={shortcutKeysStored()}
-        scope="this device"
-        onRetry={retryShortcutKeysWrite}
-        onRestoreDefaults={() => {
-          setRefused(null);
-          restoreDefaultShortcutKeys();
-        }}
-      />
+      <div className="settings-group appearance-group shortcut-groups">
       {groups.map((group) => (
-        <div key={group.title} className="settings-group shortcut-group">
+        <section key={group.title} className="appearance-field shortcut-group" aria-label={group.title}>
           <h4>{group.title}</h4>
           {group.note && <p className="shortcut-note">{group.note}</p>}
           <dl>
@@ -123,8 +127,9 @@ export function ShortcutHelpSection() {
               </Fragment>
             ))}
           </dl>
-        </div>
+        </section>
       ))}
+      </div>
     </section>
   );
 }

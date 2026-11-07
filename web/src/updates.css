@@ -1122,6 +1122,34 @@
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+/* An on/off a row's label holds (YN-8): its checkbox drawn as the switch,
+   so the row and its label stay the control. */
+input[type="checkbox"].settings-toggle {
+  appearance: none;
+  flex: none;
+  width: 36px;
+  height: 21px;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 10.5px 50%, #fff 0 7px, transparent 7.5px),
+    color-mix(in srgb, var(--text-quiet) 45%, transparent);
+  cursor: pointer;
+}
+input[type="checkbox"].settings-toggle:checked {
+  background:
+    radial-gradient(circle at 25.5px 50%, #fff 0 7px, transparent 7.5px),
+    var(--green);
+}
+input[type="checkbox"].settings-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+input[type="checkbox"].settings-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 /* One save for a Workspace page, once something on it differs from Core's. */
 .settings-savebar {
   position: sticky;
@@ -1193,6 +1221,14 @@
   width: var(--settings-slider-share);
   border-radius: 8px;
   background: color-mix(in srgb, var(--accent-ink) 78%, transparent);
+}
+/* What is in use now (a machine's running Jobs), striped over the fill. */
+.settings-slider-used {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--settings-slider-used, 0%);
+  border-radius: 8px 0 0 8px;
+  background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--ink) 42%, transparent) 0 3px, transparent 3px 6px);
 }
 .settings-slider-ticks {
   position: absolute;
