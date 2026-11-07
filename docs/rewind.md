@@ -121,6 +121,10 @@ too: their turns leave this Agent's conversation as well.
 OpenCode's undo of a staged revert is not offered: Core commits each revert
 once its files are checked.
 
+A turn a fork copied into this Agent can't be rewound: its files' snapshots
+are in the source Agent's OpenCode, not this one's. Turns the Agent ran
+itself after the fork can.
+
 Known limits:
 
 - While the session holds a staged revert, `/compact` is refused, asking for a

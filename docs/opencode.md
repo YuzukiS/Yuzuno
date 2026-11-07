@@ -45,14 +45,25 @@ yet; 2.x keeps a note of each change in the session. The models come from
 2.x's list (`/api/model`), and interrupting is 2.x's interrupt. A session's
 status is read from the sessions 2.x lists as running (`/api/session/active`).
 
-Still to move: fork.
-- **Fork:** it still reads 1.19.3's messages, so on a session of 2.x's it
-  refuses before doing anything ("not yet on OpenCode 2.x"). Core's tests of
-  it use a 1.19.3 mode of its stand-in OpenCode, removed once its part lands.
-- **Rewind** is 2.x's own revert, staged then committed: see
-  [Rewind](rewind.md#opencode).
+Fork is 2.x's too, by import. While the Agent is idle, Yuzuno reads its
+session and every message through the forked turn: the conversation up to the
+end of that turn's last run. It writes that copy into the new Agent's own
+OpenCode, in the same folder, on an empty database (2.x's session import),
+under a new session ID. It reads the copy back and compares it, field by field
+and message by message, before the new Agent is registered. The source's
+session is only read. The copy keeps each message's own ID; its usage starts
+at zero, as 2.x's own fork; sub-agent sessions are not copied, only the main
+one. No login is copied: unless a provider key comes from OpenCode's config or
+environment, sign the new Agent in before its first message. A fork whose
+write was not confirmed goes on with the same request: Yuzuno reads what the
+new OpenCode holds first and never writes the copy twice. A fork that failed
+leaves the new Agent's folder in place.
 
-So creating an OpenCode Agent stays behind the experimental switch.
+**Rewind** is 2.x's own revert, staged then committed: see
+[Rewind](rewind.md#opencode). Turns a fork copied in can't be rewound in the
+new Agent: their snapshots are in the source Agent's store.
+
+Creating an OpenCode Agent stays behind the experimental switch for now.
 
 Two things a reader of a 2.x session sees differently. Text still streaming
 when Yuzuno reads the session whole (after its stream broke, say) is what has
