@@ -219,7 +219,7 @@ test("a click on the row opens the conversation; a click on the ring goes to its
     assert.equal(p.form("w"), "row");
     // Each executor's ring: its task, never the conversation.
     const opened = Object.fromEntries(["v", "k", "a", "g"].map((id) => [id, reads(id)]));
-    for (const [id, label] of [["v", "YN-v · Design first · See the result of #688"], ["k", "YN-k · Design first · Open task YN-k"], ["a", "YN-a · Design first · Open task YN-a"], ["g", "Agent g · Open task YN-g"]]) {
+    for (const [id, label] of [["v", "Agent v · See the result of #688"], ["k", "YN-k · Design first · Open task YN-k"], ["a", "YN-a · Design first · Open task YN-a"], ["g", "Agent g · Open task YN-g"]]) {
       assert.equal(p.island(id).tagName, "BUTTON", `${id}'s ring goes somewhere`);
       assert.equal(p.island(id).getAttribute("aria-label"), label);
       p.island(id).click();
@@ -252,7 +252,7 @@ test("in Chinese the row reads in Chinese", async () => {
     assert.deepEqual(p.state("a"), ["archived", "已归档：Work a"]);
     assert.equal(p.meta("a"), "YN-a · 共 1时30分");
     assert.equal(p.island("w").getAttribute("aria-label"), "YN-w · Design first · 去 Home 回答提问");
-    assert.equal(p.island("v").getAttribute("aria-label"), "YN-v · Design first · 看结果 #688");
+    assert.equal(p.island("v").getAttribute("aria-label"), "Agent v · 看结果 #688");
     for (const id of ["w", "v", "k", "a"]) assert.doesNotMatch(p.island(id).title, /放行/, `${id}: no 放行`);
     assert.deepEqual(p.errors, []);
   } finally {

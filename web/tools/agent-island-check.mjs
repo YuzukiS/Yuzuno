@@ -295,9 +295,12 @@ async function run({ width, height, theme, motion, lang = "en" }) {
       await ringOf("yn24").hover();
       await page.waitForTimeout(motion ? 250 : 50);
       const ring = await look("yn24");
+      // Each look once its transitions (120 ms) have run.
       await rowOf("yn24").locator(".agent-line-one").hover({ force: true });
+      await page.waitForTimeout(motion ? 400 : 50);
       const row = await look("yn24");
       await rowOf("dev5").locator(".island-ringbox").hover({ force: true });
+      await page.waitForTimeout(motion ? 400 : 50);
       const plain = await look("dev5");
       report.hover = { ...(report.hover ?? {}), [tag]: { rest, ring, row, rest5, plain } };
       assert.equal(ring.halo, "none", `${tag}: no halo`);
@@ -312,6 +315,7 @@ async function run({ width, height, theme, motion, lang = "en" }) {
         await page.waitForTimeout(motion ? 250 : 50);
         await list.screenshot({ path: join(output, `${tag}-3-ring-hover.png`) });
         await rowOf("yn24").locator(".agent-line-one").hover({ force: true });
+        await page.waitForTimeout(motion ? 400 : 50);
         await list.screenshot({ path: join(output, `${tag}-3-row-hover.png`) });
         report.screenshots.push(`${tag}-3-ring-hover`, `${tag}-3-row-hover`);
       }

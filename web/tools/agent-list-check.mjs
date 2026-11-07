@@ -168,6 +168,8 @@ try {
           island: island ? [island.dataset.state, island.dataset.form] : null,
           // A standing Agent that needs you: the word, then what it asks.
           line: visible(row.querySelector(":scope > .agent-row-state.is-alert")) ? row.querySelector(":scope > .agent-row-state.is-alert").textContent : null,
+          // What of it shows: the compact list hides what it asks.
+          lineShown: visible(row.querySelector(":scope > .agent-row-state.is-alert")) ? [...row.querySelector(":scope > .agent-row-state.is-alert").children].filter(visible).map((el) => el.textContent).join("") : null,
           summary: visible(row.querySelector(".agent-work-summary")) ? row.querySelector(".agent-work-summary").textContent : null,
           needsYou: visible(row.querySelector(".needs-you")) ? row.querySelector(".needs-you").textContent : null,
           unread: island?.dataset.unread ?? null,
@@ -358,7 +360,7 @@ try {
     assert.ok(row.height <= before[row.id].height, `the row is no taller: ${before[row.id].height} → ${row.height}`);
   }
   assert.deepEqual(at.c.island, ["waiting", "row"], "needs you still shows");
-  assert.equal(at.c.line, "Needs you", "with its word, without what it asks");
+  assert.equal(at.c.lineShown, "Needs you", "with its word, without what it asks");
   assert.equal(at.b.unread, "count", "the unread notch still shows");
   const railHeight = (list) => list.reduce((sum, r) => sum + r.height, 0);
   assert.ok(railHeight(compact) <= railHeight(detailed), `the list is no taller: ${railHeight(detailed)} → ${railHeight(compact)}`);
