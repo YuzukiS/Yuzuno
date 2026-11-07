@@ -31,6 +31,8 @@ import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-densi
 import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
 import {SummaryCard} from ${JSON.stringify(path.join(root, "src/home/SummaryCard.tsx"))};
 import {ReportOpen} from ${JSON.stringify(path.join(root, "src/home/report/report-open.ts"))};
+import {sectionMarkdown} from ${JSON.stringify(path.join(root, "src/home/brief/brief-copy.ts"))};
+window.sectionMarkdown=sectionMarkdown;
 const root=createRoot(document.getElementById('root'));
 window.chooseLanguage=(language)=>saveLanguagePreferences({language});
 window.examples=BRIEF_EXAMPLES;
@@ -1857,5 +1859,19 @@ test("YN-16 S3 a Diagram on a card works there and never opens the report; its l
   const live = await until(() => document.querySelector(".home-card-frame.kind-interactive .brief-diagram svg"), "a Diagram as the visual");
   assert.match(live.closest(".brief-diagram").querySelector(".brief-diagram-detail").textContent, /选择一个节点查看说明/);
   window.chooseLanguage("en");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S2 R1 P3: Copy report leaves out a Calc that shows nothing at the starting values, title and all", (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { window } = page;
+  const put = bill();
+  put.body.elements.split.children.push("hiddenCalc");
+  put.body.elements.hiddenCalc = { type: "Calc", props: { title: "Only when rounding", items: [{ id: "spare", label: "Spare", expr: "people * 2", when: "roundUp" }] } };
+  const copied = window.sectionMarkdown(readSection(page, put), "en", { clock: "h24", timeZone: "UTC" });
+  assert.ok(!copied.includes("Only when rounding"), copied);
+  assert.equal(copied.split("Worked out from the starting values").length - 1, 1, "only the Calc that shows something says it");
+  assert.match(copied, /#+ Shares\n+_Worked out from the starting values_\n+- Total: ¥660\.00\n- Each: ¥165\.00/);
   assert.deepEqual(page.errors, []);
 });
