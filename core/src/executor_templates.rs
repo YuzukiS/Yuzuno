@@ -430,11 +430,53 @@ pub(crate) fn ids(db: &Connection) -> Result<Vec<String>> {
     Ok(list_at(db, KEY)?.templates.into_iter().map(|t| t.id).collect())
 }
 
-/// The template presets the user can adopt in Settings: template-shaped
-/// objects, never stored by Core and never saved by an Agent. T-43 fills
-/// this list; adopting one is the user's ordinary save.
+/// The ten presets (YN-23, T-43 S1a), in each language the page has. A
+/// preset names no harness: the page fills in the default for new Agents.
+const PRESETS: &str = include_str!("executor_templates/presets.json");
+/// The languages presets are written in, as the page names them.
+pub(crate) const PRESET_LANGUAGES: [&str; 2] = ["en", "zh-Hans"];
+
+/// The template presets the user can adopt in Settings, one entry per preset
+/// and language: `{id, language, label, whenToChoose, modelHint,
+/// instructions, deliveryMode, steps?, permissions?}`, where `permissions`
+/// gives the permission for each harness (`codex`: a permissionPreset,
+/// `claude`: a permissionMode). Never stored by Core and never saved by an
+/// Agent: adopting one fills an unsaved template on the page, and the
+/// user's ordinary save writes it.
 pub(crate) fn presets() -> Vec<Value> {
-    Vec::new()
+    static RESOLVED: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
+    RESOLVED.get_or_init(|| {
+        let source: Value = serde_json::from_str(PRESETS).expect("presets.json is JSON");
+        let mut out = Vec::new();
+        for preset in source["presets"].as_array().expect("presets.json lists presets") {
+            for language in PRESET_LANGUAGES {
+                let text = &preset[language];
+                let mut item = json!({
+                    "id": preset["id"], "language": language, "label": text["label"], "whenToChoose": text["whenToChoose"],
+                    "modelHint": text["modelHint"], "instructions": text["instructions"], "deliveryMode": preset["deliveryMode"],
+                });
+                if let Some(steps) = preset["steps"].as_array() {
+                    item["steps"] = steps.iter().map(|step| {
+                        let mut step = step.clone();
+                        match step["label"][language].as_str() {
+                            Some(label) => step["label"] = json!(label),
+                            None => {
+                                if let Some(step) = step.as_object_mut() {
+                                    step.remove("label");
+                                }
+                            }
+                        }
+                        step
+                    }).collect();
+                }
+                if preset["permissions"].is_object() {
+                    item["permissions"] = preset["permissions"].clone();
+                }
+                out.push(item);
+            }
+        }
+        out
+    }).clone()
 }
 
 /// A stored template without these fields.

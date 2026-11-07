@@ -5,10 +5,53 @@
   margin: 0 0 12px;
   padding: 0;
 }
-.executor-templates-settings .executor-template legend {
-  padding: 10px 16px 0;
+/* YN-23: a template is a settings card (YN-8): its name, then a block for
+   what it is, one for its delivery, one for its steps, then the rest folded. */
+.executor-templates-settings .executor-template > .executor-template-name {
+  padding: 12px 16px 0;
   color: var(--ink);
   font-weight: 600;
+}
+.executor-templates-settings .executor-template > .executor-template-name + * { border-top: 0; }
+.executor-templates-settings .executor-template-basics { padding: 4px 0 6px; }
+.executor-templates-settings .executor-template-basics > .settings-row { padding-block: 8px; }
+.executor-templates-settings .executor-template-when { width: min(28rem, 100%); }
+.executor-templates-settings .executor-template-footer { padding: 4px 16px 12px; }
+/* Steps: a numbered row each, its kind, label and per-kind setting, then
+   its moves; wrapped under its number on a narrow page. */
+.executor-steps {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+.executor-step {
+  display: grid;
+  grid-template-columns: 1.6em minmax(8.5rem, 11rem) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px 8px;
+}
+.executor-step > .settings-select,
+.executor-step > .settings-input { width: 100%; min-width: 0; }
+.executor-step-number {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.executor-step-actions { display: inline-flex; gap: 2px; grid-column: -2; }
+.executor-step-error { grid-column: 2 / -1; }
+.executor-steps-default { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.executor-steps-default > .settings-row-help { margin: 0; }
+/* Presets to add: a card each, with what it is for and its steps. */
+.executor-templates-settings .executor-presets { margin: 0 0 12px; }
+.executor-preset-options { margin-bottom: 12px; }
+.theme-choice.executor-preset-choice small.executor-preset-meta { color: var(--text-quiet, var(--text-secondary)); }
+@media (max-width: 520px) {
+  .executor-step { grid-template-columns: 1.6em minmax(0, 1fr) auto; }
+  .executor-step > .settings-input { grid-column: 2 / -1; grid-row: 2; }
+  .executor-step > .settings-select:nth-of-type(2) { grid-column: 2 / -1; }
+  .executor-step-actions { grid-column: 3; grid-row: 1; }
 }
 .executor-templates-settings .settings-input {
   width: min(18rem, 100%);
@@ -22,7 +65,6 @@
   font-size: calc(10.5px + var(--font-adjust, 3px));
 }
 .executor-templates-settings .executor-template-instructions { flex-wrap: wrap; }
-.executor-templates-settings .executor-template > .quiet-button { margin: 4px 16px 12px; }
 .executor-templates-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 /* Executors at once (T-35), above the templates and saved apart from them. */
 .executor-templates-settings .executor-slots { margin: 0 0 12px; }

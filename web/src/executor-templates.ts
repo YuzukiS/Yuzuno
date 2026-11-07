@@ -31,8 +31,35 @@ export type DeliveryMode = "pr" | "direct-commit" | "none";
 export type StepKind = "materials" | "work" | "result" | "gate" | "job" | "pr" | "review" | "ci" | "merge";
 /** `rounds` only on a review (1 or 2), `approver` only on a gate (unset: the user). */
 export type TemplateStep = { kind: StepKind; label?: string; rounds?: number; approver?: "user" | "lead" | "either" };
-/** A template the user can adopt in Settings: a template's fields, never stored until the user saves. */
-export type ExecutorPreset = ExecutorTemplate & { description?: string };
+/** A template the user can adopt in Settings (YN-23): its fields in one
+ * language, with no harness (the page fills in the default for new Agents)
+ * and a model hint, since Core has no model tiers. `permissions` is its
+ * permission per harness. Never stored until the user saves. */
+export type ExecutorPreset = {
+  id: string;
+  language?: string;
+  label: string;
+  whenToChoose?: string;
+  modelHint?: string;
+  instructions?: string;
+  deliveryMode?: DeliveryMode;
+  steps?: TemplateStep[];
+  permissions?: { codex?: string; claude?: string };
+};
+/** The presets in the page's language; one without a language is in every one. */
+export const presetsIn = (presets: ExecutorPreset[], language: string) => {
+  const these = presets.filter((p) => !p.language || p.language === language);
+  return these.length ? these : presets.filter((p) => !p.language || p.language === "en");
+};
+export const STEP_KINDS: StepKind[] = ["materials", "work", "result", "gate", "job", "pr", "review", "ci", "merge"];
+/** The kinds only a template delivered by pull request has. */
+export const PR_STEP_KINDS: StepKind[] = ["pr", "review", "ci", "merge"];
+export const MAX_STEPS = 12;
+/** A template's steps when it sets none, as Core resolves them (executor_templates.rs `default_steps`). */
+export const defaultSteps = (mode: DeliveryMode = "pr"): TemplateStep[] =>
+  (mode === "direct-commit" ? ["materials", "work", "job", "result"] as StepKind[]
+    : mode === "none" ? ["materials", "work", "result"] as StepKind[]
+    : ["materials", "work", "job", "pr", "review", "ci", "merge"] as StepKind[]).map((kind) => ({ kind }));
 /** `laterTemplates`: templates a newer Core saved that this one can't read or use; a save keeps them. */
 export type TemplateList = { version: number; templates: ExecutorTemplate[]; laterTemplates?: number };
 export type ExecutorTemplatesView = {
@@ -40,7 +67,7 @@ export type ExecutorTemplatesView = {
   workspace: TemplateList;
   /** What a dispatch can use: the Workspace's templates. `project` only from a Core before YN-2 S2. */
   available: { template: ExecutorTemplate; source: "project" | "workspace" }[];
-  /** Presets the user can adopt; empty until a Core ships some. */
+  /** Presets the user can adopt, each in each language (YN-23). */
   presets: ExecutorPreset[];
   defaultNamePattern: string;
   /** Core also answers `maxConcurrent` for a release (YN-2): a template has no limit of its own any more (T-43). */
