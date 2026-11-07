@@ -440,10 +440,13 @@ export function ConversationJobs({
   }, [jobs, ci.runs, agentId, t]);
   // The way into each whole list, which the column offers where the dock's
   // own heading and "+N more" take no presses by touch (#459 round 1, P2a).
+  // Offered while there are any at all, counted or not: a conversation
+  // whose only Job was cancelled has it on the dock, and by touch this is
+  // the one way to it (#459 R8, P3).
   useWorkActivity("job", work.filter((item: WorkEntry) => item.kind === "job"),
-    () => openJobs({ agentId }));
+    () => openJobs({ agentId }), jobs.length > 0);
   useWorkActivity("run", work.filter((item: WorkEntry) => item.kind === "run"),
-    () => openJobs({ agentId, source: "github_actions" }));
+    () => openJobs({ agentId, source: "github_actions" }), ci.runs.length > 0);
   // Jobs, then CI, as marks on the conversation's left edge (WorkDock.tsx).
   // A kind set to 0 has no group here at all.
   return (

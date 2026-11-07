@@ -165,7 +165,8 @@ export function SubAgentDock({
   );
   // Its group's own card, which is what the dock's heading opens; by touch
   // the dock takes no presses, so the column carries this too (P2a).
-  useWorkActivity(kind, work, (from) => setCard({ key: null, from }));
+  // Offered while there are any, counted or not (#459 R8, P3).
+  useWorkActivity(kind, work, (from) => setCard({ key: null, from }), all.length > 0);
   // The card is what the column's rows open, so it is built whatever the dock
   // itself draws. With the limit at 0 the group is left off the dock and this
   // component used to return before the card existed, so a row in the column

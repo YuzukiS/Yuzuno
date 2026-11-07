@@ -517,20 +517,25 @@ export function App() {
   // second press was needed to see anything (#459 R2, P3-1). Closing a view
   // that is on screen leaves the rail as it is: the reader asked for the
   // view to go, not for the column to.
+  //
+  // On a phone each opens its drawer the way the drawer's own buttons do,
+  // through the dock's motion: setting it directly skipped T-19's way in and
+  // out (#459 R8, P3).
+  const chooseDock = dockMotion.choose;
   const openWorkView = useCallback(() => {
-    if (phone) return setPhoneDock((open) => (open === "work" ? null : "work"));
+    if (phone) return chooseDock(phoneDock === "work" ? null : "work");
     if (railWork && railOpen) return setRailWork(false);
     setRailIndex(false);
     setRailWork(true);
     setRailOpen(true);
-  }, [phone, railWork, railOpen]);
+  }, [phone, phoneDock, chooseDock, railWork, railOpen]);
   const openIndexView = useCallback(() => {
-    if (phone) return setPhoneDock((open) => (open === "turns" ? null : "turns"));
+    if (phone) return chooseDock(phoneDock === "turns" ? null : "turns");
     if (railIndex && railOpen) return setRailIndex(false);
     setRailWork(false);
     setRailIndex(true);
     setRailOpen(true);
-  }, [phone, railIndex, railOpen]);
+  }, [phone, phoneDock, chooseDock, railIndex, railOpen]);
   // Touch rows wherever a finger is the pointer, not only where the phone
   // layout applies: a folding phone opened is wide and still all touch (T-15).
   const touchInput = useTouchInput();
@@ -3648,6 +3653,7 @@ export function App() {
                       dock keeps the detail (T-15). */}
                   <WorkActivityEntry
                     expanded={phone ? phoneDock === "work" : railWork && railOpen}
+                    drawer={phone}
                     onOpen={openWorkView}
                   />
                   {/* And beside it, the way into where the reader is: the

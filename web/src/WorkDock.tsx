@@ -149,7 +149,7 @@ export type WorkEntry = WorkItem & {
 };
 /** How a kind opens the list it belongs to: the dock's heading and "+N more". */
 export type OpenList = (from: HTMLElement) => void;
-type Register = (id: string, kind: WorkKind, items: readonly WorkEntry[], openList?: OpenList) => void;
+type Register = (id: string, kind: WorkKind, items: readonly WorkEntry[], openList?: OpenList, present?: boolean) => void;
 const Registry = createContext<Register | null>(null);
 
 /**
@@ -161,8 +161,16 @@ const Registry = createContext<Register | null>(null);
  * other, while either one's cleanup wrote `[]` and cleared the other's work
  * as well. The counts in the entry and the column were then whichever
  * mounted last (#459 round 1, P1).
+ *
+ * `present` says this instance has work of its kind at all, counted or not.
+ * Some of what the dock draws is deliberately left out of the count — a Job
+ * the reader cancelled, a run a later one replaced (row 14) — and with only
+ * such work there was nothing here, so the entry and the kind's "Open …" row
+ * went with it. On a touched screen wider than a phone the dock takes no
+ * press, so that work was drawn and out of reach (#459 R8, P3). Present, the
+ * kind keeps its way into its list, without anything being counted.
  */
-export function useWorkActivity(kind: WorkKind, items: readonly WorkEntry[], openList?: OpenList) {
+export function useWorkActivity(kind: WorkKind, items: readonly WorkEntry[], openList?: OpenList, present = false) {
   const register = useContext(Registry);
   // Stable for the life of this component, and different per instance.
   const id = useId();
@@ -175,10 +183,10 @@ export function useWorkActivity(kind: WorkKind, items: readonly WorkEntry[], ope
   const has = !!openList;
   const open = useCallback<OpenList>((from) => latest.current?.(from), []);
   useEffect(() => {
-    register?.(id, kind, items, has ? open : undefined);
-    return () => register?.(id, kind, [], undefined);
+    register?.(id, kind, items, has ? open : undefined, present);
+    return () => register?.(id, kind, [], undefined, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [register, id, kind, key, has, open]);
+  }, [register, id, kind, key, has, open, present]);
 }
 
 /**
@@ -191,21 +199,24 @@ const Activity = createContext<ReturnType<typeof workActivity> | null>(null);
 const Entries = createContext<readonly WorkEntry[]>([]);
 /** Each kind's way into its own whole list, where it offered one. */
 const Lists = createContext<Partial<Record<WorkKind, OpenList>>>({});
+/** Kinds with work and none of it counted: only their list is offered. */
+const Held = createContext<readonly WorkKind[]>([]);
 
 export function WorkActivityProvider({ children }: { children: ReactNode }) {
-  const [work, setWork] = useState<Record<string, { kind: WorkKind; items: readonly WorkEntry[]; openList?: OpenList }>>({});
-  const register = useCallback<Register>((id, kind, items, openList) => {
+  const [work, setWork] = useState<Record<string, { kind: WorkKind; items: readonly WorkEntry[]; openList?: OpenList; present: boolean }>>({});
+  const register = useCallback<Register>((id, kind, items, openList, present = false) => {
     setWork((was) => {
-      // Empty is this instance going away: its own slot goes, and no other.
-      if (!items.length) {
+      // Nothing at all is this instance going away, or having nothing: its
+      // own slot goes, and no other.
+      if (!items.length && !present) {
         if (!(id in was)) return was;
         const next = { ...was };
         delete next[id];
         return next;
       }
       const had = was[id];
-      if (had && had.kind === kind && had.items === items && had.openList === openList) return was;
-      return { ...was, [id]: { kind, items, openList } };
+      if (had && had.kind === kind && had.items === items && had.openList === openList && had.present === present) return was;
+      return { ...was, [id]: { kind, items, openList, present } };
     });
   }, []);
   const sorted = useMemo(() => {
@@ -221,12 +232,19 @@ export function WorkActivityProvider({ children }: { children: ReactNode }) {
       if (slot.openList && !found[slot.kind]) found[slot.kind] = slot.openList;
     return found;
   }, [work]);
+  // A kind with work and nothing of it counted, which can still be opened.
+  const held = useMemo(() => workKinds.filter((kind) => {
+    const slots = Object.values(work).filter((slot) => slot.kind === kind);
+    return slots.some((slot) => slot.present && slot.openList) && !slots.some((slot) => slot.items.length);
+  }), [work]);
   const activity = useMemo(() => workActivity(sorted), [sorted]);
   return (
     <Registry.Provider value={register}>
       <Activity.Provider value={activity}>
         <Entries.Provider value={sorted}>
-          <Lists.Provider value={lists}>{children}</Lists.Provider>
+          <Lists.Provider value={lists}>
+            <Held.Provider value={held}>{children}</Held.Provider>
+          </Lists.Provider>
         </Entries.Provider>
       </Activity.Provider>
     </Registry.Provider>
@@ -303,15 +321,19 @@ export function WorkActivityColumn({ onBack }: { onBack: () => void }) {
   // takes no presses there, so the column carries them instead (#459 round
   // 1, P2a). The mixed groups have no single list to open.
   const lists = useContext(Lists);
-  const groups = [
+  // A kind whose work is all uncounted still has its group, holding only the
+  // way into its list: nothing in it is counted, and it is still reachable.
+  const held = useContext(Held);
+  const every: { id: string; kind?: WorkKind; label: string; items: readonly WorkEntry[]; openList?: OpenList }[] = [
     { id: "attention", label: t.attention, items: needsLook, openList: undefined },
-    { id: "jobs", label: t.jobs, items: rest("job"), openList: lists.job },
-    { id: "runs", label: t.runs, items: rest("run"), openList: lists.run },
-    { id: "subAgents", label: t.subAgents, items: rest("subAgent"), openList: lists.subAgent },
-    { id: "backgroundTasks", label: t.backgroundTasks, items: rest("backgroundTask"), openList: lists.backgroundTask },
-    { id: "reviews", label: t.reviews, items: rest("review"), openList: lists.review },
+    { id: "jobs", kind: "job", label: t.jobs, items: rest("job"), openList: lists.job },
+    { id: "runs", kind: "run", label: t.runs, items: rest("run"), openList: lists.run },
+    { id: "subAgents", kind: "subAgent", label: t.subAgents, items: rest("subAgent"), openList: lists.subAgent },
+    { id: "backgroundTasks", kind: "backgroundTask", label: t.backgroundTasks, items: rest("backgroundTask"), openList: lists.backgroundTask },
+    { id: "reviews", kind: "review", label: t.reviews, items: rest("review"), openList: lists.review },
     { id: "unknown", label: t.unknown, items: unknown, openList: undefined },
-  ].filter((group) => group.items.length > 0);
+  ];
+  const groups = every.filter((group) => group.items.length > 0 || (!!group.kind && held.includes(group.kind) && !!group.openList));
   return (
     <div className="work-activity-column" lang={langTag(language)}>
       <div className="work-activity-column-top">
@@ -394,15 +416,35 @@ export function WorkDock({
 export function WorkActivityEntry({
   onOpen,
   expanded,
+  drawer = false,
 }: {
   onOpen: (from: HTMLElement) => void;
   /** Whether the view it opens is on screen, which is not the same as having
    * been asked for: the rail it lives in can be collapsed (#459 R1, P2). */
   expanded?: boolean;
+  /** What it opens is the dock itself, as a phone's drawer, rather than the column. */
+  drawer?: boolean;
 }) {
   const t = useStrings(entry);
   const activity = useContext(Activity);
-  if (!activity?.any) return null;
+  const entries = useContext(Entries);
+  const lists = useContext(Lists);
+  const held = useContext(Held);
+  if (!activity || (!activity.any && !held.length)) return null;
+  // A phone's drawer is the dock, which draws what Appearance lets it and
+  // nothing more, while this counts everything. With the counted work's kinds
+  // set to 0 there, the press opened a drawer with nothing in it. It opens the
+  // list of what it counted instead, the most pressing kind first (#459 R8,
+  // P3). The dock's own box is the one the drawer shows.
+  const open = (from: HTMLElement) => {
+    const dock = document.querySelector(".conversation-body > .work-dock > .work-dock-scroll");
+    if (drawer && !expanded && (!dock || dock.childElementCount === 0)) {
+      const kind = entries[0]?.kind ?? held[0];
+      const list = (kind && lists[kind]) || Object.values(lists)[0];
+      if (list) return list(from);
+    }
+    onOpen(from);
+  };
   // Said apart, never added up: these are different kinds of fact.
   const parts = [
     activity.exception > 0 ? t.needsLook(activity.exception) : null,
@@ -420,7 +462,7 @@ export function WorkActivityEntry({
       // drift from the first (T-15, Dev 7).
       title={t.label}
       aria-expanded={expanded}
-      onClick={(event) => onOpen(event.currentTarget)}
+      onClick={(event) => open(event.currentTarget)}
     >
       <BriefcaseBusiness size={13} aria-hidden="true" />
       <span className="sr-only">{t.label}: </span>

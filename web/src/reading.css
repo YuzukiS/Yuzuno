@@ -48,14 +48,30 @@
    the pointer arrives (T-15). */
 .agent-row-state {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 6px;
+  gap: 2px 6px;
   min-width: 0;
   margin-top: 5px;
 }
 .agent-row-state > .agent-runtime {
   flex: none;
   white-space: nowrap;
+}
+/* CI beside a Job or a check hint ("Waiting · Job / CI"), or a Turn end not
+   yet seen: that longer status takes the whole line and wraps inside it,
+   and whatever follows starts the next. Kept to one line it ran past the
+   row's edge on a 220px rail and pushed the executor badge and the activity
+   out of sight; its rules still styled it inside the name's button, which
+   it left when the row got its second line (#459 R8, P3). */
+.agent-row-state > .agent-runtime[data-combined] {
+  flex: 1 1 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.agent-row-state > .agent-runtime[data-combined] + .agent-work-summary::before {
+  content: none;
 }
 .agent-row-state > .agent-work-summary {
   flex: 1;
@@ -76,23 +92,6 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-/* CI can coexist with a Job or a check hint. That longer, combined status
-   takes its own line, so the Agent and machine names keep their usable
-   width; a single wait such as "Waiting · CI" stays beside the name. */
-@media (min-width: 521px) {
-  .agent-select:has(.agent-runtime[data-combined]) {
-    display: grid;
-    grid-template-columns: 28px minmax(0, 1fr);
-    row-gap: 4px;
-  }
-  .agent-select:has(.agent-runtime[data-combined]) .agent-rail-avatar {
-    grid-row: 1 / span 2;
-  }
-  .agent-select .agent-runtime[data-combined] {
-    grid-column: 2;
-    white-space: normal;
-  }
 }
 /* The same row everywhere, rail or drawer: the status word stays (T-15). */
 .agent-work-summary {
@@ -204,26 +203,13 @@
   line-height: 1.4;
   opacity: 0.72;
 }
-/* An executor's kind and state (T-36 S3) take their own line under its name
-   and status, as a combined status does: beside them the rail is too narrow
-   for "Executor · Queued · 2 in line". */
-.agent-select:has(> .agent-state-badge) {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
-  row-gap: 4px;
-}
-.agent-select:has(> .agent-state-badge) .agent-rail-avatar {
-  grid-row: 1 / span 2;
-}
-.agent-select:has(> .agent-state-badge):has(.agent-runtime[data-combined]) {
-  grid-template-columns: 28px minmax(0, 1fr);
-}
-.agent-select:has(> .agent-state-badge):has(.agent-runtime[data-combined]) .agent-rail-avatar {
-  grid-row: 1 / span 3;
-}
-.agent-select > .agent-state-badge {
-  grid-column: 2 / -1;
-  justify-self: start;
+/* An executor's kind and state (T-36 S3), on the row's second line after its
+   status. Where the rail is too narrow for both — "Executor · Queued · 2 in
+   line" — it wraps to a line of its own, and only past that is it shortened.
+   These rules were on the name's button, which it left with the status. */
+.agent-row-state > .agent-state-badge {
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
   padding: 0 5px;
@@ -280,12 +266,14 @@
 }
 
 /* A Turn end this device has not shown yet (T-42), and the list's way to
-   the next thing that needs you while something does. */
-.agent-select .agent-runtime.unseen-finished {
+   the next thing that needs you while something does. On the row's second
+   line, where the status is now; under the name's button these matched
+   nothing once it moved (#459 R8). */
+.agent-row-state > .agent-runtime.unseen-finished {
   color: #6f8a5c;
   font-weight: 600;
 }
-.agent-select .agent-runtime.unseen-failed {
+.agent-row-state > .agent-runtime.unseen-failed {
   color: #a96a5b;
   font-weight: 600;
 }

@@ -702,6 +702,8 @@ export function ConversationReviews({ agentId, revision, disabled, limit }: { ag
         onOpen: () => openReviews({ taskId: r.taskId, reviewId: r.id }),
       })),
     () => openReviews({ involving: agentId }),
+    // A cancelled one is not counted and is still on the dock: its list stays reachable.
+    page.reviews.length > 0,
   );
   // At 0 the dock has no group of them; they are still counted above.
   if (!page.reviews.length || limit <= 0) return null;
