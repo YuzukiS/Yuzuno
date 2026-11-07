@@ -217,7 +217,13 @@ test("a click on the row opens the conversation; a click on the ring goes to its
     p.row("w").querySelector(".agent-select").click();
     await waitFor(() => reads("w") > before, "w's conversation opens");
     assert.equal(p.form("w"), "row");
-    // Each executor's ring: its task, never the conversation.
+    // Needs you: Home, at its item in Needs you, an executor's and a standing Agent's alike.
+    for (const [id, key] of [["w", "approval:q1"], ["s", "approval:q2"]]) {
+      p.island(id).click();
+      await waitFor(() => p.doc.activeElement?.dataset?.needsYou === key, `${id}'s ring goes to its item in Home's Needs you`);
+      assert.ok(!!p.doc.querySelector(".home-view"), "Home is open");
+    }
+    // Each executor's ring: its task, never the conversation (the task board opens over the page).
     const opened = Object.fromEntries(["v", "k", "a", "g"].map((id) => [id, reads(id)]));
     for (const [id, label] of [["v", "Agent v · See the result of #688"], ["k", "YN-k · Design first · Open task YN-k"], ["a", "YN-a · Design first · Open task YN-a"], ["g", "Agent g · Open task YN-g"]]) {
       assert.equal(p.island(id).tagName, "BUTTON", `${id}'s ring goes somewhere`);
@@ -226,12 +232,6 @@ test("a click on the row opens the conversation; a click on the ring goes to its
       await waitFor(() => tasks.at(-1) === `YN-${id}`, `${id}'s ring opens its task`);
       assert.equal(reads(id), opened[id], `${id}'s ring never opened the conversation`);
       assert.equal(p.form(id), "ring", `${id}'s ring stays a ring`);
-    }
-    // Needs you: Home, at its item in Needs you, an executor's and a standing Agent's alike.
-    for (const [id, key] of [["w", "approval:q1"], ["s", "approval:q2"]]) {
-      p.island(id).click();
-      await waitFor(() => p.doc.activeElement?.dataset?.needsYou === key, `${id}'s ring goes to its item in Home's Needs you`);
-      assert.ok(!!p.doc.querySelector(".home-view"), "Home is open");
     }
     // No card, no card buttons, anywhere.
     assert.equal(p.doc.querySelectorAll(".agent-list .island-actions, .agent-list .agent-row-more, .agent-list [data-form=card]").length, 0);

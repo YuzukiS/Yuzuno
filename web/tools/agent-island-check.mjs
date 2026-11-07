@@ -349,14 +349,18 @@ async function run({ width, height, theme, motion, lang = "en" }) {
         : a.id === "yn24" ? { ...a, status: "idle", workSummary: null, executor: { ...a.executor, since: ago(0.2) } } : a));
       await page.waitForFunction(() => ["dev5", "yn24"].every((id) => document.querySelector(`.agent-list article[data-agent-id="${id}"]`)?.dataset.form === "pill"), null, { timeout: 10_000, polling: "raf" });
       const opening = await rowOf("dev5").evaluate((r) => r.querySelector(".island-shell").getAnimations().map((a) => { const k = a.effect.getKeyframes(); return [k[0].width, k.at(-1).width]; }));
+      // Read once the outline has grown (320 ms).
+      if (motion) await page.waitForTimeout(450);
       const pills = Object.fromEntries(await Promise.all(["dev5", "yn24"].map(async (id) => [id, await rowOf(id).evaluate((r) => {
         const p = r.querySelector(".island-pill").getBoundingClientRect(), g = r.querySelector(".island-ringbox").getBoundingClientRect(), s = r.querySelector(".island-shell").getBoundingClientRect();
         const one = r.querySelector(".agent-line-one"), range = document.createRange();
         range.selectNodeContents(one);
         const words = Math.max(...[...range.getClientRects()].map((x) => x.right));
+        // A name or line one cut, rather than wrapped, would be a fragment.
+        const name = r.querySelector(".agent-name"), cut = (el) => !!el && (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1);
         return { text: r.querySelector(".island-pill").textContent, leftOfRing: p.right <= g.left + 0.5, shell: s.left < p.left && s.right >= g.right && s.height <= 30,
           // Pushed, not covered: line one's words end before the pill's outline begins.
-          clear: words <= s.left + 0.5, width: Math.round(one.getBoundingClientRect().width), height: Math.round(r.getBoundingClientRect().height), cut: one.scrollHeight > one.clientHeight + 1 };
+          clear: words <= s.left + 0.5, width: Math.round(one.getBoundingClientRect().width), height: Math.round(r.getBoundingClientRect().height), cut: cut(one) || cut(name) };
       })])));
       report.pills = { ...(report.pills ?? {}), [tag]: { before, pills } };
       const said = lang === "zh" ? { dev5: "1 条新消息", yn24: "已交 #681" } : { dev5: "1 new message", yn24: "Handed in #681" };
