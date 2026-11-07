@@ -684,7 +684,7 @@ has the blocker (`blocked`); its state stays what it is.
   PR: the sidebar names an executor by it. A lead or the user gives it with
   `task_create` or `task_update` (`shortName`; kept trimmed, one line; null
   or empty clears it), typically when dispatching. Without one the task's
-  title stands in. `task_get`'s current view and `task_list`'s compact rows
+  title stands in, and the lifecycle's `task` has no `shortName`. `task_get`'s current view and `task_list`'s compact rows
   carry it. A Core from before it (core.26 and earlier) reads such a task
   as before and leaves the short name out of its next save of that task.
 - **The sidebar.** In each Project's list, leads come first, then the

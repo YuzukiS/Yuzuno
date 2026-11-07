@@ -262,8 +262,12 @@ fn lifecycle(db: &Connection, role: &Role) -> Result<Value> {
         // references and task_get name it (T-43 S2, g8); `T-<n>` only
         // while it has none.
         let key = role.task.as_deref().map(|id| crate::task_keys::current(db, id)).transpose()?.flatten();
-        // Its short name too (T-43), what the sidebar's row says it is doing.
-        view["task"] = json!({"id":key.unwrap_or_else(|| format!("T-{}", task.seq)),"title":task.title,"shortName":task.short_name});
+        view["task"] = json!({"id":key.unwrap_or_else(|| format!("T-{}", task.seq)),"title":task.title});
+        // Its short name too (T-43), what the sidebar's row says it is
+        // doing; only where it has one, so an answer without it is as before.
+        if let Some(short) = &task.short_name {
+            view["task"]["shortName"] = json!(short);
+        }
         // An executor at work whose task is blocked: the blocker, for Home
         // and the card's title (its state stays what it is).
         if task.status == "blocked" && !closed && !task.blocker.is_empty() {
