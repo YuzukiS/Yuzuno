@@ -1838,6 +1838,8 @@ type Suggestion = {
   memoryPeakMiB: number;
   averageCpuCores: number | null;
   basedOn: { jobId: string }[];
+  /** Whose runs it is from: this task's, or (with none of its own) its Project's (YN-6 S2). */
+  scope?: "task" | "project";
 };
 /** The suggestion for the draft, asked again a moment after it changes; null
  * without one. It is only shown: the limits change only if the user says so. */
@@ -1997,6 +1999,7 @@ function JobForm({
                 suggestion.averageCpuCores === null ? null : suggestion.averageCpuCores.toFixed(2),
                 memory(suggestion.memoryMiB),
                 suggestion.cpuMillis === null ? null : (suggestion.cpuMillis / 1000).toFixed(1),
+                suggestion.scope === "project",
               )}
             </p>
             <button
