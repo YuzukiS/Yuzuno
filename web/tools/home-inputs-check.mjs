@@ -402,6 +402,25 @@ async function check(run) {
     assert.equal(await frame("scones").locator('[role="switch"]').getAttribute("aria-checked"), "true");
     pass("the report page starts from the section's values and shares them across its parts; the card keeps its own");
 
+    // ---- (S3) The flowchart's report page: left to right where its 735 px fit (the desktop's page), top to bottom on a phone.
+    await press(card("flow").locator(".home-report-open"));
+    const flowPage = page.locator(".home-report");
+    const flowSvg = flowPage.locator(".report-hero .brief-diagram svg");
+    await flowSvg.waitFor({ timeout: 10_000 });
+    const onPage = await flowSvg.evaluate((svg) => {
+      const s = svg.getBoundingClientRect();
+      const boxes = [...svg.querySelectorAll(".brief-diagram-shape")].map((shape) => shape.getBoundingClientRect());
+      return { direction: svg.dataset.direction, width: Math.round(s.width), room: Math.round(svg.parentElement.clientWidth),
+        inside: boxes.every((b) => b.left >= s.left - 1 && b.right <= s.right + 1 && b.top >= s.top - 1 && b.bottom <= s.bottom + 1) };
+    });
+    assert.equal(onPage.direction, onPage.room >= 735 ? "right" : "down", JSON.stringify(onPage));
+    if (!run.phone) assert.equal(onPage.direction, "right", `the desktop's page has room: ${JSON.stringify(onPage)}`);
+    assert.ok(onPage.inside, JSON.stringify(onPage));
+    await shot(flowPage.locator(".report-hero"), "report-diagram-flow");
+    await press(flowPage.locator(".report-back"));
+    await flowPage.waitFor({ state: "detached", timeout: 10_000 });
+    pass("the flowchart's report page lays it out left to right where it fits and top to bottom where it does not", onPage);
+
     const widths = await page.evaluate(() => ({ page: document.scrollingElement.scrollWidth, window: innerWidth }));
     assert.ok(widths.page <= widths.window + 1, JSON.stringify(widths));
     await page.screenshot({ path: join(output, `${run.name}-home.png`), fullPage: true });

@@ -1727,6 +1727,8 @@ p.brief-preview-frame {
 .brief-diagram-node[role="button"] {
   cursor: pointer;
   outline: none;
+  /* A tap selects the node and outlines it; the browser's own tap colour would paint over its fill. */
+  -webkit-tap-highlight-color: transparent;
 }
 .brief-diagram-node[role="button"]:hover .brief-diagram-shape {
   stroke: var(--ink);
