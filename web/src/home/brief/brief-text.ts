@@ -112,6 +112,13 @@ export const briefText = strings({
   on: "On",
   off: "Off",
   notComputed: "Can't be worked out for these values",
+  // Diagrams (YN-16 S3).
+  diagram: "Diagram",
+  diagramLoading: "Laying out the diagram…",
+  diagramFailed: "This diagram couldn't be laid out.",
+  diagramHint: "Select a node to read about it.",
+  diagramEdges: "Connections",
+  diagramEdge: (from: string, to: string, label?: string) => `${from} → ${to}${label ? ` (${label})` : ""}`,
 }, {
   change: {
     new: ["新", "自你标为已看后新增"],
@@ -202,4 +209,10 @@ export const briefText = strings({
   on: "开",
   off: "关",
   notComputed: "按这些值无法算出",
+  diagram: "图示",
+  diagramLoading: "正在排布图示…",
+  diagramFailed: "无法排布这张图示。",
+  diagramHint: "选择一个节点查看说明。",
+  diagramEdges: "连线",
+  diagramEdge: (from, to, label) => `${from} → ${to}${label ? `（${label}）` : ""}`,
 });

@@ -46,6 +46,7 @@ export type SwitchProps = Props<"Switch">;
 export type SegmentedProps = Props<"Segmented">;
 export type CalcProps = Props<"Calc">;
 export type ButtonProps = Props<"Button">;
+export type DiagramProps = Props<"Diagram">;
 
 export type BriefElement = {
   type: string;
@@ -82,6 +83,7 @@ export const BRIEF_COMPONENTS = [
   "Segmented",
   "Calc",
   "Button",
+  "Diagram",
 ] as const satisfies readonly BriefComponent[];
 export const CHART_TYPES = new Set(["LineChart", "BarChart", "ScatterChart"]);
 

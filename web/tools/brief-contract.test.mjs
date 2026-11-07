@@ -60,9 +60,10 @@ const everyComponent = {
     elements: {
       body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources", "desk", "inputs"] },
       // YN-16: inputs, and a block they show only for some values.
-      inputs: { type: "Group", props: { title: "Try it" }, children: ["guests", "vegan", "view", "hint", "amounts", "reset"] },
+      inputs: { type: "Group", props: { title: "Try it" }, children: ["guests", "vegan", "view", "hint", "amounts", "reset", "flow"] },
       amounts: { type: "Calc", props: { items: [{ id: "flour", label: "Flour", expr: "250 * guests / 4", unit: "g", digits: 0 }, { id: "oil", label: "Oil", expr: "flour / 10", when: "vegan" }] } },
       reset: { type: "Button", props: { label: "Reset" }, on: { press: { action: "setState", params: { statePath: "/guests", value: 4 } } } },
+      flow: { type: "Diagram", props: { select: "step", nodes: [{ id: "mix", label: "Mix" }, { id: "bake", label: "Bake", detail: "220°C, 12 minutes" }], edges: [{ from: "mix", to: "bake" }] } },
       guests: { type: "NumberInput", props: { name: "guests", label: "Guests", value: 4, min: 1, max: 12, step: 1, unit: "people", control: "both", detail: "Scales every amount" } },
       vegan: { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } },
       view: { type: "Segmented", props: { name: "view", label: "View", value: 2, options: [{ value: 1, label: "One" }, { value: 2, label: "Two" }] } },
@@ -967,7 +968,7 @@ test("YN-16 a summary may name a Group of inputs as its visual, the card's own f
   ]) {
     const found = first(used(group(children)));
     assert.deepEqual([found.code, found.path, found.guide], ["summary", "body.elements.body.props.summary.visual", "brief_guide interactive"], why);
-    assert.match(found.reason, /summary\.visual "box" is a Group, which is a figure only as a Group of inputs: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Markdown, Metrics, at least one an input/);
+    assert.match(found.reason, /summary\.visual "box" is a Group, which is a figure only as a Group of inputs: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Diagram, Markdown, Metrics, at least one an input/);
   }
   const seven = used(group(["guests", "vegan", "note", "m"]));
   Object.assign(seven.body.elements, Object.fromEntries(items(3, (i) => [`x${i}`, { type: "Markdown", props: { text: `${i}` } }])));
@@ -988,10 +989,9 @@ test("YN-16 the guide's interactive part states what the checks check", () => {
   assert.match(part, /only a block inside a Group has one, as the root's own blocks are always shown/);
   assert.match(part, /eq or neq a value of the variable's kind \(for a Segmented, one of its options' values\), or gt, gte, lt or lte a number/);
   assert.match(part, /at most 8 conditions and 3 levels\. Nothing else is read: no \$item, \$index, \$cond, \$bindState or \$computed/);
-  assert.match(part, /name a Group of inputs as the summary's visual: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Markdown, Metrics, at least one an input/);
+  assert.match(part, /name a Group of inputs as the summary's visual: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Diagram, Markdown, Metrics, at least one an input/);
   assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.interactive)));
   assert.match(briefGuide("content"), /\{type, props, children\?, visible\?\} \(visible: see interactive\)/);
-  assert.match(briefGuide("content"), /^- NumberInput, Switch, Segmented, Calc, Button: see interactive\.$/m);
   assert.match(briefGuide("content"), /or a Group of inputs the reader sets on the card, see interactive\)/);
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_guide, /research, interactive, attachments/);
   assert.equal(BRIEF_LIMITS.variables, 16);
@@ -1116,6 +1116,78 @@ test("YN-16 S2 the guide gives the formula language, the functions and the Butto
   assert.match(part, /when may also use the item's own/);
   assert.match(part, /on: \{"press": action or a list of 1-4\}, each \{"action": "setState", "params": \{"statePath": "\/<name>", "value": v\}\}.*Nothing else runs from a Button, and no other block takes on\./);
   assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.calculator)));
-  assert.match(briefGuide("content"), /visual one figure \(a chart, Metrics, Calc, Table/);
+  assert.match(briefGuide("content"), /visual one figure \(a chart, Metrics, Calc, Diagram, Table/);
   assert.equal(BRIEF_LIMITS.formulas, 48);
+});
+
+// YN-16 S3: a Diagram's nodes and edges, and the variable its select names.
+const diagram = (props = {}) => ({ type: "Diagram", props: {
+  nodes: [{ id: "frame", label: "Frame" }, { id: "chain", label: "Chain", detail: "Moves the wheel." }, { id: "gear", label: "Rear gears", shape: "diamond", tone: "accent" }],
+  edges: [{ from: "frame", to: "chain" }, { from: "chain", to: "gear", label: "drives", style: "dashed" }, { from: "gear", to: "chain" }],
+  ...props,
+} });
+
+test("YN-16 S3 a Diagram's edges join two different nodes it has, once each way", () => {
+  assert.ok(checkBriefSection(section("Diagram", diagram().props)));
+  assert.ok(checkBriefSection(BRIEF_EXAMPLES.flowchart));
+  const edges = (list) => problems(section("Diagram", diagram({ edges: list }).props))[0];
+  for (const [list, code, path, reason] of [
+    [[{ from: "frame", to: "wheel" }], "invalid_field", "body.elements.it.props.edges.0", /edge 1 joins "wheel", which no node of the Diagram has/],
+    [[{ from: "frame", to: "frame" }], "invalid_field", "body.elements.it.props.edges.0", /goes from "frame" to itself/],
+    [[{ from: "frame", to: "chain" }, { from: "frame", to: "chain", label: "again" }], "duplicate_id", "body.elements.it.props.edges.1", /two edges from "frame" to "chain"/],
+  ]) {
+    const found = edges(list);
+    assert.deepEqual([found.code, found.path, found.guide], [code, path, "brief_guide interactive"], JSON.stringify(list));
+    assert.match(found.reason, reason);
+  }
+  const twice = first(section("Diagram", diagram({ nodes: [{ id: "a", label: "A" }, { id: "a", label: "B" }], edges: [] }).props));
+  assert.equal(twice.code, "duplicate_id");
+  assert.equal(first(section("Diagram", diagram({ nodes: items(41, (i) => ({ id: `n${i}`, label: `N${i}` })), edges: [] }).props)).code, "too_many");
+  assert.equal(first(section("Diagram", diagram({ edges: items(61, () => ({ from: "frame", to: "chain" })) }).props)).code, "too_many");
+  assert.equal(first(section("Diagram", diagram({ nodes: [{ id: "a", label: "x".repeat(61) }], edges: [] }).props)).code, "too_long");
+  assert.equal(first(section("Diagram", diagram({ direction: "up" }).props)).code, "invalid_field");
+});
+
+test("YN-16 S3 select names a variable of the Diagram's own, or a Segmented's that names every node", () => {
+  // Its own: visible and a Button read and set it, "" being nothing selected.
+  const own = inGroup({
+    parts: diagram({ select: "part" }),
+    about: shown({ $state: "/part", eq: "chain" }),
+    none: shown({ $state: "/part", eq: "" }),
+    reset: press({ press: setState("/part", "") }),
+  });
+  assert.ok(checkBriefSection(own));
+  assert.match(first(inGroup({ parts: diagram({ select: "part" }), about: shown({ $state: "/part", eq: "wheel" }) })).reason, /"wheel" is none of its options' values: "", "frame", "chain", "gear"/);
+  // A Segmented's: the segments and the nodes select together.
+  const segments = (values) => ({ type: "Segmented", props: { name: "part", value: values[0], options: values.map((value) => ({ value, label: value })) } });
+  assert.ok(checkBriefSection(inGroup({ pick: segments(["frame", "chain", "gear"]), parts: diagram({ select: "part" }) })));
+  const short = first(inGroup({ pick: segments(["frame", "chain"]), parts: diagram({ select: "part" }) }));
+  assert.deepEqual([short.code, short.path], ["invalid_field", "body.elements.parts.props.select"]);
+  assert.match(short.reason, /whose options do not name "gear"/);
+  const numbers = first(inGroup({ guests, parts: diagram({ select: "guests" }) }));
+  assert.match(numbers.reason, /selects into "\/guests", a number variable/);
+  assert.equal(first(inGroup({ parts: diagram({ select: "Part" }) })).path, "body.elements.parts.props.select");
+  // It counts among the section's 16 variables.
+  const many = Object.fromEntries(items(16, (i) => [`v${i}`, withProps(vegan, { name: `v${i}` })]));
+  assert.match(first(inGroup({ ...many, parts: diagram({ select: "part" }) })).reason, /inputs and selects declare 17 variables/);
+});
+
+test("YN-16 S3 a Diagram may be a summary's visual and part of a Group of inputs; the guide says how it is laid out", () => {
+  const body = (visual) => ({ key: "demo", kind: "report", title: "Demo", body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual, size: "large" } }, children: ["lead", "flow", "box"] },
+    lead: { type: "Markdown", props: { text: "How it goes." } },
+    flow: diagram({ select: "step" }),
+    box: { type: "Group", props: {}, children: ["view", "flow2"] },
+    view, flow2: diagram(),
+  } } });
+  assert.ok(checkBriefSection(body("flow")));
+  assert.ok(checkBriefSection(body("box")));
+  const part = briefGuide("interactive");
+  assert.ok(part.includes("- Diagram {"));
+  assert.match(part, /you give nodes and edges only; Yuzuno lays them out \(top to bottom, or left to right with direction right, turned top to bottom where the window is too narrow\)/);
+  assert.match(part, /A node's shape diamond is a decision, round a start or an end/);
+  assert.match(part, /At most 40 nodes and 60 edges/);
+  assert.match(part, /select names a variable that then holds the selected node's id \(\"\" while none is\)/);
+  assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.flowchart)));
+  assert.match(briefGuide("content"), /^- NumberInput, Switch, Segmented, Calc, Button, Diagram: see interactive\.$/m);
 });
