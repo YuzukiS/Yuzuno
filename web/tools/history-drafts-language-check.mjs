@@ -38,6 +38,10 @@ const part = (rows, bytes) => ({ rows, bytes });
 const parts = { items: part(40, 3 * MiB), payloads: part(2, 12 * MiB), turns: part(3, 6144), metadata: part(1, 2048), previews: part(2, 8192) };
 const history = { format: 1, readAt: "2026-10-23T08:00:00+00:00", available: true, heldAgents: 1,
   agents: [{ agentId: "a", name: "Mori", unwrittenChanges: true, stored: true, layout: 1, ...parts }], total: parts };
+// Data & storage shares History's page (YN-8 S1): a synthetic overview, so
+// that page draws rather than falling into the app's recovery page on `{}`.
+const storage = { format: 1, readAt: "2026-10-23T08:00:00+00:00", dataDir: "/fixture/data", entries: [], unreadable: null,
+  database: { pageSize: null, pages: null, freePages: null }, jobs: { total: null, unfinished: null }, native: [], notInBackup: [] };
 // A synthetic draft saved for this site, with one pasted text.
 // Saved under the Workspace and the Agent it was written in (T-195); this
 // file's /api/workspace says "ws-history-drafts-language".
@@ -89,6 +93,7 @@ await context.route("**/*", async (route) => {
     "/api/home": home, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
     "/api/jobs": noJobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
     "/api/diagnostics/memory/history": history,
+    "/api/storage": storage,
   }[path];
   if (json) return route.fulfill({ json });
   if (path.startsWith("/api/")) return route.fulfill({ json: {} });
