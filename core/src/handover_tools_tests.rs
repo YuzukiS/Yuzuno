@@ -42,7 +42,7 @@ async fn route(ws: &Arc<Workspace>, method: &str, path: &str, body: Option<Value
 }
 
 fn write(request: &str, expected: i64, markdown: &str) -> Value {
-    json!({"requestId":request,"expectedVersion":expected,"markdown":markdown,"reason":"Say how to test"})
+    json!({"requestId":request,"expectedVersion":expected,"markdown":markdown,"note":"Say how to test"})
 }
 
 fn error_of(result: Result<Value>) -> String {
@@ -62,25 +62,26 @@ fn mail_to(store: &Store, agent: &str) -> Vec<String> {
     query.query_map([agent], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
 }
 
-/// YN-2 S3: a lead of the Project writes the handover at once: a new version
-/// with its name and reason, no approval, nothing on Home. Every member reads
-/// it, and says whether it may write it.
+/// YN-2 S3: a lead of the Project writes the handover at once, with its name
+/// and an optional note: no approval, nothing on Home, no history. Every
+/// member reads it with who changed it last, and whether it may write it.
 #[tokio::test]
-async fn a_lead_writes_the_handover_at_once_with_its_name_and_reason() {
+async fn a_lead_writes_the_handover_at_once_with_its_name_and_note() {
     let (_dir, ws, p) = fixture();
     let mut events = ws.changes.subscribe(None);
     let written = ws.collaboration_call(Some("lead"), "handover_update", write("first", 1, "# Lab\nBuild with make, then test."))
         .await.unwrap_or_else(|e| panic!("a lead writes the handover at once: {e:#}"));
-    assert_eq!((written["written"]["version"].clone(), written["written"]["writtenBy"].clone(), written["written"]["reason"].clone()),
+    assert_eq!((written["version"].clone(), written["lastModified"]["by"].clone(), written["lastModified"]["note"].clone()),
         (json!(2), json!({"id":"lead","name":"Agent lead"}), json!("Say how to test")), "{written}");
-    assert_eq!(written["written"]["approvedBy"], Value::Null, "no one approves it");
     let announced: Value = serde_json::from_str(&events.try_next().expect("the write is announced").data).unwrap();
     assert_eq!((announced["handover"].clone(), announced["projectId"].clone()), (json!(true), json!(p)));
 
     let read = ws.collaboration_call(Some("exec"), "handover_get", json!({})).await.unwrap();
     assert_eq!((read["version"].clone(), read["markdown"].clone()), (json!(2), json!("# Lab\nBuild with make, then test.")),
         "an executor reads the new version");
-    assert_eq!(read["history"][0]["writtenBy"], json!({"id":"lead","name":"Agent lead"}));
+    assert_eq!((read["lastModified"]["by"]["name"].clone(), read["lastModified"]["note"].clone()), (json!("Agent lead"), json!("Say how to test")),
+        "who changed it last, and the note");
+    assert!(read.get("history").is_none(), "no history is listed: {read}");
     assert_eq!(read["canWrite"], false, "an executor reads only");
     assert_eq!(ws.collaboration_call(Some("member"), "handover_get", json!({})).await.unwrap()["canWrite"], false);
     assert_eq!(ws.collaboration_call(Some("lead2"), "handover_get", json!({})).await.unwrap()["canWrite"], true, "any lead of the Project writes it");
@@ -89,7 +90,7 @@ async fn a_lead_writes_the_handover_at_once_with_its_name_and_reason() {
     assert!(home["projects"].as_array().unwrap().iter().all(|panel| panel.get("handoverProposal").is_none()), "no proposal card");
     // The user sees it in the Project's settings, and writes after it.
     let saved = ws.store.save_handover(&p, 2, "# Lab\nThe user's.", Some("Mine")).unwrap();
-    assert_eq!((saved["version"].clone(), saved["history"][1]["writtenBy"]["id"].clone()), (json!(3), json!("lead")));
+    assert_eq!((saved["version"].clone(), saved["lastModified"]["by"]["id"].clone()), (json!(3), json!("user")));
 }
 
 /// YN-2 S3: a retry with the same requestId and payload answers the same
@@ -100,7 +101,8 @@ async fn a_retry_of_a_leads_write_is_the_same_version_and_another_payload_is_ref
     let first = ws.collaboration_call(Some("lead"), "handover_update", write("same", 1, "# Lab\nOne.")).await
         .unwrap_or_else(|e| panic!("a lead writes the handover at once: {e:#}"));
     let again = ws.collaboration_call(Some("lead"), "handover_update", write("same", 1, "# Lab\nOne.")).await.unwrap();
-    assert_eq!(again["written"], first["written"], "a retry gets the same version");
+    assert_eq!((again["version"].clone(), again["lastModified"].clone()), (first["version"].clone(), first["lastModified"].clone()),
+        "a retry gets the same version");
     let refused = error_of(ws.collaboration_call(Some("lead"), "handover_update", write("same", 2, "# Lab\nTwo.")).await);
     assert!(refused.starts_with("idempotency_conflict:"), "{refused}");
     let versions: i64 = ws.store.db.read().unwrap()
@@ -108,22 +110,32 @@ async fn a_retry_of_a_leads_write_is_the_same_version_and_another_payload_is_ref
     assert_eq!(versions, 2, "the first save and the lead's one write");
     // Another lead's write under the same requestId is its own.
     let other = ws.collaboration_call(Some("lead2"), "handover_update", write("same", 2, "# Lab\nTwo.")).await.unwrap();
-    assert_eq!(other["written"]["version"], 3);
+    assert_eq!(other["version"], 3);
+    // `reason`, the note's older name, is still taken; with no note at all too.
+    let older = ws.collaboration_call(Some("lead"), "handover_update",
+        json!({"requestId":"older","expectedVersion":3,"markdown":"# Lab\nThree.","reason":"As before"})).await.unwrap();
+    assert_eq!(older["lastModified"]["note"], "As before");
+    let bare = ws.collaboration_call(Some("lead"), "handover_update",
+        json!({"requestId":"bare","expectedVersion":4,"markdown":"# Lab\nFour."})).await.unwrap();
+    assert_eq!((bare["version"].clone(), bare["lastModified"]["note"].clone()), (json!(5), Value::Null), "a note is optional");
 }
 
 /// YN-2 S3: only a lead of the Project writes it, against the version it
-/// read, with a reason; an executor, another member, the user's tool call
-/// and an archived Project's are refused before anything is written.
+/// read, with a note of at most 200 characters; an executor, another member,
+/// the user's tool call and an archived Project's are refused before
+/// anything is written.
 #[tokio::test]
 async fn only_a_lead_writes_the_handover_and_every_member_reads_it() {
     let (_dir, ws, p) = fixture();
-    let without_reason = json!({"requestId":"r","expectedVersion":1,"markdown":"# Lab"});
+    let long_note = json!({"requestId":"r","expectedVersion":1,"markdown":"# Lab","note":"n".repeat(201)});
+    let both = json!({"requestId":"b","expectedVersion":1,"markdown":"# Lab","note":"One","reason":"Another"});
     let cases = [
         (Some("member"), write("m", 1, "# Member"), "not_lead: only a lead of this Project writes its handover"),
         (Some("exec"), write("e", 1, "# Executor"), "not_lead: only a lead of this Project writes its handover"),
         (Some("outsider"), write("o", 1, "# Outsider"), "not_member: you are in no Project"),
         (None, write("u", 1, "# User"), "agent_only: handover_update is for a Project's leads"),
-        (Some("lead"), without_reason, "invalid_input: reason is required"),
+        (Some("lead"), long_note, "A note is at most 200 characters"),
+        (Some("lead"), both, "invalid_input: give note, or reason, its older name; not both"),
         (Some("lead"), write("stale", 0, "# Lab"), "version_conflict: this Project's handover is at version 1, not 0"),
     ];
     for (actor, input, says) in cases {
@@ -138,7 +150,7 @@ async fn only_a_lead_writes_the_handover_and_every_member_reads_it() {
     let archived = error_of(ws.collaboration_call(Some("lead"), "handover_update", write("a", 1, "# Lab")).await);
     assert!(!archived.starts_with("accepted"), "an archived Project's handover doesn't change: {archived}");
     assert_eq!(ws.collaboration_call(Some("lead"), "handover_get", json!({})).await.unwrap()["canWrite"], false, "nor may it be written");
-    assert_eq!(ws.store.handover(&p, None).unwrap()["version"], 1, "nothing was written");
+    assert_eq!(ws.store.handover(&p).unwrap()["version"], 1, "nothing was written");
 }
 
 /// YN-2 S3: handover_propose, from a client that still lists it, is refused
@@ -187,7 +199,7 @@ fn a_waiting_proposal_is_superseded_at_open_and_its_lead_is_mailed_its_text_once
     assert_eq!(state("closed").0, "superseded");
     let mail = mail_to(&store, "lead");
     assert_eq!(mail.len(), 1, "its lead is told once: {mail:?}");
-    assert!(mail[0].contains("was not applied") && mail[0].contains("handover_update") && mail[0].contains("(it is at version 1)")
+    assert!(mail[0].contains("was not applied") && mail[0].contains("handover_update")
         && mail[0].contains("# Lab\nProposed by lead."), "{}", mail[0]);
     assert!(mail_to(&store, "gone").is_empty(), "a closed lead gets no mail");
     drop(store);
@@ -225,7 +237,7 @@ async fn through_mcp_a_lead_writes_the_handover_and_a_member_is_refused() {
     assert_eq!(refused.is_error, Some(true));
     assert!(refused.structured_content.unwrap()["error"].as_str().unwrap().starts_with("not_lead:"), "a member is refused over MCP");
     let written = lead.call_tool(call("handover_update", write("l", 1, "# Lab\nNew."))).await.unwrap().structured_content.unwrap();
-    assert_eq!(written["written"]["version"], 2, "{written}");
+    assert_eq!(written["version"], 2, "{written}");
     let _ = lead.cancel().await;
     let _ = member.cancel().await;
     server.abort();

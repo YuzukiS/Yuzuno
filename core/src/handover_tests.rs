@@ -19,36 +19,40 @@ fn refused(answer: &Value, error: &str) -> bool {
     answer["error"].as_str().is_some_and(|e| e.starts_with(error))
 }
 
-/// T-34 S3a: the user keeps a Project's handover document through its
-/// routes. Each save is a new version, checked against the version read,
-/// kept with why; a past version stays readable. An archived Project's
-/// document doesn't change; a deleted Project's goes with it.
+/// T-34 S3a, YN-2 S3: the user keeps a Project's handover document through
+/// its routes. Each save is checked against the revision read, with an
+/// optional note (`reason` is its older name); a read says who changed it
+/// last, and lists no history. An archived Project's document doesn't
+/// change; a deleted Project's goes with it.
 #[tokio::test]
-async fn a_handover_document_is_saved_as_versions_against_the_version_read() {
+async fn a_handover_document_is_saved_against_the_revision_read_and_says_who_changed_it_last() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
     let p = ws.store.create_project("Lab", BTreeMap::new()).unwrap().id;
     let path = format!("/api/projects/{p}/handover");
     let (status, empty) = call(&ws, "GET", &path, None).await;
-    assert_eq!((status, empty["version"].clone(), empty["markdown"].clone()), (StatusCode::OK, json!(0), json!("")));
+    assert_eq!((status, empty["version"].clone(), empty["markdown"].clone(), empty["lastModified"].clone()),
+        (StatusCode::OK, json!(0), json!(""), Value::Null));
     assert_eq!(current_in(&ws.store.db.read().unwrap(), &p).unwrap(), None, "none yet");
 
     let mut events = ws.changes.subscribe(None);
-    let (status, first) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":0,"markdown":"# Lab\nBuild with make.","reason":"First notes"}))).await;
+    let (status, first) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":0,"markdown":"# Lab\nBuild with make.","note":"First notes"}))).await;
     assert_eq!((status, first["version"].clone()), (StatusCode::OK, json!(1)), "{first}");
+    assert_eq!((first["lastModified"]["by"].clone(), first["lastModified"]["note"].clone()),
+        (json!({"id":"user","name":"You"}), json!("First notes")), "who changed it last, with the note");
     let announced: Value = serde_json::from_str(&events.try_next().expect("a save is announced").data).unwrap();
     assert_eq!((announced["handover"].clone(), announced["projectId"].clone()), (json!(true), json!(p)));
     let (_, stale) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":0,"markdown":"Overwritten"}))).await;
-    assert!(refused(&stale, "version_conflict: this Project's handover changed"), "a save against a stale version is refused: {stale}");
-    let (_, second) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":1,"markdown":"# Lab\nBuild with make; test with make check."}))).await;
-    assert_eq!(second["version"], 2);
+    assert!(refused(&stale, "version_conflict: this Project's handover changed"), "a save against a stale revision is refused: {stale}");
+    let (_, second) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":1,"markdown":"# Lab\nBuild with make; test with make check.","reason":"From an older page"}))).await;
+    assert_eq!((second["version"].clone(), second["lastModified"]["note"].clone()), (json!(2), json!("From an older page")),
+        "reason is still taken as the note: {second}");
     assert_eq!(second["markdown"], "# Lab\nBuild with make; test with make check.");
-    let history: Vec<(Value, Value, Value)> = second["history"].as_array().unwrap().iter()
-        .map(|v| (v["version"].clone(), v["writtenBy"]["id"].clone(), v["reason"].clone())).collect();
-    assert_eq!(history, [(json!(2), json!("user"), Value::Null), (json!(1), json!("user"), json!("First notes"))], "each version is kept with why");
-    assert!(second["history"][0].get("markdown").is_none(), "the list holds no texts");
-    let (_, past) = call(&ws, "GET", &format!("{path}?version=1"), None).await;
-    assert_eq!(past["past"]["markdown"], "# Lab\nBuild with make.", "a past version stays readable");
+    assert!(second.get("history").is_none(), "no history is listed: {second}");
+    let (_, read) = call(&ws, "GET", &format!("{path}?version=1"), None).await;
+    assert_eq!(read["markdown"], "# Lab\nBuild with make; test with make check.", "no past revision is read: the current document is");
+    let (_, long) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":2,"markdown":"# Lab","note":"n".repeat(201)}))).await;
+    assert!(refused(&long, "A note is at most 200 characters"), "{long}");
     assert_eq!(current_in(&ws.store.db.read().unwrap(), &p).unwrap(), Some((2, "# Lab\nBuild with make; test with make check.".into())));
 
     let (_, large) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":2,"markdown":"x".repeat(MAX_BYTES + 1)}))).await;
