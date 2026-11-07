@@ -93,10 +93,11 @@ const TEXT = {
   },
 };
 const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture/app" }, createdAt: "", updatedAt: "" }];
-const home = { generatedAt: ago(0), order: ["p1"],
+// Read fresh for each run: its waits are minutes old when each run starts.
+const home = () => ({ generatedAt: ago(0), order: ["p1"],
   needsYou: [{ kind: "approval", projectId: "p1", agentId: "yn21", agentName: "YN-21 · Design first", requestId: "q1", title: "Approve the design note", since: ago(12.5) }],
   projects: [{ project: { id: "p1", name: "Yuzuno" }, agents: { working: 2, idle: 4, waiting: 1, error: 0, offline: 1, total: 8 },
-    errors: [], pending: [], jobs: [], unseen: 0, missing: [], brief: { version: 1, history: [], sections: [] } }] };
+    errors: [], pending: [], jobs: [], unseen: 0, missing: [], brief: { version: 1, history: [], sections: [] } }] });
 const live = { executors: {
   yn24: { pr: { number: 681, url: "https://github.com/owner/repo/pull/681", state: "open", headSha: "a".repeat(40), ci: "success", reviews: { approved: 0, changesRequested: false, running: false } } },
   yn26: { pr: { number: 688, url: "https://github.com/owner/repo/pull/688", state: "open", headSha: "b".repeat(40), ci: "success", reviews: { approved: 1, changesRequested: false, running: false } } },
@@ -128,7 +129,7 @@ async function route(route) {
   }
   const json = {
     "/api/workspace": { workspace: { id: "ws-agent-island" }, agents, projects, runtime: { connected: true }, defaultCwd: "/fixture" },
-    "/api/home": home, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
+    "/api/home": home(), "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
     "/api/jobs": noJobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
     "/api/executors/live": live,
   }[path];
