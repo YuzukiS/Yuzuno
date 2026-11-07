@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowUpRight, Folder, GitFork, LoaderCircle, RefreshCw } from "lucide-react";
+import { ArrowUpRight, Folder, GitFork, LoaderCircle } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { Modal } from "./components";
 import { strings, useLanguage } from "./i18n";
@@ -73,7 +73,9 @@ const text = strings({
   name: "New agent name",
   nameTooLong: `The name is too long: at most ${NAME_BYTES} bytes, about 33 Chinese characters.`,
   note: "The new agent works in this same folder with its own OpenCode session; this agent and its session are not changed and stay open. Files are not restored: the new agent sees the folder as it is now. Your draft and any running sub-agents are not copied, and nothing is sent.",
-  uncertain: "OpenCode has not confirmed this fork yet. It is never asked again; this agent can go on meanwhile. ",
+  login: "No login is copied: unless its provider key comes from OpenCode’s config or environment, sign the new agent in before its first message.",
+  rewind: "Turns copied into the new agent can’t be rewound there; its own turns can.",
+  uncertain: "The new agent’s OpenCode has not confirmed it holds this fork yet. Continuing checks what it holds first and never writes it twice; this agent can go on meanwhile. ",
   pending: "This fork is not finished yet. ",
   failed: "The fork didn’t complete. ",
   completed: (name: string) => `Forked as ${name}.`,
@@ -81,7 +83,6 @@ const text = strings({
   close: "Close",
   forking: "Forking…",
   confirm: "Fork",
-  check: "Check again",
   carryOn: "Continue this fork",
   open: "Open",
 }, {
@@ -98,7 +99,9 @@ const text = strings({
   name: "新 Agent 名称",
   nameTooLong: `名称太长：最多 ${NAME_BYTES} 字节，约 33 个汉字。`,
   note: "新 Agent 在同一个文件夹工作，有自己的 OpenCode 会话；这个 Agent 和它的会话不会改变，也保持打开。文件不会被还原：新 Agent 看到的是文件夹现在的样子。草稿和运行中的子 Agent 不会复制，也不会发送任何内容。",
-  uncertain: "OpenCode 还没有确认这次分叉。不会再请求一次；这个 Agent 可以照常继续。",
+  login: "不会复制登录：除非服务商的密钥来自 OpenCode 的配置或环境变量，请在新 Agent 发第一条消息前为它登录。",
+  rewind: "复制到新 Agent 的 Turn 在那里不能回退；它自己的 Turn 可以。",
+  uncertain: "新 Agent 的 OpenCode 还没有确认收下这次分叉。继续会先核对它已有的内容，不会写第二次；这个 Agent 可以照常继续。",
   pending: "这次分叉还没有完成。",
   failed: "分叉没有完成。",
   completed: (name) => `已分叉为 ${name}。`,
@@ -106,7 +109,6 @@ const text = strings({
   close: "关闭",
   forking: "正在分叉…",
   confirm: "分叉",
-  check: "再次核对",
   carryOn: "继续这次分叉",
   open: "打开",
 });
@@ -209,7 +211,8 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
 
   // The one request: its ID kept before it is sent, and kept until Core says how it ended.
   async function fork() {
-    const going = outcome?.state === "pending";
+    // One not finished, or whose copy the new OpenCode has not confirmed, goes on with the same request (D-33).
+    const going = outcome?.state === "pending" || outcome?.state === "uncertain";
     if (running.current || (!going && (!name.trim() || nameBytes(name) > NAME_BYTES))) return;
     running.current = true; setBusy(true); setError("");
     const requestId = requests()[key] || outcome?.requestId || crypto.randomUUID();
@@ -241,22 +244,13 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
     } finally { running.current = false; if (shown.current) setBusy(false); }
   }
 
-  // Read only: what Core holds of it now.
-  async function check() {
-    if (running.current) return;
-    running.current = true; setBusy(true); setError("");
-    try { settled(await look()); } catch (e) { if (shown.current) setError(errorText(e)); }
-    finally { running.current = false; if (shown.current) setBusy(false); }
-  }
-
   const state = outcome?.state;
   const asking = state === "pending" || state === "uncertain";
   const tooLong = nameBytes(name) > NAME_BYTES;
   return <Modal open confirm onOpenChange={next => !next && !busy && onClose()} title={t.title} description={t.description}>
     <form className="session-import create-form codex-fork-dialog opencode-fork-dialog" onSubmit={event => {
       event.preventDefault();
-      if (state === "uncertain") void check();
-      else void fork();
+      void fork();
     }}>
       {busy && !preview && !outcome && <p role="status" className="remote-field-note"><LoaderCircle size={14} className="spin" /> {t.reading}</p>}
       {preview && !asking && <>
@@ -273,6 +267,7 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
         </fieldset>
         {tooLong && <p role="alert" className="remote-field-error">{t.nameTooLong}</p>}
         <p className="session-handoff-note">{t.note}</p>
+        <p className="session-handoff-note">{t.login} {t.rewind}</p>
       </>}
       {outcome && state !== "none" && state !== "completed" && <p role="alert" className="remote-field-error">
         {state === "uncertain" ? t.uncertain : state === "pending" ? t.pending : t.failed}{outcome.message}
@@ -283,9 +278,7 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
         <button type="button" className="secondary-button" disabled={busy} onClick={onClose}>{asking || state === "completed" ? t.close : t.cancel}</button>
         {state === "completed" && outcome?.agent ? (
           <button type="button" className="primary-button" onClick={() => { onForked(outcome); onClose(); }}><ArrowUpRight size={15} />{t.open}</button>
-        ) : state === "uncertain" ? (
-          <button className="primary-button" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />}{t.check}</button>
-        ) : state === "pending" ? (
+        ) : asking ? (
           <button className="primary-button" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <GitFork size={15} />}{busy ? t.forking : t.carryOn}</button>
         ) : (
           <button className="primary-button" disabled={busy || !preview || !name.trim() || tooLong}>{busy && preview ? <LoaderCircle size={15} className="spin" /> : <GitFork size={15} />}{busy && preview ? t.forking : t.confirm}</button>

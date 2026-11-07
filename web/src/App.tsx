@@ -3184,9 +3184,10 @@ export function App() {
     setSelected(fork.id);
     setAgentScope(fork.closedAt ? "closed" : "active");
     refresh();
+    // No credential crosses Agents (T-61 slice 7, D-31): the new one's OpenCode has no login of this one's.
     setNotice(fork.closedAt ? shell.forkClosed(fork.name)
-      : outcome.connected ? shell.forkContinuing(fork.name)
-      : shell.forkNotConnected(fork.name, (outcome.warnings ?? []).join(" ")));
+      : `${outcome.connected ? shell.forkContinuing(fork.name)
+        : shell.forkNotConnected(fork.name, (outcome.warnings ?? []).join(" "))} ${shell.openCodeForkLogin}`);
   }
   /**
    * Send to Agent (T-152): the menu and a drop on the rail both end here. It

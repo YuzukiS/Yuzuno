@@ -117,6 +117,9 @@ test("a fork from a completed turn previews what it keeps, forks once on confirm
     assert.match(shown, /deepseek\/deepseek-flash · high/);
     assert.match(shown, /Files are not restored/);
     assert.match(shown, /draft and any running sub-agents are not copied, and nothing is sent/);
+    // T-61 slice 7: no credential is copied (D-31), and copied turns can't be rewound there (D-32).
+    assert.match(shown, /No login is copied: unless its provider key comes from OpenCode’s config or environment, sign the new agent in before its first message/);
+    assert.match(shown, /Turns copied into the new agent can’t be rewound there; its own turns can/);
     assert.equal(page.forks().length, 0, "nothing asked before the confirm");
     page.name("Mori, the other way");
     page.button("Fork", page.dialog()).click();
@@ -133,30 +136,37 @@ test("a fork from a completed turn previews what it keeps, forks once on confirm
   } finally { page.close(); }
 });
 
-test("an unconfirmed fork is only checked again, after a reload too, and never asked anew", async () => {
-  let id;
-  const core = { calls: [], fork: (body) => { id = body.requestId; return { state: "uncertain", requestId: id, message: "fixture: no answer" }; },
-    // Nothing before it is asked; then that attempt, unconfirmed.
-    seen: (params) => id ? { state: "uncertain", requestId: params.get("requestId") ?? id, message: "still unconfirmed" } : { state: "none" } };
+// T-61 slice 7 (D-33): the new Agent's OpenCode is read before anything is written again, so going on is safe.
+test("an unconfirmed fork goes on with the same request, after a reload too, never a new one", async () => {
+  const asked = [];
+  const core = { calls: [], fork: (body) => {
+    asked.push(body.requestId);
+    return asked.length < 3 ? { state: "uncertain", requestId: body.requestId, message: "fixture: no answer" } : { ...completed, requestId: body.requestId };
+  },
+  // Nothing before it is asked; then that attempt, unconfirmed.
+  seen: (params) => asked.length ? { state: "uncertain", requestId: params.get("requestId") ?? asked[0], message: "still unconfirmed" } : { state: "none" } };
   let page = await mount(core);
   try {
     page.button("Fork", page.d.querySelector('[data-turn-id="t1"]')).click();
     await until(() => page.button("Fork", page.dialog()), "the preview offers the fork");
     page.button("Fork", page.dialog()).click();
-    await until(() => page.button("Check again", page.dialog()), "the unconfirmed fork offers only a check");
-    assert.match(page.dialog().textContent, /never asked again/);
-    assert.equal(page.saved()[key], id, "its request kept");
+    await until(() => page.button("Continue this fork", page.dialog()), "the unconfirmed fork goes on");
+    assert.match(page.dialog().textContent, /Continuing checks what it holds first and never writes it twice/);
+    assert.ok(!page.button("Check again", page.dialog()), "no check that only reads");
+    assert.equal(page.saved()[key], asked[0], "its request kept");
     const stored = page.window.localStorage.getItem(storageKey);
     page.close();
-    // A reload: the same attempt, read again; nothing previewed or asked.
+    // A reload: the same attempt, read again; nothing previewed.
     page = await mount(core, { [storageKey]: stored });
     page.button("Fork", page.d.querySelector('[data-turn-id="t1"]')).click();
-    await until(() => page.button("Check again", page.dialog()), "the same attempt is shown again");
-    page.button("Check again", page.dialog()).click();
-    await until(() => core.calls.filter((c) => c.method === "GET" && c.requestId === id).length === 2, "checked again by its request");
-    assert.equal(page.forks().length, 1, "asked once, before the reload, and never again");
+    await until(() => page.button("Continue this fork", page.dialog()), "the same attempt is shown again");
+    page.button("Continue this fork", page.dialog()).click();
+    await until(() => asked.length === 2 && page.button("Continue this fork", page.dialog()) && !page.button("Continue this fork", page.dialog()).disabled,
+      "still unconfirmed, it can go on again");
+    page.button("Continue this fork", page.dialog()).click();
+    await until(() => page.shown() === "c", "the new Agent opens");
+    assert.deepEqual(asked, [asked[0], asked[0], asked[0]], "the same request each time");
     assert.equal(core.calls.filter((c) => c.path === "/api/agents/a/opencode/fork/preview").length, 1, "previewed only before it was asked");
-    assert.ok(!page.button("Fork", page.dialog()), "no way to fork again from here");
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
