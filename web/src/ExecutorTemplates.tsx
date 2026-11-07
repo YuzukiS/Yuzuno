@@ -69,6 +69,7 @@ const text = strings({
   permission: "Permissions",
   inheritPermission: "Inherit the default for new Agents",
   opencodeNative: "OpenCode uses its own configuration’s model and permissions.",
+  opencodeOption: "OpenCode (Experimental)",
   namePattern: "Name",
   namePatternHelp: (pattern: string) => `{task} is the task’s ID, {label} this label. Empty: ${pattern}.`,
   instructions: "Instructions",
@@ -162,6 +163,7 @@ const text = strings({
   permission: "权限",
   inheritPermission: "沿用新 Agent 默认值",
   opencodeNative: "OpenCode 使用其自身配置中的模型与权限。",
+  opencodeOption: "OpenCode（实验性）",
   namePattern: "名称",
   namePatternHelp: (pattern) => `{task} 是任务 ID，{label} 是此标签。留空：${pattern}。`,
   instructions: "说明",
@@ -785,7 +787,7 @@ function TemplatePage({ d, t, language, view, locked, machines, savedMachine, ed
               onChange={e => edit({ harness: e.target.value as ExecutorHarness })}>
               <option value="codex">Codex</option>
               <option value="claude">Claude Code</option>
-              {(view.opencodeEnabled || d.harness === "opencode") && <option value="opencode">OpenCode</option>}
+              {(view.opencodeEnabled || d.harness === "opencode") && <option value="opencode">{t.opencodeOption}</option>}
             </select>
           </label>
           {d.harness === "opencode" ? <p className="settings-row-help executor-template-note">{t.opencodeNative}</p> : <>

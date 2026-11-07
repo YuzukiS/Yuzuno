@@ -402,6 +402,7 @@ test("OpenCode is offered only where this Core creates OpenCode Agents, with no 
     const options = [...field(page, "Harness").options].map((o) => o.value);
     assert.deepEqual(options, enabled ? ["codex", "claude", "opencode"] : ["codex", "claude"], String(enabled));
     if (enabled) {
+      assert.equal(field(page, "Harness").querySelector('option[value="opencode"]').textContent, "OpenCode (Experimental)", "marked experimental (YN-27)");
       await type(page, "Harness", "opencode");
       assert.equal(field(page, "Model"), null);
       assert.equal(field(page, "Permissions"), null);
@@ -409,6 +410,15 @@ test("OpenCode is offered only where this Core creates OpenCode Agents, with no 
     }
     assert.deepEqual(page.errors, []);
   }
+});
+
+test("OpenCode is marked experimental in a Chinese page's harness choice too (YN-27)", async () => {
+  const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex" }] }, true)]);
+  page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
+  page.window.renderTemplates();
+  await openTemplate(page, "A");
+  assert.equal(field(page, "Harness").querySelector('option[value="opencode"]').textContent, "OpenCode（实验性）");
+  assert.deepEqual(page.errors, []);
 });
 
 test("Executors at once (YN-2 S5): each machine's number is shown, with their sum; there is no Workspace number to save", async () => {
