@@ -7,6 +7,8 @@ use super::*;
 #[tokio::test]
 async fn a_released_executors_ask_is_its_dispatchers_to_answer_and_resolve() {
     let (_dir, ws, project) = lab();
+    // c is an executor here, so it doesn't lead the Project.
+    set_leads(&ws, &project, &["a", "b"]);
     ws.store.db.write().unwrap().execute(
         "INSERT INTO agent_roles(agent_id,kind,project_id,template_id,created_by,created_at,updated_at)
          VALUES('c','executor',?1,'reviewer','agent:a','now','now')", [&project]).unwrap();
@@ -39,6 +41,8 @@ async fn a_released_executors_ask_is_its_dispatchers_to_answer_and_resolve() {
 #[tokio::test]
 async fn a_closed_dispatcher_is_handed_nothing_and_an_open_one_both() {
     let (_dir, ws, project) = lab();
+    // b and c are executors here, so they don't lead the Project.
+    set_leads(&ws, &project, &["a"]);
     // b was dispatched by a, which stays open; c by d, closed before c's release.
     for (executor, by) in [("b", "agent:a"), ("c", "agent:d")] {
         ws.store.db.write().unwrap().execute(

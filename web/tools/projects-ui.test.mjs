@@ -846,47 +846,6 @@ test("Machines opens from the Workspace menu, reads nothing while open, and open
 });
 
 
-test("Home content editor settings save stable IDs, explicit none and compatibility per project", async () => {
-  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
-  try {
-    await fromScopeMenu(page, "Manage projects");
-    await openProject(page, "App");
-    const settings = await waitFor(() => page.document.querySelector('.home-editor-settings input'), "editor setting loads");
-    assert.equal(settings.checked, true, "unconfigured is all-members compatibility");
-    settings.click(); await pause();
-    let checks = [...page.document.querySelectorAll('.home-editor-members input')];
-    assert.equal(checks.length, 2, "only this project's open members are choices");
-    assert.ok(checks.every(box => box.checked));
-    checks[1].click(); await pause();
-    button(page, "Save content editors").click();
-    const saves = () => page.calls.filter(call => call.method === "PUT" && call.url.endsWith('/home-editors'));
-    await waitFor(() => saves().length === 1, "selected editor saved");
-    assert.deepEqual(saves()[0].body, { expectedVersion: 0, editorAgentIds: ['a'] });
-    await waitFor(() => !page.document.querySelector('.home-editor-members input').disabled
-      && !page.document.querySelector('.home-editor-actions').textContent.includes('Unsaved changes'), "save finished");
-    page.document.querySelector('.home-editor-members input').click(); await pause();
-    assert.match(page.document.querySelector('.home-editor-settings').textContent, /Members can only ask questions or request approval/);
-    button(page, "Save content editors").click();
-    await waitFor(() => saves().length === 2, "empty list saved");
-    assert.deepEqual(saves()[1].body.editorAgentIds, []);
-    await waitFor(() => !page.document.querySelector('.home-editor-members input').disabled
-      && !page.document.querySelector('.home-editor-actions').textContent.includes('Unsaved changes'), "second save finished");
-    // Another project's page, then back (YN-8: each project has its own page).
-    await backToProjects(page);
-    await openProject(page, "Research");
-    await waitFor(() => page.document.querySelector('.home-editor-mode input')?.checked === true, "different project retains compatibility");
-    await backToProjects(page);
-    await openProject(page, "App");
-    await waitFor(() => page.document.querySelector('.home-editor-mode input')?.checked === false, "saved empty list restored");
-    assert.ok([...page.document.querySelectorAll('.home-editor-members input')].every(box => !box.checked));
-    page.document.querySelector('.home-editor-mode input').click(); await pause();
-    button(page, "Save content editors").click();
-    await waitFor(() => saves().length === 3, "compatibility restored");
-    assert.equal(saves()[2].body.editorAgentIds, null);
-    assert.equal(page.errors.length, 0, page.errors.join('\n'));
-  } finally { page.close(); }
-});
-
 test("a Project's leads are the user's to set, from its open members that are not executors, and the rail marks them (T-33)", async () => {
   const page = await mount({
     storage: { "yuzuno.selected.ws-1": "a" },
@@ -916,7 +875,7 @@ test("a Project's leads are the user's to set, from its open members that are no
     const save = () => button(page, "Save leads");
     assert.equal(save().disabled, true, "nothing to save yet");
     section.querySelector("input").click(); await pause();
-    assert.match(page.document.querySelector(".project-leads").textContent, /No lead\. The Project works as before\./);
+    assert.match(page.document.querySelector(".project-leads").textContent, /No lead: every Agent here can only ask on Home\./);
     save().click();
     const saves = () => page.calls.filter(call => call.method === "PUT" && call.url.endsWith("/leads"));
     await waitFor(() => saves().length === 1, "the cleared list is saved");
@@ -937,8 +896,8 @@ test("a Project's leads are the user's to set, from its open members that are no
   } finally { page.close(); }
 });
 
-test("Home content editors follow a language change from another window, an unsaved choice kept (T-189)", async () => {
-  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+test("a Project's settings have no Home editors setting: its leads edit Home, which the Leads intro says in both languages (YN-2 S4)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, agents: { a: { kind: "lead" } }, leads: { "p-app": { version: 1, leadAgentIds: ["a"] } } });
   const language = async (value) => {
     page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: value }));
     page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
@@ -946,43 +905,18 @@ test("Home content editors follow a language change from another window, an unsa
   };
   try {
     await fromScopeMenu(page, "Manage projects");
-    await openProject(page, "App");
-    const all = await waitFor(() => page.document.querySelector(".home-editor-mode input"), "editor setting loads");
-    all.click(); await pause();
-    page.document.querySelectorAll(".home-editor-members input")[1].click(); await pause();
-    const settings = () => page.document.querySelector(".home-editor-settings");
-    const chosen = () => [...page.document.querySelectorAll(".home-editor-members input")].map((box) => box.checked);
-    const names = () => [...page.document.querySelectorAll(".home-editor-members span")].map((span) => span.textContent);
-    const english = { text: settings().textContent, chosen: chosen(), names: names() };
-    assert.match(english.text, /Home content editors.*Only selected members maintain reports and status.*Save content editors.*Unsaved changes/s);
-    assert.deepEqual(english.chosen, [true, false]);
-    const before = page.calls.length;
+    await openProject(page, "App"); // its own page (YN-8)
+    await waitFor(() => page.document.querySelector(".project-leads-members"), "leads load");
+    // A boolean, never the element: a failing assert would inspect a whole jsdom node.
+    assert.equal(Boolean(page.document.querySelector(".home-editor-settings")), false, "the Project's settings have no Home editors setting");
+    assert.deepEqual(page.calls.filter((call) => call.url.endsWith("/home-editors")), [], "nothing reads or writes the old setting");
+    const leads = () => page.document.querySelector(".project-leads").textContent;
+    assert.match(leads(), /Leads answer for this Project's tasks: they dispatch executors, edit Home and write the handover\. Other Agents can only ask\./);
+    assert.match(leads(), /An Agent you create in this Project or add to it leads it; you never have to set one, and you can remove a lead here\. Executors never lead\./);
     await language("zh-Hans");
-    assert.match(settings().textContent, /Home 内容编辑者.*所有成员，包括以后加入的成员.*只有所选成员维护报告和状态.*保存内容编辑者.*有未保存的更改/s);
-    assert.deepEqual([chosen(), names()], [english.chosen, english.names], "the unsaved choice and the Agent names as they were");
+    assert.match(leads(), /负责人为这个 Project 的任务负责：派发执行者、编辑 Home、写交接文档。其他 Agent 只能提问。/);
+    assert.match(leads(), /你在这个 Project 里新建或加入的 Agent 就是负责人；你不必设置，也可以在这里移除负责人。/);
     await language("en");
-    assert.equal(settings().textContent, english.text);
-    assert.deepEqual(chosen(), english.chosen);
-    assert.deepEqual(page.calls.slice(before).filter((call) => call.method === "PUT"), [], "changing the language saves nothing");
-    assert.equal(page.errors.length, 0, page.errors.join("\n"));
-  } finally { page.close(); }
-});
-
-test("a task executor is never offered as a Home content editor; all members means all but executors (T-36)", async () => {
-  // Hana is an executor in App, Mori a standing member.
-  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" }, agents: { b: { kind: "executor" } } });
-  try {
-    await fromScopeMenu(page, "Manage projects");
-    await openProject(page, "App");
-    const all = await waitFor(() => page.document.querySelector(".home-editor-mode input"), "editor setting loads");
-    assert.match(page.document.querySelector(".home-editor-mode").textContent, /^All members but task executors, including future members$/);
-    all.click(); await pause();
-    const names = [...page.document.querySelectorAll(".home-editor-members span")].map((span) => span.textContent);
-    assert.deepEqual(names, ["Mori"], "only the standing member can be chosen");
-    button(page, "Save content editors").click();
-    await waitFor(() => page.calls.some((call) => call.method === "PUT" && call.url.endsWith("/home-editors")), "the list is saved");
-    assert.deepEqual(page.calls.find((call) => call.method === "PUT" && call.url.endsWith("/home-editors")).body,
-      { expectedVersion: 0, editorAgentIds: ["a"] }, "turning off all members selects every member but the executor");
     assert.equal(page.errors.length, 0, page.errors.join("\n"));
   } finally { page.close(); }
 });

@@ -6,7 +6,9 @@ use crate::executor_lifecycle::tests::{role, task, task_is};
 /// executor in the same state never shows there: it is that lead's to follow.
 #[tokio::test]
 async fn needs_you_lists_the_executors_the_user_dispatched_and_never_a_leads() {
-    let (_dir, ws, _project) = lab();
+    let (_dir, ws, project) = lab();
+    // b and c are executors here, so they don't lead the Project.
+    set_leads(&ws, &project, &["a"]);
     let s = &ws.store;
     let (mine_public, mine) = task(s, "Mine to release");
     let (_, leads) = task(s, "The lead's to release");

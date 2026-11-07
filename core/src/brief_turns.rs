@@ -884,7 +884,11 @@ for line in sys.stdin:
                 "pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
             ws.store.insert(&detail).unwrap();
             ws.store.set_agent_project(id, Some(&project)).unwrap();
-            // A content editor of a live Project, as the user's default makes it.
+            // A content editor of a live Project: a lead, as the user's own Agents are (YN-2 S4).
+            let version = crate::agent_roles::get(&ws.store, &project).unwrap().version;
+            let mut leads = crate::agent_roles::get(&ws.store, &project).unwrap().lead_agent_ids;
+            leads.push(id.to_owned());
+            crate::agent_roles::save(&ws.store, &project, version, leads).unwrap();
             assert_eq!(crate::project_brief::agent_edits_brief(&ws.store, id).unwrap(), Some(project.clone()));
             let seam = ws.brief_turns.seam();
             assert_eq!(seam.requires(&ws.store, id).unwrap(), None);

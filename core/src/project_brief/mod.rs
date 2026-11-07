@@ -71,8 +71,9 @@ pub(crate) async fn attachment_file(ws: &Arc<Workspace>, project: &str, section:
 
 /// For other modules' tests (previews.rs): Agent `agent` puts section `key`
 /// with the file at `file` as its one attachment, as its brief_update would
-/// in a Turn of its own (it joins a new Project if it is in none). Returns
-/// the Project, section, name and version, and the attachment as kept.
+/// in a Turn of its own (it joins a new Project if it is in none, and leads
+/// it, since only a lead writes a report: YN-2 S4). Returns the Project,
+/// section, name and version, and the attachment as kept.
 #[cfg(test)]
 pub(crate) async fn attach_for_test(ws: &Arc<Workspace>, agent: &str, key: &str, file: &std::path::Path) -> Value {
     let own = crate::projects::agent_project(&ws.store.db.read().unwrap(), agent).unwrap();
@@ -84,6 +85,13 @@ pub(crate) async fn attach_for_test(ws: &Arc<Workspace>, agent: &str, key: &str,
             project
         }
     };
+    // The user's choice of leads, saved as the settings page saves it.
+    let leads = crate::agent_roles::get(&ws.store, &project).unwrap();
+    if !leads.lead_agent_ids.iter().any(|id| id == agent) {
+        let mut ids = leads.lead_agent_ids;
+        ids.push(agent.to_owned());
+        crate::agent_roles::save(&ws.store, &project, leads.version, ids).unwrap();
+    }
     ws.store.update(agent, "test/running", &json!({}), |d| {
         if !d.turns.iter().any(|t| t["status"] == "inProgress") {
             d.turns.push(json!({"id":"t-attach","status":"inProgress","items":[]}));
@@ -146,7 +154,7 @@ fn contract_text(value: &'static Value) -> Option<&'static str> {
 }
 
 const FALLBACK_RULES: &str = "Project Brief rules (Yuzuno). Nothing requires a Brief update each Turn: update it when something changed. \
-Only the user selects content editors. When editContent=false and writeOwnAsk=true, only your own Asks are allowed. When writeOwnAsk=false the Brief is read-only. \
+Leads edit Home; the user chooses leads. When editContent=false and writeOwnAsk=true, only your own Asks are allowed, and removing your own older sections. When writeOwnAsk=false the Brief is read-only. \
 Call brief_get, then brief_update with the expectedVersion it returned: put, resolve, remove or claim your sections. A rejected call changes nothing: fix the listed problems \
 (on version_conflict use the latest Brief attached) and call again with a new requestId. \
 Only a section's owner changes it; to add to another Agent's topic, put a sub-topic such as topic/review. \
@@ -372,7 +380,7 @@ pub(crate) fn delete_agent(db: &Connection, id: &str) -> Result<()> {
 }
 
 /// The Project whose Brief this Agent may edit: Some while it belongs to a
-/// Project that is not archived and the user chose it as a content editor.
+/// Project that is not archived and leads it (YN-2 S4: a lead edits Home).
 pub fn agent_edits_brief(store: &Store, agent_id: &str) -> Result<Option<String>> {
     let db = store.db.read()?;
     let Some(project) = crate::projects::agent_project(&db, agent_id)? else { return Ok(None) };

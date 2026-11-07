@@ -67,7 +67,16 @@ pub(super) fn lab() -> (tempfile::TempDir, Arc<Workspace>, String) {
         }
         running(&ws, id, "t1");
     }
+    // Its members lead it, as the user's own Agents do (YN-2 S4): they edit Home.
+    set_leads(&ws, &project, &["a", "b", "c"]);
     (dir, ws, project)
+}
+
+/// The user's choice of `project`'s leads (its Home editors, YN-2 S4),
+/// saved against the version it has now.
+pub(super) fn set_leads(ws: &Workspace, project: &str, ids: &[&str]) {
+    let version = crate::agent_roles::get(&ws.store, project).unwrap().version;
+    crate::agent_roles::save(&ws.store, project, version, ids.iter().map(|id| id.to_string()).collect()).unwrap();
 }
 
 fn body(text: &str) -> Value {
@@ -430,7 +439,7 @@ async fn brief_get_lists_your_own_replied_asks_until_you_resolve_them() {
     accept(&ws, "a", input("a3", 3, vec![op("resolve", "release")])).await;
     assert_eq!((you(&ws, "a")["repliedAsks"].clone(), you(&ws, "a")["openAsks"].clone()), (json!([]), json!(1)));
     // An Ask-only member reads and resolves its own the same way.
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     let only = you(&ws, "b");
     assert_eq!((only["capabilities"]["editContent"].clone(), keys(&only)), (json!(false), vec![json!("other")]));
     accept(&ws, "b", input("b2", 4, vec![op("resolve", "other")])).await;
@@ -1693,7 +1702,7 @@ async fn over_mcp_brief_update_answers_with_structured_receipts_and_rejections()
     // No Agent-facing operation changes the list; only the user HTTP route.
     assert!(!tools.iter().any(|tool| tool.name.contains("editor")));
     assert!(ws.collaboration_call(Some("a"), "home_editors_set", json!({"editorAgentIds":["a"]})).await.is_err());
-    editors::save(&ws.store, &project, 0, Some(vec![])).unwrap();
+    set_leads(&ws, &project, &[]);
     let refused = client.call_tool(update(input("m4", 1, vec![put("plan", "report")]))).await.unwrap();
     assert_eq!(refused.structured_content.unwrap()["problems"][0]["code"], "ask_only");
     let ask = client.call_tool(update(input("m5", 1, vec![put("plan/question", "ask")]))).await.unwrap();
@@ -1714,7 +1723,10 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
     let read = brief(&ws, "b");
     assert_eq!(section(&read, "plan")["owner"], json!({"agentId":"a","name":"Agent a","state":"moved"}));
     assert_eq!(section(&read, "notes")["owner"]["state"], "moved");
-    assert_eq!(home::build(&ws.store).unwrap()["projects"][0]["brief"]["sections"][0]["owner"]["state"], "moved");
+    // On Home they leave the main view: moved away, their owners lead the Project no more (YN-2 S4).
+    let home = home::build(&ws.store).unwrap();
+    let team = home["projects"][0]["brief"]["teamSections"].as_array().unwrap().clone();
+    assert_eq!(team.iter().find(|s| s["key"] == "plan").unwrap()["owner"]["state"], "moved");
     // The moved owner can no longer write there.
     let left = reject(&ws, "a", json!({"requestId":"a2","projectId":project,"expectedVersion":2,"changes":[put("plan", "report")]})).await;
     assert_eq!(codes(&left), ["not_owner"]);
@@ -1724,11 +1736,11 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
     assert!(rejected["problems"][0]["reason"].as_str().unwrap().contains("left this Project"));
     accept(&ws, "b", input("b2", 2, vec![op("claim", "plan")])).await;
     assert_eq!(section(&brief(&ws, "b"), "plan")["owner"]["agentId"], "b");
-    // Moved back after the claim: the section stays the claimer's.
-    ws.store.set_agent_project("a", Some(&project)).unwrap();
+    // Moved back by the user after the claim (it leads again): the section stays the claimer's.
+    ws.store.user_moves_agent("a", Some(&project)).unwrap();
     assert_eq!(codes(&reject(&ws, "a", input("a3", 3, vec![put("plan", "report")])).await), ["not_owner"]);
-    // Moved back before anyone claims: c owns its section again.
-    ws.store.set_agent_project("c", Some(&project)).unwrap();
+    // Moved back by the user before anyone claims: c owns its section again.
+    ws.store.user_moves_agent("c", Some(&project)).unwrap();
     assert_eq!(section(&brief(&ws, "b"), "notes")["owner"]["state"], "active");
     assert_eq!(codes(&reject(&ws, "b", input("b3", 3, vec![op("claim", "notes")])).await), ["not_orphan"]);
     accept(&ws, "c", input("c2", 3, vec![put("notes", "status")])).await;
@@ -2094,7 +2106,7 @@ async fn an_ask_only_member_edits_only_its_own_ask_by_its_stored_kind() {
     let (_dir, ws, project) = lab();
     // b wrote a status and an ask while it could edit content; then only a may.
     accept(&ws, "b", input("b1", 0, vec![put("old", "status"), put("question", "ask")])).await;
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     // Its old status is regular content: the edit is refused and nothing changes.
     assert_eq!(codes(&reject(&ws, "b", input("b2", 1, vec![edit("old", json!({"note":markdown("Still mine?")}))])).await), ["ask_only"]);
     // A batch of an allowed ask edit and a refused status edit is refused whole.
@@ -2205,7 +2217,7 @@ async fn a_report_marked_seen_is_the_same_section_when_its_owner_writes_it_again
     accept(&ws, "c", input("c1", 6, vec![put("log", "report")])).await;
     sections::mark_seen(&ws.store, &project, &[("log".into(), 1)]).unwrap();
     assert_eq!(history(&ws, "log")[0]["currentSource"], true);
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into(), "b".into()])).unwrap();
+    set_leads(&ws, &project, &["a", "b"]);
     assert_eq!(history(&ws, "log")[0]["currentSource"], false);
 }
 
@@ -2333,7 +2345,7 @@ async fn editors_get_advice_never_a_duty_and_nothing_is_resolved_or_refreshed_fo
     assert_eq!(section(&read, "decide")["ask"]["state"], "replied");
     assert_eq!(section(&read, "state")["status"], json!({"asOf":"2026-01-01T00:00:00Z","validFor":60,"stale":true}));
     assert_eq!(version(&ws, &project), before, "reading changed nothing");
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     let ask_only = brief(&ws, "b")["you"].clone();
     assert_eq!(ask_only["capabilities"]["editContent"], false);
     assert!(ask_only.get("homeHint").is_none());
@@ -2360,7 +2372,7 @@ async fn a_task_result_carries_home_advice_only_for_editors_of_its_project() {
     let none = deliver("none", Value::Null);
     assert!(none.get("homeHint").is_none() && !mail(&none).contains(outcome_hint()));
     // The user made b Ask-only: its result has no advice; a still gets it.
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     let ask_only = deliver("ask-only", json!(project));
     assert!(ask_only.get("homeHint").is_none());
     assert!(mail(&ask_only).ends_with(outcome_hint()));
@@ -2375,9 +2387,9 @@ async fn a_failed_home_hint_lookup_never_fails_a_task_result() {
     let call = |actor: &str, op: &str, input: Value| ws.store.collaboration_call(Some(actor), op, input);
     let task = call("a", "task_create", json!({"requestId":"c","title":"Measure","projectId":project})).unwrap()["task"].clone();
     let sent = call("a", "task_dispatch", json!({"requestId":"d","taskId":task["id"],"expectedVersion":task["version"],"toAgentId":"b"})).unwrap();
-    // An editor policy Core cannot read: every hint lookup for this Project fails.
+    // A Home preference Core cannot read: every editor's hint lookup fails.
     ws.store.db.write().unwrap().execute(
-        "INSERT OR REPLACE INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'not json')", [&project]).unwrap();
+        "INSERT OR REPLACE INTO workspace_meta(key,value) VALUES('home.presentation',X'00')", []).unwrap();
     let id = task["id"].as_str().unwrap();
     // home_hint takes the task's own key, as task_submit_result passes it.
     let key: String = ws.store.db.read().unwrap()
@@ -2454,7 +2466,7 @@ async fn the_users_presentation_preference_reaches_editors_until_the_default_rem
     assert_eq!(presentation::view(&file).unwrap(), saved);
     drop(file);
 
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     assert!(brief(&ws, "b")["you"].get("homePreference").is_none(), "Ask-only: no advice");
     assert_eq!(brief(&ws, "a")["you"]["homePreference"], json!(text));
 

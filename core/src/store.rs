@@ -1383,6 +1383,11 @@ impl Store {
             record_rows::insert(&tx, &detail.agent.id, &rows)?;
             if let Some(project) = project.as_deref() {
                 crate::projects::set_agent_project_in(&tx, &detail.agent.id, Some(project))?;
+                // The user's create (POST /api/agents) leads the Project it is
+                // created in (YN-2 S4); an executor's (with `then`) never does.
+                if machine_registered && then.is_none() {
+                    crate::agent_roles::user_added(&tx, &detail.agent.id, project)?;
+                }
             }
             if let Some(then) = then {
                 then(&tx)?;
