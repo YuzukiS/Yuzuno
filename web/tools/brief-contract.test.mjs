@@ -1154,7 +1154,8 @@ test("YN-16 S2 the guide gives the formula language, the functions and the Butto
   assert.match(part, /when may also use the item's own/);
   assert.match(part, /on: \{"press": action or a list of 1-4\}, each \{"action": "setState", "params": \{"statePath": "\/<name>", "value": v\}\}.*Nothing else runs from a Button, and no other block takes on\./);
   assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.calculator)));
-  assert.match(briefGuide("content"), /visual one figure \(a chart, Metrics, Calc, Diagram, Table/);
+  // Every figure the check accepts is named where the guide says what a visual may be (S4 R1 P3).
+  assert.match(briefGuide("content"), /visual one figure \(a chart, Metrics, Calc, Diagram, Figure, Steps, Timeline, Table, ResearchDesk, Attachments with one image file, or a Group of inputs/);
   assert.equal(BRIEF_LIMITS.formulas, 48);
 });
 
