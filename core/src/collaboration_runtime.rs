@@ -1222,6 +1222,7 @@ for line in sys.stdin:
         let kinds: Vec<_> = read["messages"].as_array().unwrap().iter().map(|m| m["metadata"]["kind"].clone()).collect();
         assert_eq!(kinds, [json!("session_changed"), Value::Null], "Core's notice first, though newer: {read:#}");
         assert_eq!(read["nextAfterSeq"], read["messages"][0]["seq"], "the cursor still follows the sequence");
+        finish(&ws, "native-turn");
         ws.close_agent("a").await.unwrap();
     }
 

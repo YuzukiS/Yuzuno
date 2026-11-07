@@ -29,8 +29,8 @@ fn changes_are_told_tool_by_tool_and_part_by_part() {
     assert_eq!(found.removed, ["old_tool"]);
     assert_eq!(found.changed, [("task_dispatch".to_owned(), Change {
         description: true,
-        // In the schema's order: an added parameter is told as a changed one.
-        parameters: vec!["executor".into(), "body".into()],
+        // By name: an added parameter is told as a changed one.
+        parameters: vec!["body".into(), "executor".into()],
         removed: vec!["gone".into()],
         required: false,
     })]);
@@ -63,7 +63,7 @@ fn at_most_four_tools_are_shown_within_the_cap_and_the_rest_named() {
     });
     let text = notice(&changes(&before), None).unwrap();
     assert!(text.contains("\njob_submit:\n  description: \"Submit"), "{text}");
-    assert!(text.contains("  changed parameters (definitions not shown): requestId, taskId"), "{text}");
+    assert!(text.contains("  changed parameters (definitions not shown): argv, artifacts, "), "{text}");
     assert!(!text.contains("  parameter argv:") && !text.contains("Not shown here"), "{text}");
     assert!(text.contains("\njob_get:\n  required: "), "{text}");
     let shown = text.split("(JSON):\n").nth(1).unwrap();

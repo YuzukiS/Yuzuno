@@ -158,6 +158,9 @@ async fn a_resumed_claude_session_is_told_once_what_changed_since_it_was_attache
         if ws.store.agent(id).unwrap().connection_state == "connected" { break; }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    // The start runs in the background under the Agent's gate, its record
+    // last: wait for all of it, as Core's own calls on this Agent do.
+    drop(ws.gate(id).await.lock().await);
     // Its first Turn named the session, as Claude does.
     ws.store.update(id, "test/session", &json!({}), |d| d.agent.claude_session_id = Some(SESSION.into())).unwrap();
     attached_earlier(&ws, id, None);

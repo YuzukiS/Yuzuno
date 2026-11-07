@@ -134,7 +134,7 @@ fn baseline() -> BTreeMap<String, Digests> {
 #[derive(Debug, Default, PartialEq)]
 struct Change {
     description: bool,
-    /// Added or changed parameters, in the schema's order.
+    /// Added or changed parameters, by name.
     parameters: Vec<String>,
     removed: Vec<String>,
     required: bool,
