@@ -524,6 +524,37 @@ async fn a_confirm_core_stopped_after_its_request_went_out_is_reverted_once_the_
     ws.close_agent("oc").await.unwrap();
 }
 
+/// A plan kept before T-61 slice 6 names no boundary (#727 R1): it goes
+/// back to its Turn's own message. Checked with no revert held and that
+/// message still there, it is read again, never taken as committed.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_plan_kept_with_no_boundary_goes_back_to_its_turns_message_and_is_never_taken_as_committed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let ws = lab(&root, &cwd).await;
+    let data = root.join("data");
+    let first = turn(&ws, &data, "first", json!({})).await;
+    let second = turn(&ws, &data, "second", json!({})).await;
+    // 2.x does nothing of it, and Core stops while it is out.
+    control(&data, "mode", json!({"stage": "500"})).await;
+    let key = ws.opencode_revert_preview("oc", &second).await.unwrap()["previewId"].as_str().unwrap().to_owned();
+    *STOP.lock().unwrap() = Some((key.clone(), Stop::AfterSent));
+    ws.opencode_revert_confirm("oc", &key).await.expect_err("the confirm ends where Core stopped");
+    // As a plan kept before the boundary was: none named.
+    let mut kept = ws.store.rewind_attempt("oc", Some(&key)).unwrap().unwrap();
+    kept.opencode.as_mut().unwrap().as_object_mut().unwrap().remove("boundary");
+    ws.store.save_rewind(&kept).unwrap();
+    let checked = ws.rewind_check("oc", &key).await.unwrap();
+    assert_eq!((&checked["status"], &checked["draft"]), (&json!("unchanged"), &json!("")),
+        "its message is still there, and all is as before: {checked}");
+    assert_eq!(turn_ids(&ws), vec![first, second.clone()], "no Turn leaves");
+    assert_eq!(Plan::of(&kept).unwrap().boundary, second, "its Turn's own message");
+    ws.close_agent("oc").await.unwrap();
+}
+
 /// An answer lost (the connection ended, or Core stopped while it was out)
 /// is settled by what a check reads (T-61 slice 6, R2-4): a session holding
 /// this revert, or one holding none whose Turn's message is gone (committed

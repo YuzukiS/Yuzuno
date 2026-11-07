@@ -90,8 +90,14 @@ pub(super) struct Plan {
 }
 
 impl Plan {
+    /// The attempt's plan. One kept before T-61 slice 6 names no boundary:
+    /// it goes back to its Turn's own message (#727 R1).
     fn of(attempt: &Attempt) -> Result<Self> {
-        Ok(serde_json::from_value(attempt.opencode.clone().context("The attempt keeps no plan")?)?)
+        let mut plan: Self = serde_json::from_value(attempt.opencode.clone().context("The attempt keeps no plan")?)?;
+        if plan.boundary.is_empty() {
+            plan.boundary = attempt.target.clone();
+        }
+        Ok(plan)
     }
 }
 
@@ -632,8 +638,11 @@ impl Workspace {
                     Some(c) => c.server.messages(&attempt.thread).await,
                     None => Err(anyhow!("OpenCode Agent 尚未连接")),
                 };
+                // Gone only from a whole list that lacks a boundary there is: any other answer says nothing.
+                let gone = |messages: &Value| !plan.boundary.is_empty()
+                    && messages.as_array().is_some_and(|all| !all.iter().any(|m| m["id"] == plan.boundary.as_str()));
                 match listed {
-                    Ok(messages) if !messages.as_array().is_some_and(|all| all.iter().any(|m| m["id"] == plan.boundary.as_str())) => {
+                    Ok(messages) if gone(&messages) => {
                         plan.ended = Some(crate::model::now());
                         plan.held = true;
                         plan.committed = Some("answered".into());
