@@ -1663,9 +1663,10 @@ export function App() {
     (r) => r.status === "uncertain" || (r.status === "sending" && !(sending && outgoing.some((m) =>
       m.agentId === selected && m.receipt.status === "sending" && m.receipt.input.clientMessageId === r.input.clientMessageId))),
   );
-  // The Home tab counts what Needs you lists: requests and open Asks. Unread
-  // turns stay with their conversations: Home does not list them, so its
-  // badge does not count them.
+  // The Home tab counts what Needs you lists, only what waits for the user's
+  // decision (YN-3): requests and questions, open Asks and executors the user
+  // dispatched. Turns that ended unseen stay with their
+  // conversations and the Agent list's mark: Home does not list or count them.
   const totalPending = activeAgents.reduce((n, a) => n + a.pendingCount, 0);
   const [openAsks, reportNeedsYou, needsYouItems] = useOpenAsks(workspaceId, !homeOpen && !previewMode, asksRevision);
   // This device's system notifications, where it chose them and its system
@@ -1721,11 +1722,11 @@ export function App() {
     const done = needsYou > 0 ? badge.setAppBadge?.(needsYou) : badge.clearAppBadge?.();
     done?.catch(() => {});
   }, [previewMode, needsYou]);
-  // Next needs you: Home's Needs you in Core's order, then the Turn ends not
-  // seen here (attention.ts). After an Ask, Home stays the place shown.
+  // Next needs you: Home's Needs you in Core's order (attention.ts). After an
+  // Ask, Home stays the place shown.
   const needsTargets = useMemo(
-    () => needsYouTargets(needsYouItems, activeAgents, turnSeen),
-    [needsYouItems, activeAgents, turnSeen],
+    () => needsYouTargets(needsYouItems, activeAgents),
+    [needsYouItems, activeAgents],
   );
   const lastNeedsJump = useRef<NeedsJump | null>(null);
   const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; n: number } | null>(null);
@@ -3616,7 +3617,6 @@ export function App() {
             onNavigate={openFromHome}
             onChanged={refresh}
             onNeedsYou={reportNeedsYou}
-            turnSeen={turnSeen}
             jumpTo={homeJump}
             arrival={homeArrival}
             onBackToReply={(link) => openMessageLink(link)}

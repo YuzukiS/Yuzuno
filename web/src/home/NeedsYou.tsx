@@ -1,5 +1,4 @@
-import { BadgeCheck, Bell, CircleAlert, CircleCheck, MessageCircleQuestionMark, MessagesSquare, OctagonPause, ShieldCheck } from "lucide-react";
-import type { Agent } from "../types";
+import { BadgeCheck, Bell, CircleAlert, MessageCircleQuestionMark, MessagesSquare, OctagonPause, ShieldCheck } from "lucide-react";
 import { useLanguage } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import { absolute, relative } from "./format";
@@ -16,29 +15,22 @@ export const needsYouKey = (item: NeedsYouItem) =>
           ? `executor:${item.agentId}:${item.state}`
           : `ask:${item.projectId}:${item.sectionKey}`;
 
-/** Turn ends this device hasn't shown (T-42), failed and finished. */
-export type UnseenEnds = { failed: Agent[]; finished: Agent[] };
-
 /**
  * Every approval, open question and open ask across projects, in Core's
  * order (Project Priority, then wait time). One fixed-height row: however
  * many arrive, the panels below never move. It only links; it never reorders
- * the panels. After them in the same row, the Turns that failed and then
- * those that finished since this device last showed them (T-42), each a way
- * to its conversation.
+ * the panels. Only what waits for the user's decision (YN-3): a Turn that
+ * ended and that this device has not shown, a CI run or a Job that finished,
+ * is its Agent's to follow, marked on the Agent list (unseenEnd), not here.
  */
 export function NeedsYou({
   items,
   projectName,
   onJump,
-  unseen = { failed: [], finished: [] },
-  onOpenAgent,
 }: {
   items: NeedsYouItem[];
   projectName: (id: string | null) => string;
   onJump: (item: NeedsYouItem) => void;
-  unseen?: UnseenEnds;
-  onOpenAgent?: (agentId: string) => void;
 }) {
   const time = useTimeDisplay();
   const language = useLanguage();
@@ -54,7 +46,7 @@ export function NeedsYou({
         <span className={`nav-count${items.length ? " attention" : ""}`}>{items.length}</span>
       </h2>
       <div className="home-card-body" id="home-needs-you-body" hidden={collapsed}>
-      {items.length || unseen.failed.length || unseen.finished.length ? (
+      {items.length ? (
         <ol className="home-needs-list">
           {items.map((item) => (
             <li key={needsYouKey(item)}>
@@ -86,31 +78,6 @@ export function NeedsYou({
               </button>
             </li>
           ))}
-          {(["failed", "finished"] as const).flatMap((outcome) =>
-            unseen[outcome].map((agent) => (
-              <li key={`unseen:${agent.id}`}>
-                <button
-                  type="button"
-                  className={`home-needs-item kind-unseen-${outcome}`}
-                  data-unseen-agent={agent.id}
-                  data-unseen={outcome}
-                  title={t.unseenOpen(agent.name)}
-                  onClick={() => onOpenAgent?.(agent.id)}
-                >
-                  {outcome === "failed" ? <CircleAlert size={14} /> : <CircleCheck size={14} />}
-                  <span className="home-needs-text">
-                    <span className="home-needs-source">
-                      {projectName(agent.projectId ?? null)} · {outcome === "failed" ? t.unseenFailed : t.unseenFinished}
-                    </span>
-                    <strong>{agent.name}</strong>
-                  </span>
-                  {agent.lastTurnEnd && (
-                    <span className="home-needs-since">{relative(agent.lastTurnEnd.at, language)}</span>
-                  )}
-                </button>
-              </li>
-            )),
-          )}
         </ol>
       ) : (
         <p className="home-needs-empty">{t.nothingNeedsYou}</p>

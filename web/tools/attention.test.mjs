@@ -77,7 +77,7 @@ test("waiting since takes each Agent's oldest request or question, and no Ask", 
   assert.deepEqual([...since], [["a", Date.parse("2026-11-05T00:00:01Z")]]);
 });
 
-test("next needs you goes through Home's Needs you in Core's order, each Agent once, then unseen failed and finished", () => {
+test("next needs you goes through Home's Needs you in Core's order, each Agent once; a Turn end not seen here is no place in it (YN-3)", () => {
   const agents = [
     agent("p2-agent", { pendingCount: 1 }),
     agent("p1-agent", { pendingCount: 2 }),
@@ -95,6 +95,9 @@ test("next needs you goes through Home's Needs you in Core's order, each Agent o
     { kind: "approval", projectId: "p2", agentId: "answered", requestId: "r3", since: "" },
     { kind: "approval", projectId: "p2", agentId: "gone", requestId: "r4", since: "" },
   ];
+  // Nothing seen on this device ({}, which the round once took and no longer
+  // needs): only what waits for the user's decision is in it. "done" and
+  // "broke" ended Turns this device has not shown; the Agent list marks them (YN-3).
   const targets = needsYouTargets(items, agents, {});
   assert.deepEqual(targets, [
     { kind: "agent", agentId: "p1-agent" },
@@ -102,27 +105,22 @@ test("next needs you goes through Home's Needs you in Core's order, each Agent o
     { kind: "agent", agentId: "p2-agent" },
     // Waiting, but not yet in the last read of Home.
     { kind: "agent", agentId: "late" },
-    { kind: "agent", agentId: "broke" },
-    { kind: "agent", agentId: "done" },
   ]);
   assert.deepEqual(nextTarget(targets, null), { target: targets[0], index: 0 });
   assert.deepEqual(nextTarget(targets, { kind: "agent", agentId: "p2-agent" }), { target: targets[3], index: 3 });
-  assert.deepEqual(nextTarget(targets, { kind: "agent", agentId: "done" }), { target: targets[0], index: 0 }, "it wraps");
+  assert.deepEqual(nextTarget(targets, { kind: "agent", agentId: "late" }), { target: targets[0], index: 0 }, "it wraps");
   assert.deepEqual(nextTarget(targets, { kind: "agent", agentId: "elsewhere" }), { target: targets[0], index: 0 });
   assert.equal(nextTarget([], null), null);
-  // Seen here, a Turn end is no longer a place to go; the round goes on
-  // from where the last jump was rather than starting over.
-  const seen = needsYouTargets(items, agents, { broke: 2 });
-  assert.equal(seen.length, 5);
-  const last = { target: { kind: "agent", agentId: "broke" }, index: 4 };
-  assert.deepEqual(nextTarget(seen, { kind: "agent", agentId: "broke" }, last), { target: { kind: "agent", agentId: "done" }, index: 4 });
-  assert.equal(needsYouTargets(items, agents, { done: 3, broke: 2 }).length, 4);
+  // Left out of the round, the last jump's place is kept: the round goes on
+  // from where it was rather than starting over.
+  const last = { target: { kind: "agent", agentId: "gone" }, index: 2 };
+  assert.deepEqual(nextTarget(targets, { kind: "agent", agentId: "gone" }, last), { target: targets[2], index: 2 });
 });
 
 test("an executor the user dispatched goes in next needs you as its Agent, a failed and closed one too (T-36 S3)", () => {
   const agents = [agent("done"), agent("broke", { closedAt: "2026-11-05T00:00:00Z" }), agent("other")];
   const executor = (agentId, state) => ({ kind: "executor", projectId: null, agentId, agentName: agentId, state, taskId: "T-1", title: "Work", since: "2026-11-05T00:00:00Z" });
   const items = [executor("done", "delivering"), executor("broke", "failed"), executor("gone", "failed")];
-  assert.deepEqual(needsYouTargets(items, agents, {}), [{ kind: "agent", agentId: "done" }, { kind: "agent", agentId: "broke" }],
+  assert.deepEqual(needsYouTargets(items, agents), [{ kind: "agent", agentId: "done" }, { kind: "agent", agentId: "broke" }],
     "each listed executor once, in Home's order; one no longer listed is left out");
 });

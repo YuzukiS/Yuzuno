@@ -67,15 +67,26 @@ A Job asks for CPU as one value (`cpuMillis`) or as a range (`cpuMillisMin` up t
 - `grant = clamp(free − headroom, min, max)`;
 - free is the budget less what every Job holding it has now: its current grant and its collector, or, for a Job without a grant (a Windows Job, or one reserved by an older Core), its reservation;
 - headroom is the Job's own collector, 100 mCPU;
-- the grant is the minimum while any other local Job is queued, and always with `cpuPolicy: "fixed"`;
+- the grant is the minimum while another queued local Job waits for CPU, and always with `cpuPolicy: "fixed"`;
 - a Job with one value has min = max, so its grant is that value, as before.
 
-The grant becomes the worker's `CPUQuota` (cgroup `cpu.max`), and its `CPUWeight` is its minimum / 20, so that 2000 mCPU is systemd's default of 100. The worker checks both before the command starts. The Job records the grant and its inputs: `cpuRequested`, `cpuGrantedAtStart`, `cpuGrant` (budget, held, free, headroom, queue length, maxActive, time) and `cpuCurrent`.
+**Which queued Jobs wait for CPU** (YN-6). A queued Job waits for CPU when only CPU, or nothing, keeps it from starting: it would start if its CPU need were zero.
+- One that fits and waits only for its turn counts too. Admission starts one Job per pass, so a burst of Jobs that all fit starts at their minimums but the last, as before, and the quotas stay within the budget.
+- One waiting for its RAM or swap reservation (even if it is also short of CPU), for host memory or behind a Job that is, for a GPU, for disk space, for a slot, for an exclusive Job or for its executor's release does not count. Neither does a run's stage waiting for its upstream, which is not queued yet.
+- Admission reads this in the transaction that reserves a Job, with the scan's own checks and order. A Job queued after that round's free-space reads has no verdict yet: the scan tries it on the next round, but here it counts as if its disk let it start, so one that fits holds the raises of that round. For the Job it reserves, it reads the others after that Job holds its reservation, slot and GPUs. When it reserves none, it reads them as they are, and if none waits for CPU it plans the raises in that same transaction.
+- `job_budget`'s `cpuWaiting` gives how many waited for CPU at the last pass (`count`) and since when (`since`, null with none). It is 0 with nothing queued and null before any pass.
 
-**While it runs.** On a Jobs tick with nothing queued, Core raises running elastic Jobs, the oldest start first: each takes what is still free, up to its maximum.
+The grant becomes the worker's `CPUQuota` (cgroup `cpu.max`), and its `CPUWeight` is its minimum / 20, so that 2000 mCPU is systemd's default of 100. The worker checks both before the command starts. The Job records the grant and its inputs: `cpuRequested`, `cpuGrantedAtStart`, `cpuGrant` and `cpuCurrent`. `cpuGrant` has the budget, held, free, headroom, queue length, maxActive and time, and also:
+- `cpuWaiting`: how many queued Jobs waited for CPU once this one held its reservation;
+- `rule`: `range` (the clamp decided it), `cpuWaiting` (they held it at its minimum) or `fixed`;
+- `heldBy`: the first of them, in admission order, when `rule` is `cpuWaiting`.
+
+A grant recorded without `rule` was decided by the earlier rule, under which any queued Job held it at its minimum.
+
+**While it runs.** On a Jobs tick that starts no Job and finds no queued Job waiting for CPU, Core raises running elastic Jobs, the oldest start first: each takes what is still free, up to its maximum. Jobs queued for anything else don't stop it.
 - The raise is `systemctl --user set-property --runtime <worker> CPUQuota=`, applied by systemd at once; the worker cgroup's `cpu.max`, read back, confirms it.
-- Each raise is appended to the Job's `cpuChanges`, and `cpuCurrent` follows it. A raise systemd refused is kept as `cpuRaiseRefusal` and not asked again for the same value.
-- Nothing is ever lowered: a Job queued later starts at its own minimum, so CPU quotas can add up to more than the budget. When Jobs then contend, their weights share the CPU.
+- Each raise is appended to the Job's `cpuChanges`, with the queue's length then and `cpuWaiting: 0`, and `cpuCurrent` follows it. A raise systemd refused is kept as `cpuRaiseRefusal` and not asked again for the same value.
+- Nothing is ever lowered. A Job that starts later, whether queued after the raise or waiting meanwhile for RAM, a GPU or the like, starts at its own minimum or more, so CPU quotas can add up to more than the budget until the raised Jobs end. When Jobs then contend, their weights share the CPU.
 - The reservation stays the minimum throughout. Memory is untouched (lowering it is `job_lower_memory`, unchanged).
 
 **What the command reads.** `YUZUNO_JOB_CPU_MILLIS` is the grant at its start. The file `YUZUNO_JOB_CPU_FILE` names holds the grant now, on one line in millicores: Core writes it before the launch, and again after each raise once `cpu.max` allows it. Rust (`available_parallelism`), Cargo, libtest and Ninja read the quota when a process starts, so a raise helps the next process, not one already running.

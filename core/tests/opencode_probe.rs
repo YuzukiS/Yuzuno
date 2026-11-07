@@ -8,13 +8,16 @@
 //! session's messages, inbox and events read through Core's mapping, there
 //! too. Slice 4a (Lead 5358): prompts run against a stub provider, also
 //! there. Slice 4b (Lead 5656): a login through Core's own calls, and the
-//! scrub after, against the stub provider.
+//! scrub after, against the stub provider. T-61 slice 1 (Lead 6884): the
+//! Workspace MCP through the Workspace's own send path, against Yuzuno's own
+//! Workspace MCP endpoint on loopback and the stub provider.
 #![cfg(target_os = "linux")]
 
 use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
 use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
 use yuzuno_workspace::opencode_v2::{admitted, is_v2, is_v2_request, read_messages, Cursor};
+use yuzuno_workspace::store::whole::WholeRecord;
 
 fn ended(pid: u64) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
@@ -628,4 +631,162 @@ async fn a_real_opencode_2x_is_logged_in_through_core_and_its_database_scrubbed_
     let left: i64 = rusqlite::Connection::open(&launch.database).unwrap()
         .query_row("SELECT count(*) FROM credential", [], |r| r.get(0)).unwrap();
     assert_eq!(left, 0, "no credential left");
+}
+
+/// Counts the MCP sessions OpenCode opens at the Workspace MCP endpoint: each
+/// `initialize` it sends.
+async fn count_initialize(axum::extract::State(count): axum::extract::State<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let (parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap_or_default();
+    if serde_json::from_slice::<Value>(&bytes).is_ok_and(|v| v["method"] == "initialize") {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    next.run(axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))).await
+}
+
+/// Every file below `dir` that holds `needle`.
+fn holding(dir: &Path, needle: &[u8]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => found.extend(holding(&path, needle)),
+            Ok(kind) if kind.is_file() && std::fs::read(&path).is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle)) => {
+                found.push(path);
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// A real OpenCode 2.x reaches the Workspace MCP through Core (T-61 slice 1,
+/// Lead 6884), by the Workspace's own path: reconnect and send, as the UI
+/// does, against Yuzuno's own Workspace MCP endpoint on loopback and the stub
+/// provider, with no network, no real provider and no login of the user's.
+/// Ready once OpenCode lists the server connected; a message goes, and the
+/// model is offered `yuzuno_peers_list` as a tool of its own, whose call
+/// reaches the endpoint as this Agent; the add before each message opens no
+/// session anew; once OpenCode has unloaded the idle folder, the next
+/// message adds it back and goes; and the bearer is in no file OpenCode
+/// keeps, nor in its configuration or the work folder.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_reaches_the_workspace_mcp_through_cores_send_path() {
+    use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61agent";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let work = work.canonicalize().unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    // The work folder's own config: the stub, and a folder unloaded after 2 s
+    // without session events (2.x's default is an hour), so that the probe sees it go.
+    std::fs::write(work.join("opencode.json"), json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"},
+        "models": {"fake": {"name": "Fake", "capabilities": {"tools": true}}}}},
+        "experimental": {"location_idle_timeout": "2 seconds"}}).to_string()).unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), work.to_string_lossy().into(), "unused".into()).unwrap();
+    // Yuzuno's own Workspace MCP endpoint, as Core serves it.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let opened = Arc::new(AtomicUsize::new(0));
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port)
+        .layer(axum::middleware::from_fn_with_state(opened.clone(), count_initialize));
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":work, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let config = yuzuno_workspace::collaboration_mcp::agent_http_config(&ws, ID, &format!("http://127.0.0.1:{mcp_port}")).unwrap();
+    let bearer = config["headers"]["Authorization"].as_str().unwrap().strip_prefix("Bearer ").unwrap().to_owned();
+    let requests = || -> Vec<Value> { std::fs::read_to_string(&log).unwrap_or_default().lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap()).collect() };
+    // Each time the Workspace tool's result, holding this Agent's ID, reached the model: a request whose newest
+    // message is that result (the stub calls the tool once per turn; 2.x does not replay old tool output whole).
+    let reached = |requests: &[Value]| requests.iter().filter(|r| r["messages"].as_array().and_then(|m| m.last())
+        .is_some_and(|m| m["role"] == "tool" && m.to_string().contains(ID))).count();
+    let finished = |turn: &str| {
+        let (ws, turn) = (ws.clone(), turn.to_owned());
+        async move {
+            for _ in 0..600 {
+                let d = ws.store.detail(ID).unwrap();
+                if let Some(t) = d.turns.iter().find(|t| t["id"] == turn.as_str()).filter(|t| t["status"] != "inProgress") {
+                    return t["status"].clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 60 s");
+        }
+    };
+    let send = |client: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":"probe-61 mcp"})).unwrap());
+        async move { ws.send_message(ID, input).await }
+    };
+
+    // 1. Connected through the Workspace: ready once OpenCode lists the server connected.
+    let d = ws.reconnect(ID).await.unwrap();
+    let shown = ws.collaboration_status(ID).await.unwrap();
+    println!("probe: connected {}, Workspace MCP ready {} ({:?}); MCP sessions opened {}", d.agent.connection_state, shown.ready,
+        shown.error, opened.load(Ordering::SeqCst));
+    assert!(shown.ready, "ready once OpenCode lists it connected: {:?}", shown.error);
+    assert_eq!(opened.load(Ordering::SeqCst), 1, "one MCP session as it connected");
+
+    // 2. A message goes, and the model calls the Workspace tool as a tool of its own, as this Agent.
+    let receipt = send("p1").await.unwrap_or_else(|refused| panic!("the message was refused: {refused}"));
+    let first = receipt.turn_id.unwrap();
+    assert_eq!(finished(&first).await, "completed");
+    let seen = requests();
+    let offered: Vec<String> = seen.iter().filter(|r| r["tools"] == true).flat_map(|r| r["toolNames"].as_array().unwrap().clone())
+        .filter_map(|n| n.as_str().map(str::to_owned)).filter(|n| n.starts_with("yuzuno_") || n == "execute").collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    println!("probe: Workspace tools offered to the model {offered:?}");
+    assert!(offered.iter().any(|n| n == "yuzuno_peers_list"), "a tool of its own, not behind `execute`");
+    assert_eq!(reached(&seen), 1, "the call reached the Workspace MCP as this Agent, and its result the model");
+    assert_eq!(opened.load(Ordering::SeqCst), 1, "the add before the message opened no session anew");
+
+    // 3. OpenCode unloads the idle folder (its own log says so), and the server goes with it.
+    let agent_dir = data.join("opencode").join(ID);
+    let mut unloaded = false;
+    for _ in 0..100 {
+        if !holding(&agent_dir, b"location services evicted").is_empty() {
+            unloaded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    println!("probe: OpenCode unloaded the idle folder: {unloaded}");
+    assert!(unloaded, "OpenCode logs that it unloaded the folder within 100 s");
+
+    // 4. The next message adds it back, and goes; its first step is offered the Workspace tools already (2.x
+    // registers a server's tools a moment after it connects: Core waits for that, MCP_TOOLS_SETTLE).
+    let before = requests().len();
+    let second = send("p2").await.unwrap_or_else(|refused| panic!("refused after OpenCode unloaded the folder: {refused}"));
+    assert_eq!(finished(&second.turn_id.unwrap()).await, "completed");
+    let first_step = requests()[before..].iter().find(|r| r["tools"] == true).cloned().expect("a step of the next message");
+    assert!(first_step["toolNames"].as_array().unwrap().iter().any(|n| n == "yuzuno_peers_list"),
+        "the next message's first step is offered the Workspace tools");
+    println!("probe: after the folder came back, MCP sessions opened {}; tool results seen {}", opened.load(Ordering::SeqCst), reached(&requests()));
+    assert_eq!(opened.load(Ordering::SeqCst), 2, "added back: a new MCP session");
+    assert_eq!(reached(&requests()), 2, "and the Workspace tool reached again");
+    assert!(ws.collaboration_status(ID).await.unwrap().ready);
+
+    // 5. Its OpenCode stopped: the bearer is in nothing it keeps, nor its configuration or the work folder.
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
+    let config_home = PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").expect("the probe's private XDG_CONFIG_HOME"));
+    for place in [agent_dir.clone(), data.join("opencode").join("cache"), work.clone(), config_home] {
+        let found = holding(&place, bearer.as_bytes());
+        println!("probe: files holding the bearer below {}: {}", place.display(), found.len());
+        assert!(found.is_empty(), "the bearer is kept in {found:?}");
+    }
 }

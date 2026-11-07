@@ -102,10 +102,11 @@ const same = (a: NeedsTarget, b: NeedsTarget) =>
  * Core orders it (Project Priority, then wait, across Projects), an Agent
  * once however many of its requests and questions wait, an executor the
  * user dispatched as its Agent (T-36 S3); then an Agent
- * waiting that the last read of Home does not have yet; then the failed and
- * then the finished Turn ends this device has not seen.
+ * waiting that the last read of Home does not have yet. Only what waits for
+ * the user's decision (YN-3): a Turn that ended, finished or failed, and
+ * that this device has not shown is the Agent list's to mark (unseenEnd).
  */
-export function needsYouTargets(items: readonly NeedsYouItem[] | null, agents: readonly Agent[], seen: TurnSeen): NeedsTarget[] {
+export function needsYouTargets(items: readonly NeedsYouItem[] | null, agents: readonly Agent[]): NeedsTarget[] {
   const targets: NeedsTarget[] = [];
   const add = (target: NeedsTarget) => {
     if (!targets.some((t) => same(t, target))) targets.push(target);
@@ -122,8 +123,6 @@ export function needsYouTargets(items: readonly NeedsYouItem[] | null, agents: r
     }
   }
   for (const agent of open) if (agent.pendingCount > 0) add({ kind: "agent", agentId: agent.id });
-  for (const outcome of ["failed", "finished"] as const)
-    for (const agent of open) if (unseenEnd(agent, seen) === outcome) add({ kind: "agent", agentId: agent.id });
   return targets;
 }
 

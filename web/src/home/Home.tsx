@@ -19,7 +19,6 @@ import { HomeWidgets, type HomeWidget } from "./HomeWidgets";
 import { HomeReturnOverview } from "./HomeReturnOverview";
 import { MachineWidget } from "./MachineWidget";
 import { NeedsYou } from "./NeedsYou";
-import { unseenEnd, type TurnSeen } from "../attention";
 import { PinNotes, PinnedSection } from "./PinnedSection";
 import { previewHome, previewProjectAgents } from "./preview-home";
 import type { HomeData, NeedsYouItem, ProjectPanel, Section } from "./types";
@@ -92,7 +91,6 @@ export function Home({
   onNavigate,
   onChanged,
   onNeedsYou,
-  turnSeen,
   jumpTo = null,
   arrival = null,
   onBackToReply,
@@ -111,8 +109,6 @@ export function Home({
   onChanged: () => void;
   /** Each read's Needs you, for the Home tab's count. */
   onNeedsYou?: (items: NeedsYouItem[]) => void;
-  /** What this device has seen of each Agent's last Turn end (T-42). */
-  turnSeen?: TurnSeen;
   /** An Ask "next needs you" goes to; another jump is another `n`. */
   jumpTo?: { projectId: string | null; sectionKey?: string; n: number } | null;
   /** "Open on Home" on a reply from Home (T-9): the section and version it
@@ -138,14 +134,6 @@ export function Home({
   // Workspace's overview (or its cards). Abort is checked before writes.
   const [reading, setReading] = useState<{ workspaceId: string; value: HomeData } | null>(null);
   const data = readOnly ? previewHome : reading?.workspaceId === workspaceId ? reading.value : null;
-  // The Turn ends this device hasn't shown (T-42): failed, then finished.
-  const unseenEnds = useMemo(() => {
-    const open = readOnly || !turnSeen ? [] : agents.filter((a) => !a.closedAt);
-    return {
-      failed: open.filter((a) => unseenEnd(a, turnSeen!) === "failed"),
-      finished: open.filter((a) => unseenEnd(a, turnSeen!) === "finished"),
-    };
-  }, [agents, turnSeen, readOnly]);
   // An Ask "next needs you" chose: shown as its own row's click shows it.
   const jumpToItem = useRef<(item: NeedsYouItem) => void>(() => {});
   const jumped = useRef(0);
@@ -836,8 +824,6 @@ export function Home({
               items={data.needsYou}
               projectName={projectName}
               onJump={jump}
-              unseen={unseenEnds}
-              onOpenAgent={(agentId) => onNavigate({ kind: "agent", agentId })}
             />
           </div>
           {/* The design preview has no workspace: its own default layout, not changed. */}

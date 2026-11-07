@@ -5,12 +5,12 @@
 //    failed and then finished Turn ends unseen here, working; their labels;
 //  - the tab title "(N) …" and the app badge N, the count Home's tab shows,
 //    an open async question among them;
-//  - Home's Needs you lists the question, then the failed and the finished
-//    Turn ends not seen;
+//  - Home's Needs you lists the question and what else waits for the user's
+//    decision, never a Turn end not seen here (YN-3);
 //  - Ctrl+J reaches the page, which takes it (defaultPrevented), and next
-//    needs you goes through Needs you in Core's order across Projects, then
-//    the unseen Turn ends, and round again; on a phone, by the rail's button;
-//  - a Turn end shown is seen on this device only (localStorage);
+//    needs you goes through Needs you in Core's order across Projects, and
+//    round again, never to a Turn end unseen; on a phone, by the rail's button;
+//  - a Turn end shown from the Agent list is seen on this device only (localStorage);
 //  - nothing is sent to Core but reads, read receipts and reading positions.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/attention-check.mjs
 import assert from "node:assert/strict";
@@ -198,7 +198,7 @@ async function check(run) {
     assert.equal(badges.at(-1), 3);
     pass("the tab title and app badge count 3, an open question among them", { title: pageTitle, badge: badges.at(-1) });
 
-    // ---- Home's Needs you: the question, then failed and finished unseen.
+    // ---- Home's Needs you: what waits for the user's decision, no Turn end unseen (YN-3).
     await openHome();
     await page.locator('[data-needs-you="question:c:t3:q1"]').waitFor({ timeout: 10_000 });
     const listed = await page.locator(".home-needs-you [data-needs-you]").evaluateAll((items) => items.map((i) => i.dataset.needsYou));
@@ -208,12 +208,12 @@ async function check(run) {
     const card = await page.locator(".home-needs-you").boundingBox();
     const boxes = await page.locator(".home-needs-you .home-needs-item").evaluateAll((items) => items.map((i) => i.getBoundingClientRect()).map((r) => ({ top: r.top, bottom: r.bottom })));
     for (const box of boxes) assert.ok(box.top >= card.y - 1 && box.bottom <= card.y + card.height + 1, `an item inside Needs you's card: ${JSON.stringify({ card, box })}`);
-    assert.deepEqual(await unseen("failed"), ["a"]);
-    assert.deepEqual(await unseen("finished"), ["b"]);
+    assert.deepEqual(await unseen("failed"), []);
+    assert.deepEqual(await unseen("finished"), []);
     await page.screenshot({ path: join(output, `${run.name}-home.png`) });
-    pass("Home's Needs you lists the question, then the failed and the finished Turn ends not seen here");
+    pass("Home's Needs you lists the question and what else waits for the user's decision, no Turn end not seen here");
 
-    // ---- Next needs you, from Home: Needs you in Core's order, then unseen.
+    // ---- Next needs you, from Home: Needs you in Core's order, and round again.
     await next();
     assert.equal(await title(), "Sora");
     if (!phone) {
@@ -224,16 +224,16 @@ async function check(run) {
     await page.locator(".home-view").waitFor({ timeout: 10_000 });
     await page.locator("#home-section-p-app-release").waitFor({ timeout: 10_000 });
     await next();
-    assert.equal(await title(), "Mori");
-    await page.waitForFunction(() => localStorage.getItem("yuzuno.turnSeen.ws-attention") === '{"a":30}', null, { timeout: 10_000 });
-    await next();
-    assert.equal(await title(), "Hana");
-    // Shown as long as reading marks it read (1.2 s), it is seen too.
-    await page.waitForFunction(() => localStorage.getItem("yuzuno.turnSeen.ws-attention") === '{"a":30,"b":20}', null, { timeout: 10_000 });
-    await next();
     assert.equal(await title(), "Sora", "and round again");
     await page.screenshot({ path: join(output, `${run.name}-conversation.png`) });
-    pass(`next needs you: Sora (Research's request and question), Mori's Ask on Home, Mori, Hana, then Sora again${phone ? ", by the rail's button" : ", by Ctrl+J, which the page took"}`);
+    pass(`next needs you: Sora (Research's request and question), Mori's Ask on Home, then Sora again${phone ? ", by the rail's button" : ", by Ctrl+J, which the page took"}`);
+
+    // ---- Shown from the Agent list as long as reading marks it read (1.2 s), a Turn end is seen on this device.
+    for (const [id, seen] of [["a", '{"a":30}'], ["b", '{"a":30,"b":20}']]) {
+      await toList();
+      await page.locator(`.agent-row[data-agent-id="${id}"] .agent-select`).click();
+      await page.waitForFunction((value) => localStorage.getItem("yuzuno.turnSeen.ws-attention") === value, seen, { timeout: 10_000 });
+    }
 
     // ---- Seen on this device: the labels say so; another device's storage is its own.
     await toList();

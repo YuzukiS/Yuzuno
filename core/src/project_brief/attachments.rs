@@ -67,6 +67,15 @@ impl Drop for Hold {
     }
 }
 
+/// Holds the snapshot file at `path` until the Hold drops, so that
+/// `collect_garbage` leaves it meanwhile: an interactive preview of it
+/// (previews.rs) serves it for its hour, cache cleared or not.
+pub(crate) fn hold(path: &Path) -> Hold {
+    let mut hold = Hold::default();
+    hold.add(path.to_owned());
+    hold
+}
+
 /// Holds every snapshot file now in the cache until the Hold drops, so that
 /// `collect_garbage` removes none of them meanwhile. A Workspace backup
 /// (T-192) takes it before copying the database, then copies the files that
