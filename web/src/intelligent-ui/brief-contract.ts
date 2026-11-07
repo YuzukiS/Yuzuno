@@ -33,6 +33,8 @@ export const BRIEF_LIMITS = {
   subtopicsPerTopic: 4,
   openAsksPerAgent: 3,
   historyDays: 30,
+  // brief_get's you.recentlyLeft lists at most this many (YN-7).
+  recentlyLeft: 20,
   snapshotFileBytes: 25 * 1024 * 1024,
   snapshotBriefBytes: 1024 * 1024 * 1024,
   // One section; checked here.
@@ -1526,10 +1528,11 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `brief_update takes changes: [...]. put creates or replaces one section you own:`,
     `- put {op:"put", ${signature(jsonSchema(sectionSchema), 1).slice(1)}`,
     `- key: topic or topic/sub; each part 1-48 of a-z, 0-9 and -, starting with a letter or digit (round-12, round-12/review). A Brief has at most ${L.topics} topics with ${L.subtopicsPerTopic} subs each.`,
-    `- kind: ask (a question for the user, see ask); report (a result the user reads and marks seen; seen reports stay in history ${L.historyDays} days); status (current state; needs status {asOf, validFor}, validFor ${L.validForMin}-${L.validForMax} seconds; greyed once asOf + validFor has passed).`,
+    `- kind: ask (a question for the user, see ask); report (a result the user reads and marks seen; a report the user marks seen at its latest version leaves brief_get's sections and your ownsKeys at once (a newer version stays, unseen) and stays in Home's history ${L.historyDays} days: put it again under its key to continue it on Home, as edit needs a live section); status (current state; needs status {asOf, validFor}, validFor ${L.validForMin}-${L.validForMax} seconds; greyed once asOf + validFor has passed).`,
     `- title: 1-${L.titleChars} characters. body: {root, elements}, see content. time: due, eta and nextUpdate, ISO 8601 with a time zone. attachments: see attachments.`,
     `edit {op:"edit", key, elements:{<id>: {type, props, children?}}, status?} replaces blocks of a section you own by id and keeps the rest as it was: the other blocks and their order, title, attachments, time and the ask's state. Each id is one the body already has, or a new block named as a child by a block you edit; the root is not edited (rearrange with put). Core checks the whole section again. status (kind status only) refreshes asOf. Day to day, edit the blocks that changed, e.g. {op:"edit", key:"overview", elements:{progress:{type:"Plan", props:{steps:[...]}}}}; put a section to create it or change its layout.`,
     `Other changes: {op:"resolve", key} resolves your ask; {op:"remove", key} removes your section (reports and status go to history); {op:"claim", key} takes an orphaned section of your Project; change it in a later brief_update, not in the one that claims it.`,
+    `brief_get's you.recentlyLeft lists your sections that left the live Brief in the last ${L.historyDays} days and are not live again, newest first, at most ${L.recentlyLeft}: {key, kind, title, version, reason, at}, reason seen (the user marked that version seen), removed or resolved; recentlyLeftMore counts the rest. An edit, resolve, remove or claim naming one of them is refused with not_found, saying why it left; put writes it again.`,
     `Only a section's owner changes it. To add to another Agent's section, put your own section under its key as topic/sub; Home shows them together with each author.`,
     `Pass expectedVersion from brief_get. On version_conflict the rejection includes latest: merge and retry with a new requestId. Nothing requires an update each turn; noChange:true is still accepted and changes nothing.`,
     `validateOnly:true pre-checks a brief_update: it runs the checks made before the write, with their problems as the update would give them (and latest), and writes nothing: no requestId kept, no version or space reserved, and it is not your update. Its answer has valid, whether the pre-check passed, and checkedAll, only whether it ran all its steps. Checking stops at the first step with problems, so false means later steps did not run and the problems listed may not be all. Checks made only on writing are outside it: sending the update checks version, Turn and permissions again against the Brief as it is then, and can still be refused, e.g. with snapshot_limit when the Brief's snapshots would exceed their total. Use it for a complex section; an ordinary edit needs no check first.`,
@@ -1648,7 +1651,8 @@ export const BRIEF_HARD_RULES = [
 export const BRIEF_TOOL_DESCRIPTIONS = {
   brief_get:
     `Read your Project's Brief: its version, the live sections (key, kind, title, owner, body, ask state, status, attachments), ` +
-    `you {agentId, ownsKeys, openAsks, repliedAsks (your asks the user answered, to act on and resolve), staleStatus, capabilities; ` +
+    `you {agentId, ownsKeys, openAsks, repliedAsks (your asks the user answered, to act on and resolve), staleStatus, ` +
+    `recentlyLeft (your sections that left lately and why: a report the user marked seen is no longer among the sections), recentlyLeftMore, capabilities; ` +
     `for a Home content editor homeHint, and homePreference once the user set one: how they like results presented, current as of this read, ` +
     `granting nothing} and the limits. ` +
     `keys: omit for every section with its body; [] for an index of the sections without bodies; [key, ...] for those sections in full. ` +
