@@ -637,7 +637,7 @@ try {
           more: one("audit").querySelector(".home-card-conditions-toggle")?.textContent ?? null,
           table: one("batches").querySelector("figcaption")?.textContent ?? null,
           tableCells: one("batches").querySelectorAll(".home-card-table tbody td").length,
-          legacy: one("setup").querySelector(".home-summary-lead")?.textContent ?? null,
+          legacy: one("setup").querySelector(".home-summary-lead")?.textContent.trim() ?? null,
           legacyBody: !!one("setup").querySelector(".brief-body"),
           // A card with no summary: its height, at the deck's minimum as the others have (YN-3).
           legacyHeights: ["setup", "dose-study"].map((key) => Math.round(one(key).getBoundingClientRect().height)),
@@ -1061,7 +1061,7 @@ try {
       full: await slot.evaluate((el) => el.classList.contains("is-full")),
       draft: await field.inputValue(),
       focused: await field.evaluate((el) => el === document.activeElement),
-      unnamed: await widget.locator(".home-summary-card.is-unnamed").count(),
+      unnamed: await widget.evaluate((el) => (el.classList.contains("is-unnamed") ? 1 : 0)),
     });
     try {
       // Its Agent drops the summary: the same widget, the user's size, the draft and the focus; it says it has none.

@@ -192,6 +192,22 @@ async function check(run) {
     result.shots.push(file);
   };
   const card = (key) => page.locator(`#home-section-p-orch-${key}`);
+  const cardShot = async (key, name = key) => {
+    const file = `${run.name}-${name}.png`;
+    await card(key).scrollIntoViewIfNeeded();
+    await card(key).screenshot({ path: join(output, file) });
+    result.shots.push(file);
+  };
+  // Where focus is, in words, for a check that it came back.
+  const focusIs = () => page.evaluate(() => {
+    const el = document.activeElement;
+    return el ? `${el.tagName.toLowerCase()}${el.className ? `.${String(el.className).trim().split(/\s+/).join(".")}` : ""}${el.getAttribute("aria-label") ? `[${el.getAttribute("aria-label")}]` : ""}` : null;
+  });
+  const focusBackOn = async (locator, what) => {
+    const handle = await locator.elementHandle();
+    await page.waitForFunction((el) => el === document.activeElement, handle, { timeout: 3000 }).catch(() => {});
+    assert.ok(await locator.evaluate((el) => el === document.activeElement), `${what}: focus is on ${await focusIs()}`);
+  };
   try {
     await page.goto(`http://${HOST}/`);
     if (run.phone) {
@@ -218,6 +234,9 @@ async function check(run) {
     const widths = await page.evaluate(() => ({ page: document.scrollingElement.scrollWidth, window: innerWidth }));
     assert.ok(widths.page <= widths.window + 1, JSON.stringify(widths));
     await shotAs("home");
+    await page.locator(".home-needs-you").screenshot({ path: join(output, `${run.name}-needs-you.png`) });
+    result.shots.push(`${run.name}-needs-you.png`);
+    for (const key of ["loss", "eval", "notes"]) await cardShot(key);
     pass("nothing wider than the window", widths);
 
     // ---- A large card's image: a click and Enter open the viewer on Home; Escape closes it; focus goes back.
@@ -233,12 +252,12 @@ async function check(run) {
     await shotAs("viewer");
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "detached", timeout: 10_000 });
-    assert.ok(await picture.evaluate((el) => el === document.activeElement), "focus back on the picture");
+    await focusBackOn(picture, "back on the picture after a click");
     await page.keyboard.press("Enter");
     await dialog.locator(".input-image-dialog img").waitFor({ timeout: 10_000 });
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "detached", timeout: 10_000 });
-    assert.ok(await picture.evaluate((el) => el === document.activeElement), "focus back after Enter too");
+    await focusBackOn(picture, "back on the picture after Enter");
     pass("the large card's image opens the viewer in place by a click and by Enter; Escape closes it, focus back");
 
     // ---- A small card's View image.
@@ -248,7 +267,8 @@ async function check(run) {
     await dialog.locator(".input-image-dialog img").waitFor({ timeout: 10_000 });
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "detached", timeout: 10_000 });
-    pass("a small card's View image opens the same viewer");
+    await focusBackOn(view, "back on View image");
+    pass("a small card's View image opens the same viewer; Escape, focus back");
 
     // ---- A card with no named summary: its first paragraph, and no more.
     assert.equal((await card("notes").locator(".home-summary-lead").innerText()).trim(),
@@ -275,9 +295,11 @@ async function check(run) {
     await tokenizer.locator(".home-fold").click();
     await tokenizer.locator(".home-ask-replied").waitFor({ timeout: 10_000 });
     assert.ok(await tokenizer.getByRole("button", { name: w.replyAgain }).isVisible());
-    await tokenizer.scrollIntoViewIfNeeded();
-    await shotAs("replied");
+    await cardShot("tokenizer", "replied-open");
     await tokenizer.locator(".home-fold").click();
+    await tokenizer.locator(".home-card-body").waitFor({ state: "hidden", timeout: 10_000 });
+    await cardShot("tokenizer", "replied-row");
+    await cardShot("draft", "replied-updated-row");
     pass("replied Asks are one line, the reply in short, Updated only after the owner's change; unfolded, Reply again", rows);
   } finally {
     await context.close();
