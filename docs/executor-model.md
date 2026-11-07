@@ -166,20 +166,21 @@ not a template's or a Project's.
   choose it. The gated runbook also has its permission: Codex **ask**,
   Claude Code **default**. A preset names no model, since Core has no model
   tiers; the template shows the preset's suggestion beside **Model**, which
-  isn't saved. **Save templates** saves the new templates like any other
-  edit. A preset is never stored as one, and no Agent saves templates or
-  presets. "Read-only" in the investigation, decision memo and design-note
-  steps is an instruction only: no permission enforces it.
+  isn't saved. Saving (the page's save bar, or **Save templates** where the
+  editor stands alone) saves the new templates like any other edit. A
+  preset is never stored as one. No Agent saves presets; a lead changes
+  templates as below. "Read-only" in the investigation, decision memo and
+  design-note steps is an instruction only: no permission enforces it.
 - **The editor.** Each template is a card: its label, harness and when to
   choose it; its delivery, chosen from three cards; its steps, shown as its
   delivery's default until you choose **Change the steps**, then one row
   each (kind, label, a review's rounds or a gate's approver, moved up or
   down, removed). A step the delivery can't have is marked at its row, and
   nothing is saved until it's fixed. **Use the default steps** sets them
-  back to unset. The other settings stay under **More settings**. Where
-  Core's answer says who last changed a template (`lastModified`), its
-  card shows it as one line under its name: "Last changed: who · when ·
-  why", "You" for your own save.
+  back to unset. The other settings stay under **More settings**. A saved
+  template's card shows who last changed it, from `lastModified` (see
+  **History** below), as one line under its name: "Last changed: who ·
+  when · why", "You" for your own save.
 - **Templates a Project had.** Before this version, a Project could keep
   templates of its own, used before the Workspace's of the same id. When this
   Core first opens a Workspace, it copies each Project's own templates into
@@ -206,9 +207,28 @@ not a template's or a Project's.
   [Which machine](#dispatching-to-a-new-executor)). OpenCode executors run on
   this Core host only, and a Codex executor can't run on a machine that
   keeps its Agents contained.
-- **Who changes them.** Only you. Saving replaces the whole list, and a save
-  against a list changed meanwhile is refused, so the page reloads first.
-  Removing a template, or a Project, changes no executor already made.
+- **Who changes them.** You, in Settings, and a lead of a Project, with
+  `executor_templates_change` (YN-24). Your save replaces the whole list, and
+  a save against a list changed meanwhile is refused, so the page reloads
+  first; when a lead changed it, the refusal says who changed which
+  templates. Removing a template, or a Project, changes no executor already
+  made.
+- **A lead's change.** A lead sends changes to one or more templates (a
+  whole template that adds one or replaces the one with its id, or the id of
+  one to remove) against the list's version it read, with a reason. It is
+  checked as your save checks a template and saved at once; no one approves
+  it, and that includes a change to an executor's permissions, model or
+  machine. It applies while each template it changes is as it was at the
+  version the lead read, so your save of another template meanwhile doesn't
+  stop it; a change to one of its templates does, and the refusal names who
+  made it. Executors and other members can't. The Project's other leads get
+  one short mail with the reason.
+- **History.** Each save, yours too, is kept: the version it made, who, when,
+  the lead's reason, and each template it changed as it was and as it is. The
+  templates' answer (`GET /api/executor-templates`) carries `lastModified`:
+  who changed each template last, when and why. A save an older Core made is
+  not in it, and a lead's change made on a version before such a save is
+  refused until the lead reads the list again.
 - **What a lead reads.** `executor_templates_list` lists the Workspace's
   templates for an Agent choosing one for `task_dispatch`. For each it gives
   the id, label, when to choose it, delivery, steps (resolved: its delivery's
@@ -216,8 +236,11 @@ not a template's or a Project's.
   permissions, machine, and the size of its instructions in bytes, not
   their text. It also gives the list's version, how many templates a newer
   Core saved that this one can't offer, and `general`, what `executor: {}`
-  makes for the caller's Project. Reading changes nothing, and no Agent tool
-  saves templates.
+  makes for the caller's Project. With `full: true`, for leads of a Project
+  only, each also carries `template`, the template as saved with all its
+  fields, for a lead to change and send back whole with
+  `executor_templates_change`; an executor or another member is refused
+  (`not_lead`). Reading changes nothing.
 - **After a newer Core.** Templates and fields that a newer Core saved and
   this one can't read or use, such as another harness or machine, are not
   shown or offered to a dispatch, and a save here keeps them as they were.
