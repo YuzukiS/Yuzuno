@@ -195,7 +195,8 @@
    border. On a ring that is a button the row stays as it is and the ring
    grows a little (agent-island.css). A row island darkens its outline's
    fill instead. */
-.agent-list .agent-row:not(.selected):hover {
+.agent-list .agent-row:not(.selected):hover,
+:root:is([data-theme="dark"], [data-palette]:not([data-palette="garden"])) .agent-list .agent-row:not(.selected):hover {
   border-color: transparent;
 }
 .agent-list .agent-row:not(.selected):hover:has(> button.agent-island:hover) {
