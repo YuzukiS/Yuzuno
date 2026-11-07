@@ -21,7 +21,6 @@ import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { SharedAppearanceSection } from "./SharedAppearance";
 import { InputPreferencesSection } from "./InputPreferences";
-import { PortalPreferencesSection } from "./portal/PortalPreferences";
 import { LanguagePreferencesSection } from "./LanguagePreferences";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { useDocumentVisible } from "./document-visible";
@@ -1055,12 +1054,8 @@ export function WorkspaceUpdates({
               <SharedAppearanceSection active={open && visible} />
             </>
           )}
-          {tab === "input" && (
-            <>
-              <InputPreferencesSection />
-              <PortalPreferencesSection />
-            </>
-          )}
+          {/* Typing & time (YN-8): sending and opening, then the clock. */}
+          {tab === "input" && <InputPreferencesSection />}
           {tab === "time" && <TimePreferencesSection />}
           {tab === "language" && <LanguagePreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}

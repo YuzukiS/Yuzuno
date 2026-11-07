@@ -1,66 +1,15 @@
-/* This device's preferences (T-189): sending messages, the clock format
-   and the keyboard shortcuts, sections of Settings (InputPreferences.tsx,
-   TimePreferences.tsx, ShortcutHelp.tsx). Their groups are padded and sized as Settings' rows
-   are (updates.css): a title, then its help. */
-.input-preferences .settings-group,
+/* This device's preferences (T-189). Sending, opening, the clock and the
+   language are Appearance's cards and blocks (YN-8: SettingsChoices.tsx,
+   appearance.css); what follows is the keyboard shortcuts' group. */
 .settings-group.shortcut-group {
   padding: 14px 16px;
 }
-.input-send-key {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-.input-send-key legend {
-  margin-bottom: 6px;
-  padding: 0;
-  color: var(--text-secondary);
-  font-size: calc(10px + var(--font-adjust, 3px));
-  font-weight: 600;
-}
-.input-send-choice {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-height: 44px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  cursor: pointer;
-}
-/* Chosen and focused as Appearance's choices are: an input's own focus
-   style is all but transparent, so the ring is on the choice. */
-.input-send-choice:hover {
-  border-color: var(--focus);
-}
-.input-send-choice:has(input:checked) {
-  border-color: var(--focus);
-  background: var(--surface-soft);
-  box-shadow: 0 0 0 1px var(--focus);
-}
-.input-send-choice:has(input:focus-visible) {
-  outline: 2px solid var(--focus);
-  outline-offset: 3px;
-}
-.input-send-choice input {
-  margin-top: 3px;
-}
-.input-send-choice span {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-.input-send-choice strong,
 .shortcut-group h4,
 .shortcut-keys h4 {
   color: var(--ink);
   font-size: calc(11px + var(--font-adjust, 3px));
   font-weight: 550;
 }
-.input-send-choice small,
-.input-preferences-fixed,
 .shortcut-note,
 .shortcut-refused,
 .shortcut-group dd {
@@ -69,11 +18,14 @@
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
-.input-preferences-fixed {
+/* A block's lines after its cards: a fixed rule, a coverage note. */
+.appearance-field .input-preferences-fixed {
   margin: 10px 0 0;
 }
-.time-zone-choice {
-  margin-top: 14px;
+.appearance-field .time-zone-choice select,
+.time-zone-choice .settings-select {
+  width: 100%;
+  max-width: 28rem;
 }
 
 .shortcut-group h4 {
