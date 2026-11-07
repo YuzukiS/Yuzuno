@@ -14,11 +14,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to a PR cancels its older run. On main, a run that has started
-# finishes. GitHub keeps one pending run per group: a further push replaces a
-# main run that is still waiting.
+# A newer push to a PR cancels its older run. A push to main has a group of its
+# own commit, so every main commit gets its own run: a later push neither
+# cancels it nor replaces it while it waits.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
