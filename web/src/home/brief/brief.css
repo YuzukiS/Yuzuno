@@ -1440,6 +1440,17 @@ p.brief-preview-frame {
   color: var(--text-secondary);
   white-space: nowrap;
 }
+/* A tap on a phone selects or presses and shows the control's own state; the browser's tap colour would paint over it. */
+.brief-step,
+.brief-segment,
+.brief-switch-control,
+.brief-figure-key-item,
+.brief-step-dot,
+.brief-step-move,
+.brief-timeline-item,
+.brief-button {
+  -webkit-tap-highlight-color: transparent;
+}
 .brief-step {
   display: inline-grid;
   place-items: center;
