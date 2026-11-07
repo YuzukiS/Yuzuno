@@ -180,9 +180,18 @@ if method=='POST' and path=='merges':
     k={'sha':s['batchCommit'],'tree':s['batchTree'],'parents':[s['refs'][body['base']],body['head']]}
     c[k['sha']]=k; s['refs'][body['base']]=k['sha']; save()
     out(201,{'sha':k['sha'],'commit':{'tree':{'sha':k['tree']}},'parents':[{'sha':x} for x in k['parents']]})
+if method=='POST' and path=='git/commits':
+    k={'sha':s['revertCommit'],'tree':body['tree'],'parents':body['parents']}
+    c[k['sha']]=k; save()
+    out(201,{'sha':k['sha'],'tree':{'sha':k['tree']},'parents':[{'sha':x} for x in k['parents']]})
 if method=='POST' and path=='pulls':
-    n='900'; s['pulls'][n]={'number':900,'state':'open','head':{'ref':body['head'],'sha':s['refs'][body['head']]},'base':{'ref':body['base']},'draft':body['draft']}
+    n=str(900+len(s['pulls'])); s['pulls'][n]={'number':int(n),'state':'open','head':{'ref':body['head'],'sha':s['refs'][body['head']]},'base':{'ref':body['base']},'draft':body['draft'],'title':body['title']}
     save(); out(201,s['pulls'][n])
+if method=='PUT' and path.startswith('pulls/') and path.endswith('/merge') and path.split('/')[1] in s['pulls']:
+    pr=s['pulls'][path.split('/')[1]]
+    m={'sha':s['revertMergeSha'],'tree':s['revertMergeTree'],'parents':[s['main'],body['sha']]}
+    c[m['sha']]=m; s['main']=m['sha']; pr.update({'state':'closed','merged':True}); save()
+    out(200,{'sha':m['sha'],'merged':True,'message':'Pull Request successfully merged'})
 if method=='PATCH' and path.startswith('pulls/') and path.split('/')[1] in s['pulls']:
     s['pulls'][path.split('/')[1]]['state']=body['state']; save(); out(200,s['pulls'][path.split('/')[1]])
 if method=='DELETE' and path.startswith('git/refs/heads/'):
@@ -246,7 +255,7 @@ if path.startswith('commits/'):
     out(200,{'sha':k['sha'],'parents':[{'sha':x} for x in k['parents']],'commit':{'tree':{'sha':k['tree']}}})
 if path.startswith('actions/runs?branch='): out(200,{'total_count':len(s['mainRuns']),'workflow_runs':s['mainRuns']})
 if path.startswith('actions/runs?head_sha='):
-    runs=s['batchRuns'] if query['head_sha']==s['batchCommit'] else s['runs']
+    runs=s.get('headRuns',{}).get(query['head_sha']) or (s['batchRuns'] if query['head_sha']==s['batchCommit'] else s['runs'])
     out(200,{'total_count':len(runs),'workflow_runs':runs})
 if path.startswith('actions/runs/') and '/jobs' in path:
     jobs=s['jobs'][path.split('/')[2]]; per=int(query.get('per_page',100)); page=int(query.get('page',1))
@@ -1529,6 +1538,161 @@ async fn a_merge_begun_under_relaxed_is_not_sent_once_the_repository_is_strict()
     assert_eq!(e["retiredMerges"][0]["policy"], "relaxed", "the unsent merge is kept: {e}");
 }
 
+/// A merge that landed and then turned main red: entry 11 is done with
+/// main_red and the queue paused. The revert's commit, and the merge of the
+/// revert PR, are what the fake GitHub answers with.
+async fn merged_then_red(lab: &Lab) -> Value {
+    let released = lab.release(Some("lead"), "r1").await.unwrap();
+    assert_eq!(lab.step().await["state"], "merged");
+    change(lab.dir.path(), |s| {
+        main_ci(s, "failure");
+        s["revertCommit"] = json!(sha('d'));
+        s["revertMergeSha"] = json!(sha('b'));
+        s["revertMergeTree"] = json!(sha('6'));
+    });
+    // By its id: a revert entry Core makes for the same task is newer.
+    let e = revert_step(lab, released["id"].as_str().unwrap()).await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("done"), json!("main_red")), "{e}");
+    e
+}
+fn revert_entry_of(lab: &Lab, original: &Value) -> Value {
+    let list = lab.ws.store.merge_list(&Scope { repository_id: Some(7), ..Default::default() }).unwrap();
+    list["entries"].as_array().unwrap().iter().find(|e| e["revert"]["of"] == original["id"]).cloned().unwrap_or(Value::Null)
+}
+async fn revert_step(lab: &Lab, id: &str) -> Value {
+    lab.due();
+    tick(&lab.ws).await.unwrap();
+    lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":id})).await.unwrap()
+}
+
+/// YN-18 S2d-2: a lead reverts, in one step, a merge whose main push CI went
+/// red. Main is still that merge and the main before it had green push CI, so
+/// the revert (that main's tree on top of the merge, on Core's own branch and
+/// PR) merges at once, through the pause the bad merge caused; green main CI
+/// after it ends the pause.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_lead_reverts_a_merge_that_turned_main_red_in_one_step() {
+    let lab = lab(green());
+    let bad = merged_then_red(&lab).await;
+    assert_eq!(lab.paused()["paused"]["reason"], "main_red");
+    assert!(lab.mail("lead2").iter().any(|m| m["body"].as_str().unwrap().contains("Reverts are off for this repository")), "the pause mail says how reverts get turned on");
+    let refused = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"]})).await.unwrap_err().to_string();
+    assert!(refused.contains("reverts are off"), "{refused}");
+    lab.ws.store.merge_set_reverts(7, Some(true), None).unwrap();
+    let refused = lab.ws.collaboration_call(Some("dev"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"]})).await.unwrap_err().to_string();
+    assert!(refused.contains("merge_revert_not_allowed"), "the task's executor is no lead: {refused}");
+    let asked = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"],"reason":"main is red"})).await.unwrap();
+    assert_eq!((asked["kind"].clone(), asked["revert"]["of"].clone()), (json!("revert"), bad["id"].clone()), "{asked}");
+    let again = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"],"reason":"main is red"})).await.unwrap();
+    assert_eq!(again["id"], asked["id"], "a retry with the same requestId gets the same revert back");
+    let id = asked["id"].as_str().unwrap().to_owned();
+    let branch = format!("queue/revert-{id}");
+    let e = revert_step(&lab, &id).await;
+    assert_eq!(e["state"], "merged", "built, and merged at once through its own pause: {}", e["detail"]);
+    assert_eq!(e["lastEvidence"]["gate"]["fastPath"]["run"], 90, "the main before the bad merge had green push CI: {e}");
+    assert_eq!(
+        writes(lab.dir.path())[1..],
+        [
+            "POST repos/owner/repo/git/commits".to_owned(),
+            "POST repos/owner/repo/git/refs".to_owned(),
+            "POST repos/owner/repo/pulls".to_owned(),
+            "PUT repos/owner/repo/pulls/900/merge".to_owned(),
+            format!("DELETE repos/owner/repo/git/refs/heads/{branch}"),
+        ],
+        "after the bad merge: the revert commit, Core's revert branch and PR, its merge, its branch removed"
+    );
+    let posts: Vec<Value> = calls(lab.dir.path()).into_iter().filter(|c| c["method"] == "POST").map(|c| c["body"].clone()).collect();
+    assert_eq!((posts[0]["tree"].clone(), posts[0]["parents"].clone()), (json!(sha('6')), json!([merge_commit()])), "the main before the merge, on top of it");
+    assert_eq!(posts[1], json!({"ref":format!("refs/heads/{branch}"),"sha":sha('d')}), "the branch at the revert commit, main being the bad merge");
+    assert_eq!(posts[2]["draft"], false, "a real PR, not a draft");
+    assert_eq!((e["number"].clone(), e["headSha"].clone()), (json!(900), json!(sha('d'))), "the entry holds its revert PR: {e}");
+    assert_eq!(e["merge"]["post"]["ok"], true, "the revert landed the tree of the main before the bad merge: {e}");
+    assert_eq!(lab.paused()["paused"]["reason"], "main_red", "the pause holds until main CI is green again");
+    change(lab.dir.path(), |s| {
+        s["mainRuns"].as_array_mut().unwrap().insert(0, json!({"id":96,"name":"CI","run_attempt":1,"head_sha":sha('b'),"status":"completed","conclusion":"success","created_at":chrono::Utc::now().to_rfc3339()}));
+    });
+    let e = revert_step(&lab, &id).await;
+    assert_eq!(e["state"], "done", "{e}");
+    assert!(lab.paused()["paused"].is_null(), "green main CI after the revert ends the pause: {}", lab.paused());
+    assert!(lab.mail("lead2").iter().any(|m| m["body"].as_str().unwrap().contains("unpaused")), "and the leads are told");
+}
+
+/// Only a merge that turned main red can be reverted, one revert at a time,
+/// and the user turning reverts off stops one under way.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_revert_needs_a_red_merge_and_the_users_consent_and_runs_one_at_a_time() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    let merged = lab.step().await;
+    lab.ws.store.merge_set_reverts(7, Some(true), None).unwrap();
+    let refused = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v0","entryId":merged["id"]})).await.unwrap_err().to_string();
+    assert!(refused.contains("only a merge whose main push CI went red"), "{refused}");
+    change(lab.dir.path(), |s| {
+        main_ci(s, "failure");
+        s["revertCommit"] = json!(sha('d'));
+    });
+    let bad = lab.step().await;
+    lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"]})).await.unwrap();
+    let busy = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v2","entryId":bad["id"]})).await.unwrap_err().to_string();
+    assert!(busy.contains("merge_revert_running"), "{busy}");
+    lab.ws.store.merge_set_reverts(7, Some(false), None).unwrap();
+    let revert = revert_entry_of(&lab, &bad);
+    let e = revert_step(&lab, revert["id"].as_str().unwrap()).await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("revert_not_allowed")), "{e}");
+    assert!(!writes(lab.dir.path()).iter().any(|w| w.contains("git/commits")), "nothing of the revert was written");
+}
+
+/// With automatic reverts on (the user's choice, off by default), Core asks
+/// for the revert itself when main CI goes red after a merge, and says so.
+#[cfg(unix)]
+#[tokio::test]
+async fn with_automatic_reverts_on_core_reverts_a_red_merge_by_itself() {
+    let lab = lab(green());
+    assert!(lab.ws.store.merge_set_reverts(7, None, Some(true)).unwrap_err().to_string().contains("turn reverts on before"));
+    lab.ws.store.merge_set_reverts(7, Some(true), Some(true)).unwrap();
+    let bad = merged_then_red(&lab).await;
+    let revert = revert_entry_of(&lab, &bad);
+    assert_eq!((revert["kind"].clone(), revert["release"]["by"]["name"].clone()), (json!("revert"), json!("Yuzuno Core")), "{revert}");
+    assert_eq!(bad["revertedBy"], revert["id"]);
+    assert!(lab.mail("lead").iter().any(|m| m["body"].as_str().unwrap().contains("Core started its revert")), "the mail says Core started it");
+    assert_eq!(revert_step(&lab, revert["id"].as_str().unwrap()).await["state"], "merged");
+}
+
+/// A revert onto a main that has moved on is merged onto that main; when it
+/// no longer applies, it stops with revert_conflict and Core removes its branch.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_revert_that_no_longer_applies_onto_the_current_main_stops_and_is_removed() {
+    let lab = lab(green());
+    lab.ws.store.merge_set_reverts(7, Some(true), None).unwrap();
+    let bad = merged_then_red(&lab).await;
+    change(lab.dir.path(), |s| {
+        let to = sha('c');
+        s["commits"][&to] = json!({"sha":to,"tree":sha('8'),"parents":[merge_commit()]});
+        s["main"] = json!(to);
+        s["batchConflict"] = json!(true);
+    });
+    let asked = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"]})).await.unwrap();
+    let id = asked["id"].as_str().unwrap().to_owned();
+    let e = revert_step(&lab, &id).await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("revert_conflict")), "{e}");
+    revert_step(&lab, &id).await;
+    let w = writes(lab.dir.path());
+    assert_eq!(
+        w[1..],
+        [
+            "POST repos/owner/repo/git/commits".to_owned(),
+            "POST repos/owner/repo/git/refs".to_owned(),
+            "POST repos/owner/repo/merges".to_owned(),
+            format!("DELETE repos/owner/repo/git/refs/heads/queue/revert-{id}"),
+        ],
+        "the branch at the moved main, the revert merged in (conflict), then removed: {w:?}"
+    );
+    assert_eq!(lab.paused()["paused"]["reason"], "main_red", "nothing landed: the pause holds");
+}
+
 /// Under the relaxed policy, a head that does not merge cleanly into the
 /// current main stops with conflict, and Core removes its probe.
 #[cfg(unix)]
@@ -2257,7 +2421,7 @@ fn the_routes_and_tools_are_well_formed() {
     let tools = tool_definitions();
     assert_eq!(
         tools.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>(),
-        ["merge_enqueue", "merge_get", "merge_list", "merge_cancel", "merge_retry", "merge_unpause"]
+        ["merge_enqueue", "merge_get", "merge_list", "merge_cancel", "merge_retry", "merge_revert", "merge_unpause"]
     );
     for tool in tools {
         let _: rmcp::model::Tool = serde_json::from_value(tool).unwrap();
