@@ -88,6 +88,7 @@ pub(super) fn current(db: &Connection, task: &SharedTask) -> Result<Value> {
     let mut view = json!({"current": {
         "taskId": task_number(db, &task.id)?,
         "title": task.title,
+        "shortName": task.short_name,
         "status": task.status,
         "version": task.version,
         "projectId": project,

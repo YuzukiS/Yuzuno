@@ -671,13 +671,22 @@ first that holds names the state:
 | 8 | `running` | 运行中 · Running | Anything else: it is at work. |
 
 Each also names its task (`task.id`, the key the task has now, such as
-`YN-3`, or `T-<n>` while it has none; `task.title`), who dispatched it
+`YN-3`, or `T-<n>` while it has none; `task.title`; and `task.shortName`,
+below), who dispatched it
 (`dispatcher`: `user`, or an Agent with its ID and name), the template it
 was made from (`template`: its `id`, and its `label` as its dispatch's
 materials give it), when it was dispatched (`dispatchedAt`), and since when
 it is in its state (`since`). An executor at work whose task is blocked also
 has the blocker (`blocked`); its state stays what it is.
 
+- **A task's short name.** What the task is about in plain words, at most
+  16 characters ("导出设备偏好", "Export settings"), not a key, a number or a
+  PR: the sidebar names an executor by it. A lead or the user gives it with
+  `task_create` or `task_update` (`shortName`; kept trimmed, one line; null
+  or empty clears it), typically when dispatching. Without one the task's
+  title stands in. `task_get`'s current view and `task_list`'s compact rows
+  carry it. A Core from before it (core.26 and earlier) reads such a task
+  as before and leaves the short name out of its next save of that task.
 - **The sidebar.** In each Project's list, leads come first, then the
   other Agents, then a 任务执行者 · Executors group and, folded by default,
   已归档 · Archived. With attention order, executors are ordered by: waiting

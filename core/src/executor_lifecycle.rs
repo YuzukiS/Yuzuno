@@ -57,6 +57,8 @@ struct Role {
 struct TaskNow {
     seq: i64,
     title: String,
+    /// Its short name (T-43), none until a lead or the user gives one.
+    short_name: Option<String>,
     status: String,
     blocker: String,
     updated_at: String,
@@ -132,6 +134,7 @@ fn task_now(db: &Connection, task: &str) -> Result<Option<TaskNow>> {
     Ok(Some(TaskNow {
         seq,
         title: text("title"),
+        short_name: data["shortName"].as_str().map(str::to_owned),
         status: text("status"),
         blocker: text("blocker"),
         updated_at: text("updatedAt"),
@@ -259,7 +262,8 @@ fn lifecycle(db: &Connection, role: &Role) -> Result<Value> {
         // references and task_get name it (T-43 S2, g8); `T-<n>` only
         // while it has none.
         let key = role.task.as_deref().map(|id| crate::task_keys::current(db, id)).transpose()?.flatten();
-        view["task"] = json!({"id":key.unwrap_or_else(|| format!("T-{}", task.seq)),"title":task.title});
+        // Its short name too (T-43), what the sidebar's row says it is doing.
+        view["task"] = json!({"id":key.unwrap_or_else(|| format!("T-{}", task.seq)),"title":task.title,"shortName":task.short_name});
         // An executor at work whose task is blocked: the blocker, for Home
         // and the card's title (its state stays what it is).
         if task.status == "blocked" && !closed && !task.blocker.is_empty() {

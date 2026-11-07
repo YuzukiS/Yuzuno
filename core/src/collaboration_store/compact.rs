@@ -22,6 +22,8 @@ pub(super) struct Row {
     pub id: String,
     pub seq: i64,
     pub title: String,
+    #[serde(default)]
+    pub short_name: Option<String>,
     pub status: String,
     #[serde(default)]
     pub assignee: Option<TaskActor>,
@@ -50,7 +52,7 @@ impl Row {
     }
 
     pub(super) fn value(&self) -> Value {
-        json!({"id":self.id,"seq":self.seq,"title":self.title,"status":self.status,"version":self.version,
+        json!({"id":self.id,"seq":self.seq,"title":self.title,"shortName":self.short_name,"status":self.status,"version":self.version,
             "assignee":self.assignee,"updatedAt":self.updated_at,"progress":summary(&self.progress),
             "blocker":summary(&self.blocker),"archivedAt":self.archived_at})
     }

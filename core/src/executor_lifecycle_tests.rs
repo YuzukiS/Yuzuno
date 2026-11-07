@@ -135,7 +135,7 @@ async fn the_listing_and_its_task_show_each_executors_lifecycle() {
     let e1 = listed(s, "e1");
     assert_eq!((e1["state"].as_str(), e1["position"].as_i64()), (Some("queued"), Some(1)), "{e1}");
     assert_eq!(e1["dispatcher"], json!({"kind":"user"}));
-    assert_eq!(e1["task"], json!({"id":queued_public,"title":"Queued work"}));
+    assert_eq!(e1["task"], json!({"id":queued_public,"title":"Queued work","shortName":null}));
     let e2 = listed(s, "e2");
     assert_eq!((e2["state"].as_str(), e2["since"].as_str()), (Some("delivering"), Some("2026-11-06T02:00:00Z")), "{e2}");
     assert_eq!(e2["dispatcher"], json!({"kind":"agent","id":"lead","name":"Agent lead"}));
@@ -175,7 +175,12 @@ async fn the_listing_names_its_task_by_its_key_and_its_template_by_its_label() {
         params![internal, project.id, json!({"id":"reviewer","label":"Reviewer","source":"workspace"}).to_string()],
     ).unwrap();
     let e1 = listed(s, "e1");
-    assert_eq!(e1["task"], json!({"id":"YN-1","title":"Keyed work"}), "its key, not T-<n>: {e1}");
+    assert_eq!(e1["task"], json!({"id":"YN-1","title":"Keyed work","shortName":null}), "its key, not T-<n>: {e1}");
+    // A short name given (T-43): the row says what it is doing by it.
+    let version = s.collaboration_call(None, "task_get", json!({"taskId":"YN-1"})).unwrap()["current"]["version"].clone();
+    s.collaboration_call(None, "task_update", json!({"requestId":"named","taskId":"YN-1","expectedVersion":version,
+        "patch":{"shortName":"Keyed export"}})).unwrap();
+    assert_eq!(listed(s, "e1")["task"]["shortName"], "Keyed export");
     assert_eq!(e1["template"], json!({"id":"reviewer","label":"Reviewer"}), "{e1}");
     assert_eq!(e1["dispatchedAt"], "2026-11-06T01:00:00Z", "{e1}");
     // One made before its dispatch row was kept still names its template.
