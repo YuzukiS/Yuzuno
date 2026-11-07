@@ -1801,7 +1801,8 @@ impl Workspace {
         let input = MessageId::new();
         let turn = format!("compact_{}", uuid::Uuid::new_v4());
         let item = format!("{turn}:compaction");
-        let attempt = json!({"state":"pending","session":c.session,"generation":c.generation,"input":input.as_str(),
+        // `askedBy`: the Server whose clock this attempt's `answered` will be (#707 R1 44d3157b).
+        let attempt = json!({"state":"pending","session":c.session,"generation":c.generation,"askedBy":c.server.id(),"input":input.as_str(),
             "model":model.as_ref().map(ModelChoice::id).or_else(|| session["model"]["providerID"].as_str()
                 .zip(session["model"]["id"].as_str()).map(|(p, m)| format!("{p}/{m}"))),"variant":variant});
         let (requested, data) = (turn.clone(), json!({"turnId":turn,"attempt":attempt}));
@@ -2440,7 +2441,7 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
         }
     }
     status(d, &snapshot.status);
-    settle_compactions(d, &compactions, [&snapshot.inbox_first, &snapshot.inbox], snapshot.status["type"] == "idle", snapshot.began, generation);
+    settle_compactions(d, &compactions, [&snapshot.inbox_first, &snapshot.inbox], snapshot.status["type"] == "idle", snapshot.began, &snapshot.by);
 }
 
 /// What a whole read of the session (T-61 slice 4) says of each compaction
@@ -2449,21 +2450,23 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
 /// after its messages), whatever its events could tell, by this process or
 /// one before it. It is missing from 2.x only by a read that `began` after
 /// 2.x's answer to it was known (`answered`, #699 R2 f4dafc6c): an earlier
-/// read may predate its admission. Both are ticks of the process of
-/// `generation` (`Server::tick`); one asked of an earlier process was
-/// answered before any read of this one began (#699 P3-a, P3-b). One asked of OpenCode 1.19.3 (T-10, no
+/// read may predate its admission. Both are ticks of the Server named `by`
+/// (`Server::tick`, `Server::id`); one asked of another Server (`askedBy`,
+/// or none recorded: an earlier process, before Core restarted or not) was
+/// answered before any read of this one began (#699 P3-a, P3-b; #707 R1
+/// 44d3157b: a generation restarts with Core). One asked of OpenCode 1.19.3 (T-10, no
 /// input ID: an empty 2.x session read as 1.19.3's before slice 4) has an
 /// answer this Core no longer reads, so nothing more of it can come.
-pub(crate) fn settle_compactions(d: &mut AgentDetail, compactions: &[Value], inboxes: [&Value; 2], idle: bool, began: u64, generation: u64) {
+pub(crate) fn settle_compactions(d: &mut AgentDetail, compactions: &[Value], inboxes: [&Value; 2], idle: bool, began: u64, by: &str) {
     for turn in d.turns.iter_mut().filter(|t| matches!(t["_opencodeCompact"]["state"].as_str(), Some("pending" | "unknown"))) {
         let Some(input) = turn["_opencodeCompact"]["input"].as_str().map(str::to_owned) else {
             compaction_lost(turn);
             continue;
         };
-        // One of an earlier process, or whose answer came before this Core kept the time of it (unknown already),
+        // One asked of another Server, or whose answer came before this Core kept the time of it (unknown already),
         // counts as answered long ago.
         let attempt = &turn["_opencodeCompact"];
-        let answered = if attempt["generation"].as_u64() != Some(generation) {
+        let answered = if attempt["askedBy"].as_str() != Some(by) {
             Some(0)
         } else {
             attempt["answered"].as_u64().or_else(|| (attempt["state"] == "unknown").then_some(0))

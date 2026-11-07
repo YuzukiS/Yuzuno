@@ -327,6 +327,8 @@ pub struct Snapshot {
     /// #699 R2 and P3-a): what it found missing was missing from then on,
     /// never before.
     pub began: u64,
+    /// The Server whose clock `began` is (`Server::id`).
+    pub by: String,
     /// The inbox as read first, before the messages (#699 R2): an item 2.x
     /// delivers and stores while the read goes on is in this list or in
     /// `messages`, never in neither.
@@ -535,6 +537,10 @@ pub struct Server {
     /// This process's own clock of reads and answers (`tick`): the order in
     /// which they happened, whatever the wall clock does (#699 P3-a).
     ticks: std::sync::atomic::AtomicU64,
+    /// This Server's own name, new each time one starts (`id`): a tick means
+    /// something only beside the name of the Server that counted it (#707
+    /// R1 44d3157b; a connection's generation restarts with Core).
+    id: String,
 }
 
 impl Server {
@@ -612,6 +618,7 @@ impl Server {
             http: reqwest::Client::builder().no_proxy().build()?,
             submitted: Mutex::default(),
             ticks: std::sync::atomic::AtomicU64::new(0),
+            id: uuid::Uuid::new_v4().simple().to_string(),
         };
         // From here on, an error drops `server`, which ends its group.
         // OpenCode's output is bytes, not necessarily UTF-8; a line is read
@@ -857,9 +864,14 @@ impl Server {
     /// The session's messages, status and inbox, read now, with the requests
     /// pending in it and in the sub-agent sessions `children`.
     /// The next tick of this process's own clock (`ticks`), from 1: a later
-    /// call answers more. A tick of another process means nothing here.
+    /// call answers more. A tick of another Server means nothing here.
     pub fn tick(&self) -> u64 {
         self.ticks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// This Server's own name (`id`), whose `tick`s these are.
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
@@ -874,6 +886,7 @@ impl Server {
         let sessions: Vec<&str> = std::iter::once(session).chain(children.iter().map(String::as_str)).collect();
         Ok(Snapshot {
             began,
+            by: self.id.clone(),
             inbox_first,
             messages,
             status,
