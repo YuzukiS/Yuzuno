@@ -2195,3 +2195,168 @@ async fn a_real_opencode_2x_agent_is_forked_through_the_workspace() {
     stub.wait().ok();
     endpoint.abort();
 }
+
+/// A source session for the import probes: two prompts of the stub's run on
+/// a real OpenCode 2.x, and its export as `opencode session export` reads it
+/// (`GET …/export`, the route that command is a client of). The server, its
+/// password, the session, its prompts and the export's `{info, messages}`.
+async fn exported_session(program: &Path, dir: &Path, port: u16) -> (Server, Launch, String, String, Vec<MessageId>, Value) {
+    let (folder, _repo) = rewind_repo(dir, port);
+    let root = dir.join("db-source");
+    std::fs::create_dir_all(&root).unwrap();
+    let launch = Launch::new(program.to_path_buf(), folder, &root, dir.join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    let model = server.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let mut prompts = Vec::new();
+    for prompt in ["probe-61 write", "probe-61 three"] {
+        prompts.push(prompt_run(&server, &mut events, &session, prompt).await.0);
+    }
+    let password = password_of(server.pid().unwrap());
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let file: Value = http.get(format!("{}/api/experimental/session/{session}/export", server.base())).basic_auth("opencode", Some(&password))
+        .send().await.unwrap().json().await.unwrap();
+    (server, launch, password, session, prompts, file["data"].clone())
+}
+
+/// A real OpenCode 2.x takes an export as Core's import writes it (T-61
+/// slice 8), against the stub provider: the export of a session, under a
+/// new ID and Core's marker, is imported into a second OpenCode on an empty
+/// database and reads back as written; the same again is refused (409).
+/// Facts for Core's own refusals, printed: a `?sanitize=true` export is
+/// imported too; a 1.x-shaped body is refused; an unsettled answer is
+/// silently left out; and how 2.x answers a body with a ~20 MiB inline image.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
+async fn a_real_opencode_2x_takes_an_export_as_cores_import_writes_it() {
+    use yuzuno_workspace::opencode_transfer::{self as transfer, ImportAnswer, Payload};
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (mut stub, port, _log) = stub_provider(dir.path());
+    let (source, launch, password, session, _, file) = exported_session(&program, dir.path(), port).await;
+    let folder = launch.directory.to_string_lossy().into_owned();
+    println!("probe: the export's info {}", file["info"]);
+    println!("probe: the export's messages {:?}", file["messages"].as_array().unwrap().iter().map(|m| format!("{} {}", m["type"], m["id"])).collect::<Vec<_>>());
+    let second = dir.path().join("db-import");
+    std::fs::create_dir_all(&second).unwrap();
+    let target = Server::start(&Launch::new(program, launch.directory.clone(), &second, dir.path().join("cache"))).await.unwrap();
+    let project = target.location(&folder).await.unwrap()["project"]["id"].as_str().unwrap().to_owned();
+    let payload_of = |file: &Value, marker: &str| {
+        let info = &file["info"];
+        let mut sent = json!({"id": transfer::session_id(), "projectID": project, "title": "Imported", "location": {"directory": folder},
+            "metadata": {"yuzuno": {"import": marker}}, "cost": info["cost"], "tokens": info["tokens"],
+            "time": {"created": info["time"]["created"], "updated": info["time"]["updated"], "idle": info["time"]["idle"]}, "outcome": info["outcome"]});
+        transfer::without_nulls(&mut sent);
+        Payload { info: sent, messages: file["messages"].as_array().unwrap().clone(), directory: folder.clone() }
+    };
+    let limit = Duration::from_secs(120);
+    // The export, imported and read back as written; the same again, refused.
+    let payload = payload_of(&file, "probe-import");
+    let answer = target.import(&payload, limit).await;
+    println!("probe: the import: {answer:?}");
+    assert!(matches!(&answer, ImportAnswer::Imported(info) if info["id"] == payload.id()), "{answer:?}");
+    let again = target.import(&payload, limit).await;
+    println!("probe: again: {again:?}");
+    assert!(matches!(again, ImportAnswer::Exists), "{again:?}");
+    transfer::read_copy(&target, &payload, &project).await.unwrap().expect("the copy as written");
+    // Facts: a sanitized export.
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let sanitized: Value = http.get(format!("{}/api/experimental/session/{session}/export?sanitize=true", source.base())).basic_auth("opencode", Some(&password))
+        .send().await.unwrap().json().await.unwrap();
+    let answer = target.import(&payload_of(&sanitized["data"], "probe-sanitized"), limit).await;
+    println!("probe: a sanitized export: {answer:?}");
+    // Facts: a 1.x-shaped body.
+    let old = Payload { info: json!({"id": transfer::session_id(), "directory": folder, "projectID": project, "title": "Old", "time": {"created": 1, "updated": 1}}),
+        messages: vec![json!({"info": {"id": "msg_old", "role": "user", "time": {"created": 1}}, "parts": []})], directory: folder.clone() };
+    let answer = target.import(&old, limit).await;
+    println!("probe: a 1.x-shaped body: {answer:?}");
+    assert!(!matches!(answer, ImportAnswer::Imported(_)), "a 1.x body is not imported");
+    // Facts: an answer not settled.
+    let mut unsettled = payload_of(&file, "probe-unsettled");
+    let open = unsettled.messages.iter().rposition(|m| m["type"] == "assistant").unwrap();
+    unsettled.messages[open]["time"].as_object_mut().unwrap().remove("completed");
+    let kept_id = unsettled.messages[open]["id"].clone();
+    let answer = target.import(&unsettled, limit).await;
+    let read = target.messages(unsettled.id()).await.unwrap();
+    println!("probe: an unsettled answer: {answer:?}; in the copy: {}", read.as_array().unwrap().iter().any(|m| m["id"] == kept_id));
+    // Facts: a ~20 MiB inline image.
+    let mut big = payload_of(&file, "probe-big");
+    let first = big.messages.iter().position(|m| m["type"] == "user").unwrap();
+    big.messages[first]["files"] = json!([{"data": "A".repeat(20 << 20), "mime": "image/png", "source": {"type": "inline"}, "name": "big.png"}]);
+    let answer = target.import(&big, limit).await;
+    println!("probe: a ~20 MiB inline image: {}", format!("{answer:?}").chars().take(300).collect::<String>());
+    if matches!(answer, ImportAnswer::Imported(_)) {
+        let copy = transfer::read_copy(&target, &big, &project).await.unwrap();
+        println!("probe: its copy read back as written: {}", copy.is_ok());
+    }
+    target.shutdown().await.unwrap();
+    source.shutdown().await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// An OpenCode 2.x session imported through the Workspace on a real OpenCode
+/// 2.x (T-61 slice 8, D-2), against the stub provider: its export uploaded,
+/// previewed and confirmed; the new Agent registered and connected, holding
+/// the session's prompts under their own IDs; a message sent to it through
+/// the Workspace runs with the imported conversation; the same file again is
+/// that Agent.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
+async fn a_real_opencode_2x_session_is_imported_through_the_workspace() {
+    use yuzuno_workspace::{model::MessageInput, workspace::Workspace};
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    std::env::set_var("YUZUNO_EXPERIMENTAL_OPENCODE", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    let (source, launch, _, _, prompts, file) = exported_session(&program, dir.path(), port).await;
+    source.shutdown().await.unwrap();
+    let folder = launch.directory.clone();
+    let ws = Workspace::new(dir.path().join("data"), folder.to_string_lossy().into(), "unused".into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port);
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let requests = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+
+    let preview = ws.opencode_import_upload(serde_json::to_vec(&file).unwrap()).await.expect("the export is taken");
+    println!("probe: the preview {preview}");
+    assert_eq!(preview["turns"], 2, "{preview}");
+    let create = serde_json::from_value(json!({"requestId": preview["requestId"], "name": "Imported", "cwd": folder})).unwrap();
+    let outcome = ws.opencode_import_create(create).await.expect("imported");
+    println!("probe: the import {outcome}");
+    assert_eq!((&outcome["state"], &outcome["importOutcome"], &outcome["connected"]), (&json!("completed"), &json!("created"), &json!(true)), "{outcome}");
+    let target = outcome["agent"]["id"].as_str().unwrap().to_owned();
+    let ids: Vec<String> = ws.store.detail(&target).unwrap().turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect();
+    assert_eq!(ids, prompts.iter().map(|p| p.as_str().to_owned()).collect::<Vec<_>>(), "the session's prompts, under their own IDs");
+    assert_eq!(std::fs::read_to_string(&log).unwrap_or_default().lines().count(), requests, "nothing asked of the model by the import");
+    // The new Agent goes on through the Workspace, its model sent the imported conversation.
+    let input = serde_json::from_value::<MessageInput>(json!({"clientMessageId": "c1", "text": "probe-61 three"})).unwrap();
+    let turn = ws.send_message(&target, input).await.expect("sent to the new Agent").turn_id.unwrap();
+    let mut ended = Value::Null;
+    for _ in 0..900 {
+        let d = ws.store.detail(&target).unwrap();
+        if let Some(t) = d.turns.iter().find(|t| t["id"] == turn.as_str() && t["status"] != "inProgress") {
+            if d.agent.status == "idle" {
+                ended = t.clone();
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(ended["status"], "completed", "{ended}");
+    let sent: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().skip(requests).map(|l| l.to_owned()).collect();
+    assert!(sent.iter().any(|l| l.contains("probe-61 write")), "the model was sent the imported conversation");
+    // The same file again: that Agent.
+    let again = ws.opencode_import_upload(serde_json::to_vec(&file).unwrap()).await.unwrap();
+    assert_eq!(again["existing"]["id"], json!(target), "{again}");
+
+    ws.close_agent(&target).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
+}
