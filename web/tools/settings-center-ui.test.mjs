@@ -108,6 +108,9 @@ test("eighteen pages in four groups and bilingual search expose real scope, with
   p.type(query, "CONTEXT compaction");
   await until(() => p.doc.querySelectorAll('.settings-catalog-card').length === 1);
   assert.match(p.doc.querySelector('.settings-catalog-card').textContent, /Unknown native values stay unknown/);
+  // While searching, no tab names a panel that isn't there (review e0111214).
+  assert.equal(p.doc.querySelector("#settings-page"), null);
+  assert.ok([...p.doc.querySelectorAll('[role="tab"]')].every((tab) => !tab.hasAttribute("aria-controls")));
   // An Agent's own setting is on no page of Settings: listed under Elsewhere.
   assert.ok(p.doc.querySelector('.settings-elsewhere .settings-catalog-card'), "an Agent's setting is under Elsewhere");
   assert.equal(p.doc.querySelector('#settings-elsewhere-title').textContent, "Elsewhere");
@@ -248,8 +251,8 @@ test("a request opens its page, and an older caller's editor opens the page it i
   // The rail's New project (YN-8): the Projects page, asked for a new one.
   p.w.renderSettings({ ...p.props, openAt: { page: "projects", sub: "new", nonce: 1 } });
   await until(() => shown().join() === "settings-editor-projects");
-  // Opened at the page, its request reaches the page a render later.
-  await until(() => p.doc.getElementById("settings-editor-projects").textContent === "Existing projects editor at new");
+  // Opened at the page, the page has its request from the first render: built once.
+  assert.equal(p.doc.getElementById("settings-editor-projects").textContent, "Existing projects editor at new");
   await until(() => p.doc.activeElement?.id === "settings-editor-projects");
   // The status bar's Machines.
   p.w.renderSettings({ ...p.props, openAt: { page: "machines", nonce: 2 } });
