@@ -706,10 +706,15 @@ impl Lab {
 /// A preview asked for through the phone entry on `port`, as Serve passes a
 /// phone's request: its Host, the login, the page's origin and client header.
 async fn mint(port: u16, login: &str) -> (u16, Value) {
+    mint_source(port, login, json!({"kind": "artifact", "agentId": "a", "path": "proto.html"})).await
+}
+
+/// The same for the preview of `source`.
+async fn mint_source(port: u16, login: &str, source: Value) -> (u16, Value) {
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let response = client.post(format!("http://127.0.0.1:{port}/api/previews")).header("host", format!("{DNS}:8444"))
         .header("tailscale-user-login", login).header("origin", format!("https://{DNS}:8444")).header("x-yuzuno-client", "desktop")
-        .json(&json!({"kind": "artifact", "agentId": "a", "path": "proto.html"})).send().await.unwrap();
+        .json(&source).send().await.unwrap();
     let code = response.status().as_u16();
     (code, response.json().await.unwrap_or(Value::Null))
 }
@@ -764,6 +769,146 @@ fn as_serve() -> String {
 /// As `as_serve`, for a change from the phone page itself.
 fn from_page() -> String {
     format!("{}Origin: https://{DNS}:8444\r\nX-Yuzuno-Client: desktop\r\n", as_serve())
+}
+
+#[tokio::test]
+async fn a_6_6_mb_home_attachment_opens_whole_through_the_phone_entry() {
+    use sha2::Digest;
+    let lab = lab("wsl");
+    lab.with_page();
+    let file = lab.dir.path().join("work/large.html");
+    let page = crate::previews::synthetic_page(6_606_144);
+    std::fs::write(&file, &page).unwrap();
+    let kept = crate::project_brief::attach_for_test(&lab.ws, "a", "designs", &file).await;
+    let phone = free_port();
+    lab.on_with_previews(phone).await;
+    let source = json!({"kind": "briefAttachment", "projectId": kept["projectId"], "section": "designs", "name": "large.html"});
+    let (code, minted) = mint_source(phone, OWNER, source).await;
+    assert_eq!(code, 200, "a 6.6 MB Home attachment opens through the phone entry: {minted}");
+    // The page as Serve passes a phone's request for it (`as_serve`).
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let response = client.get(format!("http://127.0.0.1:{phone}{}", after_origin(&minted["url"])))
+        .header("host", format!("{DNS}:8444")).header("tailscale-user-login", OWNER).header("x-forwarded-for", "100.64.0.2")
+        .send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let policy = crate::previews::page_policy(Some(&format!("https://{DNS}:8444")));
+    assert_eq!(response.headers().get("content-security-policy").and_then(|v| v.to_str().ok()), Some(policy.as_str()));
+    assert!(response.headers().get("x-frame-options").is_none(), "{:?}", response.headers());
+    let body = response.bytes().await.unwrap();
+    let sha = format!("{:x}", sha2::Sha256::digest(&page));
+    assert_eq!(minted["sha256"].as_str(), Some(sha.as_str()), "{minted}");
+    assert_eq!(format!("{:x}", sha2::Sha256::digest(&body)), sha, "the page as it was kept, whole ({} bytes came)", body.len());
+}
+
+const APART: &str = "YUZUNO_TEST_PREVIEW_APART";
+
+/// What serving a 20 MiB Home attachment's preview costs (YN-10): opened on
+/// the previews' port and through the phone entry, each page read whole by a
+/// client that keeps none of it, while the allocator counts how far the
+/// heap grew (`test_alloc`). In a test process of its own, so no other
+/// test's allocations count; the client's own do, so it is a bound. VmRSS
+/// and VmHWM before and after are reported only.
+#[test]
+fn a_20_mib_preview_is_served_without_the_page_in_memory() {
+    let name = format!("{}::a_20_mib_preview_is_served_without_the_page_in_memory", module_path!().split_once("::").unwrap().1);
+    if std::env::var(APART).as_deref() == Ok(name.as_str()) {
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        println!("{APART}={}", runtime.block_on(served_apart()));
+        return;
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([name.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+        .env(APART, &name)
+        .output()
+        .unwrap();
+    let (said, err) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "{}\n{said}\n{err}", out.status);
+    let marker = format!("{APART}=");
+    let line = said.lines().find_map(|line| line.split_once(marker.as_str()).map(|(_, said)| said))
+        .unwrap_or_else(|| panic!("what the process measured, in what it said:\n{said}"));
+    let report: Value = serde_json::from_str(line).unwrap();
+    println!("a 20 MiB preview served on both routes: {report}");
+    let size = report["size"].as_u64().unwrap();
+    assert!(report["localBytes"].as_u64().unwrap() >= size && report["phoneBytes"].as_u64().unwrap() >= size, "{report}");
+    assert!(report["heapGrowthPeakBytes"].as_i64().unwrap() < 2 << 20, "the page is never held whole: {report}");
+}
+
+/// The measurement itself (`a_20_mib_preview_is_served_without_the_page_in_memory`).
+async fn served_apart() -> Value {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const SIZE: usize = 20 << 20;
+    /// Every byte of the answer to `request`, keeping none: how many came.
+    async fn drained(port: u16, request: String) -> u64 {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let (mut chunk, mut total) = (vec![0u8; 16 << 10], 0u64);
+        loop {
+            match stream.read(&mut chunk).await.unwrap() {
+                0 => return total,
+                n => total += n as u64,
+            }
+        }
+    }
+    let lab = lab("wsl");
+    lab.with_page();
+    let file = lab.dir.path().join("work/large.html");
+    std::fs::write(&file, crate::previews::synthetic_page(SIZE)).unwrap();
+    let kept = crate::project_brief::attach_for_test(&lab.ws, "a", "designs", &file).await;
+    let phone = free_port();
+    lab.on_with_previews(phone).await;
+    let local = free_port();
+    lab.ws.services.use_ports(local..=local);
+    let source = json!({"kind": "briefAttachment", "projectId": kept["projectId"], "section": "designs", "name": "large.html"});
+    let before = memory_status();
+    crate::test_alloc::count();
+    let asker = crate::previews::Asker::Local(Some("http://localhost:4317"));
+    let view = lab.ws.open_preview(serde_json::from_value(source.clone()).unwrap(), asker).await.unwrap();
+    let port = view["port"].as_u64().unwrap() as u16;
+    let page = view["url"].as_str().unwrap().split_once(&format!(":{port}")).unwrap().1.to_owned();
+    let local_bytes = drained(port, format!("GET {page} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")).await;
+    let (code, minted) = mint_source(phone, OWNER, source).await;
+    assert_eq!(code, 200, "{minted}");
+    let phone_bytes = drained(phone, format!("GET {} HTTP/1.1\r\n{}Connection: close\r\n\r\n", after_origin(&minted["url"]), as_serve())).await;
+    let (peak, largest) = crate::test_alloc::counted_so_far();
+    json!({"size": SIZE, "localBytes": local_bytes, "phoneBytes": phone_bytes, "heapGrowthPeakBytes": peak,
+        "largestAllocationBytes": largest, "before": before, "after": memory_status()})
+}
+
+/// This process's VmRSS and VmHWM in KiB, as /proc says them now.
+fn memory_status() -> Value {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let field = |name: &str| {
+        status.lines().find_map(|line| line.strip_prefix(name)).and_then(|value| value.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+    };
+    json!({"vmRssKiB": field("VmRSS:"), "vmHwmKiB": field("VmHWM:")})
+}
+
+#[tokio::test]
+async fn a_card_preview_through_the_phone_entry_is_given_again_on_that_run_only() {
+    let lab = lab("wsl");
+    lab.with_page();
+    let file = lab.dir.path().join("work/card.html");
+    std::fs::write(&file, PAGE).unwrap();
+    let kept = crate::project_brief::attach_for_test(&lab.ws, "a", "designs", &file).await;
+    let phone = free_port();
+    lab.on_with_previews(phone).await;
+    let card = json!({"kind": "briefAttachment", "projectId": kept["projectId"], "section": "designs", "name": "card.html",
+        "version": kept["version"], "place": "card"});
+    let (_, first) = mint_source(phone, OWNER, card.clone()).await;
+    let (_, again) = mint_source(phone, OWNER, card.clone()).await;
+    assert_eq!((&first["reused"], &again["reused"], &again["url"]), (&json!(false), &json!(true), &first["url"]), "{first} {again}");
+    assert_eq!((again["proof"]["method"].as_str(), again["version"].clone()), (Some("POST"), kept["version"].clone()));
+    // A Range request gets the whole page, with the same headers.
+    let page = after_origin(&first["url"]);
+    let (status, head, body) = raw(phone, "GET", &page, &format!("{}Range: bytes=0-9\r\n", as_serve())).await;
+    assert_eq!((status, body.as_str()), (200, PAGE), "{head}");
+    let policy = crate::previews::page_policy(Some(&format!("https://{DNS}:8444")));
+    assert!(has(&head, "Content-Security-Policy", &policy) && !named(&head, "Content-Range") && !named(&head, "X-Frame-Options"), "{head}");
+    // What the phone was given ends with its run, a card's as well.
+    lab.ws.previews.revoke_phone(None);
+    assert_eq!(raw(phone, "GET", &page, &as_serve()).await.0, 404);
+    let (_, later) = mint_source(phone, OWNER, card).await;
+    assert!(later["reused"] == json!(false) && later["url"] != first["url"], "{later}");
 }
 
 #[tokio::test]

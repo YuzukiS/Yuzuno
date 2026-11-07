@@ -508,3 +508,50 @@ fn concurrent_identical_submissions_commit_only_one_result_and_notification() {
         1
     );
 }
+
+/// YN-4: one step of work that goes on, such as a plan for the dispatcher's
+/// approval or one slice of several. An executor's result with status doing
+/// leaves its task in progress and the executor at work, with nobody's
+/// task_update to undo it. Its dispatcher is told as for any result, and
+/// the mail says the dispatch continues. The same dispatch's last result,
+/// with status review, awaits release as before.
+#[test]
+fn an_intermediate_result_keeps_its_task_doing_and_its_executor_running() {
+    let (_dir, store) = fixture();
+    let dispatch = dispatch(&store, Some("lead"), "dev", "dispatch");
+    let dispatch_id = dispatch["message"]["dispatchId"].as_str().unwrap().to_owned();
+    // `dev` is this dispatch's executor, as a dispatch from a template records it.
+    let internal = task_key(&store.db.read().unwrap(), "T-1").unwrap().0;
+    store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,template_id,task_id,dispatch_id,created_by,state,created_at,updated_at)
+         VALUES('dev','executor','dev',?1,?2,'agent:lead','dispatched','now','now')",
+        params![internal, dispatch_id],
+    ).unwrap();
+    assert_eq!(task(&store)["task"]["executor"]["state"], "running", "at work before its first result");
+    let version = task(&store)["task"]["version"].as_i64().unwrap();
+    let mut plan = submission(&store, &dispatch, "plan");
+    plan["status"] = json!("doing");
+    plan["summary"] = json!("The plan, for your approval before any code.");
+    let answer = store.collaboration_call(Some("dev"), "task_submit_result", plan);
+    assert!(answer.is_ok(), "an intermediate result is taken: {answer:?}");
+    let read = task(&store)["task"].clone();
+    assert_eq!((read["status"].as_str(), read["version"].as_i64()), (Some("doing"), Some(version + 1)),
+        "the task stays in progress, one version on: {read}");
+    assert_eq!(read["executor"]["state"], "running", "its executor is at work, not awaiting release: {}", read["executor"]);
+    assert_eq!((read["result"]["status"].as_str(), read["result"]["dispatchId"].as_str()), (Some("doing"), Some(dispatch_id.as_str())),
+        "the result records the status it left the task at");
+    let inbox = mail(&store, "lead");
+    let notice = inbox.as_array().unwrap().last().unwrap().clone();
+    assert_eq!((notice["metadata"]["kind"].as_str(), notice["metadata"]["status"].as_str()), (Some("task_result"), Some("doing")), "{notice}");
+    let body = notice["body"].as_str().unwrap();
+    assert!(body.starts_with("T-1: dev (dev) submitted an intermediate result (status doing); the task stays doing and this dispatch continues."),
+        "the mail says the work goes on: {body}");
+    assert!(body.contains("The plan, for your approval before any code.") && body.contains("not independent review"), "{body}");
+    // The last result of the same dispatch: delivered, as before.
+    let last = store.collaboration_call(Some("dev"), "task_submit_result", submission(&store, &dispatch, "slices")).unwrap();
+    assert_eq!(last["task"]["status"], "review");
+    assert_eq!(task(&store)["task"]["executor"]["state"], "delivering", "the last result awaits release");
+    let notice = mail(&store, "lead").as_array().unwrap().last().unwrap().clone();
+    assert!(notice["body"].as_str().unwrap().starts_with("T-1: dev (dev) submitted a result with status review."), "{notice}");
+    assert_eq!(mail(&store, "lead").as_array().unwrap().len(), 2, "one mail per result");
+}

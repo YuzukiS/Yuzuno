@@ -1,12 +1,20 @@
 //! Interactive previews of single-file HTML (T-5): a Home attachment or a
-//! conversation file, shown working in the Portal rather than as its source.
+//! conversation file, shown working in the Portal or on its Home card rather
+//! than as its source.
 //!
 //! Core never serves such a page from its own origin, whose every response
-//! refuses framing (`server::harden`). The bytes are read once, when the user
-//! asks, and kept as they were under an unguessable token; a listener of
-//! Core's own on one port P of the services' range (`services.rs`) serves
-//! them at http://127.0.0.1:P/v/<token>, and nothing else but the page's
-//! one-time proof that its client reaches P (as a service's way is proven).
+//! refuses framing (`server::harden`). The page is taken once, when the user
+//! asks, and kept as it was under an unguessable token: a Home attachment as
+//! the snapshot Core already keeps of it, held there for as long as the
+//! preview is (`project_brief::hold_attachment`), and a conversation file as
+//! Core's own copy of it in `<data dir>/previews`. Only their index stays in
+//! memory: every answer reads its file CHUNK bytes at a time, so a page costs
+//! Core the same memory whatever its size (YN-10). A page is as large as a
+//! Home attachment Core keeps can be (MAX_BYTES); one on another machine, as
+//! its helper reads (`remote::read_artifact`). A listener of Core's own on
+//! one port P of the services' range (`services.rs`) serves them at
+//! http://127.0.0.1:P/v/<token>, and nothing else but the page's one-time
+//! proof that its client reaches P (as a service's way is proven).
 //!
 //! A page asked for through the phone entry (T-170) cannot reach P. It is
 //! served instead by the phone entry itself, at the same origin and through
@@ -36,9 +44,18 @@
 //! Core, Yuzuno's storage or the user's sessions, so the file is all it has
 //! to carry. The Portal says so, and stops showing a frame once it sees it
 //! load something else.
+//!
+//! A Home card asks for its attachment's preview with `place: "card"` and
+//! the section version it shows (YN-3). Cards keep snapshots of their own
+//! (`Place`), so a card never takes the place of one the Portal opened; and a
+//! card asking again for the same version of the same attachment, from the
+//! same page through the same entry, is given the snapshot it has while at
+//! least REUSE_LEFT of it remains, with a proof of its own each time. No
+//! snapshot is ever given more time than its hour.
 use crate::{server::{artifact_path, RemoteEntry}, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
 use axum::{
+    body::{Body, Bytes},
     extract::{Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::Next,
@@ -51,6 +68,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -62,16 +80,29 @@ use tokio::{
 
 /// The previews' key in the services' port pool (never a service's id).
 const PORT_KEY: &str = "yuzuno-preview";
-/// One page, as one file: enough for a hand-written prototype with inline
-/// images, small enough to keep in memory.
-pub const MAX_BYTES: usize = 2 * 1024 * 1024;
-/// What Core keeps at most, all snapshots together; the oldest go first.
-const MAX_KEPT_BYTES: usize = 8 * 1024 * 1024;
+/// One page, as one file: a conversation file up to this size is previewed,
+/// as a Home attachment up to it is kept (`project_brief`).
+pub(crate) const MAX_BYTES: u64 = crate::project_brief::SNAPSHOT_FILE_BYTES;
+/// The files of each place's snapshots together, at most; never less than
+/// one page.
+const MAX_KEPT_BYTES: u64 = if cfg!(test) { 32 << 20 } else { 256 << 20 };
+const _: () = assert!(MAX_KEPT_BYTES >= MAX_BYTES);
+/// Snapshots the Portal keeps, and Home cards (`Place`); in each the oldest
+/// go first, and neither makes room in the other.
 const MAX_KEPT: usize = 16;
+const MAX_CARDS: usize = 32;
+/// Proofs not yet answered, of both places; the oldest go first.
+const MAX_PROOFS: usize = 64;
 /// How long a snapshot can be opened; then it is gone.
 const LIFETIME: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 60 * 60 });
 /// How long the page has to ask for its proof's answer.
 const PROOF_TTL: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 60 });
+/// The time a card's snapshot must have left to be given again.
+const REUSE_LEFT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 10 * 60 });
+/// How much of a page is read or sent at once.
+const CHUNK: usize = 64 * 1024;
+/// Core's copies of conversation files, in the data folder.
+const COPIES: &str = "previews";
 const HEAD_LIMIT: usize = 8192;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const PROOF_PATH: &str = "/.well-known/yuzuno-preview/";
@@ -102,10 +133,53 @@ const PERMISSIONS: &str = "accelerometer=(), camera=(), display-capture=(), geol
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind", deny_unknown_fields)]
 pub enum Source {
-    /// A Home section's attachment, in the version given or its latest.
-    BriefAttachment { project_id: String, section: String, name: String, version: Option<i64> },
+    /// A Home section's attachment, in the version given or its latest; a
+    /// card's preview names its version, and gets that one or none.
+    BriefAttachment {
+        project_id: String,
+        section: String,
+        name: String,
+        version: Option<i64>,
+        #[serde(default)]
+        place: Place,
+    },
     /// A file an Agent's conversation names, in its working directory.
     Artifact { agent_id: String, path: String },
+}
+
+impl Source {
+    fn place(&self) -> Place {
+        match self {
+            Source::BriefAttachment { place, .. } => *place,
+            Source::Artifact { .. } => Place::Portal,
+        }
+    }
+}
+
+/// Where a preview is shown, each place with snapshots of its own.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Place {
+    /// The Portal: a new snapshot each time it opens one.
+    #[default]
+    Portal,
+    /// A Home card (YN-3): its live snapshot is given again.
+    Card,
+}
+
+impl Place {
+    fn name(self) -> &'static str {
+        match self {
+            Place::Portal => "portal",
+            Place::Card => "card",
+        }
+    }
+    fn most(self) -> usize {
+        match self {
+            Place::Portal => MAX_KEPT,
+            Place::Card => MAX_CARDS,
+        }
+    }
 }
 
 /// Who asks for a preview, as the server's routing admitted the request.
@@ -133,11 +207,47 @@ enum Via {
 pub(crate) struct PreviewDocument;
 
 struct Snapshot {
-    bytes: Arc<Vec<u8>>,
+    /// The page, kept as it was for as long as the snapshot is (`_keep`).
+    file: PathBuf,
+    size: u64,
     /// The origin of the page that asked: the only one that may frame it.
     ancestor: Option<String>,
     until: Instant,
     via: Via,
+    place: Place,
+    /// What a card's snapshot is given again for.
+    card: Option<CardKey>,
+    /// The facts of the reply, the same each time it is given.
+    shown: Value,
+    _keep: Keep,
+}
+
+/// A card's snapshot is of one attachment in one section version, by its
+/// content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CardKey {
+    project: String,
+    section: String,
+    name: String,
+    version: i64,
+    sha256: String,
+}
+
+/// What keeps a snapshot's file as it was: a Home attachment's snapshot held
+/// out of `collect_garbage`'s reach, or Core's own copy, deleted with it.
+#[derive(Default)]
+struct Keep {
+    _hold: Option<crate::project_brief::AttachmentHold>,
+    _copy: Option<Copied>,
+}
+
+/// A conversation file's copy, removed when the snapshot that keeps it goes.
+struct Copied(PathBuf);
+
+impl Drop for Copied {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 struct Proof {
@@ -148,30 +258,58 @@ struct Proof {
     via: Via,
 }
 
+/// The index of what Core keeps. What leaves it is handed back, to be let go
+/// (its file deleted or released) once the lock is.
 #[derive(Default)]
 struct Kept {
     snapshots: HashMap<String, Snapshot>,
+    /// Their tokens, oldest first.
     order: VecDeque<String>,
     proofs: HashMap<String, Proof>,
 }
 
 impl Kept {
-    fn bytes(&self) -> usize {
-        self.snapshots.values().map(|s| s.bytes.len()).sum()
+    /// The bytes of the files `place` keeps.
+    fn bytes(&self, place: Place) -> u64 {
+        self.snapshots.values().filter(|s| s.place == place).map(|s| s.size).sum()
     }
 
-    /// Expired ones out, then the oldest until one more of `size` fits.
-    fn make_room(&mut self, size: usize) {
-        let now = Instant::now();
-        self.snapshots.retain(|_, s| s.until > now);
-        self.proofs.retain(|_, p| p.until > now && !p.used);
+    /// The snapshots `gone` picks, out.
+    fn take(&mut self, gone: impl Fn(&Snapshot) -> bool) -> Vec<Snapshot> {
+        let tokens: Vec<String> = self.snapshots.iter().filter(|(_, s)| gone(s)).map(|(token, _)| token.clone()).collect();
+        let taken = tokens.iter().filter_map(|token| self.snapshots.remove(token)).collect();
         let snapshots = &self.snapshots;
         self.order.retain(|token| snapshots.contains_key(token));
-        while !self.order.is_empty() && (self.snapshots.len() >= MAX_KEPT || self.bytes() + size > MAX_KEPT_BYTES) {
-            if let Some(oldest) = self.order.pop_front() {
-                self.snapshots.remove(&oldest);
+        taken
+    }
+
+    /// What has had its time, out: answered or expired proofs, and expired snapshots.
+    fn expired(&mut self) -> Vec<Snapshot> {
+        let now = Instant::now();
+        self.proofs.retain(|_, p| p.until > now && !p.used);
+        self.take(|s| s.until <= now)
+    }
+
+    /// Expired ones out, then the oldest of `place` until one more of `size` fits there.
+    fn make_room(&mut self, place: Place, size: u64) -> Vec<Snapshot> {
+        let mut gone = self.expired();
+        while self.snapshots.values().filter(|s| s.place == place).count() >= place.most() || self.bytes(place) + size > MAX_KEPT_BYTES {
+            let snapshots = &self.snapshots;
+            let Some(at) = self.order.iter().position(|token| snapshots.get(token).is_some_and(|s| s.place == place)) else { break };
+            if let Some(oldest) = self.order.remove(at) {
+                gone.extend(self.snapshots.remove(&oldest));
             }
         }
+        gone
+    }
+
+    /// A proof for `challenge`; the oldest unanswered goes first once MAX_PROOFS are kept.
+    fn prove(&mut self, challenge: String, proof: Proof) {
+        while self.proofs.len() >= MAX_PROOFS {
+            let Some(oldest) = self.proofs.iter().min_by_key(|(_, p)| p.until).map(|(challenge, _)| challenge.clone()) else { break };
+            self.proofs.remove(&oldest);
+        }
+        self.proofs.insert(challenge, proof);
     }
 }
 
@@ -180,6 +318,8 @@ impl Kept {
 pub struct Previews {
     port: tokio::sync::Mutex<Option<u16>>,
     kept: Arc<Mutex<Kept>>,
+    /// Whether the folder of copies was emptied of an earlier Core's (`copy_path`).
+    emptied: tokio::sync::OnceCell<()>,
 }
 
 /// An origin as a browser sends it, fit to go back in a header: none when
@@ -215,13 +355,54 @@ impl Previews {
     /// Forget what was taken for the phone entry: on every run (`None`),
     /// or on all runs but `kept`.
     pub(crate) fn revoke_phone(&self, kept_run: Option<u64>) {
-        let mut kept = self.kept.lock().unwrap();
-        let gone = |via: &Via| matches!(via, Via::Phone(run) if Some(*run) != kept_run);
-        kept.snapshots.retain(|_, s| !gone(&s.via));
-        kept.proofs.retain(|_, p| !gone(&p.via));
-        let Kept { snapshots, order, .. } = &mut *kept;
-        order.retain(|token| snapshots.contains_key(token));
+        let taken = {
+            let mut kept = self.kept.lock().unwrap();
+            let gone = |via: &Via| matches!(via, Via::Phone(run) if Some(*run) != kept_run);
+            kept.proofs.retain(|_, p| !gone(&p.via));
+            kept.take(|s| gone(&s.via))
+        };
+        drop(taken);
     }
+
+    /// A new path for a copy, in the folder of copies; the first time this
+    /// Core copies a file, what an earlier one left there is removed (no
+    /// snapshot outlives its Core).
+    async fn copy_path(&self, data_dir: &Path) -> Result<PathBuf> {
+        let dir = data_dir.join(COPIES);
+        self.emptied.get_or_try_init(|| {
+            let dir = dir.clone();
+            async move {
+                tokio::task::spawn_blocking(move || -> Result<()> {
+                    match std::fs::remove_dir_all(&dir) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error).with_context(|| format!("cannot empty {}", dir.display())),
+                    }
+                    let mut folder = std::fs::DirBuilder::new();
+                    folder.recursive(true);
+                    #[cfg(unix)]
+                    std::os::unix::fs::DirBuilderExt::mode(&mut folder, 0o700);
+                    folder.create(&dir).with_context(|| format!("cannot create {}", dir.display()))
+                })
+                .await?
+            }
+        })
+        .await?;
+        Ok(dir.join(format!("{}.html", uuid::Uuid::new_v4().simple())))
+    }
+}
+
+/// At `until`, takes what has expired out of the index and lets its files
+/// go, even if nothing else is asked meanwhile.
+fn sweep_at(kept: &Arc<Mutex<Kept>>, until: Instant) {
+    let kept = Arc::downgrade(kept);
+    tokio::spawn(async move {
+        tokio::time::sleep_until(until).await;
+        if let Some(kept) = kept.upgrade() {
+            let gone = kept.lock().unwrap().expired();
+            drop(gone);
+        }
+    });
 }
 
 async fn accept(listener: TcpListener, port: u16, kept: Arc<Mutex<Kept>>) {
@@ -282,22 +463,69 @@ fn admit(head: &str, port: u16) -> Result<Via, (&'static str, &'static str)> {
     }
 }
 
-/// A response with the headers every answer of this origin has.
-fn response(status: &str, extra: &[(&str, String)], body: &[u8], with_body: bool) -> Vec<u8> {
+/// The head of a response with the headers every answer of this origin
+/// has, for a body of `length` bytes.
+fn head_of(status: &str, extra: &[(&str, String)], length: u64) -> Vec<u8> {
     let mut out = format!("HTTP/1.1 {status}\r\n");
     for (name, value) in extra {
         out.push_str(&format!("{name}: {value}\r\n"));
     }
     out.push_str(&format!(
         "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nCache-Control: no-store\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
+         Content-Length: {length}\r\nConnection: close\r\n\r\n"
     ));
-    let mut bytes = out.into_bytes();
+    out.into_bytes()
+}
+
+/// A response with the headers every answer of this origin has.
+fn response(status: &str, extra: &[(&str, String)], body: &[u8], with_body: bool) -> Vec<u8> {
+    let mut bytes = head_of(status, extra, body.len() as u64);
     if with_body {
         bytes.extend_from_slice(body);
     }
     bytes
+}
+
+/// An answer on port P: one put together, or a page's head and its file.
+enum Answer {
+    Whole(Vec<u8>),
+    Page { head: Vec<u8>, file: tokio::fs::File, size: u64 },
+}
+
+/// A snapshot's file, open for reading, while it is there at the size it
+/// was kept at.
+async fn opened(path: &Path, size: u64) -> Option<tokio::fs::File> {
+    let file = tokio::fs::File::open(path).await.ok()?;
+    (file.metadata().await.ok()?.len() == size).then_some(file)
+}
+
+/// `size` bytes of `file` to `out`, CHUNK at a time.
+async fn send(file: tokio::fs::File, size: u64, out: &mut TcpStream) -> std::io::Result<()> {
+    let mut file = file.take(size);
+    let mut chunk = vec![0; CHUNK];
+    loop {
+        let n = file.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        out.write_all(&chunk[..n]).await?;
+    }
+}
+
+/// `size` bytes of `file` as a body, CHUNK at a time.
+fn chunks(file: tokio::fs::File, size: u64) -> Body {
+    Body::from_stream(futures_util::stream::unfold(Some(file.take(size)), |file| async move {
+        let mut file = file?;
+        let mut chunk = vec![0; CHUNK];
+        match file.read(&mut chunk).await {
+            Ok(0) => None,
+            Ok(n) => {
+                chunk.truncate(n);
+                Some((Ok(Bytes::from(chunk)), Some(file)))
+            }
+            Err(error) => Some((Err(error), None)),
+        }
+    }))
 }
 
 /// A refusal; its body names this listener, so a check can tell it from
@@ -318,66 +546,88 @@ async fn serve(mut stream: TcpStream, port: u16, kept: Arc<Mutex<Kept>>) {
     let with_body = method != "HEAD";
     let path = target.split(['?', '#']).next().unwrap_or_default();
     let origins = values(&head, "origin");
-    let bytes = match admit(&head, port) {
-        Err((status, reason)) => refused(status, reason, with_body),
-        Ok(_) if method != "GET" && method != "HEAD" => response("405 Method Not Allowed", &[
+    let reply = match admit(&head, port) {
+        Err((status, reason)) => Answer::Whole(refused(status, reason, with_body)),
+        Ok(_) if method != "GET" && method != "HEAD" => Answer::Whole(response("405 Method Not Allowed", &[
             ("Allow", "GET, HEAD".into()),
             ("Content-Type", "text/plain; charset=utf-8".into()),
             ("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'".into()),
-        ], b"405 Method Not Allowed", with_body),
-        Ok(via) => answer(path, via, &origins, &kept, with_body),
+        ], b"405 Method Not Allowed", with_body)),
+        Ok(via) => answer(path, via, &origins, &kept, with_body).await,
     };
-    let _ = stream.write_all(&bytes).await;
+    match reply {
+        Answer::Whole(bytes) => {
+            let _ = stream.write_all(&bytes).await;
+        }
+        Answer::Page { head, file, size } => {
+            if stream.write_all(&head).await.is_ok() && with_body {
+                let _ = send(file, size, &mut stream).await;
+            }
+        }
+    }
     let _ = stream.shutdown().await;
 }
 
 /// The answer to an admitted GET or HEAD of `path`, through `via`.
-fn answer(path: &str, via: Via, origins: &[&str], kept: &Mutex<Kept>, with_body: bool) -> Vec<u8> {
+async fn answer(path: &str, via: Via, origins: &[&str], kept: &Mutex<Kept>, with_body: bool) -> Answer {
     if let Some(challenge) = path.strip_prefix(PROOF_PATH) {
-        // At most one Origin; the proof's own, or none for a page that sent none.
-        let origin = match origins {
-            [] => None,
-            [origin] => Some((*origin).to_owned()),
-            _ => return refused("404 Not Found", "No such Yuzuno preview", with_body),
-        };
-        let given = {
-            let mut kept = kept.lock().unwrap();
-            match kept.proofs.get_mut(challenge) {
-                Some(proof) if !proof.used && Instant::now() < proof.until && origin == proof.origin && proof.via == via => {
-                    proof.used = true;
-                    Some((proof.answer.clone(), proof.origin.clone()))
-                }
-                _ => None,
-            }
-        };
-        match given {
-            Some((answer, origin)) => {
-                let mut extra = vec![("Content-Type", "text/plain; charset=utf-8".to_owned())];
-                if let Some(origin) = origin {
-                    extra.push(("Access-Control-Allow-Origin", origin));
-                    extra.push(("Vary", "Origin".into()));
-                }
-                response("200 OK", &extra, answer.as_bytes(), with_body)
-            }
-            None => refused("404 Not Found", "No such Yuzuno preview", with_body),
-        }
+        Answer::Whole(proof_answer(challenge, via, origins, kept, with_body))
     } else if let Some(token) = path.strip_prefix(PAGE_PATH) {
         let found = {
             let kept = kept.lock().unwrap();
-            kept.snapshots.get(token).filter(|s| Instant::now() < s.until && s.via == via).map(|s| (s.bytes.clone(), s.ancestor.clone()))
+            kept.snapshots.get(token).filter(|s| Instant::now() < s.until && s.via == via).map(|s| (s.file.clone(), s.size, s.ancestor.clone()))
         };
-        match found {
-            Some((page, ancestor)) => response("200 OK", &[
-                ("Content-Type", "text/html; charset=utf-8".into()),
-                ("Content-Security-Policy", page_policy(ancestor.as_deref())),
-                ("Cross-Origin-Opener-Policy", "same-origin".into()),
-                ("Cross-Origin-Resource-Policy", "same-origin".into()),
-                ("Permissions-Policy", PERMISSIONS.into()),
-            ], &page, with_body),
-            None => refused("404 Not Found", "No such Yuzuno preview", with_body),
+        let page = match found {
+            Some((file, size, ancestor)) => opened(&file, size).await.map(|file| (file, size, ancestor)),
+            None => None,
+        };
+        match page {
+            Some((file, size, ancestor)) => Answer::Page {
+                head: head_of("200 OK", &[
+                    ("Content-Type", "text/html; charset=utf-8".into()),
+                    ("Content-Security-Policy", page_policy(ancestor.as_deref())),
+                    ("Cross-Origin-Opener-Policy", "same-origin".into()),
+                    ("Cross-Origin-Resource-Policy", "same-origin".into()),
+                    ("Permissions-Policy", PERMISSIONS.into()),
+                ], size),
+                file,
+                size,
+            },
+            None => Answer::Whole(refused("404 Not Found", "No such Yuzuno preview", with_body)),
         }
     } else {
-        refused("404 Not Found", "No such Yuzuno preview", with_body)
+        Answer::Whole(refused("404 Not Found", "No such Yuzuno preview", with_body))
+    }
+}
+
+/// The answer to an admitted GET or HEAD of a proof's `challenge`.
+fn proof_answer(challenge: &str, via: Via, origins: &[&str], kept: &Mutex<Kept>, with_body: bool) -> Vec<u8> {
+    // At most one Origin; the proof's own, or none for a page that sent none.
+    let origin = match origins {
+        [] => None,
+        [origin] => Some((*origin).to_owned()),
+        _ => return refused("404 Not Found", "No such Yuzuno preview", with_body),
+    };
+    let given = {
+        let mut kept = kept.lock().unwrap();
+        match kept.proofs.get_mut(challenge) {
+            Some(proof) if !proof.used && Instant::now() < proof.until && origin == proof.origin && proof.via == via => {
+                proof.used = true;
+                Some((proof.answer.clone(), proof.origin.clone()))
+            }
+            _ => None,
+        }
+    };
+    match given {
+        Some((answer, origin)) => {
+            let mut extra = vec![("Content-Type", "text/plain; charset=utf-8".to_owned())];
+            if let Some(origin) = origin {
+                extra.push(("Access-Control-Allow-Origin", origin));
+                extra.push(("Vary", "Origin".into()));
+            }
+            response("200 OK", &extra, answer.as_bytes(), with_body)
+        }
+        None => refused("404 Not Found", "No such Yuzuno preview", with_body),
     }
 }
 
@@ -435,10 +685,12 @@ async fn phone_page(State(ws): State<Arc<Workspace>>, Extension(entry): Extensio
     }
     let found = named(request.uri().path(), PHONE_PAGE).and_then(|token| {
         let kept = ws.previews.kept.lock().unwrap();
-        kept.snapshots.get(token).filter(|s| Instant::now() < s.until && s.via == Via::Phone(entry.run())).map(|s| (s.bytes.clone(), s.ancestor.clone()))
+        kept.snapshots.get(token).filter(|s| Instant::now() < s.until && s.via == Via::Phone(entry.run()))
+            .map(|s| (s.file.clone(), s.size, s.ancestor.clone()))
     });
-    let Some((page, ancestor)) = found else { return no_such().await };
-    let mut response = (StatusCode::OK, page.as_ref().clone()).into_response();
+    let Some((file, size, ancestor)) = found else { return no_such().await };
+    let Some(file) = opened(&file, size).await else { return no_such().await };
+    let mut response = Response::new(chunks(file, size));
     let headers = response.headers_mut();
     for (name, value) in [
         (header::CONTENT_TYPE, "text/html; charset=utf-8".to_owned()),
@@ -560,96 +812,305 @@ fn html_name(name: &str) -> bool {
     lower.ends_with(".html") || lower.ends_with(".htm")
 }
 
+/// What a preview is taken of, found and not yet read.
+enum Found {
+    /// A Home attachment's snapshot, and what a card's preview of it is.
+    Attachment { file: PathBuf, sha256: String, name: String, key: CardKey },
+    /// A file in an Agent's working directory on this host.
+    Local { file: PathBuf, name: String },
+    /// One on the Agent's own machine, as its helper read it.
+    Remote { bytes: Vec<u8>, name: String },
+}
+
+/// A page as Core keeps it: its file, what keeps that as it was, and what the reply says of it.
+struct Taken {
+    file: PathBuf,
+    size: u64,
+    sha256: String,
+    name: String,
+    version: Option<i64>,
+    card: Option<CardKey>,
+    keep: Keep,
+}
+
+/// Who asked, as the server's routing admitted the request, and where its snapshot and proof are.
+struct Asked {
+    via: Via,
+    ancestor: Option<String>,
+    /// The page's address and the proof's, but for the token or challenge.
+    page_url: String,
+    proof_url: String,
+    method: Option<&'static str>,
+    port: u16,
+    place: Place,
+}
+
+impl Asked {
+    /// The reply for snapshot `page`, with what it shows and a proof of its own.
+    fn reply(&self, page: &str, shown: &Value, challenge: &str, answer: &str, reused: bool) -> Value {
+        let mut proof = json!({"challenge": challenge, "answer": answer, "url": format!("{}{challenge}", self.proof_url)});
+        if let Some(method) = self.method {
+            proof["method"] = json!(method);
+        }
+        let mut reply = shown.clone();
+        reply["port"] = json!(self.port);
+        reply["url"] = json!(format!("{}{page}", self.page_url));
+        reply["proof"] = proof;
+        reply["place"] = json!(self.place.name());
+        reply["reused"] = json!(reused);
+        reply
+    }
+
+    /// A new proof whose answer is `answer`, for the page that asked, where it asked.
+    fn proof(&self, answer: String) -> Proof {
+        Proof { answer, origin: self.ancestor.clone(), until: Instant::now() + PROOF_TTL, used: false, via: self.via.clone() }
+    }
+}
+
+/// Whether bytes given piece by piece are UTF-8 as a whole: a character a
+/// piece ends inside of is carried into the next.
+#[derive(Default)]
+struct Utf8 {
+    carried: Vec<u8>,
+}
+
+impl Utf8 {
+    fn feed(&mut self, mut piece: &[u8]) -> bool {
+        if let Some(&lead) = self.carried.first() {
+            let width = match lead {
+                0xC2..=0xDF => 2,
+                0xE0..=0xEF => 3,
+                0xF0..=0xF4 => 4,
+                _ => return false,
+            };
+            let more = (width - self.carried.len()).min(piece.len());
+            self.carried.extend_from_slice(&piece[..more]);
+            piece = &piece[more..];
+            if self.carried.len() < width {
+                return true;
+            }
+            if std::str::from_utf8(&self.carried).is_err() {
+                return false;
+            }
+            self.carried.clear();
+        }
+        match std::str::from_utf8(piece) {
+            Ok(_) => true,
+            // Cut short at its end: the rest of that character comes next.
+            Err(error) if error.error_len().is_none() => {
+                self.carried.extend_from_slice(&piece[error.valid_up_to()..]);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Whether no character was left unfinished.
+    fn whole(&self) -> bool {
+        self.carried.is_empty()
+    }
+}
+
+/// One pass over a page, CHUNK bytes at a time: its size and SHA-256, once
+/// all of it is read, is UTF-8 and is at most `limit` bytes. Each chunk is
+/// written to `copy` too.
+fn scan(page: &mut impl std::io::Read, mut copy: Option<&mut std::fs::File>, limit: u64) -> Result<(u64, String)> {
+    use std::io::Write;
+    let (mut size, mut sha, mut text) = (0u64, Sha256::new(), Utf8::default());
+    let mut chunk = vec![0; CHUNK];
+    loop {
+        let n = match page.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        size += n as u64;
+        ensure!(size <= limit, "preview_too_large: a previewed page is at most {} MB", limit >> 20);
+        ensure!(text.feed(&chunk[..n]), "preview_unsupported: the file is not UTF-8 text");
+        sha.update(&chunk[..n]);
+        if let Some(copy) = copy.as_mut() {
+            copy.write_all(&chunk[..n])?;
+        }
+    }
+    ensure!(text.whole(), "preview_unsupported: the file is not UTF-8 text");
+    Ok((size, format!("{:x}", sha.finalize())))
+}
+
+/// A new file for a copy, readable and writable by Core alone.
+fn new_copy(path: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path).with_context(|| format!("cannot copy into {}", path.display()))
+}
+
+impl Previews {
+    /// What `found` is now, kept as it is: a Home attachment's snapshot held
+    /// where it is, anything else copied once.
+    async fn take(&self, data_dir: &Path, found: Found) -> Result<Taken> {
+        match found {
+            Found::Attachment { file, sha256, name, key } => {
+                // Held before it is read: from here collect_garbage leaves it.
+                let hold = crate::project_brief::hold_attachment(&file);
+                let path = file.clone();
+                let (size, sha) = tokio::task::spawn_blocking(move || -> Result<(u64, String)> {
+                    let mut page = std::fs::File::open(&path).context("snapshot_missing: The snapshot of this attachment is no longer kept")?;
+                    scan(&mut page, None, MAX_BYTES)
+                })
+                .await??;
+                ensure!(sha == sha256, "preview_unavailable: the kept snapshot of this attachment no longer matches its SHA-256");
+                let version = Some(key.version);
+                Ok(Taken { file, size, sha256: sha, name, version, card: Some(key), keep: Keep { _hold: Some(hold), _copy: None } })
+            }
+            Found::Local { file, name } => self.copy(data_dir, name, move |copy| {
+                let mut page = std::fs::File::open(&file).with_context(|| format!("{} cannot be read", file.display()))?;
+                scan(&mut page, Some(copy), MAX_BYTES)
+            }).await,
+            Found::Remote { bytes, name } => self.copy(data_dir, name, move |copy| scan(&mut bytes.as_slice(), Some(copy), MAX_BYTES)).await,
+        }
+    }
+
+    /// A conversation file as Core's copy of it, which `write` makes.
+    async fn copy(&self, data_dir: &Path, name: String, write: impl FnOnce(&mut std::fs::File) -> Result<(u64, String)> + Send + 'static)
+        -> Result<Taken> {
+        let copied = Copied(self.copy_path(data_dir).await?);
+        let path = copied.0.clone();
+        let (size, sha256) = tokio::task::spawn_blocking(move || write(&mut new_copy(&path)?)).await??;
+        Ok(Taken { file: copied.0.clone(), size, sha256, name, version: None, card: None, keep: Keep { _hold: None, _copy: Some(copied) } })
+    }
+}
+
 impl Workspace {
-    /// The bytes of `source` as they are now, and the file's name.
-    async fn preview_bytes(self: &Arc<Self>, source: &Source) -> Result<(String, Vec<u8>)> {
+    /// What `source` names, found where it is kept but not yet read, and its name.
+    async fn preview_of(self: &Arc<Self>, source: &Source) -> Result<Found> {
         match source {
-            Source::BriefAttachment { project_id, section, name, version } => {
+            Source::BriefAttachment { project_id, section, name, version, place } => {
                 ensure!(html_name(name), "preview_unsupported: only a single .html or .htm file can be previewed");
-                let path = crate::project_brief::attachment_file(self, project_id, section, name, *version).await?;
-                Ok((name.clone(), read_bounded(&path).await?))
+                ensure!(*place == Place::Portal || version.is_some(), "invalid_input: a card's preview names the section version it shows");
+                let kept = crate::project_brief::attachment_file(self, project_id, section, name, *version).await?;
+                let key = CardKey { project: project_id.clone(), section: section.clone(), name: name.clone(), version: kept.version, sha256: kept.sha256.clone() };
+                Ok(Found::Attachment { file: kept.path, sha256: kept.sha256, name: name.clone(), key })
             }
             Source::Artifact { agent_id, path } => {
                 ensure!(html_name(path), "preview_unsupported: only a single .html or .htm file can be previewed");
                 let agent = self.listed(agent_id).await?;
-                let bytes = if let Some(remote) = &agent.remote {
-                    crate::remote::read_artifact(&remote.machine, &agent.cwd, path).await?
-                } else {
-                    read_bounded(&artifact_path(&agent.cwd, path)?).await?
-                };
                 let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
-                Ok((name, bytes))
+                Ok(match &agent.remote {
+                    Some(remote) => Found::Remote { bytes: crate::remote::read_artifact(&remote.machine, &agent.cwd, path).await?, name },
+                    None => Found::Local { file: artifact_path(&agent.cwd, path)?, name },
+                })
             }
         }
     }
 
-    /// The user's request to see `source` working: its bytes now, kept as
-    /// they are under a new token, and the proof for the page to check that
-    /// its client reaches where it was taken for. A page on Core's own port
+    /// The user's request to see `source` working: it is kept as it is now
+    /// under a new token, with the proof for the page to check that its
+    /// client reaches where it was taken for. A page on Core's own port
     /// (`origin` as the request had it) gets port P and a proof by GET (no
     /// `method`). One through the phone entry gets that entry's own origin,
     /// framed only by it, and a proof by POST (`method`), as its run serves
-    /// now; or an error while phone access does not include previews. The
-    /// reply alone carries the token and the proof's answer.
+    /// now; or an error while phone access does not include previews. A card
+    /// asking again is given its live snapshot, with a new proof. The reply
+    /// alone carries the token and the proof's answer.
     pub async fn open_preview(self: &Arc<Self>, source: Source, asker: Asker<'_>) -> Result<Value> {
         if let Asker::Phone(entry) = &asker {
             ensure!(phone_open(self, entry), "{PHONE_OFF}");
         }
-        let (name, bytes) = self.preview_bytes(&source).await?;
-        ensure!(bytes.len() <= MAX_BYTES, "preview_too_large: a previewed page is at most {} MB", MAX_BYTES / (1024 * 1024));
-        if std::str::from_utf8(&bytes).is_err() {
-            bail!("preview_unsupported: the file is not UTF-8 text");
-        }
-        let (page, challenge, answer) = (token(), token(), token());
-        let (via, ancestor, url, proof, port) = match asker {
+        let place = source.place();
+        let found = self.preview_of(&source).await?;
+        let asked = match asker {
             Asker::Local(origin) => {
                 let port = self.previews.listening(self).await?;
                 let base = format!("http://127.0.0.1:{port}");
-                let proof = json!({"challenge": challenge, "answer": answer, "url": format!("{base}{PROOF_PATH}{challenge}")});
-                (Via::Local, origin_of(origin), format!("{base}{PAGE_PATH}{page}"), proof, port)
+                Asked { via: Via::Local, ancestor: origin_of(origin), page_url: format!("{base}{PAGE_PATH}"), proof_url: format!("{base}{PROOF_PATH}"),
+                    method: None, port, place }
             }
             Asker::Phone(entry) => {
                 let origin = entry.origin();
                 let port = reqwest::Url::parse(origin).ok().and_then(|url| url.port_or_known_default()).unwrap_or(443);
                 // By POST, which sends the page's Origin: a GET from the same origin usually sends none.
-                let proof = json!({"challenge": challenge, "answer": answer, "url": format!("{origin}{PHONE_PROOF}{challenge}"), "method": "POST"});
-                (Via::Phone(entry.run()), Some(origin.to_owned()), format!("{origin}{PHONE_PAGE}{page}"), proof, port)
+                Asked { via: Via::Phone(entry.run()), ancestor: Some(origin.to_owned()), page_url: format!("{origin}{PHONE_PAGE}"),
+                    proof_url: format!("{origin}{PHONE_PROOF}"), method: Some("POST"), port, place }
             }
         };
-        let sha256 = format!("{:x}", Sha256::digest(&bytes));
-        let size = bytes.len();
-        {
+        if let (Place::Card, Found::Attachment { key, .. }) = (place, &found) {
+            let given = {
+                let mut kept = self.previews.kept.lock().unwrap();
+                let open = !matches!(asked.via, Via::Phone(run) if crate::remote_access::phone_previews(self) != Some(run));
+                let left = Instant::now() + REUSE_LEFT;
+                let live = kept.snapshots.iter()
+                    .find(|(_, s)| open && s.place == Place::Card && s.card.as_ref() == Some(key) && s.ancestor == asked.ancestor
+                        && s.via == asked.via && s.until >= left)
+                    .map(|(page, s)| (page.clone(), s.shown.clone()));
+                live.map(|(page, shown)| {
+                    let (challenge, answer) = (token(), token());
+                    kept.prove(challenge.clone(), asked.proof(answer.clone()));
+                    asked.reply(&page, &shown, &challenge, &answer, true)
+                })
+            };
+            if let Some(reply) = given {
+                return Ok(reply);
+            }
+        }
+        let taken = self.previews.take(&self.data_dir, found).await?;
+        let (page, challenge, answer) = (token(), token(), token());
+        let now = chrono::Utc::now();
+        let shown = json!({
+            "name": taken.name, "size": taken.size, "sha256": taken.sha256,
+            "takenAt": now.to_rfc3339(),
+            "expiresAt": (now + chrono::Duration::from_std(LIFETIME).context("lifetime")?).to_rfc3339(),
+            "version": taken.version,
+        });
+        let reply = asked.reply(&page, &shown, &challenge, &answer, false);
+        let until = Instant::now() + LIFETIME;
+        let gone = {
             let mut kept = self.previews.kept.lock().unwrap();
             // Checked again under the lock that turning previews off clears
             // after it: nothing is kept for the phone once they are off.
-            if let Via::Phone(run) = via {
-                ensure!(crate::remote_access::phone_previews(self) == Some(run), "{PHONE_OFF}");
+            if matches!(asked.via, Via::Phone(run) if crate::remote_access::phone_previews(self) != Some(run)) {
+                None
+            } else {
+                let gone = kept.make_room(place, taken.size);
+                kept.snapshots.insert(page.clone(), Snapshot {
+                    file: taken.file, size: taken.size, ancestor: asked.ancestor.clone(), until, via: asked.via.clone(), place,
+                    card: taken.card.filter(|_| place == Place::Card), shown, _keep: taken.keep,
+                });
+                kept.order.push_back(page);
+                kept.prove(challenge, asked.proof(answer));
+                Some(gone)
             }
-            kept.make_room(size);
-            kept.snapshots.insert(page.clone(), Snapshot {
-                bytes: Arc::new(bytes), ancestor: ancestor.clone(), until: Instant::now() + LIFETIME, via: via.clone(),
-            });
-            kept.order.push_back(page.clone());
-            kept.proofs.insert(challenge.clone(), Proof { answer: answer.clone(), origin: ancestor, until: Instant::now() + PROOF_TTL, used: false, via });
-        }
-        let now = chrono::Utc::now();
-        Ok(json!({
-            "name": name, "size": size, "sha256": sha256,
-            "takenAt": now.to_rfc3339(),
-            "expiresAt": (now + chrono::Duration::from_std(LIFETIME).context("lifetime")?).to_rfc3339(),
-            "port": port,
-            "url": url,
-            "proof": proof,
-        }))
+        };
+        let Some(gone) = gone else { bail!("{PHONE_OFF}") };
+        drop(gone);
+        sweep_at(&self.previews.kept, until);
+        Ok(reply)
     }
 }
 
-/// A file's bytes, read once and at most one past the limit.
-async fn read_bounded(path: &std::path::Path) -> Result<Vec<u8>> {
-    let file = tokio::fs::File::open(path).await.with_context(|| format!("{} cannot be read", path.display()))?;
-    let mut bytes = Vec::new();
-    file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes).await?;
-    Ok(bytes)
+/// A single-file page of exactly `size` bytes (at least 512) for tests:
+/// text with characters of every UTF-8 length, and a script at its very
+/// end that says the whole page ran (YN-10).
+#[cfg(test)]
+pub(crate) fn synthetic_page(size: usize) -> Vec<u8> {
+    let head = "<!doctype html><meta charset=\"utf-8\"><title>Large page</title><p id=\"end\">not run</p>\n";
+    let tail = "\n<script>document.getElementById(\"end\").textContent=\"ran to the end\"</script>\n";
+    let line = "<p>Plain ASCII, é ü ß, 中文字, 🙂 and more filler.</p>\n";
+    assert!(size >= 512, "{size} bytes is too small a page");
+    let mut page = String::with_capacity(size);
+    page.push_str(head);
+    // Whole lines while they fit, then a comment padded to the exact size.
+    while page.len() + line.len() + "<!---->".len() + tail.len() <= size {
+        page.push_str(line);
+    }
+    let pad = size - page.len() - "<!---->".len() - tail.len();
+    page.push_str("<!--");
+    page.push_str(&"a".repeat(pad));
+    page.push_str("-->");
+    page.push_str(tail);
+    assert_eq!(page.len(), size);
+    page.into_bytes()
 }
 
 #[cfg(test)]

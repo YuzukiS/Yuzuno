@@ -29,6 +29,7 @@ const KNOWN: &[(&str, &str)] = &[
     ("claude-runtime", "claudeRuntime"),
     ("opencode", "opencode"),
     ("desktop-updates", "desktopDownloads"),
+    ("previews", "previews"),
     (workspace_backup::online::JOURNAL, "backupOperations"),
     (workspace_backup::schedule::FILE, "backupSchedule"),
 ];

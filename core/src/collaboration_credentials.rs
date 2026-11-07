@@ -114,6 +114,9 @@ impl Workspace {
         if self.collaboration_url.get().is_some() {
             self.record_collaboration_status(id, generation,
                 CollaborationStatus { ready: true, error: None, reason: None }).await;
+            // What the session was attached with, and the notice when that
+            // changed since it was last attached (YN-5).
+            self.session_attached(id, generation).await;
         }
     }
 
@@ -131,7 +134,11 @@ impl Workspace {
             }
             Err(_) => unconfirmed("workspaceError", "无法读取 Workspace 身份"),
         };
+        let ready = status.ready;
         self.record_collaboration_status(id, generation, status).await;
+        if ready {
+            self.session_attached(id, generation).await;
+        }
     }
 }
 
@@ -155,3 +162,7 @@ mod tests {
         assert_eq!(probe_status(Ok(json!({"isError":true,"content":[{"text":"HTTP 401"}]})), "w", "a", "new").reason, Some("unauthorized"));
     }
 }
+
+#[cfg(test)]
+#[path = "session_notice_tests.rs"]
+mod session_notice_tests;

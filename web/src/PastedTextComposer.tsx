@@ -1,7 +1,7 @@
 import { textLabel } from "./message-content";
 import { clipboardImages } from "./image-input";
 import { touchKeyboard } from "./touch-input";
-import { returnSends, type SendKey } from "./device-preferences";
+import { returnKey, type SendKey } from "./device-preferences";
 import {
   forwardRef,
   useImperativeHandle,
@@ -321,23 +321,16 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
           Prec.highest(
             EditorView.domEventHandlers({
               keydown(event, v) {
-                if (
-                  event.key === "Enter" &&
-                  !event.shiftKey &&
-                  !event.isComposing &&
-                  !v.composing &&
-                  event.target === v.contentDOM
-                ) {
-                  event.preventDefault();
-                  // Ctrl/Cmd+Enter always sends, from a keyboard attached to
-                  // a touch screen too; Return alone as this device's
-                  // preference says.
-                  if (event.ctrlKey || event.metaKey || returnSends(callbacks.current.sendKey ?? "auto", touchKeyboard()))
-                    callbacks.current.onSubmit();
-                  else insertNewline(v);
-                  return true;
-                }
-                return false;
+                if (v.composing || event.target !== v.contentDOM) return false;
+                // Ctrl/Cmd+Enter always sends, from a keyboard attached to
+                // a touch screen too; Return alone as this device's
+                // preference says (device-preferences.ts returnKey).
+                const sends = returnKey(event, callbacks.current.sendKey ?? "auto", touchKeyboard);
+                if (sends === null) return false;
+                event.preventDefault();
+                if (sends) callbacks.current.onSubmit();
+                else insertNewline(v);
+                return true;
               },
               paste(event, v) {
                 const files = clipboardImages(event.clipboardData);

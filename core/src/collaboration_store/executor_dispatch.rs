@@ -1,5 +1,7 @@
-//! A task dispatched from an executor template (T-34, executor model phase
-//! 1; docs/executor-model.md): Core creates the Agent the task goes to. Each
+//! A task dispatched to a new executor (T-34, executor model phase 1;
+//! docs/executor-model.md): Core creates the Agent the task goes to, from an
+//! executor template, or, with no `templateId`, as a general executor made
+//! from the defaults for new Agents (YN-2). Each
 //! such dispatch is a row of its own, keyed by its caller and requestId and
 //! written before the Agent exists, so a retry finds it and never makes a
 //! second Agent:
@@ -112,7 +114,9 @@ impl Plan {
     /// failed it) leaves no Agent.
     pub(crate) fn then(&self) -> InTransaction {
         let (actor, request, agent) = (self.dispatch.actor.clone(), self.dispatch.request_id.clone(), self.dispatch.agent_id.clone());
-        let (project, template, task) = (self.project_id.clone(), self.template.id.clone(), self.task_id.clone());
+        // A general executor (YN-2) has no template: its role names none.
+        let template = Some(self.template.id.clone()).filter(|id| !id.is_empty());
+        let (project, task) = (self.project_id.clone(), self.task_id.clone());
         Box::new(move |db| {
             let at = now();
             let moved = db.execute(
@@ -202,7 +206,7 @@ pub(super) fn dispatched(db: &Connection, actor: &TaskActor, request: &str, agen
          WHERE actor=?1 AND request_id=?2 AND agent_id=?3 AND state='created'",
         params![actor_key(actor), request, agent, dispatch, at],
     )?;
-    ensure!(moved == 1, "invalid_input: executor names a dispatch from an executor template, whose Agent Core makes; give toAgentId alone to dispatch to an existing Agent");
+    ensure!(moved == 1, "invalid_input: executor names a dispatch to a new executor, whose Agent Core makes; give toAgentId alone to dispatch to an existing Agent");
     db.execute("UPDATE agent_roles SET dispatch_id=?2,updated_at=?3 WHERE agent_id=?1 AND kind='executor'", params![agent, dispatch, at])?;
     let (template, task, project, machine, template_id) = row.context("the dispatch's template is missing")?;
     crate::executor_slots::enqueue(db, agent, &task, project.as_deref(), &machine, &template_id)?;
@@ -246,9 +250,13 @@ impl Store {
             params![key, request_id], |r| r.get(0))?;
         ensure!(!used, "idempotency_conflict: requestId already has a different payload");
         let executor = &request["executor"];
-        ensure!(executor.is_object(), "invalid_input: executor is {{templateId, machineId?}}");
+        ensure!(executor.is_object(), "invalid_input: executor is {{}} for a general executor, or {{templateId, machineId?}}");
         allowed(executor, &["templateId", "machineId"])?;
-        let template_id = required_text(executor, "templateId", 48)?;
+        // None: a general executor, from the defaults for new Agents (YN-2).
+        let template_id = match executor.get("templateId") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(required_text(executor, "templateId", 48)?),
+        };
         let given_machine = optional_text(executor, "machineId", 128)?.filter(|m| !m.is_empty());
         let task = load_task(&tx, &required_text(&request, "taskId", 128)?)?;
         check_version(&task, &request)?;
@@ -260,10 +268,25 @@ impl Store {
         if let Some(project) = &project {
             crate::projects::ensure_assignable(&tx, project)?;
         }
-        let (template, source) = crate::executor_templates::template_in(&tx, project.as_deref(), &template_id)?.with_context(|| {
-            format!("template_not_found: neither this task's Project nor the Workspace has an executor template {template_id}")
-        })?;
-        template.validate(crate::opencode_agent::enabled())?;
+        let (template, source) = match &template_id {
+            Some(template_id) => {
+                let found = crate::executor_templates::template_in(&tx, project.as_deref(), template_id)?;
+                let Some(found) = found else {
+                    let ids = crate::executor_templates::ids_in(&tx, project.as_deref())?;
+                    let named = if ids.is_empty() { "none".to_owned() } else { ids.join(", ") };
+                    bail!("template_not_found: neither this task's Project nor the Workspace has an executor template {template_id}; \
+                        the templates it can use are: {named}. executor: {{}} makes a general executor from the defaults for new Agents");
+                };
+                found.0.validate(crate::opencode_agent::enabled())?;
+                found
+            }
+            // Its harness is chosen now, in this transaction, so the machine
+            // checks below are for the harness it is made with.
+            None => {
+                let (harness, _) = crate::agent_defaults::new_agent_harness(&tx, project.as_deref())?;
+                (Template::general(harness), "builtin")
+            }
+        };
         // Where it runs (T-35 S3a, Lead 2 Q1): the dispatch's machine, else
         // its template's, else this Core host; `auto`, the one Core chooses
         // now (S3b, executor_choice.rs), recorded with why.
@@ -321,7 +344,7 @@ impl Store {
         let at = now();
         // What the executor's materials say of its template (T-34, R1 b0046ce0):
         // its instructions reach it with the task, not only its settings.
-        let given = json!({"id":template.id,"label":template.label,"source":source,"instructions":template.instructions});
+        let given = template.given(source);
         tx.execute(
             "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at,choice_json)
              VALUES(?1,?2,?3,?4,?5,?6,?10,?7,?8,'pending',?9,?9,?11)",

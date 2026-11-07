@@ -120,7 +120,7 @@ async fn a_template_dispatch_creates_one_executor_that_gets_its_mail_once_connec
     // An accepted dispatch is said so, not a panic: the assertion below names it.
     let paused = ws.collaboration_call(None, "task_dispatch", dispatch("paused", &third)).await
         .err().map_or_else(|| "accepted".to_owned(), |e| e.to_string());
-    assert!(paused.starts_with("workspace_updating:") && paused.contains("from an executor template waits for it"),
+    assert!(paused.starts_with("workspace_updating:") && paused.contains("a dispatch to a new executor waits for it"),
         "a template dispatch is refused while an update drains: {paused}");
     assert!(paused.contains("Retry the same request once the update is done"), "the refusal says to retry it: {paused}");
     assert_eq!(ws.store.agents().unwrap().len(), 2, "nothing was created during the update");
@@ -159,6 +159,48 @@ async fn a_template_dispatch_creates_one_executor_that_gets_its_mail_once_connec
     for id in [executor, after["agentId"].as_str().unwrap().to_owned(), led_executor] {
         ws.close_agent(&id).await.unwrap();
     }
+    serving.abort();
+}
+
+/// YN-2 S1: a dispatch to a new executor that names no template makes a
+/// general executor through the same create path as New Agent: the harness
+/// of the Project's defaults for new Agents, named `{task} · Executor`, with
+/// no template instructions in its mail, which still reaches it once it is
+/// connected.
+#[tokio::test]
+async fn a_general_dispatch_makes_its_executor_from_the_projects_defaults_and_its_mail_reaches_it() {
+    std::env::set_var("YUZUNO_CLAUDE_BRIDGE", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/executor_dispatch_bridge.mjs"));
+    let lab = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let work = folder(lab.path(), "project");
+    let ws = Workspace::new(lab.path().join("data"), lab.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let project = ws.store.create_project("Executor fixture", BTreeMap::from([("local".into(), work.clone())])).unwrap().id;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    assert_ne!(port, 4317);
+    ws.start_collaboration(port);
+    let app = server::router_on_port(ws.clone(), lab.path().join("no-ui"), port);
+    let serving = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let defaults = reqwest::Client::new().post(format!("http://127.0.0.1:{port}/api/projects/{project}/agent-defaults"))
+        .header("X-Yuzuno-Client", "desktop").json(&json!({"harness":"claude"})).send().await.unwrap();
+    assert_eq!(defaults.status(), reqwest::StatusCode::OK, "{}", defaults.text().await.unwrap_or_default());
+
+    let general = task(&ws, "Fix the fixture", &project, None).await;
+    let answer = ws.collaboration_call(None, "task_dispatch", json!({"requestId":"general","taskId":general,"expectedVersion":1,"executor":{}}))
+        .await.unwrap_or_else(|e| panic!("a dispatch that names no template makes a general executor: {e:#}"));
+    let executor = answer["agentId"].as_str().unwrap().to_owned();
+    let agents = ws.store.agents().unwrap();
+    let agent = agents.iter().find(|a| a.id == executor).expect("the executor is listed");
+    assert_eq!(
+        (agent.kind.as_deref(), agent.project_id.as_deref(), agent.cwd.as_str(), agent.name.as_str(), agent.harness.as_str()),
+        (Some("executor"), Some(project.as_str()), work.as_str(), "EF-1 · Executor", "claude"),
+        "an executor of the task's Project, in its folder, with the Project's default harness",
+    );
+    until("the mail reaches the executor", || !prompts(Path::new(&work)).is_empty()).await;
+    let mail = ws.store.collaboration_call(Some(&executor), "peer_read", json!({})).unwrap();
+    let dispatched = mail["messages"].as_array().unwrap().iter().find(|m| m["taskId"] == json!(general)).expect("the dispatch's mail");
+    let body = dispatched["body"].as_str().unwrap();
+    assert!(body.contains("Executor: General executor") && !body.contains("Its instructions:"), "it is told it has no template: {body}");
+    ws.close_agent(&executor).await.unwrap();
     serving.abort();
 }
 

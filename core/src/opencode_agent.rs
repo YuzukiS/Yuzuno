@@ -116,6 +116,19 @@ const CONFIRM_LIMIT: Duration = Duration::from_secs(5);
 const STOP_LIMIT: Duration = Duration::from_secs(10);
 /// Waits before each attempt to open the event stream again.
 const RESUBSCRIBE: [Duration; 3] = [Duration::from_millis(100), Duration::from_millis(500), Duration::from_secs(2)];
+/// The Workspace MCP server's name in an Agent's OpenCode: its tools are
+/// `yuzuno_<tool>` there.
+const MCP_NAME: &str = "yuzuno";
+/// How long a Workspace MCP server OpenCode lists as still connecting is
+/// waited for: as long as Core lets it take to connect, and a little more.
+const MCP_SETTLE: Duration = Duration::from_secs(opencode::MCP_STARTUP.as_secs() + 2);
+/// How long a message waits after Core has just connected the Workspace MCP
+/// in its OpenCode: 2.x offers a server's tools to the model from a registry
+/// it reloads 100 ms after the server's tools change (2.2.5
+/// core/src/tool/mcp.ts), not at once, so a step started sooner has none of
+/// them (probe diag 4523e39b: "No tool named yuzuno_peers_list"). 2.x has no
+/// route to ask whether it has; five times that is waited instead.
+const MCP_TOOLS_SETTLE: Duration = Duration::from_millis(500);
 
 /// An Agent's OpenCode process, started but not yet attached (T-10 Fork),
 /// with where its snapshots are known to be kept, or why not.
@@ -670,10 +683,20 @@ impl Workspace {
         permit.validate(&self.admission)?;
         let gate = self.gate(id).await;
         let _held = gate.lock().await;
-        ensure_agent_open(&self.listed(id).await?)?;
-        if let Err(error) = self.opencode_ensure(id).await {
-            self.failed(id, &error).await;
-            return Err(error);
+        let agent = self.listed(id).await?;
+        ensure_agent_open(&agent)?;
+        let live = self.opencodes.lock().unwrap().contains_key(id);
+        match self.opencode_ensure(id).await {
+            // On a connection already live, the Workspace MCP is checked
+            // again on the same process and a failed one tried again (T-61
+            // slice 1); one just started reported it as it attached. Its
+            // readiness shows on the record; a reconnect is not refused for it.
+            Ok(c) if live => { let _ = self.opencode_mcp(id, &agent, &c, true).await; }
+            Ok(_) => {}
+            Err(error) => {
+                self.failed(id, &error).await;
+                return Err(error);
+            }
         }
         if read { Ok(Some(self.answer(id).await?)) } else { Ok(None) }
     }
@@ -800,7 +823,7 @@ impl Workspace {
         // The Agent's Workspace MCP credential is handed to OpenCode first;
         // readiness is announced only after OpenCode reports reaching it.
         let mcp = match self.collaboration_http_config(&d.agent).await? {
-            Some(config) => Some(add_mcp(&server, &config).await),
+            Some(config) => Some(workspace_mcp(&server, &config, false).await),
             None => None,
         };
         // Subscribed before the snapshot, so nothing between them is missed.
@@ -840,10 +863,8 @@ impl Workspace {
             let (ws, agent, usage) = (self.clone(), id.to_owned(), c.clone());
             tokio::spawn(async move { ws.opencode_context_window(&agent, &usage, model).await });
         }
-        match mcp {
-            Some(Mcp::Connected) => self.collaboration_started(id, generation).await,
-            Some(Mcp::NotConnected(native)) => self.collaboration_refused(id, generation, &native).await,
-            None => {}
+        if let Some(state) = mcp {
+            self.opencode_mcp_reported(id, generation, state).await;
         }
         self.opencode_watch(id, generation, events, Arc::downgrade(&server));
         self.changed(id);
@@ -853,6 +874,30 @@ impl Workspace {
     /// The connection's event stream, read until its generation is gone. It
     /// holds neither the Workspace nor the server, so dropping the Workspace
     /// ends OpenCode and then this.
+    /// Before a message, and on a reconnect (`retry`), with Workspace MCP on:
+    /// the Agent's Workspace MCP handed to its OpenCode again
+    /// (`workspace_mcp`), so that one OpenCode dropped with the Agent's folder
+    /// is back before the message goes (T-61 slice 1); readiness as OpenCode
+    /// then reports it; and the message refused unless it is ready.
+    async fn opencode_mcp(&self, id: &str, agent: &crate::model::Agent, c: &Connection, retry: bool) -> Result<()> {
+        if let Some(config) = self.collaboration_http_config(agent).await? {
+            let state = workspace_mcp(&c.server, &config, retry).await;
+            self.opencode_mcp_reported(id, c.generation, state).await;
+        }
+        self.require_collaboration(id).await
+    }
+
+    /// Readiness of connection `generation`, as its OpenCode reported the
+    /// Workspace MCP server: ready only once connected.
+    async fn opencode_mcp_reported(&self, id: &str, generation: u64, state: Mcp) {
+        match state {
+            Mcp::Connected => self.collaboration_started(id, generation).await,
+            Mcp::NotConnected(native) => self.collaboration_refused(id, generation, &native).await,
+            Mcp::Pending => self.collaboration_refused(id, generation, &json!({"status":"pending"})).await,
+            Mcp::Absent => self.collaboration_refused(id, generation, &json!({"status":"notListed"})).await,
+        }
+    }
+
     fn opencode_watch(self: &Arc<Self>, id: &str, generation: u64, mut events: Events, server: Weak<Server>) {
         let (ws, id) = (Arc::downgrade(self), id.to_owned());
         tokio::spawn(async move {
@@ -1131,7 +1176,7 @@ impl Workspace {
             takes_images(model.as_ref())?;
             ensure!(listed_command(&c.server, &input.text).await?.is_none(), IMAGES_WITH_COMMAND);
         }
-        self.require_collaboration(id).await
+        self.opencode_mcp(id, &detail.agent, &c, false).await
     }
 
     /// Before the receipt of a message added to the running Turn `expected`
@@ -1148,7 +1193,7 @@ impl Workspace {
             takes_images(model.as_ref())?;
         }
         ensure!(listed_command(&c.server, &input.text).await?.is_none(), COMMAND_WHILE_RUNNING);
-        self.require_collaboration(id).await
+        self.opencode_mcp(id, &detail.agent, &c, false).await
     }
 
     /// Under the Agent gate, before a message: what a restart of Core leaves
@@ -1231,7 +1276,7 @@ impl Workspace {
         }
         joinable(&d, expected)?;
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 连接已断开；补充消息未发送，草稿保留")?;
-        self.require_collaboration(id).await?;
+        self.opencode_mcp(id, &d.agent, &c, false).await?;
         let model = chosen(&c.server, &d.agent.model).await?;
         let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
         ensure!(listed_command(&c.server, text).await?.is_none(), COMMAND_WHILE_RUNNING);
@@ -1382,7 +1427,7 @@ impl Workspace {
         }
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；这条消息没有发送");
         let c = self.opencode_ensure(id).await?;
-        self.require_collaboration(id).await?;
+        self.opencode_mcp(id, &d.agent, &c, false).await?;
         // The model and variant it goes with, as OpenCode lists them now (or its own).
         let model = chosen(&c.server, &d.agent.model).await?;
         let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
@@ -1936,14 +1981,69 @@ async fn stop(server: Arc<Server>) -> Result<()> {
 /// The remote MCP server OpenCode is given for this Agent, and whether it
 /// reached it. A failed request is reported, not raised: readiness is
 /// separate from the connection, which still serves reading and stopping.
-async fn add_mcp(server: &Server, config: &Value) -> Mcp {
+/// The Agent's Workspace MCP handed to its OpenCode, and how OpenCode then
+/// lists it (T-61 slice 1). It is added each time with the same
+/// configuration: 2.x changes nothing for a server it holds, and adds back
+/// one it dropped with the Agent's folder, which it unloads after an hour
+/// without session events and on a reload (2.2.5
+/// core/src/location-activity.ts). `retry` (a reconnect) also has it try a
+/// server it lists as failed again, which the same configuration does not.
+/// One still connecting is waited for, at most MCP_SETTLE; one this call
+/// connected, MCP_TOOLS_SETTLE more, until 2.x offers its tools. Nothing
+/// OpenCode answers is kept with the bearer in it.
+async fn workspace_mcp(server: &Server, config: &Value, retry: bool) -> Mcp {
     let url = config["url"].as_str().unwrap_or_default();
     let Some(bearer) = config["headers"]["Authorization"].as_str().and_then(|h| h.strip_prefix("Bearer ")) else {
-        return Mcp::NotConnected(json!({"error":"Workspace MCP credential is missing"}));
+        return Mcp::NotConnected(json!({"status":"unknown","error":"Workspace MCP credential is missing"}));
     };
-    match server.add_mcp("yuzuno", url, bearer).await {
-        Ok(state) => state,
-        Err(error) => Mcp::NotConnected(json!({"error":error.to_string()})),
+    let refused = |error: anyhow::Error| Mcp::NotConnected(json!({"status":"refused","error":error.to_string()}));
+    let before = server.mcp(MCP_NAME).await.ok();
+    if let Err(error) = server.add_mcp(MCP_NAME, url, bearer).await {
+        return without(refused(error), bearer);
+    }
+    let mut state = settled(server).await;
+    let failed = |state: &Mcp| matches!(state, Mcp::NotConnected(native) if matches!(native["status"].as_str(), Some("failed" | "needs_auth")));
+    if retry && failed(&state) {
+        if let Err(error) = server.connect_mcp(MCP_NAME).await {
+            return without(refused(error), bearer);
+        }
+        state = settled(server).await;
+    }
+    // Connected by this call: its tools are offered from 2.x's next reload of its registry.
+    if state == Mcp::Connected && before != Some(Mcp::Connected) {
+        tokio::time::sleep(MCP_TOOLS_SETTLE).await;
+    }
+    without(state, bearer)
+}
+
+/// The Workspace MCP server as OpenCode lists it once it is no longer
+/// connecting, or after MCP_SETTLE.
+async fn settled(server: &Server) -> Mcp {
+    let deadline = Instant::now() + MCP_SETTLE;
+    loop {
+        match server.mcp(MCP_NAME).await {
+            Ok(Mcp::Pending) if Instant::now() < deadline => tokio::time::sleep(Duration::from_millis(100)).await,
+            Ok(Mcp::Pending) => return Mcp::NotConnected(json!({"status":"pending",
+                "error":format!("still connecting after {} s", MCP_SETTLE.as_secs())})),
+            // Added, and not listed: a managed MCP policy of its configuration may remove it.
+            Ok(Mcp::Absent) => return Mcp::NotConnected(json!({"status":"notListed",
+                "error":"OpenCode does not list it after adding it; an MCP policy in its configuration may remove it"})),
+            Ok(state) => return state,
+            Err(error) => return Mcp::NotConnected(json!({"status":"unknown","error":error.to_string()})),
+        }
+    }
+}
+
+/// `state` with the bearer taken out of anything OpenCode said.
+fn without(state: Mcp, bearer: &str) -> Mcp {
+    match state {
+        Mcp::NotConnected(mut native) => {
+            if let Some(error) = native["error"].as_str().filter(|error| !bearer.is_empty() && error.contains(bearer)) {
+                native["error"] = error.replace(bearer, "[redacted]").into();
+            }
+            Mcp::NotConnected(native)
+        }
+        state => state,
     }
 }
 

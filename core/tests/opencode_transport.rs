@@ -6,7 +6,7 @@
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
 use yuzuno_workspace::opencode::{
-    session_of, Events, HttpStatus, Launch, Mcp, MessageId, Reply, Server, Submission, EVENT_IDLE_LIMIT,
+    session_of, Events, HttpStatus, Launch, Mcp, McpRefused, MessageId, Reply, Server, Submission, EVENT_IDLE_LIMIT,
 };
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
@@ -507,27 +507,63 @@ async fn events_arrive_in_order_and_a_broken_stream_is_recovered_by_a_snapshot()
     server.shutdown().await.unwrap();
 }
 
+/// A Workspace MCP server goes to OpenCode 2.x by its own route (T-61 slice
+/// 1): added at runtime to the Agent's folder, named as its sessions name it,
+/// with OAuth off and its tools as tools of their own, and listed by its
+/// status only. The same configuration again connects nothing anew; another
+/// does; a failed one is tried again only when asked. A refusal says its
+/// status and kind, never what OpenCode answered.
 #[tokio::test]
-async fn mcp_is_ready_only_when_opencode_reports_it_connected() {
+async fn mcp_goes_to_the_agents_folder_by_2x_s_own_route_and_is_ready_only_when_listed_connected() {
     let lab = lab();
     let server = Server::start(&lab.launch).await.unwrap();
     let url = "http://127.0.0.1:9/mcp/agent";
-    assert_eq!(server.add_mcp("yuzuno", url, "token-1").await.unwrap(), Mcp::Connected);
+    let folder = json!([lab.launch.directory.to_str().unwrap()]);
+    let connects = || async { lab.control("mcp", json!({})).await["connects"].as_array().unwrap().len() };
+    assert_eq!(server.mcp("yuzuno").await.unwrap(), Mcp::Absent);
+    server.add_mcp("yuzuno", url, "token-1").await.unwrap();
     assert_eq!(server.mcp("yuzuno").await.unwrap(), Mcp::Connected);
-    assert_eq!(lab.posts("/mcp")[0]["body"], json!({"name": "yuzuno", "config": {"type": "remote", "url": url,
-        "oauth": false, "headers": {"Authorization": "Bearer token-1"}}}));
+    let added: Vec<Value> = lab.calls().into_iter().filter(|c| c["method"] == "PUT").collect();
+    assert_eq!(added[0]["path"], "/api/experimental/mcp/yuzuno");
+    assert_eq!(added[0]["query"]["location[directory]"], folder, "the Agent's folder, named");
+    assert_eq!(added[0]["body"], json!({"config": {"type": "remote", "url": url, "oauth": false, "codemode": false,
+        "headers": {"Authorization": "Bearer token-1"}, "timeout": {"startup": 10000, "catalog": 10000}}}));
+    let listed: Vec<Value> = lab.calls().into_iter().filter(|c| c["path"] == "/api/mcp").collect();
+    assert!(listed.iter().all(|c| c["query"]["location[directory]"] == folder));
+    server.add_mcp("yuzuno", url, "token-1").await.unwrap();
+    assert_eq!(connects().await, 1, "the same configuration again connects nothing anew");
 
     for status in ["failed", "needs_auth"] {
         lab.control("mode", json!({"mcp": status})).await;
-        match server.add_mcp("yuzuno", url, "token-2").await.unwrap() {
-            Mcp::NotConnected(native) => assert_eq!(native["status"], status),
-            Mcp::Connected => panic!("{status} is not ready"),
+        server.add_mcp("yuzuno", url, &format!("token-{status}")).await.unwrap();
+        match server.mcp("yuzuno").await.unwrap() {
+            Mcp::NotConnected(native) => assert!(native["status"] == status && native["error"].is_string(), "{native}"),
+            other => panic!("{status} is not ready: {other:?}"),
         }
-        assert!(matches!(server.mcp("yuzuno").await.unwrap(), Mcp::NotConnected(_)));
     }
-    assert_eq!(server.mcp("absent").await.unwrap(), Mcp::NotConnected(Value::Null));
-    assert!(lab.calls().iter().all(|c| matches!(c["path"].as_str(), Some("/api/info" | "/mcp"))),
-        "nothing else was sent: no permission rule, no configuration");
+    // Failed, and the same configuration again: nothing is tried again; asked, it is.
+    lab.control("mode", json!({"mcp": "connected"})).await;
+    let before = connects().await;
+    server.add_mcp("yuzuno", url, "token-needs_auth").await.unwrap();
+    assert!(matches!(server.mcp("yuzuno").await.unwrap(), Mcp::NotConnected(_)));
+    assert_eq!(connects().await, before);
+    server.connect_mcp("yuzuno").await.unwrap();
+    assert_eq!(server.mcp("yuzuno").await.unwrap(), Mcp::Connected);
+    assert_eq!(lab.posts("/api/experimental/mcp/yuzuno/connect")[0]["query"]["location[directory]"], folder);
+
+    lab.control("mode", json!({"mcp": "pending"})).await;
+    server.add_mcp("yuzuno", url, "token-3").await.unwrap();
+    assert_eq!(server.mcp("yuzuno").await.unwrap(), Mcp::Pending);
+
+    lab.control("mode", json!({"mcpRefuse": true})).await;
+    let refused = server.add_mcp("yuzuno", url, "token-4").await.unwrap_err();
+    assert_eq!(refused.downcast_ref::<McpRefused>(), Some(&McpRefused { code: 400, kind: Some("InvalidRequestError".into()) }));
+    assert!(!refused.to_string().contains("token-4"), "{refused}");
+    let unknown = server.connect_mcp("other").await.unwrap_err();
+    assert_eq!(unknown.downcast_ref::<McpRefused>(), Some(&McpRefused { code: 404, kind: Some("McpServerNotFoundError".into()) }));
+    assert!(lab.calls().iter().all(|c| c["path"] == "/api/info" || c["path"] == "/api/mcp"
+            || c["path"].as_str().unwrap().starts_with("/api/experimental/mcp/")),
+        "nothing else was sent: no permission rule, no configuration, nothing to 1.19.3's /mcp");
     server.shutdown().await.unwrap();
 }
 

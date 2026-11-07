@@ -593,3 +593,106 @@ fn a_summary_reads_only_what_it_tells_of_a_review_and_an_unreadable_review_fails
         .map_or_else(|| "dispatched".to_owned(), |e| format!("{e:#}"));
     assert!(failed.contains("malformed JSON"), "an unreadable review is an error, not an empty summary: {failed}");
 }
+
+fn harness(name: &str) -> crate::agent_defaults::AgentDefaults {
+    crate::agent_defaults::AgentDefaults { harness: Some(name.into()), ..Default::default() }
+}
+
+/// YN-2 S1: a dispatch to a new executor that names no template makes a
+/// general executor. Its harness is the new-Agent default of the task's
+/// Project, else the Workspace's, else Codex; everything else is left for
+/// the create path to inherit. It has no instructions of its own (the
+/// handover and the task's materials are its instructions), no template
+/// limit, and a retry finds it as any template dispatch's.
+#[test]
+fn a_dispatch_without_a_template_makes_a_general_executor_from_the_defaults_for_new_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    let plain = store.create_project("Plain", BTreeMap::from([("local".into(), "/synthetic/plain".into())])).unwrap().id;
+    store.save_project_agent_defaults(&p, &harness("claude")).unwrap();
+    store.save_handover(&p, 0, "# Lab\nBuild with make.", None).unwrap();
+    let t = task(&store, "Review", Some(&p), None);
+    let general = |task: &str, request: &str, executor: Value| json!({"requestId":request,"taskId":task,"expectedVersion":1,"executor":executor});
+
+    let plan = begun(&store, None, general(&t, "general", json!({})))
+        .unwrap_or_else(|e| panic!("a dispatch that names no template makes a general executor: {e}"));
+    assert_eq!((plan.template.harness.as_str(), plan.name.as_str(), plan.template.id.as_str()), ("claude", "LAB-1 · Executor", ""),
+        "the Project's new-Agent harness, named {{task}} · Executor, with no template id");
+    assert!(plan.template.model.is_none() && plan.template.permission_mode.is_none() && plan.template.instructions.is_none(),
+        "everything else is inherited as for a new Agent: {:?}", plan.template);
+    assert_eq!((plan.machine.as_str(), plan.folders.as_slice()), ("local", ["/synthetic/project".to_owned()].as_slice()));
+    let (template_id, template_json): (String, String) = store.db.read().unwrap().query_row(
+        "SELECT template_id, template_json FROM executor_dispatches WHERE request_id='general'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!((template_id.as_str(), serde_json::from_str::<Value>(&template_json).unwrap()),
+        ("", json!({"id":null,"label":"Executor","source":"builtin","instructions":null})));
+
+    // Elsewhere, the Workspace's default, else the built-in Codex.
+    let elsewhere = task(&store, "Elsewhere", Some(&plain), None);
+    let null = begun(&store, None, general(&elsewhere, "builtin", json!({"templateId":null}))).unwrap();
+    assert_eq!(null.template.harness, "codex", "a Project without a default, and no Workspace default: Codex");
+    store.save_agent_defaults(&harness("claude")).unwrap();
+    let workspace = begun(&store, None, general(&elsewhere, "workspace", json!({}))).unwrap();
+    assert_eq!(workspace.template.harness, "claude", "the Workspace's default");
+
+    create(&store, &plan);
+    let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+    let executor = plan.dispatch.agent_id.clone();
+    assert_eq!(answer["agentId"].as_str(), Some(executor.as_str()));
+    let given = store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    let materials = &given["dispatchMaterials"];
+    assert_eq!(materials["template"], json!({"id":null,"label":"Executor","source":"builtin","instructions":null}));
+    assert_eq!(materials["handover"]["markdown"], "# Lab\nBuild with make.", "its instructions are the handover and the materials");
+    let body = answer["message"]["body"].as_str().unwrap();
+    assert!(body.contains("General executor") && !body.contains("Executor template:"), "the mail says it has no template: {body}");
+    let role: Option<String> = store.db.read().unwrap()
+        .query_row("SELECT template_id FROM agent_roles WHERE agent_id=?1 AND kind='executor'", [&executor], |r| r.get(0)).unwrap();
+    assert_eq!(role, None, "its role names no template");
+    let slot: String = store.db.read().unwrap()
+        .query_row("SELECT template_id FROM executor_slots WHERE agent_id=?1", [&executor], |r| r.get(0)).unwrap();
+    assert_eq!(slot, "", "no template limit of its own");
+    assert_eq!(store.executor_slot_next(&Default::default()).unwrap().as_deref(), Some(executor.as_str()), "it starts in its turn");
+
+    let Ok(Next::Dispatch(again)) = store.executor_dispatch_begin(None, general(&t, "general", json!({})), LocalDefault::Read(None)) else {
+        panic!("a retry with the same requestId finds the first dispatch");
+    };
+    assert_eq!(again.agent_id, executor);
+    assert_eq!(store.collaboration_call(None, "task_dispatch", again.input).unwrap(), answer, "a retry gets the first answer");
+}
+
+/// YN-2 S1: a template the dispatch names and neither list has is refused
+/// with the ids it could name, and the general executor as the way without one.
+#[test]
+fn a_missing_template_is_refused_naming_the_templates_and_the_general_executor() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer(), {"id":"writer","label":"Writer","harness":"claude"}]));
+    let t = task(&store, "Review", Some(&p), None);
+    let refused = begun(&store, None, json!({"requestId":"missing","taskId":t,"expectedVersion":1,"executor":{"templateId":"missing"}})).unwrap_err();
+    assert!(refused.starts_with("template_not_found:") && refused.contains("can use are: reviewer, writer")
+        && refused.contains("executor: {} makes a general executor"), "{refused}");
+    let empty = begun(&store, None, json!({"requestId":"empty","taskId":t,"expectedVersion":1,"executor":{"templateId":""}})).unwrap_err();
+    assert!(empty.starts_with("invalid_input: templateId must not be empty"), "an empty id is no general executor: {empty}");
+}
+
+/// YN-2 S1: a general executor's machine is checked for the harness the
+/// defaults give it, as a template's is for its own: a contained machine
+/// runs no Codex executor, and `auto` leaves it out for one.
+#[test]
+fn a_general_executors_machine_is_checked_for_the_harness_its_defaults_give() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    machine(&store, "boxed", "Boxed", true);
+    let p = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into()),
+        ("boxed".into(), "/srv/boxed/project".into())])).unwrap().id;
+    let t = task(&store, "Review", Some(&p), None);
+    let with = |request: &str, machine: &str| json!({"requestId":request,"taskId":t,"expectedVersion":1,"executor":{"machineId":machine}});
+    let refused = begun(&store, None, with("codex", "boxed")).unwrap_err();
+    assert!(refused.starts_with("machine_contained: Boxed keeps its Agents contained"), "the built-in Codex: {refused}");
+    let auto = begun(&store, None, with("auto", "auto")).unwrap();
+    assert_eq!(auto.machine, "local", "auto leaves the contained machine out for a Codex executor");
+    store.save_project_agent_defaults(&p, &harness("claude")).unwrap();
+    let claude = begun(&store, None, with("claude", "boxed")).unwrap();
+    assert_eq!((claude.machine.as_str(), claude.template.harness.as_str()), ("boxed", "claude"), "a Claude Code default runs there");
+}

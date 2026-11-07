@@ -37,6 +37,24 @@ export function returnSends(sendKey: SendKey, touch: boolean): boolean {
   return sendKey === "enter" || (sendKey === "auto" && !touch);
 }
 
+/**
+ * What a Return pressed in a message field does, the composer's rule and
+ * Home's replies' too (YN-3): null when it is not a plain Return to take
+ * (another key, Shift+Return, or Return while an input method composes: the
+ * field's own, a new line or the input method's choice); true when it sends
+ * (Ctrl/⌘+Return always, Return alone where `returnSends`); false when it
+ * makes a new line. `touch` is asked only for a Return alone.
+ */
+export function returnKey(
+  event: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; isComposing: boolean; keyCode?: number },
+  sendKey: SendKey,
+  touch: () => boolean,
+): boolean | null {
+  // An input method's own Return: isComposing, or Safari's 229 on the keydown that ends a composition.
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return null;
+  return event.ctrlKey || event.metaKey || returnSends(sendKey, touch());
+}
+
 export function readPreferences(): DevicePreferences {
   const saved = readDeviceValue(STORAGE_KEY) as Partial<DevicePreferences> | null;
   return {

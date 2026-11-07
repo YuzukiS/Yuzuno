@@ -1,16 +1,17 @@
 import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useLanguage, useStrings } from "../i18n";
 import { systemTimeZone, timeZoneName, useTimeDisplay } from "../time-preferences";
-import { BookOpen, CalendarClock, Check, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
+import { BookOpen, CalendarClock, Check, ChevronDown, ChevronRight, Clock3, Eye, LoaderCircle, MessageSquareReply, Pin, PinOff } from "lucide-react";
 import { errorText } from "../api";
 import { CopyButton } from "../components";
 import type { Agent } from "../types";
-import { AskReply, repliedThenUpdated } from "./AskReply";
+import { AskReply } from "./AskReply";
 import { changedBlocks, rememberSeenBlocks } from "./brief/block-changes";
 import { reportMarkdown } from "./brief/brief-copy";
 import { CardReply, cardReplySlot, hasCardReply } from "./CardReply";
 import { BriefMarkdown } from "./brief/Markdown";
-import { changedSinceSeen, sectionDomId } from "./brief-layout";
+import { changedSinceSeen, repliedThenUpdated, sectionDomId } from "./brief-layout";
+import { DeckSizes } from "./card-sizes";
 import { FoldButton, useCardFold } from "./card-fold";
 import { sectionConditions, sectionSummary, unmaintained } from "./card-summary";
 import { absolute, deferChoices, duration, relative } from "./format";
@@ -136,7 +137,19 @@ export const SectionCard = memo(function SectionCard({
   const reportWords = reportText(language);
   // Collapsing hides the body only: drafts, Defer and table state are kept,
   // and the header still says what changed and offers Seen (T-115).
-  const [collapsed, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
+  const [chosenFold, toggleFold] = useCardFold(`section:${projectId}:${section.key}`);
+  // Answered and waiting for its owner, as it was when first shown in this
+  // visit: an answer card, a small card on the deck (YN-3, the design the user
+  // chose, D3): the question's title, the reply quoted, who acts next or what
+  // its owner changed since, Reply again; the question and details one click
+  // away. One answered here keeps its card until the next visit (card-sizes.ts).
+  const replied = section.ask?.state === "replied";
+  const sizes = useContext(DeckSizes);
+  const short = sizes ? sizes.short(projectId, section.key, section.version, replied) : replied;
+  const [rowOpen, setRowOpen] = useState(false);
+  // Each step is the answer card's Reply again (AskReply).
+  const [againRequest, setAgainRequest] = useState(0);
+  const collapsed = short ? !rowOpen : chosenFold;
   const [ref, release] = useReservedHeight(`${section.version}:${section.ask?.state ?? ""}`, collapsed);
   const [seeing, setSeeing] = useState(false);
   const [deferOpen, setDeferOpen] = useState(false);
@@ -164,8 +177,9 @@ export const SectionCard = memo(function SectionCard({
   const gone = t.gone[section.owner.state as keyof typeof t.gone] ?? t.inactive;
   // Answered, waiting for its owner: no longer the user's to decide, so it
   // shows in short, with the question and details one click away.
-  const replied = section.ask?.state === "replied";
   const updatedSinceReply = replied && repliedThenUpdated(section);
+  // What its owner says now, after the reply: the body's opening, on the answer card.
+  const update = useMemo(() => (short && updatedSinceReply ? sectionSummary(section) : null), [short, updatedSinceReply, section]);
   const deferred =
     !replied && section.ask?.deferredUntil && Date.parse(section.ask.deferredUntil) > Date.now()
       ? section.ask.deferredUntil
@@ -197,6 +211,142 @@ export const SectionCard = memo(function SectionCard({
       setBusy(false);
     }
   }
+  // The title, and whether it changed for the user or nobody keeps it up to date.
+  const heading = (
+    <>
+      <h3 id={`${sectionDomId(projectId, section.key)}-title`}>{section.title}</h3>
+      {/* Answered, it is never new to the user: only its owner's change since (YN-3). */}
+      {changed && (
+        <span className="home-changed" title={t.changedTitle}>
+          {section.seen || replied ? t.updated : t.new}
+        </span>
+      )}
+      {orphaned && (
+        <span className="home-unmaintained" title={t.notMaintainedTitle(section.owner.name, gone, t.kindInSentence[section.kind])}>
+          {t.notMaintained}
+        </span>
+      )}
+    </>
+  );
+  const seenButton = changed && !readOnly && (
+    <button
+      type="button"
+      className="quiet-button home-seen"
+      disabled={seeing}
+      onClick={() => void seen()}
+      aria-label={t.seenLabel(section.title)}
+    >
+      {seeing ? <LoaderCircle size={13} className="spin" /> : <Eye size={13} />}
+      {t.seen}
+    </button>
+  );
+  if (short) {
+    const bodyId = `${sectionDomId(projectId, section.key)}-body`;
+    const replyText = section.ask?.replyText?.trim();
+    return (
+      <article
+        ref={ref}
+        id={sectionDomId(projectId, section.key)}
+        data-section-key={section.key}
+        data-section-version={section.version}
+        // Closed, a small card the deck packs (deck-packing.ts); opened, it takes its row, as an open Ask does.
+        data-card-size={rowOpen ? undefined : "small"}
+        tabIndex={-1}
+        className={`home-section kind-ask is-replied is-short is-answer${sub ? " is-sub" : ""}${changed ? " is-changed" : ""}${rowOpen ? " is-open" : " is-collapsed"}`}
+        onPointerDown={release}
+        aria-labelledby={`${sectionDomId(projectId, section.key)}-title`}
+      >
+        {notice}
+        <header className="home-section-head">
+          {topic !== undefined && <span className="home-sub-of">{t.inTopic(topic)}</span>}
+          <span className="home-kind kind-ask is-replied">{t.repliedWaiting(section.owner.name)}</span>
+          <span className="home-section-meta">
+            {/* The reply's time: the owner's, if changed since, is with what it says. */}
+            {section.ask?.repliedAt ? (
+              <span title={absolute(section.ask.repliedAt, time)}>{relative(section.ask.repliedAt, language)}</span>
+            ) : (
+              <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
+            )}
+          </span>
+          {!readOnly && <PinButton section={section} projectId={projectId} />}
+          {seenButton}
+        </header>
+        <div className="home-answer">
+          <div className="home-answer-title">{heading}</div>
+          {replyText && (
+            <blockquote className="home-answer-reply" title={replyText}>
+              <span className="home-answer-who">{t.you}</span>
+              {replyText}
+            </blockquote>
+          )}
+          {updatedSinceReply ? (
+            <div className="home-answer-update">
+              <p className="home-answer-update-head">{t.updatedAfterReply(section.owner.name, relative(section.updatedAt, language))}</p>
+              {update && <BriefMarkdown text={update} />}
+            </div>
+          ) : (
+            <p className="home-answer-next">{t.nextActs(section.owner.name)}</p>
+          )}
+          <div className="home-answer-foot">
+            {!readOnly && (
+              <button
+                type="button"
+                className="secondary-button home-answer-again"
+                onClick={() => {
+                  setRowOpen(true);
+                  setAgainRequest((n) => n + 1);
+                }}
+              >
+                <MessageSquareReply size={13} />
+                {t.replyAgain}
+              </button>
+            )}
+            {/* The card's fold, as a jump to it opens it (card-fold.tsx unfoldAround). */}
+            <button
+              type="button"
+              className="quiet-button home-fold home-answer-details"
+              aria-expanded={rowOpen}
+              aria-controls={bodyId}
+              onClick={() => setRowOpen((open) => !open)}
+            >
+              {rowOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              {t.questionAndDetails}
+            </button>
+          </div>
+        </div>
+        <div className="home-card-body" id={bodyId} hidden={!rowOpen}>
+          {orphaned && (
+            <p className="home-note home-unmaintained-note">
+              {t.notMaintainedNote(section.owner.name, gone, t.kindInSentence[section.kind])}
+            </p>
+          )}
+          <p className="home-question">{section.ask!.question}</p>
+          <div className="home-section-body">
+            <SectionBody section={section} projectId={projectId} changes={blocks} />
+          </div>
+          <div className="home-ask">
+            <AskReply
+              key={section.key}
+              section={section}
+              inRow
+              face
+              againRequest={againRequest}
+              projectId={projectId}
+              workspaceId={workspaceId}
+              agents={agents}
+              readOnly={readOnly}
+              onSent={onChanged}
+            />
+          </div>
+        </div>
+        {error && (
+          <p className="inline-error" role="alert">
+            {error}
+          </p>
+        )}
+      </article>
+    );
+  }
   return (
     <article
       ref={ref}
@@ -220,17 +370,7 @@ export const SectionCard = memo(function SectionCard({
         <span className={`home-kind kind-${section.kind}${replied ? " is-replied" : ""}`}>
           {replied ? t.replied : t.kind[section.kind]}
         </span>
-        <h3 id={`${sectionDomId(projectId, section.key)}-title`}>{section.title}</h3>
-        {changed && (
-          <span className="home-changed" title={t.changedTitle}>
-            {section.seen ? t.updated : t.new}
-          </span>
-        )}
-        {orphaned && (
-          <span className="home-unmaintained" title={t.notMaintainedTitle(section.owner.name, gone, t.kindInSentence[section.kind])}>
-            {t.notMaintained}
-          </span>
-        )}
+        {heading}
         <span className="home-section-meta">
           <span className="home-owner">
             {sub ? t.by : ""}
@@ -271,18 +411,7 @@ export const SectionCard = memo(function SectionCard({
             stays in the click (Safari) and a folded card copies in full. */}
         {section.kind === "report" && <CopyButton text={() => reportMarkdown(section, projectId, language, time)} label={t.copyReport} />}
         {!readOnly && <PinButton section={section} projectId={projectId} />}
-        {changed && !readOnly && (
-          <button
-            type="button"
-            className="quiet-button home-seen"
-            disabled={seeing}
-            onClick={() => void seen()}
-            aria-label={t.seenLabel(section.title)}
-          >
-            {seeing ? <LoaderCircle size={13} className="spin" /> : <Eye size={13} />}
-            {t.seen}
-          </button>
-        )}
+        {seenButton}
       </header>
       {collapsed && (summary || section.status) && (
         <div className="home-card-glance">
