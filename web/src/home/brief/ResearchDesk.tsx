@@ -32,7 +32,7 @@ type Definition = NonNullable<Desk["definitions"]>[number];
 
 type Read =
   | { status: "read"; value: number; from: string }
-  | { status: "missing" | "not_number"; from: string }
+  | { status: "missing" | "not_number" | "ambiguous"; from: string }
   | { status: "unavailable"; reason?: string; from: string };
 type SourceInfo = {
   attachment?: string;
@@ -50,7 +50,7 @@ type SourceInfo = {
 };
 type Resolved = { version: number; values: Record<string, Read>; sources: Record<string, SourceInfo> };
 type Loaded = { key: string; data?: Resolved; error?: string; readAt?: string };
-type Origin = "read" | "provided" | "missing" | "not_number" | "unavailable" | "loading";
+type Origin = "read" | "provided" | "missing" | "not_number" | "ambiguous" | "unavailable" | "loading";
 /** A number as shown: its value when there is one (as the file or the Agent has it), and where it came from. */
 type Shown = { value: number | null; origin: Origin; from?: string };
 /** A shown number times a plot's display scale; the value itself stays as it was. */

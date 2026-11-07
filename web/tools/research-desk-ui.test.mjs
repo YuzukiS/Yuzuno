@@ -363,6 +363,19 @@ test("selection follows pointer and keys across the desk, and survives a new ver
   }
 });
 
+// YN-7 item 3: a CSV row's key that Core found in two or more rows is shown as such, not as a number.
+test("a number whose row Core found more than once says so (YN-7)", async () => {
+  const page = mount(serve(doseStudy, { 3: { "low-v2.value": { status: "ambiguous", from: "results.json" } } }));
+  try {
+    page.window.renderSection(section(page, doseStudy, 3, { refs: {} }), PROJECT, "ws-1");
+    await until(() => page.document.querySelector('.research-origin[data-origin="ambiguous"]'), "a row found more than once");
+    assert.ok(page.document.querySelector('.research-origin[data-origin="ambiguous"]').textContent.includes("More than one row of the snapshot matches"));
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("definitions keep every version, show what a change moved, and plans only preview", async () => {
   const page = mount(serve(doseStudy, { 3: { "low-v2.value": { status: "missing", from: "results.json" } } }));
   try {
