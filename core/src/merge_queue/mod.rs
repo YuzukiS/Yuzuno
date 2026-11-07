@@ -8,6 +8,7 @@
 mod checks;
 mod landing;
 mod remote;
+mod revert;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
@@ -130,7 +131,8 @@ pub(super) async fn tick(ws: &Arc<Workspace>) -> Result<()> {
                     continue;
                 }
                 let checked_from = store::anchor(&entry);
-                let outcome = remote::check(ws, &entry).await.map_err(|e| format!("{e:#}"));
+                let outcome = if entry["kind"] == "revert" { revert::check(ws, &entry).await } else { remote::check(ws, &entry).await }
+                    .map_err(|e| format!("{e:#}"));
                 let cooldown = ws.stored(crate::ci_monitor::read_cooldown).await.unwrap_or(0);
                 let key = id.clone();
                 let recorded = ws.stored(move |s| s.merge_record(&key, attempt, &checked_from, outcome, cooldown)).await?;
@@ -215,6 +217,16 @@ pub async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, 
             ws.merge_queue.wake.notify_one();
             Ok(answer)
         }
+        "merge_revert" => {
+            let i: Change = serde_json::from_value(input)?;
+            request_key(&i.request_id)?;
+            ensure!(i.reason.as_ref().is_none_or(|r| r.len() <= 2000), "invalid_input: reason must be at most 2,000 bytes");
+            let answer = ws.stored(move |s| s.merge_revert(actor.as_deref(), &i.request_id, &i.entry_id, i.reason.as_deref())).await?;
+            ws.changes.send(json!({"mergeQueue":true,"collaboration":true}));
+            ws.collaboration_wakeup.notify_one();
+            ws.merge_queue.wake.notify_one();
+            Ok(answer)
+        }
         "merge_unpause" => {
             let i: Unpause = serde_json::from_value(input)?;
             request_key(&i.request_id)?;
@@ -255,6 +267,7 @@ pub(crate) fn router() -> Router<Arc<Workspace>> {
         .route("/api/merge-queue/{id}", get(detail))
         .route("/api/merge-queue/{id}/cancel", post(cancel))
         .route("/api/merge-queue/{id}/retry", post(retry))
+        .route("/api/merge-queue/{id}/revert", post(revert_route))
 }
 async fn list(AppState(ws): AppState<Arc<Workspace>>, Query(scope): Query<Scope>) -> Result<Json<Value>, ApiError> {
     let input = json!({"taskId":scope.task_id,"repositoryId":scope.repository_id,"state":scope.state});
@@ -280,6 +293,10 @@ async fn retry(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<String>, J
     let input = strip(json!({"requestId":b.request_id,"entryId":id,"reason":b.reason}));
     Ok(Json(ws.collaboration_call(None, "merge_retry", input).await?))
 }
+async fn revert_route(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<String>, Json(b): Json<ChangeBody>) -> Result<Json<Value>, ApiError> {
+    let input = strip(json!({"requestId":b.request_id,"entryId":id,"reason":b.reason}));
+    Ok(Json(ws.collaboration_call(None, "merge_revert", input).await?))
+}
 async fn unpause(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>, Json(b): Json<ChangeBody>) -> Result<Json<Value>, ApiError> {
     let input = strip(json!({"requestId":b.request_id,"repositoryId":id,"reason":b.reason}));
     Ok(Json(ws.collaboration_call(None, "merge_unpause", input).await?))
@@ -295,10 +312,15 @@ struct Switch {
     landing: Option<String>,
     /// The landing policy (YN-18 S2d): `strict` or `relaxed`.
     policy: Option<String>,
+    /// The user's consent to one-step reverts (YN-18 S2d-2).
+    revert: Option<bool>,
+    /// Core reverts on its own when main CI goes red after a merge; needs reverts on.
+    #[serde(rename = "autoRevert")]
+    auto_revert: Option<bool>,
 }
 async fn switch(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>, Json(b): Json<Switch>) -> Result<Json<Value>, ApiError> {
-    if b.enabled.is_none() && b.landing.is_none() && b.policy.is_none() {
-        return Err(anyhow::anyhow!("invalid_input: give enabled, landing, policy or any of them").into());
+    if b.enabled.is_none() && b.landing.is_none() && b.policy.is_none() && b.revert.is_none() && b.auto_revert.is_none() {
+        return Err(anyhow::anyhow!("invalid_input: give enabled, landing, policy, revert, autoRevert or any of them").into());
     }
     // A landing this Core does not have, or an unknown policy, is refused
     // before anything is saved.
@@ -316,6 +338,9 @@ async fn switch(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>, Jso
             }
             if let Some(policy) = b.policy.as_deref() {
                 answer = s.merge_set_policy(id, policy)?;
+            }
+            if b.revert.is_some() || b.auto_revert.is_some() {
+                answer = s.merge_set_reverts(id, b.revert, b.auto_revert)?;
             }
             if let Some(enabled) = b.enabled {
                 answer = s.merge_set_enabled(id, enabled)?;
@@ -369,6 +394,12 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             "merge_retry",
             "Check a stopped merge entry again from the start on fresh reads. Core reads main now, and from then on counts only main CI since that main. It never reruns CI: rerun a red job by other means first. Only the Agent that released it, or the user.",
             json!({"requestId":text,"entryId":text,"reason":{"type":"string","maxLength":2000}}),
+            &["requestId", "entryId"],
+        ),
+        def(
+            "merge_revert",
+            "Revert, in one step, a merge the queue made whose main push CI went red (its entry is done with reason main_red). Only a lead of a Project the repository is linked to, or the user, and only while the user allows reverts for the repository (Projects → repositories). Core writes a revert commit (the tree of the main before that merge, on top of it), puts it on its own branch queue/revert-{entry} (merged onto the current main if main has moved on; a conflict stops with revert_conflict) and opens a PR, then queues that PR as a revert entry. It merges as a merge commit pinned to its head once CI on it is green, or at once when main is still the bad merge and the main before it had green push CI. It needs no review round, passes only the main_red pause of the merge it reverts, and green main CI after it ends that pause. The answer is the revert entry; merge_get follows it. Retry an identical request with the same requestId.",
+            json!({"requestId":text,"entryId":{"type":"string","description":"The entry of the merge to revert"},"reason":{"type":"string","maxLength":2000}}),
             &["requestId", "entryId"],
         ),
         def(

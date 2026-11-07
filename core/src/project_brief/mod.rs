@@ -168,7 +168,7 @@ const FALLBACK_GUIDE: &str = "Project Brief guide.\n\
 Sections: brief_update changes take op put, edit, patch, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
 At most 12 topics with 4 sub-topics each. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
-put: {op:'put', key, kind:'ask'|'report'|'status', title, body, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root.\n\
+put: {op:'put', key, kind:'ask'|'report'|'status', title, body or markdown, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root; markdown is the section's text as one Markdown block.\n\
 edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else.\n\
 patch: {op:'patch', key, patch:[RFC 6902 operations on the body], status?} changes single values and keeps what edit keeps; the whole section is checked again.\n\
 ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. \
@@ -249,6 +249,8 @@ fn update_properties(project: Value) -> Value {
             "kind":{"type":"string","enum":["ask","report","status"]},
             "title":{"type":"string","minLength":1,"maxLength":120},
             "body":{"type":"object","description":"A json-render spec {root, elements} with a BriefBody root; see brief_guide content."},
+            "markdown":{"type":"string","description":"For put, instead of body: the section's text as one Markdown block (id text); registered attachments are shown after it (id files). See brief_guide sections."},
+            "size":{"type":"string","enum":["small","wide","large"],"description":"With markdown: the card's size on Home, as BriefBody summary size."},
             "elements":{"type":"object","description":"For edit: block ids mapped to their new {type, props, children?}; the section's other blocks, title, attachments and ask state are kept. See brief_guide sections."},
             "patch":{"type":"array","minItems":1,"maxItems":patch::MAX_OPS,"description":"For patch: RFC 6902 operations on the section's body, paths being JSON Pointers into it, e.g. [{op:\"replace\", path:\"/elements/refs/props/items/3/note\", value:\"Merged.\"}]. Kept as an edit keeps; the whole section is checked again. See brief_guide sections.",
                 "items":{"type":"object","required":["op","path"],"properties":{"op":{"type":"string","enum":patch::OPS},"path":{"type":"string"},"from":{"type":"string"},"value":{}}}},

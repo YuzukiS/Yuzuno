@@ -498,8 +498,8 @@ test("schema problems name the field, the component's props and the guide part",
 test("hard rules, tool descriptions and the guide are generated within their caps", () => {
   assert.ok(BRIEF_HARD_RULES.length <= 1500, `${BRIEF_HARD_RULES.length} characters`);
   for (const [name, description] of Object.entries(BRIEF_TOOL_DESCRIPTIONS)) {
-    // brief_update grows with its ops (YN-14: patch); every tool stays within DESCRIPTION_CAP.
-    assert.ok(description.length <= (name === "brief_update" ? 1400 : 1200), `${name}: ${description.length} characters`);
+    // brief_update grows with its ops (YN-14: patch, markdown); every tool stays within DESCRIPTION_CAP.
+    assert.ok(description.length <= (name === "brief_update" ? 1500 : 1200), `${name}: ${description.length} characters`);
     assert.ok(description.length <= DESCRIPTION_CAP);
     assert.match(description, /brief_guide/, `${name} names the guide`);
   }
@@ -777,6 +777,37 @@ test("YN-3 the guide says a card with no visual shows its first kept image or HT
   assert.match(content, /A card with no visual shows instead the first kept image or single HTML page \(\.html or \.htm\) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there\./);
   assert.match(content, /A report whose body holds only its lead \(one paragraph\), the card's picture and files, and its conditions is the whole report: its card has no Open report\./);
   assert.match(content, /large \(two columns, two rows: an image, a scatter chart, an HTML page\)/);
+});
+
+test("a put with markdown instead of body gets the body Core builds for it (YN-14 A3)", () => {
+  const text = "**core.25** is out; the two regressions are fixed in core.26.";
+  const report = checkBriefSection({ op: "put", key: "release", kind: "report", title: "core.25", markdown: text });
+  assert.deepEqual(report.body, { root: "body", elements: {
+    body: { type: "BriefBody", props: {}, children: ["text"] },
+    text: { type: "Markdown", props: { text } },
+  } });
+  assert.equal(report.markdown, undefined, "the stored section has its body, not markdown");
+  // With attachments, size, and for an ask and a status.
+  const files = checkBriefSection({ key: "design", kind: "report", title: "Design", markdown: text, size: "wide",
+    attachments: [{ name: "preview.html", path: "/home/me/preview.html" }, { name: "note.md", path: "/home/me/note.md" }] });
+  assert.deepEqual(files.body.elements.body, { type: "BriefBody", props: { summary: { lead: "text", size: "wide" } }, children: ["text", "files"] });
+  assert.deepEqual(files.body.elements.files, { type: "Attachments", props: { items: [{ name: "preview.html" }, { name: "note.md" }] } });
+  assert.equal(files.size, undefined);
+  const ask = checkBriefSection({ key: "q", kind: "ask", title: "Q", markdown: "Why: it costs a day.",
+    ask: { question: "Run it?", reply: { options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }] } } });
+  assert.equal(ask.body.elements.text.props.text, "Why: it costs a day.");
+  const status = checkBriefSection({ key: "s", kind: "status", title: "S", markdown: "Green.", status: { asOf: "2026-11-07T08:00:00Z", validFor: 600 } });
+  assert.equal(status.body.elements.text.props.text, "Green.");
+  // What is refused, before anything is built.
+  const at = (value) => { const [found] = problems(value); return [found.code, found.path]; };
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: text, body: report.body }), ["invalid_field", "markdown"]);
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: "  " }), ["invalid_field", "markdown"]);
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: 3 }), ["invalid_field", "markdown"]);
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: text, size: "huge" }), ["invalid_field", "size"]);
+  assert.deepEqual(at({ ...report, size: "wide" }), ["invalid_field", "size"], "size goes with markdown");
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R" }), ["missing_field", "body"], "neither is still a missing body");
+  assert.match(briefGuide("sections"), /^- markdown instead of body, for a section that is text: Core makes the body one Markdown block "text"/m);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /body\|markdown/);
 });
 
 // YN-16 S1: inputs, the variables they declare and the visible conditions

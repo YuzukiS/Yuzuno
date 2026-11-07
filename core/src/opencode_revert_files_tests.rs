@@ -90,15 +90,6 @@ fn roots_are_worked_out_from_the_environment_as_opencode_works_them_out() {
         assert!(error.contains(said), "{pairs:?}: {error}");
     }
     assert!(Roots::of(env(&[]), || None).is_err(), "no home folder at all");
-
-    let path = json!({"home": "/account", "state": "/account/.local/state/opencode", "config": "/account/.config/opencode", "worktree": "/w", "directory": "/w"});
-    roots.agrees(&path).unwrap();
-    for (name, other) in [("home", "/elsewhere"), ("state", "/s/opencode"), ("config", "/c/opencode")] {
-        let mut changed = path.clone();
-        changed[name] = other.into();
-        let error = roots.agrees(&changed).unwrap_err().to_string();
-        assert!(error.contains(&format!("OpenCode's {name} folder is {other}")), "{error}");
-    }
 }
 
 #[test]
@@ -189,45 +180,6 @@ fn a_step_with_a_start_and_no_file_list_refuses_files() {
         let error = targets_v2(&[user.clone(), step.clone(), listed.clone()], "u1", "/w", "/w/f").unwrap_err().to_string();
         assert!(error.contains(said), "{step}, first: {error}");
     }
-}
-
-#[test]
-fn a_revert_sends_back_each_file_of_a_later_patch_to_its_first_patchs_snapshot() {
-    let message = |id: &str, role: &str, parts: Value| json!({"info": {"id": id, "role": role}, "parts": parts});
-    let text = |id: &str| json!({"id": id, "type": "text", "text": "x"});
-    let patch = |hash: &str, files: &[&str]| json!({"id": "p", "type": "patch", "hash": hash, "files": files});
-    let (one, two) = ("a".repeat(40), "b".repeat(40));
-    let messages = vec![
-        message("u1", "user", json!([text("t1")])),
-        message("a1", "assistant", json!([text("t2"), patch(&one, &["/w/f/a", "/w/f/b"])])),
-        message("u2", "user", json!([text("t3")])),
-        message("a2", "assistant", json!([patch(&two, &["/w/f/a", "/w/f/c"])])),
-    ];
-    let target = |file: &str, hash: &str| Target { file: file.into(), rel: file.trim_start_matches("/w/").into(), hash: hash.into() };
-    assert_eq!(targets(&messages, "u1", "/w", "/w/f").unwrap(),
-        vec![target("/w/f/a", &one), target("/w/f/b", &one), target("/w/f/c", &two)], "each file once, its first patch's snapshot");
-    assert_eq!(targets(&messages, "u2", "/w", "/w/f").unwrap(), vec![target("/w/f/a", &two), target("/w/f/c", &two)],
-        "nothing before the boundary");
-    assert_eq!(targets(&messages[..3], "u2", "/w", "/w/f").unwrap(), vec![], "no patch after it: no file");
-
-    for (messages, boundary, said) in [
-        (messages.clone(), "a1", "goes back to a user message"),
-        (messages.clone(), "u9", "would revert nothing"),
-        (vec![message("u1", "user", json!([]))], "u1", "would revert nothing"),
-        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/other/x"])]))], "u1", "outside the Agent's folder"),
-        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/../other"])]))], "u1", "not a plain absolute path"),
-        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch("HEAD", &["/w/f/a"])]))], "u1", "not an object ID"),
-        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/x*"])]))], "u1", "a character Git reads as a pattern"),
-        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/x?"])]))], "u1", "a character Git reads as a pattern"),
-        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/[ab]"])]))], "u1", "a character Git reads as a pattern"),
-        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/x\\y"])]))], "u1", "a character Git reads as a pattern"),
-        (vec![message("u1", "user", json!([text("t")])), message("a1", "assistant", json!([patch(&one, &["/w/f/sub/.gitattributes"])]))], "u1", "is a .gitattributes file"),
-    ] {
-        let error = targets(&messages, boundary, "/w", "/w/f").unwrap_err().to_string();
-        assert!(error.contains(said), "{boundary}: {error}");
-    }
-    assert!(targets(&messages, "u1", "/w", "/elsewhere").is_err(), "an Agent folder outside the worktree");
-    assert!(targets(&messages, "u1", "/", "/w").is_err(), "the root as worktree");
 }
 
 #[tokio::test]
@@ -424,11 +376,12 @@ fn opencodes_checkout_reads_a_path_as_a_pattern_so_such_a_path_is_refused() {
     let pattern = work.join("x*");
     run(&store, &work, &["checkout", hash.as_str(), "--", pattern.to_str().unwrap()]);
     assert_eq!(fs::read_to_string(work.join("xa")).unwrap(), "a0", "Git matched xa by the pattern x*");
+    let rel = work.join("x*").strip_prefix(&root).unwrap().to_string_lossy().into_owned();
     let messages = vec![
-        json!({"info": {"id": "u1", "role": "user"}, "parts": [{"id": "t", "type": "text", "text": "x"}]}),
-        json!({"info": {"id": "a1", "role": "assistant"}, "parts": [{"id": "p", "type": "patch", "hash": hash, "files": [work.join("x*")]}]}),
+        json!({"id": "u1", "type": "user", "text": "x"}),
+        json!({"id": "a1", "type": "assistant", "snapshot": {"start": hash, "files": [rel]}}),
     ];
-    let error = targets(&messages, "u1", root.to_str().unwrap(), work.to_str().unwrap()).unwrap_err().to_string();
+    let error = targets_v2(&messages, "u1", root.to_str().unwrap(), work.to_str().unwrap()).unwrap_err().to_string();
     assert!(error.contains("a character Git reads as a pattern"), "{error}");
 }
 

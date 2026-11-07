@@ -36,9 +36,14 @@ login:
   whose creation answer was lost is still deleted; a 404 or 422 then means it
   never existed.
 
-Core never force-pushes. It closes only the batch PRs it opened and deletes
-only the `queue/merge-{entry}` branches it created. It never starts, reruns or
-cancels a workflow.
+- Only while the user allows reverts for the repository (see Reverts): a
+  revert's commit (`POST git/commits`, the tree of the main before a bad merge
+  on top of it), the branch `queue/revert-{entry}` and its PR (not a draft),
+  the merge of that PR, and removing the branch afterwards.
+
+Core never force-pushes. It closes only the batch and revert PRs it opened and
+deletes only the `queue/merge-{entry}` and `queue/revert-{entry}` branches it
+created. It never starts, reruns or cancels a workflow.
 
 ## Who may release
 
@@ -245,6 +250,45 @@ merge records the policy it started with. If the
 policy turns strict while an entry holds a probe on the current main, the probe
 becomes its batch: Core opens the draft PR from it.
 
+## Reverts
+
+When main's push CI goes red after a merge the queue made, the entry ends
+`done` with `main_red` and the queue pauses. Such a merge can be reverted in
+one step: by a lead of a Project the repository is linked to (`merge_revert`
+with the entry), or by the user (Revert on the pause in Jobs → Merge queue).
+Only while the user allows reverts for the repository, in its switch block in
+Projects → repositories (`{"revert": true}`); allowing them lists their writes
+first. With automatic reverts on as well (`{"autoRevert": true}`, off by
+default), Core asks for the revert itself as soon as main goes red, and the
+mail says so. Turning reverts off turns automatic reverts off too, and stops a
+revert under way (`revert_not_allowed`).
+
+A revert is an entry of the queue (`kind: "revert"`, `revert.of` naming the
+reverted entry). One runs at a time per merge. Its first check builds it:
+
+1. A revert commit: the tree of the main before the bad merge, on top of that
+   merge.
+2. Core's branch `queue/revert-{entry}`: at that commit while main is still the
+   bad merge; otherwise at the current main, with the revert commit merged in.
+   If that does not apply, the revert stops with `revert_conflict` and has to be
+   made by hand.
+3. A PR from that branch, not a draft; the entry takes its number and head.
+
+Each step is recorded before the next write, as for a batch. The revert then
+merges as a merge commit pinned to its head, after the same reconcile and with
+the same post-check, once either holds:
+
+- main is still the bad merge, the revert restores exactly the main before it,
+  and that main's push CI succeeded (at once); or
+- every workflow run on the revert PR's head finished green.
+
+It needs no review round: Core built it mechanically. It is the only entry that
+passes the `main_red` pause of the merge it reverts, and no other pause. If main
+moves before it merges, it stops with `revert_outdated`; ask for it again. Its
+branch is removed after it merges or stops. Once main's push CI on the revert
+is green, the pause ends, journaled as ended by the revert, and every waiting
+entry is re-anchored there. If that CI is red too, the queue stays paused.
+
 ## Pauses
 
 A repository's queue pauses on red main CI, a failed post-check, a
@@ -288,7 +332,7 @@ run.
 | `merging` | The merge request is journaled or sent. |
 | `merged` | GitHub merged it; Core follows main's push CI. |
 | `done` | Main's push CI on the merge commit finished. |
-| `stopped` | A check decided against. `reason` is one of `head_moved`, `pr_not_open`, `base_changed`, `review_not_passing`, `main_red`, `ci_red`, `conflict`, `nothing_to_merge`, `merge_blocked`, `batch_changed`, `checkout_mismatch`, `checkout_unproven`, `merge_refused`, `merge_unknown`, `post_check_failed`, `post_check_unverified`, `gh_too_old`, `wait_timeout`, `github_unreachable` or `dry_run_ended`. |
+| `stopped` | A check decided against. `reason` is one of `head_moved`, `pr_not_open`, `base_changed`, `review_not_passing`, `main_red`, `ci_red`, `conflict`, `nothing_to_merge`, `merge_blocked`, `batch_changed`, `checkout_mismatch`, `checkout_unproven`, `merge_refused`, `merge_unknown`, `post_check_failed`, `post_check_unverified`, `gh_too_old`, `wait_timeout`, `github_unreachable`, `dry_run_ended`, `revert_conflict`, `revert_not_allowed` or `revert_outdated`. |
 | `cancelled` | Cancelled by the Agent that released it, or by the user. |
 
 `merge_retry` checks a stopped entry again from the start. Only the Agent that

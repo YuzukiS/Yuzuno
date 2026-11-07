@@ -646,13 +646,13 @@ async fn a_fork_answered_after_its_watch_settles_that_attempt_and_the_same_reque
 
 /// On a session whose messages are 2.x's, fork still reads 1.19.3's: it
 /// refuses, before doing anything, until its own slice moves it (T-32 slice
-/// 3b, Lead 4983 decision A). A rewind is previewed on 2.x (T-61 slice 5),
-/// its confirm refused until slice 6; compaction has moved (T-61 slice 4):
-/// it goes by 2.x's own route, never 1.19.3's. The stand-in sends 2.x's
-/// messages here, as it does by default.
+/// 3b, Lead 4983 decision A). A rewind goes by 2.x's own revert, staged then
+/// committed (T-61 slices 5 and 6), and compaction by 2.x's own route (T-61
+/// slice 4), never 1.19.3's. The stand-in sends 2.x's messages here, as it
+/// does by default.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn on_2x_a_rewind_is_previewed_not_confirmed_fork_refuses_and_compaction_goes_by_2xs_route() {
+async fn on_2x_a_rewind_and_compaction_go_by_2xs_routes_and_fork_refuses() {
     program();
     let dir = tempfile::tempdir().unwrap();
     let (root, cwd) = (dir.path().canonicalize().unwrap(), dir.path().canonicalize().unwrap().join("work"));
@@ -671,13 +671,15 @@ async fn on_2x_a_rewind_is_previewed_not_confirmed_fork_refuses_and_compaction_g
     let not_yet = crate::opencode_v2::NOT_YET;
     // What each says, or nothing when it went ahead.
     let said = |result: anyhow::Result<()>| result.err().map(|e| e.to_string()).unwrap_or_default();
-    let preview = ws.opencode_revert_preview("oc", &turn).await.expect("a 2.x rewind is previewed");
-    let rewind = said(ws.opencode_revert_confirm("oc", preview["previewId"].as_str().unwrap()).await.map(drop));
-    assert!(rewind.contains(not_yet) && rewind.contains("没有回退"), "its confirm refuses: {rewind}");
     let fork = said(ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &turn, "F")).await.map(drop));
     assert!(fork.contains(not_yet) && fork.contains("没有 fork"), "fork refuses: {fork}");
+    let preview = ws.opencode_revert_preview("oc", &turn).await.expect("a 2.x rewind is previewed");
+    let reverted = ws.opencode_revert_confirm("oc", preview["previewId"].as_str().unwrap()).await.expect("and confirmed");
+    assert_eq!(reverted["status"], "completed", "staged, then committed: {reverted}");
     assert!(asked(&data, "oc", "POST", "/revert").is_empty() && asked(&data, "oc", "POST", "/fork").is_empty(),
-        "nothing was asked of OpenCode");
+        "nothing of 1.19.3's was asked of OpenCode");
+    assert_eq!((asked(&data, "oc", "POST", "/revert/stage").len(), asked(&data, "oc", "POST", "/revert/commit").len()), (1, 1),
+        "2.x's stage, then its commit");
     // Its model is the Agent's chosen one, made the session's first (D-19 (a)).
     ws.opencode_set_model("oc", "deepseek/deepseek-flash".into()).await.unwrap();
     let compact = said(ws.opencode_compact("oc").await.map(drop));

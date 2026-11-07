@@ -147,3 +147,27 @@ async fn a_patch_follows_the_owner_ask_only_and_version_rules() {
     send(&ws, "c", input("c2", 3, vec![text("c-ask")])).await.unwrap();
     assert_eq!(codes(&send(&ws, "c", input("c3", 4, vec![text("c-notes")])).await.unwrap_err()), ["ask_only"]);
 }
+
+/// YN-14 A3: a put with markdown is stored with the body Core builds for it,
+/// and a later patch reaches its text.
+#[tokio::test]
+async fn a_markdown_put_is_stored_as_its_built_body_and_patched_like_any_other() {
+    let (dir, ws, _project) = lab();
+    let file = dir.path().join("preview.png");
+    std::fs::write(&file, b"fixture image bytes").unwrap();
+    let change = json!({"op":"put","key":"release","kind":"report","title":"core.25","size":"wide",
+        "markdown":"**core.25** is out.","attachments":[{"name":"preview.png","path":file}]});
+    let accepted = send(&ws, "a", input("m1", 0, vec![change])).await.unwrap();
+    assert_eq!(accepted["repairs"], Value::Null, "a markdown put needs no repair: {accepted}");
+    let stored = section(&brief(&ws, "a"), "release").clone();
+    assert_eq!(stored["body"], json!({"root":"body","elements":{
+        "body":{"type":"BriefBody","props":{"summary":{"lead":"text","size":"wide"}},"children":["text","files"]},
+        "text":{"type":"Markdown","props":{"text":"**core.25** is out."}},
+        "files":{"type":"Attachments","props":{"items":[{"name":"preview.png"}]}}}}));
+    let note = patch("release", json!([{"op":"replace","path":"/elements/text/props/text","value":"**core.25** is out and installed."}]));
+    send(&ws, "a", input("m2", 1, vec![note])).await.unwrap();
+    assert_eq!(section(&brief(&ws, "a"), "release")["body"]["elements"]["text"]["props"]["text"], "**core.25** is out and installed.");
+    let both = json!({"op":"put","key":"other","kind":"report","title":"Both","markdown":"x","body":stored["body"]});
+    let rejected = send(&ws, "a", input("m3", 2, vec![both])).await.unwrap_err();
+    assert_eq!((codes(&rejected), rejected["problems"][0]["path"].clone()), (vec!["invalid_field".to_owned()], json!("changes[0].markdown")));
+}
