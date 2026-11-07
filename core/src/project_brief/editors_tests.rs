@@ -229,7 +229,7 @@ fn home_editors_are_project_scoped_and_persistent() {
     choose_leads(&ws, &project, &["a"]);
     drop(ws);
     let reopened = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused-harness".into()).unwrap();
-    assert_eq!(editors::get(&reopened.store, &project).unwrap().editor_agent_ids, vec!["a".to_owned()]);
+    assert_eq!(json!(editors::get(&reopened.store, &project).unwrap().editor_agent_ids), json!(["a"]));
     assert_eq!(agent_edits_brief(&reopened.store, "new").unwrap(), None);
 }
 

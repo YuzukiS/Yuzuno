@@ -1709,7 +1709,10 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
     let read = brief(&ws, "b");
     assert_eq!(section(&read, "plan")["owner"], json!({"agentId":"a","name":"Agent a","state":"moved"}));
     assert_eq!(section(&read, "notes")["owner"]["state"], "moved");
-    assert_eq!(home::build(&ws.store).unwrap()["projects"][0]["brief"]["sections"][0]["owner"]["state"], "moved");
+    // On Home they leave the main view: moved away, their owners lead the Project no more (YN-2 S4).
+    let home = home::build(&ws.store).unwrap();
+    let team = home["projects"][0]["brief"]["teamSections"].as_array().unwrap().clone();
+    assert_eq!(team.iter().find(|s| s["key"] == "plan").unwrap()["owner"]["state"], "moved");
     // The moved owner can no longer write there.
     let left = reject(&ws, "a", json!({"requestId":"a2","projectId":project,"expectedVersion":2,"changes":[put("plan", "report")]})).await;
     assert_eq!(codes(&left), ["not_owner"]);
@@ -1719,11 +1722,11 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
     assert!(rejected["problems"][0]["reason"].as_str().unwrap().contains("left this Project"));
     accept(&ws, "b", input("b2", 2, vec![op("claim", "plan")])).await;
     assert_eq!(section(&brief(&ws, "b"), "plan")["owner"]["agentId"], "b");
-    // Moved back after the claim: the section stays the claimer's.
-    ws.store.set_agent_project("a", Some(&project)).unwrap();
+    // Moved back by the user after the claim (it leads again): the section stays the claimer's.
+    ws.store.user_moves_agent("a", Some(&project)).unwrap();
     assert_eq!(codes(&reject(&ws, "a", input("a3", 3, vec![put("plan", "report")])).await), ["not_owner"]);
-    // Moved back before anyone claims: c owns its section again.
-    ws.store.set_agent_project("c", Some(&project)).unwrap();
+    // Moved back by the user before anyone claims: c owns its section again.
+    ws.store.user_moves_agent("c", Some(&project)).unwrap();
     assert_eq!(section(&brief(&ws, "b"), "notes")["owner"]["state"], "active");
     assert_eq!(codes(&reject(&ws, "b", input("b3", 3, vec![op("claim", "notes")])).await), ["not_orphan"]);
     accept(&ws, "c", input("c2", 3, vec![put("notes", "status")])).await;
