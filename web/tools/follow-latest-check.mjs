@@ -194,7 +194,8 @@ try {
         await page.keyboard.press("Home");
         await page.locator('[data-turn-choice="t0"]').click();
         await page.locator('#turn-t0').waitFor();
-        await page.getByRole("button", { name: "Continue to newer messages", exact: true }).waitFor();
+        // An older window: Back to latest floats (YN-19; it had a link to newer messages).
+        await page.locator(".jump-latest").waitFor();
         await stable(page);
         delayTail = true;
       } else await wheelUp(page, 1200);

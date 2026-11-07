@@ -644,7 +644,10 @@ export function App() {
     setAtBottomState(at);
     setLatestAway(!at);
   }, []);
-  const latestShown = latestAway || historyReading;
+  // A window older than the newest one is never the latest, wherever in it
+  // the reader is, its end included (YN-19): the newest end is not in view.
+  const olderWindow = !!detail && detail.agent.id === selected && !!detail.conversation?.hasAfter;
+  const latestShown = latestAway || historyReading || olderWindow;
   // Back to latest leaves through a copy (T-19): aria-hidden, inert and not
   // hit by the pointer, it fades out where the button was, while the button
   // itself is gone at once. Only within one conversation: another one shown
@@ -811,7 +814,7 @@ export function App() {
   // moves the page rather than taps, and after which no click comes). Either
   // that or the pane having moved makes it the reader scrolling, even when
   // the pan moved nothing (already at the end) or came back where it began.
-  const touch = useRef<{ from: number; panned: boolean } | null>(null);
+  const touch = useRef<{ from: number; panned: boolean; y?: number } | null>(null);
   // What grows after it is drawn (a tool row unfolding, a chart laying out),
   // or a pane that shrinks under a growing composer, keeps the end in view
   // while the conversation follows it, as an update does. A row the reader
@@ -1189,15 +1192,44 @@ export function App() {
   // offered only where the saved conversation starts (T-161).
   const nativeHistoryHere = !currentDetail?.conversation?.hasBefore;
   const [pageTarget, setPageTarget] = useState<{agentId:string; turnId:string; itemId?:string; top:number; start:string|null; end:string|null; hold:true} | null>(null);
-  const [pageSpace, setPageSpace] = useState<"before" | "after" | null>(null);
+  // Room kept on a side of the window while a page replaces it, so the
+  // scroll is not clamped before the place being read is put back. A side
+  // stays until the place holds; one page's room is never taken away by the
+  // next page's read (YN-19: pages now follow each other as the reader
+  // scrolls, so a read can start while the last one's room is still there).
+  const [pageSpace, setPageSpace] = useState<{ before?: true; after?: true } | null>(null);
+  const beforeSpace = useRef<HTMLDivElement>(null);
+  const afterSpace = useRef<HTMLDivElement>(null);
+  // The saved window being read in place of the shown one, and which way:
+  // its loading line, or why it could not be read, shows on that side.
+  const [windowPage, setWindowPage] = useState<{ direction: "before" | "after"; failed?: true } | null>(null);
+  const windowRead = useRef<{ direction: "before" | "after" } | null>(null);
+  // Which way the reader last scrolled, by their own wheel, keys, finger or
+  // scrollbar, never by the app's own scrolling: pages load only that way.
+  const readerWay = useRef<"up" | "down" | null>(null);
+  const lastTop = useRef(0);
   // Puts the page target's place back, while it holds (ConversationRows calls it).
   const heldPlace = useRef<(() => void) | null>(null);
   // Back to latest from a window that is not the newest waits for it (T-6).
   const toLatest = useRef(false);
-  useEffect(() => { setPageTarget(null); setPageSpace(null); toLatest.current = false; }, [selected]);
+  // Back to latest keeps the end in view until the newest window is in and
+  // its rows have measured (YN-19); the reader's own scroll ends it.
+  const latestPin = useRef<{ frame: number } | null>(null);
+  const stopLatestPin = useCallback(() => {
+    if (latestPin.current) cancelAnimationFrame(latestPin.current.frame);
+    latestPin.current = null;
+  }, []);
+  useEffect(() => {
+    setPageTarget(null); setPageSpace(null); setWindowPage(null); toLatest.current = false; stopLatestPin();
+    windowRead.current = null; readerWay.current = null;
+  }, [selected, stopLatestPin]);
+  useEffect(() => stopLatestPin, [stopLatestPin]);
   // A Turn's landing is the conversation's it was in: another Agent's, or none, ends it (T-19).
   useEffect(() => () => turnSettled.current?.(), [selected]);
-  useEffect(() => { if (sourceJump || jumpToTurn) setPageSpace(null); }, [sourceJump, jumpToTurn]);
+  useEffect(() => {
+    if (!sourceJump && !jumpToTurn) return;
+    setPageSpace(null); setWindowPage(null); windowRead.current = null; readerWay.current = null;
+  }, [sourceJump, jumpToTurn]);
   // An earlier window that could not be read moves nothing to hold in place.
   useEffect(() => { if (savedPages.error) setPageTarget(null); }, [savedPages.error]);
   /** What the reader sees at the top of the conversation: the first item
@@ -1216,6 +1248,17 @@ export function App() {
     const turnId = found?.element.closest<HTMLElement>("[id^='turn-']")?.id.slice("turn-".length);
     return found && turnId && found.element.dataset.itemId
       ? {turnId, itemId:found.element.dataset.itemId, top:readingTop(found.element)} : null;
+  }
+  /** Once a page's place holds, the room kept for it goes, in the same
+   * commit as the hold ends: before the window, the reading anchor keeps
+   * what is in view where it is as that room goes (ReadingAnchor). After
+   * it, only when none of it is in view, or taking it away would bring the
+   * end up under the reader. */
+  function releaseSpace() {
+    const pane = scroll.current;
+    const after = afterSpace.current;
+    const keepAfter = !!pane && !!after && after.getBoundingClientRect().top < pane.getBoundingClientRect().bottom;
+    setPageSpace(space => (space?.after && keepAfter ? { after: true } : null));
   }
   function pageAnchor(turnId: string, itemId?: string) {
     const turn = document.getElementById(`turn-${turnId}`);
@@ -1244,14 +1287,20 @@ export function App() {
     let frame = 0, still = 0, frames = 0;
     const settle = () => {
       still = restore() ? 0 : still + 1;
-      if (still >= 2 || ++frames >= 60) setPageTarget(null);
-      else frame = requestAnimationFrame(settle);
+      if (still >= 2 || ++frames >= 60) {
+        setPageTarget(null);
+        releaseSpace();
+      } else frame = requestAnimationFrame(settle);
     };
     restore();
     frame = requestAnimationFrame(settle);
     heldPlace.current = () => { if (restore()) still = 0; };
     return () => { cancelAnimationFrame(frame); heldPlace.current = null; };
   }, [currentDetail, live.windowLoading, pageTarget, selected]);
+  // The newest window is the one shown, with no read of another on its way
+  // (Back to latest's pin waits for it, YN-19).
+  const newestShown = useRef(false);
+  newestShown.current = !!currentDetail && currentDetail.agent.id === selected && !currentDetail.conversation?.hasAfter && !live.windowLoading;
   // Back to latest from a window that is not the newest (the windows were
   // replaced, or a jump into history) shows the newest window's end once it
   // is in (T-6). Scrolled before, the end was the old window's, which has
@@ -2617,11 +2666,17 @@ export function App() {
       watch.disconnect();
     };
   }, [agent?.name, nameOpen, selected]);
-  // The reading bar and what it says: a source being read, or a window of
-  // earlier messages. Either one carries the single way back to the latest.
+  // The reading bar and what it says: a source being read, which carries the
+  // single way back to the latest. A window of earlier messages has no bar of
+  // its own: newer pages load as the reader nears its end, and Back to latest
+  // floats above the composer meanwhile (YN-19).
   const source = catchupSource?.agentId === selected ? catchupSource : null;
   const historyWindow = !!currentDetail?.conversation?.hasAfter;
-  const readingBar = !!source || historyWindow;
+  const readingBar = !!source;
+  const pillShown = latestShown && !readingBar;
+  // The newer page on its way, or why it could not be read while Core has
+  // not read it since (it retries): the line at the window's end (YN-19).
+  const newerPage = windowPage?.direction !== "after" ? null : !windowPage.failed ? "loading" : detailError ? "failed" : null;
   // Search offers to open a message, Agent or report link; a Home link is
   // what a notification opens, not something to paste.
   const pastedLink = searchOpen ? parseAppLink(search) : null;
@@ -2678,6 +2733,9 @@ export function App() {
     setPhoneDock(null);
     setPageTarget(null);
     setPageSpace(null);
+    setWindowPage(null);
+    windowRead.current = null;
+    readerWay.current = null;
     savedPages.drop();
     toLatest.current = !!currentDetail?.conversation?.hasAfter;
     if (currentDetail?.conversation) void live.navigate({});
@@ -2688,14 +2746,44 @@ export function App() {
     setSourceJump(false);
     setJumpToTurn(null);
     stickToBottom.current = true;
-    requestAnimationFrame(() =>
-      scroll.current?.scrollTo({
-        top: scroll.current.scrollHeight,
-        // Estimated gaps change as the final rows mount. A smooth scroll's
-        // intermediate events look like reading history and cancel following.
-        behavior: "instant",
-      }),
-    );
+    pinLatest();
+  }
+  /** One press of Back to latest ends at the very end (YN-19). Each frame
+   * the end is put in view, instantly (a smooth scroll's steps look like
+   * the reader scrolling, and estimated gaps change as the final rows
+   * mount): first the shown window's, while the newest is still on its way,
+   * then the newest window's, until its rows have measured — the end has
+   * stayed put for three frames, or a second has passed. Scrolled once when
+   * the newest window arrived, the end moved on as its rows below the view
+   * mounted and grew. The reader's own scroll ends it (stopLatestPin), as
+   * does anything that stops following the end. */
+  function pinLatest() {
+    stopLatestPin();
+    const pin = { frame: 0 };
+    const began = performance.now();
+    let arrived = 0, still = 0, height = -1;
+    // Its scrolls were not the reader's (onScroll let them be): once it
+    // ends, the pane says where it is as any scroll does.
+    const finish = (el: HTMLDivElement | null) => {
+      latestPin.current = null;
+      el?.dispatchEvent(new Event("scroll"));
+    };
+    const step = () => {
+      const el = scroll.current;
+      if (latestPin.current !== pin) return;
+      if (!el || !stickToBottom.current) return finish(el);
+      const now = performance.now();
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > 0.5) el.scrollTop = el.scrollHeight;
+      if (newestShown.current) {
+        arrived ||= now;
+        still = el.scrollHeight === height ? still + 1 : 0;
+        height = el.scrollHeight;
+        if (still >= 3 || now - arrived >= 1000) return finish(el);
+      } else if (now - began >= 10_000) return finish(el);
+      pin.frame = requestAnimationFrame(step);
+    };
+    latestPin.current = pin;
+    pin.frame = requestAnimationFrame(step);
   }
   /** The session's own earlier turns, read where the saved conversation
    * starts; the reader's first Turn is held in place. */
@@ -2736,12 +2824,21 @@ export function App() {
       // records. Do not keep paging from its opposite edge forever.
       if (visibleCursor !== (direction === "before" ? window.end : window.start)) cursor = visibleCursor;
     }
+    // Newer messages load as the reader nears the end (YN-19), so the newer
+    // window starts a screen above what is in view, not at the last Item
+    // shown: what is in view stays, with a screen of what was read before
+    // it, and only what was scrolled past further up gives way.
+    if (direction === "after") {
+      const from = savedAbove(scroll.current?.clientHeight ?? 0);
+      if (from && from !== window.start) cursor = from;
+    }
     const [turnId, itemId] = JSON.parse(cursor) as [string, string | null];
     const item = pageAnchor(turnId, itemId || undefined);
     // A page target holds the reader's place; it opens nothing (T-161).
     const target = {agentId:selected, turnId, itemId:itemId || undefined,
       top:item ? readingTop(item) : (scroll.current?.getBoundingClientRect().top ?? 0) + 32,
       start:window.start, end:window.end, hold:true as const};
+    const reading = readerAnchor();
     stickToBottom.current = false;
     setHistoryReading(true);
     setAtBottom(false);
@@ -2750,9 +2847,7 @@ export function App() {
       // live window is pinned, so new messages do not move it out from
       // under the earlier ones.
       live.pinWindow();
-      const reading = readerAnchor();
       if (savedPages.loadEarlier(cursor)) {
-        setPageSpace(null);
         setPageTarget(reading ? {...target, ...reading} : target);
         return;
       }
@@ -2763,19 +2858,87 @@ export function App() {
       // held in place (T-161).
       const last = readerAnchor(true);
       if (reading && last && savedPages.detail?.turns.some(turn => turn.id === last.turnId && turn.items.some(item => item.id === last.itemId))) {
-        setPageSpace("after");
+        setPageSpace(space => ({...space, after:true}));
         setPageTarget({...target, ...reading});
-        void live.navigate({before:JSON.stringify([last.turnId, last.itemId])}, true);
+        readWindow("before", {before:JSON.stringify([last.turnId, last.itemId])});
         return;
       }
     }
     // Replacing a page removes content on the opposite side of its overlap.
     // Reserve at most one viewport there so scrollTop is not clamped before
     // the overlapping item can return to the same screen position.
-    setPageSpace(direction === "before" ? "after" : "before");
-    setPageTarget(target);
-    void live.navigate({[direction]:cursor}, true);
+    setPageSpace(space => ({...space, [direction === "before" ? "after" : "before"]:true}));
+    setPageTarget(direction === "after" && reading ? {...target, ...reading} : target);
+    readWindow(direction, {[direction]:cursor});
   }
+  /** Reads the saved window in place of the shown one. A read that fails
+   * lets the place go, as an earlier page's does (the window it was held
+   * for did not come), and says so on its side with a way to try again
+   * (YN-19); Core's reader keeps retrying it meanwhile. */
+  function readWindow(direction: "before" | "after", query: Record<string, string>) {
+    const page = { direction };
+    windowRead.current = page;
+    setWindowPage(page);
+    void live.navigate(query, true).then(() => {
+      if (windowRead.current !== page) return;
+      windowRead.current = null;
+      if (!live.sync.failed) { setWindowPage(null); return; }
+      setWindowPage({ ...page, failed: true });
+      setPageTarget(null);
+      releaseSpace();
+    });
+  }
+  /** The saved message a newer window starts at: the last one starting at
+   * least `reach` above the view, else the first mounted one. Only saved
+   * messages: native pages and outgoing ones are no cursor. */
+  function savedAbove(reach: number) {
+    const pane = scroll.current;
+    const turns = savedPages.detail?.turns;
+    if (!pane || !turns) return null;
+    const line = pane.getBoundingClientRect().top - reach;
+    let found: string | null = null;
+    for (const element of pane.querySelectorAll<HTMLElement>("[data-item-id]")) {
+      const turnId = element.closest<HTMLElement>("[id^='turn-']")?.id.slice("turn-".length);
+      const itemId = element.dataset.itemId;
+      const rect = element.getBoundingClientRect();
+      if (!turnId || !itemId || rect.height <= 0 || !turns.some(turn => turn.id === turnId && turn.items.some(item => item.id === itemId))) continue;
+      if (found && rect.top > line) break;
+      found = JSON.stringify([turnId, itemId]);
+      if (rect.top > line) break;
+    }
+    return found;
+  }
+  /** Near either end of a saved window with more beyond it, the next one is
+   * read by itself, as its link or button read it before (YN-19): newer
+   * ones within a screen of the end as the reader goes down, earlier ones
+   * within a screen of the top as they go up. The session's own earlier
+   * turns stay behind their button. Not while another read, a held place,
+   * a jump or Back to latest is on its way, nor after a read failed (Try
+   * again reads it), nor where nothing is laid out. */
+  function autoPage() {
+    const el = scroll.current;
+    const window = currentDetail?.conversation;
+    const way = readerWay.current;
+    if (!el || el.clientHeight <= 0 || !window || !way || previewMode || homeOpen || listShown) return;
+    if (live.windowLoading || savedPages.loading || savedPages.error || windowPage || pageTarget || latestPin.current
+      || toLatest.current || jumpToTurn || sourceJump || artifact) return;
+    const reach = el.clientHeight;
+    if (way === "down" && window.hasAfter) {
+      const room = afterSpace.current?.offsetHeight ?? 0;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight - room < reach) changeHistoryPage("after");
+    } else if (way === "up" && window.hasBefore) {
+      const room = beforeSpace.current;
+      if (el.scrollTop - (room ? room.offsetTop + room.offsetHeight : 0) < reach) changeHistoryPage("before");
+    }
+  }
+  // Again when a read or a held place ends, or the window changes: a short
+  // page can leave the reader near its end with nothing more to scroll.
+  useEffect(() => autoPage(), [currentDetail, live.windowLoading, savedPages.loading, pageTarget, windowPage]);
+  // A failed read that Core's reader has since read after all (it retries)
+  // no longer stops the next page.
+  useEffect(() => {
+    if (!detailError) setWindowPage(page => (page?.failed ? null : page));
+  }, [detailError]);
   function readerScrollIntent() {
     requestAnimationFrame(() => {
       const el = scroll.current;
@@ -3794,6 +3957,9 @@ export function App() {
             <div
               ref={conversationBody}
               className="conversation-body"
+              // Back to latest floats here: on a desktop the pane ends above
+              // it while it shows (turn-dock.css, YN-19).
+              data-latest={pillShown ? "shown" : undefined}
               data-phone-dock={phone && dockMotion.shown ? dockMotion.shown : undefined}
               data-phone-dock-way={phone && dockMotion.way ? dockMotion.way : undefined}
               onAnimationEnd={(event) => {
@@ -3813,9 +3979,9 @@ export function App() {
                   </div>
                 )}
                 {/* One reading bar, and one way back to the latest in it:
-                    a source being read, the place left off, or a window of
-                    earlier messages. The floating button stands in only when
-                    no bar is showing, so two never appear at once (T-15). */}
+                    a source being read, or the place left off. The floating
+                    button stands in only when no bar is showing, so two never
+                    appear at once (T-15). */}
                 {readingBar && (
                   <div className="source-navigation" lang={langTag(language)}>
                     {/* The way back to the latest, always: a reader who is
@@ -3838,17 +4004,10 @@ export function App() {
                       </button>
                     )}
                     <span role="status">
-                      {source
-                        ? sourceNotice?.(shell) || (source.progress !== undefined ? (source.where ? shell.readingIn(source.where) : source.title)
-                          : source.restore !== undefined ? shell.leftOff
-                          : source.link ? shell.linked : shell.original)
-                        : shell.earlierMessages}
+                      {source && (sourceNotice?.(shell) || (source.progress !== undefined ? (source.where ? shell.readingIn(source.where) : source.title)
+                        : source.restore !== undefined ? shell.leftOff
+                        : source.link ? shell.linked : shell.original))}
                     </span>
-                    {historyWindow && (
-                      <button className="inline-link" disabled={live.windowLoading} onClick={() => changeHistoryPage("after")}>
-                        {live.windowLoading ? shell.loadingHistory : shell.newerMessages}
-                      </button>
-                    )}
                   </div>
                 )}
               </ConversationStrips>
@@ -3874,14 +4033,30 @@ export function App() {
                 onWheel={(e) => {
                   if (!ownEvent(e)) return;
                   if (e.deltaY < 0) {
+                    readerWay.current = "up";
+                    stopLatestPin();
                     live.pinWindow();
                     stickToBottom.current = false;
                   }
-                  if (e.deltaY > 0) readerScrollIntent();
+                  if (e.deltaY > 0) {
+                    readerWay.current = "down";
+                    readerScrollIntent();
+                  }
                 }}
                 onTouchStart={(e) => {
                   if (!ownEvent(e)) return;
-                  touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false };
+                  touch.current = { from: scroll.current?.scrollTop ?? 0, panned: false, y: e.touches[0]?.clientY };
+                }}
+                // Which way a finger moves the conversation; one moving it
+                // back up ends Back to latest's pin, as a wheel up does.
+                onTouchMove={(e) => {
+                  const now = touch.current, y = e.touches[0]?.clientY;
+                  if (!ownEvent(e) || !now || y === undefined) return;
+                  if (now.y !== undefined && Math.abs(y - now.y) >= 2) {
+                    readerWay.current = y < now.y ? "down" : "up";
+                    if (y > now.y) stopLatestPin();
+                  }
+                  now.y = y;
                 }}
                 // The browser's pan: noted, never taken for a cancelled touch.
                 onPointerCancel={(e) => {
@@ -3912,9 +4087,13 @@ export function App() {
                     return;
                   // Space on a disclosure opens or closes it rather than scrolling.
                   if (["End", "PageDown", "ArrowDown"].includes(e.key) ||
-                    (e.key === " " && !(e.target as Element).closest?.("summary")))
+                    (e.key === " " && !(e.target as Element).closest?.("summary"))) {
+                    readerWay.current = "down";
                     readerScrollIntent();
+                  }
                   if (["Home", "PageUp", "ArrowUp"].includes(e.key)) {
+                    readerWay.current = "up";
+                    stopLatestPin();
                     live.pinWindow();
                     stickToBottom.current = false;
                   }
@@ -3937,12 +4116,20 @@ export function App() {
                 onPointerDown={(e) => {
                   // Native scrollbar events target the scroll container itself.
                   // Clicking a message or a source link must not leave history mode.
-                  if (e.target === e.currentTarget)
+                  if (e.target === e.currentTarget) {
                     draggingScrollbar.current = true;
+                    stopLatestPin();
+                  }
                 }}
                 onScroll={() => {
                   const el = scroll.current;
                   if (el) {
+                    const moved = el.scrollTop - lastTop.current;
+                    lastTop.current = el.scrollTop;
+                    // Back to latest's own scrolling on its way to the end
+                    // says nothing about the reader (pinLatest).
+                    if (latestPin.current) return;
+                    if (draggingScrollbar.current && Math.abs(moved) >= 1) readerWay.current = moved > 0 ? "down" : "up";
                     if (
                       draggingScrollbar.current &&
                       el.scrollHeight - el.scrollTop - el.clientHeight < 8
@@ -3959,6 +4146,7 @@ export function App() {
                     setLatestAway((away) => (elsewhere || gap >= 96 ? true : gap < 48 ? false : away));
                     stickToBottom.current = latest;
                     noteReading(latest);
+                    autoPage();
                   }
                 }}
               >
@@ -3980,7 +4168,7 @@ export function App() {
                     const native = !!currentDetail.history?.hasMore && nativeHistoryHere;
                     return <HistoryEntry
                       more={saved || native}
-                      loading={saved ? savedPages.loading || (live.windowLoading && pageSpace === "after") : sessionHistory.loading}
+                      loading={saved ? savedPages.loading || (windowPage?.direction === "before" && !windowPage.failed) : sessionHistory.loading}
                       busy={live.windowLoading || savedPages.loading || sessionHistory.loading}
                       error={savedPages.error || sessionHistory.error || ""}
                       added={sessionHistory.added}
@@ -3994,8 +4182,8 @@ export function App() {
                       {detailError}
                     </p>
                   )}
-                  {pageSpace === "before" && currentDetail?.conversation?.hasBefore &&
-                    <div aria-hidden="true" style={{ height: scroll.current?.clientHeight || 0 }} />}
+                  {pageSpace?.before && currentDetail?.conversation?.hasBefore &&
+                    <div ref={beforeSpace} aria-hidden="true" style={{ height: scroll.current?.clientHeight || 0 }} />}
                   {!currentDetail && !detailError ? (
                     <div className="loading-state">
                       <LoaderCircle size={18} className="spin" />
@@ -4061,13 +4249,28 @@ export function App() {
                       </p>
                     </div>
                   )}
-                  {/* Where the loaded window ends. Back to latest is not
-                      repeated here: the reading bar above carries the one
-                      entry for it (T-15). */}
-                  {historyWindow && <div className="conversation-history-window">
-                    <button className="inline-link" disabled={live.windowLoading} onClick={() => changeHistoryPage("after")}>
-                      {live.windowLoading ? shell.loadingHistory : shell.newerMessages}
-                    </button>
+                  {/* Where the loaded window ends, when newer messages follow:
+                      they load as the reader nears it, so there is no link
+                      here, only a quiet line while they load and, when they
+                      could not be read, why and a way to try again (YN-19).
+                      Back to latest is the floating button's (T-15). */}
+                  {historyWindow && newerPage && <div className="conversation-history-window" data-state={newerPage}>
+                    {newerPage === "loading" ? (
+                      <p role="status" className="conversation-history-loading">
+                        <LoaderCircle size={13} className="spin" aria-hidden="true" />
+                        {shell.newerLoading}
+                      </p>
+                    ) : (
+                      <>
+                        <p role="alert" className="history-entry-error">
+                          {shell.newerFailed} <span className="history-entry-reason">{detailError}</span>
+                        </p>
+                        <button type="button" className="secondary-button" disabled={live.windowLoading}
+                          onClick={() => changeHistoryPage("after")}>
+                          {shell.tryAgain}
+                        </button>
+                      </>
+                    )}
                   </div>}
                   <OutgoingMessages
                     agentId={agent.id}
@@ -4105,8 +4308,8 @@ export function App() {
                     className="read-end-marker"
                     aria-hidden="true"
                   />
-                  {pageSpace === "after" && currentDetail?.conversation?.hasAfter &&
-                    <div aria-hidden="true" style={{ height: scroll.current?.clientHeight || 0 }} />}
+                  {pageSpace?.after && currentDetail?.conversation?.hasAfter &&
+                    <div ref={afterSpace} aria-hidden="true" style={{ height: scroll.current?.clientHeight || 0 }} />}
                   </ConversationWindow>
                   </OpenCodeForkHost>
                   </OpenCodeRevertHost>
@@ -4152,17 +4355,17 @@ export function App() {
                   inputs={readingBy === "inputs"}
                 />
               )}
-              {latestShown && !readingBar && (
-                <button className="jump-latest" ref={latestButton} onClick={backToLatest}>
+              {pillShown && (
+                <button className="jump-latest" ref={latestButton} onClick={backToLatest} lang={langTag(language)}>
                   <ArrowDown size={13} />
-                  Back to latest
+                  {shell.backLatest}
                 </button>
               )}
               {latestLeaving > 0 && (
                 <div key={latestLeaving} className="jump-latest-leaving" aria-hidden="true" inert ref={latestLeavingCopy}
-                  onAnimationEnd={() => setLatestLeaving(0)}>
+                  onAnimationEnd={() => setLatestLeaving(0)} lang={langTag(language)}>
                   <ArrowDown size={13} />
-                  Back to latest
+                  {shell.backLatest}
                 </div>
               )}
             </div>

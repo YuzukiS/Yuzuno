@@ -2453,18 +2453,20 @@ test("earlier saved messages load in front of what is being read, within three w
     assert.match(text(), /Answer 3[\s\S]*Question 4[\s\S]*Answer 4[\s\S]*Question 5[\s\S]*Answer 5/);
     assert.equal(text().match(/Answer 4/g).length, 1, "the Item both windows hold is shown once");
     assert.equal(earlier(), 1);
-    assert.equal(button(page, "Continue to newer messages"), undefined);
+    assert.ok(!button(page, "Continue to newer messages"), "no link to newer messages");
     button(page, "Load earlier messages").click();
     await until(() => /Question 3/.test(text()), "a second earlier window is shown");
     assert.match(text(), /Answer 2[\s\S]*Question 3[\s\S]*Answer 3[\s\S]*Answer 5/);
     assert.equal(earlier(), 2);
-    // A third would pass the bound: the windows are replaced as before, and
-    // the newer messages are one click away.
+    // A third would pass the bound: the windows are replaced as before. The
+    // newer messages then load as the reader scrolls toward the end (YN-19):
+    // no link to them, and Back to latest floats, with no reading bar.
     button(page, "Load earlier messages").click();
     await until(() => /Question 2/.test(text()) && !/Answer 5/.test(text()), "the window before them replaces them");
     assert.match(text(), /Answer 1[\s\S]*Question 2[\s\S]*Answer 2/);
     assert.equal(earlier(), 3);
-    assert.ok(button(page, "Continue to newer messages"));
+    assert.ok(!button(page, "Continue to newer messages"), "no link to newer messages");
+    assert.ok(!!page.document.querySelector("button.jump-latest") && !page.document.querySelector(".source-navigation"), "Back to latest floats, and no bar");
     button(page, "Back to latest").click();
     await until(() => /Answer 5/.test(text()) && !/Question 2/.test(text()), "back at the latest window");
     // A failed read keeps what is shown and says why; it can be tried again.
