@@ -446,10 +446,11 @@ test("task delegation defaults to normal and only requests urgent delivery when 
   }
 });
 
-test("a task goes to a new executor: a general one unless a template of its project, then the workspace, is chosen (T-34, YN-2)", async () => {
+test("a task goes to a new executor: a general one unless one of the workspace's templates is chosen (T-34, YN-2)", async () => {
   let current = task({ projectId: "p-app" });
+  // Templates are the Workspace's (YN-2 S2); a project's id still says whose defaults a general executor takes.
   const available = [
-    { template: { id: "reviewer", label: "Reviewer", harness: "claude" }, source: "project" },
+    { template: { id: "reviewer", label: "Reviewer", harness: "claude" }, source: "workspace" },
     { template: { id: "builder", label: "Builder", harness: "codex" }, source: "workspace" },
   ];
   const view = (list, general) => ({ workspace: { version: 1, templates: [] }, available: list, defaultNamePattern: "{task} · {label}",
@@ -484,8 +485,8 @@ test("a task goes to a new executor: a general one unless a template of its proj
       return select?.options.length === 3 && !select.disabled && select;
     }, "templates read");
     assert.deepEqual([...picker.options].map((option) => option.textContent),
-      ["General executor · Claude Code (this project’s default)", "Reviewer · this project’s", "Builder"],
-      "a general executor first, with the harness it would get, then the task project templates, then the workspace ones");
+      ["General executor · Claude Code (this project’s default)", "Reviewer", "Builder"],
+      "a general executor first, with the harness it would get, then the workspace's templates");
     assert.equal(picker.value, "", "the general executor is chosen unless a template is");
     assert.equal(field(page, "Send to"), undefined, "no agent picker for a new executor");
     assert.match(page.document.querySelector(".collab-inset").textContent, /Core creates an agent for this task, a general one or from the template you choose/);

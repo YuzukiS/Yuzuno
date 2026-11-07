@@ -717,3 +717,24 @@ fn a_general_executors_machine_is_checked_for_the_harness_its_defaults_give() {
     let claude = begun(&store, None, with("claude", "boxed")).unwrap();
     assert_eq!((claude.machine.as_str(), claude.template.harness.as_str()), ("boxed", "claude"), "a Claude Code default runs there");
 }
+
+/// YN-2 S2: templates are the Workspace's. A dispatch of a task in a Project
+/// gets the Workspace's template of the id it names, never a Project's own
+/// list kept from before, and its materials say so.
+#[test]
+fn a_dispatch_in_a_project_gets_the_workspaces_template_of_that_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([reviewer()]));
+    store.db.write().unwrap().execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)",
+        params![crate::executor_templates::project_key(&p),
+            json!({"version":1,"templates":[{"id":"reviewer","label":"Project reviewer","harness":"codex"}]}).to_string()]).unwrap();
+    let t = task(&store, "Review", Some(&p), None);
+    let plan = begun(&store, None, dispatch(&t, "first")).unwrap();
+    assert_eq!((plan.template.label.as_str(), plan.template.harness.as_str()), ("Reviewer", "claude"),
+        "the Workspace's reviewer, not the Project's own list from before");
+    let given: String = store.db.read().unwrap()
+        .query_row("SELECT template_json FROM executor_dispatches WHERE request_id='first'", [], |r| r.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&given).unwrap()["source"], "workspace");
+}

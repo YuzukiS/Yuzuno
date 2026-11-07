@@ -264,26 +264,22 @@ fn pending(db: &Connection) -> Result<bool> {
     )?)
 }
 
-/// A template, for its own limit (T-35 S4): a Project's own template is not
-/// the Workspace's of the same id. Its source, its Project when its own, its id.
-type TemplateKey = (&'static str, Option<String>, String);
+/// A template, for its own limit (T-35 S4): the Workspace's of an id (YN-2
+/// S2: there are no Project templates any more).
+type TemplateKey = String;
 
-/// The templates a pass has looked up, by their row's Project and template id.
-type Templates = HashMap<(Option<String>, String), Option<(TemplateKey, Option<i64>)>>;
+/// The templates a pass has looked up, by their id.
+type Templates = HashMap<String, Option<(TemplateKey, Option<i64>)>>;
 
-/// The template an executor's row names, as a dispatch of its task's Project
-/// finds it now (the Project's own, else the Workspace's), with its limit
-/// (`maxConcurrent`); none once no such template exists, which limits nothing.
-fn template_of(db: &Connection, cache: &mut Templates, project: Option<&str>, id: &str) -> Result<Option<(TemplateKey, Option<i64>)>> {
-    let entry = (project.map(str::to_owned), id.to_owned());
-    if let Some(found) = cache.get(&entry) {
+/// The template an executor's row names, as a dispatch finds it now, with
+/// its limit (`maxConcurrent`); none once no such template exists, or for a
+/// general executor (its id is empty), which limits nothing.
+fn template_of(db: &Connection, cache: &mut Templates, id: &str) -> Result<Option<(TemplateKey, Option<i64>)>> {
+    if let Some(found) = cache.get(id) {
         return Ok(found.clone());
     }
-    let found = crate::executor_templates::template_in(db, project, id)?.map(|(template, source)| {
-        let own = if source == "project" { project.map(str::to_owned) } else { None };
-        ((source, own, id.to_owned()), template.max_concurrent.map(i64::from))
-    });
-    cache.insert(entry, found.clone());
+    let found = crate::executor_templates::template(db, id)?.map(|template| (id.to_owned(), template.max_concurrent.map(i64::from)));
+    cache.insert(id.to_owned(), found.clone());
     Ok(found)
 }
 
@@ -318,7 +314,7 @@ fn holding(db: &Connection, cache: &mut Templates) -> Result<Holding> {
     let mut held = Holding::default();
     for (project, machine, template, n) in rows {
         held.total += n;
-        if let Some((key, _)) = template_of(db, cache, project.as_deref(), &template)? {
+        if let Some((key, _)) = template_of(db, cache, &template)? {
             *held.templates.entry(key).or_insert(0) += n;
         }
         if let Some(project) = project {
@@ -466,7 +462,7 @@ impl Store {
                     None => None,
                 };
                 let machine_cap = limit_at(&tx, &machine_key(&waiting.machine))?.slots;
-                let template = template_of(&tx, &mut templates, waiting.project.as_deref(), &waiting.template)?;
+                let template = template_of(&tx, &mut templates, &waiting.template)?;
                 let template_room = template.as_ref().is_none_or(|(key, cap)| room(by_template.get(key), *cap));
                 if room(waiting.project.as_ref().and_then(|p| projects.get(p)), project_cap)
                     && room(machines.get(&waiting.machine), machine_cap)
