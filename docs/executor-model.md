@@ -518,7 +518,7 @@ A released executor takes no more mail or work:
   with `executor_archived`, naming its task and its dispatcher. Write to the
   dispatcher instead, or dispatch the task again for new work.
 - **Its proposals are its dispatcher's.** A task status change it proposed
-  with `result_publish` is decided by the Agent that dispatched it: the
+  with `result_publish` (before YN-14 removed that tool) is decided by the Agent that dispatched it: the
   proposal shows who, and can't be decided there. You decide it if you
   dispatched the executor, or if its dispatcher is closed or no longer
   exists.

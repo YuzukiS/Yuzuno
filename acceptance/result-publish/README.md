@@ -1,5 +1,7 @@
 # T-37 acceptance: result_publish
 
+> **Retired (YN-14 A5).** Core no longer offers the `result_publish` and `result_guide` MCP tools, so these scripts no longer run against a current Core. They and the record below are kept as history.
+
 `live.py` runs a lab Core on port 4494 with its own data folder, built from this
 branch. `browser.mjs` reads the recorded Turns in headless Chromium.
 `codex-instructions.py` probes the installed Codex app-server directly. Evidence

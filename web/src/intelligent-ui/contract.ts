@@ -3,8 +3,9 @@
  *
  * Everything that decides what an interactive result may contain lives here
  * and depends on zod only: the component props, the whole-result checks,
- * the display defaults, the schema version, and the capability text and
- * input schema Agents are given. The renderer's catalog (spec.ts), the reply
+ * the display defaults, the schema version, and the notice and fence guide
+ * Agents are given (YN-14 A5: no MCP tool publishes results any more; a
+ * reply's yuzuno-ui block shows one). The renderer's catalog (spec.ts), the reply
  * parser (message.ts) and Core's validator all use this file; nothing
  * restates the format elsewhere. Core runs it as a generated bundle,
  * runtimes/result-validator/ (web/tools/result-validator.mjs builds it).
@@ -404,11 +405,6 @@ function checkRows(type: "Table" | "BarChart", props: unknown, at: string): { id
   return rows;
 }
 
-/** The optional tool an Agent uses to publish a result instead of a JSON
- * block in its reply. Core enforces these limits; Agents are told them. */
-export const RESULT_TOOL = "result_publish";
-/** The read-only tool that answers with the full guide to RESULT_TOOL. */
-export const GUIDE_TOOL = "result_guide";
 /**
  * The longest tool description or server instructions a supported native
  * client shows whole. Claude Code 2.1.280 keeps the first 2048 UTF-16 code
@@ -506,131 +502,50 @@ function componentGuide(type: Component): string {
   return formatComponentGuide(type, sentProps(type), COMPONENT_DESCRIPTIONS[type], `${children}${note}`);
 }
 
-/** What the tool does and when to use it; the start of the entry and the guide. */
-const WHAT = `Show an interactive result (tables, charts, metrics, a short clarification form or a proposed task status change) to the user in this Turn.`;
-const WHEN =
-  `Optional: use it only when structure helps — comparing options, tabular or numeric data, or collecting several related answers. For simple facts, confirmations and short answers, reply in plain text and do not call ${RESULT_TOOL}.`;
-const PUBLISHING =
-  `Pass expectedTurnId: the yuzuno.activeTurnId that peers_list returns to you during this Turn. Core checks the result before it is shown. An accepted result is displayed at the end of this Turn, below your reply: do not repeat it, its JSON or a yuzuno-ui block in your reply. A rejection lists problems as {code, path, reason}: fix them and call again with a new requestId; after ${RESULT_LIMITS.rejectedPerTurn} rejections in a Turn, answer in text. If the tool is unavailable or the Turn has changed, answer in text.`;
-const LIMITS =
-  `At most ${RESULT_LIMITS.chainsPerTurn} results per Turn. To change one, pass revisesResultId: the resultId of its latest version from this Turn (at most ${RESULT_LIMITS.versionsPerChain} versions).`;
+/**
+ * The components a reply's yuzuno-ui block shows (YN-14 A5): display only.
+ * Clarification, TaskStatus and Continue were result_publish's, whose
+ * stored results Core still renders and answers; no new one is published.
+ */
+export const FENCE_COMPONENTS = ["Result", "Section", "Text", "Metrics", "Table", "BarChart", "Sources"] as const satisfies readonly Component[];
+
+/** How an Agent shows a result in a conversation (YN-14 A5), as a reply's yuzuno-ui block. */
+export const FENCE_NOTICE =
+  `To show a table, chart, metrics, sections or sources in a conversation, put one yuzuno-ui fenced block in your reply: one sentence of plain text first, ` +
+  "then ```yuzuno-ui with a JSON spec {root, elements}: \"root\" first, then the elements in the order they are shown, the Result first. " +
+  `Yuzuno draws each element as it arrives. At most one block per reply; it only displays. A form, a choice or a status change goes to a Home Ask instead. ` +
+  `yuzuno_guide topic results lists each component's props. Reply in plain text when a sentence will do.`;
+
 const SHAPE =
   `spec is {root, elements}: elements maps ids (1-${ID_LENGTH} characters: a letter, then letters, digits, - or _; every other id has the same form) to {type, props, children?}. root names a Result. The elements form one tree, at most 6 levels and 32 components, every element used, at most ${MAX_SPEC_BYTES} bytes as compact JSON.`;
 
 /**
- * The full guide in parts, in order: a header, how to publish, each
- * component, and the rules across components. Core joins the same parts to
- * answer GUIDE_TOOL (see joinGuide); describeGuide does it here.
+ * yuzuno_guide topic results' component list, generated from the catalog:
+ * the block's shape, each display component's props, and the rules a block
+ * is checked with when it closes (checkSpec).
  */
-export function guideParts() {
-  return {
-    header:
-      `Guide to ${RESULT_TOOL}, schema version ${SCHEMA_VERSION}. Core checks every result against this same contract. ` +
-      SIGNATURE_LEGEND,
-    usage: [`${WHAT} ${WHEN}`, PUBLISHING, LIMITS, SHAPE].join("\n"),
-    components: Object.fromEntries(COMPONENTS.map((type) => [type, componentGuide(type)])) as Record<Component, string>,
-    rules: [
-      `Clarification is available through ${RESULT_TOOL}, not a reply's JSON block. Keep ordinary text answers available. Required does not imply a default; include default.source whenever suggesting or pre-filling a value. Answers use original resultId/formId/field IDs and option IDs. A revision replaces the previous form and its draft stays separate. Publishing a form does not authorize any action or permission request.`,
-      `A result has at most one Continue, Clarification or TaskStatus. Every Table row has a cell for each column key and no others.`,
-      `TaskStatus is available through ${RESULT_TOOL}, not a reply's JSON block. Its task must exist and have another status; read it with task_get. Publishing changes nothing: the user confirms or declines, and may change the status or reason first. Propose a change only when asked to or when your work calls for one; never propose done for work you have not finished.`,
-      `Sources hrefs are http(s) URLs or local file paths (optionally :line); rows and bars cite them by id in sourceIds. Table and BarChart ids, row ids and column keys are unique.`,
-    ].join("\n"),
-  };
-}
-
-/** The parts joined: every component, or only `components` (in catalog order). */
-export function joinGuide(parts: ReturnType<typeof guideParts>, components?: readonly string[]): string {
-  const chosen = components?.length ? COMPONENTS.filter((type) => components.includes(type)) : COMPONENTS;
-  return [parts.header, parts.usage, "Components:", ...chosen.map((type) => parts.components[type]), "Rules:", parts.rules].join("\n");
-}
-
-/** The guide GUIDE_TOOL answers with; Home and other readers use the same text. */
-export function describeGuide(components?: readonly string[]): string {
-  const unknown = components?.filter((type) => !Object.hasOwn(componentProps, type)) ?? [];
-  if (unknown.length) throw new Error(`Unknown component: ${unknown.join(", ")}.`);
-  return joinGuide(guideParts(), components);
+export function describeFenceGuide(): string {
+  return [
+    `A reply's yuzuno-ui block, schema version ${SCHEMA_VERSION}. ${SIGNATURE_LEGEND}`,
+    SHAPE,
+    "Components:",
+    ...FENCE_COMPONENTS.map(componentGuide),
+    "Rules:",
+    `Sources hrefs are http(s) URLs or local file paths (optionally :line); rows and bars cite them by id in sourceIds. Table and BarChart ids, row ids and column keys are unique; every Table row has a cell for each column key and no others. A block that fails these checks when it closes shows as text.`,
+  ].join("\n");
 }
 
 /**
- * What an Agent is told about the tools, and their input schemas. Generated
- * from this file only. The tool's own description is a short entry that fits
- * MAX_DESCRIPTION_LENGTH; the full guide is GUIDE_TOOL's answer. The `spec`
- * argument is described rather than given as a full JSON Schema: Core
- * validates it and answers with exact problems.
+ * What Core is told about results, generated from this file only: the
+ * notice every native session gets, the fence guide yuzuno_guide serves, and
+ * the limits Core still applies to the results it stores.
  */
 export function describeContract() {
-  const parts = guideParts();
-  // The guide is named in the second sentence, so a client that cuts the
-  // description harder than MAX_DESCRIPTION_LENGTH still shows where it is.
-  const description = [
-    `${WHAT} This is a summary: every component's exact props, limits and rules are in ${GUIDE_TOOL}. Read it before your first result in a session (pass components to read only some); a rejection names it too.`,
-    WHEN,
-    PUBLISHING,
-    LIMITS,
-    `${SHAPE} Components: ${COMPONENTS.join(", ")}. At most one Continue, Clarification or TaskStatus; a form never approves an action or permission, and a TaskStatus changes its task only when the user confirms it.`,
-  ].join("\n");
   return {
-    name: RESULT_TOOL,
     schemaVersion: SCHEMA_VERSION,
     limits: RESULT_LIMITS,
-    // What an Agent with the Yuzuno MCP is told once per session, so it can
-    // choose the tool when content suits it; the tool's own description has
-    // the rest. Harnesses load MCP tools on demand, hence the tool search.
-    capability:
-      `Yuzuno can show an interactive table, chart, short form or task status proposal. When comparing options, presenting data, ` +
-      `collecting related answers or proposing a task status for the user to confirm, use the yuzuno ${RESULT_TOOL} tool (load it with tool search if needed; ` +
-      `${GUIDE_TOOL} has each component's full guide), fix any problems it returns, and do not repeat an accepted ` +
-      `result in your reply. For simple questions, confirmations, or when the user asks for text only, reply in plain text.`,
-    description,
-    inputSchema: {
-      type: "object",
-      properties: {
-        requestId: {
-          type: "string", minLength: 1, maxLength: 128,
-          description: "Stable retry key. Reuse it only to retry exactly this submission.",
-        },
-        expectedTurnId: {
-          type: "string", minLength: 1, maxLength: 200,
-          description: "yuzuno.activeTurnId from peers_list, read during this Turn.",
-        },
-        spec: { type: "object", description: `The result, {root, elements}. ${GUIDE_TOOL} has every component's props.` },
-        revisesResultId: {
-          type: ["string", "null"],
-          description: "The latest version of a result you published in this Turn, which this one replaces.",
-        },
-      },
-      required: ["requestId", "expectedTurnId", "spec"],
-      additionalProperties: false,
-    },
-    // Core joins these parts to answer GUIDE_TOOL; components keep catalog order.
-    guide: {
-      header: parts.header,
-      usage: parts.usage,
-      components: COMPONENTS.map((type) => ({ type, text: parts.components[type] })),
-      rules: parts.rules,
-      text: joinGuide(parts),
-    },
+    capability: FENCE_NOTICE,
+    fenceGuide: describeFenceGuide(),
     maxDescriptionLength: MAX_DESCRIPTION_LENGTH,
-    guideTool: {
-      name: GUIDE_TOOL,
-      description:
-        `The full guide to ${RESULT_TOOL}: how to publish, every component's exact props and limits, and the rules ` +
-        `a result must follow, from the contract Core checks results with. Read-only. Call it before your first ` +
-        `result in a session, or when a rejection names it. Pass components to read only some.`,
-      inputSchema: {
-        type: "object",
-        properties: {
-          components: {
-            type: "array",
-            items: { type: "string", enum: COMPONENTS },
-            minItems: 1,
-            maxItems: COMPONENTS.length,
-            uniqueItems: true,
-            description: "Only these components, with the usage and rules. Omit for the whole guide.",
-          },
-        },
-        additionalProperties: false,
-      },
-    },
   };
 }

@@ -1757,7 +1757,7 @@ export function briefGuide(part?: BriefGuidePart): string {
  * result it submits or receives, and result_publish.
  */
 export const BRIEF_OUTCOME_HINT =
-  `Home: a lasting finding, decision or stage result goes in a short report linked to its Task and sources; a current state in a status; a choice for the user in an ask. result_publish shows only in this turn. How to write it: yuzuno_guide brief.`;
+  `Home: a lasting finding, decision or stage result goes in a short report linked to its Task and sources; a current state in a status; a choice for the user in an ask. A yuzuno-ui block in your reply shows only in the conversation. How to write it: yuzuno_guide brief.`;
 
 /**
  * Always loaded, so short and most important first: Claude's system prompt
@@ -1765,7 +1765,7 @@ export const BRIEF_OUTCOME_HINT =
  */
 export const BRIEF_HARD_RULES = [
   `Yuzuno Project Brief rules:`,
-  `1. No Brief update is required each turn: write when something changed, for the user: conclusion first, limits beside it, evidence on its Task. A current state goes in a status, a lasting finding or decision in a short report linked to its Task, a choice for the user in an ask; result_publish never reaches Home. Load tools with tool search if needed.`,
+  `1. No Brief update is required each turn: write when something changed, for the user: conclusion first, limits beside it, evidence on its Task. A current state goes in a status, a lasting finding or decision in a short report linked to its Task, a choice for the user in an ask; yuzuno-ui blocks never reach Home. Load tools with tool search if needed.`,
   `2. Pass expectedVersion from brief_get. On version_conflict, re-read (the rejection has the latest), merge and retry with a new requestId.`,
   `3. Leads edit Home; the user chooses leads. If editContent is false and writeOwnAsk is true, write only your own Asks. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
   `4. An ask needs a question plus reply options, freeText, a form or a choice. A reply marks it replied. Resolve your asks explicitly with resolve once they are handled: a preference once taken in, an authorized action only after it is done and its result is on the Task or Brief. A reply executes nothing itself: act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant.`,
