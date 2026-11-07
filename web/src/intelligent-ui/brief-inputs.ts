@@ -31,15 +31,16 @@ export function declaredVariable(node: Node | undefined): { name: string; kind: 
   return typeof value === "string" ? { name, kind: "text", value } : null;
 }
 
-/** Blocks whose parts the reader selects (YN-16 S3): a Diagram's nodes, into the variable its select names. */
-export const SELECTING_TYPES = ["Diagram"] as const;
+/** Blocks whose parts the reader selects, into the variable their select names: a Diagram's nodes (YN-16 S3), a Figure's hotspots (S4). */
+export const SELECTING_TYPES = ["Diagram", "Figure"] as const;
 
 /** The variable a block selects into and the ids it sets it to; null for any other block, or one without select. */
 export function selectOf(node: Node | undefined): { name: string; ids: string[] } | null {
   if (!node || !(SELECTING_TYPES as readonly unknown[]).includes(node.type) || !record(node.props)) return null;
-  const { select, nodes } = node.props;
+  const { select } = node.props;
   if (typeof select !== "string" || !VARIABLE_NAME.test(select)) return null;
-  const ids = (Array.isArray(nodes) ? nodes : []).flatMap((part) => (record(part) && typeof part.id === "string" ? [part.id] : []));
+  const parts = node.type === "Figure" ? node.props.hotspots : node.props.nodes;
+  const ids = (Array.isArray(parts) ? parts : []).flatMap((part) => (record(part) && typeof part.id === "string" ? [part.id] : []));
   return { name: select, ids };
 }
 
@@ -62,14 +63,15 @@ export function startingValues(elements: Record<string, Node | undefined> | unde
 }
 
 /** What an interactive figure may hold besides its inputs, and how many blocks of its own. */
-export const CARD_PART_TYPES: ReadonlySet<string> = new Set<string>([...INPUT_TYPES, "Button", "Calc", "Diagram", "Markdown", "Metrics"]);
+export const CARD_PART_TYPES: ReadonlySet<string> = new Set<string>([...INPUT_TYPES, "Button", "Calc", "Diagram", "Figure", "Steps", "Timeline", "Markdown", "Metrics"]);
 export const CARD_PARTS = 6;
 
 /**
  * Whether a block is an interactive figure, one a summary may name as its
  * visual so the reader adjusts it on the card itself: a Group of 1 to
  * CARD_PARTS blocks of its own, each an input, a Button, a Calc, a Diagram,
- * a Markdown or Metrics, at least one of them an input.
+ * a Figure, Steps, a Timeline, a Markdown or Metrics, at least one of them an
+ * input.
  */
 export function interactiveGroup(elements: Record<string, Node | undefined> | undefined, id: string): boolean {
   const node = elements && Object.hasOwn(elements, id) ? elements[id] : undefined;
