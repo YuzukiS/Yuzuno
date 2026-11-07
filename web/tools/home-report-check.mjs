@@ -270,6 +270,9 @@ async function serve(route) {
     "/api/models": () => ({ models: [] }),
   }[path];
   if (json) return route.fulfill({ json: json() });
+  // The linked repository's merge queue, as Repository details read it (T-37): off, as a fixture repository's is.
+  const queue = path.match(/^\/api\/merge-queue\/repositories\/(\d+)$/);
+  if (queue && request.method() === "GET") return route.fulfill({ json: { repositoryId: Number(queue[1]), enabled: false, paused: null, landing: "core-merge" } });
   if (path.startsWith("/api/")) {
     report.unexpected.push(path);
     return route.fulfill({ json: {} });
@@ -661,9 +664,10 @@ try {
       const expected = deckShape.container >= 1248 ? 4 : deckShape.container >= 560 ? 2 : 1;
       assert.equal(deckShape.columns, expected, JSON.stringify(deckShape));
       // Each card at the size its author named (Lead 2457), the notes wide though a lead alone; a card with no
-      // summary small, and one kept from before sizes (uptime) its figure's (Lead 2473).
+      // summary sized to its picture (YN-3 PR C2: the study opens with its research desk, wide) or small with
+      // none, and one kept from before sizes (uptime) its figure's (Lead 2473).
       const sizes = Object.fromEntries(deckShape.places.filter((p) => p.size).map((p) => [p.key, `${p.size} ${p.source}`]));
-      assert.deepEqual(sizes, { setup: "small content", data: "small content", baseline: "small content", eval: "wide author", "dose-study": "small content",
+      assert.deepEqual(sizes, { setup: "small content", data: "small content", baseline: "small content", eval: "wide author", "dose-study": "wide content",
         audit: "wide author", "audit/notes": "wide author", screens: "large author", batches: "wide author", uptime: "small content", pulse: "wide author" });
       for (const place of deckShape.places.filter((p) => p.size)) {
         // At least its own size, more where it takes the cells the grid's flow would leave empty; its rows as packed

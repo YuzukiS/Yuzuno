@@ -614,7 +614,7 @@ test("YN-3 a small card's kept image is a View image button that opens the same 
   assert.deepEqual(page.errors, []);
 });
 
-test("YN-3 a card whose author named no summary opens as its body does: a first paragraph, or a first block shown as a small card shows figures; never more", async (t) => {
+test("YN-3 a card whose author named no summary opens as its body does: a first paragraph, or a first block as its picture, the card sized to it (PR C2); never more", async (t) => {
   const page = mount();
   t.after(page.close);
   const { document, window } = page;
@@ -640,9 +640,10 @@ test("YN-3 a card whose author named no summary opens as its body does: a first 
   window.renderCard(unnamed(["m"], { m: metrics }), PROJECT, { deck: true });
   assert.equal(lead(), null);
   assert.deepEqual([...document.querySelectorAll(".home-card-numbers dd")].map((dd) => dd.textContent), ["2", "40 k"]);
-  // An image first: View image, as a small card offers its image.
+  // An image first: its picture, the card sized to it (large, PR C2), the image opened from its frame.
   window.renderCard(unnamed(["files"], { files: { type: "Attachments", props: { items: [{ name: "shot.png" }] } } }), PROJECT, { deck: true });
-  assert.equal(document.querySelectorAll("button.home-card-image-view").length, 1);
+  assert.equal(card().dataset.cardSize, "large");
+  assert.equal(document.querySelectorAll("button.home-card-image-open").length, 1);
   // Nothing a card can show first: its title alone, never “No summary named”.
   window.renderCard(unnamed(["g", "text"], { g: { type: "Group", props: { title: "Runs" }, children: ["log"] }, log: md("Run 101"), text: md("Merged.") }), PROJECT, { deck: true });
   assert.equal(lead(), null);

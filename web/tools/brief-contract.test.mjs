@@ -723,3 +723,11 @@ test("the research guide states the revision form and the desk-wide row and part
     assert.match(found.reason, new RegExp(`row and part id "${id}" is used twice`), id);
   }
 });
+
+// YN-3 PR C2: Agents read on the guide that an attached HTML page shows on its card, and when a card is the whole report.
+test("YN-3 the guide says a card with no visual shows its first kept image or HTML page, working, and that a card holding all its body is the whole report", () => {
+  const content = briefGuide("content");
+  assert.match(content, /A card with no visual shows instead the first kept image or single HTML page \(\.html or \.htm\) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there\./);
+  assert.match(content, /A report whose body holds only its lead \(one paragraph\), the card's picture and files, and its conditions is the whole report: its card has no Open report\./);
+  assert.match(content, /large \(two columns, two rows: an image, a scatter chart, an HTML page\)/);
+});
