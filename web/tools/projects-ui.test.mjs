@@ -1221,7 +1221,10 @@ function queueCore(page, queue, { unpauseFails = 0 } = {}) {
         queue.paused = null;
         return respond({ repositoryId: 7, unpaused: true });
       }
-      if (init.method === "PUT") queue.enabled = body.enabled;
+      if (init.method === "PUT") {
+        if ("enabled" in body) queue.enabled = body.enabled;
+        if ("policy" in body) queue.policy = body.policy;
+      }
       return respond(queue);
     }
     return fetch(url, init);
@@ -1274,6 +1277,45 @@ test("the merge queue switch names every write before it turns on, and turns off
   }
 });
 
+test("the landing policy is strict until chosen; relaxed names its write first and strict saves at once (YN-18 S2d)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+  try {
+    const queue = { repositoryId: 7, enabled: true, paused: null, landing: "core-merge" };
+    queueCore(page, queue);
+    const row = await openQueue(page, "Manage projects");
+    const radio = (value) => row.querySelector(`.merge-queue-policy input[value='${value}']`);
+    const policy = row.querySelector(".merge-queue-policy");
+    assert.ok(policy.textContent.includes("Landing policy"), "the policy has its own heading");
+    assert.equal(radio("strict").checked, true, "a repository with no policy is strict");
+    assert.ok(policy.textContent.includes("Strict, before a release cut") && policy.textContent.includes("Relaxed, day to day"));
+    assert.ok(policy.textContent.includes("CI must have tested the current main with the head"), "strict says what it needs");
+    assert.ok(policy.textContent.includes("Main CI after each merge is watched; red pauses the queue."), "relaxed says what watches it");
+    radio("relaxed").click(); await pause();
+    const confirm = row.querySelector(".merge-queue-policy-confirm");
+    assert.ok(confirm, "relaxed asks first");
+    for (const words of ["Use the relaxed policy for owner/repo?", "no longer wait for CI on the current main", "queue/merge-",
+      "It opens no PR, so no CI runs on it", "deletes it after the merge"])
+      assert.ok(confirm.textContent.includes(words), words);
+    assert.equal(queueWrites(page).length, 0, "nothing is saved before the confirmation");
+    assert.equal(radio("strict").checked, true, "strict stays chosen while it asks");
+    within(row, "Cancel").click(); await pause();
+    assert.ok(!row.querySelector(".merge-queue-policy-confirm"), "Cancel closes it, saving nothing");
+    assert.equal(queueWrites(page).length, 0);
+    radio("relaxed").click(); await pause();
+    within(row, "Use relaxed").click();
+    await waitFor(() => radio("relaxed").checked, "relaxed is chosen");
+    assert.deepEqual(queueWrites(page).map((call) => call.body), [{ policy: "relaxed" }]);
+    radio("strict").click();
+    await waitFor(() => radio("strict").checked, "strict again");
+    assert.deepEqual(queueWrites(page).map((call) => call.body), [{ policy: "relaxed" }, { policy: "strict" }], "strict saves at once");
+    assert.ok(!row.querySelector(".merge-queue-policy-confirm"), "with no confirmation");
+    assert.equal(queue.enabled, true, "the switch stays on throughout");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
 test("a paused merge queue says why and unpauses with one request id until answered, in Chinese (T-37)", async () => {
   const page = await mount({ storage: chinese });
   try {
@@ -1284,6 +1326,7 @@ test("a paused merge queue says why and unpauses with one request id until answe
     assert.equal(row.getAttribute("aria-label"), "owner/repo 的合并队列");
     assert.ok(row.textContent.includes("已开启：Core 合并此仓库中已放行合并的 PR。"), "on, in Chinese");
     assert.ok(row.textContent.includes("落地方式 core-merge"), "the landing, in Chinese");
+    assert.ok(row.textContent.includes("落地策略") && row.textContent.includes("严格（发布切出前）") && row.textContent.includes("放宽（平时）"), "the policy, in Chinese");
     assert.ok(box().textContent.includes("已暂停：main_red"), "the reason, as Core gave it");
     assert.ok(box().textContent.includes("Main CI run 91 concluded failure"), "and Core's detail, as written");
     within(row, "解除暂停").click();

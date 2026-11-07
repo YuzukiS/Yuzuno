@@ -1346,6 +1346,186 @@ async fn a_pr_whose_mergeability_github_is_computing_waits_for_its_runs() {
     assert_eq!(e["detail"], "No run of workflow CI on the head yet");
 }
 
+/// A completed review round at `head` with these findings.
+fn review_found(s: &Store, task: &str, head: &str, conclusion: &str, findings: Value) -> String {
+    let task = internal(s, task);
+    let id = uuid::Uuid::new_v4().to_string();
+    let data = json!({"id":id,"status":"completed","conclusion":conclusion,"headSha":head,"round":2,
+        "findings":findings,"coverage":{"coveredFileCount":3,"fileCount":3}});
+    s.db.write()
+        .unwrap()
+        .execute(
+            "INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,'7:pull:11','completed',?3)",
+            rusqlite::params![id, task, data.to_string()],
+        )
+        .unwrap();
+    id
+}
+/// The repository's landing policy, set as the user sets it.
+fn relaxed(lab: &Lab) {
+    lab.ws.store.merge_set_policy(7, "relaxed").unwrap();
+}
+
+/// YN-12 item 1: a P0–P2 finding of any completed round at the released head
+/// holds that head back, even when a later round of the same head passed. Only
+/// a new head with a passing round of its own clears it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_p0_to_p2_finding_of_any_round_at_the_head_holds_it_back() {
+    let lab = lab(green());
+    review_found(&lab.ws.store, &lab.task, &head(), "changes_requested", json!([{"priority":1,"title":"a real bug"}]));
+    review(&lab.ws.store, &lab.task, &head(), "no_findings");
+    let refused = lab.release(Some("lead"), "r1").await.unwrap_err().to_string();
+    assert!(refused.contains("review_not_passing") && refused.contains("found 1 P0–P2 issue(s)"), "the release is refused: {refused}");
+
+    let lab = lab_with(|_| {});
+    lab.release(Some("lead"), "r1").await.unwrap();
+    review_found(&lab.ws.store, &lab.task, &head(), "changes_requested", json!([{"priority":2},{"priority":3}]));
+    review(&lab.ws.store, &lab.task, &head(), "no_findings");
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("review_not_passing")), "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("found 1 P0–P2 issue(s)"), "only the P2 counts, not the P3: {}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty());
+
+    let lab = lab_with(|_| {});
+    review_found(&lab.ws.store, &lab.task, &sha('a'), "changes_requested", json!([{"priority":0}]));
+    review(&lab.ws.store, &lab.task, &head(), "no_findings");
+    lab.release(Some("lead"), "r1").await.unwrap();
+    assert_eq!(lab.step().await["state"], "merged", "a finding at an older head does not hold this one back");
+}
+
+/// The user sets a repository's landing policy on the switch's route: strict
+/// by default, or relaxed; an unknown one is refused and saves nothing, and no
+/// Agent tool sets it.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_landing_policy_is_strict_until_the_user_sets_it_on_the_route() {
+    use tower::ServiceExt;
+    let lab = lab(green());
+    let put = |body: Value| {
+        axum::http::Request::builder()
+            .method("PUT")
+            .uri("/api/merge-queue/repositories/7")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    };
+    let answer = |response: axum::response::Response| async move {
+        let status = response.status();
+        (status, serde_json::from_slice::<Value>(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap())
+    };
+    assert_eq!(lab.paused()["policy"], "strict", "a repository is strict unless set otherwise");
+    let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"policy":"lenient"}))).await.unwrap()).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("policy is strict or relaxed"), "{body}");
+    assert_eq!(lab.paused()["policy"], "strict", "a refused policy saves nothing");
+    let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"policy":"relaxed"}))).await.unwrap()).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!((body["policy"].clone(), body["enabled"].clone()), (json!("relaxed"), json!(true)), "the switch stays as it was: {body}");
+    let last = body["switches"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!((last["detail"].clone(), last["by"].clone()), (json!("Policy set to relaxed"), json!("user")), "the journal records it: {body}");
+    for tool in tool_definitions() {
+        assert!(!tool.to_string().contains("\"policy\""), "no Agent tool sets the policy: {}", tool["name"]);
+    }
+}
+
+/// The relaxed policy (the user's rule of 2026-11-07): a reviewed head whose
+/// own CI is green merges although CI tested an older main, once Core's own
+/// merge of the head into the current main is clean (the probe: a branch at
+/// main with the head merged in, no PR, so no CI) and main CI is not red. The
+/// merge must land the probe's tree.
+#[cfg(unix)]
+#[tokio::test]
+async fn under_the_relaxed_policy_a_head_tested_on_an_older_main_merges_through_cores_own_merge() {
+    let lab = lab_with(main_moved_ref_stale);
+    relaxed(&lab);
+    let e = lab.release(Some("lead"), "r1").await.unwrap();
+    let branch = format!("queue/merge-{}", e["id"].as_str().unwrap());
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "{}", e["detail"]);
+    assert_eq!(
+        writes(lab.dir.path()),
+        [
+            "POST repos/owner/repo/git/refs".to_owned(),
+            "POST repos/owner/repo/merges".to_owned(),
+            "PUT repos/owner/repo/pulls/11/merge".to_owned(),
+            format!("DELETE repos/owner/repo/git/refs/heads/{branch}")
+        ],
+        "the probe (branch and merge, no PR), the merge, then the probe's removal"
+    );
+    assert!(!calls(lab.dir.path()).iter().any(|c| c["endpoint"].as_str().unwrap().ends_with("/logs")), "no job log is read");
+    let gate = &e["lastEvidence"]["gate"];
+    assert_eq!((gate["kind"].clone(), gate["tree"].clone()), (json!("relaxed"), json!(tree())), "{gate}");
+    assert_eq!(e["lastEvidence"]["policy"], "relaxed");
+    assert_eq!((e["merge"]["policy"].clone(), e["merge"]["expectedMain"].clone()), (json!("relaxed"), json!(sha('c'))));
+    assert_eq!(e["merge"]["post"]["ok"], true, "the merge landed the probe's tree: {e}");
+    assert_eq!(e["batch"]["cleanup"], "done");
+    assert!(lab.mail("lead").iter().any(|m| m["body"].as_str().unwrap().contains("under the relaxed policy")), "the mail says how it merged");
+    change(lab.dir.path(), |s| main_ci(s, "failure"));
+    let e = lab.step().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("done"), json!("main_red")), "main CI is still watched: {e}");
+    assert_eq!(lab.paused()["paused"]["reason"], "main_red", "and red pauses the queue");
+
+    // The same GitHub under the strict policy builds a batch instead.
+    let lab = lab_with(main_moved_ref_stale);
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    assert!(lab.entry().await["detail"].as_str().unwrap().contains("Core opened batch #900"));
+}
+
+/// Under the relaxed policy, a head that does not merge cleanly into the
+/// current main stops with conflict, and Core removes its probe.
+#[cfg(unix)]
+#[tokio::test]
+async fn under_the_relaxed_policy_a_probe_that_conflicts_stops_and_is_removed() {
+    let lab = lab_with(|s| {
+        main_moved_ref_stale(s);
+        s["batchConflict"] = json!(true);
+    });
+    relaxed(&lab);
+    let e = lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e2 = lab.entry().await;
+    assert_eq!((e2["state"].clone(), e2["reason"].clone()), (json!("stopped"), json!("conflict")), "{e2}");
+    lab.step().await;
+    assert_eq!(
+        writes(lab.dir.path()),
+        ["POST repos/owner/repo/git/refs".to_owned(), "POST repos/owner/repo/merges".to_owned(), format!("DELETE repos/owner/repo/git/refs/heads/queue/merge-{}", e["id"].as_str().unwrap())],
+        "nothing merged, and the probe branch is gone"
+    );
+}
+
+/// Under the relaxed policy main CI must not be red now: a red main makes the
+/// entry wait, never stop or pause, and it merges once main is green again. A
+/// main run still waiting to start holds the merge too, so each merge keeps a
+/// main run of its own.
+#[cfg(unix)]
+#[tokio::test]
+async fn under_the_relaxed_policy_a_red_main_waits_and_the_entry_merges_once_it_is_green() {
+    let lab = lab_with(|s| {
+        s["mainRuns"].as_array_mut().unwrap().insert(0, json!({"id":91,"name":"CI","head_sha":main_sha(),"status":"completed","conclusion":"failure","created_at":"2026-11-05T06:00:00Z"}));
+    });
+    relaxed(&lab);
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "a red main waits under the relaxed policy: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("Main CI run 91"), "{}", e["detail"]);
+    assert!(lab.paused()["paused"].is_null(), "and pauses nothing");
+    change(lab.dir.path(), |s| {
+        s["mainRuns"].as_array_mut().unwrap().insert(0, json!({"id":92,"name":"CI","head_sha":main_sha(),"status":"pending","conclusion":null,"created_at":"2026-11-05T06:30:00Z"}));
+    });
+    let e = lab.step().await;
+    assert!(e["detail"].as_str().unwrap().contains("waits to start"), "a main run waiting to start holds the merge: {}", e["detail"]);
+    change(lab.dir.path(), |s| {
+        s["mainRuns"][0]["status"] = json!("completed");
+        s["mainRuns"][0]["conclusion"] = json!("success");
+    });
+    assert_eq!(lab.step().await["state"], "merged", "green again: it merges");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_batch_that_cannot_merge_stops_and_core_deletes_its_branch() {

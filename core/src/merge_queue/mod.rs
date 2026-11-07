@@ -293,18 +293,29 @@ async fn repository(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>)
 struct Switch {
     enabled: Option<bool>,
     landing: Option<String>,
+    /// The landing policy (YN-18 S2d): `strict` or `relaxed`.
+    policy: Option<String>,
 }
 async fn switch(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>, Json(b): Json<Switch>) -> Result<Json<Value>, ApiError> {
-    if b.enabled.is_none() && b.landing.is_none() {
-        return Err(anyhow::anyhow!("invalid_input: give enabled, landing or both").into());
+    if b.enabled.is_none() && b.landing.is_none() && b.policy.is_none() {
+        return Err(anyhow::anyhow!("invalid_input: give enabled, landing, policy or any of them").into());
     }
-    // A landing this Core does not have is refused before anything is saved.
+    // A landing this Core does not have, or an unknown policy, is refused
+    // before anything is saved.
     let landing = b.landing.as_deref().map(landing::Landing::chosen).transpose()?;
+    if let Some(policy) = b.policy.as_deref() {
+        if !matches!(policy, checks::STRICT | checks::RELAXED) {
+            return Err(anyhow::anyhow!("invalid_input: policy is strict or relaxed, not {policy:?}").into());
+        }
+    }
     let answer = ws
         .stored(move |s| {
             let mut answer = Value::Null;
             if let Some(landing) = landing {
                 answer = s.merge_set_landing(id, landing)?;
+            }
+            if let Some(policy) = b.policy.as_deref() {
+                answer = s.merge_set_policy(id, policy)?;
             }
             if let Some(enabled) = b.enabled {
                 answer = s.merge_set_enabled(id, enabled)?;
@@ -331,7 +342,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     vec![
         def(
             "merge_enqueue",
-            "Release one reviewed PR head into Core's merge queue. Only the task's dispatching lead, or the user, may release; the task's executor may not, and the user must first turn the queue on for the repository. That switch is the user's own, in Projects → repositories; no Agent tool reaches it. While the queue is off, Core writes nothing to GitHub. Releasing states that the project's review pair is complete: Core checks that the last completed review round of this PR reviewed exactly headSha and passes the review policy, and refuses otherwise. Core then checks on fresh GitHub reads that the PR is open at headSha and has no merge conflict (a conflicting PR stops at once with conflict: GitHub runs no CI for it), main CI since the release is not red, every workflow run on the head finished green, and every CI job checked out exactly the merge of the current main and the head. If CI tested an older main, Core opens a CI-only batch PR on the current main and waits for its CI. Once every check holds, Core merges the PR as a merge commit pinned to headSha, checks that the merge commit is main plus the head with the tested tree, removes its batch, and follows main's push CI. The outcome and its evidence are written to the task and mailed to you and the task's executor. Core never reruns CI. Retry an identical request with the same requestId.",
+            "Release one reviewed PR head into Core's merge queue. Only the task's dispatching lead, or the user, may release; the task's executor may not, and the user must first turn the queue on for the repository. That switch is the user's own, in Projects → repositories; no Agent tool reaches it. While the queue is off, Core writes nothing to GitHub. Releasing states that the project's review pair is complete: Core checks that the last completed review round of this PR reviewed exactly headSha and passes the review policy, and that no round at headSha found a P0–P2 issue, and refuses otherwise. Core then checks on fresh GitHub reads that the PR is open at headSha and has no merge conflict (a conflicting PR stops at once with conflict: GitHub runs no CI for it), main CI since the release is not red, every workflow run on the head finished green, and every CI job checked out exactly the merge of the current main and the head. If CI tested an older main, Core opens a CI-only batch PR on the current main and waits for its CI. Under the repository's relaxed policy (the user's choice) CI on an older main counts: Core instead checks that its own merge of the head into the current main is clean (a branch with no PR) and that main CI is not red now, and waits while it is. Once every check holds, Core merges the PR as a merge commit pinned to headSha, checks that the merge commit is main plus the head with the tested tree, removes its batch, and follows main's push CI. The outcome and its evidence are written to the task and mailed to you and the task's executor. Core never reruns CI. Retry an identical request with the same requestId.",
             json!({"requestId":text,"taskId":task,"pullUrl":{"type":"string","description":"https://github.com/<owner>/<repo>/pull/<number>, linked to the task"},"headSha":head,
                 "note":{"type":"string","maxLength":2000},"requireWorkflows":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":100},"description":"Workflows that must also have run green on the head besides CI, for example Desktop macOS."}}),
             &["requestId", "taskId", "pullUrl", "headSha"],

@@ -126,6 +126,9 @@ fn repository(db: &Connection, id: i64) -> Result<Value> {
     if !v["landing"].is_string() {
         v["landing"] = json!(super::landing::DEFAULT);
     }
+    if !v["policy"].is_string() {
+        v["policy"] = json!(checks::STRICT);
+    }
     Ok(v)
 }
 fn save_repository(db: &Connection, id: i64, data: &Value) -> Result<()> {
@@ -149,6 +152,18 @@ fn switched(data: &mut Value, on: bool, by: &str, detail: &str) {
     data["switches"] = json!(list);
 }
 
+/// Every completed review round of a PR link (on any task) at `head`, oldest
+/// first (YN-12 item 1): a P0–P2 finding in any of them holds the head back.
+fn rounds_at(db: &Connection, link: &str, head: &str) -> Result<Vec<Value>> {
+    let mut q = db.prepare(
+        "SELECT data FROM pr_reviews WHERE link_id=?1 AND status='completed' AND json_extract(data,'$.headSha')=?2 ORDER BY rowid",
+    )?;
+    let rows = q
+        .query_map(params![link, head], |r| r.get::<_, String>(0))?
+        .map(|r| Ok(serde_json::from_str::<Value>(&r?)?))
+        .collect();
+    rows
+}
 /// The newest completed review of a PR link (on any task), and whether a
 /// round of it is still running.
 fn review(db: &Connection, link: &str) -> Result<(Option<Value>, bool)> {
@@ -250,7 +265,8 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue) ->
         "merge_queue_disabled: the merge queue is off for {repository}; only the user can turn it on, in Projects → repositories"
     );
     let (latest, running) = review(db, &link)?;
-    match checks::review(&json!({"headSha":input.head_sha}), latest.as_ref(), running) {
+    let at_head = rounds_at(db, &link, &input.head_sha)?;
+    match checks::review(&json!({"headSha":input.head_sha}), latest.as_ref(), running, &at_head) {
         Ok(_) => {}
         Err(Hold::Wait(detail)) => bail!("review_running: {detail}"),
         Err(Hold::Stop(reason, detail)) => bail!("{reason}: {detail}"),
@@ -319,7 +335,7 @@ fn short(sha: &Value) -> String {
 fn record(e: &Value) -> Value {
     let last = &e["lastEvidence"];
     json!({"entry":e["id"],"repository":e["repository"],"pr":e["number"],"head":e["headSha"],"state":e["state"],
-        "release":e["release"],"review":last["review"],"main":last["main"],"gate":last["gate"],"mergeRef":last["mergeRef"],"checkedAt":last["checkedAt"],
+        "release":e["release"],"review":last["review"],"main":last["main"],"gate":last["gate"],"mergeRef":last["mergeRef"],"policy":last["policy"],"checkedAt":last["checkedAt"],
         "batch":e["batch"],"merge":e["merge"],
         "stop":if e["state"] == "stopped" { json!({"reason":e["reason"],"detail":e["detail"]}) } else { Value::Null }})
 }
@@ -344,6 +360,9 @@ fn announce(db: &Connection, e: &Value, priority: &str) -> Result<()> {
     let m = &e["merge"];
     let gate = &e["lastEvidence"]["gate"];
     let body = match (e["state"].as_str(), e["reason"].as_str()) {
+        (Some("merged"), _) if gate["kind"] == "relaxed" => format!(
+            "Merge queue: merged #{n} at {head} as {}, a merge commit pinned to that head, under the relaxed policy. Gate: the PR's own CI green at the head, and Core's own merge of the head into main {} clean (tree {}); CI did not test that merge. Post-check: parents main {} and the head, tree as Core's merge. Core now follows main's push CI on it; red pauses the queue. Entry {id}: merge_get(entryId) has the evidence record.",
+            short(&m["sha"]), short(&m["expectedMain"]), short(&gate["tree"]), short(&m["expectedMain"])),
         (Some("merged"), _) => format!(
             "Merge queue: merged #{n} at {head} as {}, a merge commit pinned to that head. Gate: {} (tree {}), with every CI job on exactly that merge. Post-check: parents main {} and the head, tree as tested. Core now follows main's push CI on it. Entry {id}: merge_get(entryId) has the evidence record.",
             short(&m["sha"]), gate["kind"].as_str().unwrap_or("?"), short(&gate["tree"]), short(&m["expectedMain"])),
@@ -535,9 +554,12 @@ pub(super) struct Recorded {
 }
 
 impl Store {
-    pub(super) fn merge_review(&self, link: &str) -> Result<(Option<Value>, bool)> {
+    /// The newest completed round of the PR, whether one is running, and every
+    /// completed round at `head`.
+    pub(super) fn merge_review(&self, link: &str, head: &str) -> Result<(Option<Value>, bool, Vec<Value>)> {
         let db = self.db.read()?;
-        review(&db, link)
+        let (latest, running) = review(&db, link)?;
+        Ok((latest, running, rounds_at(&db, link, head)?))
     }
 
     /// The release's checks before anything is read from GitHub, or the
@@ -800,7 +822,7 @@ impl Store {
                         e["waitingSince"] = Value::Null;
                         if state == "merging" {
                             e["merge"] = json!({"expectedMain":evidence["main"]["before"],"tree":evidence["gate"]["tree"],"gate":evidence["gate"]["kind"],
-                                "landing":r["landing"],"head":e["headSha"],"attempts":0,"puts":[],"startedAt":now(),"sha":null,"post":null,"mainCi":null});
+                                "landing":r["landing"],"policy":evidence["policy"],"head":e["headSha"],"attempts":0,"puts":[],"startedAt":now(),"sha":null,"post":null,"mainCi":null});
                         }
                     }
                     Err(Hold::Wait(detail)) => {
@@ -1259,6 +1281,40 @@ impl Store {
         data["landing"] = json!(landing.name());
         data["updatedAt"] = json!(now());
         save_repository(&tx, repository_id, &data)?;
+        let data = repository(&tx, repository_id)?;
+        tx.commit()?;
+        Ok(data)
+    }
+    /// The user's landing policy for a repository (YN-18 S2d): `strict`, CI on
+    /// the current main through batches, or `relaxed`, the PR's own CI and a
+    /// clean merge with the current main. Journaled with the switch.
+    pub(super) fn merge_set_policy(&self, repository_id: i64, policy: &str) -> Result<Value> {
+        ensure!(
+            matches!(policy, checks::STRICT | checks::RELAXED),
+            "invalid_input: policy is strict or relaxed, not {policy:?}"
+        );
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let known: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM github_repositories WHERE id=?1)", [repository_id], |r| r.get(0))?;
+        ensure!(known, "not_found: link the repository to a Project first");
+        let mut data = repository(&tx, repository_id)?;
+        if data["policy"] != policy {
+            let on = data["enabled"] == true;
+            switched(&mut data, on, "user", &format!("Policy set to {policy}"));
+        }
+        data["policy"] = json!(policy);
+        data["updatedAt"] = json!(now());
+        save_repository(&tx, repository_id, &data)?;
+        // Every entry still to be checked is checked again under the new policy.
+        let waiting: Vec<String> = tx
+            .prepare("SELECT data FROM merge_entries WHERE repository_id=?1 AND state IN ('queued','waiting','ready')")?
+            .query_map([repository_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for raw in waiting {
+            let mut e: Value = serde_json::from_str(&raw)?;
+            e["nextCheck"] = json!(0);
+            save(&tx, &e)?;
+        }
         let data = repository(&tx, repository_id)?;
         tx.commit()?;
         Ok(data)
