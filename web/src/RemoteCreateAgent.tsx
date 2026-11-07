@@ -95,7 +95,9 @@ export function RemoteCreateAgent({
   projects?: Project[];
   /** The project being viewed, if any; the user can still choose another. */
   initialProjectId?: string;
-  /** Whether Core creates OpenCode Agents (`opencode.enabled` of /workspace). */
+  /** Whether Core creates OpenCode Agents (`opencode.enabled` of /workspace):
+   * yes unless it was started with them off (YN-27). Each entry is marked
+   * experimental. */
   opencode?: boolean;
 }) {
   const language = useLanguage();
@@ -515,7 +517,8 @@ export function RemoteCreateAgent({
             disabled={locked}
             onClick={() => switchTo("opencode")}
           >
-            {t.existingOpenCode}
+            {t.existingOpenCode}{" "}
+            <small className="agent-create-mode-note">{t.experimental}</small>
           </button>
         )}
       </div>

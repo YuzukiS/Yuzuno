@@ -143,8 +143,9 @@ fn model_rule_keeps_a_listed_model_and_says_when_it_cannot() {
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/opencode_server.py");
 
-/// One `opencode` for the whole test process, as the Agent tests have it,
-/// with OpenCode Agents switched on.
+/// One `opencode` for the whole test process, as the Agent tests have it.
+/// OpenCode Agents are on without `YUZUNO_EXPERIMENTAL_OPENCODE` (YN-27):
+/// these imports run with none set, as on a Core started without it.
 #[cfg(target_os = "linux")]
 fn program() {
     static PROGRAM: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
@@ -155,7 +156,7 @@ fn program() {
         std::fs::write(&program, format!("#!/bin/sh\nexec /usr/bin/python3 {FIXTURE} \"$@\"\n")).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
-        std::env::set_var("YUZUNO_EXPERIMENTAL_OPENCODE", "1");
+        std::env::remove_var("YUZUNO_EXPERIMENTAL_OPENCODE");
         program
     });
 }

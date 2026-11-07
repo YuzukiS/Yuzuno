@@ -224,6 +224,29 @@ test("the export goes to Core as it is, its preview says what is kept, and one i
   }
 });
 
+test("each OpenCode entry of the dialog is marked experimental, in English and in Chinese (YN-27)", async () => {
+  const page = mount();
+  const language = async (value) => {
+    page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: value }));
+    page.window.dispatchEvent(new page.window.StorageEvent("storage", { key: "yuzuno.language" }));
+    await tick();
+  };
+  const chip = () => page.document.querySelector('.choice-chip[data-value="opencode"]')?.textContent.trim();
+  try {
+    page.window.renderCreate({ open: true, close() {}, defaultCwd: "/workspace", disabled: false, onCreated() {}, projects: [], opencode: true });
+    await tick();
+    assert.equal(button(page, "OpenCode export").textContent.trim(), "OpenCode export Experimental", "the import tab");
+    assert.equal(chip(), "OpenCodeExperimental", "the harness of a new Agent");
+    await language("zh-Hans");
+    assert.equal(button(page, "OpenCode 导出文件").textContent.trim(), "OpenCode 导出文件 实验性");
+    assert.equal(chip(), "OpenCode实验性");
+    assert.deepEqual(uploads(page), []);
+    assert.deepEqual(page.errors, []);
+  } finally {
+    page.close();
+  }
+});
+
 test("the tab is offered only while Core creates OpenCode Agents", async () => {
   const page = mount();
   try {

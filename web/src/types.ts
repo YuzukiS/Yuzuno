@@ -106,7 +106,8 @@ export interface Workspace {
     error?: string;
   };
   defaultCwd: string;
-  /** Whether this Core creates OpenCode Agents (an experimental switch). */
+  /** Whether this Core creates OpenCode Agents: yes unless it was started
+   * with `YUZUNO_EXPERIMENTAL_OPENCODE=0` (YN-27). They stay experimental. */
   opencode?: { enabled: boolean; version?: string };
 }
 export interface NativeItem {
