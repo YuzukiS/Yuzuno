@@ -186,9 +186,12 @@ test('every state and stop reason of the merge queue doc has its word, in Englis
 });
 
 // The landing tiers docs/merge-queue.md names (T-37 S2b): each repository
-// card says its landing in words, a later Core's included.
+// card says its landing in words, a later Core's included. The table is the
+// Landing section's own, up to the next section (the Policy section's table,
+// YN-18 S2d, names policies, not landings).
 function landingsOf(text) {
-  const table = text.slice(text.indexOf('## Landing'), text.indexOf('## Pauses'));
+  const start = text.indexOf('## Landing');
+  const table = text.slice(start, text.indexOf('\n## ', start + 1));
   return [...table.matchAll(/^\| `([a-z-]+)` \|/gm)].map(m => m[1]);
 }
 
