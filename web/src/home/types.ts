@@ -105,6 +105,9 @@ export type Section = {
   seen: { version: number; at: string } | null;
   /** A seen report kept for 30 days, or a removed section. */
   history: boolean;
+  /** What Core changed to accept this version (YN-14), in Core's words;
+   * absent when it was accepted as sent, and from older Cores. */
+  repairs?: { code: string; path: string; reason: string }[];
   /** History entries on Home: why it is history. */
   historyReason?: "seen" | "removed" | "resolved";
   /** History entries on Home: whether Home shows its source now (its owner may still edit Home). */
