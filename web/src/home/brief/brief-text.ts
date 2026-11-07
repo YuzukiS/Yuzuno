@@ -2,7 +2,7 @@ import { strings } from "../../i18n";
 
 type PlanWord = "todo" | "doing" | "done" | "blocked";
 type SeverityWord = "critical" | "high" | "medium" | "low" | "info";
-type RefWord = "task" | "pr" | "ci" | "job" | "review" | "agent" | "machine";
+type RefWord = "task" | "pr" | "ci" | "job" | "run" | "review" | "agent" | "machine";
 
 /**
  * A Brief's own words in the interface language (T-189): the controls,
@@ -39,7 +39,9 @@ export const briefText = strings({
   sincePrevious: " since the previous version",
   // Live references.
   references: "References",
-  refKind: { task: "Task", pr: "Pull request", ci: "CI run", job: "Job", review: "Review", agent: "Agent", machine: "Machine" } as Record<RefWord, string>,
+  refKind: { task: "Task", pr: "Pull request", ci: "CI run", job: "Job", run: "Job run", review: "Review", agent: "Agent", machine: "Machine" } as Record<RefWord, string>,
+  /** A run's stages, beside its state (YN-7). */
+  refStages: (done: number, total: number) => `${done}/${total} ${total === 1 ? "stage" : "stages"}`,
   refAsOf: (at: string) => ` · as of ${at}`,
   open: (what: string) => `Open ${what}`,
   notFound: "not found",
@@ -127,7 +129,8 @@ export const briefText = strings({
   previously: (value) => `之前为 ${value}`,
   sincePrevious: "（相对上一版本）",
   references: "引用",
-  refKind: { task: "任务", pr: "拉取请求", ci: "CI 运行", job: "Job", review: "审查", agent: "Agent", machine: "机器" },
+  refKind: { task: "任务", pr: "拉取请求", ci: "CI 运行", job: "Job", run: "Job 运行", review: "审查", agent: "Agent", machine: "机器" },
+  refStages: (done, total) => `${done}/${total} 个阶段`,
   refAsOf: (at) => ` · 截至 ${at}`,
   open: (what) => `打开 ${what}`,
   notFound: "未找到",

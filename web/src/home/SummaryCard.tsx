@@ -5,7 +5,7 @@ import { CopyButton } from "../components";
 import { useLanguage, useStrings } from "../i18n";
 import { useTimeDisplay } from "../time-preferences";
 import type { Agent } from "../types";
-import { attachmentUrl, type ChartProps } from "./brief/brief-catalog";
+import { attachmentUrl, type ChartProps, type ResearchDeskProps } from "./brief/brief-catalog";
 import { BriefContext } from "./brief/BriefContext";
 import { briefText } from "./brief/brief-text";
 import { CardChart, type ChartKind } from "./brief/Charts";
@@ -14,6 +14,7 @@ import { reportMarkdown } from "./brief/brief-copy";
 import { keptSnapshot, useKeptImage } from "./brief/kept-image";
 import { useKeptImagePreview } from "./brief/image-preview";
 import { BriefMarkdown } from "./brief/Markdown";
+import { DeskCardClaim } from "./brief/ResearchDesk";
 import { changedSinceSeen, sectionDomId } from "./brief-layout";
 import { PinOff } from "lucide-react";
 import { CardFoldWorkspace } from "./card-fold";
@@ -338,29 +339,42 @@ type ChecklistItem = { id: string; text: string; done: boolean };
  * card), then "+N more conditions" (never one: a lone last chip takes a
  * line of its own); Markdown in two lines, then "Show all conditions".
  * Either opens in place, and the card grows to hold it.
+ *
+ * A Checklist's own title names the box, else "Conditions" (YN-7). Its open
+ * items come first, each group in the author's order, so what is folded
+ * first is what is already done, and the fold says how many of the folded
+ * are still open. The report page keeps the author's order.
  */
 function CardConditions({ section, projectId, id, lines: most }: { section: Section; projectId: string; id: string; lines: number }) {
   const t = useStrings(cardText);
   const node = (section.body as { elements?: Record<string, { type?: string; props?: Record<string, unknown> }> }).elements?.[id];
-  const items = node?.type === "Checklist" && Array.isArray(node.props?.items) ? (node.props.items as ChecklistItem[]) : null;
+  const listed = node?.type === "Checklist" && Array.isArray(node.props?.items) ? (node.props.items as ChecklistItem[]) : null;
+  const items = useMemo(() => (listed ? [...listed.filter((item) => !item.done), ...listed.filter((item) => item.done)] : null), [listed]);
+  const title = node?.type === "Checklist" && typeof node.props?.title === "string" && node.props.title.trim() ? node.props.title : null;
+  const label = title ?? t.conditions;
   const list = useRef<HTMLUListElement>(null);
   const prose = useRef<HTMLDivElement>(null);
   const bodyId = useId();
   const [all, setAll] = useState(false);
   const [hidden, setHidden] = useState(0);
+  const [hiddenOpen, setHiddenOpen] = useState(0);
   const [clamped, setClamped] = useState(false);
   useLayoutEffect(() => {
     const measure = () => {
       if (items && list.current) {
         const chips = [...list.current.children] as HTMLElement[];
         chips.forEach((chip) => chip.removeAttribute("hidden"));
-        if (all) return setHidden(0);
+        if (all) {
+          setHiddenOpen(0);
+          return setHidden(0);
+        }
         const lines = [...new Set(chips.map((chip) => chip.offsetTop))].sort((a, b) => a - b);
         const past = lines[most];
         let over = past === undefined ? 0 : chips.filter((chip) => chip.offsetTop >= past).length;
         if (over === 1) over = 0;
         chips.slice(chips.length - over).forEach((chip) => chip.setAttribute("hidden", ""));
         setHidden(over);
+        setHiddenOpen(over ? items.slice(items.length - over).filter((item) => !item.done).length : 0);
       } else if (prose.current) {
         setClamped(!all && prose.current.scrollHeight > prose.current.clientHeight + 1);
       }
@@ -374,8 +388,8 @@ function CardConditions({ section, projectId, id, lines: most }: { section: Sect
     return () => observer.disconnect();
   }, [all, items, section.version, most]);
   return (
-    <div className={`home-card-conditions${all ? " is-open" : ""}`} role="group" aria-label={t.conditions}>
-      <span className="home-card-conditions-label">{t.conditions}</span>
+    <div className={`home-card-conditions${all ? " is-open" : ""}`} role="group" aria-label={label}>
+      <span className="home-card-conditions-label">{label}</span>
       {items ? (
         <ul ref={list} id={bodyId} className="home-card-condition-chips">
           {items.map((item) => (
@@ -392,7 +406,7 @@ function CardConditions({ section, projectId, id, lines: most }: { section: Sect
       )}
       {(hidden > 0 || clamped || all) && (
         <button type="button" className="quiet-button home-card-conditions-toggle" aria-expanded={all} aria-controls={bodyId} onClick={() => setAll(!all)}>
-          {all ? t.fewerConditions : items ? t.moreConditions(hidden) : t.allConditions}
+          {all ? t.fewerConditions : items ? t.moreConditions(hidden, hiddenOpen) : t.allConditions}
         </button>
       )}
     </div>
@@ -500,6 +514,10 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
   const metrics = large ? metricsOf(section, figure) : null;
   const chart = chartOf(section, figure);
   const brief = useMemo(() => ({ projectId, section }), [projectId, section]);
+  // A desk with a claim is drawn as its lead claim (YN-7); one with none, by its question and counts.
+  const desk = figure.kind === "desk" && figure.lead
+    ? ((section.body as { elements?: Record<string, { props?: unknown }> }).elements?.[figure.id]?.props as ResearchDeskProps | undefined)
+    : undefined;
   return (
     <figure className={`home-card-frame kind-${figure.kind}${chart ? " is-chart" : ""}`}>
       <FrameBody opens={opens} label={figure.kind === "image" ? words.openImage(figure.name) : ""} onOpen={viewer.open}>
@@ -551,6 +569,14 @@ function FigureFrame({ section, projectId, figure, large }: { section: Section; 
               onError={kept.onError}
             />
           )
+        ) : figure.kind === "desk" && desk ? (
+          <BriefContext.Provider value={brief}>
+            <DeskCardClaim
+              desk={desk}
+              elementKey={figure.id}
+              more={<>{figure.claims > 1 && <>{t.deskMore(figure.claims - 1)} · </>}{t.deskInteractive}</>}
+            />
+          </BriefContext.Provider>
         ) : figure.kind === "desk" ? (
           <p className="home-card-desk">
             <strong>{figure.title}</strong>

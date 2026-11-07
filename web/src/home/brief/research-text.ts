@@ -53,6 +53,8 @@ export const researchText = strings({
     unknown: "No snapshot to compare the Agent's SHA-256 with",
   } as Record<"same" | "different" | "unknown", string>,
   described: "As described by the Agent",
+  /** Said once above the desk's list of sources (YN-7). */
+  describedList: "Locations and revisions below are as described by the Agent; they were not read.",
   location: "Location",
   revision: "Revision",
   lines: (lines: string) => `lines ${lines}`,
@@ -160,6 +162,7 @@ export const researchText = strings({
     unknown: "没有快照可与 Agent 给出的 SHA-256 比对",
   },
   described: "Agent 的描述",
+  describedList: "下面的位置和版本是 Agent 的描述，未经读取。",
   location: "位置",
   revision: "版本",
   lines: (lines) => `第 ${lines} 行`,

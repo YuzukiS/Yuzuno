@@ -89,3 +89,11 @@ test("a card is named by its project and Home's id of the section, never its key
   assert.equal(sizable({ id: 7 }), true);
   assert.equal(sizable({}), false, "an older Core names no id");
 });
+
+test("a research desk's figure names its lead claim, the first, with its status; a desk with none names no claim (YN-7)", async () => {
+  const { figureOf } = await import("../src/home/card-preview.ts");
+  const desk = (claims) => section({ lead: "lead", visual: "fig" }, { lead, fig: { type: "ResearchDesk", props: { title: "Q", claims, plots: [{ id: "p" }] } } });
+  const claims = [{ id: "c1", title: "First claim", status: "conditional" }, { id: "c2", title: "Second claim", status: "open" }];
+  assert.deepEqual(figureOf(desk(claims), "fig"), { kind: "desk", id: "fig", title: "Q", claims: 2, plots: 1, lead: { id: "c1", title: "First claim", status: "conditional" } });
+  assert.equal(figureOf(desk([]), "fig").lead, null);
+});
