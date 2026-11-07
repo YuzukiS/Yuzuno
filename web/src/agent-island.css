@@ -236,17 +236,17 @@
 
 /* Two lines: the state and its clock, then one sentence. */
 .agent-island[data-form="two"] {
-  width: max-content;
-  max-width: min(178px, 100%);
+  width: 10.5rem;
+  max-width: 100%;
   height: 42px;
-  padding: 4px 10px 5px;
+  padding: 4px 8px 5px;
   border-radius: 13px;
   align-items: stretch;
   gap: 4px;
   background: color-mix(in srgb, currentColor 10%, transparent);
 }
 .app.phone .agent-island[data-form="two"] {
-  max-width: min(186px, 100%);
+  width: 11.5rem;
   height: 40px;
 }
 .agent-island[data-form="two"] .island-head {

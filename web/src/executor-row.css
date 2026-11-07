@@ -1,22 +1,31 @@
-/* An executor's template and PR (ExecutorRowFacts, T-43 S2), held in its
+/* An executor's PR and template (ExecutorRowFacts, T-43 S2), held in its
    island beside its state since the user's review of 2026-11-07: "◐ · #681 ·
-   1h12m". They give way before the state or its clock does, the template
-   first, and are dropped once there is no room for them at all. */
+   1h12m". They give way before the state or its clock does, each whole:
+   a chip with no room wraps onto a second line the island never shows, the
+   template before the PR. The empty first item lets even the first chip
+   wrap away. */
 .agent-island .executor-row-facts {
   display: inline-flex;
   flex: 0 1 auto;
-  align-items: baseline;
-  gap: 4px;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: center;
+  column-gap: 4px;
   min-width: 0;
+  height: 1.3em;
   overflow: hidden;
   color: var(--muted);
   font-weight: 650;
+  line-height: 1.3em;
+}
+.agent-island .executor-row-facts::before {
+  content: "";
+  width: 0;
+  margin-right: -4px;
 }
 .agent-island .executor-row-facts > span {
-  min-width: 0;
-  overflow: hidden;
+  flex: none;
   white-space: nowrap;
-  text-overflow: ellipsis;
 }
 .agent-island .executor-row-facts > span::before {
   content: "·";
@@ -24,12 +33,7 @@
   opacity: 0.7;
 }
 .executor-template-chip {
-  flex: 0 1000 auto;
-  max-width: 9ch;
   opacity: 0.85;
-}
-.executor-pr-chip {
-  flex: 0 1 auto;
 }
 .executor-pr-chip[data-tone="ok"] {
   color: var(--state-working, #5f7f52);

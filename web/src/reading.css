@@ -74,6 +74,11 @@
   padding-block: 9px;
   margin-bottom: 4px;
 }
+/* In the list a compact row is one line already: no more padding than a
+   detailed one. */
+:root[data-agent-list="compact"] .agent-list .agent-row {
+  padding-block: 8px;
+}
 :root[data-agent-list="compact"] .agent-work-summary,
 :root[data-agent-list="compact"] .agent-list .agent-row > .agent-row-state {
   display: none;
@@ -133,6 +138,11 @@
 }
 .agent-list .agent-row > .agent-island[data-form="card"] {
   margin: 0;
+}
+/* A row with no line two is one line: the island and the "…" on it. */
+.agent-list .agent-row:not(:has(> .agent-row-state)) > :is(.agent-island, .agent-row-menu),
+:root[data-agent-list="compact"] .agent-list .agent-row > :is(.agent-island, .agent-row-menu) {
+  grid-row: 1;
 }
 /* Where the reader is -- selected, under the pointer or holding focus -- the
    "…" opens beside the island; elsewhere it takes no width, and is still

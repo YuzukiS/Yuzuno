@@ -120,10 +120,10 @@ export function stateText(view: ExecutorView, language: Language): string {
   return detail ? `${t.shown[view.shown]} · ${detail}` : t.shown[view.shown];
 }
 
-/** What the chips say, for the island's label: the template, then the PR
- * and its status. Null when there are no chips. */
+/** What the chips say, for the island's label: the PR and its status, then
+ * the template. Null when there are no chips. */
 export function rowFactsLabel(view: ExecutorView, template: string | null | undefined, t: Text): string | null {
-  const parts = [template || null, view.pr ? `${t.pr(view.pr.number)} · ${prText(view.pr.status, t)}` : null].filter(Boolean);
+  const parts = [view.pr ? `${t.pr(view.pr.number)} · ${prText(view.pr.status, t)}` : null, template || null].filter(Boolean);
   return parts.length ? parts.join(" · ") : null;
 }
 
@@ -139,10 +139,11 @@ export function ExecutorRowFacts({ view, template, title }: { view: ExecutorView
   const pr = view.pr ? `${t.pr(view.pr.number)} · ${prText(view.pr.status, t)}` : null;
   return (
     <span className="executor-row-facts" data-shown={view.shown} title={title}>
-      {template && <span className="executor-template-chip" title={`${t.template}: ${template}`}>{template}</span>}
+      {/* The PR first: the template is the chip that gives way first. */}
       {view.pr && (
         <span className="executor-pr-chip" data-tone={view.pr.tone} title={pr ?? undefined}>#{view.pr.number}</span>
       )}
+      {template && <span className="executor-template-chip" title={`${t.template}: ${template}`}>{template}</span>}
     </span>
   );
 }

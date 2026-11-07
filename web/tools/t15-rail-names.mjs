@@ -157,7 +157,8 @@ check(before.every((r) => r.statusWhole), `every island is shown whole, inside i
 check(before.filter((r) => r.activityClipped !== null).every((r) => r.activityClipped),
   "the activity beside it is what runs out of room");
 check(before.every((r) => r.height >= 44), `a row is still at least 44px tall (${before.map((r) => r.height).join(", ")})`);
-check(before.every((r) => r.menuHit >= 36), `the \u2026 keeps a touch target of at least 36px (${before[0].menuHit})`);
+// Where it shows (T-43 v4-2: elsewhere it takes no width beside the island).
+check(before.filter((r) => r.menuShown).every((r) => r.menuHit >= 36), `the \u2026 keeps a touch target of at least 36px where it shows (${before.filter((r) => r.menuShown).map((r) => r.menuHit).join(", ")})`);
 check(before.every((r) => !r.avatar), "no avatar on any Agent row");
 check(before.every((r) => r.menuClear !== false),
   "the \u2026 does not sit over the island");
