@@ -10,8 +10,8 @@
  * a BriefBody root), the per-block limits, and the text Agents are given
  * (hard rules, tool descriptions and brief_guide). Core runs it in the same
  * generated bundle as results, runtimes/result-validator/, and reads the text
- * from its contract.json. Rules across sections (topic counts, open asks per
- * Agent, owners, versions) are Core's.
+ * from its contract.json. Rules across sections (topic counts, owners,
+ * versions) are Core's.
  */
 import { z } from "zod";
 import {
@@ -31,7 +31,6 @@ export const BRIEF_LIMITS = {
   // Across sections; Core enforces these.
   topics: 12,
   subtopicsPerTopic: 4,
-  openAsksPerAgent: 3,
   historyDays: 30,
   // brief_get's you.recentlyLeft lists at most this many (YN-7).
   recentlyLeft: 20,
@@ -1571,7 +1570,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Use options for one choice and a form for several related answers, as in the decision and form examples.`,
     `The user's answer reaches you as an ordinary message quoting the section. The ask then shows "replied": it leaves Needs you, and brief_get lists it in you.repliedAsks (key, title, repliedAt, the reply in short, updatedSinceReply). It stays until you resolve it with {op:"resolve", key}; nothing closes it for you.`,
     `When to resolve: a preference or information you asked for, once you have taken it in; an action the reply authorizes, only after that action is confirmed done and its result is on the existing Task or a Brief section. A green CI or a whole Task being done is not that action. While it runs, or after it fails, keep the ask replied and report progress on the Task or Brief: edit keeps it replied, while put asks it again. Ask again only when the user has something new to decide. A reply executes nothing by itself: act on what the user has authorized, an explicit reply included, without asking for it again, and never infer a retry, merge or wider permission from an answer that does not grant it.`,
-    `openAsks counts your unresolved asks, open or replied; at most ${L.openAsksPerAgent} per Agent.`,
+    `brief_get's you.openAsks counts your unresolved asks, open or replied.`,
     `Answers never execute actions: nothing in a Brief merges, deploys or approves; Core approvals stay separate.`,
   ],
   content: [
@@ -1617,7 +1616,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Attach what the user should look at: a screenshot or a sketch (its caption says which) and the data file a chart reads. Logs, raw data, full tables and test output are execution evidence: leave them on their Task and link it with LiveRefs instead of attaching them here.`,
   ],
   limits: [
-    `- Brief: ${L.topics} topics, ${L.subtopicsPerTopic} subs per topic, ${L.openAsksPerAgent} open asks per Agent; seen reports stay ${L.historyDays} days.`,
+    `- Brief: ${L.topics} topics, ${L.subtopicsPerTopic} subs per topic; seen reports stay ${L.historyDays} days.`,
     `- Body: ${L.bodyBytes} bytes of compact JSON, ${L.components} components, ${L.depth} levels; BriefBody ${L.bodyChildren} children, Group ${L.groupChildren}, Columns 2-${L.columns}.`,
     `- Markdown: each fenced code or log block ${L.codeBlockLines} lines. Math: ${L.mathChars} characters.`,
     `- Checklist, Plan and Findings: ${L.listItems} items each. Metrics: ${L.metrics}. Sources: ${L.sources}.`,
