@@ -135,6 +135,8 @@ async fn a_saved_session_is_imported_once_and_goes_on_as_itself() {
     assert_eq!((d.agent.harness.as_str(), d.agent.claude_session_id.as_deref(), d.agent.cwd.as_str()), ("claude", Some(A), cwd.as_str()));
     assert_eq!((d.agent.connection_state.as_str(), d.agent.status.as_str(), d.agent.name.as_str()), ("disconnected", "offline", "Build fix"));
     assert_eq!(ws.store.agent_project(&id).unwrap().as_deref(), Some(project.id.as_str()));
+    assert_eq!(ws.store.agent_kind(&id).unwrap().as_deref(), Some("lead"),
+        "the user's import leads the Project it was imported into (YN-2 S4)");
     assert_eq!(ids(&d), ["native-p1", "native-p2"]);
     assert!(d.turns.iter().all(|t| t["status"] == "completed" && t["_yuzunoOrigin"] == "outside"));
     assert_eq!(d.turns[0]["items"][0]["content"], json!([{"type":"text","text":"Hi"},{"type":"text","text":"[1 image saved by Claude, not shown]"}]));

@@ -283,3 +283,71 @@ fn a_lead_leads_only_the_project_it_was_chosen_for_wherever_it_is_moved() {
     assert_eq!(kind_of(&store, "b"), STANDING, "moved back, it is not a lead until chosen again");
     assert_eq!(get(&store, &p).unwrap(), Leads { version: version + 1, lead_agent_ids: vec![] });
 }
+
+/// YN-2 S4, the user's rule: an Agent the user moves into a Project leads it
+/// (`user_moves_agent`, the move route's call). A saved list keeps the leads
+/// the user chose and gains it; a member the user did not choose stays as it
+/// was. An executor never leads, wherever the user moves it, nor does a
+/// closed Agent; a move into the Project it is in changes nothing.
+#[test]
+fn an_agent_the_user_moves_in_leads_and_an_executor_never_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    for id in ["a", "b", "c", "e", "x"] {
+        agent(&store, id);
+    }
+    let p = project(&store, "Lab", &["a", "b"]);
+    save(&store, &p, 0, vec!["a".into()]).unwrap();
+    store.user_moves_agent("c", Some(&p)).unwrap();
+    assert_eq!(get(&store, &p).unwrap(), Leads { version: 2, lead_agent_ids: vec!["a".into(), "c".into()] },
+        "an Agent the user moves in leads; the saved choice stays");
+    assert_eq!(kind_of(&store, "b"), STANDING, "a member the user did not choose stays as it was");
+    executor(&store, "e");
+    store.user_moves_agent("e", Some(&p)).unwrap();
+    assert_eq!(kind_of(&store, "e"), EXECUTOR, "an executor never leads, wherever the user moves it");
+    close(&store, "x");
+    store.user_moves_agent("x", Some(&p)).unwrap();
+    assert!(!leads(&store.db.read().unwrap(), "x", &p).unwrap(), "nor does a closed Agent");
+    assert_eq!(get(&store, &p).unwrap(), Leads { version: 2, lead_agent_ids: vec!["a".into(), "c".into()] });
+    store.user_moves_agent("c", Some(&p)).unwrap();
+    assert_eq!(get(&store, &p).unwrap().version, 2, "a move into the Project it is in changes nothing");
+    // The user removes c; it stays removed while it stays there.
+    save(&store, &p, 2, vec!["a".into()]).unwrap();
+    store.user_moves_agent("c", Some(&p)).unwrap();
+    assert_eq!(kind_of(&store, "c"), STANDING);
+    // Moved out and in again by the user, it leads again.
+    store.user_moves_agent("c", None).unwrap();
+    store.user_moves_agent("c", Some(&p)).unwrap();
+    assert_eq!(kind_of(&store, "c"), LEAD);
+}
+
+/// YN-2 S4, at upgrade: a Project whose leads were never saved gets every
+/// open member that is not an executor as its lead, once, and its version
+/// moves on; a Project with a saved list keeps it. Opening again changes
+/// nothing more.
+#[test]
+fn at_upgrade_a_project_with_no_saved_leads_gets_its_open_members_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspace.db");
+    let (fresh, chosen) = {
+        let store = Store::open(&path).unwrap();
+        for id in ["a", "b", "e", "x", "y", "z"] {
+            agent(&store, id);
+        }
+        let fresh = project(&store, "Fresh", &["a", "b", "e", "x"]);
+        executor(&store, "e");
+        close(&store, "x");
+        let chosen = project(&store, "Chosen", &["y", "z"]);
+        save(&store, &chosen, 0, vec!["y".into()]).unwrap();
+        (fresh, chosen)
+    };
+    let store = Store::open(&path).unwrap();
+    assert_eq!(get(&store, &fresh).unwrap(), Leads { version: 1, lead_agent_ids: vec!["a".into(), "b".into()] },
+        "a Project with no saved leads gets its open members that are not executors, once");
+    assert_eq!(kind_of(&store, "e"), EXECUTOR);
+    assert_eq!(get(&store, &chosen).unwrap(), Leads { version: 1, lead_agent_ids: vec!["y".into()] }, "a saved list is kept");
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(get(&store, &fresh).unwrap().version, 1, "opening again writes nothing more");
+    assert_eq!(get(&store, &chosen).unwrap().lead_agent_ids, ["y"]);
+}

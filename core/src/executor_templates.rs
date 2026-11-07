@@ -3,10 +3,11 @@
 //! A template names its harness, model and permissions, how its Agent is
 //! named and where it works, and instructions it starts with.
 //!
-//! The Workspace keeps a list, and each Project its own, beside the defaults
-//! for new Agents (`workspace_meta`). A dispatch names a template by its id
-//! and gets the task's Project's template of that id first, else the
-//! Workspace's. Lists are read leniently, so a later Core's further fields do
+//! The Workspace keeps one list, beside the defaults for new Agents
+//! (`workspace_meta`), and a dispatch names a template of it by its id
+//! (YN-2 S2). Project lists an earlier Core kept are copied into it once at
+//! open (`migrate`) and stay stored as they were; no dispatch reads them.
+//! Lists are read leniently, so a later Core's further fields do
 //! not stop this one; a save is checked strictly, against the version it was
 //! read at, and replaces the whole list, keeping as it was what a later Core
 //! stored that this one can't read. Only the user saves them: these are
@@ -14,8 +15,8 @@
 //!
 //! A template's executors run on this Core host, on the machine it names, or
 //! on the one Core chooses for each dispatch (`auto`, T-35 S3b); a
-//! dispatch's own machineId wins (T-35 S3a). Its `maxConcurrent` limits
-//! how many of its executors hold a slot at once (executor_slots.rs, T-35).
+//! dispatch's own machineId wins (T-35 S3a). How many run at once is each
+//! machine's limit alone (executor_slots.rs, YN-2 S5), not a template's.
 use crate::{
     agent_defaults::{catalog_entry, catalog_name, check_in_catalog, CLAUDE_MODES, CODEX_PRESETS},
     server::ApiError,
@@ -30,7 +31,8 @@ use serde_json::{json, Value};
 use std::{collections::BTreeSet, sync::Arc};
 
 const KEY: &str = "executors.templates";
-/// Where a Project's own templates are kept.
+/// Where a Project's own templates were kept before YN-2 S2: read only by
+/// `migrate`, and removed with their Project (projects.rs).
 pub(crate) fn project_key(project: &str) -> String {
     format!("executors.templates.project:{project}")
 }
@@ -41,12 +43,17 @@ pub const DEFAULT_NAME_PATTERN: &str = "{task} · {label}";
 pub const GENERAL_LABEL: &str = "Executor";
 const MAX_TEMPLATES: usize = 50;
 pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
-const MAX_CONCURRENT: u32 = 64;
-/// What a save says of a `maxConcurrent` it can't take, whatever was wrong
-/// with it (a negative number, a fraction, text): the editor says the same.
-const AT_ONCE: &str = "At most at once is a whole number from 1 to 64";
-const FIELDS: [&str; 11] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
-    "permissionMode", "machineId", "instructions", "maxConcurrent"];
+/// `maxConcurrent` is a field an older page still sends (YN-2 S5): a
+/// template has no limit of its own any more, only each machine has. For
+/// one release a save that sends it is taken and the value dropped; the
+/// release after refuses it as unknown.
+/// What `limits.maxConcurrent` still answers, for that same release: a
+/// template page from before S5 reads its field's bound from it.
+const OLDER_PAGES_MAX_CONCURRENT: u32 = 64;
+const FIELDS: [&str; 12] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
+    "permissionMode", "machineId", "instructions", "maxConcurrent", "origin"];
+/// The Project lists the migration has copied, each at the version it read.
+const MOVED: &str = "executors.templates.moved";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,11 +86,19 @@ pub struct Template {
     /// Given to the executor with its dispatch's materials, at most 8 KiB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
-    /// At most this many of its executors hold a slot at once, within the
-    /// Workspace's, Project's and machine's limits (executor_slots.rs); unset
-    /// adds no limit of its own.
+    /// A template the migration copied from a Project's own list (YN-2 S2):
+    /// which Project, and the id it had there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_concurrent: Option<u32>,
+    pub origin: Option<Origin>,
+}
+
+/// Where a copied template came from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Origin {
+    pub project_id: String,
+    pub project_name: String,
+    pub id: String,
 }
 
 /// A list as stored, with the version a save is checked against.
@@ -186,8 +201,10 @@ impl Template {
         if let Some(text) = &self.instructions {
             ensure!(text.len() <= MAX_INSTRUCTIONS, "A template's instructions are at most 8 KiB");
         }
-        if let Some(limit) = self.max_concurrent {
-            ensure!((1..=MAX_CONCURRENT).contains(&limit), "{AT_ONCE}");
+        if let Some(origin) = &self.origin {
+            for part in [&origin.project_id, &origin.project_name, &origin.id] {
+                ensure!(part.len() <= 200 && !part.chars().any(char::is_control), "A template's origin names its Project and id, at most 200 bytes each");
+            }
         }
         Ok(())
     }
@@ -198,17 +215,17 @@ impl Template {
     /// the defaults for new Agents as any new Agent does. It has no
     /// instructions of its own: the Project's handover and the task's
     /// materials are its instructions. Its id is empty, which no saved
-    /// template can have, so it has no limit of its own (executor_slots.rs).
+    /// template can have.
     pub(crate) fn general(harness: String) -> Self {
         Self {
             id: String::new(), label: GENERAL_LABEL.into(), name_pattern: None, harness, model: None, reasoning_effort: None,
-            permission_preset: None, permission_mode: None, machine_id: None, instructions: None, max_concurrent: None,
+            permission_preset: None, permission_mode: None, machine_id: None, instructions: None, origin: None,
         }
     }
 
     /// What a dispatch's materials say of this template, from the list
-    /// `source` names (`project`, `workspace`, or `builtin` for the general
-    /// executor, whose id is none).
+    /// `source` names (`workspace`, or `builtin` for the general executor,
+    /// whose id is none; `project` in materials from before YN-2 S2).
     pub(crate) fn given(&self, source: &str) -> Value {
         let id = (!self.id.is_empty()).then_some(self.id.as_str());
         json!({"id":id,"label":self.label,"source":source,"instructions":self.instructions})
@@ -291,30 +308,121 @@ fn list_at(db: &Connection, key: &str) -> Result<Templates> {
     read_list(db.query_row("SELECT value FROM workspace_meta WHERE key=?1", [key], |r| r.get(0)).optional()?)
 }
 
-/// The template of this id a dispatch of a task in `project` gets: the
-/// Project's own, else the Workspace's, and which one it is.
-pub(crate) fn template_in(db: &Connection, project: Option<&str>, id: &str) -> Result<Option<(Template, &'static str)>> {
-    if let Some(project) = project {
-        if let Some(own) = list_at(db, &project_key(project))?.templates.into_iter().find(|t| t.id == id) {
-            return Ok(Some((own, "project")));
-        }
-    }
-    Ok(list_at(db, KEY)?.templates.into_iter().find(|t| t.id == id).map(|t| (t, "workspace")))
+/// The Workspace's template of this id, which a dispatch names.
+pub(crate) fn template(db: &Connection, id: &str) -> Result<Option<Template>> {
+    Ok(list_at(db, KEY)?.templates.into_iter().find(|t| t.id == id))
 }
 
-/// The template ids a dispatch of a task in `project` can name, its
-/// Project's first, for a refusal that names none of them.
-pub(crate) fn ids_in(db: &Connection, project: Option<&str>) -> Result<Vec<String>> {
-    let mut ids: Vec<String> = match project {
-        Some(project) => list_at(db, &project_key(project))?.templates.into_iter().map(|t| t.id).collect(),
-        None => vec![],
-    };
-    for template in list_at(db, KEY)?.templates {
-        if !ids.contains(&template.id) {
-            ids.push(template.id);
+/// The template ids a dispatch can name, for a refusal that names none of them.
+pub(crate) fn ids(db: &Connection) -> Result<Vec<String>> {
+    Ok(list_at(db, KEY)?.templates.into_iter().map(|t| t.id).collect())
+}
+
+/// The template presets the user can adopt in Settings: template-shaped
+/// objects, never stored by Core and never saved by an Agent. T-43 fills
+/// this list; adopting one is the user's ordinary save.
+pub(crate) fn presets() -> Vec<Value> {
+    Vec::new()
+}
+
+/// A stored template without these fields.
+fn without(value: &Value, fields: &[&str]) -> Value {
+    let mut value = value.clone();
+    if let Some(object) = value.as_object_mut() {
+        for field in fields {
+            object.remove(*field);
         }
     }
-    Ok(ids)
+    value
+}
+
+/// Whether `item`, of the Workspace's list, is `template` of `project`'s
+/// list already: the same stored template, or a copy made of it under a free
+/// id and a label naming its Project.
+fn holds(item: &Value, template: &Value, project: &str) -> bool {
+    without(item, &["origin"]) == without(template, &["origin"])
+        || (item["origin"]["projectId"] == project && item["origin"]["id"] == template["id"]
+            && without(item, &["origin", "id", "label"]) == without(template, &["origin", "id", "label"]))
+}
+
+/// `text` cut to `max` characters.
+fn cut(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
+/// The first `<id>-2`, `<id>-3`… no template in `items` has, at most 48 bytes.
+fn free_id(items: &[Value], id: &str) -> String {
+    (2..).map(|n| {
+        let suffix = format!("-{n}");
+        let base: String = id.chars().take(48 - suffix.len()).collect();
+        format!("{}{suffix}", base.trim_end_matches('-'))
+    }).find(|candidate| !items.iter().any(|item| item["id"] == candidate.as_str())).unwrap()
+}
+
+/// YN-2 S2, on every open: each Project's own template list an earlier Core
+/// kept is copied into the Workspace's once per version of it, so a list an
+/// older Core saved again later is copied again. A template already there as
+/// it is (the same id and fields, or an earlier copy of it) is not copied;
+/// one whose id the Workspace uses for another gets the first free
+/// `<id>-<n>` and its Project's name in its label; each copy says where it
+/// came from (`origin`). The Project lists are left as they are, and a
+/// template this Core can't read stays in its list. In one transaction.
+pub(crate) fn migrate(db: &Connection) -> Result<()> {
+    let lists: Vec<(String, String)> = db
+        .prepare("SELECT key, value FROM workspace_meta WHERE key LIKE 'executors.templates.project:%' ORDER BY key")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    if lists.is_empty() {
+        return Ok(());
+    }
+    let tx = db.unchecked_transaction()?;
+    let raw_moved: Option<String> = tx.query_row("SELECT value FROM workspace_meta WHERE key=?1", [MOVED], |r| r.get(0)).optional()?;
+    let mut moved = raw_moved.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default();
+    let workspace = list_at(&tx, KEY)?;
+    let mut stored = workspace.stored.clone().unwrap_or_else(|| json!({"version": 0, "templates": []}));
+    let mut items: Vec<Value> = stored["templates"].as_array().cloned().unwrap_or_default();
+    let mut appended = false;
+    for (key, raw) in lists {
+        let project = key.trim_start_matches("executors.templates.project:").to_owned();
+        let Ok(list) = serde_json::from_str::<Value>(&raw) else { continue };
+        let version = list["version"].as_i64().unwrap_or(0);
+        if moved.get(&project).and_then(Value::as_i64).is_some_and(|done| done >= version) {
+            continue;
+        }
+        let name: Option<String> = tx
+            .query_row("SELECT json_extract(data,'$.name') FROM projects WHERE id=?1", [&project], |r| r.get(0))
+            .optional()?
+            .flatten();
+        // A Project that is gone takes its list with it (projects.rs).
+        let Some(name) = name else { continue };
+        for template in list["templates"].as_array().into_iter().flatten().filter(|t| readable(t).is_some()) {
+            let id = template["id"].as_str().unwrap_or_default().to_owned();
+            if items.iter().any(|item| holds(item, template, &project)) {
+                continue;
+            }
+            let mut copy = template.clone();
+            copy["origin"] = json!({"projectId": project, "projectName": name, "id": id});
+            if items.iter().any(|item| item["id"] == id.as_str()) {
+                copy["id"] = json!(free_id(&items, &id));
+                let suffix = format!(" ({})", cut(&name, 40));
+                let label = template["label"].as_str().unwrap_or(&id);
+                copy["label"] = json!(format!("{}{suffix}", cut(label, 80 - suffix.chars().count())));
+            }
+            items.push(copy);
+            appended = true;
+        }
+        moved.insert(project, version.into());
+    }
+    if appended {
+        stored["version"] = json!(workspace.version + 1);
+        stored["templates"] = json!(items);
+        tx.execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![KEY, stored.to_string()])?;
+    }
+    tx.execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![MOVED, Value::Object(moved).to_string()])?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// The templates a save names, each checked strictly: no field this Core
@@ -323,18 +431,16 @@ pub(crate) fn ids_in(db: &Connection, project: Option<&str>) -> Result<Vec<Strin
 /// editable, so the rest of the list does too (R2 70093e91, R4 42f066e2):
 /// no new one is added, and a dispatch from one is refused.
 fn parse_save(templates: &[Value], opencode: bool, saved: &[Template]) -> Result<Vec<Template>> {
-    ensure!(templates.len() <= MAX_TEMPLATES, "At most {MAX_TEMPLATES} templates");
+    // The migration may have passed the limit: a list keeps what it holds.
+    let most = MAX_TEMPLATES.max(saved.len());
+    ensure!(templates.len() <= most, "At most {most} templates");
     let mut parsed = Vec::with_capacity(templates.len());
     for value in templates {
         let Some(object) = value.as_object() else { bail!("A template is an object") };
         if let Some(field) = object.keys().find(|k| !FIELDS.contains(&k.as_str())) {
             bail!("Unknown template field: {field}");
         }
-        // Before serde, whose own words for a negative number or a fraction
-        // the user would see instead.
-        if let Some(limit) = object.get("maxConcurrent").filter(|v| !v.is_null()) {
-            ensure!(limit.as_u64().is_some_and(|n| (1..=u64::from(MAX_CONCURRENT)).contains(&n)), "{AT_ONCE}");
-        }
+        // An older page's `maxConcurrent` is taken and dropped (S5): Template has no such field.
         let template: Template = serde_json::from_value(value.clone()).map_err(|e| anyhow::anyhow!("Invalid template: {e}"))?;
         let kept = saved.iter().any(|t| t.id == template.id && t.harness == "opencode");
         template.validate(opencode || kept)?;
@@ -389,27 +495,18 @@ impl Store {
         list_at(&*self.db.read()?, KEY)
     }
 
-    /// A Project's own templates; none saved is an empty list.
-    pub(crate) fn project_executor_templates(&self, project: &str) -> Result<Templates> {
-        let db = self.db.read()?;
-        crate::projects::ensure_exists(&db, project)?;
-        list_at(&db, &project_key(project))
-    }
-
-    /// `template_in`, read on its own.
+    /// `template`, read on its own.
     #[cfg(test)]
-    pub(crate) fn executor_template(&self, project: Option<&str>, id: &str) -> Result<Option<(Template, &'static str)>> {
-        template_in(&*self.db.read()?, project, id)
+    pub(crate) fn executor_template(&self, id: &str) -> Result<Option<Template>> {
+        template(&*self.db.read()?, id)
     }
 
-    /// Replaces the list at `key`, checked against `expected` in the same
+    /// Replaces the Workspace's list, checked against `expected` in the same
     /// transaction; the version moves on with every save, an empty list too.
-    fn save_templates_at(&self, key: &str, project: Option<&str>, expected: i64, templates: Vec<Template>) -> Result<Templates> {
+    fn save_templates(&self, expected: i64, templates: Vec<Template>) -> Result<Templates> {
+        let key = KEY;
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
-        if let Some(project) = project {
-            crate::projects::ensure_assignable(&tx, project)?;
-        }
         let current = list_at(&tx, key)?;
         ensure!(current.version == expected, "version_conflict: these executor templates changed; reload before saving");
         let stored = stored_list(&current, &templates, current.version + 1)?.to_string();
@@ -422,30 +519,21 @@ impl Store {
     }
 }
 
-/// The lists, and what a dispatch can use: for a Project, its own templates
-/// and the Workspace's whose id it doesn't use itself.
-fn view(workspace: &Templates, project: Option<(&str, &Templates)>) -> Value {
-    let mut available: Vec<Value> = vec![];
-    if let Some((_, own)) = project {
-        available.extend(own.templates.iter().map(|t| json!({"template": t, "source": "project"})));
-    }
-    let shadowed = |id: &str| project.is_some_and(|(_, own)| own.templates.iter().any(|t| t.id == id));
-    available.extend(workspace.templates.iter().filter(|t| !shadowed(&t.id)).map(|t| json!({"template": t, "source": "workspace"})));
-    let mut view = json!({
+/// The Workspace's list, what a dispatch can use (the same templates, for
+/// clients that read `available`), and the presets the user can adopt.
+fn view(workspace: &Templates) -> Value {
+    let available: Vec<Value> = workspace.templates.iter().map(|t| json!({"template": t, "source": "workspace"})).collect();
+    json!({
         "workspace": workspace,
         "available": available,
+        "presets": presets(),
         "defaultNamePattern": DEFAULT_NAME_PATTERN,
-        "limits": {"templates": MAX_TEMPLATES, "instructionsBytes": MAX_INSTRUCTIONS, "maxConcurrent": MAX_CONCURRENT},
+        // A list the migration took past the limit keeps what it holds.
+        "limits": {"templates": MAX_TEMPLATES.max(workspace.templates.len()), "instructionsBytes": MAX_INSTRUCTIONS,
+            "maxConcurrent": OLDER_PAGES_MAX_CONCURRENT},
         "opencodeEnabled": crate::opencode_agent::enabled(),
         "appliesTo": "Dispatches from a template from now on; executors already created keep their own settings.",
-    });
-    if let Some((id, own)) = project {
-        view["project"] = json!({"id": id, "version": own.version, "templates": own.templates});
-        if own.later_templates > 0 {
-            view["project"]["laterTemplates"] = own.later_templates.into();
-        }
-    }
-    view
+    })
 }
 
 #[derive(Deserialize)]
@@ -471,14 +559,11 @@ fn general_view(store: &Store, project: Option<&str>) -> Result<Value> {
 
 async fn get_templates(State(ws): State<Arc<Workspace>>, Query(query): Query<ForProject>) -> Result<Json<Value>, ApiError> {
     Ok(Json(ws.stored(move |s| {
-        let workspace = s.executor_templates()?;
-        let mut answer = match &query.project_id {
-            Some(id) => {
-                let own = s.project_executor_templates(id)?;
-                view(&workspace, Some((id, &own)))
-            }
-            None => view(&workspace, None),
-        };
+        if let Some(id) = &query.project_id {
+            crate::projects::ensure_exists(&*s.db.read()?, id)?;
+        }
+        let mut answer = view(&s.executor_templates()?);
+        // A Project's id says whose new-Agent defaults the general executor takes.
         answer["general"] = general_view(s, query.project_id.as_deref())?;
         Ok(answer)
     }).await?))
@@ -501,27 +586,16 @@ async fn put_templates(State(ws): State<Arc<Workspace>>, Json(input): Json<Save>
     let _permit = ws.admission.enter_work()?;
     let current = ws.stored(|s| s.executor_templates()).await?;
     let templates = prepared(&ws, &input, current).await?;
-    let saved = ws.stored(move |s| s.save_templates_at(KEY, None, input.expected_version, templates)).await?;
+    let saved = ws.stored(move |s| s.save_templates(input.expected_version, templates)).await?;
     ws.changes.send(json!({"executorTemplates": true}));
-    Ok(Json(view(&saved, None)))
+    Ok(Json(view(&saved)))
 }
 
-async fn put_project_templates(
-    State(ws): State<Arc<Workspace>>,
-    Path(id): Path<String>,
-    Json(input): Json<Save>,
-) -> Result<Json<Value>, ApiError> {
-    let _permit = ws.admission.enter_work()?;
-    let project = id.clone();
-    let current = ws.stored(move |s| s.project_executor_templates(&project)).await?;
-    let templates = prepared(&ws, &input, current).await?;
-    let project = id.clone();
-    let answer = ws.stored(move |s| {
-        let saved = s.save_templates_at(&project_key(&project), Some(&project), input.expected_version, templates)?;
-        Ok(view(&s.executor_templates()?, Some((&project, &saved))))
-    }).await?;
-    ws.changes.send(json!({"executorTemplates": true, "projectId": id}));
-    Ok(Json(answer))
+/// A page from before YN-2 S2 saving a Project's own list is told where
+/// templates are now; nothing is written.
+async fn put_project_templates(Path(_id): Path<String>) -> Result<Json<Value>, ApiError> {
+    Err(anyhow::anyhow!("setting_moved: executor templates are kept for the whole Workspace now, in Settings → Executor templates; \
+        this Project's own were copied there. Nothing was saved; reload the page").into())
 }
 
 pub fn router() -> Router<Arc<Workspace>> {

@@ -31,7 +31,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "YN-3", runs: [], posts: [], replies: [], unexpected: [], errors: [] };
+const report = { task: "YN-3", runs: [], posts: [], replies: [], previews: [], unexpected: [], errors: [] };
 // A secure origin, as Core's own (localhost, or https on a tailnet): a reply needs crypto.randomUUID, which a
 // browser gives only there. Every request is answered here; none leaves the browser.
 const HOST = "localhost:47391";
@@ -73,6 +73,10 @@ const owner = (agentId, name) => ({ agentId, name, state: "active" });
 const node = (type, props, children) => (children ? { type, props, children } : { type, props });
 const md = (text) => node("Markdown", { text });
 const spec = (props, top, elements) => ({ root: "body", elements: { body: node("BriefBody", props, top), ...elements } });
+// A single-file HTML page Core keeps (YN-3 C2): Core names its kind text.
+const pageFile = (name) => ({ name, kind: "text", mime: "text/plain; charset=utf-8", size: 1536, snapshot: true, mayChange: false, takenAt: at(90) });
+// The preview port Core gives cards (YN-10's card previews, as #679 builds them), here only this check's.
+const PREVIEWS = "127.0.0.1:47390";
 const shot = (name, caption) => ({ name, kind: "image", mime: "image/png", size: PNG.length, snapshot: true, mayChange: false, takenAt: at(90), caption, width: 640, height: 400 });
 let id = 100;
 const section = (key, kind, title, body, extra = {}) => ({ id: id++, key, kind, title, version: 2, owner: owner("l", "lead-1"), updatedAt: at(30),
@@ -97,6 +101,10 @@ const sections = [
     a: md("The tokenizer drops one character in 0.02 % of lines; the fix lands with the next shard rebuild.\n\nDetails follow."),
     b: md("A second paragraph the card never shows."),
   })),
+  section("ring", "report", "Ring design", spec({ summary: { lead: "lead" } }, ["lead", "files"], {
+    lead: md("The ring design, working: drag a ring to see its clearance."),
+    files: node("Attachments", { items: [{ name: "ring.html" }] }),
+  }), { attachments: [pageFile("ring.html")] }),
   section("tokenizer", "ask", "Keep the old tokenizer?", spec({}, ["q"], { q: md("Old or new tokenizer for the rebuild?") }), {
     updatedAt: at(80),
     ask: { question: "Keep the old tokenizer until the rebuild?", state: "replied", repliedAt: at(60), replyText: "Keep it until the shard rebuild, then switch.", reply: { freeText: true } },
@@ -164,6 +172,8 @@ async function check(run) {
     ...(run.phone ? { isMobile: true, hasTouch: true } : {}),
   });
   await context.addInitScript((language) => {
+    // Yuzuno's page only: a card's sandboxed preview frame has no storage of its own to set (YN-3 C2).
+    if (window !== window.top) return;
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
     // The window opens on trainer-2, whose request waits: no Turn end is shown first.
@@ -171,6 +181,18 @@ async function check(run) {
   }, run.language);
   await context.route("**/*", async (route) => {
     const request = route.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
+    if (url.host === PREVIEWS) {
+      const token = url.pathname.match(/^\/v\/tok-(\w+)$/);
+      if (token) return route.fulfill({
+        status: 200, contentType: "text/html; charset=utf-8",
+        headers: { "Content-Security-Policy": `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors http://${HOST}` },
+        body: `<!doctype html><meta charset="utf-8"><title>Ring</title><style>body{font:15px system-ui,sans-serif;margin:12px;background:#f3efe3}</style>` +
+          `<h1 id="ring">Ring design</h1><p id="ran">scripts did not run</p>` +
+          `<script>document.getElementById("ran").textContent = "scripts ran in origin " + String(window.origin);</script>`,
+      });
+      const proof = url.pathname.match(/^\/\.well-known\/yuzuno-preview\/c-(\w+)$/);
+      if (proof) return route.fulfill({ status: 200, contentType: "text/plain", headers: { "Access-Control-Allow-Origin": `http://${HOST}` }, body: `a-${proof[1]}` });
+    }
     if (url.host !== HOST) {
       report.unexpected.push(request.url());
       return route.abort();
@@ -184,6 +206,15 @@ async function check(run) {
       const body = JSON.parse(request.postData() || "{}");
       report.replies.push({ run: run.name, body });
       return route.fulfill({ json: { input: { ...body, expectedTurnId: null, question: null }, status: "accepted", turnId: "t-enter", error: null } });
+    }
+    if (method === "POST" && path === "/api/previews") {
+      const body = JSON.parse(request.postData() || "{}");
+      report.previews.push({ run: run.name, body });
+      return route.fulfill({ json: {
+        name: body.name, size: 1536, sha256: "a".repeat(64), takenAt: at(0), expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        version: body.version, port: 47390, url: `http://${PREVIEWS}/v/tok-${body.section}`, place: "card", reused: false,
+        proof: { challenge: `c-${body.section}`, answer: `a-${body.section}`, url: `http://${PREVIEWS}/.well-known/yuzuno-preview/c-${body.section}` },
+      } });
     }
     if (method !== "GET") {
       // Marking a conversation read is a read receipt, not a change to Home.
@@ -306,7 +337,7 @@ async function check(run) {
     // ---- The deck: its order, the heading, Out of date closed at the end, and no hole (PR B).
     const deck = page.locator('[data-home-project="p-orch"] .home-brief').first();
     assert.deepEqual(await deck.locator("[data-section-key]").evaluateAll((els) => els.map((el) => el.dataset.sectionKey)),
-      ["overnight", "release", "loss", "eval", "notes", "plan", "tokenizer", "draft", "progress"]);
+      ["overnight", "release", "loss", "eval", "notes", "ring", "plan", "tokenizer", "draft", "progress"]);
     assert.equal(await deck.locator(":scope > .home-deck-heading").innerText(), w.repliedGroup);
     const closed = deck.locator(":scope > details.home-out-of-date");
     assert.equal(await closed.evaluate((el) => el.open), false, "out of date, closed");
@@ -349,6 +380,29 @@ async function check(run) {
     result.shots.push(`${run.name}-deck.png`);
     await closed.locator("summary").click();
     pass("the deck in its order, the answered Asks under their heading, Out of date closed at the end; no hole in either", { columns: main.columns, rows: main.rows });
+
+    // ---- A report whose substance is its HTML page (YN-3 C2): the page works on its card, asked for only
+    // once the card is in view, in the Portal's sandbox (its script runs, in an opaque origin); the card is the whole report.
+    {
+      const ring = card("ring");
+      const inView = await ring.evaluate((el) => { const r = el.getBoundingClientRect(); return r.top < innerHeight && r.bottom > 0; });
+      const asked = () => report.previews.filter((entry) => entry.run === run.name && entry.body.section === "ring");
+      if (!inView) assert.equal(asked().length, 0, "not asked for before the card is in view");
+      await ring.scrollIntoViewIfNeeded();
+      const frame = ring.locator("iframe.home-card-page-frame");
+      await frame.waitFor({ timeout: 15_000 });
+      assert.deepEqual(asked().map((entry) => entry.body), [{ kind: "briefAttachment", projectId: "p-orch", section: "ring", name: "ring.html", version: 2, place: "card" }]);
+      assert.deepEqual(await frame.evaluate((el) => [el.getAttribute("sandbox"), el.getAttribute("referrerpolicy"), el.getAttribute("allow")]), ["allow-scripts", "no-referrer", ""]);
+      const inside = await (await frame.elementHandle()).contentFrame();
+      await inside.waitForFunction(() => /scripts ran in origin/.test(document.getElementById("ran")?.textContent ?? ""), null, { timeout: 10_000 });
+      assert.equal(await inside.locator("#ran").innerText(), "scripts ran in origin null", "its script runs, sandboxed");
+      assert.equal(await ring.getAttribute("data-card-size"), "large");
+      assert.equal(await ring.locator(".home-report-open").count(), 0, "the whole report: no Open report");
+      assert.ok(await ring.locator(".home-card-page-large").isVisible(), "Open large");
+      await page.waitForTimeout(200);
+      await cardShot("ring", "page-card");
+      pass("a report's HTML page works on its card once in view, sandboxed; the card is the whole report", { inView });
+    }
 
     // ---- Answered Asks are answer cards (YN-3, the user's D3): small cards the deck packs, two sharing a row;
     // whom each waits for, its title, the reply quoted (three lines at most), who acts next or its owner's update.

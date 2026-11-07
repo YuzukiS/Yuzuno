@@ -28,6 +28,7 @@ mod refs;
 mod research;
 mod sections;
 mod update;
+mod patch;
 mod writes;
 #[cfg(test)]
 mod preview_tests;
@@ -71,8 +72,9 @@ pub(crate) async fn attachment_file(ws: &Arc<Workspace>, project: &str, section:
 
 /// For other modules' tests (previews.rs): Agent `agent` puts section `key`
 /// with the file at `file` as its one attachment, as its brief_update would
-/// in a Turn of its own (it joins a new Project if it is in none). Returns
-/// the Project, section, name and version, and the attachment as kept.
+/// in a Turn of its own (it joins a new Project if it is in none, and leads
+/// it, since only a lead writes a report: YN-2 S4). Returns the Project,
+/// section, name and version, and the attachment as kept.
 #[cfg(test)]
 pub(crate) async fn attach_for_test(ws: &Arc<Workspace>, agent: &str, key: &str, file: &std::path::Path) -> Value {
     let own = crate::projects::agent_project(&ws.store.db.read().unwrap(), agent).unwrap();
@@ -84,6 +86,13 @@ pub(crate) async fn attach_for_test(ws: &Arc<Workspace>, agent: &str, key: &str,
             project
         }
     };
+    // The user's choice of leads, saved as the settings page saves it.
+    let leads = crate::agent_roles::get(&ws.store, &project).unwrap();
+    if !leads.lead_agent_ids.iter().any(|id| id == agent) {
+        let mut ids = leads.lead_agent_ids;
+        ids.push(agent.to_owned());
+        crate::agent_roles::save(&ws.store, &project, leads.version, ids).unwrap();
+    }
     ws.store.update(agent, "test/running", &json!({}), |d| {
         if !d.turns.iter().any(|t| t["status"] == "inProgress") {
             d.turns.push(json!({"id":"t-attach","status":"inProgress","items":[]}));
@@ -109,7 +118,6 @@ pub(crate) use update::TOOL as UPDATE_TOOL;
 
 pub(crate) const MAX_TOPICS: usize = 12;
 pub(crate) const MAX_SUBTOPICS: usize = 4;
-pub(crate) const MAX_OPEN_ASKS: usize = 3;
 pub(crate) const MAX_ATTACHMENTS: usize = 12;
 /// A file up to this size is kept as it was; a larger one is referenced.
 pub(crate) const SNAPSHOT_FILE_BYTES: u64 = 25 * 1024 * 1024;
@@ -147,7 +155,7 @@ fn contract_text(value: &'static Value) -> Option<&'static str> {
 }
 
 const FALLBACK_RULES: &str = "Project Brief rules (Yuzuno). Nothing requires a Brief update each Turn: update it when something changed. \
-Only the user selects content editors. When editContent=false and writeOwnAsk=true, only your own Asks are allowed. When writeOwnAsk=false the Brief is read-only. \
+Leads edit Home; the user chooses leads. When editContent=false and writeOwnAsk=true, only your own Asks are allowed, and removing your own older sections. When writeOwnAsk=false the Brief is read-only. \
 Call brief_get, then brief_update with the expectedVersion it returned: put, resolve, remove or claim your sections. A rejected call changes nothing: fix the listed problems \
 (on version_conflict use the latest Brief attached) and call again with a new requestId. \
 Only a section's owner changes it; to add to another Agent's topic, put a sub-topic such as topic/review. \
@@ -157,12 +165,13 @@ Write conclusions, decisions and asks for the user, not a transcript; the Brief 
 Details and examples: brief_guide.";
 
 const FALLBACK_GUIDE: &str = "Project Brief guide.\n\
-Sections: brief_update changes take op put, edit, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
+Sections: brief_update changes take op put, edit, patch, resolve, remove or claim, and a key: topic or topic/sub (lowercase letters, digits, -). \
 At most 12 topics with 4 sub-topics each. Only the owner changes a section; add to another Agent's topic with a sub-topic. \
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
-put: {op:'put', key, kind:'ask'|'report'|'status', title, body, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root.\n\
+put: {op:'put', key, kind:'ask'|'report'|'status', title, body or markdown, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root; markdown is the section's text as one Markdown block.\n\
 edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else.\n\
-ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. At most 3 unresolved asks per Agent. \
+patch: {op:'patch', key, patch:[RFC 6902 operations on the body], status?} changes single values and keeps what edit keeps; the whole section is checked again.\n\
+ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. \
 A user's reply marks it replied (out of Needs you, listed in brief_get you.repliedAsks); resolve it once handled: a preference when taken in, \
 an authorized action only after it is done, with its result on the Task or Brief. While it runs or after it fails, keep it replied and report progress.\n\
 status: status.asOf (ISO time) and status.validFor (seconds); it greys out when stale.\n\
@@ -235,12 +244,16 @@ fn update_properties(project: Value) -> Value {
         "noChange":{"type":"boolean","description":"true, with no changes: nothing of yours changed in this Turn."},
         "validateOnly":{"type":"boolean","description":"true: only pre-check this update: the checks before its write, nothing written or reserved, not this Turn's update. The write itself checks again and can still refuse it."},
         "changes":{"type":"array","maxItems":update::MAX_CHANGES,"items":{"type":"object","required":["op","key"],"properties":{
-            "op":{"type":"string","enum":["put","edit","resolve","remove","claim"]},
+            "op":{"type":"string","enum":["put","edit","patch","resolve","remove","claim"]},
             "key":{"type":"string","description":"topic or topic/sub: lowercase letters, digits and -, each part up to 48 characters."},
             "kind":{"type":"string","enum":["ask","report","status"]},
             "title":{"type":"string","minLength":1,"maxLength":120},
             "body":{"type":"object","description":"A json-render spec {root, elements} with a BriefBody root; see brief_guide content."},
+            "markdown":{"type":"string","description":"For put, instead of body: the section's text as one Markdown block (id text); registered attachments are shown after it (id files). See brief_guide sections."},
+            "size":{"type":"string","enum":["small","wide","large"],"description":"With markdown: the card's size on Home, as BriefBody summary size."},
             "elements":{"type":"object","description":"For edit: block ids mapped to their new {type, props, children?}; the section's other blocks, title, attachments and ask state are kept. See brief_guide sections."},
+            "patch":{"type":"array","minItems":1,"maxItems":patch::MAX_OPS,"description":"For patch: RFC 6902 operations on the section's body, paths being JSON Pointers into it, e.g. [{op:\"replace\", path:\"/elements/refs/props/items/3/note\", value:\"Merged.\"}]. Kept as an edit keeps; the whole section is checked again. See brief_guide sections.",
+                "items":{"type":"object","required":["op","path"],"properties":{"op":{"type":"string","enum":patch::OPS},"path":{"type":"string"},"from":{"type":"string"},"value":{}}}},
             "ask":{"type":"object","description":"For kind ask: {question, reply:{options?, freeText?, form?, choice?}}."},
             "status":{"type":"object","description":"For kind status: {asOf: ISO time, validFor: seconds}."},
             "time":{"type":"object","description":"{due?, eta?, nextUpdate?} as ISO times."},
@@ -259,7 +272,7 @@ fn limits() -> Value {
     if let Some(limits) = brief_contract().map(|brief| &brief["limits"]).filter(|limits| limits.is_object()) {
         return limits.clone();
     }
-    json!({"topics":MAX_TOPICS,"subtopicsPerTopic":MAX_SUBTOPICS,"openAsksPerAgent":MAX_OPEN_ASKS,
+    json!({"topics":MAX_TOPICS,"subtopicsPerTopic":MAX_SUBTOPICS,
         "attachments":MAX_ATTACHMENTS,"snapshotFileBytes":SNAPSHOT_FILE_BYTES,
         "snapshotBriefBytes":SNAPSHOT_BRIEF_BYTES,"historyDays":HISTORY_DAYS,"recentlyLeft":sections::RECENTLY_LEFT})
 }
@@ -364,6 +377,36 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// A released executor's live sections become `to`'s, as a claim makes
+/// them (executor_archiving.rs, T-36 S2): in each Project the Brief moves on
+/// as a write of exactly those keys, recorded like any other (writes.rs), so
+/// an update read before it to another section is no version conflict.
+/// Content, versions of the sections and seen state are unchanged.
+pub(crate) fn hand_over(db: &Connection, from: &str, to: &str, name: &str) -> Result<()> {
+    let mut handed: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    {
+        let mut query = db.prepare("SELECT project_id,key FROM project_brief_sections WHERE owner_id=?1 AND live=1")?;
+        for row in query.query_map([from], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (project, key) = row?;
+            handed.entry(project).or_default().push(key);
+        }
+    }
+    let at = now();
+    for (project, keys) in &handed {
+        let before = sections::brief_version(db, project)?;
+        db.execute(
+            "INSERT INTO project_briefs(project_id,version,updated_at) VALUES(?1,1,?2)
+             ON CONFLICT(project_id) DO UPDATE SET version=version+1,updated_at=excluded.updated_at",
+            params![project, at],
+        )?;
+        let version = sections::brief_version(db, project)?;
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        writes::record(db, project, before, version, &keys)?;
+    }
+    db.execute("UPDATE project_brief_sections SET owner_id=?2,owner_name=?3 WHERE owner_id=?1 AND live=1", params![from, to, name])?;
+    Ok(())
+}
+
 /// A deleted Agent's turn records and receipts go with it. Its sections
 /// stay, owned by a deleted Agent, for another Agent of the Project to claim.
 pub(crate) fn delete_agent(db: &Connection, id: &str) -> Result<()> {
@@ -373,7 +416,7 @@ pub(crate) fn delete_agent(db: &Connection, id: &str) -> Result<()> {
 }
 
 /// The Project whose Brief this Agent may edit: Some while it belongs to a
-/// Project that is not archived and the user chose it as a content editor.
+/// Project that is not archived and leads it (YN-2 S4: a lead edits Home).
 pub fn agent_edits_brief(store: &Store, agent_id: &str) -> Result<Option<String>> {
     let db = store.db.read()?;
     let Some(project) = crate::projects::agent_project(&db, agent_id)? else { return Ok(None) };

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -15,13 +15,12 @@ import {
   X,
 } from "lucide-react";
 import type { SettingsEditor } from "./settings-catalog";
-import { SettingsCenter, type SettingsNavigation, type SettingsOpenAt } from "./SettingsCenter";
+import { SettingsCenter, type SettingsNavigation, type SettingsOpenAt, type SettingsRequest } from "./SettingsCenter";
 import { RuntimeSection } from "./RuntimeSection";
 import { AboutSection } from "./AboutSection";
 import { AppearanceSection } from "./AppearanceSettings";
 import { SharedAppearanceSection } from "./SharedAppearance";
 import { InputPreferencesSection } from "./InputPreferences";
-import { PortalPreferencesSection } from "./portal/PortalPreferences";
 import { LanguagePreferencesSection } from "./LanguagePreferences";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { useDocumentVisible } from "./document-visible";
@@ -38,7 +37,6 @@ import { ReviewSettings } from "./ReviewSettings";
 import { AutoContinueDefault } from "./QuotaResume";
 import { AgentDefaults } from "./AgentDefaults";
 import { ExecutorTemplates } from "./ExecutorTemplates";
-import { JobsBudgetEditor, RemoteJobsEditor } from "./JobsSettings";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { WorkspaceBackup } from "./WorkspaceBackup";
@@ -369,6 +367,7 @@ export function WorkspaceUpdatesHost({
   navigation,
   workspaceId,
   openAt,
+  pages,
 }: {
   enabled: boolean;
   open: boolean;
@@ -379,8 +378,10 @@ export function WorkspaceUpdatesHost({
   /** Which Workspace's saved drafts the drafts tab reads (T-195). Empty until
    * the Workspace is known, and then none are shown as its own. */
   workspaceId: string;
-  /** Opens Settings at this editor (a notification's click, T-196). */
+  /** Opens Settings at this page or editor (a notification's click, T-196; the rail, YN-8). */
   openAt?: SettingsOpenAt | null;
+  /** The Projects and Machines pages' managers (YN-8), drawn by their owner. */
+  pages?: SettingsPagesContent;
 }) {
   const intent = useUpdateIntent(workspaceId);
   // A chosen update is followed closely even while Settings is closed.
@@ -398,12 +399,23 @@ export function WorkspaceUpdatesHost({
       navigation={navigation}
       workspaceId={workspaceId}
       openAt={openAt}
+      pages={pages}
       {...updates}
     />
   );
 }
 
 // The Settings dialog's own title and close button (T-189).
+/** What the Projects and Machines pages show; `visible` while their page is
+ * shown, `sub` the project or machine asked for ("new" for a new project). */
+/** Settings › Projects and › Machines (YN-8), given by the shell's owner.
+ * `open` is whether Settings is open: a page's own unfinished change is
+ * kept while another page is shown. */
+export type SettingsPagesContent = {
+  projects?: (open: boolean, request?: SettingsRequest) => ReactNode;
+  machines?: (open: boolean, request?: SettingsRequest) => ReactNode;
+};
+
 const settingsDialogText = strings(
   { title: "Settings", description: "Find a setting, check what it affects and open its editor.", close: "Close dialog" },
   { title: "设置", description: "查找一项设置，了解它影响什么，并打开它的编辑页。", close: "关闭对话框" },
@@ -421,6 +433,7 @@ export function WorkspaceUpdates({
   navigation,
   workspaceId,
   openAt,
+  pages,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -433,6 +446,7 @@ export function WorkspaceUpdates({
   navigation?: SettingsNavigation;
   workspaceId: string;
   openAt?: SettingsOpenAt | null;
+  pages?: SettingsPagesContent;
 }) {
   const language = useLanguage();
   const dialog = settingsDialogText(language);
@@ -812,7 +826,9 @@ export function WorkspaceUpdates({
         openAt={openAt}
         onEditorChange={setActiveEditor}
         attention={stage === "running" || stage === "reload" || stage === "prepared" || stage === "local" || stage === "published"}
-        renderEditor={(tab, visible, openEditor) => <>
+        renderEditor={(tab, visible, openEditor, request) => <>
+          {tab === "projects" && pages?.projects?.(open, request)}
+          {tab === "machines" && pages?.machines?.(open, request)}
           {tab === "updates" && (
             <section
               className="settings-section"
@@ -1038,26 +1054,14 @@ export function WorkspaceUpdates({
               <SharedAppearanceSection active={open && visible} />
             </>
           )}
-          {tab === "input" && (
-            <>
-              <InputPreferencesSection />
-              <PortalPreferencesSection />
-            </>
-          )}
+          {/* Typing & time (YN-8): sending and opening, then the clock. */}
+          {tab === "input" && <InputPreferencesSection />}
           {tab === "time" && <TimePreferencesSection />}
           {tab === "language" && <LanguagePreferencesSection />}
           {tab === "shortcuts" && <ShortcutHelpSection />}
           {tab === "transfer" && <DeviceTransferSection />}
           {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "executor-templates" && <ExecutorTemplates active={open} />}
-          {/* Jobs & resources (T-55): this host's settings, the Jobs card's before. */}
-          {tab === "jobs-budget" && <JobsBudgetEditor active={open && visible} />}
-          {tab === "jobs-remote" && (
-            <RemoteJobsEditor
-              active={open && visible}
-              onOpenMachines={navigation && !navigation.disabled ? () => navigation.onNavigate({ kind: "machines" }) : undefined}
-            />
-          )}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "auto-continue" && <AutoContinueDefault active={open} />}
           {tab === "home" && <HomePresentationSettings active={open} />}

@@ -7,7 +7,7 @@
 //! the two, outside any database lock, and attachment files are copied
 //! there too (see attachments::stage).
 use super::{
-    attachments,
+    attachments, patch,
     sections::{self, Owners, Row},
     writes, *,
 };
@@ -22,6 +22,9 @@ const MAX_EDITED: usize = 32;
 pub(super) const MAX_PROBLEMS: usize = 10;
 /// Advice an answer carries at most (T-176), as the contract's limits.advice.items.
 pub(super) const MAX_ADVICE: usize = 3;
+/// Repairs one section keeps (YN-14), as the contract's limits.repairsPerSection;
+/// an answer lists at most MAX_PROBLEMS of them and counts the rest.
+pub(super) const MAX_REPAIRS: usize = 8;
 
 /// What checks a section `put`: the generated validator, or in tests a
 /// stand-in for it.
@@ -32,22 +35,37 @@ pub(crate) enum Checker {
     /// A stand-in that also gives advice.
     #[cfg(test)]
     Advising(fn(&Value) -> Result<(Value, Vec<Value>), Value>),
+    /// A stand-in that repairs (YN-14): the section and its repairs.
+    #[cfg(test)]
+    Repairing(fn(&Value) -> Result<(Value, Vec<Value>), Value>),
+}
+
+/// What the validator made of a section it accepted.
+pub(super) struct Accepted {
+    pub section: Value,
+    /// Advice on it (T-176).
+    pub advice: Vec<Value>,
+    /// What it changed to accept it (YN-14), by paths in the section.
+    pub repairs: Vec<Value>,
 }
 
 impl Checker {
-    /// The normalized section and the validator's advice on it, or its problems.
-    async fn check(&self, section: &Value, previous_body: Option<&Value>) -> Result<Result<(Value, Vec<Value>), Value>, String> {
+    /// The normalized section with the validator's advice and repairs, or its problems.
+    async fn check(&self, section: &Value, previous_body: Option<&Value>) -> Result<Result<Accepted, Value>, String> {
+        let accepted = |(section, advice, repairs)| Accepted { section, advice, repairs };
         match self {
             Checker::Node(validator) => {
                 if brief_schema_version().is_none() {
                     return Err("this Core's validator predates Project Briefs".into());
                 }
-                validator.check_brief_section(section, previous_body).await
+                Ok(validator.check_brief_section(section, previous_body).await?.map(accepted))
             }
             #[cfg(test)]
-            Checker::Fake(check) => Ok(check(section).map(|section| (section, vec![]))),
+            Checker::Fake(check) => Ok(check(section).map(|section| accepted((section, vec![], vec![])))),
             #[cfg(test)]
-            Checker::Advising(check) => Ok(check(section)),
+            Checker::Advising(check) => Ok(check(section).map(|(section, advice)| accepted((section, advice, vec![])))),
+            #[cfg(test)]
+            Checker::Repairing(check) => Ok(check(section).map(|(section, repairs)| accepted((section, vec![], repairs)))),
         }
     }
 }
@@ -91,12 +109,17 @@ pub(super) fn rejection(mut problems: Vec<Value>, latest: Option<Value>) -> Valu
 /// write checks is outside it: the write checks version, Turn and
 /// permissions again and can still refuse, e.g. with snapshot_limit for the
 /// Brief's snapshot total. Advice comes only with a valid answer.
-fn preview(rejected: Option<Value>, checked_all: bool, advice: Vec<Value>) -> Value {
+fn preview(rejected: Option<Value>, checked_all: bool, advice: Vec<Value>, repairs: Vec<Value>) -> Value {
     let Some(mut rejected) = rejected else {
-        return json!({"validateOnly":true,"valid":true,"checkedAll":true,"problems":[],"advice":advice,
+        let (repairs, more) = listed(repairs);
+        let mut answer = json!({"validateOnly":true,"valid":true,"checkedAll":true,"problems":[],"advice":advice,"repairs":repairs,
             "note":"validateOnly: the pre-check passed against the Brief as it is now. Nothing was written or reserved, and \
                 this is not the Turn's Brief update. Sending it checks version, Turn and permissions again, and checks made \
                 only on writing, such as the Brief's snapshot total, can still refuse it."});
+        if more > 0 {
+            answer["moreRepairs"] = json!(more);
+        }
+        return answer;
     };
     let note = if checked_all {
         "validateOnly: nothing was written. The pre-check ran all its steps; checks made only on writing did not run."
@@ -115,12 +138,12 @@ fn preview(rejected: Option<Value>, checked_all: bool, advice: Vec<Value>) -> Va
 }
 
 /// The validator's advice on change `index` (T-176), added to `advice`
-/// once each and at most MAX_ADVICE in all. A block edit is advised only
-/// on the blocks it replaced, never again on the rest of the section.
+/// once each and at most MAX_ADVICE in all. A block edit or patch is
+/// advised only on the blocks it changed, never again on the rest of the section.
 fn advise(change: &Change, index: usize, found: Vec<Value>, advice: &mut Vec<Value>) {
     for mut one in found.into_iter().filter(Value::is_object) {
         let path = one["path"].as_str().unwrap_or_default().to_owned();
-        if change.op == Op::Edit && !edited_block(change, &path) {
+        if matches!(change.op, Op::Edit | Op::Patch) && !edited_block(change, &path) {
             continue;
         }
         one["path"] = json!(change_path(change, index, &path));
@@ -130,10 +153,31 @@ fn advise(change: &Change, index: usize, found: Vec<Value>, advice: &mut Vec<Val
     }
 }
 
-/// Whether `path` (body.elements.<id>…) is in a block the edit replaced.
+/// An answer's repairs (YN-14): at most MAX_PROBLEMS, and how many more there were.
+fn listed(mut repairs: Vec<Value>) -> (Vec<Value>, usize) {
+    let more = repairs.len().saturating_sub(MAX_PROBLEMS);
+    repairs.truncate(MAX_PROBLEMS);
+    (repairs, more)
+}
+
+/// Whether `path` (body.elements.<id>…) is in a block the edit replaced,
+/// or the patch changed: one its path or from names under /elements/<id>,
+/// or any block when it names /elements or /root as a whole.
 fn edited_block(change: &Change, path: &str) -> bool {
     let Some(rest) = path.strip_prefix("body.elements.") else { return false };
     let id = rest.split('.').next().unwrap_or_default();
+    if change.op == Op::Patch {
+        return change.edit["patch"].as_array().into_iter().flatten().any(|op| {
+            ["path", "from"].iter().filter_map(|field| op[*field].as_str()).any(|pointer| {
+                let mut tokens = pointer.split('/').skip(1).map(|token| token.replace("~1", "/").replace("~0", "~"));
+                match (tokens.next().as_deref(), tokens.next()) {
+                    (Some("elements"), Some(block)) => block == id,
+                    (Some("elements") | Some("root"), None) => true,
+                    _ => false,
+                }
+            })
+        });
+    }
     change.edit["elements"].as_object().is_some_and(|elements| elements.contains_key(id))
 }
 
@@ -142,6 +186,9 @@ pub(super) enum Op {
     Put,
     /// Replaces blocks of an existing section by element id; see `edited`.
     Edit,
+    /// Changes values of an existing section's body by RFC 6902 operations
+    /// (YN-14 A2); see `patched`. Otherwise as Edit.
+    Patch,
     Resolve,
     Remove,
     Claim,
@@ -156,11 +203,14 @@ pub(super) struct Change {
     /// the stored section with the edited blocks in place, built by `start`
     /// from the row the edit reads, and checked the same way.
     pub section: Value,
-    /// edit only: {elements, status?} as sent.
+    /// edit: {elements, status?} as sent; patch: {patch, status?}.
     pub edit: Value,
     /// Stored body for an edit's legacy unused-attachment compatibility.
     /// Set by start, never accepted from the Agent's request.
     pub previous_body: Option<Value>,
+    /// What the validator repaired to accept this change (YN-14), by paths
+    /// in the section; set once the sections pass, and kept with it.
+    pub repairs: Vec<Value>,
 }
 
 pub(super) struct Request {
@@ -173,6 +223,8 @@ pub(super) struct Request {
     /// The validator's advice on the checked sections, set once they pass;
     /// an accepted answer carries it.
     pub advice: Vec<Value>,
+    /// Every change's repairs by paths in the change (YN-14), set with advice.
+    pub repairs: Vec<Value>,
 }
 
 /// Whether `input` asks only to be checked (validateOnly: true).
@@ -270,7 +322,7 @@ fn parse(input: &Value) -> Result<Request, Vec<Value>> {
         }
     }
     match expected {
-        Some(expected) if problems.is_empty() => Ok(Request { project, expected, no_change, changes, validate_only: validate_only(input), advice: vec![] }),
+        Some(expected) if problems.is_empty() => Ok(Request { project, expected, no_change, changes, validate_only: validate_only(input), advice: vec![], repairs: vec![] }),
         _ => Err(problems),
     }
 }
@@ -284,11 +336,12 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
     let op = match object.get("op").and_then(Value::as_str) {
         Some("put") => Op::Put,
         Some("edit") => Op::Edit,
+        Some("patch") => Op::Patch,
         Some("resolve") => Op::Resolve,
         Some("remove") => Op::Remove,
         Some("claim") => Op::Claim,
         _ => {
-            problems.push(problem("invalid_change", format!("{at}.op"), "op is one of put, edit, resolve, remove or claim.", "sections"));
+            problems.push(problem("invalid_change", format!("{at}.op"), "op is one of put, edit, patch, resolve, remove or claim.", "sections"));
             return None;
         }
     };
@@ -315,14 +368,17 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
             return None;
         }
         let edit = json!({"elements":elements,"status":object.get("status").cloned().unwrap_or(Value::Null)});
-        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None });
+        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![] });
+    }
+    if op == Op::Patch {
+        return parse_patch(&at, key, object, problems);
     }
     if op != Op::Put {
         if let Some(extra) = object.keys().find(|field| !matches!(field.as_str(), "op" | "key")) {
             problems.push(problem("invalid_change", format!("{at}.{extra}"), "resolve, remove and claim take only op and key.", "sections"));
             return None;
         }
-        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit: Value::Null, previous_body: None });
+        return Some(Change { op, key: key.into(), kind: String::new(), section: Value::Null, edit: Value::Null, previous_body: None, repairs: vec![] });
     }
     let kind = object.get("kind").and_then(Value::as_str).filter(|kind| matches!(*kind, "ask" | "report" | "status"));
     let Some(kind) = kind else {
@@ -346,7 +402,58 @@ fn parse_change(index: usize, change: &Value, problems: &mut Vec<Value>) -> Opti
     }
     let mut section = Value::Object(object.clone());
     section.as_object_mut().unwrap().remove("op");
-    Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None })
+    Some(Change { op, key: key.into(), kind: kind.into(), section, edit: Value::Null, previous_body: None, repairs: vec![] })
+}
+
+/// A patch change's shape (YN-14 A2): 1-MAX_OPS RFC 6902 operations, each
+/// {op, path} with value for add, replace and test and from for move and
+/// copy, and nothing else. Whether its paths are in the body is `patched`'s.
+fn parse_patch(at: &str, key: &str, object: &serde_json::Map<String, Value>, problems: &mut Vec<Value>) -> Option<Change> {
+    if let Some(extra) = object.keys().find(|field| !matches!(field.as_str(), "op" | "key" | "patch" | "status")) {
+        problems.push(problem("invalid_change", format!("{at}.{extra}"),
+            "patch takes op, key, patch and, for a status section, status; put the section to change anything else.", "sections"));
+        return None;
+    }
+    let Some(ops) = object.get("patch").and_then(Value::as_array).filter(|ops| (1..=patch::MAX_OPS).contains(&ops.len())) else {
+        problems.push(problem("invalid_change", format!("{at}.patch"),
+            format!("patch is a list of 1-{} RFC 6902 operations on the section's body, e.g. [{{op:\"replace\", path:\"/elements/notes/props/text\", value:\"…\"}}].", patch::MAX_OPS),
+            "sections"));
+        return None;
+    };
+    for (number, op) in ops.iter().enumerate() {
+        let here = format!("{at}.patch[{number}]");
+        let Some(fields) = op.as_object() else {
+            problems.push(problem("invalid_change", here, "Each operation is {op, path, value?, from?}.", "sections"));
+            return None;
+        };
+        let name = fields.get("op").and_then(Value::as_str).filter(|name| patch::OPS.contains(name));
+        let Some(name) = name else {
+            problems.push(problem("invalid_change", format!("{here}.op"), format!("op is one of {}.", patch::OPS.join(", ")), "sections"));
+            return None;
+        };
+        let wants = |field: &str| match field {
+            "value" => matches!(name, "add" | "replace" | "test"),
+            "from" => matches!(name, "move" | "copy"),
+            _ => matches!(field, "op" | "path"),
+        };
+        if let Some(extra) = fields.keys().find(|field| !wants(field)) {
+            problems.push(problem("invalid_change", format!("{here}.{extra}"), format!("{name} takes {}.", match name {
+                "add" | "replace" | "test" => "op, path and value",
+                "move" | "copy" => "op, from and path",
+                _ => "op and path",
+            }), "sections"));
+            return None;
+        }
+        let missing = ["path", "value", "from"].into_iter().find(|field| wants(field) && !fields.contains_key(*field));
+        let bad_pointer = ["path", "from"].into_iter().find(|field| fields.get(*field).is_some_and(|v| !v.as_str().is_some_and(|s| s.len() <= 1000)));
+        if let Some(field) = missing.or(bad_pointer) {
+            problems.push(problem("invalid_change", format!("{here}.{field}"),
+                format!("{name} needs {field}{}.", if field == "value" { "" } else { ": a JSON Pointer into the body, e.g. /elements/notes/props/text" }), "sections"));
+            return None;
+        }
+    }
+    let edit = json!({"patch":ops,"status":object.get("status").cloned().unwrap_or(Value::Null)});
+    Some(Change { op: Op::Patch, key: key.into(), kind: String::new(), section: Value::Null, edit, previous_body: None, repairs: vec![] })
 }
 
 pub(super) struct Caller {
@@ -483,27 +590,25 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
     let rows: BTreeMap<&str, &Row> = live.iter().map(|row| (row.key.as_str(), row)).collect();
     let mut owners = Owners::default();
     let mut problems = vec![];
-    let open_asks = |planned: &BTreeMap<String, Planned>| {
-        planned.values().filter(|p| p.owner == ctx.agent && p.open_ask).count()
-    };
-    let ask_limit = |at: &str| problem("ask_limit", at,
-        format!("You already have {MAX_OPEN_ASKS} unresolved asks; resolve one before asking more."), "ask");
     for (index, change) in request.changes.iter().enumerate() {
         let at = format!("changes[{index}]");
         let key = change.key.as_str();
         let existing = planned.get(key).cloned();
         if !can_edit {
-            let own_ask = rows.get(key).is_some_and(|row| row.owner_id == ctx.agent && row.kind == "ask");
+            let own = rows.get(key).is_some_and(|row| row.owner_id == ctx.agent);
+            let own_ask = own && rows.get(key).is_some_and(|row| row.kind == "ask");
             let permitted = match change.op {
                 Op::Put => change.kind == "ask" && (existing.is_none() || own_ask),
                 // An edit keeps the stored kind: an Ask-only member edits
                 // only its own ask, never a report or status it wrote before.
-                Op::Resolve | Op::Remove | Op::Edit => own_ask,
+                Op::Resolve | Op::Edit | Op::Patch => own_ask,
+                // It may take down what it wrote as an editor (YN-2 S4, Q-L5).
+                Op::Remove => own,
                 Op::Claim => false,
             };
             if !permitted {
                 problems.push(problem("ask_only", format!("{at}.op"),
-                    "You are Ask-only in this Project. You may submit and update your own valid asks, resolve them, or send noChange:true. Only the user can select Home content editors. Keep internal progress in tasks and mail; no per-turn Brief update is required.", "sections"));
+                    "You are Ask-only in this Project. You may submit and update your own valid asks, resolve them, remove your own older sections, or send noChange:true. A Project's leads edit Home; the user chooses them. Keep internal progress in tasks and mail; no per-turn Brief update is required.", "sections"));
                 continue;
             }
         }
@@ -564,14 +669,11 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                         }
                     }
                 }
-                let was_open = existing.as_ref().is_some_and(|p| p.open_ask);
                 planned.insert(key.into(), Planned { owner: ctx.agent.clone(), open_ask: change.kind == "ask" });
-                if change.kind == "ask" && !was_open && open_asks(&planned) > MAX_OPEN_ASKS {
-                    problems.push(ask_limit(&format!("{at}.kind")));
-                }
             }
-            // Changes no owner, kind or ask state; the blocks are `edited`'s.
-            Op::Edit => match &existing {
+            // Changes no owner, kind or ask state; the blocks are `edited`'s
+            // (`patched`'s).
+            Op::Edit | Op::Patch => match &existing {
                 None => problems.push(problem("not_found", format!("{at}.key"), match gone()? {
                     note if note.is_empty() => format!("No live section has key {key}; create it with put."),
                     note => format!("No live section has key {key}, so there is nothing to edit.{note}"),
@@ -604,11 +706,7 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                 Some(_) if orphaned.is_none() => problems.push(problem("not_orphan", format!("{at}.key"),
                     format!("{key} has an active owner; only a section whose owner was closed, deleted or left the Project can be claimed."), "sections")),
                 Some(p) => {
-                    let open = p.open_ask;
                     planned.insert(key.into(), Planned { owner: ctx.agent.clone(), ..p.clone() });
-                    if open && open_asks(&planned) > MAX_OPEN_ASKS {
-                        problems.push(ask_limit(&format!("{at}.key")));
-                    }
                 }
             },
         }
@@ -670,14 +768,15 @@ fn start(store: &Store, actor: &str, id: &str, input: &Value) -> Result<Start> {
     let mut request = request;
     let mut problems = vec![];
     for (index, change) in request.changes.iter_mut().enumerate() {
-        if change.op != Op::Edit {
+        if !matches!(change.op, Op::Edit | Op::Patch) {
             continue;
         }
         // rules found it live and the caller's. The commit only goes ahead
         // while no write to this key came after expectedVersion (conflict),
         // so this row is the one it changes.
         let row = sections::live_key(&db, &ctx.project, &change.key)?.context("the section changed while it was being read")?;
-        match edited(&row, &change.edit, index) {
+        let composed = if change.op == Op::Patch { patched(&row, &change.edit, index) } else { edited(&row, &change.edit, index) };
+        match composed {
             Ok(section) => {
                 change.section = section;
                 change.previous_body = Some(row.data["body"].clone());
@@ -702,7 +801,7 @@ fn revoked_during_validation_cannot_commit_or_leave_a_receipt() {
     // This is the lock-free validator/attachment-staging interval. Policy
     // versions are separate from Brief versions, so only the commit rules
     // (not the ordinary optimistic Brief check) can reject this write.
-    editors::save(&ws.store, &project, 0, Some(vec![])).unwrap();
+    super::tests::set_leads(&ws, &project, &[]);
     let (answer, changed) = commit(&ws.store, "a", "race", &input, &turn, &request, &[request.changes[0].section.clone()], &[vec![]]).unwrap();
     assert_eq!(answer.unwrap_err()["problems"][0]["code"], "ask_only");
     assert!(changed.is_none());
@@ -725,7 +824,7 @@ fn an_edit_revoked_during_validation_cannot_commit() {
         "elements":{"note":{"type":"Markdown","props":{"text":"Second."}}}}]});
     let Start::Check(request, _, turn) = start(&ws.store, "a", "edit", &edit).unwrap() else { panic!("initially permitted") };
     // Revoked while the edited section is checked: the write's own rules refuse it.
-    editors::save(&ws.store, &project, 0, Some(vec![])).unwrap();
+    super::tests::set_leads(&ws, &project, &[]);
     let (answer, changed) = commit(&ws.store, "a", "edit", &edit, &turn, &request, &[request.changes[0].section.clone()], &[vec![]]).unwrap();
     assert_eq!(answer.unwrap_err()["problems"][0]["code"], "ask_only");
     assert!(changed.is_none());
@@ -809,6 +908,24 @@ fn edited(row: &Row, edit: &Value, index: usize) -> Result<Value, Vec<Value>> {
     for (id, block) in blocks {
         body["elements"][id] = block;
     }
+    Ok(composed(row, body, &edit["status"]))
+}
+
+/// A patch's section (YN-14 A2): the stored body with the operations
+/// applied in order, otherwise as `edited` composes it. The first operation
+/// that can't be applied refuses the change by its own path.
+fn patched(row: &Row, edit: &Value, index: usize) -> Result<Value, Vec<Value>> {
+    let mut body = row.data["body"].clone();
+    let ops = edit["patch"].as_array().cloned().unwrap_or_default();
+    if let Err(failed) = patch::apply(&mut body, &ops) {
+        return Err(vec![problem(failed.code, format!("changes[{index}].patch[{}].{}", failed.index, failed.field), failed.reason, "sections")]);
+    }
+    Ok(composed(row, body, &edit["status"]))
+}
+
+/// The section a block edit or patch sends the validator: `body` with the
+/// rest as stored, and `status` when the change gives one.
+fn composed(row: &Row, body: Value, status: &Value) -> Value {
     let data = &row.data;
     let mut section = json!({"key":row.key,"kind":row.kind,"title":data["title"],"body":body});
     for name in ["ask", "status", "time"] {
@@ -816,8 +933,8 @@ fn edited(row: &Row, edit: &Value, index: usize) -> Result<Value, Vec<Value>> {
             section[name] = data[name].clone();
         }
     }
-    if !edit["status"].is_null() {
-        section["status"] = edit["status"].clone();
+    if !status.is_null() {
+        section["status"] = status.clone();
     }
     let attachments: Vec<Value> = data["attachments"].as_array().into_iter().flatten().map(|entry| {
         let mut sent = json!({"name":entry["name"]});
@@ -831,7 +948,7 @@ fn edited(row: &Row, edit: &Value, index: usize) -> Result<Value, Vec<Value>> {
     if !attachments.is_empty() {
         section["attachments"] = json!(attachments);
     }
-    Ok(section)
+    section
 }
 
 /// Where a validator problem is in the change: an edit sends blocks, not a
@@ -840,6 +957,7 @@ fn change_path(change: &Change, index: usize, path: &str) -> String {
     let path = match change.op {
         Op::Edit if path == "body" || path == "body.elements" => "elements".to_owned(),
         Op::Edit => path.strip_prefix("body.").unwrap_or(path).to_owned(),
+        // A patch sends operations, not blocks: problems name the patched body.
         _ => path.to_owned(),
     };
     if path.is_empty() { format!("changes[{index}]") } else { format!("changes[{index}].{path}") }
@@ -855,15 +973,17 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
     let (store, who, payload, key) = (ws.store.clone(), actor.to_owned(), input.clone(), id.clone());
     let (mut request, remote, turn) = match crate::db::blocking(move || start(&store, &who, &key, &payload)).await? {
         Start::Replay(answer) => return Ok(Ok(answer)),
-        Start::Reject(rejected) if only => return Ok(Ok(preview(Some(rejected), false, vec![]))),
+        Start::Reject(rejected) if only => return Ok(Ok(preview(Some(rejected), false, vec![], vec![]))),
         Start::Reject(rejected) => return Ok(Err(rejected)),
         Start::Check(request, remote, turn) => (request, remote, turn),
     };
     // Each section put, checked outside any database lock.
     let mut normalized = Vec::with_capacity(request.changes.len());
-    let (mut problems, mut advice) = (vec![], vec![]);
+    let (mut problems, mut advice, mut repairs) = (vec![], vec![], vec![]);
+    // Each change's repairs as the section keeps them.
+    let mut kept = vec![vec![]; request.changes.len()];
     for (index, change) in request.changes.iter().enumerate() {
-        if !matches!(change.op, Op::Put | Op::Edit) {
+        if !matches!(change.op, Op::Put | Op::Edit | Op::Patch) {
             normalized.push(Value::Null);
             continue;
         }
@@ -871,9 +991,15 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
             anyhow::anyhow!("validator_unavailable: {reason}. Not counted against you; try again later")
         })?;
         match checked {
-            Ok((section, found)) => {
-                advise(change, index, found, &mut advice);
-                normalized.push(section);
+            Ok(accepted) => {
+                advise(change, index, accepted.advice, &mut advice);
+                for found in accepted.repairs.iter().filter(|found| found.is_object()) {
+                    let mut found = found.clone();
+                    found["path"] = json!(change_path(change, index, found["path"].as_str().unwrap_or_default()));
+                    repairs.push(found);
+                }
+                kept[index] = accepted.repairs.into_iter().filter(Value::is_object).take(MAX_REPAIRS).collect();
+                normalized.push(accepted.section);
             }
             Err(found) => {
                 for mut found in found.as_array().cloned().unwrap_or_default() {
@@ -886,7 +1012,7 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
     }
     if !problems.is_empty() {
         let rejected = rejection(problems, None);
-        return Ok(if request.validate_only { Ok(preview(Some(rejected), false, vec![])) } else { Err(rejected) });
+        return Ok(if request.validate_only { Ok(preview(Some(rejected), false, vec![], vec![])) } else { Err(rejected) });
     }
     if request.validate_only {
         // The attachments are judged as staging judges them; nothing is copied.
@@ -895,9 +1021,13 @@ pub(super) async fn update(ws: &Arc<Workspace>, checker: &Checker, actor: &str, 
             .collect();
         let (cache, data_dir) = (attachments::dir(&ws.data_dir), ws.data_dir.clone());
         let problems = crate::db::blocking(move || attachments::inspect(&cache, &data_dir, remote, &sections)).await?;
-        return Ok(Ok(preview((!problems.is_empty()).then(|| rejection(problems, None)), true, advice)));
+        return Ok(Ok(preview((!problems.is_empty()).then(|| rejection(problems, None)), true, advice, repairs)));
     }
     request.advice = advice;
+    request.repairs = repairs;
+    for (change, repairs) in request.changes.iter_mut().zip(kept) {
+        change.repairs = repairs;
+    }
     // Attachment files are copied before the write; one the write then
     // does not keep is collected afterwards.
     let (cache, data_dir) = (attachments::dir(&ws.data_dir), ws.data_dir.clone());
@@ -1009,6 +1139,14 @@ fn commit(
     if !request.advice.is_empty() {
         answer["advice"] = json!(request.advice);
     }
+    // Nor do repairs (YN-14): they say what Core changed to accept it.
+    if !request.repairs.is_empty() {
+        let (repairs, more) = listed(request.repairs.clone());
+        answer["repairs"] = json!(repairs);
+        if more > 0 {
+            answer["moreRepairs"] = json!(more);
+        }
+    }
     tx.execute(
         "INSERT INTO collaboration_requests(actor,operation,request_id,input_json,response_json) VALUES(?1,?2,?3,?4,?5)",
         params![format!("agent:{actor}"), TOOL, id, input.to_string(), answer.to_string()],
@@ -1033,8 +1171,8 @@ fn research_rules(
         let current = sections::live_key(tx, &ctx.project, &change.key)?;
         let next = match change.op {
             Op::Put => section_data(&normalized[index], &change.section, &staged[index]),
-            // An edit keeps the section's attachments.
-            Op::Edit => {
+            // An edit or patch keeps the section's attachments.
+            Op::Edit | Op::Patch => {
                 let Some(row) = &current else { continue };
                 let mut data = row.data.clone();
                 data["body"] = normalized[index]["body"].clone();
@@ -1047,6 +1185,24 @@ fn research_rules(
         }
     }
     Ok(problems)
+}
+
+/// The repairs a section keeps after a block edit (YN-14): the edit's own,
+/// then the earlier ones of blocks it did not replace that are still in the
+/// body, and those of the section as a whole (its tree, an ask's options);
+/// at most MAX_REPAIRS, each once.
+fn kept_repairs(stored: &Value, change: &Change, body: &Value) -> Vec<Value> {
+    let mut kept: Vec<Value> = change.repairs.clone();
+    for old in stored.as_array().into_iter().flatten().filter(|old| old.is_object()) {
+        let path = old["path"].as_str().unwrap_or_default();
+        let block = path.strip_prefix("body.elements.").map(|rest| rest.split('.').next().unwrap_or_default());
+        let gone = block.is_some_and(|id| edited_block(change, path) || body["elements"].get(id).is_none());
+        if !gone && !kept.iter().any(|known| known["code"] == old["code"] && known["path"] == old["path"]) {
+            kept.push(old.clone());
+        }
+    }
+    kept.truncate(MAX_REPAIRS);
+    kept
 }
 
 /// A put's stored data: the validator's normalized section with the
@@ -1080,7 +1236,11 @@ fn apply(
         let row = || current.as_ref().context("the section changed while it was being written");
         match change.op {
             Op::Put => {
-                let data = section_data(&normalized[index], &change.section, &staged[index]);
+                let mut data = section_data(&normalized[index], &change.section, &staged[index]);
+                // A put's repairs are the section's (YN-14); a clean put has none.
+                if !change.repairs.is_empty() {
+                    data["repairs"] = json!(change.repairs);
+                }
                 // A reply shows as replied until the owner changes the ask
                 // (docs/home-v1.md; brief_guide): a new version after a reply
                 // is the owner's next question, open for the user again.
@@ -1140,7 +1300,7 @@ fn apply(
                 attachments::index(tx, seq, &ctx.project, &staged[index])?;
                 changed.push(json!({"key":change.key,"version":version}));
             }
-            Op::Edit => {
+            Op::Edit | Op::Patch => {
                 let row = row()?;
                 // Only the blocks (and a status section's status) change:
                 // title, time, attachments and the ask's state stay as they
@@ -1149,6 +1309,14 @@ fn apply(
                 data["body"] = normalized[index]["body"].clone();
                 if !change.edit["status"].is_null() {
                     data["status"] = normalized[index]["status"].clone();
+                }
+                match kept_repairs(&row.data["repairs"], change, &data["body"]) {
+                    repairs if repairs.is_empty() => {
+                        if let Some(data) = data.as_object_mut() {
+                            data.remove("repairs");
+                        }
+                    }
+                    repairs => data["repairs"] = json!(repairs),
                 }
                 tx.execute(
                     "UPDATE project_brief_sections SET version=?2,owner_name=?3,data=?4,updated_at=?5,updated_turn_id=?6 WHERE seq=?1",

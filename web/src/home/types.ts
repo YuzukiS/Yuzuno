@@ -1,4 +1,3 @@
-import type { HandoverProposalSummary } from "../project-handover";
 /**
  * What Home reads from Core (GET /api/home and its companions). Core owns
  * these facts. Section bodies are written by Agents and checked by the
@@ -45,7 +44,7 @@ export type SectionAttachment = {
  * the current state; the Agent only names the item.
  */
 export type LiveRefState = {
-  kind: "task" | "pr" | "ci" | "job" | "review" | "agent" | "machine";
+  kind: "task" | "pr" | "ci" | "job" | "run" | "review" | "agent" | "machine";
   id: string;
   /** Unknown when Core can't find it: shown as such, never guessed. */
   found: boolean;
@@ -69,6 +68,10 @@ export type LiveRefState = {
   archived?: boolean;
   /** Core could not read the item: not the same as not found. */
   unavailable?: boolean;
+  /** For a run of stages (YN-7): how many of its stages are done, of how many. */
+  stages?: { done: number; total: number };
+  /** For a run: the Job of its newest attempt, where Jobs shows the run with every stage. */
+  jobId?: string;
 };
 
 export type Section = {
@@ -102,6 +105,9 @@ export type Section = {
   seen: { version: number; at: string } | null;
   /** A seen report kept for 30 days, or a removed section. */
   history: boolean;
+  /** What Core changed to accept this version (YN-14), in Core's words;
+   * absent when it was accepted as sent, and from older Cores. */
+  repairs?: { code: string; path: string; reason: string }[];
   /** History entries on Home: why it is history. */
   historyReason?: "seen" | "removed" | "resolved";
   /** History entries on Home: whether Home shows its source now (its owner may still edit Home). */
@@ -140,8 +146,6 @@ export type ProjectPanel = {
   };
   errors: { agentId: string; agentName: string; message: string; at: string }[];
   pending: (PendingRequest & { agentName: string })[];
-  /** A lead's handover proposal waiting for the user (T-34 S3b). */
-  handoverProposal?: HandoverProposalSummary | null;
   jobs: HomeJob[];
   brief: { version: number; sections: Section[]; teamSections?: Section[]; history: Section[] };
   /** Live sections changed since the user last marked them seen. */
@@ -157,7 +161,7 @@ export type ProjectPanel = {
 };
 
 export type NeedsYouItem = {
-  kind: "approval" | "ask" | "question" | "handover" | "executor";
+  kind: "approval" | "ask" | "question" | "executor";
   projectId: string | null;
   agentId: string;
   agentName: string;
@@ -166,8 +170,6 @@ export type NeedsYouItem = {
   /** A question's Turn and Item (T-42). */
   turnId?: string;
   itemId?: string;
-  /** A lead's handover proposal (T-34 S3b), named by its proposer. */
-  proposalId?: string;
   /** An executor the user dispatched (T-36 S3): its result waits for the
    * user's release, its start failed, or its task is blocked while it runs. */
   state?: "delivering" | "failed" | "blocked";

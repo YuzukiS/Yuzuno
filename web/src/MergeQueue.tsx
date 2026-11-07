@@ -83,6 +83,13 @@ const queueEn = {
   unpauseWho: (who: string) => `Who can unpause: ${who}, or you.`,
   unpauseHelp:
     "Ends the pause and re-anchors every waiting entry at the main Core reads now, so their main CI counts from there.",
+  revert: (pr: number) => `Revert #${pr}`,
+  revertWho: (who: string) => `Who can revert: ${who}, or you.`,
+  revertHelp:
+    "Core writes a revert commit (the main before this merge, on top of it) on its own branch queue/revert-…, opens a PR, and merges it once CI on it is green, or at once if main is still this merge and the main before it had green CI. It needs no review round and is the only entry that passes this pause; green main CI after it ends the pause.",
+  reverting: (id: string) => `Revert queued as entry ${id}: Core builds it on its own branch and PR, then merges it.`,
+  revertOff: "Reverts are off for this repository. Turn them on in Projects → repositories to revert this merge in one step.",
+  revertOf: (pr: number) => `Revert of #${pr}`,
   leadsOf: (project: string, leads: string) => `a lead of ${project} (${leads})`,
   noLead: "none set",
   anyLead: "a lead of a Project this repository is linked to",
@@ -218,6 +225,13 @@ const queueText = strings<QueueText>(queueEn, {
   unpause: "恢复",
   unpauseWho: (who) => `可恢复者：${who}，或你。`,
   unpauseHelp: "结束暂停，并把每个等待中的条目重新锚定到 Core 此时读取的主分支上，主分支 CI 从那里开始计算。",
+  revert: (pr) => `回退 #${pr}`,
+  revertWho: (who) => `可回退者：${who}，或你。`,
+  revertHelp:
+    "Core 在自己的分支 queue/revert-… 上写一个回退提交（在这个合并之上恢复合并前的主分支），开一个 PR；PR 上的 CI 通过后合并它。如果主分支仍是这个合并、且合并前的主分支 CI 是绿的，则立即合并。它不需要审查轮，是唯一能越过这次暂停的条目；它合并后主分支 CI 变绿即结束暂停。",
+  reverting: (id) => `回退已排入条目 ${id}：Core 在自己的分支和 PR 上构建它，然后合并。`,
+  revertOff: "这个仓库的回退已关闭。在「项目 → 仓库」中打开回退，即可一步回退这个合并。",
+  revertOf: (pr) => `#${pr} 的回退`,
   leadsOf: (project, leads) => `${project} 的负责人（${leads}）`,
   noLead: "尚未设置",
   anyLead: "关联此仓库的项目的负责人",
@@ -608,7 +622,7 @@ export function MergeQueue({
             <JobRow
               status={entryStatus(e)}
               state={`${stateWord(e.state, language)}${e.reason ? ` · ${reasonWord(e.reason, language)}` : ""}`}
-              name={t.title2(e.repository, e.number)}
+              name={e.kind === "revert" && e.revert?.pr != null ? `${t.title2(e.repository, e.number)} · ${t.revertOf(e.revert.pr)}` : t.title2(e.repository, e.number)}
               meta={[e.taskReference || e.taskId, t.head(short(e.headSha))]}
               note={e.detail || undefined}
               moments={moments([
@@ -847,6 +861,7 @@ function RepositoryCard({
           act={act}
           onChanged={onChanged}
           onUnpaused={setUnpaused}
+          reverts={state?.revert === true}
           t={t}
           language={language}
         />
@@ -874,6 +889,7 @@ function PauseBanner({
   act,
   onChanged,
   onUnpaused,
+  reverts,
   t,
   language,
 }: {
@@ -887,10 +903,14 @@ function PauseBanner({
   onChanged: () => void;
   /** Core's answer, kept by the card once the pause is gone. */
   onUnpaused: (said: string) => void;
+  /** YN-18 S2d-2: the user allows one-step reverts for this repository. */
+  reverts: boolean;
   t: QueueText;
   language: Language;
 }) {
   const listed = pause.entryId ? entries.find((e) => e.id === pause.entryId) : undefined;
+  // The merge that turned main red can be reverted in one step.
+  const revertable = pause.reason === "main_red" && listed?.state === "done" && listed.reason === "main_red" && listed.kind !== "revert";
   const red = pause.reason === "main_red" && typeof pause.run === "number" ? pause.run : null;
   return (
     <div className="merge-pause" data-reason={pause.reason}>
@@ -961,6 +981,25 @@ function PauseBanner({
           return said;
         }}
       />
+      {revertable && listed && pause.number != null &&
+        (reverts ? (
+          <MergeActionBox
+            action="revert"
+            label={t.revert(pause.number)}
+            icon={<RotateCcw size={13} aria-hidden="true" />}
+            who={t.revertWho(leads)}
+            help={t.revertHelp}
+            t={t}
+            language={language}
+            run={async (reason) => {
+              const answer = await act<{ id?: string }>("revert", listed.id, reason);
+              onChanged();
+              return t.reverting(answer?.id ?? "");
+            }}
+          />
+        ) : (
+          <p className="job-footnote merge-revert-off">{t.revertOff}</p>
+        ))}
     </div>
   );
 }
@@ -1052,7 +1091,7 @@ function EntryDetail({
       <JobDetailHeading
         status={entryStatus(e)}
         state={`${stateWord(e.state, language)}${e.reason ? ` · ${reasonWord(e.reason, language)}` : ""}`}
-        title={t.title2(repo, e.number)}
+        title={e.kind === "revert" && e.revert?.pr != null ? `${t.title2(repo, e.number)} · ${t.revertOf(e.revert.pr)}` : t.title2(repo, e.number)}
         role={ongoing(e) ? "status" : undefined}
       >
         {safeUrl(e.url, repo) && (

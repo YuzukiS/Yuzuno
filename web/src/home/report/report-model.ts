@@ -1,12 +1,13 @@
 import type { ReportLink } from "../../deep-link";
 import type { ProjectPanel, Section } from "../types";
+import { interactiveGroup } from "../../intelligent-ui/brief-inputs.ts";
 
 type Node = { type?: string; props?: Record<string, unknown>; children?: string[] };
 type Body = { root?: unknown; elements?: Record<string, Node> } | null | undefined;
 
 const CHARTS = new Set(["LineChart", "BarChart", "ScatterChart"]);
 /** A summary's one figure (brief-contract.ts): Attachments with exactly one item. */
-const FIGURES = new Set([...CHARTS, "Metrics", "Table", "ResearchDesk", "Attachments"]);
+const FIGURES = new Set([...CHARTS, "Metrics", "Calc", "Diagram", "Table", "ResearchDesk", "Attachments"]);
 
 function tree(section: Section) {
   const body = section.body as Body;
@@ -35,7 +36,8 @@ export function summaryOf(section: Section): Summary | null {
   const type = (id: unknown) => (typeof id === "string" && top.includes(id) ? elements[id]?.type : undefined);
   const { lead, visual, conditions, size } = named;
   if (type(lead) !== "Markdown") return null;
-  const figure = visual === undefined || (FIGURES.has(type(visual) ?? "") &&
+  // A Group is a figure as a Group of inputs the reader sets (YN-16).
+  const figure = visual === undefined || (type(visual) === "Group" ? interactiveGroup(elements, visual as string) : FIGURES.has(type(visual) ?? "") &&
     (type(visual) !== "Attachments" || (elements[visual as string].props?.items as unknown[] | undefined)?.length === 1));
   const holds = conditions === undefined || type(conditions) === "Markdown" || type(conditions) === "Checklist";
   const ids = [lead, visual, conditions].filter((id) => id !== undefined);

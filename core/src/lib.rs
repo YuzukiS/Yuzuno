@@ -7,7 +7,7 @@ mod executor_lifecycle;
 mod executor_live;
 pub mod executor_templates;
 pub mod handover;
-pub mod handover_proposals;
+pub mod handover_tools;
 mod executor_dispatch;
 mod executor_release;
 mod executor_slots;
@@ -83,6 +83,9 @@ pub mod previews;
 /// The test binary's allocator, watched (project_brief, previews).
 #[cfg(test)]
 mod test_alloc;
+/// Free loopback ports every test module shares (YN-20).
+#[cfg(test)]
+mod test_ports;
 mod service_jobs;
 mod remote_images;
 pub mod results;

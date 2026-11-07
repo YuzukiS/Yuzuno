@@ -202,10 +202,8 @@ try {
   const openAppearance = async () => {
     await page.getByRole("button", { name: "Settings and updates" }).click();
     await settings.waitFor();
-    // A narrow window lists the categories in a picker, not as tabs (T-189).
-    const picker = settings.getByRole("combobox", { name: "Settings category", exact: true });
-    if (await picker.isVisible()) await picker.selectOption("appearance");
-    else await settings.locator("#settings-tab-appearance").click();
+    // Its page of Settings; on a phone the list of pages comes first (YN-8).
+    await settings.locator("#settings-tab-appearance").click();
     await settings.getByRole("heading", { name: "Appearance", exact: true }).waitFor();
   };
   const closeSettings = async () => {

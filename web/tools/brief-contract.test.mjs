@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
+  BRIEF_DESCRIBED_COMPONENTS, briefComponentHints,
   BRIEF_COMPONENT_DESCRIPTIONS, BRIEF_EXAMPLES, BRIEF_GUIDE_PARTS, BRIEF_HARD_RULES, BRIEF_KEY_PATTERN, BRIEF_LIMITS, BRIEF_OUTCOME_HINT,
   BRIEF_PROBLEM_CODES, BRIEF_SCHEMA_VERSION, BRIEF_TOOL_DESCRIPTIONS, BriefError, DESCRIPTION_CAP, briefComponentProps,
   briefGuide, checkBriefSection, describeBrief, fencedBlockLines, researchReads,
@@ -58,7 +59,16 @@ const everyComponent = {
   body: {
     root: "body",
     elements: {
-      body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources", "desk"] },
+      body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources", "desk", "inputs"] },
+      // YN-16: inputs, and a block they show only for some values.
+      inputs: { type: "Group", props: { title: "Try it" }, children: ["guests", "vegan", "view", "hint", "amounts", "reset", "flow"] },
+      amounts: { type: "Calc", props: { items: [{ id: "flour", label: "Flour", expr: "250 * guests / 4", unit: "g", digits: 0 }, { id: "oil", label: "Oil", expr: "flour / 10", when: "vegan" }] } },
+      reset: { type: "Button", props: { label: "Reset" }, on: { press: { action: "setState", params: { statePath: "/guests", value: 4 } } } },
+      flow: { type: "Diagram", props: { select: "step", nodes: [{ id: "mix", label: "Mix" }, { id: "bake", label: "Bake", detail: "220°C, 12 minutes" }], edges: [{ from: "mix", to: "bake" }] } },
+      guests: { type: "NumberInput", props: { name: "guests", label: "Guests", value: 4, min: 1, max: 12, step: 1, unit: "people", control: "both", detail: "Scales every amount" } },
+      vegan: { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } },
+      view: { type: "Segmented", props: { name: "view", label: "View", value: 2, options: [{ value: 1, label: "One" }, { value: 2, label: "Two" }] } },
+      hint: { type: "Markdown", visible: { $and: [{ $state: "/vegan" }, { $state: "/guests", gte: 6 }] }, props: { text: "Use two trays." } },
       desk: doseStudy.body.elements.desk,
       intro: { type: "Markdown", props: { text: "# Round 12\n\n```sh\nnpm test\n```" } },
       split: { type: "Columns", props: { widths: [3, 1] }, children: ["group", "side"] },
@@ -489,7 +499,8 @@ test("schema problems name the field, the component's props and the guide part",
 test("hard rules, tool descriptions and the guide are generated within their caps", () => {
   assert.ok(BRIEF_HARD_RULES.length <= 1500, `${BRIEF_HARD_RULES.length} characters`);
   for (const [name, description] of Object.entries(BRIEF_TOOL_DESCRIPTIONS)) {
-    assert.ok(description.length <= 1200, `${name}: ${description.length} characters`);
+    // brief_update carries its ops and the common components' props (YN-14); every tool stays within DESCRIPTION_CAP.
+    assert.ok(description.length <= (name === "brief_update" ? DESCRIPTION_CAP : 1200), `${name}: ${description.length} characters`);
     assert.ok(description.length <= DESCRIPTION_CAP);
     assert.match(description, /brief_guide/, `${name} names the guide`);
   }
@@ -503,7 +514,11 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /keys: omit for every section with its body; \[\] for an index/);
   assert.match(briefGuide("sections"), new RegExp(`What goes where: ${BRIEF_OUTCOME_HINT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.match(BRIEF_HARD_RULES, /editContent is false.*only your own Asks/);
-  assert.match(briefGuide("errors"), /ask_only.*Only the user/);
+  assert.match(briefGuide("errors"), /ask_only.*removing your own older sections.*A Project's leads edit Home; the user chooses them\./);
+  // YN-2 S4: the leads edit Home; an Ask-only member may also take down its own older sections.
+  assert.match(rules[3], /^3\. Leads edit Home; the user chooses leads\. If editContent is false and writeOwnAsk is true, write only your own Asks\./);
+  assert.match(briefGuide(), /When editContent is false and writeOwnAsk is true, only create\/update\/resolve\/remove your own Asks, remove your own older sections, or send noChange/);
+  assert.doesNotMatch(BRIEF_HARD_RULES, /selects Home content editors/);
   for (const phrase of [/expectedVersion/, /version_conflict.*re-read.*merge/, /only their own sections.*topic\/sub/, /question plus .*options, freeText, a form or a choice/, /Resolve your asks explicitly/, /never executes actions/, /brief_guide/])
     assert.match(BRIEF_HARD_RULES, phrase);
   assert.ok(rules.findIndex((line) => /never executes actions/.test(line)) < rules.findIndex((line) => /brief_guide for formats/.test(line)));
@@ -516,7 +531,10 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   assert.match(briefGuide("ask"), /only after that action is confirmed done.*A green CI or a whole Task being done is not that action/);
   assert.match(briefGuide("ask"), /edit keeps it replied, while put asks it again/);
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /expectedVersion.*requestId.*noChange:true/);
-  for (const op of ["put", "edit", "resolve", "remove", "claim"]) assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, new RegExp(`op:"${op}"`));
+  for (const op of ["put", "edit", "patch", "resolve", "remove", "claim"]) assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, new RegExp(`op:"${op}"`));
+  // patch, as Core applies it (YN-14 A2): RFC 6902 on the body, the whole section checked again.
+  assert.match(briefGuide("sections"), /^patch \{op:"patch", key, patch:\[\.\.\.\], status\?\} changes single values .* RFC 6902 operations .* Core checks the whole section again/m);
+  assert.match(briefGuide("errors"), /patch_path and patch_test/);
   // edit, as Core applies it: blocks by id, the rest kept, the root left to put.
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /edit \{op:"edit", key, elements:\{<id>: block\}\} replaces only those blocks;/);
   assert.match(briefGuide("sections"), /^edit \{op:"edit", key, elements:\{<id>: \{type, props, children\?\}\}, status\?\} replaces blocks .* the root is not edited \(rearrange with put\)\./m);
@@ -560,6 +578,50 @@ test("a report the user marks seen leaves brief_get, and you.recentlyLeft says w
   assert.match(sections, /a report the user marks seen at its latest version leaves brief_get's sections and your ownsKeys at once \(a newer version stays, unseen\) .* put it again under its key to continue it on Home, as edit needs a live section/);
   assert.match(sections, /you\.recentlyLeft lists your sections that left the live Brief in the last 30 days and are not live again, newest first, at most 20: \{key, kind, title, version, reason, at\}, reason seen \(the user marked that version seen\), removed or resolved; recentlyLeftMore counts the rest\./);
   assert.match(sections, /An edit, resolve, remove or claim naming one of them is refused with not_found, saying why it left; put writes it again\./);
+});
+
+test("a LiveRefs item and a ResearchDesk plan's link may name a run of stages, and the guide says what it shows (YN-7)", () => {
+  const refs = { key: "sweep", kind: "status", title: "Sweep", status: { asOf: "2026-11-07T00:00:00Z", validFor: 3600 },
+    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["refs"] },
+      refs: { type: "LiveRefs", props: { items: [{ kind: "run", id: "0c2b5486-e986-4a30-864d-d3b03e73e07b", label: "lr sweep" }] } } } } };
+  assert.doesNotThrow(() => checkBriefSection(refs), "a LiveRefs item may name a run of stages");
+  assert.equal(checkBriefSection(refs).body.elements.refs.props.items[0].kind, "run");
+  const desk = structuredClone(benchmark);
+  desk.body.elements.desk.props.plans[0].links = [{ kind: "run", id: "0c2b5486-e986-4a30-864d-d3b03e73e07b" }];
+  assert.doesNotThrow(() => checkBriefSection(desk), "a plan's link may name a run of stages");
+  assert.equal(checkBriefSection(desk).body.elements.desk.props.plans[0].links[0].kind, "run");
+  assert.match(BRIEF_COMPONENT_DESCRIPTIONS.LiveRefs, /run \(a run of stages: the runId job_run_submit returned; Yuzuno shows its status and how many stages are done\)/);
+  assert.match(briefGuide("research"), /links name existing tasks, Jobs or runs of stages \(kind run, the runId job_run_submit returned\)/);
+});
+
+// YN-7 item 3: a number may be a CSV or TSV row's cell, the row named by the
+// text its key columns hold; each read form only from its own kind of file.
+test("a ResearchDesk number may be a CSV row's cell named by its key columns, and the guide says how it matches (YN-7)", () => {
+  const cell = { from: "table.csv", row: { sport: "alpha", d: "2" }, column: "auc" };
+  const withCsv = (number, path = "/home/me/study/table.csv") => {
+    const copy = structuredClone(doseStudy);
+    copy.attachments.push({ name: "table.csv", path });
+    copy.body.elements.desk.props.plots[0].rows[0].estimate.value = number;
+    return copy;
+  };
+  assert.doesNotThrow(() => checkBriefSection(withCsv(cell)), "a row's cell from a .csv");
+  assert.doesNotThrow(() => checkBriefSection(withCsv(cell, "/home/me/study/table.TSV")), "a row's cell from a .tsv");
+  assert.deepEqual(researchReads(checkBriefSection(withCsv(cell)).body.elements.desk.props)[0], { at: "low-v2.value", ...cell });
+  // table.csv then holds no read and is flagged too; the read's own problem is the one here.
+  const fromJson = problems(withCsv({ ...cell, from: "results.json" })).find((found) => found.code === "research_attachment");
+  assert.equal(fromJson.code, "research_attachment");
+  assert.match(fromJson.reason, /reads a row's cell from CSV or TSV files only/);
+  assert.equal(first(withCsv({ from: "table.csv", pointer: "/0/auc" })).code, "research_attachment", "a JSON Pointer is not a CSV read");
+  const wide = first(withCsv({ ...cell, row: { a: "1", b: "2", c: "3", d: "4", e: "5" } }));
+  assert.equal(wide.code, "invalid_field");
+  assert.match(wide.reason, /Name 1 to 4 columns/);
+  assert.equal(first(withCsv({ ...cell, row: {} })).code, "invalid_field", "a row names at least one column");
+  assert.equal(first(withCsv({ ...cell, column: " " })).code, "invalid_field", "a column has a name");
+  assert.equal(first(withCsv({ ...cell, pointer: "/0" })).code, "invalid_field", "a pointer or a row, not both");
+  assert.equal(BRIEF_PROBLEM_CODES.research_attachment, "A ResearchDesk number read from an attachment of the wrong kind: a JSON Pointer needs a .json file, a CSV row a .csv or .tsv file, each with a path.");
+  const guide = briefGuide("research");
+  assert.match(guide, /\{from, row, column\} for one whose path ends in \.csv or \.tsv/);
+  assert.match(guide, /Cells compare as text as written, without the spaces around them: "2" does not match "2\.0"\. No matching row shows as missing, two or more as ambiguous, never a guess/);
 });
 
 test("contract.json carries the brief, generated from this file", async () => {
@@ -637,7 +699,7 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   assert.equal(rejected((p) => { p.definitions[0].versions[1].version = 1; }).code, "duplicate_id");
   assert.equal(rejected((p) => { p.revisions[0].definition = { id: "recovery", from: 2, to: 1 }; }).code, "definition_order");
   assert.equal(rejected((p) => { p.revisions[0].claim = "nowhere"; }).code, "missing_reference");
-  // Numbers come only from this section's JSON attachments.
+  // Numbers come only from this section's attachments; a JSON Pointer only from a JSON file.
   const unregistered = rejected((p) => { p.plots[0].rows[0].estimate.value.from = "other.json"; });
   assert.equal(unregistered.code, "missing_attachment");
   assert.equal(unregistered.path, "body.elements.desk.props.plots.0.rows.0.estimate.value.from");
@@ -708,4 +770,477 @@ test("the research guide states the revision form and the desk-wide row and part
     assert.equal(found.code, "duplicate_id", id);
     assert.match(found.reason, new RegExp(`row and part id "${id}" is used twice`), id);
   }
+});
+
+// YN-3 PR C2: Agents read on the guide that an attached HTML page shows on its card, and when a card is the whole report.
+test("YN-3 the guide says a card with no visual shows its first kept image or HTML page, working, and that a card holding all its body is the whole report", () => {
+  const content = briefGuide("content");
+  assert.match(content, /A card with no visual shows instead the first kept image or single HTML page \(\.html or \.htm\) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there\./);
+  assert.match(content, /A report whose body holds only its lead \(one paragraph\), the card's picture and files, and its conditions is the whole report: its card has no Open report\./);
+  assert.match(content, /large \(two columns, two rows: an image, a scatter chart, an HTML page\)/);
+});
+
+test("a put with markdown instead of body gets the body Core builds for it (YN-14 A3)", () => {
+  const text = "**core.25** is out; the two regressions are fixed in core.26.";
+  const report = checkBriefSection({ op: "put", key: "release", kind: "report", title: "core.25", markdown: text });
+  assert.deepEqual(report.body, { root: "body", elements: {
+    body: { type: "BriefBody", props: {}, children: ["text"] },
+    text: { type: "Markdown", props: { text } },
+  } });
+  assert.equal(report.markdown, undefined, "the stored section has its body, not markdown");
+  // With attachments, size, and for an ask and a status.
+  const files = checkBriefSection({ key: "design", kind: "report", title: "Design", markdown: text, size: "wide",
+    attachments: [{ name: "preview.html", path: "/home/me/preview.html" }, { name: "note.md", path: "/home/me/note.md" }] });
+  assert.deepEqual(files.body.elements.body, { type: "BriefBody", props: { summary: { lead: "text", size: "wide" } }, children: ["text", "files"] });
+  assert.deepEqual(files.body.elements.files, { type: "Attachments", props: { items: [{ name: "preview.html" }, { name: "note.md" }] } });
+  assert.equal(files.size, undefined);
+  const ask = checkBriefSection({ key: "q", kind: "ask", title: "Q", markdown: "Why: it costs a day.",
+    ask: { question: "Run it?", reply: { options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }] } } });
+  assert.equal(ask.body.elements.text.props.text, "Why: it costs a day.");
+  const status = checkBriefSection({ key: "s", kind: "status", title: "S", markdown: "Green.", status: { asOf: "2026-11-07T08:00:00Z", validFor: 600 } });
+  assert.equal(status.body.elements.text.props.text, "Green.");
+  // What is refused, before anything is built.
+  const at = (value) => { const [found] = problems(value); return [found.code, found.path]; };
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: text, body: report.body }), ["invalid_field", "markdown"]);
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: "  " }), ["invalid_field", "markdown"]);
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: 3 }), ["invalid_field", "markdown"]);
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R", markdown: text, size: "huge" }), ["invalid_field", "size"]);
+  assert.deepEqual(at({ ...report, size: "wide" }), ["invalid_field", "size"], "size goes with markdown");
+  assert.deepEqual(at({ key: "r", kind: "report", title: "R" }), ["missing_field", "body"], "neither is still a missing body");
+  assert.match(briefGuide("sections"), /^- markdown instead of body, for a section that is text: Core makes the body one Markdown block "text"/m);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /body\|markdown/);
+});
+
+test("brief_update's description names the common components with their props, generated from the catalog (YN-14 A4)", () => {
+  const hints = briefComponentHints();
+  assert.ok(BRIEF_TOOL_DESCRIPTIONS.brief_update.includes(`elements are {type, props, children?}: ${hints}; the rest in brief_guide content.`));
+  for (const type of BRIEF_DESCRIBED_COMPONENTS) {
+    assert.ok(Object.hasOwn(briefComponentProps, type), type);
+    const shape = briefComponentProps[type].shape;
+    const shown = hints.match(new RegExp(`(?:^| )${type}\\{(.*?)\\}(?= [A-Z]|$)`))?.[1] ?? "";
+    for (const prop of Object.keys(shape).filter((prop) => !["sourceIds", "selectable"].includes(prop)))
+      assert.match(shown, new RegExp(`\\b${prop}\\b`), `${type} shows ${prop}`);
+  }
+  assert.match(hints, /Findings\{title\?, items\[\{id, source, severity: info\|low\|medium\|high\|critical, text\}\]\}/);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /reply: options\[\{id, label\}\]/);
+  // Truthful about HTML in Markdown (YN-14 S4): sanitized, not refused.
+  assert.match(BRIEF_COMPONENT_DESCRIPTIONS.Markdown, /HTML written in it is sanitized/);
+  assert.doesNotMatch(briefGuide(), /Raw HTML is not supported/);
+});
+
+// YN-16 S1: inputs, the variables they declare and the visible conditions
+// that read them, as the contract checks them for Core.
+
+/** A report whose root holds one Group of these blocks. */
+const inGroup = (elements, extra = {}) => ({
+  key: "demo", kind: "report", title: "Demo", ...extra,
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: {}, children: ["box"] },
+    box: { type: "Group", props: {}, children: Object.keys(elements) },
+    ...elements,
+  } },
+});
+const guests = { type: "NumberInput", props: { name: "guests", label: "Guests", value: 4, min: 1, max: 12 } };
+const vegan = { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } };
+const view = { type: "Segmented", props: { name: "view", label: "View", value: "side", options: [{ value: "side", label: "Side" }, { value: "top", label: "Top" }] } };
+const shown = (visible) => ({ type: "Markdown", visible, props: { text: "Shown for some values." } });
+const withProps = (node, props) => ({ ...node, props: { ...node.props, ...props } });
+const codes = (found) => found.map((one) => [one.code, one.path]);
+
+test("YN-16 inputs declare variables of their own name, and visible reads them", () => {
+  for (const blocks of [
+    { guests }, { vegan }, { view },
+    { view: withProps(view, { value: 2, options: [{ value: 1, label: "1" }, { value: 2, label: "2" }, { value: 3.5, label: "3.5" }] }) },
+    { guests: withProps(guests, { step: 0.25, value: 1.75, digits: 2, prefix: "¥", control: "slider" }) },
+  ])
+    assert.ok(checkBriefSection(inGroup(blocks)), JSON.stringify(blocks));
+  for (const visible of [
+    { $state: "/vegan" }, { $state: "/vegan", not: true }, { $state: "/vegan", eq: true }, { $state: "/vegan", neq: false },
+    { $state: "/guests", eq: 4 }, { $state: "/guests", neq: 4 }, { $state: "/guests", gt: 2 }, { $state: "/guests", gte: 2 },
+    { $state: "/guests", lt: 2 }, { $state: "/guests", lte: 2, not: true }, { $state: "/view", eq: "top" }, { $state: "/view", neq: "side" },
+    [{ $state: "/vegan" }, { $state: "/guests", gte: 6 }],
+    { $and: [{ $state: "/vegan" }, { $or: [{ $state: "/view", eq: "top" }, { $state: "/guests", gt: 1 }] }] },
+    { $or: [[{ $state: "/vegan" }, { $state: "/guests", gt: 1 }], { $state: "/view", eq: "top" }] },
+    { $or: [{ $state: "/vegan" }, { $state: "/guests", lt: 3 }] },
+  ])
+    assert.ok(checkBriefSection(inGroup({ guests, vegan, view, note: shown(visible) })), JSON.stringify(visible));
+  // In a Group inside Columns, and on a Group or Columns inside a Group.
+  const nested = {
+    key: "demo", kind: "report", title: "Demo",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: {}, children: ["cols"] },
+      cols: { type: "Columns", props: {}, children: ["left", "right"] },
+      left: { type: "Group", props: {}, children: ["vegan", "inner"] },
+      right: { type: "Group", props: {}, children: ["note"] },
+      vegan,
+      note: shown({ $state: "/vegan" }),
+      inner: { type: "Columns", visible: { $state: "/vegan", not: true }, props: {}, children: ["a", "b"] },
+      a: { type: "Markdown", props: { text: "a" } },
+      b: { type: "Group", props: {}, children: [] },
+    } },
+  };
+  assert.ok(checkBriefSection(nested));
+  // The interactive example of the guide is a valid section that uses all three kinds of condition.
+  assert.ok(checkBriefSection(BRIEF_EXAMPLES.interactive));
+});
+
+test("YN-16 a variable's name is a lower-case word, declared once, at most 16 in a section", () => {
+  for (const name of ["Guests", "1a", "a-b", "a".repeat(33), "constructor", "toString"]) {
+    const found = first(inGroup({ guests: withProps(guests, { name }) }));
+    assert.deepEqual([found.code, found.path, found.guide], ["invalid_field", "body.elements.guests.props.name", "brief_guide interactive"], name);
+  }
+  const twice = first(inGroup({ guests, again: withProps(vegan, { name: "guests" }) }));
+  assert.deepEqual([twice.code, twice.path], ["duplicate_id", "body.elements.again.props.name"]);
+  assert.match(twice.reason, /Switch "again" declares the variable "guests", which another input of this section declares too/);
+  const many = Object.fromEntries(items(17, (i) => [`v${i}`, withProps(vegan, { name: `v${i}` })]));
+  const over = first(inGroup(many));
+  assert.deepEqual([over.code, over.path], ["too_many", "body.elements"]);
+  assert.match(over.reason, /declare 17 variables; the limit is 16/);
+  assert.ok(checkBriefSection(inGroup(Object.fromEntries(items(16, (i) => [`v${i}`, withProps(vegan, { name: `v${i}` })])))));
+});
+
+test("YN-16 a NumberInput's range and a Segmented's options are checked, with the field to change", () => {
+  const number = (props) => problems(inGroup({ guests: withProps(guests, props) }));
+  assert.deepEqual(codes(number({ min: 12, max: 12 })), [["invalid_field", "body.elements.guests.props.max"]]);
+  assert.deepEqual(codes(number({ min: 5, value: 4 })), [["invalid_field", "body.elements.guests.props.value"]]);
+  assert.deepEqual(codes(number({ value: 13 })), [["invalid_field", "body.elements.guests.props.value"]]);
+  assert.deepEqual(codes(number({ step: 0 })), [["invalid_field", "body.elements.guests.props.step"]]);
+  assert.deepEqual(codes(number({ step: -1 })), [["invalid_field", "body.elements.guests.props.step"]]);
+  const steps = number({ min: 0, max: 1000, step: 0.001 });
+  assert.deepEqual(codes(steps), [["invalid_field", "body.elements.guests.props.step"]]);
+  assert.match(steps[0].reason, /takes 1000000 steps of 0.001 from min to max; the limit is 100000/);
+  assert.ok(checkBriefSection(inGroup({ guests: withProps(guests, { min: 0, max: 100, step: 0.001 }) })), "exactly 100000 steps");
+  assert.match(first(inGroup({ guests: withProps(guests, { control: "dial" }) })).reason, /control must be "stepper" or "slider" or "both"/);
+  assert.equal(first(inGroup({ guests: withProps(guests, { value: Number.NaN }) })).code, "invalid_field");
+  const segmented = (props) => problems(inGroup({ view: withProps(view, props) }));
+  const mixed = segmented({ options: [{ value: "side", label: "Side" }, { value: 2, label: "Two" }] });
+  assert.deepEqual(codes(mixed), [["invalid_field", "body.elements.view.props.options"]]);
+  assert.match(mixed[0].reason, /options mix numbers and texts/);
+  assert.deepEqual(codes(segmented({ options: [{ value: "side", label: "Side" }, { value: "side", label: "Again" }] })), [["duplicate_id", "body.elements.view.props.options"]]);
+  const missing = segmented({ value: "front" });
+  assert.deepEqual(codes(missing), [["invalid_field", "body.elements.view.props.value"]]);
+  assert.match(missing[0].reason, /value "front" is not one of its options' values: "side", "top"/);
+  assert.equal(segmented({ options: [{ value: "side", label: "Side" }] })[0].code, "invalid_field", "fewer than 2 options");
+  assert.equal(segmented({ options: items(7, (i) => ({ value: `o${i}`, label: `O${i}` })), value: "o0" })[0].code, "too_many", "more than 6 options");
+  for (const found of [...number({ min: 12, max: 12 }), ...mixed, ...missing]) assert.equal(found.guide, "brief_guide interactive");
+});
+
+test("YN-16 visible is refused unless it reads a declared variable with a value of its kind, inside a Group", () => {
+  const refused = (visible) => problems(inGroup({ guests, vegan, view, note: shown(visible) }));
+  for (const [visible, code, path, reason] of [
+    [{ $item: "x" }, "unknown_field", "body.elements.note.visible", /unknown field "\$item"; a condition is \{"\$state": "\/<variable>"/],
+    [{ $index: true }, "unknown_field", "body.elements.note.visible", /"\$index"/],
+    [{ $state: "/vegan", $bindState: "/vegan" }, "unknown_field", "body.elements.note.visible", /"\$bindState"/],
+    [{ $cond: { $state: "/vegan" } }, "unknown_field", "body.elements.note.visible", /"\$cond"/],
+    [{ $state: "vegan" }, "invalid_field", "body.elements.note.visible.$state", /"\$state": "\/" and a variable's name.*variables: \/guests, \/vegan, \/view/],
+    [{ $state: "/salt" }, "invalid_field", "body.elements.note.visible.$state", /reads "\/salt", which no input of this section declares/],
+    [{ $state: "/vegan", gt: 1 }, "invalid_field", "body.elements.note.visible.gt", /gt compares a number variable with a number; "\/vegan" is a boolean variable: use eq or neq/],
+    [{ $state: "/guests", gt: "2" }, "invalid_field", "body.elements.note.visible.gt", /"2" is not a number/],
+    [{ $state: "/guests", eq: "4" }, "invalid_field", "body.elements.note.visible.eq", /"\/guests" is a number variable; eq needs a number, not "4"/],
+    [{ $state: "/vegan", eq: "yes" }, "invalid_field", "body.elements.note.visible.eq", /boolean variable/],
+    [{ $state: "/view", eq: "front" }, "invalid_field", "body.elements.note.visible.eq", /"front" is none of its options' values: "side", "top"/],
+    [{ $state: "/view", eq: { $state: "/view" } }, "invalid_field", "body.elements.note.visible.eq", /text variable/],
+    [{ $state: "/guests" }, "invalid_field", "body.elements.note.visible", /"\/guests" is a number variable: compare it, e\.g\. \{"\$state": "\/guests", "gte": 2\}/],
+    [{ $state: "/view" }, "invalid_field", "body.elements.note.visible", /compare it, e\.g\. \{"\$state": "\/view", "eq": "side"\}/],
+    [{ $state: "/guests", gt: 1, lt: 9 }, "invalid_field", "body.elements.note.visible", /compares with gt and lt; one comparison per condition/],
+    [{ $state: "/vegan", not: false }, "invalid_field", "body.elements.note.visible.not", /not is true, to negate it, or left out/],
+    [true, "invalid_field", "body.elements.note.visible", /is a condition, e\.g\. \{"\$state": "\/vegan"\}.*not true/],
+    [[], "invalid_field", "body.elements.note.visible", /An array in "note" visible is empty/],
+    [[[{ $state: "/vegan" }]], "invalid_field", "body.elements.note.visible.0", /holds only conditions/],
+    [[{ $or: [{ $state: "/vegan" }] }], "invalid_field", "body.elements.note.visible.0", /holds only conditions/],
+    [{ $and: [] }, "invalid_field", "body.elements.note.visible.$and", /lists one or more conditions/],
+    [{ $and: [{ $state: "/vegan" }], $or: [] }, "unknown_field", "body.elements.note.visible", /has "\$or" beside it/],
+    [{ $and: [{ $or: [{ $and: [{ $state: "/vegan" }] }] }] }, "invalid_field", "body.elements.note.visible.$and.0.$or.0.$and.0", /nests deeper than 3 levels/],
+    [items(9, () => ({ $state: "/vegan" })), "too_many", "body.elements.note.visible", /has 9 conditions; the limit is 8/],
+  ]) {
+    const found = refused(visible);
+    assert.deepEqual([found[0].code, found[0].path, found[0].guide], [code, path, "brief_guide interactive"], JSON.stringify(visible));
+    assert.match(found[0].reason, reason, JSON.stringify(visible));
+  }
+  assert.ok(checkBriefSection(inGroup({ vegan, note: shown(items(8, () => ({ $state: "/vegan" }))) })), "8 conditions");
+  // Only a block inside a Group: never the root's own blocks, a Columns' columns or the root.
+  const top = section("Markdown", { text: "x" });
+  top.body.elements.it.visible = { $state: "/vegan" };
+  const onTop = first(top);
+  assert.deepEqual([onTop.code, onTop.path], ["invalid_field", "body.elements.it.visible"]);
+  assert.match(onTop.reason, /"it" has visible, which only a block inside a Group may have: the root's own blocks are always shown/);
+  const column = inGroup({ vegan });
+  column.body.elements.body.children.push("cols");
+  Object.assign(column.body.elements, {
+    cols: { type: "Columns", props: {}, children: ["a", "b"] },
+    a: shown({ $state: "/vegan" }),
+    b: { type: "Markdown", props: { text: "b" } },
+  });
+  assert.match(first(column).reason, /the root's own blocks and the columns of a Columns are always shown/);
+  const root = inGroup({ vegan });
+  root.body.elements.body.visible = { $state: "/vegan" };
+  assert.deepEqual(codes([first(root)]), [["unknown_field", "body.elements.body"]]);
+});
+
+test("YN-16 S1 still refuses events, watches, repeats, spec state and expressions in props", () => {
+  for (const extra of [
+    { on: { press: { action: "setState", params: { statePath: "/vegan", value: true } } } },
+    { watch: { "/vegan": { action: "setState", params: { statePath: "/guests", value: 2 } } } },
+    { repeat: { statePath: "/items" } },
+  ]) {
+    const found = first(inGroup({ vegan, note: { ...shown(undefined), ...extra } }));
+    assert.deepEqual([found.code, found.path], ["unknown_field", "body.elements.note"], JSON.stringify(extra));
+    assert.match(found.reason, /Elements are \{type, props, children\?, visible\?\}/);
+  }
+  const state = inGroup({ vegan });
+  state.body.state = { vegan: true };
+  assert.deepEqual(codes([first(state)]), [["unknown_field", "body"]]);
+  const expression = first(inGroup({ guests, m: { type: "Metrics", props: { items: [{ label: "Guests", value: { $state: "/guests" } }] } } }));
+  assert.equal(expression.code, "invalid_field");
+  assert.equal(expression.path, "body.elements.m.props.items.0.value");
+  assert.equal(first(inGroup({ guests: withProps(guests, { value: { $state: "/guests" } }) })).code, "invalid_field");
+});
+
+test("YN-16 a summary may name a Group of inputs as its visual, the card's own figure", () => {
+  const card = (box) => ({
+    key: "demo", kind: "report", title: "Demo",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "box", size: "wide" } }, children: ["lead", "box"] },
+      lead: { type: "Markdown", props: { text: "Try the amounts." } },
+      box,
+      guests, vegan, note: shown({ $state: "/vegan" }), m: { type: "Metrics", props: { items: [{ label: "a", value: 1 }] } },
+      inner: { type: "Group", props: {}, children: [] },
+    } },
+  });
+  const group = (children) => ({ type: "Group", props: {}, children });
+  const used = (box) => {
+    const value = card(box);
+    for (const key of ["guests", "vegan", "note", "m", "inner"]) if (!box.children.includes(key)) delete value.body.elements[key];
+    return value;
+  };
+  assert.ok(checkBriefSection(used(group(["guests", "vegan", "note", "m"]))));
+  assert.ok(checkBriefSection(used(group(["vegan"]))), "one input alone");
+  for (const [children, why] of [
+    [["note", "m"], "no input"],
+    [["guests", "inner"], "a Group inside"],
+  ]) {
+    const found = first(used(group(children)));
+    assert.deepEqual([found.code, found.path, found.guide], ["summary", "body.elements.body.props.summary.visual", "brief_guide interactive"], why);
+    assert.match(found.reason, /summary\.visual "box" is a Group, which is a figure only as a Group of inputs: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Diagram, Markdown, Metrics, at least one an input/);
+  }
+  const seven = used(group(["guests", "vegan", "note", "m"]));
+  Object.assign(seven.body.elements, Object.fromEntries(items(3, (i) => [`x${i}`, { type: "Markdown", props: { text: `${i}` } }])));
+  seven.body.elements.box.children.push("x0", "x1", "x2");
+  assert.equal(first(seven).code, "summary", "7 blocks");
+  // A summary block is the root's own: it is always shown.
+  const hidden = used(group(["guests"]));
+  hidden.body.elements.box.visible = { $state: "/guests", gt: 1 };
+  assert.equal(first(hidden).path, "body.elements.box.visible");
+});
+
+test("YN-16 the guide's interactive part states what the checks check", () => {
+  const part = briefGuide("interactive");
+  for (const type of ["NumberInput", "Switch", "Segmented"]) assert.ok(part.includes(`- ${type} {name, `), type);
+  assert.match(part, /never saved, never sent to you and never runs anything/);
+  assert.match(part, /a letter a-z, then up to 31 letters or digits.*declared once per section, at most 16 in all/);
+  assert.match(part, /takes at most 100000 steps from min to max; digits is how many decimals are shown \(default: as many as step, min or max has\)/);
+  assert.match(part, /only a block inside a Group has one, as the root's own blocks are always shown/);
+  assert.match(part, /eq or neq a value of the variable's kind \(for a Segmented, one of its options' values\), or gt, gte, lt or lte a number/);
+  assert.match(part, /at most 8 conditions and 3 levels\. Nothing else is read: no \$item, \$index, \$cond, \$bindState or \$computed/);
+  assert.match(part, /name a Group of inputs as the summary's visual: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Diagram, Markdown, Metrics, at least one an input/);
+  assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.interactive)));
+  assert.match(briefGuide("content"), /\{type, props, children\?, visible\?\} \(visible: see interactive\)/);
+  assert.match(briefGuide("content"), /or a Group of inputs the reader sets on the card, see interactive\)/);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_guide, /research, interactive, attachments/);
+  assert.equal(BRIEF_LIMITS.variables, 16);
+});
+
+// YN-16 S2: Calc formulas and a Button's press.
+const calc = (items, extra = {}) => ({ type: "Calc", props: { items, ...extra } });
+const press = (on) => ({ type: "Button", props: { label: "Reset" }, on });
+const setState = (statePath, value) => ({ action: "setState", params: { statePath, value } });
+
+test("YN-16 S2 a Calc's formulas read the section's variables and its earlier items, and give their type", () => {
+  const items = [
+    { id: "flour", label: "Flour", expr: "250 * guests / 4", unit: "g", digits: 0 },
+    { id: "fat", label: "Fat", expr: "vegan ? flour / 10 : flour / 8" },
+    { id: "trays", label: "Trays", expr: "ceil(guests / 6)", when: "trays > 1 && view == 'top'", emphasis: true },
+  ];
+  assert.ok(checkBriefSection(inGroup({ guests, vegan, view, sums: calc(items, { layout: "metrics", title: "Amounts" }) })));
+  assert.ok(checkBriefSection(BRIEF_EXAMPLES.calculator));
+  const refusedAt = (item, field) => {
+    const found = problems(inGroup({ guests, vegan, view, sums: calc([items[0], item]) }));
+    assert.equal(found[0].guide, "brief_guide interactive");
+    assert.equal(found[0].path, `body.elements.sums.props.items.1.${field}`);
+    return found[0];
+  };
+  for (const [expr, reason] of [
+    ["fetch('x')", /item "x" expr "fetch\('x'\)", at character 1: fetch\(\) is not a formula function/],
+    ["flour = 2", /at character 7: = assigns/],
+    ["window.location", /at character 7: \. reads a property/],
+    ["salt * 2", /at character 1: "salt" is neither a variable of this section nor an earlier item of this Calc; it may use guests, vegan, view, flour/],
+    ["x + 1", /"x" is neither/],
+    ["vegan", /expr gives a boolean; expr gives a number/],
+    ["view", /expr gives a text/],
+    ["guests +", /the formula ends where a value is expected/],
+  ]) {
+    const found = refusedAt({ id: "x", label: "X", expr }, "expr");
+    assert.equal(found.code, "formula", expr);
+    assert.match(found.reason, reason, expr);
+  }
+  assert.match(refusedAt({ id: "x", label: "X", expr: "1", when: "guests" }, "when").reason, /when gives a number; when gives true or false/);
+  assert.equal(refusedAt({ id: "x", label: "X", expr: "1", when: "later > 1" }, "when").code, "formula");
+  assert.match(briefGuide("errors"), /^- formula: A Calc expr or when that does not parse.*the reason says at which character \(see interactive\)\.$/m);
+  // An item reads only earlier items: a later one, or one of another Calc, is unknown.
+  const order = problems(inGroup({ guests, sums: calc([{ id: "a", label: "A", expr: "b + 1" }, { id: "b", label: "B", expr: "2" }]) }));
+  assert.match(order[0].reason, /"b" is neither a variable of this section nor an earlier item/);
+  const other = problems(inGroup({ guests, one: calc([{ id: "a", label: "A", expr: "1" }]), two: calc([{ id: "b", label: "B", expr: "a" }]) }));
+  assert.equal(other[0].path, "body.elements.two.props.items.0.expr");
+});
+
+test("YN-16 S2 a Calc item's id is a name, once in its Calc and none of the variables; formulas are bounded", () => {
+  const item = (id, expr = "1") => ({ id, label: id, expr });
+  assert.equal(first(inGroup({ guests, sums: calc([item("total-sum")]) })).path, "body.elements.sums.props.items.0.id");
+  const twice = first(inGroup({ guests, sums: calc([item("a"), item("a")]) }));
+  assert.deepEqual([twice.code, twice.path], ["duplicate_id", "body.elements.sums.props.items.1.id"]);
+  const shadow = first(inGroup({ guests, sums: calc([item("guests")]) }));
+  assert.deepEqual([shadow.code, shadow.path], ["duplicate_id", "body.elements.sums.props.items.0.id"]);
+  assert.match(shadow.reason, /has the name of a variable of this section/);
+  assert.ok(checkBriefSection(inGroup({ one: calc([item("a")]), two: calc([item("a")]) })), "each Calc has its own ids");
+  assert.equal(first(inGroup({ sums: calc(items(13, (i) => item(`a${i}`))) })).code, "too_many");
+  // 48 formulas in a section, expr and when together.
+  const many = (count) => Object.fromEntries(items(Math.ceil(count / 12), (c) => [`c${c}`, calc(items(Math.min(12, count - c * 12), (i) => item(`a${i}`)))]));
+  assert.ok(checkBriefSection(inGroup(many(48))));
+  const over = first(inGroup(many(49)));
+  assert.deepEqual([over.code, over.path], ["too_many", "body.elements"]);
+  assert.match(over.reason, /49 Calc formulas \(expr and when\); the limit is 48/);
+  assert.equal(first(inGroup({ sums: calc([item("a", "1+".repeat(120) + "1")]) })).code, "too_long", "the schema's own length");
+});
+
+test("YN-16 S2 only a Button takes on, and its press only sets declared variables to values they take", () => {
+  const ok = (on) => assert.ok(checkBriefSection(inGroup({ guests, vegan, view, reset: press(on) })), JSON.stringify(on));
+  ok({ press: setState("/guests", 4) });
+  ok({ press: [setState("/guests", 1), setState("/vegan", true), setState("/view", "top"), setState("/guests", 12)] });
+  const refusedOn = (on) => problems(inGroup({ guests, vegan, view, reset: press(on) }))[0];
+  for (const [on, code, path, reason] of [
+    [undefined, "missing_field", "body.elements.reset.on", /Button "reset" needs on: \{"press": \{"action": "setState"/],
+    [{ click: setState("/guests", 4) }, "unknown_field", "body.elements.reset.on", /on has one event, press/],
+    [{ press: [] }, "invalid_field", "body.elements.reset.on.press", /press has 0 actions; give 1 to 4/],
+    [{ press: items(5, () => setState("/guests", 4)) }, "too_many", "body.elements.reset.on.press", /press has 5 actions/],
+    [{ press: { action: "pushState", params: { statePath: "/guests", value: 4 } } }, "invalid_field", "body.elements.reset.on.press", /can only setState/],
+    [{ press: { action: "fetch", params: { url: "https://example.com" } } }, "invalid_field", "body.elements.reset.on.press", /nothing else runs from a section/],
+    [{ press: { ...setState("/guests", 4), confirm: true } }, "unknown_field", "body.elements.reset.on.press", /unknown field "confirm"/],
+    [{ press: { action: "setState", params: { statePath: "/guests", value: 4, extra: 1 } } }, "invalid_field", "body.elements.reset.on.press.params", /params are \{"statePath"/],
+    [{ press: setState("/salt", 4) }, "invalid_field", "body.elements.reset.on.press.params.statePath", /sets "\/salt", which is not "\/" and a variable an input of this section declares/],
+    [{ press: setState("guests", 4) }, "invalid_field", "body.elements.reset.on.press.params.statePath", /which is not "\/"/],
+    [{ press: setState("/guests", "4") }, "invalid_field", "body.elements.reset.on.press.params.value", /"\/guests" is a number variable; Button "reset" sets it to "4"/],
+    [{ press: setState("/guests", 13) }, "invalid_field", "body.elements.reset.on.press.params.value", /from 1 to 12; 13 is outside/],
+    [{ press: setState("/view", "front") }, "invalid_field", "body.elements.reset.on.press.params.value", /"front" is none of its options' values/],
+    [{ press: [setState("/guests", 4), setState("/vegan", 1)] }, "invalid_field", "body.elements.reset.on.press.1.params.value", /boolean variable/],
+  ]) {
+    const found = refusedOn(on);
+    assert.deepEqual([found.code, found.path, found.guide], [code, path, "brief_guide interactive"], JSON.stringify(on));
+    assert.match(found.reason, reason, JSON.stringify(on));
+  }
+  // Any other block with on is refused by its shape, as before.
+  const calcOn = first(inGroup({ guests, sums: { ...calc([{ id: "a", label: "A", expr: "1" }]), on: { press: setState("/guests", 4) } } }));
+  assert.deepEqual([calcOn.code, calcOn.path], ["unknown_field", "body.elements.sums"]);
+});
+
+test("YN-16 S2 a Calc may be a summary's visual, and a Group of inputs may hold a Calc and a Button", () => {
+  const body = (visual, box) => ({
+    key: "demo", kind: "report", title: "Demo",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", visual, size: "wide" } }, children: ["lead", "box"] },
+      lead: { type: "Markdown", props: { text: "Amounts." } },
+      box, guests, sums: calc([{ id: "a", label: "A", expr: "guests * 2" }]), reset: press({ press: setState("/guests", 4) }),
+    } },
+  });
+  const group = { type: "Group", props: {}, children: ["guests", "sums", "reset"] };
+  assert.ok(checkBriefSection(body("box", group)));
+  // A Calc alone as the visual: its inputs elsewhere, the card works it out from the starting values.
+  const alone = body("sums", { type: "Group", props: {}, children: ["guests", "reset"] });
+  alone.body.elements.body.children = ["lead", "sums", "box"];
+  assert.ok(checkBriefSection(alone));
+});
+
+test("YN-16 S2 the guide gives the formula language, the functions and the Button's press as checked", () => {
+  const part = briefGuide("interactive");
+  for (const type of ["Calc", "Button"]) assert.ok(part.includes(`- ${type} {`), type);
+  assert.match(part, /with \+ - \* \/ % \^ \(power, right to left: -2\^2 is -4\), < <= > >= == !=, && \|\| !, cond \? a : b/);
+  assert.match(part, /round\(1-2\), floor\(1\), ceil\(1\), abs\(1\), sqrt\(1\), min\(2-4\), max\(2-4\), clamp\(3\)/);
+  assert.match(part, /round\(1\.005, 2\) is 1\.01/);
+  assert.match(part, /no =, no \. or \[ \], no other names or functions\. At most 240 characters, 80 parts and 8 levels each, 48 formulas per section, 12 items per Calc/);
+  assert.match(part, /when may also use the item's own/);
+  assert.match(part, /on: \{"press": action or a list of 1-4\}, each \{"action": "setState", "params": \{"statePath": "\/<name>", "value": v\}\}.*Nothing else runs from a Button, and no other block takes on\./);
+  assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.calculator)));
+  assert.match(briefGuide("content"), /visual one figure \(a chart, Metrics, Calc, Diagram, Table/);
+  assert.equal(BRIEF_LIMITS.formulas, 48);
+});
+
+// YN-16 S3: a Diagram's nodes and edges, and the variable its select names.
+const diagram = (props = {}) => ({ type: "Diagram", props: {
+  nodes: [{ id: "frame", label: "Frame" }, { id: "chain", label: "Chain", detail: "Moves the wheel." }, { id: "gear", label: "Rear gears", shape: "diamond", tone: "accent" }],
+  edges: [{ from: "frame", to: "chain" }, { from: "chain", to: "gear", label: "drives", style: "dashed" }, { from: "gear", to: "chain" }],
+  ...props,
+} });
+
+test("YN-16 S3 a Diagram's edges join two different nodes it has, once each way", () => {
+  assert.ok(checkBriefSection(section("Diagram", diagram().props)));
+  assert.ok(checkBriefSection(BRIEF_EXAMPLES.flowchart));
+  const edges = (list) => problems(section("Diagram", diagram({ edges: list }).props))[0];
+  for (const [list, code, path, reason] of [
+    [[{ from: "frame", to: "wheel" }], "invalid_field", "body.elements.it.props.edges.0", /edge 1 joins "wheel", which no node of the Diagram has/],
+    [[{ from: "frame", to: "frame" }], "invalid_field", "body.elements.it.props.edges.0", /goes from "frame" to itself/],
+    [[{ from: "frame", to: "chain" }, { from: "frame", to: "chain", label: "again" }], "duplicate_id", "body.elements.it.props.edges.1", /two edges from "frame" to "chain"/],
+  ]) {
+    const found = edges(list);
+    assert.deepEqual([found.code, found.path, found.guide], [code, path, "brief_guide interactive"], JSON.stringify(list));
+    assert.match(found.reason, reason);
+  }
+  const twice = first(section("Diagram", diagram({ nodes: [{ id: "a", label: "A" }, { id: "a", label: "B" }], edges: [] }).props));
+  assert.equal(twice.code, "duplicate_id");
+  assert.equal(first(section("Diagram", diagram({ nodes: items(41, (i) => ({ id: `n${i}`, label: `N${i}` })), edges: [] }).props)).code, "too_many");
+  assert.equal(first(section("Diagram", diagram({ edges: items(61, () => ({ from: "frame", to: "chain" })) }).props)).code, "too_many");
+  assert.equal(first(section("Diagram", diagram({ nodes: [{ id: "a", label: "x".repeat(61) }], edges: [] }).props)).code, "too_long");
+  assert.equal(first(section("Diagram", diagram({ direction: "up" }).props)).code, "invalid_field");
+});
+
+test("YN-16 S3 select names a variable of the Diagram's own, or a Segmented's that names every node", () => {
+  // Its own: visible and a Button read and set it, "" being nothing selected.
+  const own = inGroup({
+    parts: diagram({ select: "part" }),
+    about: shown({ $state: "/part", eq: "chain" }),
+    none: shown({ $state: "/part", eq: "" }),
+    reset: press({ press: setState("/part", "") }),
+  });
+  assert.ok(checkBriefSection(own));
+  assert.match(first(inGroup({ parts: diagram({ select: "part" }), about: shown({ $state: "/part", eq: "wheel" }) })).reason, /"wheel" is none of its options' values: "", "frame", "chain", "gear"/);
+  // A Segmented's: the segments and the nodes select together.
+  const segments = (values) => ({ type: "Segmented", props: { name: "part", value: values[0], options: values.map((value) => ({ value, label: value })) } });
+  assert.ok(checkBriefSection(inGroup({ pick: segments(["frame", "chain", "gear"]), parts: diagram({ select: "part" }) })));
+  const short = first(inGroup({ pick: segments(["frame", "chain"]), parts: diagram({ select: "part" }) }));
+  assert.deepEqual([short.code, short.path], ["invalid_field", "body.elements.parts.props.select"]);
+  assert.match(short.reason, /whose options do not name "gear"/);
+  const numbers = first(inGroup({ guests, parts: diagram({ select: "guests" }) }));
+  assert.match(numbers.reason, /selects into "\/guests", a number variable/);
+  assert.equal(first(inGroup({ parts: diagram({ select: "Part" }) })).path, "body.elements.parts.props.select");
+  // It counts among the section's 16 variables.
+  const many = Object.fromEntries(items(16, (i) => [`v${i}`, withProps(vegan, { name: `v${i}` })]));
+  assert.match(first(inGroup({ ...many, parts: diagram({ select: "part" }) })).reason, /inputs and selects declare 17 variables/);
+});
+
+test("YN-16 S3 a Diagram may be a summary's visual and part of a Group of inputs; the guide says how it is laid out", () => {
+  const body = (visual) => ({ key: "demo", kind: "report", title: "Demo", body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual, size: "large" } }, children: ["lead", "flow", "box"] },
+    lead: { type: "Markdown", props: { text: "How it goes." } },
+    flow: diagram({ select: "step" }),
+    box: { type: "Group", props: {}, children: ["view", "flow2"] },
+    view, flow2: diagram(),
+  } } });
+  assert.ok(checkBriefSection(body("flow")));
+  assert.ok(checkBriefSection(body("box")));
+  const part = briefGuide("interactive");
+  assert.ok(part.includes("- Diagram {"));
+  assert.match(part, /you give nodes and edges only; Yuzuno lays them out \(top to bottom, or left to right with direction right, turned top to bottom where the window is too narrow\)/);
+  assert.match(part, /A node's shape diamond is a decision, round a start or an end/);
+  assert.match(part, /At most 40 nodes and 60 edges/);
+  assert.match(part, /select names a variable that then holds the selected node's id \(\"\" while none is\)/);
+  assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.flowchart)));
+  assert.match(briefGuide("content"), /^- NumberInput, Switch, Segmented, Calc, Button, Diagram: see interactive\.$/m);
 });

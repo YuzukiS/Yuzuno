@@ -334,29 +334,12 @@ export function checkSpec(json: unknown): { spec: ResultSpec; defaults: string[]
       }
     }
     if (node.type === "Table" || node.type === "BarChart") {
-      const props =
-        node.type === "Table"
-          ? componentProps.Table.parse(node.props)
-          : componentProps.BarChart.parse(node.props);
-      if (groups.has(props.id))
+      const id = (node.props as { id: string }).id;
+      if (groups.has(id))
         throw new ResultError("duplicate_id", "Selection IDs must be unique.", `${at}.id`);
-      groups.add(props.id);
-      const rows = "rows" in props ? props.rows : props.data;
-      if (new Set(rows.map((row) => row.id)).size !== rows.length)
-        throw new ResultError("duplicate_id", "Row IDs must be unique.", at);
-      for (const row of rows) references.push(...(row.sourceIds || []));
-      if ("columns" in props) {
-        const keys = props.columns.map((column) => column.key);
-        if (new Set(keys).size !== keys.length)
-          throw new ResultError("duplicate_id", "Column keys must be unique.", `${at}.columns`);
-        for (const row of props.rows) {
-          if (
-            Object.keys(row.cells).length !== keys.length ||
-            keys.some((key) => !(key in row.cells))
-          )
-            throw new ResultError("row_mismatch", "Every row must match its columns.", `${at}.rows`);
-        }
-      }
+      groups.add(id);
+      // Then what one element shows alone, as checkElement checks it.
+      for (const row of checkRows(node.type, node.props, at)) references.push(...(row.sourceIds || []));
     }
     if ((node.type === "Continue" || node.type === "Clarification" || node.type === "TaskStatus") && ++actions > 1)
       throw new ResultError("extra_action", "Only one continuation, clarification form or task status proposal is allowed.", `elements.${key}`);
@@ -364,6 +347,61 @@ export function checkSpec(json: unknown): { spec: ResultSpec; defaults: string[]
   if (references.some((key) => !allSources.has(key)))
     throw new ResultError("missing_source", "A referenced source is missing.");
   return { spec, defaults: applied };
+}
+
+/** Made on first use: built at load, Core's validator bundle would keep it too. */
+let oneElement: z.ZodType<{ elements: Record<string, ResultSpec["elements"][string]> }> | undefined;
+
+/**
+ * One element of a result, checked on its own as checkSpec checks it: its
+ * id, its component and props (display defaults filled in), and the checks
+ * that read nothing else (unique row, bar and column ids, rows that match
+ * their columns, valid and unique sources). What needs the whole result (the
+ * tree, one Result, cited sources, one action, unique selection ids) is
+ * checkSpec's alone. A reply's block still being written draws only
+ * elements that pass this (stream.ts); the whole block is checked once it is
+ * closed. Throws ResultError, with checkSpec's paths.
+ */
+export function checkElement(key: string, json: unknown): ResultSpec["elements"][string] {
+  // Checked first: a key such as __proto__ is not one of the record's own.
+  if (!id.safeParse(key).success) throw new ResultError("invalid_field", "Invalid element id.", "elements");
+  oneElement ??= z.strictObject({ elements: z.record(id, element) });
+  const parsed = oneElement.safeParse(withDisplayDefaults({ elements: { [key]: json } }).value);
+  if (!parsed.success) throw schemaError(parsed.error);
+  if (!Object.hasOwn(parsed.data.elements, key)) throw new ResultError("invalid_field", "Invalid element id.", "elements");
+  const node = parsed.data.elements[key];
+  const at = `elements.${key}.props`;
+  if (node.type === "Sources") {
+    const seen = new Set<string>();
+    for (const item of componentProps.Sources.parse(node.props).items) {
+      if (seen.has(item.id) || !sourceTarget(item.href))
+        throw new ResultError("invalid_source", "Invalid or duplicate source.", `${at}.items`);
+      seen.add(item.id);
+    }
+  }
+  if (node.type === "Table" || node.type === "BarChart") checkRows(node.type, node.props, at);
+  return node;
+}
+
+/**
+ * A Table's or BarChart's own rows (checkElement, checkSpec): unique row and
+ * bar ids, unique column keys, rows that match their columns. Returns the
+ * rows, which checkSpec reads their sourceIds from. Throws ResultError.
+ */
+function checkRows(type: "Table" | "BarChart", props: unknown, at: string): { id: string; sourceIds?: string[] }[] {
+  const parsed = type === "Table" ? componentProps.Table.parse(props) : componentProps.BarChart.parse(props);
+  const rows = "rows" in parsed ? parsed.rows : parsed.data;
+  if (new Set(rows.map((row) => row.id)).size !== rows.length)
+    throw new ResultError("duplicate_id", "Row IDs must be unique.", at);
+  if ("columns" in parsed) {
+    const keys = parsed.columns.map((column) => column.key);
+    if (new Set(keys).size !== keys.length)
+      throw new ResultError("duplicate_id", "Column keys must be unique.", `${at}.columns`);
+    for (const row of parsed.rows)
+      if (Object.keys(row.cells).length !== keys.length || keys.some((key) => !(key in row.cells)))
+        throw new ResultError("row_mismatch", "Every row must match its columns.", `${at}.rows`);
+  }
+  return rows;
 }
 
 /** The optional tool an Agent uses to publish a result instead of a JSON

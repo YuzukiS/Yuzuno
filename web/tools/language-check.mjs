@@ -104,7 +104,7 @@ const shell = (page) => dialog(page).evaluate((box) => ({
   title: box.querySelector(".modal-heading h2")?.textContent ?? null,
   close: box.querySelector(".modal-heading .icon-button")?.getAttribute("aria-label") ?? null,
   // Each category's full name: the tab's name, beside its short one (T-187).
-  tabs: [...box.querySelectorAll('[role="tab"]')].map((tab) => tab.querySelector(".sr-only").textContent),
+  tabs: [...box.querySelectorAll('[role="tab"]')].map((tab) => tab.querySelector(".settings-nav-label").textContent),
   lang: box.querySelector(".settings-center")?.getAttribute("lang") ?? null,
   search: box.querySelector(".settings-search input")?.getAttribute("placeholder") ?? null,
 }));
@@ -127,7 +127,8 @@ async function openEditor(page, query, title, editor) {
 }
 const editorState = (box) => box.evaluate((el) => ({
   lang: el.getAttribute("lang"),
-  heading: el.querySelector("h3")?.textContent ?? null,
+  // A page's own heading, or a card's title where the page's heading is another editor's (YN-8).
+  heading: el.querySelector("h3, .settings-group-title")?.textContent ?? null,
   status: el.querySelector(".save-status [role=status]")?.textContent.trim() ?? null,
   alert: el.querySelector(".save-status [role=alert]")?.textContent.trim() ?? null,
   checked: [...el.querySelectorAll("input[type=radio]:checked")].map((input) => input.value),
@@ -143,8 +144,13 @@ const refuseLanguage = (page, refuse) => page.evaluate((refuse) => {
     return window.languageStorage.setItem.call(this, key, ...rest);
   };
 }, refuse);
-const EN_TABS = ["Appearance & interaction", "Notifications & attention", "Agents & runtime", "Connections & devices", "Projects & collaboration", "Jobs & resources", "Data, privacy & recovery", "Updates & about"];
-const ZH_TABS = ["外观与交互", "通知与提醒", "Agent 与运行环境", "连接与设备", "项目与协作", "Job 与资源", "数据、隐私与恢复", "更新与关于"];
+// Settings' pages in their four groups (YN-8).
+const EN_TABS = ["Appearance", "Typing & time", "Language", "Shortcuts", "Notifications", "Move to another device",
+  "Projects", "Machines", "Agent defaults", "Executors", "Home", "Phone access",
+  "Storage", "Backup & restore", "Diagnostics", "Updates", "Runtime", "About & help"];
+const ZH_TABS = ["外观", "输入与时间", "语言", "快捷键", "通知", "迁移到其他设备",
+  "项目", "机器", "Agent 默认", "执行者", "主页", "手机访问",
+  "存储", "备份与恢复", "诊断", "更新", "运行环境", "关于与帮助"];
 
 try {
   // ---- en-US
@@ -165,7 +171,9 @@ try {
     const language = await editorState(box);
     assert.deepEqual(language, { lang: "zh-Hans", heading: "界面语言", status: "已保存到此设备", alert: null, checked: ["zh-Hans"] });
     const coverage = await box.locator(".input-preferences-fixed").textContent();
-    assert.match(coverage, /“界面语言”、“发送消息”、“时钟与时区”、“键盘快捷键”、“主题、文字与布局”、“把偏好移到另一台设备”、“数据与存储概览”、“复制诊断信息”、“通知偏好”、“关于与帮助”、“Home 展示”、“代码审查”、“手机与远程访问”、“运行环境与版本”、“新 Agent 默认值”、“Workspace 备份与恢复”、“历史与内存信息”、“草稿存储”、“版本与更新”/);
+    // The pages as the catalog names them; Typing & time's first is where pages open (T-5), and
+    // executor templates, usage-limit resume and the Job budgets have joined since (YN-8 S4b).
+    assert.match(coverage, /“界面语言”、“网页与原型的打开方式”、“时钟与时区”、“键盘快捷键”、“主题、文字与布局”、“把偏好移到另一台设备”、“数据与存储概览”、“复制诊断信息”、“通知偏好”、“关于与帮助”、“Home 展示”、“代码审查”、“手机与远程访问”、“运行环境与版本”、“新 Agent 默认值”、“执行者模板”、“Workspace 备份与恢复”、“历史与内存信息”、“草稿存储”、“版本与更新”、“用量限额后继续：Workspace 默认值”、“Core 主机 Job 预算”、“远程机器 Job 预算”。/);
     assert.match(coverage, /仍为英文/);
     assert.match(coverage, /系统通知（包括测试通知）也仍为英文/);
     assert.match(coverage, /“项目”窗口也会随之显示：项目列表、新建项目、项目页面及其中的“新 Agent 默认值”、“代码审查”/);
@@ -191,8 +199,9 @@ try {
     assert.match(await box.textContent(), /24 小时制/);
     box = await openEditor(page, "发送键", "发送消息", "input");
     const input = await editorState(box);
-    assert.deepEqual([input.lang, input.heading, input.checked], ["zh-Hans", "发送消息", ["auto"]]);
-    assert.match(await box.locator(".settings-current").textContent(), /^Return：发送$/);
+    // Typing & time's first card (YN-8 S4a): sending, then where pages open.
+    assert.deepEqual([input.lang, input.heading, input.checked], ["zh-Hans", "输入与时间", ["auto", "inside"]]);
+    assert.match(await box.locator(".settings-current").textContent(), /^Return：发送 · 在 Yuzuno 内打开$/);
     box = await openEditor(page, "快捷键", "键盘快捷键", "shortcuts");
     const help = await box.evaluate((el) => ({
       heading: el.querySelector("h3").textContent,
@@ -204,13 +213,16 @@ try {
     for (const key of ["Ctrl", "Return", "Shift", "Esc", "Tab"]) assert.ok(help.keys.includes(key), key);
     // New Agent defaults has had model and reasoning defaults since #266.
     const models = await search(page, "推理");
-    assert.deepEqual(models, ["模型、推理与权限", "新 Agent 默认值"]);
+    // Both found, in Chinese; their order is the search's (YN-8's directory ranks pages first).
+    assert.deepEqual([...models].sort(), ["模型、推理与权限", "新 Agent 默认值"].sort());
     const agentsListed = await page.locator(".settings-catalog-card select option").allTextContents();
     assert.deepEqual(agentsListed, ["选择一个 Agent…", "Mori"], "an Agent's name stays as it was written");
     check("Clock & time zone, Sending messages and Keyboard shortcuts are in Chinese; key names, Agent names and time zones stay as written", { help });
 
     // Workspace service (Versions & updates), the last editor translated: Chinese, marked so.
-    await page.locator('[role="tab"]', { hasText: "更新与关于" }).click();
+    // Its own page since YN-8 S1: 更新. A search shows only the pages it finds, so it is cleared first.
+    await page.locator(".settings-search input").fill("");
+    await page.locator('[role="tab"]', { hasText: /^更新$/ }).click();
     box = page.locator("#settings-editor-updates");
     await box.waitFor({ timeout: 10_000 });
     const updates = await editorState(box);
@@ -268,7 +280,8 @@ try {
     const box = await openEditor(page, "language", "Language", "language");
     const note = await box.locator('label:has(input[value="system"]) small').textContent();
     assert.match(note, /^This browser asks for Japanese.*which this version doesn’t have, so English is shown\.$/);
-    assert.equal(await box.locator('label:has(input[value="system"]) strong').textContent(), "System · English");
+    // A choice card's name (YN-8 S4a).
+    assert.equal(await box.locator('label:has(input[value="system"]) .theme-choice-name').textContent(), "System · English");
     check("a browser in Japanese: System shows English and says Japanese isn't available", { note });
     await context.close();
   }

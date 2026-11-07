@@ -67,7 +67,16 @@ pub(super) fn lab() -> (tempfile::TempDir, Arc<Workspace>, String) {
         }
         running(&ws, id, "t1");
     }
+    // Its members lead it, as the user's own Agents do (YN-2 S4): they edit Home.
+    set_leads(&ws, &project, &["a", "b", "c"]);
     (dir, ws, project)
+}
+
+/// The user's choice of `project`'s leads (its Home editors, YN-2 S4),
+/// saved against the version it has now.
+pub(super) fn set_leads(ws: &Workspace, project: &str, ids: &[&str]) {
+    let version = crate::agent_roles::get(&ws.store, project).unwrap().version;
+    crate::agent_roles::save(&ws.store, project, version, ids.iter().map(|id| id.to_string()).collect()).unwrap();
 }
 
 fn body(text: &str) -> Value {
@@ -310,7 +319,7 @@ async fn a_closed_or_deleted_owners_sections_are_claimed_once_within_the_project
 }
 
 #[tokio::test]
-async fn topic_sub_topic_ask_and_attachment_limits_are_rejected_with_their_codes() {
+async fn topic_sub_topic_and_attachment_limits_are_rejected_with_their_codes() {
     let (_dir, ws, _project) = lab();
     let topics: Vec<Value> = (0..12).map(|n| put(&format!("t{n}"), "report")).collect();
     accept(&ws, "a", input("a1", 0, topics)).await;
@@ -319,20 +328,40 @@ async fn topic_sub_topic_ask_and_attachment_limits_are_rejected_with_their_codes
     let subs: Vec<Value> = (1..=4).map(|n| put(&format!("t0/s{n}"), "report")).collect();
     accept(&ws, "a", input("a3", 1, subs)).await;
     assert_eq!(codes(&reject(&ws, "a", input("a4", 2, vec![put("t0/s5", "report")])).await), ["topic_limit"]);
-    let asks: Vec<Value> = (1..=3).map(|n| put(&format!("t1/q{n}"), "ask")).collect();
-    accept(&ws, "a", input("a5", 2, asks)).await;
-    assert_eq!(codes(&reject(&ws, "a", input("a6", 3, vec![put("t1/q4", "ask")])).await), ["ask_limit"]);
-    assert_eq!(brief(&ws, "a")["you"]["openAsks"], 3);
-    // Another Agent has its own three.
-    accept(&ws, "b", input("b1", 3, vec![put("t2/q1", "ask")])).await;
-    // An ask the Agent claims counts too.
-    close(&ws, "b", true);
-    assert_eq!(codes(&reject(&ws, "a", input("a7", 4, vec![op("claim", "t2/q1")])).await), ["ask_limit"]);
     let mut many = put("t3", "report");
     many["attachments"] = json!((0..13).map(|n| json!({"name":format!("f{n}.txt"),"url":"https://example.com"})).collect::<Vec<_>>());
-    assert_eq!(codes(&reject(&ws, "a", input("a8", 4, vec![many])).await), ["attachment_limit"]);
+    assert_eq!(codes(&reject(&ws, "a", input("a8", 2, vec![many])).await), ["attachment_limit"]);
     let changes: Vec<Value> = (0..25).map(|n| put(&format!("t4/x{n}"), "report")).collect();
-    assert!(codes(&reject(&ws, "a", input("a9", 4, changes)).await).contains(&"invalid_input".to_owned()));
+    assert!(codes(&reject(&ws, "a", input("a9", 2, changes)).await).contains(&"invalid_input".to_owned()));
+}
+
+#[tokio::test]
+async fn an_agent_with_three_unresolved_asks_still_puts_a_fourth_and_a_fifth() {
+    // YN-11: the user wants no per-Agent cap on unresolved asks.
+    let (_dir, ws, project) = lab();
+    let asks: Vec<Value> = (1..=3).map(|n| put(&format!("q{n}"), "ask")).collect();
+    accept(&ws, "a", input("a1", 0, asks)).await;
+    // A replied ask is still unresolved.
+    assert!(sections::mark_replied_live(&ws.store, &project, "q1", "Left").unwrap());
+    assert_eq!(brief(&ws, "a")["you"]["openAsks"], 3);
+    let fourth = call(&ws, "a", input("a2", 1, vec![put("q4", "ask")])).await.unwrap();
+    assert!(fourth.is_ok(), "a fourth unresolved ask is accepted: {fourth:?}");
+    let fifth = call(&ws, "a", input("a3", 2, vec![put("q5", "ask")])).await.unwrap();
+    assert!(fifth.is_ok(), "a fifth unresolved ask is accepted: {fifth:?}");
+    // An ask claimed from a closed Agent is added the same way.
+    accept(&ws, "b", input("b1", 3, vec![put("theirs", "ask")])).await;
+    close(&ws, "b", true);
+    let claimed = call(&ws, "a", input("a4", 4, vec![op("claim", "theirs")])).await.unwrap();
+    assert!(claimed.is_ok(), "a claimed sixth unresolved ask is accepted: {claimed:?}");
+    // openAsks still counts them, as information; limits name no cap.
+    let read = brief(&ws, "a");
+    assert_eq!(read["you"]["openAsks"], 6);
+    assert!(read["limits"].get("openAsksPerAgent").is_none(), "{}", read["limits"]);
+    // Needs you lists every open one; the replied q1 waits for its owner.
+    let mut needs: Vec<Value> = home::build(&ws.store).unwrap()["needsYou"].as_array().unwrap().iter()
+        .filter(|n| n["kind"] == "ask").map(|n| n["sectionKey"].clone()).collect();
+    needs.sort_by_key(|key| key.to_string());
+    assert_eq!(needs, ["q2", "q3", "q4", "q5", "theirs"].map(|key| json!(key)));
 }
 
 #[tokio::test]
@@ -410,7 +439,7 @@ async fn brief_get_lists_your_own_replied_asks_until_you_resolve_them() {
     accept(&ws, "a", input("a3", 3, vec![op("resolve", "release")])).await;
     assert_eq!((you(&ws, "a")["repliedAsks"].clone(), you(&ws, "a")["openAsks"].clone()), (json!([]), json!(1)));
     // An Ask-only member reads and resolves its own the same way.
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     let only = you(&ws, "b");
     assert_eq!((only["capabilities"]["editContent"].clone(), keys(&only)), (json!(false), vec![json!("other")]));
     accept(&ws, "b", input("b2", 4, vec![op("resolve", "other")])).await;
@@ -977,6 +1006,35 @@ async fn live_references_show_core_state_or_not_found() {
     let _ = project;
 }
 
+/// YN-7 item 4: a section may name a run of stages. It shows the run's status
+/// as Jobs derives it, how many stages are done, its task's key and the Job of
+/// its newest attempt, where Jobs shows the run; an id no run has is not found.
+#[tokio::test]
+async fn a_live_reference_to_a_run_shows_its_status_stages_task_and_newest_job() {
+    let (_dir, ws, _project) = lab();
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Sweep"})).unwrap();
+    let task_id: String = ws.store.db.read().unwrap().query_row("SELECT id FROM collaboration_tasks", [], |r| r.get(0)).unwrap();
+    {
+        let db = ws.store.db.write().unwrap();
+        db.execute("INSERT INTO local_job_runs(id,task_id,agent_id,data) VALUES('run-1',?1,'a',?2)", rusqlite::params![task_id,
+            json!({"id":"run-1","taskId":task_id,"taskRef":"T-1","name":"lr sweep","cancelRequestedAt":null,
+                "stages":[{"key":"prep","needs":[]},{"key":"train","needs":["prep"]}]}).to_string()]).unwrap();
+        for (job, stage, status) in [("job-prep", "prep", "succeeded"), ("job-train", "train", "running")] {
+            db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'a',?3,?4)", rusqlite::params![job, task_id, status,
+                json!({"id":job,"name":stage,"status":status,"run":{"id":"run-1","stage":stage,"attempt":1}}).to_string()]).unwrap();
+            db.execute("INSERT INTO local_job_run_attempts(run_id,stage,attempt,job_id) VALUES('run-1',?1,1,?2)", [stage, job]).unwrap();
+        }
+    }
+    let mut change = put("refs", "report");
+    change["body"] = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["refs"]},
+        "refs":{"type":"LiveRefs","props":{"items":[{"kind":"run","id":"run-1"},{"kind":"run","id":"nope"}]}}}});
+    accept(&ws, "a", input("a1", 0, vec![change])).await;
+    let refs = section(&brief(&ws, "a"), "refs")["refs"].clone();
+    assert_eq!(refs["run:run-1"], json!({"kind":"run","id":"run-1","found":true,"title":"lr sweep","state":"running","tone":"active",
+        "taskId":"T-1","stages":{"done":1,"total":2},"jobId":"job-train"}), "the run as Jobs has it, its newest Job to open it by");
+    assert_eq!(refs["run:nope"], json!({"kind":"run","id":"nope","found":false}));
+}
+
 /// T-56: a section may name a task by any key it has or had; it shows with
 /// the key it has now, through a Project key change too.
 #[tokio::test]
@@ -1518,7 +1576,8 @@ fn the_tools_come_from_the_contract_and_brief_get_and_update_load_without_search
     assert!(schema["properties"].as_object().unwrap().keys().all(|key| !key.contains("agent") && key != "turnId"));
     // Core enforces the numbers the contract tells Agents.
     let limits = &brief_contract().unwrap()["limits"];
-    for (key, value) in [("topics", MAX_TOPICS as u64), ("subtopicsPerTopic", MAX_SUBTOPICS as u64), ("openAsksPerAgent", MAX_OPEN_ASKS as u64),
+    assert!(limits.get("openAsksPerAgent").is_none(), "no per-Agent ask limit (YN-11)");
+    for (key, value) in [("topics", MAX_TOPICS as u64), ("subtopicsPerTopic", MAX_SUBTOPICS as u64),
         ("attachments", MAX_ATTACHMENTS as u64), ("snapshotFileBytes", SNAPSHOT_FILE_BYTES), ("snapshotBriefBytes", SNAPSHOT_BRIEF_BYTES),
         ("historyDays", HISTORY_DAYS as u64), ("recentlyLeft", sections::RECENTLY_LEFT as u64), ("chartSeries", attachments::CHART_SERIES as u64),
         ("chartPointsPerSeriesFromData", attachments::CHART_POINTS as u64)] {
@@ -1556,6 +1615,56 @@ async fn the_generated_validator_checks_sections_for_core() {
     assert_eq!(rejected["problems"][0]["path"], "changes[0].ask.reply");
     assert_eq!(rejected["problems"][0]["guide"], "brief_guide ask");
     assert_eq!(version(&ws, &project), 1);
+}
+
+/// YN-14 A1: a section Core can repair is accepted with its repairs; they
+/// stay with it until a put replaces it or an edit replaces the repaired block.
+#[tokio::test]
+async fn a_repaired_section_is_accepted_and_keeps_its_repairs_until_written_again() {
+    let (_dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    let mut change = put("review", "report");
+    change["body"] = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["note","log"]},
+        "note":markdown("Hello"),"log":{"type":"Code","props":{"code":"FAIL x"}}}});
+    let sent = input("r1", 0, vec![change]);
+
+    // validateOnly says what Core would repair, and writes nothing.
+    let mut only = sent.clone();
+    only["validateOnly"] = json!(true);
+    let previewed = update::update(&ws, &checker, "a", only).await.unwrap().unwrap();
+    assert_eq!((previewed["valid"].clone(), previewed["repairs"][0]["code"].clone()), (json!(true), json!("component_to_markdown")));
+    assert_eq!(version(&ws, &project), 0);
+
+    let accepted = update::update(&ws, &checker, "a", sent.clone()).await.unwrap().unwrap();
+    assert_eq!(accepted["repairs"][0]["code"], "component_to_markdown", "{accepted}");
+    assert_eq!(accepted["repairs"][0]["path"], "changes[0].body.elements.log");
+    assert!(accepted["repairs"][0]["reason"].as_str().unwrap().contains("\"Code\" became Markdown"));
+    let shown = section(&brief(&ws, "a"), "review").clone();
+    assert_eq!(shown["body"]["elements"]["log"], json!({"type":"Markdown","props":{"text":"```\nFAIL x\n```"}}));
+    assert_eq!(shown["repairs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(shown["repairs"][0]["path"], "body.elements.log");
+    // Home reads the same repairs.
+    let home = home::build(&ws.store).unwrap();
+    let on_home = home["projects"][0]["brief"]["sections"].as_array().unwrap().iter().find(|s| s["key"] == "review").unwrap().clone();
+    assert_eq!(on_home["repairs"], shown["repairs"]);
+    // The same requestId replays the first answer, repairs and all.
+    assert_eq!(update::update(&ws, &checker, "a", sent).await.unwrap().unwrap(), accepted);
+
+    // An edit of another block keeps them; its answer has none of its own.
+    let kept = update::update(&ws, &checker, "a", input("r2", 1, vec![edit("review", json!({"note":markdown("Hi")}))])).await.unwrap().unwrap();
+    assert_eq!(kept["repairs"], Value::Null);
+    assert_eq!(section(&brief(&ws, "a"), "review")["repairs"], shown["repairs"]);
+    // An edit that replaces the repaired block as it should be ends them.
+    update::update(&ws, &checker, "a", input("r3", 2, vec![edit("review", json!({"log":markdown("Fixed.")}))])).await.unwrap().unwrap();
+    assert_eq!(section(&brief(&ws, "a"), "review")["repairs"], Value::Null);
+    // A section that needs none is stored with none.
+    let mut again = put("review", "report");
+    again["body"]["elements"]["note"] = json!({"type":"Markdown","props":{"text":"Hello","format":"gfm"}});
+    let repaired = update::update(&ws, &checker, "a", input("r4", 3, vec![again])).await.unwrap().unwrap();
+    assert_eq!(repaired["repairs"][0]["code"], "dropped_field");
+    update::update(&ws, &checker, "a", input("r5", 4, vec![put("review", "report")])).await.unwrap().unwrap();
+    assert_eq!(section(&brief(&ws, "a"), "review")["repairs"], Value::Null);
+    assert_eq!(version(&ws, &project), 5);
 }
 
 #[tokio::test]
@@ -1643,7 +1752,7 @@ async fn over_mcp_brief_update_answers_with_structured_receipts_and_rejections()
     // No Agent-facing operation changes the list; only the user HTTP route.
     assert!(!tools.iter().any(|tool| tool.name.contains("editor")));
     assert!(ws.collaboration_call(Some("a"), "home_editors_set", json!({"editorAgentIds":["a"]})).await.is_err());
-    editors::save(&ws.store, &project, 0, Some(vec![])).unwrap();
+    set_leads(&ws, &project, &[]);
     let refused = client.call_tool(update(input("m4", 1, vec![put("plan", "report")]))).await.unwrap();
     assert_eq!(refused.structured_content.unwrap()["problems"][0]["code"], "ask_only");
     let ask = client.call_tool(update(input("m5", 1, vec![put("plan/question", "ask")]))).await.unwrap();
@@ -1664,7 +1773,10 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
     let read = brief(&ws, "b");
     assert_eq!(section(&read, "plan")["owner"], json!({"agentId":"a","name":"Agent a","state":"moved"}));
     assert_eq!(section(&read, "notes")["owner"]["state"], "moved");
-    assert_eq!(home::build(&ws.store).unwrap()["projects"][0]["brief"]["sections"][0]["owner"]["state"], "moved");
+    // On Home they leave the main view: moved away, their owners lead the Project no more (YN-2 S4).
+    let home = home::build(&ws.store).unwrap();
+    let team = home["projects"][0]["brief"]["teamSections"].as_array().unwrap().clone();
+    assert_eq!(team.iter().find(|s| s["key"] == "plan").unwrap()["owner"]["state"], "moved");
     // The moved owner can no longer write there.
     let left = reject(&ws, "a", json!({"requestId":"a2","projectId":project,"expectedVersion":2,"changes":[put("plan", "report")]})).await;
     assert_eq!(codes(&left), ["not_owner"]);
@@ -1674,11 +1786,11 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
     assert!(rejected["problems"][0]["reason"].as_str().unwrap().contains("left this Project"));
     accept(&ws, "b", input("b2", 2, vec![op("claim", "plan")])).await;
     assert_eq!(section(&brief(&ws, "b"), "plan")["owner"]["agentId"], "b");
-    // Moved back after the claim: the section stays the claimer's.
-    ws.store.set_agent_project("a", Some(&project)).unwrap();
+    // Moved back by the user after the claim (it leads again): the section stays the claimer's.
+    ws.store.user_moves_agent("a", Some(&project)).unwrap();
     assert_eq!(codes(&reject(&ws, "a", input("a3", 3, vec![put("plan", "report")])).await), ["not_owner"]);
-    // Moved back before anyone claims: c owns its section again.
-    ws.store.set_agent_project("c", Some(&project)).unwrap();
+    // Moved back by the user before anyone claims: c owns its section again.
+    ws.store.user_moves_agent("c", Some(&project)).unwrap();
     assert_eq!(section(&brief(&ws, "b"), "notes")["owner"]["state"], "active");
     assert_eq!(codes(&reject(&ws, "b", input("b3", 3, vec![op("claim", "notes")])).await), ["not_orphan"]);
     accept(&ws, "c", input("c2", 3, vec![put("notes", "status")])).await;
@@ -1691,6 +1803,8 @@ async fn an_owner_moved_out_of_the_project_leaves_its_sections_to_claim_unless_m
 mod editors_tests;
 #[path = "release_handover_tests.rs"]
 mod release_handover_tests;
+#[path = "patch_tests.rs"]
+mod patch_tests;
 #[path = "executor_needs_tests.rs"]
 mod executor_needs_tests;
 #[path = "recently_left_tests.rs"]
@@ -1847,15 +1961,23 @@ async fn an_authors_card_size_is_kept_with_its_summary_and_read_as_written() {
     let v = version(&ws, &project);
     update::update(&ws, &checker, "a", input("s2", v, vec![edit("eval", json!({"answer":markdown("B lowers loss by 4%.")}))])).await.unwrap().unwrap();
     assert_eq!(size_of(section(&brief(&ws, "a"), "eval")), "wide");
-    // A size outside the three is refused where it stands, and nothing changes.
+    // A size outside the three is refused where it stands, and nothing
+    // changes; one in another letter case is repaired (YN-14).
     let v = version(&ws, &project);
-    for bad in [json!("huge"), json!("Wide"), json!(2)] {
+    for bad in [json!("huge"), json!(2)] {
         let mut wrong = card.clone();
         wrong["body"]["elements"]["body"]["props"]["summary"]["size"] = bad.clone();
         let rejected = update::update(&ws, &checker, "a", input("s3", v, vec![wrong])).await.unwrap().unwrap_err();
         assert_eq!((rejected["problems"][0]["code"].clone(), rejected["problems"][0]["path"].clone()),
             (json!("invalid_field"), json!("changes[0].body.elements.body.props.summary.size")), "{bad}: {rejected}");
     }
+    assert_eq!(version(&ws, &project), v);
+    let mut cased = card.clone();
+    cased["body"]["elements"]["body"]["props"]["summary"]["size"] = json!("Wide");
+    let mut check = input("s3", v, vec![cased]);
+    check["validateOnly"] = json!(true);
+    let validated = update::update(&ws, &checker, "a", check).await.unwrap().unwrap();
+    assert_eq!((validated["valid"].clone(), validated["repairs"][0]["code"].clone()), (json!(true), json!("normalized_value")), "{validated}");
     assert_eq!(version(&ws, &project), v);
     // The author's next size, in the next version; seen, it goes to History with it.
     card["body"] = sized(Some("large"));
@@ -1893,27 +2015,30 @@ async fn the_generated_validator_checks_layout_and_edits_whole() {
     let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
     let accepted = update::update(&ws, &checker, "a", input("a1", 0, vec![overview()])).await.unwrap();
     assert!(accepted.is_ok(), "{accepted:?}");
-    // An edit that leaves a block out of the tree is checked whole, and the
-    // problem names the edit's own path.
+    // An edit is checked whole. One that leaves a block out of the tree has
+    // it removed, as the edit unlinked it (YN-14), and the repair names the
+    // edit's own path.
     let orphaning = edit("overview", json!({"next":{"type":"Group","props":{"title":"Findings"},"children":[]}}));
-    let rejected = update::update(&ws, &checker, "a", input("a2", 1, vec![orphaning])).await.unwrap().unwrap_err();
-    assert_eq!(rejected["problems"][0]["code"], "unused_component", "{rejected}");
-    assert_eq!(rejected["problems"][0]["path"], "changes[0].elements");
-    // Columns need one width per child.
+    let repaired = update::update(&ws, &checker, "a", input("a2", 1, vec![orphaning])).await.unwrap().unwrap();
+    assert_eq!(repaired["repairs"][0]["code"], "fixed_tree", "{repaired}");
+    assert_eq!(repaired["repairs"][0]["path"], "changes[0].elements");
+    assert_eq!(section(&brief(&ws, "a"), "overview")["body"]["elements"]["findings"], Value::Null);
+    // Columns widths that do not match its children are dropped.
     let mismatched = edit("overview", json!({"split":{"type":"Columns","props":{"widths":[1,1,1]},"children":["work","next"]}}));
-    let rejected = update::update(&ws, &checker, "a", input("a3", 1, vec![mismatched])).await.unwrap().unwrap_err();
-    assert_eq!(rejected["problems"][0]["code"], "columns_widths", "{rejected}");
-    assert_eq!(rejected["problems"][0]["path"], "changes[0].elements.split.props.widths");
-    // status only on a status section, through the same check.
-    update::update(&ws, &checker, "a", input("a4", 1, vec![put("notes", "report")])).await.unwrap().unwrap();
+    let repaired = update::update(&ws, &checker, "a", input("a3", 2, vec![mismatched])).await.unwrap().unwrap();
+    assert_eq!(repaired["repairs"][0]["code"], "dropped_layout", "{repaired}");
+    assert_eq!(repaired["repairs"][0]["path"], "changes[0].elements.split.props");
+    assert_eq!(section(&brief(&ws, "a"), "overview")["body"]["elements"]["split"]["props"], json!({}));
+    // status only on a status section: the envelope is never repaired.
+    update::update(&ws, &checker, "a", input("a4", 3, vec![put("notes", "report")])).await.unwrap().unwrap();
     let mut misplaced = edit("notes", json!({"note":markdown("x")}));
     misplaced["status"] = json!({"asOf":"2026-10-18T06:00:00Z","validFor":600});
-    let rejected = update::update(&ws, &checker, "a", input("a5", 2, vec![misplaced])).await.unwrap().unwrap_err();
+    let rejected = update::update(&ws, &checker, "a", input("a5", 4, vec![misplaced])).await.unwrap().unwrap_err();
     assert_eq!(rejected["problems"][0]["code"], "misplaced_field", "{rejected}");
     assert_eq!(rejected["problems"][0]["path"], "changes[0].status");
-    let edited = update::update(&ws, &checker, "a", input("a6", 2, vec![edit("overview", json!({"progress":markdown("Step 2 of 3.")}))])).await.unwrap();
+    let edited = update::update(&ws, &checker, "a", input("a6", 4, vec![edit("overview", json!({"progress":markdown("Step 2 of 3.")}))])).await.unwrap();
     assert!(edited.is_ok(), "{edited:?}");
-    assert_eq!(version(&ws, &project), 3);
+    assert_eq!(version(&ws, &project), 5);
 }
 
 #[tokio::test]
@@ -1957,7 +2082,7 @@ async fn an_edit_keeps_the_snapshots_and_the_charts_that_read_them() {
 }
 
 #[tokio::test]
-async fn unused_attachments_are_rejected_before_staging_and_last_use_removal_is_atomic() {
+async fn a_puts_unused_attachment_is_shown_and_an_edit_removing_its_last_use_is_refused_atomically() {
     for key in ["tasks-board", "development"] {
         let (dir, ws, project) = lab();
         let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
@@ -1965,20 +2090,20 @@ async fn unused_attachments_are_rejected_before_staging_and_last_use_removal_is_
         std::fs::write(&file, b"fixture image bytes").unwrap();
         let mut change = put(key, "status");
         change["attachments"] = json!([{"name":"preview.png","path":file}]);
-        let rejected = update::update(&ws, &checker, "a", input("unused", 0, vec![change.clone()])).await.unwrap().unwrap_err();
-        assert_eq!(codes(&rejected), ["unused_attachment"]);
-        assert_eq!(rejected["problems"][0]["path"], "changes[0].attachments.0.name");
-        assert_eq!(rejected["problems"][0]["guide"], "brief_guide attachments");
-        assert!(rejected["problems"][0]["reason"].as_str().unwrap().contains("reachable Attachments block"));
-        assert_eq!(version(&ws, &project), 0);
-        assert_eq!(rows(&ws, "SELECT COUNT(*) FROM project_brief_receipts"), 0);
-        assert_eq!(rows(&ws, "SELECT COUNT(*) FROM project_brief_snapshots"), 0);
-
-        // The smallest repair is a displayed reference; no automatic layout rewrite.
-        change["body"]["elements"]["note"] = json!({"type":"Attachments","props":{"items":[{"name":"preview.png"}]}});
-        update::update(&ws, &checker, "a", input("repaired", 0, vec![change])).await.unwrap().unwrap();
+        // A put's registration nothing shows is repaired (YN-14): Core shows it
+        // in an Attachments block at the end of the root and says so.
+        let accepted = update::update(&ws, &checker, "a", input("unused", 0, vec![change])).await.unwrap().unwrap();
+        assert_eq!(accepted["repairs"][0]["code"], "showed_attachment", "{accepted}");
+        assert_eq!(accepted["repairs"][0]["path"], "changes[0].body.elements.files");
+        assert_eq!(accepted["repairs"][0]["guide"], "brief_guide attachments");
         let before = section(&brief(&ws, "a"), key).clone();
-        let remove_last = edit(key, json!({"note":markdown("Preview removed.")}));
+        assert_eq!(before["body"]["elements"]["body"]["children"], json!(["note", "files"]));
+        assert_eq!(before["body"]["elements"]["files"], json!({"type":"Attachments","props":{"items":[{"name":"preview.png"}]}}));
+        assert_eq!(before["repairs"][0]["path"], "body.elements.files");
+        assert_eq!(rows(&ws, "SELECT COUNT(*) FROM project_brief_snapshots"), 1);
+
+        // An edit that stops showing it is not repaired: refused, nothing changed.
+        let remove_last = edit(key, json!({"files":markdown("Preview removed.")}));
         let rejected = update::update(&ws, &checker, "a", input("remove-last", 1, vec![remove_last])).await.unwrap().unwrap_err();
         assert_eq!(codes(&rejected), ["unused_attachment"]);
         assert_eq!(section(&brief(&ws, "a"), key), &before);
@@ -2020,9 +2145,7 @@ async fn legacy_unused_attachments_stay_readable_and_unrelated_edits_keep_asks_a
     assert_eq!(historical["body"], report["body"]);
     assert_eq!(historical["attachments"][0]["snapshot"], true);
 
-    // Full replacements are strict, even for legacy content, and cannot forge context.
-    let rejected = update::update(&ws, &checker, "a", input("put", 2, vec![ask.clone()])).await.unwrap().unwrap_err();
-    assert_eq!(codes(&rejected), ["unused_attachment"]);
+    // An edit cannot forge context.
     let mut forged = edit("legacy", json!({"note":markdown("Spoofed.")}));
     forged["previousBody"] = body("fake");
     assert_eq!(codes(&reject(&ws, "a", input("forged", 2, vec![forged])).await), ["invalid_change"]);
@@ -2037,6 +2160,14 @@ async fn legacy_unused_attachments_stay_readable_and_unrelated_edits_keep_asks_a
     assert_eq!(repaired["ask"], before["ask"]);
     assert_eq!(repaired["attachments"], before["attachments"]);
     assert_eq!(version(&ws, &project), 3);
+
+    // A full replacement checks every registration again, legacy ones
+    // included: an unused one is shown (YN-14), and a put asks again.
+    let replaced = update::update(&ws, &checker, "a", input("put", 3, vec![ask.clone()])).await.unwrap().unwrap();
+    assert_eq!(replaced["repairs"][0]["code"], "showed_attachment", "{replaced}");
+    let after_put = section(&brief(&ws, "a"), "legacy").clone();
+    assert_eq!(after_put["body"]["elements"]["files"], json!({"type":"Attachments","props":{"items":[{"name":"old.png"}]}}));
+    assert_eq!(after_put["ask"]["state"], "open");
 }
 
 #[tokio::test]
@@ -2044,7 +2175,7 @@ async fn an_ask_only_member_edits_only_its_own_ask_by_its_stored_kind() {
     let (_dir, ws, project) = lab();
     // b wrote a status and an ask while it could edit content; then only a may.
     accept(&ws, "b", input("b1", 0, vec![put("old", "status"), put("question", "ask")])).await;
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     // Its old status is regular content: the edit is refused and nothing changes.
     assert_eq!(codes(&reject(&ws, "b", input("b2", 1, vec![edit("old", json!({"note":markdown("Still mine?")}))])).await), ["ask_only"]);
     // A batch of an allowed ask edit and a refused status edit is refused whole.
@@ -2155,7 +2286,7 @@ async fn a_report_marked_seen_is_the_same_section_when_its_owner_writes_it_again
     accept(&ws, "c", input("c1", 6, vec![put("log", "report")])).await;
     sections::mark_seen(&ws.store, &project, &[("log".into(), 1)]).unwrap();
     assert_eq!(history(&ws, "log")[0]["currentSource"], true);
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into(), "b".into()])).unwrap();
+    set_leads(&ws, &project, &["a", "b"]);
     assert_eq!(history(&ws, "log")[0]["currentSource"], false);
 }
 
@@ -2283,7 +2414,7 @@ async fn editors_get_advice_never_a_duty_and_nothing_is_resolved_or_refreshed_fo
     assert_eq!(section(&read, "decide")["ask"]["state"], "replied");
     assert_eq!(section(&read, "state")["status"], json!({"asOf":"2026-01-01T00:00:00Z","validFor":60,"stale":true}));
     assert_eq!(version(&ws, &project), before, "reading changed nothing");
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     let ask_only = brief(&ws, "b")["you"].clone();
     assert_eq!(ask_only["capabilities"]["editContent"], false);
     assert!(ask_only.get("homeHint").is_none());
@@ -2310,7 +2441,7 @@ async fn a_task_result_carries_home_advice_only_for_editors_of_its_project() {
     let none = deliver("none", Value::Null);
     assert!(none.get("homeHint").is_none() && !mail(&none).contains(outcome_hint()));
     // The user made b Ask-only: its result has no advice; a still gets it.
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     let ask_only = deliver("ask-only", json!(project));
     assert!(ask_only.get("homeHint").is_none());
     assert!(mail(&ask_only).ends_with(outcome_hint()));
@@ -2325,9 +2456,9 @@ async fn a_failed_home_hint_lookup_never_fails_a_task_result() {
     let call = |actor: &str, op: &str, input: Value| ws.store.collaboration_call(Some(actor), op, input);
     let task = call("a", "task_create", json!({"requestId":"c","title":"Measure","projectId":project})).unwrap()["task"].clone();
     let sent = call("a", "task_dispatch", json!({"requestId":"d","taskId":task["id"],"expectedVersion":task["version"],"toAgentId":"b"})).unwrap();
-    // An editor policy Core cannot read: every hint lookup for this Project fails.
+    // A Home preference Core cannot read: every editor's hint lookup fails.
     ws.store.db.write().unwrap().execute(
-        "INSERT OR REPLACE INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'not json')", [&project]).unwrap();
+        "INSERT OR REPLACE INTO workspace_meta(key,value) VALUES('home.presentation',X'00')", []).unwrap();
     let id = task["id"].as_str().unwrap();
     // home_hint takes the task's own key, as task_submit_result passes it.
     let key: String = ws.store.db.read().unwrap()
@@ -2404,7 +2535,7 @@ async fn the_users_presentation_preference_reaches_editors_until_the_default_rem
     assert_eq!(presentation::view(&file).unwrap(), saved);
     drop(file);
 
-    editors::save(&ws.store, &project, 0, Some(vec!["a".into()])).unwrap();
+    set_leads(&ws, &project, &["a"]);
     assert!(brief(&ws, "b")["you"].get("homePreference").is_none(), "Ask-only: no advice");
     assert_eq!(brief(&ws, "a")["you"]["homePreference"], json!(text));
 
@@ -2559,4 +2690,40 @@ async fn a_research_desk_reads_only_its_snapshots_and_keeps_each_definition_vers
     assert_eq!(read("body", None).err().unwrap().code, "element_not_found");
     let other = research::desk(&ws.store, &cache, "other-project", "study", "desk", None).unwrap().err().unwrap();
     assert_eq!(other.code, "section_not_found");
+}
+
+/// YN-7 item 3: a desk reads a CSV cell by the text its row's key columns
+/// hold, as written; no row, two rows or a column the file lacks is never a guess.
+#[tokio::test]
+async fn a_research_desk_reads_a_csv_cell_by_its_rows_text_and_never_guesses() {
+    let (dir, ws, project) = lab();
+    let checker = Checker::Node(Arc::new(crate::results::Validator::from_env()));
+    std::fs::write(dir.path().join("results.csv"),
+        "sport, d ,auc\nalpha,2,0.92\nalpha,2.0,0.50\nbeta,1,0.81\nbeta,1,0.83\ngamma,3,n/a\n\"  delta \",4, 0.7 \n").unwrap();
+    let cell = |sport: &str, d: &str, column: &str| json!({"from":"results.csv","row":{"sport":sport,"d":d},"column":column});
+    let part = |id: &str, value: Value| json!({"id":id,"label":id,"estimate":{"value":value}});
+    let put = json!({"op":"put","key":"study","kind":"report","title":"Study (synthetic)",
+        "attachments":[{"name":"results.csv","path":dir.path().join("results.csv")}],
+        "body":{"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{},"children":["desk"]},
+            "desk":{"type":"ResearchDesk","props":{"schema":"research/1",
+                "claims":[{"id":"c1","title":"Alpha ranks well","statement":"About 0.9 at d 2.","status":"conditional","primary":"r1"}],
+                "plots":[{"id":"p1","title":"AUC","digits":2,"rows":[
+                    {"id":"r1","label":"alpha d2","estimate":{"value":cell("alpha","2","auc"),"low":cell("beta","1","auc"),"high":cell("gamma","3","auc")},
+                     "parts":[part("a",cell("alpha","2","f1")),part("b",cell("omega","2","auc")),part("c",cell("delta","4","auc")),
+                        part("e",json!({"from":"results.csv","row":{"league":"x"},"column":"auc"}))]}]}],
+                "sources":[{"id":"res","label":"Results","kind":"data","snapshot":"results.csv"}]}}}}});
+    let accepted = update::update(&ws, &checker, "a", input("c1", 0, vec![put])).await.unwrap();
+    assert!(accepted.is_ok(), "{accepted:?}");
+
+    let cache = attachments::dir(&ws.data_dir);
+    let values = research::desk(&ws.store, &cache, &project, "study", "desk", None).unwrap().ok().unwrap()["values"].clone();
+    let status = |at: &str| values[at]["status"].clone();
+    // "2" matches the row holding "2", not the one holding "2.0".
+    assert_eq!(values["r1.value"], json!({"status":"read","value":0.92,"from":"results.csv"}));
+    assert_eq!((status("r1.low"), status("r1.high")), (json!("ambiguous"), json!("not_number")), "two rows match; n/a is no number");
+    assert_eq!((status("a.value"), status("b.value"), status("e.value")), (json!("missing"), json!("missing"), json!("missing")),
+        "a column, a row or a key column the file lacks");
+    // The spaces around a cell or a header name are not its text.
+    assert_eq!(values["c.value"]["value"], json!(0.7));
 }

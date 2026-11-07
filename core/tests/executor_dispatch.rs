@@ -226,10 +226,11 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
         .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Review the change."}]}))
         .send().await.unwrap();
     assert_eq!(saved.status(), reqwest::StatusCode::OK);
-    let slots = client.put(format!("{base}/executor-slots")).header("X-Yuzuno-Client", "desktop")
+    // This Core host's limit (YN-2 S5: each machine's is the only one).
+    let slots = client.put(format!("{base}/machines/local/executor-slots")).header("X-Yuzuno-Client", "desktop")
         .json(&json!({"expectedVersion":0,"slots":2})).send().await.unwrap();
     assert_eq!(slots.status(), reqwest::StatusCode::OK);
-    assert_eq!(slots.json::<Value>().await.unwrap()["workspace"]["slots"], 2);
+    assert_eq!(slots.json::<Value>().await.unwrap()["machines"][0]["slots"], 2);
 
     // Three dispatches, each executor in a worktree of its own.
     let (mut tasks, mut executors, mut folders) = (Vec::new(), Vec::new(), Vec::new());
@@ -244,7 +245,8 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
     until("the first two get their mail", || folders[..2].iter().all(|f| !prompts(Path::new(f)).is_empty())).await;
     // As an Agent reads it: task_get's current view.
     let slot = |task: &str| ws.store.collaboration_call(None, "task_get", json!({"taskId":task,"view":"current"})).unwrap()["current"]["executorSlot"].clone();
-    assert_eq!(slot(&tasks[2]), json!({"agentId":executors[2],"state":"waiting","machine":"local","position":1}));
+    assert_eq!(slot(&tasks[2]), json!({"agentId":executors[2],"state":"waiting","machine":"local","position":1,
+        "waitsFor":{"machine":"local","name":"this Core host","running":2,"limit":2}}));
     let third = ws.store.agent(&executors[2]).unwrap();
     assert_eq!((third.connection_state.as_str(), third.status.as_str()), ("disconnected", "offline"), "the third waits, unstarted");
 
@@ -253,7 +255,8 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
         .json(&json!({})).send().await.unwrap();
     assert_eq!(refused.status(), reqwest::StatusCode::BAD_REQUEST);
     let refused = refused.json::<Value>().await.unwrap()["error"].as_str().unwrap_or_default().to_owned();
-    assert!(refused.starts_with("executor_queued: this executor waits for an executor slot (number 1 in the queue)"), "{refused}");
+    assert!(refused.starts_with("executor_queued: this executor waits for a slot on this Core host (2 of 2 running there; number 1 in the queue)"),
+        "{refused}");
     let third = ws.store.agent(&executors[2]).unwrap();
     assert_eq!((third.connection_state.as_str(), third.status.as_str(), third.error.as_deref()), ("disconnected", "offline", None),
         "a refused Connect changes nothing");
@@ -307,7 +310,7 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
     let answer = ws.collaboration_call(None, "task_dispatch", dispatch("four", &fourth)).await.unwrap();
     let fourth_executor = answer["agentId"].as_str().unwrap().to_owned();
     assert_eq!(slot(&fourth)["state"], "waiting");
-    let raised = client.put(format!("{base}/executor-slots")).header("X-Yuzuno-Client", "desktop")
+    let raised = client.put(format!("{base}/machines/local/executor-slots")).header("X-Yuzuno-Client", "desktop")
         .json(&json!({"expectedVersion":1,"slots":3})).send().await.unwrap();
     assert_eq!(raised.status(), reqwest::StatusCode::OK);
     until("the fourth gets its mail", || !prompts(Path::new(&fourth_folder)).is_empty()).await;
@@ -322,7 +325,8 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
     let first = ws.store.agent(&executors[0]).unwrap();
     assert!(first.closed_at.is_none());
     assert_eq!((first.connection_state.as_str(), first.status.as_str()), ("disconnected", "offline"), "reopened, not started");
-    assert_eq!(slot(&tasks[0]), json!({"agentId":executors[0],"state":"waiting","machine":"local","position":1}));
+    assert_eq!(slot(&tasks[0]), json!({"agentId":executors[0],"state":"waiting","machine":"local","position":1,
+        "waitsFor":{"machine":"local","name":"this Core host","running":3,"limit":3}}));
     ws.close_agent(&fourth_executor).await.unwrap();
     until("the reopened one runs", || slot(&tasks[0])["state"] == "running").await;
     assert_eq!(ws.store.agent(&executors[0]).unwrap().connection_state, "connected");
@@ -432,7 +436,7 @@ async fn a_lead_releases_its_executor_over_mcp_and_the_freed_slot_starts_the_nex
         .json(&json!({"expectedVersion":0,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Review the change."}]}))
         .send().await.unwrap();
     assert_eq!(saved.status(), reqwest::StatusCode::OK);
-    let slots = client.put(format!("{base}/executor-slots")).header("X-Yuzuno-Client", "desktop")
+    let slots = client.put(format!("{base}/machines/local/executor-slots")).header("X-Yuzuno-Client", "desktop")
         .json(&json!({"expectedVersion":0,"slots":1})).send().await.unwrap();
     assert_eq!(slots.status(), reqwest::StatusCode::OK);
     for id in ["lead", "member"] {

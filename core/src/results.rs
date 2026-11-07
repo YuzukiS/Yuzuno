@@ -424,8 +424,11 @@ impl Validator {
     /// A validator without advice (before T-176) gives none.
     /// Only block edits supply previous_body, read from the stored row at
     /// the guarded Brief version; attachment registrations cannot change.
+    /// One Brief section: Ok((normalized, advice, repairs)) when the
+    /// validator accepted it, repairs being what it changed to accept it
+    /// (YN-14; none from a bundle that predates them), or the problems.
     pub(crate) async fn check_brief_section(self: &Arc<Self>, section: &Value, previous_body: Option<&Value>)
-        -> Result<Result<(Value, Vec<Value>), Value>, String> {
+        -> Result<Result<(Value, Vec<Value>, Vec<Value>), Value>, String> {
         let deadline = Instant::now() + DEADLINE;
         let queued = Waiting(&self.waiting);
         if self.waiting.fetch_add(1, Ordering::SeqCst) >= MAX_WAITING {
@@ -446,7 +449,8 @@ impl Validator {
                 }
                 Some(true) if answer["normalized"].is_object() => {
                     let advice = answer["advice"].as_array().cloned().unwrap_or_default();
-                    Ok(Ok((answer["normalized"].take(), advice)))
+                    let repairs = answer["repairs"].as_array().cloned().unwrap_or_default();
+                    Ok(Ok((answer["normalized"].take(), advice, repairs)))
                 }
                 Some(false) if answer["problems"].as_array().is_some_and(|p| !p.is_empty()) => Ok(Err(answer["problems"].take())),
                 _ => Err("unreadable validator answer".to_owned()),
@@ -998,6 +1002,8 @@ mod tests {
         let (_dir, ws) = fixture();
         let project = ws.store.create_project("Code", Default::default()).unwrap().id;
         ws.store.set_agent_project("a", Some(&project)).unwrap();
+        // It leads the Project, so it edits Home (YN-2 S4).
+        crate::agent_roles::save(&ws.store, &project, 0, vec!["a".into()]).unwrap();
         let editor = ws.result_publish("a", input("hint-a", "t1", spec(None))).await.unwrap().unwrap();
         assert_eq!(editor["homeHint"], crate::project_brief::outcome_hint());
         // In no Project, so no Brief of its own.
@@ -1014,9 +1020,10 @@ mod tests {
         let (_dir, ws) = fixture();
         let project = ws.store.create_project("Code", Default::default()).unwrap().id;
         ws.store.set_agent_project("a", Some(&project)).unwrap();
-        // An editor policy Core cannot read makes the lookup fail.
+        crate::agent_roles::save(&ws.store, &project, 0, vec!["a".into()]).unwrap();
+        // A Home preference Core cannot read makes an editor's lookup fail.
         ws.store.db.write().unwrap().execute(
-            "INSERT OR REPLACE INTO project_brief_editors(project_id,version,editor_ids) VALUES(?1,1,'not json')", [&project]).unwrap();
+            "INSERT OR REPLACE INTO workspace_meta(key,value) VALUES('home.presentation',X'00')", []).unwrap();
         let published = ws.result_publish("a", input("broken-hint", "t1", spec(None))).await.unwrap().unwrap();
         assert!(published.get("homeHint").is_none(), "{published}");
         assert_eq!(rows(&ws, "interactive_results"), 1);

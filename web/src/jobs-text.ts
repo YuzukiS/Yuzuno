@@ -147,6 +147,12 @@ export const jobsText = strings({
   notLowered: (reason: string) => `Not lowered: ${reason}`,
   memoryLimit: "Memory limit",
   loweredLine: (from: string, to: string, by: string, at: string) => `Lowered from ${from} to ${to} by ${by}, ${at}`,
+  suggestedRam: "Suggested RAM",
+  keptSuggestion: (asked: string, memory: string, runs: number, peak: string, project: boolean, limit: boolean) =>
+    `Asked ${asked} · suggested ${memory} from ${runs === 1 ? "1 earlier run" : `${runs} earlier runs`}${project ? " of this command in this Project's other tasks" : ""} (peak ${peak}${limit ? "; one was stopped at its memory limit" : ""})`,
+  farAboveSuggestion:
+    "More than 1.5 × the suggestion: all of it is held in the shared budget while the job waits and runs. To ask less, cancel and submit again, or lower its memory limit once it runs.",
+  belowPeak: "Below the peak of those runs: it may be stopped at its memory limit.",
   notReserved: "; not reserved",
   onDevices: (devices: string) => ` on ${devices}`,
   currentRam: "Current RAM",
@@ -178,8 +184,8 @@ export const jobsText = strings({
   ramLimit: "RAM limit (MiB)",
   swapLimit: "Swap limit (MiB)",
   timeLimit: "Time limit (seconds)",
-  suggestion: (runs: number, peak: string, cores: string | null, memory: string, cpu: string | null) =>
-    `${runs === 1 ? "The last measured run" : `The last ${runs} measured runs`} of this name or command in this task peaked at ${peak} RAM${cores ? ` and ${cores} CPU cores` : ""}. Suggested: ${memory} RAM${cpu ? ` and ${cpu} CPU` : ""} (peak × 1.5, rounded up). Your limits stay as you set them.`,
+  suggestion: (runs: number, peak: string, cores: string | null, memory: string, cpu: string | null, project: boolean) =>
+    `${runs === 1 ? "The last measured run" : `The last ${runs} measured runs`} ${project ? "of this command in this Project's other tasks" : "of this name or command in this task"} peaked at ${peak} RAM${cores ? ` and ${cores} CPU cores` : ""}. Suggested: ${memory} RAM${cpu ? ` and ${cpu} CPU` : ""} (RAM: peak × 1.3 or peak + 1 GiB, whichever is more; CPU: × 1.5; rounded up). Your limits stay as you set them.`,
   useSuggestion: "Use suggestion",
   exclusiveRun: "Exclusive execution",
   exclusiveNote:
@@ -327,6 +333,11 @@ export const jobsText = strings({
   notLowered: (reason) => `未降低：${reason}`,
   memoryLimit: "内存上限",
   loweredLine: (from, to, by, at) => `${at} 由 ${by} 从 ${from} 降到 ${to}`,
+  suggestedRam: "建议内存",
+  keptSuggestion: (asked, memory, runs, peak, project, limit) =>
+    `申请 ${asked} · 按${project ? "本项目其他任务中同命令的" : ""}之前 ${runs} 次运行建议 ${memory}（峰值 ${peak}${limit ? "；其中一次在内存上限处被停止" : ""}）`,
+  farAboveSuggestion: "超过建议值的 1.5 倍：排队和运行期间，申请的全部内存都占着共享预算。要少申请，可取消后重新提交，或在它运行后降低内存上限。",
+  belowPeak: "低于这些运行的峰值：可能在内存上限处被停止。",
   notReserved: "；未预留",
   onDevices: (devices) => `，位于 ${devices}`,
   currentRam: "当前内存",
@@ -357,8 +368,8 @@ export const jobsText = strings({
   ramLimit: "内存上限（MiB）",
   swapLimit: "交换空间上限（MiB）",
   timeLimit: "时间上限（秒）",
-  suggestion: (runs, peak, cores, memory, cpu) =>
-    `该任务中同名或同命令的${runs === 1 ? "上次有完整测量的运行" : `最近 ${runs} 次有完整测量的运行`}峰值为 ${peak} 内存${cores ? `、${cores} 个 CPU 核` : ""}。建议申请 ${memory} 内存${cpu ? `、${cpu} CPU` : ""}（峰值 × 1.5 向上取整）。你填写的限制不会被改动。`,
+  suggestion: (runs, peak, cores, memory, cpu, project) =>
+    `${project ? "本项目其他任务中同命令的" : "该任务中同名或同命令的"}${runs === 1 ? "上次有完整测量的运行" : `最近 ${runs} 次有完整测量的运行`}峰值为 ${peak} 内存${cores ? `、${cores} 个 CPU 核` : ""}。建议申请 ${memory} 内存${cpu ? `、${cpu} CPU` : ""}（内存：峰值 × 1.3 与峰值 + 1 GiB 取较大者；CPU：× 1.5；向上取整）。你填写的限制不会被改动。`,
   useSuggestion: "采用建议",
   exclusiveRun: "独占执行",
   exclusiveNote: "等待更早的 Job 完成，然后在此 Core 托管的本地 Job 中单独运行。之后的 Job 会排队，直到清理完成。其他应用继续运行；资源限制仍然适用。未勾选的 Job 使用普通的共享容量。",

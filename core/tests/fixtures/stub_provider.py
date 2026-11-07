@@ -16,6 +16,16 @@ message's keyword:
 - `probe-4a form`: one call of OpenCode's `question` tool, which opens a form.
 - `probe-61 mcp` (T-61 slice 1): one call of the Workspace MCP's
   `yuzuno_peers_list`; once its result is back, a last text.
+- `probe-61 write` (T-61 slice 5): three tool calls in one step, `write`
+  `a.txt` as `two`, `write` `new.txt`, and `shell` writing `../sibling.txt`
+  (outside the folder); once their results are back, a last text.
+- `probe-61 three`: one `write` of `a.txt` as `three`, then a last text.
+- `probe-61 nested` (T-61 slice 6): two `write` calls in one step, `a.txt`
+  as `four` and `sub/b.txt` as `b`; once their results are back, a last
+  text.
+- 2.x's summary prompt (T-61 slice 4: "You MUST summarize the conversation
+  above", 2.2.5 core/src/session/compaction.ts), with or without tools: a
+  summary in 2.x's template, which 2.x checks by its headings.
 A request without tools (OpenCode's own title, say) is answered with a
 title, streamed when it asks for a stream, as OpenCode does.
 """
@@ -34,6 +44,10 @@ def chunk(delta, finish=None):
 
 USAGE = {'id': 'chatcmpl-stub', 'object': 'chat.completion.chunk', 'created': 1, 'model': 'fake', 'choices': [],
          'usage': {'prompt_tokens': 11, 'completion_tokens': 7, 'total_tokens': 18}}
+
+
+# A summary in 2.x's template (2.2.5 checks it has one of its `##` headings).
+SUMMARY = '## Objective\n- probe-61 compaction summary.\n\n## Next Move\n1. (none)'
 
 
 def text_of(message):
@@ -61,6 +75,10 @@ class Handler(BaseHTTPRequestHandler):
         users = [m for m in messages if m.get('role') == 'user']
         asked = text_of(users[-1]) if users else ''
         last = messages[-1].get('role') if messages else None
+        if 'You MUST summarize the conversation above' in asked:
+            if body.get('stream'):
+                return self.stream([chunk({'role': 'assistant', 'content': SUMMARY}), chunk({}, 'stop')])
+            return self.whole(SUMMARY)
         if not body.get('tools'):
             if body.get('stream'):
                 return self.stream([chunk({'role': 'assistant', 'content': 'Stub title'}), chunk({}, 'stop')])
@@ -80,6 +98,16 @@ class Handler(BaseHTTPRequestHandler):
                         'function': {'name': 'yuzuno_peers_list', 'arguments': '{}'}}
                 return self.stream([chunk({'role': 'assistant', 'tool_calls': [call]}), chunk({}, 'tool_calls')])
             return self.stream([chunk({'role': 'assistant', 'content': 'Peers seen.'}), chunk({}, 'stop')])
+        if 'probe-61 write' in asked or 'probe-61 three' in asked or 'probe-61 nested' in asked:
+            if last == 'tool':
+                return self.stream([chunk({'role': 'assistant', 'content': 'Written.'}), chunk({}, 'stop')])
+            calls = [('write', {'path': 'a.txt', 'content': 'two\n'}), ('write', {'path': 'new.txt', 'content': 'new\n'}),
+                     ('shell', {'command': 'printf changed > ../sibling.txt'})] if 'probe-61 write' in asked \
+                else [('write', {'path': 'a.txt', 'content': 'four\n'}), ('write', {'path': 'sub/b.txt', 'content': 'b\n'})] \
+                if 'probe-61 nested' in asked else [('write', {'path': 'a.txt', 'content': 'three\n'})]
+            delta = [{'index': n, 'id': f'call_stub_5{n}', 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(arguments)}}
+                     for n, (name, arguments) in enumerate(calls)]
+            return self.stream([chunk({'role': 'assistant', 'tool_calls': delta}), chunk({}, 'tool_calls')])
         if 'probe-4a tools' in asked and last != 'tool':
             call = {'index': 0, 'id': 'call_stub_1', 'type': 'function',
                     'function': {'name': 'read', 'arguments': json.dumps({'path': 'a.txt'})}}

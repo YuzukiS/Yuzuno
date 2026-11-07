@@ -59,7 +59,7 @@ export function ExecutorRail({
   workspaceId: string;
   selectedId: string | null;
   searching: boolean;
-  order?: { seen: TurnSeen; waiting?: ReadonlySet<string> };
+  order?: { seen: TurnSeen };
   renderAgent: (agent: Agent) => ReactNode;
 }) {
   const t = useStrings(lifecycleText);

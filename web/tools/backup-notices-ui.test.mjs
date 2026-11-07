@@ -145,16 +145,12 @@ test("a failed daily backup is one notification, not repeated on a reconnect, an
     assert.deepEqual(posts(), postsBefore, "no backup, retry or removal is started");
     assert.equal(p.core.asked, 0, "the system is never asked from here");
 
-    // Settings left through a card that opens another dialog: opened again, it
-    // starts where it always does, not at Backup (review bbce8367, P3).
-    const search = p.d.querySelector('input[type="search"]');
-    Object.getOwnPropertyDescriptor(p.w.HTMLInputElement.prototype, "value").set.call(search, "Execution machines");
-    search.dispatchEvent(new p.w.Event("input", { bubbles: true }));
-    const leave = () => [...p.d.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith("Open Execution machines"));
-    await until(() => leave() && !leave().disabled, "the machines card");
-    leave().click();
-    await until(() => !p.d.querySelector("#settings-editor-backup"), "Settings closed");
+    // Settings closed: opened again, it starts where it always does, not at
+    // Backup (review bbce8367, P3). App forgets the request whenever Settings
+    // closes, however it is left; the cards that left it for the Projects or
+    // Machines dialog are its own pages now (YN-8).
     for (const close of p.d.querySelectorAll('[aria-label="Close dialog"]')) close.click();
+    await until(() => !p.d.querySelector("#settings-editor-backup"), "Settings closed");
     await pause(100);
     p.d.querySelector('[aria-label="Settings and updates"]').click();
     await until(() => p.d.querySelector("#settings-editor-updates"), "Settings again");

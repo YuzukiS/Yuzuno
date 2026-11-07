@@ -155,7 +155,8 @@ def save(): p.write_text(json.dumps(s))
 def out(code,data,link=None):
     if include:
         status={200:'200 OK',201:'201 Created',204:'204 No Content',404:'404 Not Found',405:'405 Method Not Allowed',409:'409 Conflict',422:'422 Unprocessable Entity',429:'429 Too Many Requests',502:'502 Bad Gateway'}[code]
-        sys.stdout.write('HTTP/2.0 '+status+'\r\nEtag: "'+str(len(s['calls']))+'"\r\n'+('Link: '+link+'\r\n' if link else '')+'\r\n'+('' if data is None else json.dumps(data)))
+        poll='X-Poll-Interval: '+str(s['pollInterval'])+'\r\n' if s.get('pollInterval') and path.startswith('git/ref') else ''
+        sys.stdout.write('HTTP/2.0 '+status+'\r\nEtag: "'+str(len(s['calls']))+'"\r\n'+poll+('Link: '+link+'\r\n' if link else '')+'\r\n'+('' if data is None else json.dumps(data)))
     else:
         sys.stdout.write(data if isinstance(data,str) else json.dumps(data))
     if code>=300:
@@ -173,13 +174,26 @@ if method=='POST' and path=='git/refs':
     if answer=='lost': out(502,{'message':'Bad gateway'})
     out(201,{'ref':body['ref'],'object':{'sha':body['sha']}})
 if method=='POST' and path=='merges':
+    if s.pop('slowMerge',None):
+        save(); p.with_name('merge-started').write_text('1'); time.sleep(2)
     if s.get('batchConflict'): out(409,{'message':'Merge conflict'})
-    k={'sha':s['batchCommit'],'tree':s['batchTree'],'parents':[s['refs'][body['base']],body['head']]}
+    q=s.get('mergeCommits',{}).get(body['head'])
+    made=q.pop(0) if q else [s['batchCommit'],s['batchTree']]
+    k={'sha':made[0],'tree':made[1],'parents':[s['refs'][body['base']],body['head']]}
     c[k['sha']]=k; s['refs'][body['base']]=k['sha']; save()
     out(201,{'sha':k['sha'],'commit':{'tree':{'sha':k['tree']}},'parents':[{'sha':x} for x in k['parents']]})
+if method=='POST' and path=='git/commits':
+    k={'sha':s['revertCommit'],'tree':body['tree'],'parents':body['parents']}
+    c[k['sha']]=k; save()
+    out(201,{'sha':k['sha'],'tree':{'sha':k['tree']},'parents':[{'sha':x} for x in k['parents']]})
 if method=='POST' and path=='pulls':
-    n='900'; s['pulls'][n]={'number':900,'state':'open','head':{'ref':body['head'],'sha':s['refs'][body['head']]},'base':{'ref':body['base']},'draft':body['draft']}
+    n=str(900+len(s['pulls'])); s['pulls'][n]={'number':int(n),'state':'open','head':{'ref':body['head'],'sha':s['refs'][body['head']]},'base':{'ref':body['base']},'draft':body['draft'],'title':body['title']}
     save(); out(201,s['pulls'][n])
+if method=='PUT' and path.startswith('pulls/') and path.endswith('/merge') and path.split('/')[1] in s['pulls']:
+    pr=s['pulls'][path.split('/')[1]]
+    m={'sha':s['revertMergeSha'],'tree':s['revertMergeTree'],'parents':[s['main'],body['sha']]}
+    c[m['sha']]=m; s['main']=m['sha']; pr.update({'state':'closed','merged':True}); save()
+    out(200,{'sha':m['sha'],'merged':True,'message':'Pull Request successfully merged'})
 if method=='PATCH' and path.startswith('pulls/') and path.split('/')[1] in s['pulls']:
     s['pulls'][path.split('/')[1]]['state']=body['state']; save(); out(200,s['pulls'][path.split('/')[1]])
 if method=='DELETE' and path.startswith('git/refs/heads/'):
@@ -190,6 +204,11 @@ if method=='DELETE' and path.startswith('git/refs/heads/'):
     if answer=='429':
         save(); out(429,{'message':'API rate limit exceeded'})
     s['refs'].pop(path[len('git/refs/heads/'):],None); save(); out(204,None)
+if method=='PUT' and path=='pulls/12/merge':
+    m={'sha':s['mergeSha12'],'tree':s['mergeTree12'],'parents':[s['main'],body['sha']]}
+    c[m['sha']]=m; s['main']=m['sha']
+    s['pull12'].update({'merged':True,'state':'closed','merged_at':'now','merge_commit_sha':m['sha']}); save()
+    out(200,{'sha':m['sha'],'merged':True,'message':'Pull Request successfully merged'})
 if method=='PUT' and path=='pulls/11/merge':
     answer=s['mergeAnswers'].pop(0) if s['mergeAnswers'] else 'ok'; save()
     if answer in ('405','409'): out(int(answer),{'message':'Pull Request is not mergeable'})
@@ -229,6 +248,11 @@ if path.startswith('git/ref/heads/') and path[len('git/ref/heads/'):] in s.get('
 if path=='branches/main': out(200,{'commit':{'sha':s.get('branchMain',s['main'])}})
 if path=='git/ref/pull/11/merge':
     out(200,{'object':{'sha':s['merge']}}) if s['merge'] else out(404,{})
+if path=='git/ref/pull/12/merge':
+    out(200,{'object':{'sha':s['merge12']}}) if s.get('merge12') else out(404,{})
+if path.startswith('compare/'):
+    key=path[len('compare/'):].split('?')[0]
+    out(200,s['compare'][key]) if key in s.get('compare',{}) else out(404,{'message':'Not Found'})
 down=s.get('commitDown')
 if path.startswith('git/commits/') and (down is True or down==path.split('/')[-1]): out(502,{'message':'Bad gateway'})
 if path.startswith('git/commits/'):
@@ -240,7 +264,7 @@ if path.startswith('commits/'):
     out(200,{'sha':k['sha'],'parents':[{'sha':x} for x in k['parents']],'commit':{'tree':{'sha':k['tree']}}})
 if path.startswith('actions/runs?branch='): out(200,{'total_count':len(s['mainRuns']),'workflow_runs':s['mainRuns']})
 if path.startswith('actions/runs?head_sha='):
-    runs=s['batchRuns'] if query['head_sha']==s['batchCommit'] else s['runs']
+    runs=s.get('headRuns',{}).get(query['head_sha']) or (s['batchRuns'] if query['head_sha']==s['batchCommit'] else s['runs'])
     out(200,{'total_count':len(runs),'workflow_runs':runs})
 if path.startswith('actions/runs/') and '/jobs' in path:
     jobs=s['jobs'][path.split('/')[2]]; per=int(query.get('per_page',100)); page=int(query.get('page',1))
@@ -1181,6 +1205,582 @@ async fn a_head_tested_on_an_older_main_merges_through_a_batch_on_the_current_ma
     assert_eq!(e["batch"]["cleanup"], "done");
 }
 
+/// Main moved on to sha('c') after the PR's CI ran, and GitHub never moved the
+/// PR's merge ref: it stays main_sha() + head, as in the T-37 lab (finding F1,
+/// over 19 minutes). The compare of the two mains names main_sha() as their
+/// merge base, so the ref's main is an older main. The batch's own CI ran on
+/// the current main.
+fn main_moved_ref_stale(s: &mut Value) {
+    let to = sha('c');
+    s["commits"][&to] = json!({"sha":to,"tree":sha('6'),"parents":[main_sha()]});
+    s["commits"][&batch_merge_ref()]["parents"] = json!([to, batch_commit()]);
+    s["main"] = json!(to);
+    s["compare"] = json!({format!("{}...{}", main_sha(), to): {"base":main_sha(),"mergeBase":main_sha(),"commits":1}});
+}
+/// Backdate when the entry's last check first saw its merge ref as it is.
+fn age_merge_ref(lab: &Lab, seconds: i64) {
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_entries SET data=json_set(data,'$.lastEvidence.mergeRef.since',json_extract(data,'$.lastEvidence.mergeRef.since')-?1)", [seconds])
+        .unwrap();
+}
+
+/// T-37 lab finding F1: a merge ref GitHub never moves to the current main kept
+/// the entry waiting until wait_timeout. CI on the PR checked out that ref, so
+/// it cannot have tested the current main: the entry goes to the batch at once.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_ref_github_never_moves_to_the_current_main_batches_in_one_tick() {
+    let lab = lab_with(main_moved_ref_stale);
+    let e = lab.release(Some("lead"), "r1").await.unwrap();
+    let branch = format!("queue/merge-{}", e["id"].as_str().unwrap());
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "{e}");
+    assert!(
+        e["detail"].as_str().unwrap().contains("Core opened batch #900"),
+        "a merge ref on an older main goes to the batch in the first check: {}",
+        e["detail"]
+    );
+    assert_eq!(
+        writes(lab.dir.path()),
+        ["POST repos/owner/repo/git/refs", "POST repos/owner/repo/merges", "POST repos/owner/repo/pulls"],
+        "the batch: its branch, the head merged into it, and its draft PR"
+    );
+    let create = calls(lab.dir.path()).into_iter().find(|c| c["method"] == "POST").unwrap();
+    assert_eq!(create["body"], json!({"ref":format!("refs/heads/{branch}"),"sha":sha('c')}), "the batch is built on the current main");
+    assert!(
+        !calls(lab.dir.path()).iter().any(|c| c["endpoint"].as_str().unwrap().ends_with("/logs")),
+        "no job log is read: CI behind a stale merge ref cannot have tested the current main"
+    );
+    change(lab.dir.path(), batch_green);
+    let e = lab.step().await;
+    assert_eq!(e["state"], "merged", "CI on the batch proved the merge: {e}");
+    assert_eq!(e["lastEvidence"]["gate"]["kind"], "batch");
+    assert_eq!(e["merge"]["post"]["ok"], true, "{e}");
+}
+
+/// A merge ref GitHub has not computed is waited for, but only two minutes:
+/// then Core builds the batch with its own merge.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_ref_github_has_not_computed_is_waited_for_two_minutes_then_batched() {
+    let lab = lab_with(|s| {
+        main_moved_ref_stale(s);
+        s["merge"] = Value::Null;
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.entry().await["state"], "waiting");
+    assert!(writes(lab.dir.path()).is_empty(), "within the two minutes Core writes nothing");
+    age_merge_ref(&lab, 100);
+    lab.step().await;
+    assert!(writes(lab.dir.path()).is_empty(), "nor before they end");
+    age_merge_ref(&lab, 21);
+    let e = lab.step().await;
+    assert!(
+        e["detail"].as_str().unwrap().contains("Core opened batch #900"),
+        "after two minutes without a merge ref Core builds the batch itself: {}",
+        e["detail"]
+    );
+    assert_eq!(writes(lab.dir.path()).len(), 3, "its branch, its merge and its draft PR");
+}
+
+/// T-37 lab finding F2: GitHub runs no CI for a PR with merge conflicts, so
+/// the entry waited for runs until wait_timeout. GitHub's own verdict stops it
+/// at once, and the task and the mail say what to do next.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_conflicting_pr_without_ci_stops_with_conflict_in_one_tick() {
+    let lab = lab_with(|s| {
+        s["pull"]["mergeable"] = json!(false);
+        s["pull"]["mergeable_state"] = json!("dirty");
+        s["runs"] = json!([]);
+        s["merge"] = Value::Null;
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("conflict")), "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("cannot merge into its base"), "{}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty(), "a conflict writes nothing to GitHub");
+    assert!(
+        !calls(lab.dir.path()).iter().any(|c| c["endpoint"].as_str().unwrap().contains("head_sha=")),
+        "it stops before waiting for runs GitHub will never start"
+    );
+    let next = "merges the current main into the PR branch";
+    assert!(
+        lab.comments().iter().any(|c| c.contains("stopped (conflict)") && c.contains(next)),
+        "the task says what to do next: {:?}",
+        lab.comments()
+    );
+    for agent in ["lead", "dev"] {
+        assert!(
+            lab.mail(agent).iter().any(|m| m["body"].as_str().unwrap().contains(next)),
+            "{agent} is told what to do next: {:?}",
+            lab.mail(agent)
+        );
+    }
+}
+
+/// GitHub answers git/ref reads with X-Poll-Interval: 300, and the shared read
+/// kept such a body for that long without asking again. After main moved, the
+/// queue then read the old main from git/ref beside the new one from
+/// branches/main and waited "The base branch moved between reads" for up to
+/// five minutes (YN-18 lab, after scenario A merged). The queue's reads ask
+/// GitHub every time; a 304 still reuses the cached body.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_ref_read_inside_githubs_poll_interval_is_asked_again() {
+    let lab = lab_with(|s| {
+        s["pollInterval"] = json!(300);
+        s["runs"][1]["status"] = json!("in_progress");
+        s["runs"][1]["conclusion"] = Value::Null;
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.entry().await["state"], "waiting", "CI on the head is still running");
+    change(lab.dir.path(), |s| {
+        s["runs"][1]["status"] = json!("completed");
+        s["runs"][1]["conclusion"] = json!("success");
+        move_main(s, sha('c'), sha('d'));
+    });
+    let e = lab.step().await;
+    assert_eq!(e["state"], "merged", "both reads of main name the new main at once: {}", e["detail"]);
+    assert_eq!(e["merge"]["expectedMain"], sha('c'), "the merge is checked against the new main: {e}");
+}
+
+/// While GitHub is still computing whether the PR can merge, nothing is
+/// decided: the entry waits for its runs as before.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pr_whose_mergeability_github_is_computing_waits_for_its_runs() {
+    let lab = lab_with(|s| {
+        s["pull"]["mergeable"] = Value::Null;
+        s["pull"]["mergeable_state"] = json!("unknown");
+        s["runs"] = json!([]);
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "{e}");
+    assert_eq!(e["detail"], "No run of workflow CI on the head yet");
+}
+
+/// A completed review round at `head` with these findings.
+fn review_found(s: &Store, task: &str, head: &str, conclusion: &str, findings: Value) -> String {
+    let task = internal(s, task);
+    let id = uuid::Uuid::new_v4().to_string();
+    let data = json!({"id":id,"status":"completed","conclusion":conclusion,"headSha":head,"round":2,
+        "findings":findings,"coverage":{"coveredFileCount":3,"fileCount":3}});
+    s.db.write()
+        .unwrap()
+        .execute(
+            "INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,'7:pull:11','completed',?3)",
+            rusqlite::params![id, task, data.to_string()],
+        )
+        .unwrap();
+    id
+}
+/// The repository's landing policy, set as the user sets it.
+fn relaxed(lab: &Lab) {
+    lab.ws.store.merge_set_policy(7, "relaxed").unwrap();
+}
+
+/// YN-12 item 1: a P0–P2 finding of any completed round at the released head
+/// holds that head back, even when a later round of the same head passed. Only
+/// a new head with a passing round of its own clears it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_p0_to_p2_finding_of_any_round_at_the_head_holds_it_back() {
+    let lab = lab(green());
+    review_found(&lab.ws.store, &lab.task, &head(), "changes_requested", json!([{"priority":1,"title":"a real bug"}]));
+    review(&lab.ws.store, &lab.task, &head(), "no_findings");
+    let refused = lab.release(Some("lead"), "r1").await.unwrap_err().to_string();
+    assert!(refused.contains("review_not_passing") && refused.contains("found 1 P0–P2 issue(s)"), "the release is refused: {refused}");
+
+    let lab = lab_with(|_| {});
+    lab.release(Some("lead"), "r1").await.unwrap();
+    review_found(&lab.ws.store, &lab.task, &head(), "changes_requested", json!([{"priority":2},{"priority":3}]));
+    review(&lab.ws.store, &lab.task, &head(), "no_findings");
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("review_not_passing")), "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("found 1 P0–P2 issue(s)"), "only the P2 counts, not the P3: {}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty());
+
+    let lab = lab_with(|_| {});
+    review_found(&lab.ws.store, &lab.task, &sha('a'), "changes_requested", json!([{"priority":0}]));
+    review(&lab.ws.store, &lab.task, &head(), "no_findings");
+    lab.release(Some("lead"), "r1").await.unwrap();
+    assert_eq!(lab.step().await["state"], "merged", "a finding at an older head does not hold this one back");
+}
+
+/// The user sets a repository's landing policy on the switch's route: strict
+/// by default, or relaxed; an unknown one is refused and saves nothing, and no
+/// Agent tool sets it.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_landing_policy_is_strict_until_the_user_sets_it_on_the_route() {
+    use tower::ServiceExt;
+    let lab = lab(green());
+    let put = |body: Value| {
+        axum::http::Request::builder()
+            .method("PUT")
+            .uri("/api/merge-queue/repositories/7")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    };
+    let answer = |response: axum::response::Response| async move {
+        let status = response.status();
+        (status, serde_json::from_slice::<Value>(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap())
+    };
+    assert_eq!(lab.paused()["policy"], "strict", "a repository is strict unless set otherwise");
+    let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"policy":"lenient"}))).await.unwrap()).await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("policy is strict or relaxed"), "{body}");
+    assert_eq!(lab.paused()["policy"], "strict", "a refused policy saves nothing");
+    let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"policy":"relaxed"}))).await.unwrap()).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!((body["policy"].clone(), body["enabled"].clone()), (json!("relaxed"), json!(true)), "the switch stays as it was: {body}");
+    let last = body["switches"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!((last["detail"].clone(), last["by"].clone()), (json!("Policy set to relaxed"), json!("user")), "the journal records it: {body}");
+    for tool in tool_definitions() {
+        assert!(!tool.to_string().contains("\"policy\""), "no Agent tool sets the policy: {}", tool["name"]);
+    }
+}
+
+/// The relaxed policy (the user's rule of 2026-11-07): a reviewed head whose
+/// own CI is green merges although CI tested an older main, once Core's own
+/// merge of the head into the current main is clean (the probe: a branch at
+/// main with the head merged in, no PR, so no CI) and main CI is not red. The
+/// merge must land the probe's tree.
+#[cfg(unix)]
+#[tokio::test]
+async fn under_the_relaxed_policy_a_head_tested_on_an_older_main_merges_through_cores_own_merge() {
+    let lab = lab_with(main_moved_ref_stale);
+    relaxed(&lab);
+    let e = lab.release(Some("lead"), "r1").await.unwrap();
+    let branch = format!("queue/merge-{}", e["id"].as_str().unwrap());
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "{}", e["detail"]);
+    assert_eq!(
+        writes(lab.dir.path()),
+        [
+            "POST repos/owner/repo/git/refs".to_owned(),
+            "POST repos/owner/repo/merges".to_owned(),
+            "PUT repos/owner/repo/pulls/11/merge".to_owned(),
+            format!("DELETE repos/owner/repo/git/refs/heads/{branch}")
+        ],
+        "the probe (branch and merge, no PR), the merge, then the probe's removal"
+    );
+    assert!(!calls(lab.dir.path()).iter().any(|c| c["endpoint"].as_str().unwrap().ends_with("/logs")), "no job log is read");
+    let gate = &e["lastEvidence"]["gate"];
+    assert_eq!((gate["kind"].clone(), gate["tree"].clone()), (json!("relaxed"), json!(tree())), "{gate}");
+    assert_eq!(e["lastEvidence"]["policy"], "relaxed");
+    assert_eq!((e["merge"]["policy"].clone(), e["merge"]["expectedMain"].clone()), (json!("relaxed"), json!(sha('c'))));
+    assert_eq!(e["merge"]["post"]["ok"], true, "the merge landed the probe's tree: {e}");
+    assert_eq!(e["batch"]["cleanup"], "done");
+    assert!(lab.mail("lead").iter().any(|m| m["body"].as_str().unwrap().contains("under the relaxed policy")), "the mail says how it merged");
+    change(lab.dir.path(), |s| main_ci(s, "failure"));
+    let e = lab.step().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("done"), json!("main_red")), "main CI is still watched: {e}");
+    assert_eq!(lab.paused()["paused"]["reason"], "main_red", "and red pauses the queue");
+
+    // The same GitHub under the strict policy builds a batch instead.
+    let lab = lab_with(main_moved_ref_stale);
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    assert!(lab.entry().await["detail"].as_str().unwrap().contains("Core opened batch #900"));
+}
+
+/// A check counts only under the policy it ran with (S2d-1 R1, P2): the user
+/// turning the repository strict while a relaxed check runs (here, during its
+/// probe merge) must not let that check merge a head whose CI never tested the
+/// current main. The entry is checked again under strict, which batches.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_relaxed_check_that_ends_after_the_user_chose_strict_does_not_merge() {
+    let lab = lab_with(|s| {
+        main_moved_ref_stale(s);
+        s["slowMerge"] = json!(true);
+    });
+    relaxed(&lab);
+    lab.release(Some("lead"), "r1").await.unwrap();
+    let ws = lab.ws.clone();
+    let pass = tokio::spawn(async move { tick(&ws).await });
+    let started = lab.dir.path().join("merge-started");
+    for _ in 0..200 {
+        if started.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(started.exists(), "the relaxed check reached its probe merge");
+    lab.ws.store.merge_set_policy(7, "strict").unwrap();
+    pass.await.unwrap().unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "the relaxed check does not merge under strict: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("changed to strict"), "{}", e["detail"]);
+    assert!(!writes(lab.dir.path()).iter().any(|w| w.starts_with("PUT")), "no merge was sent");
+    let e = lab.step().await;
+    assert!(e["detail"].as_str().unwrap().contains("Core opened batch #900"), "checked under strict, it batches: {}", e["detail"]);
+}
+
+/// The same holds for a merge already journaled-to-be: a merge begun under
+/// the relaxed policy is not sent once the repository is strict.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_begun_under_relaxed_is_not_sent_once_the_repository_is_strict() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    let mut m = lab.entry().await;
+    m["state"] = json!("merging");
+    m["merge"] = json!({"expectedMain":main_sha(),"tree":tree(),"gate":"relaxed","policy":"relaxed","head":head(),"attempts":0,"puts":[],"sha":null,"post":null,"mainCi":null});
+    lab.ws.store.db.write().unwrap().execute("UPDATE merge_entries SET state='merging',next_check=0,data=?1", [m.to_string()]).unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("changed to strict"), "{}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty(), "no merge was sent");
+    assert_eq!(e["retiredMerges"][0]["policy"], "relaxed", "the unsent merge is kept: {e}");
+}
+
+/// A merge that landed and then turned main red: entry 11 is done with
+/// main_red and the queue paused. The revert's commit, and the merge of the
+/// revert PR, are what the fake GitHub answers with.
+async fn merged_then_red(lab: &Lab) -> Value {
+    let released = lab.release(Some("lead"), "r1").await.unwrap();
+    assert_eq!(lab.step().await["state"], "merged");
+    change(lab.dir.path(), |s| {
+        main_ci(s, "failure");
+        s["revertCommit"] = json!(sha('d'));
+        s["revertMergeSha"] = json!(sha('b'));
+        s["revertMergeTree"] = json!(sha('6'));
+    });
+    // By its id: a revert entry Core makes for the same task is newer.
+    let e = revert_step(lab, released["id"].as_str().unwrap()).await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("done"), json!("main_red")), "{e}");
+    e
+}
+fn revert_entry_of(lab: &Lab, original: &Value) -> Value {
+    let list = lab.ws.store.merge_list(&Scope { repository_id: Some(7), ..Default::default() }).unwrap();
+    list["entries"].as_array().unwrap().iter().find(|e| e["revert"]["of"] == original["id"]).cloned().unwrap_or(Value::Null)
+}
+async fn revert_step(lab: &Lab, id: &str) -> Value {
+    lab.due();
+    tick(&lab.ws).await.unwrap();
+    lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":id})).await.unwrap()
+}
+
+/// YN-18 S2d-2: a lead reverts, in one step, a merge whose main push CI went
+/// red. Main is still that merge and the main before it had green push CI, so
+/// the revert (that main's tree on top of the merge, on Core's own branch and
+/// PR) merges at once, through the pause the bad merge caused; green main CI
+/// after it ends the pause.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_lead_reverts_a_merge_that_turned_main_red_in_one_step() {
+    let lab = lab(green());
+    let bad = merged_then_red(&lab).await;
+    assert_eq!(lab.paused()["paused"]["reason"], "main_red");
+    assert!(lab.mail("lead2").iter().any(|m| m["body"].as_str().unwrap().contains("Reverts are off for this repository")), "the pause mail says how reverts get turned on");
+    let refused = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"]})).await.unwrap_err().to_string();
+    assert!(refused.contains("reverts are off"), "{refused}");
+    lab.ws.store.merge_set_reverts(7, Some(true), None).unwrap();
+    let refused = lab.ws.collaboration_call(Some("dev"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"]})).await.unwrap_err().to_string();
+    assert!(refused.contains("merge_revert_not_allowed"), "the task's executor is no lead: {refused}");
+    let asked = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"],"reason":"main is red"})).await.unwrap();
+    assert_eq!((asked["kind"].clone(), asked["revert"]["of"].clone()), (json!("revert"), bad["id"].clone()), "{asked}");
+    let again = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"],"reason":"main is red"})).await.unwrap();
+    assert_eq!(again["id"], asked["id"], "a retry with the same requestId gets the same revert back");
+    let id = asked["id"].as_str().unwrap().to_owned();
+    let branch = format!("queue/revert-{id}");
+    let e = revert_step(&lab, &id).await;
+    assert_eq!(e["state"], "merged", "built, and merged at once through its own pause: {}", e["detail"]);
+    assert_eq!(e["lastEvidence"]["gate"]["fastPath"]["run"], 90, "the main before the bad merge had green push CI: {e}");
+    assert_eq!(
+        writes(lab.dir.path())[1..],
+        [
+            "POST repos/owner/repo/git/commits".to_owned(),
+            "POST repos/owner/repo/git/refs".to_owned(),
+            "POST repos/owner/repo/pulls".to_owned(),
+            "PUT repos/owner/repo/pulls/900/merge".to_owned(),
+            format!("DELETE repos/owner/repo/git/refs/heads/{branch}"),
+        ],
+        "after the bad merge: the revert commit, Core's revert branch and PR, its merge, its branch removed"
+    );
+    let posts: Vec<Value> = calls(lab.dir.path()).into_iter().filter(|c| c["method"] == "POST").map(|c| c["body"].clone()).collect();
+    assert_eq!((posts[0]["tree"].clone(), posts[0]["parents"].clone()), (json!(sha('6')), json!([merge_commit()])), "the main before the merge, on top of it");
+    assert_eq!(posts[1], json!({"ref":format!("refs/heads/{branch}"),"sha":sha('d')}), "the branch at the revert commit, main being the bad merge");
+    assert_eq!(posts[2]["draft"], false, "a real PR, not a draft");
+    assert_eq!((e["number"].clone(), e["headSha"].clone()), (json!(900), json!(sha('d'))), "the entry holds its revert PR: {e}");
+    assert_eq!(e["merge"]["post"]["ok"], true, "the revert landed the tree of the main before the bad merge: {e}");
+    assert_eq!(lab.paused()["paused"]["reason"], "main_red", "the pause holds until main CI is green again");
+    change(lab.dir.path(), |s| {
+        s["mainRuns"].as_array_mut().unwrap().insert(0, json!({"id":96,"name":"CI","run_attempt":1,"head_sha":sha('b'),"status":"completed","conclusion":"success","created_at":chrono::Utc::now().to_rfc3339()}));
+    });
+    let e = revert_step(&lab, &id).await;
+    assert_eq!(e["state"], "done", "{e}");
+    assert!(lab.paused()["paused"].is_null(), "green main CI after the revert ends the pause: {}", lab.paused());
+    assert!(lab.mail("lead2").iter().any(|m| m["body"].as_str().unwrap().contains("unpaused")), "and the leads are told");
+}
+
+/// A revert whose PR was saved on its batch, but Core stopped before the
+/// entry took that PR's number and head (S2d-2 R1, P2): the next check makes
+/// it good, and the revert lands, instead of failing forever with no head.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_revert_that_stopped_before_taking_its_pr_takes_it_on_the_next_check() {
+    let lab = lab(green());
+    lab.ws.store.merge_set_reverts(7, Some(true), None).unwrap();
+    let bad = merged_then_red(&lab).await;
+    let asked = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"]})).await.unwrap();
+    let id = asked["id"].as_str().unwrap().to_owned();
+    let branch = format!("queue/revert-{id}");
+    // GitHub holds the branch and the PR; the entry's batch names the PR, the entry itself does not.
+    change(lab.dir.path(), |s| {
+        s["refs"][&branch] = json!(sha('d'));
+        s["commits"][&sha('d')] = json!({"sha":sha('d'),"tree":sha('6'),"parents":[merge_commit()]});
+        s["pulls"]["900"] = json!({"number":900,"state":"open","head":{"ref":branch,"sha":sha('d')},"base":{"ref":"main"},"draft":false});
+    });
+    let batch = json!({"kind":"revert","branch":branch,"main":merge_commit(),"ref":true,"revertCommit":sha('d'),"commit":sha('d'),"tree":sha('6'),"pr":900,"closed":false,"deleted":false});
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_entries SET data=json_set(data,'$.batch',json(?1)) WHERE id=?2", rusqlite::params![batch.to_string(), id])
+        .unwrap();
+    let e = revert_step(&lab, &id).await;
+    assert_eq!((e["number"].clone(), e["headSha"].clone()), (json!(900), json!(sha('d'))), "the entry took its PR on this check: {e}");
+    assert_eq!(e["state"], "merged", "and the revert landed: {}", e["detail"]);
+    assert!(!writes(lab.dir.path()).iter().any(|w| w.ends_with("/pulls") || w.ends_with("/git/commits")), "nothing was built a second time");
+}
+
+/// Only a merge that turned main red can be reverted, one revert at a time,
+/// and the user turning reverts off stops one under way.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_revert_needs_a_red_merge_and_the_users_consent_and_runs_one_at_a_time() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    let merged = lab.step().await;
+    lab.ws.store.merge_set_reverts(7, Some(true), None).unwrap();
+    let refused = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v0","entryId":merged["id"]})).await.unwrap_err().to_string();
+    assert!(refused.contains("only a merge whose main push CI went red"), "{refused}");
+    change(lab.dir.path(), |s| {
+        main_ci(s, "failure");
+        s["revertCommit"] = json!(sha('d'));
+    });
+    let bad = lab.step().await;
+    lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"]})).await.unwrap();
+    let busy = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v2","entryId":bad["id"]})).await.unwrap_err().to_string();
+    assert!(busy.contains("merge_revert_running"), "{busy}");
+    lab.ws.store.merge_set_reverts(7, Some(false), None).unwrap();
+    let revert = revert_entry_of(&lab, &bad);
+    let e = revert_step(&lab, revert["id"].as_str().unwrap()).await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("revert_not_allowed")), "{e}");
+    assert!(!writes(lab.dir.path()).iter().any(|w| w.contains("git/commits")), "nothing of the revert was written");
+}
+
+/// With automatic reverts on (the user's choice, off by default), Core asks
+/// for the revert itself when main CI goes red after a merge, and says so.
+#[cfg(unix)]
+#[tokio::test]
+async fn with_automatic_reverts_on_core_reverts_a_red_merge_by_itself() {
+    let lab = lab(green());
+    assert!(lab.ws.store.merge_set_reverts(7, None, Some(true)).unwrap_err().to_string().contains("turn reverts on before"));
+    lab.ws.store.merge_set_reverts(7, Some(true), Some(true)).unwrap();
+    let bad = merged_then_red(&lab).await;
+    let revert = revert_entry_of(&lab, &bad);
+    assert_eq!((revert["kind"].clone(), revert["release"]["by"]["name"].clone()), (json!("revert"), json!("Yuzuno Core")), "{revert}");
+    assert_eq!(bad["revertedBy"], revert["id"]);
+    assert!(lab.mail("lead").iter().any(|m| m["body"].as_str().unwrap().contains("Core started its revert")), "the mail says Core started it");
+    assert_eq!(revert_step(&lab, revert["id"].as_str().unwrap()).await["state"], "merged");
+}
+
+/// A revert onto a main that has moved on is merged onto that main; when it
+/// no longer applies, it stops with revert_conflict and Core removes its branch.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_revert_that_no_longer_applies_onto_the_current_main_stops_and_is_removed() {
+    let lab = lab(green());
+    lab.ws.store.merge_set_reverts(7, Some(true), None).unwrap();
+    let bad = merged_then_red(&lab).await;
+    change(lab.dir.path(), |s| {
+        let to = sha('c');
+        s["commits"][&to] = json!({"sha":to,"tree":sha('8'),"parents":[merge_commit()]});
+        s["main"] = json!(to);
+        s["batchConflict"] = json!(true);
+    });
+    let asked = lab.ws.collaboration_call(Some("lead2"), "merge_revert", json!({"requestId":"v1","entryId":bad["id"]})).await.unwrap();
+    let id = asked["id"].as_str().unwrap().to_owned();
+    let e = revert_step(&lab, &id).await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("revert_conflict")), "{e}");
+    revert_step(&lab, &id).await;
+    let w = writes(lab.dir.path());
+    assert_eq!(
+        w[1..],
+        [
+            "POST repos/owner/repo/git/commits".to_owned(),
+            "POST repos/owner/repo/git/refs".to_owned(),
+            "POST repos/owner/repo/merges".to_owned(),
+            format!("DELETE repos/owner/repo/git/refs/heads/queue/revert-{id}"),
+        ],
+        "the branch at the moved main, the revert merged in (conflict), then removed: {w:?}"
+    );
+    assert_eq!(lab.paused()["paused"]["reason"], "main_red", "nothing landed: the pause holds");
+}
+
+/// Under the relaxed policy, a head that does not merge cleanly into the
+/// current main stops with conflict, and Core removes its probe.
+#[cfg(unix)]
+#[tokio::test]
+async fn under_the_relaxed_policy_a_probe_that_conflicts_stops_and_is_removed() {
+    let lab = lab_with(|s| {
+        main_moved_ref_stale(s);
+        s["batchConflict"] = json!(true);
+    });
+    relaxed(&lab);
+    let e = lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e2 = lab.entry().await;
+    assert_eq!((e2["state"].clone(), e2["reason"].clone()), (json!("stopped"), json!("conflict")), "{e2}");
+    lab.step().await;
+    assert_eq!(
+        writes(lab.dir.path()),
+        ["POST repos/owner/repo/git/refs".to_owned(), "POST repos/owner/repo/merges".to_owned(), format!("DELETE repos/owner/repo/git/refs/heads/queue/merge-{}", e["id"].as_str().unwrap())],
+        "nothing merged, and the probe branch is gone"
+    );
+}
+
+/// Under the relaxed policy main CI must not be red now: a red main makes the
+/// entry wait, never stop or pause, and it merges once main is green again. A
+/// main run still waiting to start holds the merge too, so each merge keeps a
+/// main run of its own.
+#[cfg(unix)]
+#[tokio::test]
+async fn under_the_relaxed_policy_a_red_main_waits_and_the_entry_merges_once_it_is_green() {
+    let lab = lab_with(|s| {
+        s["mainRuns"].as_array_mut().unwrap().insert(0, json!({"id":91,"name":"CI","head_sha":main_sha(),"status":"completed","conclusion":"failure","created_at":"2026-11-05T06:00:00Z"}));
+    });
+    relaxed(&lab);
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "a red main waits under the relaxed policy: {e}");
+    assert!(e["detail"].as_str().unwrap().contains("Main CI run 91"), "{}", e["detail"]);
+    assert!(lab.paused()["paused"].is_null(), "and pauses nothing");
+    change(lab.dir.path(), |s| {
+        s["mainRuns"].as_array_mut().unwrap().insert(0, json!({"id":92,"name":"CI","head_sha":main_sha(),"status":"pending","conclusion":null,"created_at":"2026-11-05T06:30:00Z"}));
+    });
+    let e = lab.step().await;
+    assert!(e["detail"].as_str().unwrap().contains("waits to start"), "a main run waiting to start holds the merge: {}", e["detail"]);
+    change(lab.dir.path(), |s| {
+        s["mainRuns"][0]["status"] = json!("completed");
+        s["mainRuns"][0]["conclusion"] = json!("success");
+    });
+    assert_eq!(lab.step().await["state"], "merged", "green again: it merges");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_batch_that_cannot_merge_stops_and_core_deletes_its_branch() {
@@ -1219,7 +1819,7 @@ async fn red_ci_on_a_batch_stops_and_core_removes_the_batch() {
         s["batchRuns"][0]["conclusion"] = json!("failure");
     });
     let e = lab.step().await;
-    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("ci_red")), "red CI on the batch stops the entry: {e}");
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("batch_failed")), "red CI on the batch stops the entry: {e}");
     lab.step().await;
     let w = writes(lab.dir.path());
     assert_eq!(
@@ -1228,6 +1828,205 @@ async fn red_ci_on_a_batch_stops_and_core_removes_the_batch() {
         "Core closes its batch PR and deletes its branch: {w:?}"
     );
     assert!(!w.iter().any(|w| w.starts_with("PUT")), "nothing merged");
+}
+
+/// The second PR of the chain tests, #12: its head, GitHub's merge ref for
+/// it on the current main, the merge of an older main its CI tested, its batch
+/// commit on top of #11's, that batch PR's merge ref, a batch of it rebuilt
+/// on main, the batch tree, and its merge commit on main.
+fn h2() -> String {
+    "a1".repeat(20)
+}
+fn ref2() -> String {
+    "b1".repeat(20)
+}
+fn old2() -> String {
+    "b2".repeat(20)
+}
+fn batch2() -> String {
+    "c1".repeat(20)
+}
+fn batch2_ref() -> String {
+    "c2".repeat(20)
+}
+fn solo2() -> String {
+    "c3".repeat(20)
+}
+fn tree2() -> String {
+    "d1".repeat(20)
+}
+fn merge2() -> String {
+    "e1".repeat(20)
+}
+fn run(id: u64, head: &str, conclusion: Option<&str>) -> Value {
+    json!({"id":id,"name":"CI","run_attempt":1,"status":if conclusion.is_some() { "completed" } else { "in_progress" },"conclusion":conclusion,"head_sha":head})
+}
+/// A completed review round of `head` on the PR link `link`.
+fn review_on(s: &Store, task: &str, link: &str, head: &str) {
+    let task = internal(s, task);
+    let id = uuid::Uuid::new_v4().to_string();
+    let data = json!({"id":id,"status":"completed","conclusion":"no_findings","headSha":head,"round":1,
+        "findings":[],"coverage":{"coveredFileCount":3,"fileCount":3}});
+    s.db.write()
+        .unwrap()
+        .execute(
+            "INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,?3,'completed',?4)",
+            rusqlite::params![id, task, link, data.to_string()],
+        )
+        .unwrap();
+}
+
+/// #11, the lab's entry, and #12, released after it on the same main with
+/// another head. CI on each PR tested an older main, so each needs a batch.
+/// #12 is due only once the test makes it so.
+#[cfg(unix)]
+async fn chain_lab() -> (Lab, String, String) {
+    let lab = lab_with(|s| {
+        s["logs"]["501"] = json!(log(&sha('7')));
+        s["logs"]["502"] = json!(log(&sha('7')));
+        let mut pull12 = s["pull"].clone();
+        pull12["number"] = json!(12);
+        pull12["head"]["sha"] = json!(h2());
+        s["pull12"] = pull12;
+        s["merge12"] = json!(ref2());
+        s["commits"][ref2()] = json!({"sha":ref2(),"tree":sha('8'),"parents":[main_sha(), h2()]});
+        s["commits"][old2()] = json!({"sha":old2(),"tree":sha('8'),"parents":[old_main(), h2()]});
+        s["commits"][batch2_ref()] = json!({"sha":batch2_ref(),"tree":tree2(),"parents":[main_sha(), batch2()]});
+        s["headRuns"] = json!({h2(): [run(43, &h2(), Some("success"))], batch2(): [run(61, &batch2(), None)]});
+        s["jobs"]["43"] = json!([{"id":431,"name":"Core (build and test)","conclusion":"success"},{"id":432,"name":"Web UI","conclusion":"success"}]);
+        s["jobs"]["61"] = json!([{"id":611,"name":"Core (build and test)","conclusion":"success"},{"id":612,"name":"Web UI","conclusion":"success"}]);
+        for job in ["431", "432"] {
+            s["logs"][job] = json!(log(&old2()));
+        }
+        for job in ["611", "612"] {
+            s["logs"][job] = json!(log(&batch2_ref()));
+        }
+        s["mergeCommits"] = json!({h2(): [[batch2(), tree2()], [solo2(), tree2()]]});
+        s["mergeSha12"] = json!(merge2());
+        s["mergeTree12"] = json!(tree2());
+    });
+    let first = lab.release(Some("lead"), "r1").await.unwrap()["id"].as_str().unwrap().to_owned();
+    let second = {
+        let db = lab.ws.store.db.read().unwrap();
+        let mut w: Value = serde_json::from_str(&db.query_row("SELECT data FROM merge_entries", [], |r| r.get::<_, String>(0)).unwrap()).unwrap();
+        w["id"] = json!(uuid::Uuid::new_v4().to_string());
+        w["entryId"] = w["id"].clone();
+        w["number"] = json!(12);
+        w["url"] = json!("https://github.com/owner/repo/pull/12");
+        w["headSha"] = json!(h2());
+        w["linkId"] = json!("7:pull:12");
+        w
+    };
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO merge_entries(id,task_id,repository_id,number,state,next_check,data) VALUES(?1,?2,7,12,'queued',99999999999,?3)",
+        rusqlite::params![second["id"].as_str(), second["taskId"].as_str(), second.to_string()],
+    ).unwrap();
+    review_on(&lab.ws.store, &lab.task, "7:pull:12", &h2());
+    (lab, first, second["id"].as_str().unwrap().to_owned())
+}
+async fn by_id(lab: &Lab, id: &str) -> Value {
+    lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"entryId":id})).await.unwrap()
+}
+fn posts(lab: &Lab) -> Vec<Value> {
+    calls(lab.dir.path()).into_iter().filter(|c| c["method"] == "POST").map(|c| c["body"].clone()).collect()
+}
+
+/// YN-18 S2e: #12 does not wait for #11 to merge before its CI starts. Its
+/// batch stacks on #11's batch, CI runs on both at once, and #12 merges right
+/// after #11 on its own batch CI, proved by tree.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_second_batch_stacks_on_the_first_and_merges_right_after_it_on_its_own_ci() {
+    let (lab, first, second) = chain_lab().await;
+    tick(&lab.ws).await.unwrap();
+    let a = by_id(&lab, &first).await;
+    assert_eq!((a["state"].clone(), a["batch"]["chain"]["step"].clone(), a["batch"]["base"].clone()), (json!("waiting"), json!(1), json!(main_sha())), "{a}");
+    lab.step().await;
+    let b = by_id(&lab, &second).await;
+    assert_eq!(b["state"], "waiting", "{b}");
+    assert_eq!(b["batch"]["chain"]["id"], a["batch"]["chain"]["id"], "one chain: {b}");
+    assert_eq!((b["batch"]["chain"]["step"].clone(), b["batch"]["chain"]["prev"].clone()), (json!(2), json!(first)));
+    assert_eq!((b["batch"]["base"].clone(), b["batch"]["commit"].clone(), b["batch"]["pr"].clone()), (json!(batch_commit()), json!(batch2()), json!(901)));
+    assert!(b["detail"].as_str().unwrap().contains("step 2 of a chain of batches"), "{}", b["detail"]);
+    let branch2 = format!("queue/merge-{second}");
+    let p = posts(&lab);
+    assert_eq!(p[3], json!({"ref":format!("refs/heads/{branch2}"),"sha":batch_commit()}), "#12's batch branch starts at #11's batch commit");
+    assert_eq!((p[4]["base"].clone(), p[4]["head"].clone()), (json!(branch2), json!(h2())));
+    assert!(p[5]["title"].as_str().unwrap().contains("after #11"), "{}", p[5]["title"]);
+    assert_eq!(lab.step().await["state"], "waiting", "no CI on #11's batch yet");
+    assert_eq!(by_id(&lab, &second).await["detail"], "Step 2 of a chain of batches: it merges after #11, the step ahead of it");
+    change(lab.dir.path(), |s| {
+        batch_green(s);
+        s["headRuns"][batch2()] = json!([run(61, &batch2(), Some("success"))]);
+    });
+    lab.step().await;
+    let (a, b) = (by_id(&lab, &first).await, by_id(&lab, &second).await);
+    assert_eq!((a["state"].clone(), a["merge"]["post"]["ok"].clone()), (json!("merged"), json!(true)), "{a}");
+    assert_eq!((b["state"].clone(), b["merge"]["post"]["ok"].clone()), (json!("merged"), json!(true)), "#12 merged in the same pass: {b}");
+    let gate = &b["lastEvidence"]["gate"];
+    assert_eq!((gate["kind"].clone(), gate["chain"]["step"].clone(), gate["tree"].clone()), (json!("batch"), json!(2), json!(tree2())), "{gate}");
+    assert_eq!(gate["runs"][0]["jobs"][0]["checkout"], batch2_ref(), "a checkout of #12's batch merged into the main before #11 still proves its tree");
+    let puts: Vec<String> = writes(lab.dir.path()).into_iter().filter(|w| w.starts_with("PUT")).collect();
+    assert_eq!(puts, ["PUT repos/owner/repo/pulls/11/merge", "PUT repos/owner/repo/pulls/12/merge"], "in release order");
+    assert_eq!(b["merge"]["expectedMain"], merge_commit(), "#12 landed on #11's merge commit");
+}
+
+/// YN-18 S2e decision 7: red CI on a step drops that entry (batch_failed), and
+/// the step after it rebuilds without it, on main.
+#[cfg(unix)]
+#[tokio::test]
+async fn red_ci_on_a_chain_step_drops_it_and_the_next_step_rebuilds_on_main() {
+    let (lab, first, second) = chain_lab().await;
+    tick(&lab.ws).await.unwrap();
+    lab.step().await;
+    let chain = by_id(&lab, &second).await["batch"]["chain"]["id"].clone();
+    change(lab.dir.path(), |s| {
+        batch_green(s);
+        s["batchRuns"][0]["conclusion"] = json!("failure");
+    });
+    lab.step().await;
+    let a = by_id(&lab, &first).await;
+    assert_eq!((a["state"].clone(), a["reason"].clone()), (json!("stopped"), json!("batch_failed")), "{a}");
+    let b = by_id(&lab, &second).await;
+    assert_eq!(b["state"], "waiting", "{b}");
+    assert_eq!(
+        (b["batch"]["chain"]["step"].clone(), b["batch"]["base"].clone(), b["batch"]["commit"].clone(), b["batch"]["pr"].clone()),
+        (json!(1), json!(main_sha()), json!(solo2()), json!(902)),
+        "{b}"
+    );
+    assert_ne!(b["batch"]["chain"]["id"], chain, "a new chain");
+    assert_eq!(b["retiredBatches"][0]["pr"], 901, "its batch on #11's was removed: {b}");
+    let w = writes(lab.dir.path());
+    let branch2 = format!("queue/merge-{second}");
+    let at = w.iter().position(|w| w == "PATCH repos/owner/repo/pulls/901").expect("Core closed batch PR #901");
+    assert_eq!(w[at + 1], format!("DELETE repos/owner/repo/git/refs/heads/{branch2}"));
+    assert_eq!(w[at + 2..at + 5], ["POST repos/owner/repo/git/refs", "POST repos/owner/repo/merges", "POST repos/owner/repo/pulls"]);
+    assert_eq!(posts(&lab)[6], json!({"ref":format!("refs/heads/{branch2}"),"sha":main_sha()}), "rebuilt on main");
+    let mail = lab.mail("lead");
+    assert!(mail.iter().any(|m| m["body"].as_str().unwrap_or("").contains("batch_failed")), "the release is told: {mail:?}");
+    assert!(!w.iter().any(|w| w.starts_with("PUT")), "nothing merged");
+}
+
+/// A head that contains the head of an entry released before it waits for
+/// that entry to join the chain, so a stack lands in its order.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_head_stacked_on_an_earlier_release_joins_the_chain_after_it() {
+    let (lab, first, second) = chain_lab().await;
+    change(lab.dir.path(), |s| {
+        s["merge"] = Value::Null;
+        s["compare"] = json!({format!("{}...{}", head(), h2()): {"base":head(),"mergeBase":head(),"commits":2}});
+    });
+    lab.step().await;
+    let b = by_id(&lab, &second).await;
+    assert_eq!(b["state"], "waiting", "{b}");
+    assert!(b["detail"].as_str().unwrap().contains("contains the head of #11"), "{}", b["detail"]);
+    assert!(b["batch"].is_null() && writes(lab.dir.path()).is_empty(), "nothing built while #11 has not joined: {b}");
+    change(lab.dir.path(), |s| s["merge"] = json!(merge_sha()));
+    lab.step().await;
+    let (a, b) = (by_id(&lab, &first).await, by_id(&lab, &second).await);
+    assert_eq!(a["batch"]["chain"]["step"], 1, "{a}");
+    assert_eq!((b["batch"]["chain"]["step"].clone(), b["batch"]["chain"]["prev"].clone()), (json!(2), json!(first)), "{b}");
 }
 
 #[cfg(unix)]
@@ -1805,6 +2604,38 @@ fn the_checkout_line_and_the_newest_run_of_each_workflow_are_read_exactly() {
     );
 }
 
+/// The merge ref decides the slot only when it is the merge of the current
+/// main and the head. A ref on an older main goes to the batch at once; any
+/// other ref, or none, waits the grace, then goes too (YN-18 S2c). A PR GitHub
+/// reports as conflicting stops; one it is still computing does not.
+#[test]
+fn the_merge_ref_and_githubs_conflict_verdict_are_decided_exactly() {
+    use checks::Slot;
+    let commit = |parents: Vec<String>| json!({"sha":merge_sha(),"tree":{"sha":tree()},"parents":parents.iter().map(|p| json!({"sha":p})).collect::<Vec<_>>()});
+    let (main, head) = (main_sha(), head());
+    assert_eq!(checks::slot(Some(&commit(vec![main.clone(), head.clone()])), &main, &head), Slot::Fresh(tree()));
+    assert_eq!(checks::slot(Some(&commit(vec![old_main(), head.clone()])), &main, &head), Slot::Stale(old_main()));
+    assert!(matches!(checks::slot(None, &main, &head), Slot::Missing(_)));
+    assert!(matches!(checks::slot(Some(&commit(vec![main.clone(), sha('a')])), &main, &head), Slot::Missing(_)), "a ref of another head is no merge of this one");
+    let stale = Slot::Stale(old_main());
+    assert!(checks::batch_now(&stale, true, 0, &main).unwrap().contains("older main"), "an older main batches at once");
+    assert!(matches!(checks::batch_now(&stale, false, checks::SLOT_GRACE - 1, &main), Err(Hold::Wait(_))), "a main not known to be older waits");
+    assert!(checks::batch_now(&stale, false, checks::SLOT_GRACE, &main).is_ok(), "until the grace ends");
+    let missing = Slot::Missing("GitHub has not computed the PR's merge ref yet".into());
+    match checks::batch_now(&missing, false, 0, &main) {
+        Err(Hold::Wait(detail)) => assert!(detail.contains("within 2 minutes"), "the wait names its end: {detail}"),
+        other => panic!("a missing ref waits first: {other:?}"),
+    }
+    assert!(checks::batch_now(&missing, false, checks::SLOT_GRACE, &main).is_ok());
+    let pr = |mergeable: Value, state: &str| json!({"mergeable":mergeable,"mergeable_state":state,"base":{"ref":"main"}});
+    for (mergeable, state) in [(json!(false), "dirty"), (json!(false), "unknown"), (json!(true), "dirty")] {
+        assert!(matches!(checks::conflicting(&pr(mergeable.clone(), state)), Err(Hold::Stop("conflict", _))), "{mergeable} {state} stops");
+    }
+    for (mergeable, state) in [(Value::Null, "unknown"), (json!(true), "clean"), (json!(true), "unstable"), (json!(true), "blocked")] {
+        assert_eq!(checks::conflicting(&pr(mergeable.clone(), state)), Ok(()), "{mergeable} {state} is decided later");
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_job_log_read_stops_at_its_limit() {
@@ -1826,7 +2657,7 @@ fn the_routes_and_tools_are_well_formed() {
     let tools = tool_definitions();
     assert_eq!(
         tools.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>(),
-        ["merge_enqueue", "merge_get", "merge_list", "merge_cancel", "merge_retry", "merge_unpause"]
+        ["merge_enqueue", "merge_get", "merge_list", "merge_cancel", "merge_retry", "merge_revert", "merge_unpause"]
     );
     for tool in tools {
         let _: rmcp::model::Tool = serde_json::from_value(tool).unwrap();
@@ -1996,8 +2827,8 @@ async fn a_merge_begun_with_a_landing_this_core_lacks_is_not_sent() {
 }
 
 /// The user sets a repository's landing on its route: `core-merge`, the only
-/// one this Core has. The two planned for core.25 are refused by name, and a
-/// refused request saves nothing, its switch change included.
+/// one this Core has. The two named for a later Core are refused by name, and
+/// a refused request saves nothing, its switch change included.
 #[cfg(unix)]
 #[tokio::test]
 async fn the_landing_is_core_merge_and_the_planned_ones_are_refused_by_name() {
@@ -2018,7 +2849,7 @@ async fn the_landing_is_core_merge_and_the_planned_ones_are_refused_by_name() {
     for name in ["github-auto-merge", "github-merge-queue"] {
         let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"landing":name,"enabled":false}))).await.unwrap()).await;
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "a planned landing is refused: {body}");
-        assert!(body["error"].as_str().unwrap().contains(&format!("the {name} landing comes in core.25")), "{name} is refused by name: {body}");
+        assert!(body["error"].as_str().unwrap().contains(&format!("this Core has no {name} landing")), "{name} is refused by name, with no release promised: {body}");
     }
     let (status, body) = answer(router().with_state(lab.ws.clone()).oneshot(put(json!({"landing":"bors"}))).await.unwrap()).await;
     assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");

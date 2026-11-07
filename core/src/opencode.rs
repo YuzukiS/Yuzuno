@@ -229,8 +229,7 @@ impl std::error::Error for RequestRefused {}
 pub enum Submission {
     /// OpenCode took it: 2.x's prompt answers with the message as it
     /// durably admitted it, under the ID it was sent with, or says the ID is
-    /// one it holds already (T-32 slice 4a). A command's answer (1.19.3's
-    /// route) says only that the run started.
+    /// one it holds already (T-32 slice 4a).
     Accepted,
     /// A 4xx: OpenCode refused the request before taking it (an unknown
     /// session, an invalid body, wrong credentials).
@@ -240,31 +239,33 @@ pub enum Submission {
     Unknown(String),
 }
 
-/// What a compaction request (`summarize`) is known to have done (T-10).
+/// What 2.x answered a compaction with (`POST /api/session/:id/compact`,
+/// T-61 slice 4). 2.x admits a compaction and answers at once, before it
+/// runs: what became of it is its message's, under the ID Core asked for.
 #[derive(Debug, PartialEq)]
-pub enum CompactAnswer {
-    /// 200 with the whole body the JSON `true`: OpenCode's handler returned,
-    /// so its run has ended there, however the compaction went (an abort
-    /// ends it too: the run is cancelled and the waiting request answered,
-    /// `effect/runner.ts`). Not that it compacted anything.
-    Ended,
-    /// A 4xx, as OpenCode gave it.
-    Refused(HttpStatus),
-    /// Anything else: no answer, a lost connection, a 5xx (OpenCode's proxy
-    /// turns a broken upstream into a 500, `middleware/proxy.ts`), another
-    /// body. Whether the run has ended is not known.
+pub enum CompactAdmission {
+    /// 200 with the compaction 2.x admitted under the ID asked for.
+    Admitted,
+    /// 200 with another compaction already pending in the session (2.2.5
+    /// core/src/session/inbox.ts): the one asked for was not admitted.
+    OtherPending(String),
+    /// Refused before it was admitted: 404 for a session or folder 2.x does
+    /// not hold, 400 for a request it can't read. 2.x's words of why.
+    Refused { code: u16, message: String },
+    /// Anything else (409 for an ID already a message, a 5xx, no answer, a
+    /// lost connection, another body): it may or may not have been admitted.
+    /// Look for its ID; never send it again.
     Unknown(String),
 }
 
 /// What a revert request is known to have done (T-10 Revert, Lead 3990).
 #[derive(Debug, PartialEq)]
 pub enum RevertAnswer {
-    /// 200 with the session as OpenCode answered it. Whether it reverted
-    /// anything is that session's `revert`, not the status: a message it
-    /// does not find also answers 200, the session unchanged.
+    /// 200 with the revert 2.x staged, read as the session holding it
+    /// (`{id, revert}`, `Server::stage`).
     Answered(Value),
-    /// Refused before OpenCode did anything, as only its own refusals
-    /// before the revert begins answer (see `refused_before`).
+    /// Refused before OpenCode changed any file, as only its own refusals
+    /// before the stage begins answer (see `refused_before`).
     Refused(HttpStatus),
     /// Anything else: no answer, a lost connection, a 5xx, any other 4xx or
     /// body. Its files may have been sent back in part or whole.
@@ -321,6 +322,16 @@ pub enum Mcp {
 /// What OpenCode holds for one session now.
 #[derive(Debug)]
 pub struct Snapshot {
+    /// When the read began, on this process's own clock (`Server::tick`,
+    /// #699 R2 and P3-a): what it found missing was missing from then on,
+    /// never before.
+    pub began: u64,
+    /// The Server whose clock `began` is (`Server::id`).
+    pub by: String,
+    /// The inbox as read first, before the messages (#699 R2): an item 2.x
+    /// delivers and stores while the read goes on is in this list or in
+    /// `messages`, never in neither.
+    pub inbox_first: Value,
     /// The session's messages, oldest first, as `GET /api/session/:id/message`
     /// pages them (`messages`).
     pub messages: Value,
@@ -385,29 +396,48 @@ impl FilePart {
     }
 }
 
-/// A command OpenCode's configuration defines (`/config`'s `command`, T-10),
-/// and only what lists and runs it. Its template, which may hold shell lines
-/// (`!`) or paths, and everything else of `/config` (provider keys and
-/// options among it) are never kept.
+/// A command OpenCode offers (`GET /api/command`, T-10, T-61 slice 3): its
+/// name and description, all 2.x lists of one. Its template, which may
+/// hold shell lines (`!`) or paths, its agent and its model stay
+/// OpenCode's: 2.x says nothing of them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CommandChoice {
     pub name: String,
     pub description: String,
-    /// Whether its template takes arguments (`$ARGUMENTS`, `$1`–`$9`).
-    pub takes_arguments: bool,
-    /// Whether it runs as a sub-agent (`subtask`).
-    pub subtask: bool,
-    /// The model it runs with by its own configuration, which OpenCode uses
-    /// over the caller's (`session/prompt.ts` command): its own `model`,
-    /// else that of the agent it names.
-    pub model: Option<String>,
 }
 
-/// Whether a command template takes arguments: OpenCode replaces
-/// `$ARGUMENTS` and `$1`–`$9` in it.
-fn takes_arguments(template: &str) -> bool {
-    template.contains("$ARGUMENTS") || (1..=9).any(|n| template.contains(&format!("${n}")))
+/// What 2.x answered a command with (`POST /api/session/:id/command`, T-61
+/// slice 3). It answers once it has admitted what the command makes of its
+/// text, or done what the command does, not at the end of any run.
+#[derive(Debug, PartialEq)]
+pub enum CommandAnswer {
+    /// 204: done. What it admitted, if anything, is under an ID of 2.x's
+    /// own, as its events and record show: the request carries no ID.
+    Done,
+    /// A 4xx, with which 2.x ran nothing (404 `CommandNotFoundError` for a
+    /// name it does not define, or the session's), or a 500
+    /// (`CommandExecutionError`): what the command does failed, possibly
+    /// after it admitted a message, which only the session's record tells.
+    /// 2.x's words of why, as `command_words` keeps them.
+    Refused { code: u16, message: String },
+    /// No answer, a lost connection or an unexpected status: it may or may
+    /// not have run. It is never sent again.
+    Unknown(String),
 }
+
+/// 2.x's own words of why it refused or failed a command (`message`), at
+/// most `COMMAND_WORDS` characters; else its status.
+async fn command_words(response: Response) -> String {
+    let code = response.status().as_u16();
+    let answered: Value = response.json().await.unwrap_or_default();
+    let message = answered["message"].as_str().or(answered["data"]["message"].as_str()).unwrap_or_default();
+    if message.trim().is_empty() {
+        return format!("HTTP {code}");
+    }
+    message.chars().take(COMMAND_WORDS).collect()
+}
+
+const COMMAND_WORDS: usize = 500;
 
 /// Variant names mildest first, as OpenCode derives them (`none`, `low`, …,
 /// `max`, `provider/transform.ts`); other names after them, by name.
@@ -503,6 +533,13 @@ pub struct Server {
     version: String,
     http: reqwest::Client,
     submitted: Mutex<HashSet<MessageId>>,
+    /// This process's own clock of reads and answers (`tick`): the order in
+    /// which they happened, whatever the wall clock does (#699 P3-a).
+    ticks: std::sync::atomic::AtomicU64,
+    /// This Server's own name, new each time one starts (`id`): a tick means
+    /// something only beside the name of the Server that counted it (#707
+    /// R1 44d3157b; a connection's generation restarts with Core).
+    id: String,
 }
 
 impl Server {
@@ -579,6 +616,8 @@ impl Server {
             // Never through a proxy: the password goes to loopback only.
             http: reqwest::Client::builder().no_proxy().build()?,
             submitted: Mutex::default(),
+            ticks: std::sync::atomic::AtomicU64::new(0),
+            id: uuid::Uuid::new_v4().simple().to_string(),
         };
         // From here on, an error drops `server`, which ends its group.
         // OpenCode's output is bytes, not necessarily UTF-8; a line is read
@@ -821,16 +860,33 @@ impl Server {
         status_of(&self.data(Method::GET, "/api/session/active", &[], None).await?, session)
     }
 
+    /// The next tick of this process's own clock (`ticks`), from 1: a later
+    /// call answers more. A tick of another Server means nothing here.
+    pub fn tick(&self) -> u64 {
+        self.ticks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
+
+    /// This Server's own name (`id`), whose `tick`s these are.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
     /// The session's messages, status and inbox, read now, with the requests
     /// pending in it and in the sub-agent sessions `children`.
     pub async fn snapshot(&self, session: &str, children: &[String]) -> Result<Snapshot> {
+        let began = self.tick();
+        let path = format!("/api/session/{}/inbox", segment(session)?);
+        let inbox_first = self.data(Method::GET, &path, &[], None).await?;
+        ensure!(inbox_first.is_array(), "OpenCode's {path} is not a list");
         let messages = self.messages(session).await?;
         let status = self.session_status(session).await?;
-        let path = format!("/api/session/{}/inbox", segment(session)?);
         let inbox = self.data(Method::GET, &path, &[], None).await?;
         ensure!(inbox.is_array(), "OpenCode's {path} is not a list");
         let sessions: Vec<&str> = std::iter::once(session).chain(children.iter().map(String::as_str)).collect();
         Ok(Snapshot {
+            began,
+            by: self.id.clone(),
+            inbox_first,
             messages,
             status,
             inbox,
@@ -874,71 +930,45 @@ impl Server {
         Ok(models)
     }
 
-    /// The commands OpenCode's configuration defines now, by name. Nothing
-    /// else of `/config` is kept, not even a command's template.
-    ///
-    /// 2.x lists its own (`GET /api/command`, T-32 slice 4a), naming and
-    /// describing each only; 1.19.3's `/config` is read where that route is
-    /// not there, as the stand-in keeps it until the commands slice. Running
-    /// one is still 1.19.3's route (`command`), which 2.x refuses.
+    /// The commands OpenCode offers now, by name (`GET /api/command`, T-32
+    /// slice 4a): its configuration's, its own (`init`, `review`, `goal`, …)
+    /// and its MCP servers' prompts. Each is named and described only.
     pub async fn commands(&self) -> Result<Vec<CommandChoice>> {
-        match self.data(Method::GET, "/api/command", &[], None).await {
-            Ok(listed) => {
-                let mut commands: Vec<CommandChoice> = listed.as_array().context("OpenCode's commands is not a list")?.iter()
-                    .filter_map(|command| Some(CommandChoice {
-                        name: command["name"].as_str()?.to_owned(),
-                        description: command["description"].as_str().unwrap_or_default().into(),
-                        // 2.x's list says nothing of a command's template, agent or model.
-                        takes_arguments: true,
-                        subtask: false,
-                        model: None,
-                    })).collect();
-                commands.sort_by(|a, b| a.name.cmp(&b.name));
-                return Ok(commands);
-            }
-            Err(error) if error.downcast_ref::<HttpStatus>().is_some_and(|s| s.code == 404) => {}
-            Err(error) => return Err(error),
-        }
-        let config = self.json(Method::GET, "/config", None).await?;
-        let named = |model: &Value| model.as_str().filter(|m| !m.is_empty()).map(str::to_owned);
-        let mut commands: Vec<CommandChoice> = config["command"].as_object().into_iter().flatten().map(|(name, info)| CommandChoice {
-            name: name.clone(),
-            description: info["description"].as_str().unwrap_or_default().into(),
-            takes_arguments: takes_arguments(info["template"].as_str().unwrap_or_default()),
-            subtask: info["subtask"] == true,
-            model: named(&info["model"]).or_else(|| info["agent"].as_str().and_then(|agent| named(&config["agent"][agent]["model"]))),
-        }).collect();
+        let listed = self.data(Method::GET, "/api/command", &[], None).await?;
+        let mut commands: Vec<CommandChoice> = listed.as_array().context("OpenCode's commands is not a list")?.iter()
+            .filter_map(|command| Some(CommandChoice {
+                name: command["name"].as_str()?.to_owned(),
+                description: command["description"].as_str().unwrap_or_default().into(),
+            })).collect();
         commands.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(commands)
     }
 
-    /// The request that runs the command `name` with `arguments` under `id`,
-    /// once: an ID this server was given before is refused here, whatever
-    /// became of it. `model` is `"provider/model"`, as the command endpoint
-    /// takes it. OpenCode 1.19.3 answers only once the run has ended, and
-    /// every failure as 400 (`handlers/session.ts` command), so the request
-    /// has no time limit of its own, and holds nothing of this server: it
-    /// does not keep OpenCode from being stopped. Its answer says nothing a
-    /// caller can wait for about delivery.
-    pub fn command(&self, session: &str, id: &MessageId, name: &str, arguments: &str, model: Option<&str>, variant: Option<&str>)
-        -> Result<impl std::future::Future<Output = Submission> + Send + 'static> {
-        let path = format!("/session/{}/command", segment(session)?);
+    /// The request that runs the command `name` with `text` in the session
+    /// (`POST /api/session/:id/command {name, text}`, T-61 slice 3), once
+    /// for `id`, Core's ID of its Turn: an ID this server was given before
+    /// is refused here, whatever became of it. 2.x's request carries no ID
+    /// and no model: what it admits gets an ID of 2.x's own, with the
+    /// session's model unless the command names one. 2.x answers once the
+    /// command has admitted its message, which can wait on the template's
+    /// shell lines or an MCP server, so the request has no time limit of
+    /// its own, and holds nothing of this server: it does not keep OpenCode
+    /// from being stopped.
+    pub fn command(&self, session: &str, id: &MessageId, name: &str, text: &str)
+        -> Result<impl std::future::Future<Output = CommandAnswer> + Send + 'static> {
+        let path = format!("/api/session/{}/command", segment(session)?);
         ensure!(self.submitted.lock().unwrap().insert(id.clone()),
             "Message {} was submitted already; it is never sent again", id.as_str());
-        let mut body = json!({"messageID": id.as_str(), "command": name, "arguments": arguments});
-        if let Some(model) = model {
-            body["model"] = model.into();
-        }
-        if let Some(variant) = variant {
-            body["variant"] = variant.into();
-        }
-        let request = self.request(Method::POST, &path).json(&body);
+        let request = self.request(Method::POST, &path).json(&json!({"name": name, "text": text}));
         Ok(async move {
             match request.send().await {
-                Err(error) => Submission::Unknown(format!("OpenCode did not answer: {error}")),
-                Ok(response) if response.status().is_success() => Submission::Accepted,
-                Ok(response) if response.status().is_client_error() => Submission::Refused(status(response).await),
-                Ok(response) => Submission::Unknown(status(response).await.to_string()),
+                Err(error) => CommandAnswer::Unknown(format!("OpenCode did not answer: {error}")),
+                Ok(response) if response.status().is_success() => CommandAnswer::Done,
+                Ok(response) if response.status().is_client_error() || response.status().as_u16() == 500 => {
+                    let code = response.status().as_u16();
+                    CommandAnswer::Refused { code, message: command_words(response).await }
+                }
+                Ok(response) => CommandAnswer::Unknown(status(response).await.to_string()),
             }
         })
     }
@@ -956,6 +986,15 @@ impl Server {
         self.json(Method::GET, "/path", None).await
     }
 
+    /// Where 2.x holds `directory` (T-61 slice 5: `GET /api/location`, its
+    /// `location[directory]` as a deepObject query, protocol/src/groups/
+    /// location.ts): `{directory, project: {id, directory, canonical}}`, the
+    /// folder as 2.x resolved it and the project it holds it for, whose
+    /// `directory` is the Git top level its snapshots are taken from.
+    pub async fn location(&self, directory: &str) -> Result<Value> {
+        self.json_with(Method::GET, "/api/location", &[(LOCATION, directory)], None).await
+    }
+
     /// The project OpenCode holds this instance's folder for (`GET /project/current`).
     pub async fn project(&self) -> Result<Value> {
         self.json(Method::GET, "/project/current", None).await
@@ -968,57 +1007,87 @@ impl Server {
         Ok(Value::Array(self.all(&format!("/api/session/{}/message", segment(session)?), &[("order", "asc")]).await?))
     }
 
-    /// The request that compacts the session with `provider`'s `model`
-    /// (T-10), as its own `/compact` does (`POST /session/:id/summarize`,
-    /// `auto: false`). OpenCode 1.19.3 writes the compaction's own user
-    /// message, under an ID of its choosing, then runs the compaction and
-    /// answers only once that run ends (`handlers/session.ts` summarize); it
-    /// takes no variant. So, as a command's, the request has no time limit of
-    /// its own and holds nothing of this server, and its answer alone says
-    /// nothing a caller can wait for.
-    pub fn summarize(&self, session: &str, provider: &str, model: &str) -> Result<impl std::future::Future<Output = CompactAnswer> + Send + 'static> {
-        let path = format!("/session/{}/summarize", segment(session)?);
-        let request = self.request(Method::POST, &path).json(&json!({"providerID": provider, "modelID": model, "auto": false}));
-        Ok(async move {
-            match request.send().await {
-                Err(error) => CompactAnswer::Unknown(format!("OpenCode did not answer: {error}")),
-                Ok(response) if response.status().as_u16() == 200 => match response.text().await {
-                    Ok(body) if serde_json::from_str::<Value>(&body).is_ok_and(|v| v == Value::Bool(true)) => CompactAnswer::Ended,
-                    Ok(body) => CompactAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
-                    Err(error) => CompactAnswer::Unknown(format!("OpenCode's answer broke off: {error}")),
-                },
-                Ok(response) if response.status().is_client_error() => CompactAnswer::Refused(status(response).await),
-                Ok(response) => CompactAnswer::Unknown(status(response).await.to_string()),
+    /// Compacts the session under `id` (T-61 slice 4: `POST
+    /// /api/session/:id/compact {id}`), once: an ID this server was given
+    /// before is refused here, whatever became of it. The request carries no
+    /// model: 2.x compacts with the session's, as a prompt runs. 2.x commits a
+    /// revert the session holds first, then admits the compaction and answers
+    /// at once; it has no busy guard (a compaction admitted while a run goes
+    /// on is taken up at its next step), so callers ask only while idle.
+    pub async fn compact(&self, session: &str, id: &MessageId) -> Result<CompactAdmission> {
+        let path = format!("/api/session/{}/compact", segment(session)?);
+        ensure!(self.submitted.lock().unwrap().insert(id.clone()),
+            "Message {} was submitted already; it is never sent again", id.as_str());
+        let sent = self.request(Method::POST, &path).timeout(REQUEST_LIMIT).json(&json!({"id": id.as_str()})).send().await;
+        Ok(match sent {
+            Err(error) => CompactAdmission::Unknown(format!("OpenCode did not answer: {error}")),
+            Ok(response) if response.status().as_u16() == 200 => match response.json::<Value>().await {
+                Ok(answer) if answer["data"]["type"] == "compaction" && answer["data"]["id"] == id.as_str() => CompactAdmission::Admitted,
+                Ok(answer) if answer["data"]["type"] == "compaction" && answer["data"]["id"].is_string() =>
+                    CompactAdmission::OtherPending(answer["data"]["id"].as_str().unwrap_or_default().to_owned()),
+                Ok(_) => CompactAdmission::Unknown("OpenCode answered 200 with no compaction".into()),
+                Err(error) => CompactAdmission::Unknown(format!("OpenCode's answer was not read: {error}")),
+            },
+            Ok(response) => {
+                let code = response.status().as_u16();
+                let answered: Value = response.json().await.unwrap_or_default();
+                let kind = answered["_tag"].as_str().unwrap_or_default();
+                let words = || answered["message"].as_str().unwrap_or("").chars().take(500).collect::<String>();
+                // Only what 2.x refuses before it admits anything: an unknown session or folder, a request it can't read.
+                let refused = matches!((code, kind), (404, "SessionNotFoundError" | "LocationNotFoundError"))
+                    || (code == 400 && kind == "InvalidRequestError"
+                        && matches!(answered["kind"].as_str(), Some("Params" | "Headers" | "Query" | "Payload")));
+                if refused {
+                    CompactAdmission::Refused { code, message: if words().is_empty() { format!("HTTP {code}") } else { words() } }
+                } else {
+                    CompactAdmission::Unknown(format!("OpenCode answered HTTP {code} {kind}"))
+                }
             }
         })
     }
 
-    /// The request that reverts the session to before `message` (T-10
-    /// Revert), as OpenCode 1.19.3's own (`POST /session/:id/revert`,
-    /// `session/revert.ts`): it checks the files of every later patch out of
-    /// OpenCode's snapshots, then keeps the revert in the session, to apply at
-    /// its next prompt, and answers once that is done. So it has no time
-    /// limit of its own and holds nothing of this server; sent once.
-    pub fn revert(&self, session: &str, message: &str) -> Result<impl std::future::Future<Output = RevertAnswer> + Send + 'static> {
-        let path = format!("/session/{}/revert", segment(session)?);
-        let request = self.request(Method::POST, &path).json(&json!({"messageID": message}));
-        let session = session.to_owned();
+    /// The request that stages a revert of `session` to before `message`
+    /// (T-61 slice 6: `POST /api/session/:id/revert/stage {messageID,
+    /// files: true}`, 2.2.5 core/src/session/revert.ts). 2.x captures the
+    /// folder, sends back each file of every later step to that step's first
+    /// snapshot, keeps the revert in the session and answers with it once
+    /// that is done; `commit` then deletes the messages. So it has no time
+    /// limit of its own and holds nothing of this server; sent once. Its 200
+    /// is read as the session holding that revert (`{id, revert}`), as
+    /// 1.19.3's whole session answer was.
+    pub fn stage(&self, session: &str, message: &str) -> Result<impl std::future::Future<Output = RevertAnswer> + Send + 'static> {
+        let path = format!("/api/session/{}/revert/stage", segment(session)?);
+        let request = self.request(Method::POST, &path).json(&json!({"messageID": message, "files": true}));
+        let (session, asked) = (session.to_owned(), message.to_owned());
         Ok(async move {
             match request.send().await {
                 Err(error) => RevertAnswer::Unknown(format!("OpenCode did not answer: {error}")),
                 Ok(response) if response.status().as_u16() == 200 => match response.text().await {
                     Ok(body) => match serde_json::from_str::<Value>(&body) {
-                        Ok(session) if session.is_object() => RevertAnswer::Answered(session),
+                        Ok(answer) if answer["data"].is_object() => RevertAnswer::Answered(json!({"id": session, "revert": answer["data"]})),
                         _ => RevertAnswer::Unknown(format!("OpenCode answered 200 with {}", body.chars().take(200).collect::<String>())),
                     },
                     Err(error) => RevertAnswer::Unknown(format!("OpenCode's answer broke off: {error}")),
                 },
                 Ok(response) => {
                     let status = status(response).await;
-                    if refused_before(&status, &session) { RevertAnswer::Refused(status) } else { RevertAnswer::Unknown(status.to_string()) }
+                    if refused_before(&status, &session, &asked) { RevertAnswer::Refused(status) } else { RevertAnswer::Unknown(status.to_string()) }
                 }
             }
         })
+    }
+
+    /// Commits the revert `session` holds (T-61 slice 6: `POST
+    /// /api/session/:id/revert/commit`, D-26 (a)): 2.x deletes the messages
+    /// from its boundary on, the boundary included, and touches no file.
+    /// 204, also when nothing is held. A lost answer is harmless: 2.x commits
+    /// a held revert itself before its next prompt or compaction.
+    pub async fn commit(&self, session: &str) -> Result<()> {
+        let path = format!("/api/session/{}/revert/commit", segment(session)?);
+        let response = self.request(Method::POST, &path).timeout(REQUEST_LIMIT).send().await
+            .map_err(|error| anyhow!("OpenCode did not answer {path} ({})", error.without_url()))?;
+        ensure!(response.status().as_u16() == 204, "OpenCode answered {path} with {}", status(response).await);
+        Ok(())
     }
 
     /// The request that forks `session` (`POST /session/:id/fork`, T-10
@@ -1089,18 +1158,6 @@ impl Server {
         let response = self.request(Method::POST, "/sync/replay").timeout(REPLAY_LIMIT).json(&body).send().await
             .context("OpenCode did not answer /sync/replay")?;
         success(response).await?.json().await.context("OpenCode's answer to /sync/replay is not JSON")
-    }
-
-    /// Removes one part of a message (`DELETE
-    /// /session/:id/message/:message/part/:part`, T-10). OpenCode 1.19.3 only
-    /// announces the removal (`session.ts` removePart) and deletes the part
-    /// by its ID and session alone (`core/src/session/projector.ts`), with no
-    /// check that it exists, is that message's, or that the session is idle:
-    /// its `true` says none of that. Only a read after it does.
-    pub async fn delete_part(&self, session: &str, message: &str, part: &str) -> Result<()> {
-        let path = format!("/session/{}/message/{}/part/{}", segment(session)?, segment(message)?, segment(part)?);
-        self.json(Method::DELETE, &path, None).await?;
-        Ok(())
     }
 
     /// The sessions OpenCode started under `session` (its sub-agents,
@@ -1696,27 +1753,31 @@ async fn success(response: Response) -> Result<Response> {
     Err(status(response).await.into())
 }
 
-/// Whether a revert's answer is one OpenCode 1.19.3 gives only before it
-/// does anything (Lead 4109), its status and whole body together, as its own
-/// API declares them (`packages/sdk/openapi.json`): 409 `SessionBusyError`
-/// of `session` itself, from `assertNotBusy`, the revert's first step
-/// (`session/revert.ts`); 404
-/// `NotFoundError`, from `requireSession`, the handler's own first step
-/// (`handlers/session.ts`); 400 `BadRequest` of a parameter, query or
-/// payload that could not be decoded, before the handler runs
-/// (`middleware/schema-error.ts`). Not one of kind `Body`: OpenCode answers
-/// so too when it cannot encode its own response, after the handler ran
-/// (`test/server/httpapi-schema-error-body.test.ts`, Lead 4121). Nor any
-/// other answer: a 401 or 403, any other body for those statuses, or one
-/// cut short.
-fn refused_before(status: &HttpStatus, session: &str) -> bool {
+/// Whether a stage's answer is one 2.x gives only before it changes any
+/// file of the Agent's (T-61 slice 6), its status and whole body together,
+/// as its own API declares them (protocol/src/errors.ts): 409
+/// `SessionBusyError` of `session` itself (core/src/session/session.ts, the
+/// stage's busy guard); 404 `SessionNotFoundError`, `LocationNotFoundError`,
+/// or `MessageNotFoundError` of the message `asked` (that one comes after a
+/// capture, which writes into the snapshot store only); 400
+/// `InvalidRequestError` of a parameter, header, query or payload that could
+/// not be decoded, before the handler runs. Not one of kind `Body`: before
+/// 2.2.0 2.x answered so when it could not encode its own response, after
+/// the handler ran. Nor any other answer: a 401, a 500, any other body for
+/// those statuses, or one cut short.
+fn refused_before(status: &HttpStatus, session: &str, asked: &str) -> bool {
     let Ok(body) = serde_json::from_str::<Value>(&status.body) else { return false };
     let text = |value: &Value| value.is_string();
     match status.code {
         409 => body["_tag"] == "SessionBusyError" && body["sessionID"] == session && text(&body["message"]),
-        404 => body["name"] == "NotFoundError" && text(&body["data"]["message"]),
-        400 => body["name"] == "BadRequest" && text(&body["data"]["message"])
-            && matches!(body["data"]["kind"].as_str(), Some("Params" | "Query" | "Payload")),
+        404 => text(&body["message"]) && match body["_tag"].as_str() {
+            Some("SessionNotFoundError") => body["sessionID"] == session,
+            Some("MessageNotFoundError") => body["sessionID"] == session && body["messageID"] == asked,
+            Some("LocationNotFoundError") => true,
+            _ => false,
+        },
+        400 => body["_tag"] == "InvalidRequestError" && text(&body["message"])
+            && matches!(body["kind"].as_str(), Some("Params" | "Headers" | "Query" | "Payload")),
         _ => false,
     }
 }
@@ -1739,27 +1800,38 @@ async fn status(response: Response) -> HttpStatus {
 mod tests {
     use super::*;
 
+    /// Only 2.x's own refusals before a stage changes any file count as
+    /// refused (T-61 slice 6, R2-2): busy for this session, a session,
+    /// location or asked message 2.x does not hold, a request it could not
+    /// read. 1.19.3's bodies, another session's or message's, a `Body` 400,
+    /// any other status, or a body cut short say nothing of what it did.
     #[test]
-    fn only_opencodes_own_refusals_before_a_revert_begins_count_as_refused() {
-        let refused = |code: u16, body: Value| refused_before(&HttpStatus { code, body: body.to_string() }, "ses_1");
-        assert!(refused(409, json!({"_tag": "SessionBusyError", "sessionID": "ses_1", "message": "Session is busy: ses_1"})));
-        assert!(refused(404, json!({"name": "NotFoundError", "data": {"message": "Session not found: ses_1"}})));
-        assert!(refused(400, json!({"name": "BadRequest", "data": {"message": "Expected string", "kind": "Payload"}})));
+    fn only_opencodes_own_refusals_before_a_revert_count_as_refused() {
+        let refused = |code: u16, body: Value| refused_before(&HttpStatus { code, body: body.to_string() }, "ses_1", "msg_1");
         for (code, body) in [
-            (409, json!({"name": "SessionBusyError", "data": {"sessionID": "ses_1", "message": "busy"}})),
-            (409, json!({"_tag": "ConflictError", "message": "conflict"})),
-            (404, json!({"_tag": "SessionNotFoundError", "sessionID": "ses_1", "message": "gone"})),
-            (400, json!({"name": "BadRequest", "data": {"message": "no", "kind": "Headers"}})),
-            (400, json!({"name": "BadRequest", "data": {"message": "Expected a session", "kind": "Body"}})),
-            (401, json!({"_tag": "UnauthorizedError", "message": "no"})),
-            (403, json!({"_tag": "ForbiddenError", "message": "no"})),
-            (500, json!({"name": "UnknownError", "data": {"message": "no"}})),
+            (409, json!({"_tag": "SessionBusyError", "sessionID": "ses_1", "message": "Session is busy: ses_1"})),
+            (404, json!({"_tag": "SessionNotFoundError", "sessionID": "ses_1", "message": "Session not found: ses_1"})),
+            (404, json!({"_tag": "MessageNotFoundError", "sessionID": "ses_1", "messageID": "msg_1", "message": "Message not found: msg_1"})),
+            (404, json!({"_tag": "LocationNotFoundError", "message": "Location not found"})),
+            (400, json!({"_tag": "InvalidRequestError", "kind": "Payload", "message": "Expected string"})),
+            (400, json!({"_tag": "InvalidRequestError", "kind": "Headers", "message": "no"})),
         ] {
-            assert!(!refused(code, body.clone()), "{code} {body}");
+            assert!(refused(code, body.clone()), "refused before anything: {code} {body}");
         }
-        assert!(!refused(409, json!({"_tag": "SessionBusyError", "sessionID": "ses_2", "message": "Session is busy: ses_2"})),
-            "a busy answer of another session is no refusal of this one");
-        assert!(!refused_before(&HttpStatus { code: 409, body: "{\"_tag\":\"SessionBusyError\",\"sessionID\":\"ses_1\",…".into() }, "ses_1"), "cut short");
+        for (code, body) in [
+            (409, json!({"_tag": "SessionBusyError", "sessionID": "ses_2", "message": "Session is busy: ses_2"})),
+            (409, json!({"_tag": "ConflictError", "message": "conflict"})),
+            (404, json!({"_tag": "MessageNotFoundError", "sessionID": "ses_1", "messageID": "msg_2", "message": "Message not found: msg_2"})),
+            (404, json!({"_tag": "SessionNotFoundError", "sessionID": "ses_2", "message": "gone"})),
+            (404, json!({"name": "NotFoundError", "data": {"message": "Session not found: ses_1"}})),
+            (400, json!({"_tag": "InvalidRequestError", "kind": "Body", "message": "the response could not be encoded"})),
+            (400, json!({"name": "BadRequest", "data": {"message": "Expected string", "kind": "Payload"}})),
+            (401, json!({"_tag": "UnauthorizedError", "message": "no"})),
+            (500, json!({"_tag": "UnknownError", "message": "no", "ref": "err_1"})),
+        ] {
+            assert!(!refused(code, body.clone()), "says nothing of what it did: {code} {body}");
+        }
+        assert!(!refused_before(&HttpStatus { code: 409, body: "{\"_tag\":\"SessionBusyError\",\"sessionID\":\"ses_1\",…".into() }, "ses_1", "msg_1"), "cut short");
     }
 
     #[test]

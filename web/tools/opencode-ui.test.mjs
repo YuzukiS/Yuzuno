@@ -458,6 +458,46 @@ test("an OpenCode turn names OpenCode, shows its tool calls and offers its own r
   } finally { codex.close(); page.close(); }
 });
 
+test("an OpenCode command that ran with no turn of its own says why under that turn, in the language shown (T-61 slice 3)", async () => {
+  const turn = (notice) => ({ id: "msg_c", status: "completed", notice, items: [
+    { id: "msg_c:input", type: "userMessage", content: [{ type: "text", text: "/explain x" }] },
+  ] });
+  const agent = { id: "a", name: "Ocean", status: "idle", color: "sage", harness: "opencode" };
+  const shown = (notice, language) => {
+    const page = mount();
+    if (language) page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+    page.window.renderTurn({ turn: turn(notice), index: 0, agent, onFile() {}, onRewindDraft() {} });
+    return page;
+  };
+  const pages = [
+    shown({ kind: "command_no_turn", detail: "explain" }),
+    shown({ kind: "command_subagent", detail: "reviewer" }),
+    shown({ kind: "command_subagent", detail: "reviewer" }, "zh-Hans"),
+    shown({ kind: "command_no_turn", detail: "explain" }, "zh-Hans"),
+    shown({ kind: "a_newer_kind", detail: "x" }),
+    shown(null),
+  ];
+  try {
+    await tick(); await tick();
+    // Text and booleans only: a failing assertion on a jsdom element can take the whole test's memory to print it.
+    const note = (page) => page.document.querySelector(".turn-notice");
+    assert.equal(note(pages[0])?.textContent, "OpenCode ran /explain; it started no turn.", "the no-turn notice, in English");
+    assert.equal(note(pages[1])?.textContent,
+      "OpenCode runs this command in a background sub-agent (reviewer). Its result comes back to the session later, in a run of OpenCode’s own, not in this turn.",
+      "the sub-agent notice, in English");
+    assert.equal(note(pages[2])?.textContent, "OpenCode 在后台的子 Agent（reviewer）中执行这条命令；它的结果之后由 OpenCode 自己交回会话，不属于这一轮。",
+      "the sub-agent notice, in Chinese");
+    assert.equal(note(pages[3])?.textContent, "OpenCode 执行了 /explain；它没有开始新的一轮。", "the no-turn notice, in Chinese");
+    for (const page of pages.slice(0, 4)) {
+      assert.equal(note(page).closest('[role="alert"]') === null, true, "plain text under the turn, not an alert");
+      assert.equal(page.document.querySelector(".inline-error") === null, true, "nothing failed");
+    }
+    assert.equal(note(pages[4]) === null, true, "a kind this version doesn't know shows nothing");
+    assert.equal(note(pages[5]) === null, true, "no notice, no line");
+    for (const page of pages) assert.deepEqual(page.errors, []);
+  } finally { for (const page of pages) page.close(); }
+});
+
 // OpenCode's revert (T-10): previewed with its files, asked once, the
 // original text given back only once OpenCode keeps the revert; an outcome
 // not confirmed is only checked, never kept by choice or asked again.
@@ -487,7 +527,7 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
     "/rewind/confirm": { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退", files: [{ path: "/work/a.txt", outcome: "verified" }] } });
   try {
     const text = kept.page.document.body.textContent;
-    assert.match(text, /This turn and 1 later turns leave the conversation; 1 earlier turns stay/);
+    assert.match(text, /This turn and 1 later turns leave the conversation; 1 earlier turns stay\. OpenCode removes them from its session as soon as the files are back/);
     assert.match(text, /\/work\/a\.txt: now 3 bytes, becomes no file/);
     assert.match(text, /Any change made since, by you or another Agent, is overwritten; Core keeps a copy of each first/);
     assert.ok(!button(kept.page, "Keep current history"), "no way to keep the current history");
@@ -506,7 +546,8 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
   // Not confirmed: only checked, held back meanwhile; kept on check with a file that drifted: the text once, the file named.
   let checks = 0;
   const unsure = await open({ "/rewind/preview": preview,
-    "/rewind/confirm": { attemptId: "revert_1", status: "unknown", draft: "", message: "这次回退的结果无法确认" },
+    "/rewind/confirm": { attemptId: "revert_1", status: "unknown", draft: "", message: "这次回退的结果无法确认",
+      files: [{ path: "/work/a.txt", outcome: "notRestored" }] },
     "/rewind/check": () => (++checks === 1
       ? { attemptId: "revert_1", status: "unknown", draft: "", message: "这次回退的结果无法确认" }
       : { attemptId: "revert_1", status: "completed", draft: "Fix a.txt", message: "已回退，但有 1 个文件不是快照里的内容",
@@ -515,6 +556,9 @@ test("OpenCode's revert previews its files, asks once and gives the text back on
     button(unsure.page, "Revert").click(); await tick(); await tick();
     let text = unsure.page.document.body.textContent;
     assert.match(text, /The revert is not yet confirmed/);
+    // T-61 slice 6 (D-27 (a)): each file as it is now, and nothing put back on its own.
+    assert.match(text, /\/work\/a\.txt: still as before: OpenCode did not send it back/);
+    assert.match(text, /OpenCode may have sent some of these files back before it stopped: each is shown as it is now\. Core kept a copy of each first and puts nothing back on its own/);
     assert.match(text, /New messages to this Agent wait until the outcome is confirmed\. The revert is never asked for again/);
     assert.ok(!button(unsure.page, "Keep current history"), "an unknown outcome is never kept by choice");
     assert.deepEqual(unsure.drafts, [], "no text back while not confirmed");

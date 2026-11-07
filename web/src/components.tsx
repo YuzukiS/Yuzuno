@@ -43,7 +43,7 @@ import type {
   PendingRequest,
   MessageReceipt,
 } from "./types";
-import { api, artifactUrl, errorText, NO_ANSWER_REPLY, post, respondToRequest } from "./api";
+import { api, artifactUrl, errorText, NO_ANSWER_REPLY, respondToRequest } from "./api";
 import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-answer";
 import { useRequestDraft } from "./request-draft";
 import { ClaudePermission, ClaudeSubAgentScope, ClaudeTool, PlanText, planTitle } from "./ClaudeControls";
@@ -456,6 +456,14 @@ export function messageHandoff(
 export function isBriefReminder(turn: NativeTurn, item: NativeItem, firstUser?: NativeItem) {
   return item._yuzunoSource === "brief-reminder" || (turn._yuzunoSource === "brief-reminder" && item === firstUser);
 }
+/** Why a Turn ended with no run of its own, as Core noted it (T-61 slice 3), in
+ * the language shown; null for none, or a kind this version doesn't know. */
+export function turnNotice(turn: NativeTurn, t: TurnWords = turnWords("en")): string | null {
+  const notice = turn.notice;
+  if (notice?.kind === "command_no_turn") return t.commandNoTurn(notice.detail);
+  if (notice?.kind === "command_subagent") return t.commandSubagent(notice.detail);
+  return null;
+}
 /** What started a Claude turn that is not shown as a reply to your message. */
 export function nativeTurnLabel(turn: NativeTurn, t: TurnWords = turnWords("en")) {
   if (turn._yuzunoUnmatched) return t.unmatched;
@@ -802,45 +810,6 @@ function ToolActivity({
     </details>
   );
 }
-/** Giving up an OpenCode compaction that OpenCode still holds unfinished
- * (T-10): the user's own act, run by Core, which removes only its part.
- * Asked once per press, never again by itself: a second press while one is
- * out asks nothing. Core's answer alone never says it was given up; this
- * waits for Core's record of the Turn, which then shows no button. A refusal
- * is said here, for the user to try again or not. One per Agent and Turn
- * (keyed so), so nothing of it shows on another Agent. */
-function CompactionGiveUp({ agentId, turn }: { agentId: string; turn: NativeTurn }) {
-  const t = useStrings(turnWords);
-  const [phase, setPhase] = useState<"idle" | "asking" | "answered">("idle");
-  const out = useRef(false);
-  const [error, setError] = useState("");
-  const attempt = turn._opencodeCompact;
-  if (!attempt || !attempt.message || !attempt.part || !(attempt.nativePending === true || attempt.state === "unknown")) return null;
-  async function giveUp() {
-    // Set before React renders the press: presses in the same moment ask once.
-    if (out.current) return;
-    out.current = true;
-    setPhase("asking");
-    setError("");
-    try {
-      await post(`/agents/${encodeURIComponent(agentId)}/compact/abandon`, { turnId: turn.id });
-      setPhase("answered");
-    } catch (e) {
-      out.current = false;
-      setError(errorText(e));
-      setPhase("idle");
-    }
-  }
-  return (
-    <div className="turn-compaction-give-up">
-      <button type="button" className="secondary-button" disabled={phase !== "idle"} title={t.giveUpCompactionHelp} onClick={() => void giveUp()}>
-        {phase === "asking" ? t.givingUpCompaction : phase === "answered" ? t.compactionRecordAwaited : t.giveUpCompaction}
-      </button>
-      {error && <p role="alert" className="inline-error" lang="">{error}</p>}
-    </div>
-  );
-}
-
 export function Turn({
   turn,
   index,
@@ -922,6 +891,7 @@ export function Turn({
   const timeOf = (item: NativeItem) => timeMarks?.get(timeMarkKey(turn.id, item.id));
   const language = useLanguage();
   const t = turnWords(language);
+  const notice = turnNotice(turn, t);
   // Reading by your inputs (T-6): each input of yours, or one no record
   // attributes, opens a part of the Turn; mail, reminders, automatic
   // continues and Claude's own inputs fold with the tools around them.
@@ -1279,7 +1249,7 @@ export function Turn({
               : errorText(turn.error)}
           </div>
         )}
-        {agent.harness === "opencode" && <CompactionGiveUp key={`${agent.id}:${turn.id}`} agentId={agent.id} turn={turn} />}
+        {notice && <p className="turn-notice">{notice}</p>}
         {turn.status === "interrupted" && (
           <div className="turn-interrupted">
             {turn.missingNative ? (

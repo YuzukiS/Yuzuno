@@ -106,3 +106,18 @@ test("a card's report link carries the section's identity when Core gave one", (
   const { id: _id, ...older } = live(3);
   assert.deepEqual(linkTo("p1", older), { projectId: "p1", key: "eval", version: 3 });
 });
+
+test("YN-16 a summary's visual may be a Group of inputs, the card's live figure", () => {
+  const report = (box) => ({
+    key: "scones", kind: "report", title: "Scones", version: 1,
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "box", size: "wide" } }, children: ["lead", "box"] },
+      lead: { type: "Markdown", props: { text: "Scales." } },
+      box,
+      vegan: { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } },
+      note: { type: "Markdown", props: { text: "Oil." } },
+    } },
+  });
+  assert.deepEqual(summaryOf(report({ type: "Group", props: {}, children: ["vegan", "note"] })), { lead: "lead", visual: "box", conditions: null, size: "wide" });
+  assert.equal(summaryOf(report({ type: "Group", props: {}, children: ["note"] })), null, "a Group of no input is no figure");
+});

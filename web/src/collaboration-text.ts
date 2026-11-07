@@ -75,7 +75,7 @@ export const boardText = strings({
     state === "waiting" ? (position ? `Queued (number ${position})` : "Queued")
       : state === "starting" ? (reason ? `Start not finished: ${reason}` : "Starting") : "Running",
   executorSlotHelp: (state: string, reason?: string | null) =>
-    state === "waiting" ? "Its executor waits for a free slot and starts in turn. Settings → Executor templates sets how many run at once."
+    state === "waiting" ? "Its executor waits for a free slot on its machine and starts in turn. Settings → Machines sets how many run at once on each machine."
       : state === "starting" ? (reason ? `Its executor keeps its slot, open; its start didn't finish: ${reason}. Connect starts it again; Close frees its slot.` : "Its executor holds a slot and is starting.")
       : "Its executor holds a slot and is running.",
   updatedAt: (at: string) => `Updated ${at}`,
@@ -115,7 +115,6 @@ export const boardText = strings({
   general: "General executor",
   generalAs: (harness: string, source: "project" | "workspace" | "builtin") =>
     `General executor · ${harness} (${source === "project" ? "this project’s default" : source === "workspace" ? "the Workspace’s default" : "built-in default"})`,
-  projectTemplate: "this project’s",
   templateHint: "Core creates an agent for this task, a general one or from the template you choose, in the task’s worktree or else the project’s folder. It starts when an executor slot is free and gets the task with the project’s handover. Its result comes back to you.",
   noTemplates: "No executor templates yet: a general executor takes the defaults for new agents. Add templates in Settings, under Executor templates.",
   templatesUnread: (error: string) => `Couldn’t read the executor templates: ${error}`,
@@ -281,7 +280,7 @@ export const boardText = strings({
     state === "waiting" ? (position ? `排队中（第 ${position} 位）` : "排队中")
       : state === "starting" ? (reason ? `启动未完成：${reason}` : "启动中") : "运行中",
   executorSlotHelp: (state, reason) =>
-    state === "waiting" ? "它的执行者在等空位，会按顺序启动。同时运行的数量在 设置 → 执行者模板 中设定。"
+    state === "waiting" ? "它的执行者在等所在机器的空位，会按顺序启动。每台机器同时运行的数量在“设置 → 机器”中设定。"
       : state === "starting" ? (reason ? `它的执行者保持打开并占着一个位置；启动未完成：${reason}。连接会再次启动它；关闭会释放它的位置。` : "它的执行者占着一个位置，正在启动。")
       : "它的执行者占着一个位置，正在运行。",
   updatedAt: (at) => `更新于 ${at}`,
@@ -319,7 +318,6 @@ export const boardText = strings({
   general: "通用执行者",
   generalAs: (harness, source) =>
     `通用执行者 · ${harness}（${source === "project" ? "此项目的默认" : source === "workspace" ? "Workspace 的默认" : "内置默认"}）`,
-  projectTemplate: "此项目的",
   templateHint: "Core 为这个任务创建一个 Agent（通用的，或按你选的模板），在任务的工作树中，否则在项目的文件夹中。有空闲的执行者名额时它就启动，并拿到任务和项目的交接文档。它的结果会回到你这里。",
   noTemplates: "还没有执行者模板：通用执行者使用新 Agent 的默认设置。可在设置的“执行者模板”中添加模板。",
   templatesUnread: (error) => `无法读取执行者模板：${error}`,

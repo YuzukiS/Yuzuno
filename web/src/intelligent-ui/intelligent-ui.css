@@ -544,3 +544,22 @@
   transition:
     background-color var(--motion-micro) var(--ease-standard);
 }
+/* A result whose block is still being written (YN-15): what is checked is
+   drawn, the rest keeps its room. Nothing here moves or animates a height. */
+.result-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.result-pending {
+  min-height: 1.3rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--line) 38%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .result-live .spin {
+    animation: none;
+  }
+}

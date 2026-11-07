@@ -21,6 +21,11 @@ import { BriefBarChart, BriefLineChart, BriefScatterChart } from "./Charts";
 import { BriefLiveRefs } from "./LiveRefs";
 import { BriefAttachments } from "./AttachmentView";
 import { BriefResearchDesk } from "./ResearchDesk";
+import { BriefNumberInput, BriefSegmented, BriefSwitch } from "./Inputs";
+import { BriefButton, BriefCalc, type Press } from "./Calc";
+import { BriefDiagram } from "./Diagram";
+import { VARIABLE_NAME } from "../../intelligent-ui/brief-inputs.ts";
+import { useSectionStore } from "./brief-state";
 import { useBriefDensity } from "../home-density";
 import type { BlockChanges } from "./block-changes";
 import { briefText } from "./brief-text";
@@ -135,7 +140,8 @@ function BriefTable(props: BriefTableProps) {
 
 // Display only: no component here starts anything. Links open pages and
 // references open the panels the app already has; nothing an Agent wrote
-// can call an API.
+// can call an API. Inputs (YN-16) write their own variable in the store of
+// the place that shows the section, which blocks' visible conditions read.
 const registry: ComponentRegistry = {
   BriefBody: part(({ children }: { children?: ReactNode }) => <div className="brief-root">{children}</div>),
   Group: part(BriefGroup),
@@ -154,6 +160,12 @@ const registry: ComponentRegistry = {
   Attachments: part(BriefAttachments),
   Sources: part(BriefSources),
   ResearchDesk: part(BriefResearchDesk),
+  NumberInput: part(BriefNumberInput),
+  Switch: part(BriefSwitch),
+  Segmented: part(BriefSegmented),
+  Calc: part(BriefCalc),
+  Button: part(BriefButton),
+  Diagram: part(BriefDiagram),
 };
 const noActions = Object.freeze({});
 function BriefSources(props: SourcesProps) {
@@ -185,6 +197,35 @@ function resultShim(spec: BriefSpec, title: string): ResultSpec {
       elements[`sources${index}`] = { ...node, props };
     });
   return { root: "root", elements } as ResultSpec;
+}
+
+/** The prop BriefSectionBody gives a Button: what its press sets (YN-16 S2). */
+const PRESS = "yuzunoPress";
+
+/** A Button's press as setState actions of variables, each `{statePath: "/name", value}`; anything else is left out. */
+function pressOf(on: unknown): Press {
+  const press = on && typeof on === "object" && !Array.isArray(on) ? (on as { press?: unknown }).press : undefined;
+  const actions: unknown[] = Array.isArray(press) ? press : press === undefined ? [] : [press];
+  return actions.flatMap((action) => {
+    const { action: kind, params } = (action && typeof action === "object" ? action : {}) as { action?: unknown; params?: { statePath?: unknown; value?: unknown } };
+    const path = params?.statePath;
+    const value = params?.value;
+    const fits = typeof value === "boolean" || typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
+    return kind === "setState" && typeof path === "string" && VARIABLE_NAME.test(path.slice(1)) && path.startsWith("/") && fits
+      ? [{ statePath: path, value: value as Press[number]["value"] }]
+      : [];
+  });
+}
+
+/** An element as the contract keeps it: its type, props, children and visible condition; a Button's press as its own prop. */
+function keptElement({ type, props, children, visible, on }: BriefSpec["elements"][string]) {
+  const { [PRESS]: _given, ...own } = props ?? {};
+  return {
+    type,
+    props: type === "Button" ? { ...own, [PRESS]: pressOf(on) } : own,
+    ...(children === undefined ? {} : { children }),
+    ...(visible === undefined ? {} : { visible }),
+  };
 }
 
 type BodyProps = {
@@ -228,10 +269,18 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
     const elements = Object.fromEntries(
       Object.entries(section.body.elements).map(([key, given]) => {
         const change = changes?.get(key);
+        // What json-render would also run from an element (YN-16): event
+        // bindings, watches and repeats. A body keeps its type, props,
+        // children and visible condition only; a Button's press is read here,
+        // as setState of its section's variables and nothing else, and
+        // Yuzuno's Button runs it (Calc.tsx), never json-render's actions.
+        const kept = given && (given.type === "Button" || PRESS in (given.props ?? {}) || "on" in given || "watch" in given || "repeat" in given)
+          ? keptElement(given)
+          : given;
         const node =
-          given && (change || (given.props && CHANGE in given.props))
-            ? { ...given, props: { ...given.props, [CHANGE]: change } }
-            : given;
+          kept && (change || (kept.props && CHANGE in kept.props))
+            ? { ...kept, props: { ...kept.props, [CHANGE]: change } }
+            : kept;
         if (node?.type === "Table" && node.props?.title === undefined)
           return [key, { ...node, props: { ...node.props, title: "Table" } }];
         // A research desk reads its numbers and keeps its selection by its id (T-9).
@@ -264,6 +313,7 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
     [spec],
   );
   const shim = useMemo(() => (spec ? resultShim(spec, section.title) : null), [spec, section.title]);
+  const store = useSectionStore(section);
   const context = useMemo<BriefContextValue>(
     () => ({ projectId, section, onOpenAgent, onOpenMachine }),
     [projectId, section, onOpenAgent, onOpenMachine],
@@ -286,7 +336,7 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
             (card-fold.tsx), "" where it has none -- an identity no Workspace
             claims, never read as one's. */}
         <ResultProvider spec={shim} blocks={tables} identity={`brief:${workspaceId}:${projectId}:${section.key}`}>
-          <StateProvider initialState={{}}>
+          <StateProvider store={store}>
             <VisibilityProvider>
               <ActionProvider handlers={noActions}>
                 <Renderer spec={spec} registry={registry} fallback={Unreadable} />

@@ -37,10 +37,13 @@ let machines = [
   { id: "boxed", name: "Boxed", kind: "ssh", target: "boxed", codex: "codex", defaultCwd: "/srv/boxed", contained: true, lastCheck: null },
 ];
 // What Core keeps and answers (executor_slots.rs `executor_slots_view`).
-let limits = [{ id: "local", name: "this Core host", version: 0, slots: null, executors: 1 },
-  { id: "lab", name: "Lab box", version: 2, slots: 3, executors: 1 }, { id: "boxed", name: "Boxed", version: 0, slots: null, executors: 0 }];
-const slotsView = () => ({ workspace: { version: 0, slots: 3, saved: false, default: 3, startLimitSeconds: 300 },
-  limits: { min: 1, max: 64, startLimitSeconds: { min: 30, max: 3600, default: 300 } }, inUse: { waiting: 1, starting: 0, running: 2 }, machines: limits });
+// As Core answers since YN-2 S5: `slots` is the limit that applies, `saved` whether it is the machine's own.
+let limits = [{ id: "local", name: "this Core host", version: 0, slots: 3, saved: false, default: 3, executors: 1 },
+  { id: "lab", name: "Lab box", version: 2, slots: 3, saved: true, default: 3, executors: 1 },
+  { id: "boxed", name: "Boxed", version: 0, slots: 3, saved: false, default: 3, executors: 0 }];
+const slotsView = () => ({ workspace: { version: 0, startLimitSeconds: 300 },
+  limits: { min: 1, max: 64, default: 3, startLimitSeconds: { min: 30, max: 3600, default: 300 } }, inUse: { waiting: 1, starting: 0, running: 2 },
+  machines: limits, total: limits.reduce((sum, m) => sum + m.slots, 0) });
 let saved = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude" }] };
 const templates = () => ({ workspace: saved, available: saved.templates.map((template) => ({ template, source: "workspace" })),
   defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false });
@@ -82,7 +85,7 @@ await context.route("**/*", async (route) => {
     const id = decodeURIComponent(limitPut[1]);
     const own = limits.find((m) => m.id === id);
     if (!own || body.expectedVersion !== own.version) return route.fulfill({ status: 400, json: { error: "version_conflict: these executor slots changed; reload before saving" } });
-    limits = limits.map((m) => (m.id === id ? { ...m, version: m.version + 1, slots: body.slots } : m));
+    limits = limits.map((m) => (m.id === id ? { ...m, version: m.version + 1, slots: body.slots ?? 3, saved: body.slots !== null } : m));
     return route.fulfill({ json: slotsView() });
   }
   const machinePut = path.match(/^\/api\/machines\/([^/]+)$/);
@@ -155,11 +158,18 @@ async function openSettingsCard(page, search, title) {
   const card = page.locator(".settings-catalog-card").filter({ has: page.locator("h4", { hasText: title }) }).first();
   await card.locator("button").last().click({ timeout: 10_000 });
 }
+// Settings › Machines (YN-8): the list first; a row opens a machine's page.
 async function openMachines(page) {
   await openSettingsCard(page, "SSH", "Execution machines & SSH");
-  const dialog = page.getByRole("dialog", { name: "Machines" });
-  await dialog.waitFor({ timeout: 10_000 });
+  const dialog = page.locator(".modal.settings-modal");
+  await dialog.locator(".settings-machines [data-machine-row]").first().waitFor({ timeout: 10_000 });
   return dialog;
+}
+async function openMachine(dialog, id) {
+  const back = dialog.locator(".settings-machines .settings-crumb");
+  if (await back.count()) await back.click();
+  await dialog.locator(`[data-machine-row="${id}"]`).click({ timeout: 10_000 });
+  await dialog.locator(`article[data-machine-id="${id}"]`).waitFor({ timeout: 10_000 });
 }
 async function openTemplates(page) {
   await openSettingsCard(page, "executor", "Executor templates");
@@ -186,37 +196,43 @@ try {
   await page.goto(`https://${HOST}/`);
   await page.getByRole("button", { name: "Settings and updates" }).waitFor({ timeout: 10_000 });
 
-  // ---- 1. The Machines editor: Lab box's own limit, saved after the machine.
+  // ---- 1. Lab box's page (YN-8): its own limit on a slider, saved with the page's one Save.
   let dialog = await openMachines(page);
-  await dialog.getByRole("button", { name: "Edit Lab box" }).click({ timeout: 10_000 });
-  const editor = dialog.locator(".remote-machine-editor");
-  const field = editor.locator('input[aria-label="Executors at once"]');
+  await openMachine(dialog, "lab");
+  const settings = dialog.locator(".machine-settings");
+  const field = settings.locator('input[type=range][aria-label="Executors at once"]');
   await field.waitFor({ timeout: 10_000 });
-  await page.waitForFunction(() => document.querySelector('.remote-machine-editor input[aria-label="Executors at once"]')?.value === "3", null, { timeout: 10_000 });
-  await editor.getByText("Lowering it stops no running executor").waitFor({ timeout: 10_000 });
+  await page.waitForFunction(() => document.querySelector('.machine-settings input[type=range][aria-label="Executors at once"]')?.value === "3", null, { timeout: 10_000 });
+  await settings.getByText("Lowering it stops no running executor").waitFor({ timeout: 10_000 });
   await field.fill("5");
-  await editor.getByRole("button", { name: "Save changes" }).click();
-  await editor.waitFor({ state: "detached", timeout: 10_000 });
+  const bar = dialog.locator(".settings-savebar");
+  await bar.getByRole("button", { name: "Save", exact: true }).click();
+  await bar.getByText("All changes saved.").waitFor({ timeout: 10_000 });
   const lab = report.writes.filter((w) => w.path.startsWith("/api/machines/lab"));
-  assert.deepEqual(lab.map((w) => w.path), ["/api/machines/lab", "/api/machines/lab/executor-slots"]);
-  assert.deepEqual(lab[1].body, { expectedVersion: 2, slots: 5 });
-  check("1 the Machines editor: Lab box's limit 3 read, 5 saved after the machine against version 2", { body: lab[1].body });
+  assert.deepEqual(lab.map((w) => w.path), ["/api/machines/lab/executor-slots"], "the limit alone: the machine itself is not sent");
+  assert.deepEqual(lab[0].body, { expectedVersion: 2, slots: 5 });
+  check("1 Lab box's page: its limit 3 read on the slider, 5 saved with the page's Save against version 2", { body: lab[0].body });
 
-  // ---- 2. The Core host's card: its own limit, through the route for local.
+  // ---- 2. The Core host's page: its own limit on a slider, through the route for local with the page's Save (YN-8).
+  await openMachine(dialog, "local");
   const host = dialog.locator('[data-machine-id="local"] .machine-executor-limit');
   await host.waitFor({ timeout: 10_000 });
   await host.getByText("1 on this machine now.").waitFor({ timeout: 10_000 });
-  await host.locator("input").fill("2");
-  await host.getByRole("button", { name: "Save executors at once" }).click();
-  await host.getByText("Saved.").waitFor({ timeout: 10_000 });
+  await host.getByText("The default, 3.").waitFor({ timeout: 10_000 }); // none saved: the default shown (YN-2 S5)
+  assert.equal(await host.locator("input[type=range]").inputValue(), "3", "the slider at the default");
+  await host.locator("input[type=range]").fill("2");
+  await bar.getByRole("button", { name: "Save", exact: true }).click();
+  await bar.getByText("All changes saved.").waitFor({ timeout: 10_000 });
   const local = report.writes.find((w) => w.path === "/api/machines/local/executor-slots");
   assert.deepEqual(local.body, { expectedVersion: 0, slots: 2 });
-  check("2 the Core host card: its own limit 2 saved through the route for local against version 0", { body: local.body });
+  check("2 the Core host's page: its own limit 2 saved with the page's Save through the route for local against version 0", { body: local.body });
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached", timeout: 10_000 });
 
   // ---- 3. The template editor: Runs on, auto explained, and kept on save.
   let box = await openTemplates(page);
+  await box.locator('input[aria-label="Label"]').first().waitFor({ timeout: 10_000 });
+  await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
   const runsOn = box.locator('select[aria-label="Runs on"]');
   await runsOn.waitFor({ timeout: 10_000 });
   await page.waitForFunction(() => document.querySelector('#settings-editor-executor-templates select[aria-label="Runs on"]')?.options.length === 4, null, { timeout: 10_000 });
@@ -252,13 +268,13 @@ try {
     const at = `${width}-${scheme}`;
     assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), scheme, `${at}: the page is in the ${scheme} theme`);
     dialog = await openMachines(page);
-    await dialog.getByRole("button", { name: "Edit Lab box" }).click({ timeout: 10_000 });
-    const shownEditor = dialog.locator(".remote-machine-editor");
-    await shownEditor.locator('input[aria-label="Executors at once"]').waitFor({ timeout: 10_000 });
-    assert.deepEqual(await fits(shownEditor), { box: true, wider: [] }, `${at}: the Machines editor fits`);
-    // The editor is taller than a screen: the shot is the new field, with its help.
-    await shownEditor.locator("label", { has: page.locator('input[aria-label="Executors at once"]') })
-      .screenshot({ path: join(output, `1-machine-editor-${at}.png`) });
+    await openMachine(dialog, "lab");
+    const shownSettings = dialog.locator(".machine-settings");
+    await shownSettings.locator('input[type=range][aria-label="Executors at once"]').waitFor({ timeout: 10_000 });
+    assert.deepEqual(await fits(shownSettings), { box: true, wider: [] }, `${at}: Lab box's settings fit`);
+    // Its page is taller than a screen: the shot is the Jobs block, with the limit and its help.
+    await shownSettings.locator(".machine-settings-jobs").screenshot({ path: join(output, `1-machine-jobs-${at}.png`) });
+    await openMachine(dialog, "local");
     const shownHost = dialog.locator('[data-machine-id="local"] .machine-executor-limit');
     await shownHost.waitFor({ timeout: 10_000 });
     assert.deepEqual(await fits(shownHost), { box: true, wider: [] }, `${at}: the Core host control fits`);
@@ -266,6 +282,8 @@ try {
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "detached", timeout: 10_000 });
     box = await openTemplates(page);
+    await box.locator('input[aria-label="Label"]').first().waitFor({ timeout: 10_000 });
+    await box.locator("details.executor-template-more > summary").first().click(); // YN-2 S2: the rest is folded
     await box.locator('select[aria-label="Runs on"]').waitFor({ timeout: 10_000 });
     assert.deepEqual(await fits(box), { box: true, wider: [] }, `${at}: the template editor fits`);
     await box.locator("label.settings-row", { has: page.locator('select[aria-label="Runs on"]') }).first()
@@ -275,15 +293,15 @@ try {
     const card = page.locator('.collab-task-card[data-task-id="T-51"]');
     assert.deepEqual(await fits(card), { box: true, wider: [] }, `${at}: the task card fits`);
     await card.screenshot({ path: join(output, `4-task-card-${at}.png`) });
-    check(`${at}: the Machines editor, the Core host control, the template editor and the task card fit their width`);
+    check(`${at}: Lab box's settings, the Core host control, the template editor and the task card fit their width`);
     await page.keyboard.press("Escape");
   }
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);
   assert.deepEqual(report.writes.map((w) => `${w.method} ${w.path}`),
-    ["PUT /api/machines/lab", "PUT /api/machines/lab/executor-slots", "PUT /api/machines/local/executor-slots", "PUT /api/executor-templates"],
-    "the four saves, nothing else written");
+    ["PUT /api/machines/lab/executor-slots", "PUT /api/machines/local/executor-slots", "PUT /api/executor-templates"],
+    "the three saves, nothing else written: Lab box's limit alone sends no machine (YN-8)");
   report.status = "passed";
 } catch (error) {
   report.status = "failed";

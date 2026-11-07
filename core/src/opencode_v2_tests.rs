@@ -280,6 +280,122 @@ fn a_whole_read_gives_the_live_stream_what_its_later_events_do_not_repeat() {
     assert_eq!(next[0]["data"]["info"]["parentID"], "msg_u1");
 }
 
+/// A message delivered whose admission this connection never saw waits for
+/// the session's next event that tells (T-61 slice 4, D-21), then is marked
+/// so (T-61 slice 3): what it was is not known here, so it is no command's
+/// input. One whose admission it saw, a synthetic one too, is not.
+#[test]
+fn a_delivery_whose_admission_was_not_seen_says_so() {
+    let mut c = Cursor::default();
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    assert!(c.read(&ev("session.inbox.delivered", 1, d(json!({"inboxID": "msg_u0"})))).is_empty(), "held");
+    assert_eq!(kinds(&c.read(&ev("session.execution.started", 2, d(json!({}))))), ["session.status"], "still held: this tells nothing");
+    let unseen = c.read(&ev("session.step.started", 3, d(json!({"assistantMessageID": "msg_a0"}))));
+    assert_eq!(unseen[0]["data"]["info"], json!({"id": "msg_u0", "role": "user", "time": {"created": 1}, "_opencodeUnseen": true}),
+        "a step tells: a user's message, before its answer");
+    assert_eq!(unseen[1]["data"]["info"]["parentID"], "msg_u0", "which the step answers");
+    assert!(c.read(&ev("session.inbox.enqueued", 2, d(json!({"inboxID": "msg_s1", "item": {"type": "synthetic"}})))).is_empty());
+    let seen = c.read(&ev("session.inbox.delivered", 3, d(json!({"inboxID": "msg_s1"}))));
+    assert_eq!(seen[0]["data"]["info"], json!({"id": "msg_s1", "role": "user", "time": {"created": 3}}));
+}
+
+/// A compaction delivered while this connection did not see it admitted is
+/// no user's message, once 2.x starts it under that ID (T-61 slice 4, D-21):
+/// it would have begun a turn nobody sent.
+#[test]
+fn a_delivered_compaction_whose_admission_was_unseen_is_no_users_message() {
+    let mut c = Cursor::default();
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    let mut out = c.read(&ev("session.inbox.delivered", 1, d(json!({"inboxID": "msg_c0"}))));
+    out.extend(c.read(&ev("session.execution.started", 2, d(json!({})))));
+    out.extend(c.read(&ev("session.compaction.started", 3, d(json!({"reason": "manual", "inputID": "msg_c0"})))));
+    let users: Vec<&Value> = out.iter().filter(|e| e["data"]["info"]["role"] == "user").collect();
+    assert!(users.is_empty(), "no user's message: {users:?}");
+    assert_eq!(kinds(&out), ["session.status", "message.updated", COMPACTION], "its start, as Core reads one");
+    assert!(c.sessions.get("ses_1").is_some_and(|open| open.held.is_none() && open.user.is_none()), "nothing held, no turn open");
+}
+
+/// A delivery whose admission went unseen is held only until the session's
+/// next event tells what it was (T-61 slice 4, D-21): another compaction's
+/// start (an automatic one, as an overflow starts at a run's beginning) does
+/// not make it that compaction's input, so it is a user's message.
+#[test]
+fn an_unseen_delivery_is_no_other_compactions_input() {
+    let mut c = Cursor::default();
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    let mut out = c.read(&ev("session.inbox.delivered", 1, d(json!({"inboxID": "msg_u0"}))));
+    out.extend(c.read(&ev("session.execution.started", 2, d(json!({})))));
+    out.extend(c.read(&ev("session.compaction.started", 3, d(json!({"reason": "auto"})))));
+    let users: Vec<&Value> = out.iter().filter(|e| e["data"]["info"]["role"] == "user").map(|e| &e["data"]["info"]).collect();
+    assert_eq!(users, [&json!({"id": "msg_u0", "role": "user", "time": {"created": 1}, "_opencodeUnseen": true})],
+        "the unseen delivery, a user's message, not the automatic compaction's input: {out:?}");
+}
+
+/// A compaction is read as Core's own `opencode.compaction` (T-61 slice 4),
+/// live and whole alike: its message's ID (the input's, for one asked for),
+/// how it stands, why it ran, and its summary and model, or its error. One
+/// that failed compacted nothing: no entry, so nothing measured is stale.
+#[test]
+fn a_compaction_is_read_as_cores_own_event_live_and_whole() {
+    let mut c = Cursor::default();
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    let of = |read: &[Value]| read.iter().find(|e| e["type"] == COMPACTION).map(|e| e["data"].clone()).unwrap_or_default();
+    let started = of(&c.read(&ev("session.compaction.started", 1, d(json!({"reason": "manual", "inputID": "msg_in"})))));
+    assert_eq!(started, json!({"sessionID": "ses_1", "id": "msg_in", "status": "running", "reason": "manual"}));
+    let model = json!({"id": "fake", "providerID": "stub"});
+    let ended = of(&c.read(&ev("session.compaction.ended", 2, d(json!({"reason": "manual", "model": model, "text": "## Objective\nx"})))));
+    assert_eq!(ended, json!({"sessionID": "ses_1", "id": "msg_in", "status": "completed", "reason": "manual",
+        "summary": "## Objective\nx", "model": model}));
+    c.read(&ev("session.compaction.started", 3, d(json!({"reason": "manual", "inputID": "msg_in2"}))));
+    let error = json!({"type": "compaction.failed", "message": "the summary failed"});
+    let failed = c.read(&ev("session.compaction.failed", 4, d(json!({"reason": "manual", "error": error, "inputID": "msg_in2"}))));
+    assert_eq!(kinds(&failed), [COMPACTION], "no entry: it compacted nothing");
+    assert_eq!(of(&failed), json!({"sessionID": "ses_1", "id": "msg_in2", "status": "failed", "reason": "manual", "error": error}));
+
+    let stored = read_messages(&json!([
+        {"id": "msg_in", "type": "compaction", "status": "completed", "reason": "manual", "summary": "## Objective\nx", "model": model,
+         "time": {"created": 1}},
+        {"id": "msg_in2", "type": "compaction", "status": "failed", "reason": "manual", "error": error, "time": {"created": 3}},
+    ]));
+    assert_eq!(stored.compactions, [
+        json!({"id": "msg_in", "status": "completed", "reason": "manual", "summary": "## Objective\nx", "model": model, "error": null}),
+        json!({"id": "msg_in2", "status": "failed", "reason": "manual", "summary": null, "model": null, "error": error}),
+    ], "as 2.x stores them");
+}
+
+/// A sub-agent's result, which 2.x hands the session as a synthetic message
+/// (`metadata.source` `subagent`), is marked so wherever Core reads it (T-61
+/// slice 3, D-15): delivered live, delivered after a whole read found it in
+/// the inbox, and stored. Another synthetic message, and a user's, is not.
+#[test]
+fn a_sub_agents_result_is_marked_live_after_a_whole_read_and_stored() {
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    let result = |id: &str| json!({"id": id, "type": "synthetic", "delivery": "steer",
+        "payload": {"text": "<subagent>Seen.</subagent>", "metadata": {"source": "subagent", "state": "completed"}}});
+    let mut c = Cursor::default();
+    let item = result("msg_r1");
+    c.read(&ev("session.inbox.enqueued", 1, d(json!({"inboxID": "msg_r1", "item": item}))));
+    let live = c.read(&ev("session.inbox.delivered", 2, d(json!({"inboxID": "msg_r1"}))));
+    assert_eq!(live[0]["data"]["info"][SUB_AGENTS_RESULT], true, "delivered live: {}", live[0]);
+    let shell = json!({"type": "synthetic", "payload": {"text": "ls", "metadata": {"source": "shell"}}});
+    c.read(&ev("session.inbox.enqueued", 3, d(json!({"inboxID": "msg_s1", "item": shell}))));
+    let other = c.read(&ev("session.inbox.delivered", 4, d(json!({"inboxID": "msg_s1"}))));
+    assert_eq!(other[0]["data"]["info"].get(SUB_AGENTS_RESULT), None, "a shell's output is not");
+
+    let mut c = Cursor::default();
+    c.resumed("ses_1", &read_messages(&json!([])), &json!([result("msg_r2")]));
+    let after = c.read(&ev("session.inbox.delivered", 5, d(json!({"inboxID": "msg_r2"}))));
+    assert_eq!(after[0]["data"]["info"][SUB_AGENTS_RESULT], true, "found in the inbox by a whole read, then delivered");
+
+    let stored = read_messages(&json!([
+        {"id": "msg_u1", "type": "user", "text": "hi", "time": {"created": 1}},
+        {"id": "msg_r3", "type": "synthetic", "text": "<subagent>Seen.</subagent>", "metadata": {"source": "subagent"}, "time": {"created": 2}},
+        {"id": "msg_s2", "type": "synthetic", "text": "ls", "metadata": {"source": "shell"}, "time": {"created": 3}},
+    ]));
+    let marked: Vec<bool> = stored.messages.iter().map(|m| m["info"][SUB_AGENTS_RESULT] == true).collect();
+    assert_eq!(marked, [false, true, false], "stored: {:?}", stored.messages);
+}
+
 /// Text gathered for an answer's entry is written out by the next event of
 /// that answer, by its step's end, and by its execution's end, not only by
 /// a later delta of the same entry or its own end (T-32 slice 4a; R2 and R5
@@ -407,6 +523,26 @@ fn a_form_yuzuno_cannot_fill_says_why() {
     assert!(provider.get("_opencodeUnfillable").is_none() && provider["questions"][0]["custom"] == false, "a web search provider's is filled");
 }
 
+/// A field names a secret only by 2.x's own words (2.2.5's ACP client,
+/// S3 R1 e0c0291f): "private" alone is an ordinary question's word, while
+/// a private or API key, written any of 2.x's ways, is a secret.
+#[test]
+fn a_question_asks_for_a_secret_only_in_2xs_own_words() {
+    let with = |change: &dyn Fn(&mut Value)| { let mut form = question_form("frm_1"); change(&mut form); request_of(&form) };
+    let ordinary = with(&|f: &mut Value| {
+        f["fields"][0]["title"] = "Should the repo be private?".into();
+        f["fields"][0]["description"] = "Private or public".into();
+    });
+    assert!(ordinary.get("_opencodeUnfillable").is_none(), "a question whether the repo is private asks for no secret: {ordinary}");
+    for title in ["Paste your private key", "private_key", "Private-Key", "privatekey", "Your api key", "API_KEY", "a password", "the token"] {
+        let read = with(&|f: &mut Value| f["fields"][0]["title"] = title.into());
+        let said = read["_opencodeUnfillable"].as_str().unwrap_or_default();
+        assert!(said.contains("a secret"), "{title:?} names a secret: {said:?}");
+    }
+    let spaced = with(&|f: &mut Value| f["fields"][0]["title"] = "private  key".into());
+    assert!(spaced.get("_opencodeUnfillable").is_none(), "two separators are not 2.x's `private[_ -]?key`: {spaced}");
+}
+
 /// Core's answers become 2.x's answer by field key and option value (T-61
 /// slice 2): a label is its option's value (a web search provider's differ),
 /// typed text only where the field takes it, one value for a text field, a
@@ -523,8 +659,8 @@ fn a_compaction_a_whole_read_finds_running_ends_as_the_one_entry_it_read() {
     let mut c = Cursor::default();
     c.resumed("ses_1", &read, &json!([]));
     let ended = c.read(&json!({"id": "evt_E9", "type": "session.compaction.ended", "created": 3, "data": {"sessionID": "ses_1", "reason": "auto"}}));
-    assert_eq!(ended.iter().map(|e| e["data"]["info"]["id"].clone()).collect::<Vec<_>>(), [json!("msg_C1")],
-        "one compaction, one entry, across a whole read");
+    assert_eq!(ended.iter().filter(|e| e["type"] == "message.updated").map(|e| e["data"]["info"]["id"].clone()).collect::<Vec<_>>(),
+        [json!("msg_C1")], "one compaction, one entry, across a whole read");
     let done = json!([{"id": "msg_C1", "type": "compaction", "status": "completed", "reason": "auto", "time": {"created": 2}}]);
     assert_eq!(read_messages(&done).compaction, None, "one completed is not running");
 }

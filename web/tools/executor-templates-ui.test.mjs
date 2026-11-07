@@ -1,6 +1,7 @@
-// T-34 S1: Settings → Executor templates, and a project's own on its page.
-// A save sends the whole list as this client writes it, against the version
-// read; a conflict says so and offers a reload. Fixture HTTP only; no Core.
+// T-34 S1, YN-2 S2: Settings → Executor templates, the Workspace's only list;
+// a project has no templates and no executors number of its own (YN-2 S5: each machine has). A save sends the whole list as
+// this client writes it, against the version read; a conflict says so and
+// offers a reload. Fixture HTTP only; no Core.
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -23,10 +24,13 @@ try {
     entry,
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
-import {ExecutorTemplates} from ${src("ExecutorTemplates.tsx")};
+import * as Templates from ${src("ExecutorTemplates.tsx")};
 const root=createRoot(document.getElementById('root'));
-window.renderTemplates=()=>root.render(<ExecutorTemplates active/>);
-window.renderProjectTemplates=(id,disabled=false)=>root.render(<ExecutorTemplates active projectId={id} disabled={disabled}/>);`,
+window.renderTemplates=()=>root.render(<Templates.ExecutorTemplates active/>);
+// A project's page (YN-2 S2). Before it, the page held the editor with a projectId: a red there fails at an assertion.
+window.renderProjectExecutors=(id,disabled=false)=>root.render(Templates.ProjectExecutors
+  ? <Templates.ProjectExecutors projectId={id} disabled={disabled}/>
+  : <Templates.ExecutorTemplates active projectId={id} disabled={disabled}/>);`,
   );
   const result = await build({
     root,
@@ -49,25 +53,25 @@ async function until(check, what, ms = 3000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
-// As Core answers (executor_templates::view).
-const view = (workspace, project, opencodeEnabled = false) => ({
+// As Core answers (executor_templates::view): the Workspace's list only (YN-2 S2).
+const view = (workspace, opencodeEnabled = false, presets = []) => ({
   workspace,
-  ...(project ? { project: { id: "p1", ...project } } : {}),
-  available: [
-    ...(project?.templates ?? []).map((template) => ({ template, source: "project" })),
-    ...workspace.templates.filter((w) => !(project?.templates ?? []).some((p) => p.id === w.id)).map((template) => ({ template, source: "workspace" })),
-  ],
+  available: workspace.templates.map((template) => ({ template, source: "workspace" })),
+  presets,
   defaultNamePattern: "{task} · {label}",
   limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 },
   opencodeEnabled,
 });
 
-// As Core answers /api/executor-slots (executor_slots.rs `executor_slots_view`).
-const slotsView = ({ version = 0, slots = 3, saved = false, project, inUse = { waiting: 0, starting: 0, running: 0 }, startLimitSeconds = 300 } = {}) => ({
-  workspace: { version, slots, saved, default: 3, startLimitSeconds },
-  limits: { min: 1, max: 64, startLimitSeconds: { min: 30, max: 3600, default: 300 } },
+// As Core answers /api/executor-slots (executor_slots.rs `executor_slots_view`, YN-2 S5: each machine's limit only).
+const machineRow = (id, name, slots, saved) => ({ id, name, version: saved ? 1 : 0, slots, saved, default: 3, executors: 0 });
+const slotsView = ({ version = 0, inUse = { waiting: 0, starting: 0, running: 0 }, startLimitSeconds = 300,
+  machines = [machineRow("local", "this Core host", 3, false)] } = {}) => ({
+  workspace: { version, startLimitSeconds },
+  limits: { min: 1, max: 64, default: 3, startLimitSeconds: { min: 30, max: 3600, default: 300 } },
   inUse,
-  ...(project ? { project: { id: "p1", ...project } } : {}),
+  machines,
+  total: machines.reduce((sum, m) => sum + m.slots, 0),
 });
 const isSlots = (url) => /\/executor-slots(\?|$)/.test(url);
 
@@ -117,7 +121,7 @@ test("Executor templates: a new template is added, said as written and saved as 
   });
   page.window.renderTemplates();
   const section = () => page.document.querySelector("#settings-executor-templates");
-  await until(() => /No template yet\./.test(section()?.textContent ?? ""), "the empty list");
+  await until(() => /No template yet: a dispatch makes a general executor\./.test(section()?.textContent ?? ""), "the empty list");
   assert.equal(button(page, "Save templates").disabled, true, "nothing to save yet");
   assert.doesNotMatch(section().textContent, /Executors run on this Core host\./, "the host-only line is gone: each template says where it runs (T-35 S3)");
 
@@ -168,38 +172,63 @@ test("Executor templates: a new template is added, said as written and saved as 
   assert.deepEqual(page.errors, []);
 });
 
-test("a project's own templates: the Workspace's are named, those it replaces said so; an archived project's can't change", async () => {
-  const workspace = { version: 3, templates: [{ id: "reviewer", label: "Reviewer", harness: "codex" }, { id: "writer", label: "Writer", harness: "claude" }] };
-  // In Core's own field order, which is not the order this client writes them in.
-  let project = { version: 1, templates: [{ id: "reviewer", label: "Project reviewer", namePattern: "{label} on {task}", harness: "claude" }] };
+test("a template needs only a label and a harness; the rest is folded, a copied one says where it came from (YN-2 S2)", async () => {
+  const copied = { id: "reviewer-2", label: "Reviewer (Lab)", harness: "claude", instructions: "Lab's way.",
+    origin: { projectId: "p1", projectName: "Lab", id: "reviewer" } };
+  let workspace = { version: 2, templates: [copied] };
   const page = mount((url, method, body) => {
-    if (method === "PUT") project = { version: project.version + 1, templates: body.templates };
-    return [200, view(workspace, project)];
+    if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+    return [200, view(workspace)];
   });
-  page.window.renderProjectTemplates("p1");
-  await until(() => field(page, "Label"), "the project's list");
-  const text = () => page.document.querySelector(".executor-templates-settings").textContent;
-  assert.match(text(), /Also available here, from the Workspace: Reviewer \(replaced here\) · Writer\./);
-  assert.equal(page.calls.find((c) => !isSlots(c.url)).url, "/api/executor-templates?projectId=p1");
-  assert.equal(field(page, "Name").value, "{label} on {task}");
-  assert.equal(button(page, "Save templates").disabled, true, "nothing to save after loading");
-  assert.doesNotMatch(text(), /Unsaved changes/, "nothing to save after loading");
-  await type(page, "Label", "Lead reviewer");
+  page.window.renderTemplates();
+  const section = () => page.document.querySelector("#settings-executor-templates");
+  await until(() => field(page, "Label"), "the list");
+  assert.match(section().textContent, /Copied from the project Lab, where its id was reviewer\./);
+  const folds = () => [...page.document.querySelectorAll("details.executor-template-more")];
+  assert.ok(folds().length === 1 && !folds()[0].open, "a template's other settings are folded");
+  assert.equal(folds()[0].querySelector("summary").textContent, "More settings (1 set)", "the fold says how many it sets");
+  button(page, "Add template").click();
+  await tick();
+  assert.equal(button(page, "Save templates").disabled, true, "a template needs a label");
+  assert.match(section().textContent, /A template needs a label\./);
+  const labels = () => [...page.document.querySelectorAll('[aria-label="Label"]')];
+  const proto = page.window.HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(proto, "value").set.call(labels()[1], "Builder");
+  labels()[1].dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  await tick();
+  assert.equal(button(page, "Save templates").disabled, false, "a label and the default harness are enough");
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
-  assert.deepEqual(puts(page)[0], { url: "/api/projects/p1/executor-templates", method: "PUT", body: { expectedVersion: 1, templates: [
-    { id: "reviewer", label: "Lead reviewer", harness: "claude", namePattern: "{label} on {task}" },
-  ] } });
-  page.window.renderProjectTemplates("p1", true);
-  await tick();
-  assert.equal(page.document.querySelector("fieldset").disabled, true);
-  assert.equal(button(page, "Add template").disabled, true);
+  assert.deepEqual(puts(page)[0].body, { expectedVersion: 2, templates: [copied, { id: "builder", label: "Builder", harness: "codex" }] },
+    "the copy keeps where it came from; the new one is a label and a harness");
+  assert.deepEqual(page.errors, []);
+});
+
+test("a preset is adopted into an unsaved draft, with a free id, and saved only by Save (YN-2 S2, presets from T-43)", async () => {
+  const preset = { id: "design-first", label: "Design first", harness: "claude", instructions: "Write the design note first.",
+    description: "When a change needs a design note approved before code." };
+  let workspace = { version: 1, templates: [{ id: "design-first", label: "Design first", harness: "codex" }] };
+  const page = mount((url, method, body) => {
+    if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+    return [200, view(workspace, false, [preset])];
+  });
+  page.window.renderTemplates();
+  await until(() => field(page, "Add from a preset"), "the preset picker");
+  assert.deepEqual([...field(page, "Add from a preset").options].map((o) => o.textContent), ["Add from a preset", "Design first"]);
+  await type(page, "Add from a preset", "design-first");
+  assert.equal(page.document.querySelectorAll("fieldset").length, 2, "a draft from the preset");
+  assert.deepEqual(puts(page), [], "nothing is saved by adopting");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1, "the save");
+  assert.deepEqual(puts(page)[0].body.templates[1],
+    { id: "design-first-2", label: "Design first", harness: "claude", instructions: "Write the design note first." },
+    "a free id, and the preset's fields without its description");
   assert.deepEqual(page.errors, []);
 });
 
 test("OpenCode is offered only where this Core creates OpenCode Agents, with no model or permissions of its own", async () => {
   for (const enabled of [false, true]) {
-    const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex" }], laterTemplates: 1 }, undefined, enabled)]);
+    const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex" }], laterTemplates: 1 }, enabled)]);
     page.window.renderTemplates();
     await until(() => field(page, "Harness"), "the list");
     assert.match(page.document.querySelector(".executor-templates-settings").textContent,
@@ -216,99 +245,37 @@ test("OpenCode is offered only where this Core creates OpenCode Agents, with no 
   }
 });
 
-test("Executors at once (T-35): the Workspace's limit is saved against its version, a whole number from 1 to 64", async () => {
-  let current = { version: 0, slots: 3, saved: false, inUse: { waiting: 2, starting: 1, running: 3 } };
-  let conflict = false;
-  const page = mount(() => [200, view({ version: 0, templates: [] })], (url, method, body) => {
-    if (method === "PUT") {
-      if (conflict || body.expectedVersion !== current.version) return [400, { error: "version_conflict: these executor slots changed; reload before saving" }];
-      current = { ...current, version: current.version + 1, slots: body.slots, saved: true };
-    }
-    return [200, slotsView(current)];
-  });
+test("Executors at once (YN-2 S5): each machine's number is shown, with their sum; there is no Workspace number to save", async () => {
+  const machines = [machineRow("local", "this Core host", 6, true), machineRow("mini", "Mac mini", 3, false)];
+  const page = mount(() => [200, view({ version: 0, templates: [] })],
+    () => [200, slotsView({ machines, inUse: { waiting: 2, starting: 1, running: 3 } })]);
   page.window.renderTemplates();
   const group = () => page.document.querySelector('[role="group"][aria-label="How many executors run at once"]');
-  await until(() => field(page, "Executors at once"), "the limit");
-  assert.equal(page.calls.find((c) => isSlots(c.url)).url, "/api/executor-slots");
-  assert.equal(field(page, "Executors at once").value, "3");
-  assert.match(group().textContent, /How many executors run at once in this Workspace\. Those dispatched beyond it wait in a queue and start in turn, as executors close\. 3 unless you change it\./);
+  await until(() => group() && field(page, "Start time limit (seconds)"), "executors at once");
+  assert.match(group().textContent, /Executors at once is set for each machine: this Core host 6, Mac mini 3 \(default\); 9 in all\./,
+    "each machine's number, the default marked, and their sum");
+  assert.match(group().textContent, /Change a machine's number in Settings → Machines\./);
   assert.match(group().textContent, /In this Workspace now: 3 running, 1 starting, 2 waiting\./);
-  const save = () => button(page, "Save executors at once");
-  assert.equal(save().disabled, true, "nothing to save yet");
-
-  for (const bad of ["0", "65", ""]) {
-    await type(page, "Executors at once", bad);
-    assert.equal(save().disabled, true, `${JSON.stringify(bad)} is not saved`);
-    assert.match(group().textContent, /A whole number from 1 to 64\./, `${JSON.stringify(bad)} says the range`);
-    assert.equal(field(page, "Executors at once").getAttribute("aria-invalid"), "true");
-  }
-  await type(page, "Executors at once", "5");
-  assert.match(group().textContent, /Unsaved change/);
-  save().click();
-  await until(() => /Saved\./.test(group().textContent), "the saved limit");
-  assert.deepEqual(slotPuts(page), [{ url: "/api/executor-slots", method: "PUT", body: { expectedVersion: 0, slots: 5, startLimitSeconds: 300 } }]);
-  assert.equal(field(page, "Executors at once").value, "5");
-  assert.equal(save().disabled, true, "what was saved is what is shown");
-  assert.deepEqual(puts(page), [], "the templates are saved apart");
-
-  conflict = true;
-  await type(page, "Executors at once", "6");
-  save().click();
-  await until(() => group().querySelector('[role="alert"]'), "the refusal");
-  assert.match(group().querySelector('[role="alert"]').textContent, /version_conflict: these executor slots changed/);
-  conflict = false;
-  button(page, "Reload executors at once").click();
-  await until(() => field(page, "Executors at once")?.value === "5", "the saved limit again");
-  assert.ok(!group().querySelector('[role="alert"]'), "the refusal is gone");
-  assert.deepEqual(page.errors, []);
-});
-
-test("Executors at once (T-35): a project's own limit is within the Workspace's, empty to unset; an archived project's can't change", async () => {
-  let project = { version: 0, slots: null };
-  const page = mount(() => [200, view({ version: 0, templates: [] }, { version: 0, templates: [] })], (url, method, body) => {
-    if (method === "PUT") project = { version: project.version + 1, slots: body.slots };
-    return [200, slotsView({ slots: 4, saved: true, version: 2, project })];
-  });
-  page.window.renderProjectTemplates("p1");
-  await until(() => field(page, "Executors at once"), "the project's limit");
-  assert.equal(page.calls.find((c) => isSlots(c.url)).url, "/api/executor-slots?projectId=p1");
-  assert.equal(field(page, "Executors at once").value, "", "unset: empty");
-  const group = () => page.document.querySelector('[role="group"][aria-label="How many executors run at once"]');
-  assert.match(group().textContent, /At most this many of this project’s executors at once, within the Workspace’s 4\. Empty: only the Workspace’s limit applies\./);
-  const save = () => button(page, "Save executors at once");
-  assert.equal(save().disabled, true);
-  await type(page, "Executors at once", "2");
-  save().click();
-  await until(() => slotPuts(page).length === 1, "the save");
-  await until(() => /Saved\./.test(group().textContent), "saved");
-  await type(page, "Executors at once", "");
-  assert.equal(save().disabled, false, "empty unsets a project's own");
-  save().click();
-  await until(() => slotPuts(page).length === 2, "the second save");
-  assert.deepEqual(slotPuts(page), [
-    { url: "/api/projects/p1/executor-slots", method: "PUT", body: { expectedVersion: 0, slots: 2 } },
-    { url: "/api/projects/p1/executor-slots", method: "PUT", body: { expectedVersion: 1, slots: null } },
-  ]);
-  page.window.renderProjectTemplates("p1", true);
-  await tick();
-  assert.equal(field(page, "Executors at once").disabled, true);
-  assert.equal(save().disabled, true);
+  assert.equal(Boolean(field(page, "Executors at once")), false, "no Workspace number to set: it is each machine's");
+  assert.equal(page.calls.find((c) => isSlots(c.url)).url, "/api/executor-slots");
   assert.deepEqual(page.errors, []);
 });
 
 test("Executors at once (T-35): an answer without its fields reads as Core's defaults", async () => {
   const page = mount(() => [200, view({ version: 0, templates: [] })], () => [200, {}]);
   page.window.renderTemplates();
-  await until(() => field(page, "Executors at once"), "the limit");
-  assert.equal(field(page, "Executors at once").value, "3");
-  assert.match(page.document.querySelector('[role="group"][aria-label="How many executors run at once"]').textContent, /0 running, 0 starting, 0 waiting/);
+  await until(() => field(page, "Start time limit (seconds)"), "the start time limit");
+  assert.equal(field(page, "Start time limit (seconds)").value, "300");
+  const group = page.document.querySelector('[role="group"][aria-label="How many executors run at once"]');
+  assert.match(group.textContent, /0 running, 0 starting, 0 waiting/);
+  assert.match(group.textContent, /; 0 in all\./, "no machine listed: none counted");
   assert.deepEqual(page.errors, []);
 });
 
-test("Start time limit (T-35 S2): the Workspace's, a whole number of seconds from 30 to 3600, saved with its limit; a project has none of its own", async () => {
-  let current = { version: 0, slots: 3, saved: false, startLimitSeconds: 300 };
+test("Start time limit (T-35 S2): the Workspace's, a whole number of seconds from 30 to 3600, saved alone (YN-2 S5)", async () => {
+  let current = { version: 0, startLimitSeconds: 300 };
   const page = mount(() => [200, view({ version: 0, templates: [] })], (url, method, body) => {
-    if (method === "PUT") current = { ...current, version: current.version + 1, slots: body.slots, saved: true, startLimitSeconds: body.startLimitSeconds ?? current.startLimitSeconds };
+    if (method === "PUT") current = { ...current, version: current.version + 1, startLimitSeconds: body.startLimitSeconds };
     return [200, slotsView(current)];
   });
   page.window.renderTemplates();
@@ -316,7 +283,8 @@ test("Start time limit (T-35 S2): the Workspace's, a whole number of seconds fro
   const group = () => page.document.querySelector('[role="group"][aria-label="How many executors run at once"]');
   assert.equal(field(page, "Start time limit (seconds)").value, "300");
   assert.match(group().textContent, /How long an executor’s start may take before Core cuts it off\. A start that fails is rebuilt once; a second failure blocks its task\. 300 unless you change it\./);
-  const save = () => button(page, "Save executors at once");
+  const save = () => button(page, "Save start time limit");
+  assert.equal(save().disabled, true, "nothing to save yet");
   for (const bad of ["29", "3601", "30.5", ""]) {
     await type(page, "Start time limit (seconds)", bad);
     assert.match(group().textContent, /A whole number of seconds from 30 to 3600\./, `${JSON.stringify(bad)} says the range`);
@@ -326,47 +294,30 @@ test("Start time limit (T-35 S2): the Workspace's, a whole number of seconds fro
   await type(page, "Start time limit (seconds)", "45");
   save().click();
   await until(() => slotPuts(page).length === 1, "the save");
-  assert.deepEqual(slotPuts(page)[0].body, { expectedVersion: 0, slots: 3, startLimitSeconds: 45 });
+  assert.deepEqual(slotPuts(page)[0], { url: "/api/executor-slots", method: "PUT", body: { expectedVersion: 0, startLimitSeconds: 45 } },
+    "the start time limit alone: no Workspace number");
   await until(() => /Saved\./.test(group().textContent), "saved");
   assert.equal(field(page, "Start time limit (seconds)").value, "45");
   assert.deepEqual(page.errors, []);
 });
 
-test("Start time limit (T-35 S2): a project's limit editor has no start time limit", async () => {
-  const page = mount(() => [200, view({ version: 0, templates: [] }, { version: 0, templates: [] })],
-    () => [200, slotsView({ project: { version: 0, slots: null } })]);
-  page.window.renderProjectTemplates("p1");
-  await until(() => field(page, "Executors at once"), "the project's limit");
-  assert.ok(!field(page, "Start time limit (seconds)"), "the Workspace's alone");
-  assert.deepEqual(page.errors, []);
-});
-
-test("At most at once (T-35 S4): a template's own limit is a whole number from 1 to 64, or empty; anything else holds the save, said at its field", async () => {
-  let workspace = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude" }] };
+test("a template has no limit of its own (T-43: one limit per machine); one saved before is dropped at the next save", async () => {
+  let workspace = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude", maxConcurrent: 3 }] };
   const page = mount((url, method, body) => {
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
     return [200, view(workspace)];
   });
   page.window.renderTemplates();
-  await until(() => field(page, "At most at once"), "the template");
+  await until(() => field(page, "Name"), "the template");
   const section = () => page.document.querySelector("#settings-executor-templates");
-  assert.match(section().textContent, /At most this many of this template’s executors run at once, within Executors at once\. Empty: no limit of its own\./);
-  for (const bad of ["-1", "2.5", "0", "65"]) {
-    await type(page, "At most at once", bad);
-    assert.match(section().textContent, /At most at once is a whole number from 1 to 64\./, `${bad} says the range`);
-    assert.equal(field(page, "At most at once").getAttribute("aria-invalid"), "true", `${bad} is marked`);
-    assert.equal(button(page, "Save templates").disabled, true, `${bad} is not saved`);
-  }
-  await type(page, "At most at once", "3");
-  assert.doesNotMatch(section().textContent, /is a whole number from 1 to 64/);
+  assert.equal(field(page, "At most at once"), null, "no At most at once field");
+  assert.doesNotMatch(section().textContent, /At most at once|no limit of its own/);
+  assert.match(section().querySelector(".executor-template summary").textContent, /^More settings$/, "an old limit isn't counted on the fold");
+  assert.equal(button(page, "Save templates").disabled, true, "an old limit alone is nothing to save");
+  await type(page, "Name", "{task} · review");
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
-  assert.deepEqual(puts(page)[0].body.templates, [{ id: "reviewer", label: "Reviewer", harness: "claude", maxConcurrent: 3 }]);
-  await until(() => /Saved\./.test(section().textContent), "saved");
-  await type(page, "At most at once", "");
-  button(page, "Save templates").click();
-  await until(() => puts(page).length === 2, "the second save");
-  assert.deepEqual(puts(page)[1].body.templates, [{ id: "reviewer", label: "Reviewer", harness: "claude" }], "empty: no limit of its own");
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "reviewer", label: "Reviewer", harness: "claude", namePattern: "{task} · review" }], "saved without its old limit");
   assert.deepEqual(page.errors, []);
 });
 
@@ -387,7 +338,7 @@ test("Runs on (T-35 S3): a template names this Core host, a registered machine o
   const page = mount((url, method, body) => {
     if (url.endsWith("/machines")) return [200, machineList];
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
-    return [200, view(workspace, undefined, true)];
+    return [200, view(workspace, true)];
   });
   page.window.renderTemplates();
   const section = () => page.document.querySelector("#settings-executor-templates").textContent;

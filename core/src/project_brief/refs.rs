@@ -10,7 +10,8 @@ use std::collections::HashMap;
 /// How the state reads at a glance (LiveRefState.tone).
 fn tone(state: &str) -> &'static str {
     match state {
-        "failed" | "changes_requested" | "error" | "rejected" | "interrupted" | "unreachable" | "waiting" | "blocked" => {
+        "failed" | "changes_requested" | "error" | "rejected" | "interrupted" | "unreachable" | "waiting" | "blocked"
+        | "waiting_analysis" => {
             "attention"
         }
         "running" | "doing" | "working" | "queued" | "starting" | "preparing" | "pending" | "cancelling" | "review" => {
@@ -103,6 +104,17 @@ impl<'a> Refs<'a> {
                 crate::task_keys::refresh(db, &mut job);
                 let mut shown = state(json!({"found":true,"title":job["name"]}), job["status"].as_str().unwrap_or("unknown"));
                 shown["taskId"] = job["taskRef"].clone();
+                shown
+            }),
+            // A run of stages (YN-7): its status, how many stages are done, its
+            // task, and the Job of its newest attempt, where Jobs shows the run.
+            "run" => crate::jobs::run_live_ref(db, id)?.map(|run| {
+                let mut shown = state(json!({"found":true,"title":run["name"]}), run["status"].as_str().unwrap_or("unknown"));
+                shown["taskId"] = run["taskRef"].clone();
+                shown["stages"] = json!({"done":run["stagesDone"],"total":run["stages"]});
+                if run["jobId"].is_string() {
+                    shown["jobId"] = run["jobId"].clone();
+                }
                 shown
             }),
             "review" => match data(db, "SELECT data FROM pr_reviews WHERE id=?1", id)? {

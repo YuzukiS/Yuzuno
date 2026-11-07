@@ -14,7 +14,7 @@ Every pull request to `main` and every push to `main` runs [the CI workflow](../
 - **Caches:** only Cargo's. The Rust cache keeps compiled dependencies, not this repository's own crates; every run restores it and only a push to `main` saves it. Its key depends on the pinned toolchain alone, since the jobs install it in a `RUSTUP_HOME` of their own. npm caches nothing, so no `node_modules` or package archive is kept between runs.
 - **Disk:** Core and Lint remove preinstalled SDKs they do not use only when `/` has less free space than they need (`.github/scripts/free-disk.sh`).
 - **No artifacts:** CI uploads no build output, package or `node_modules`, and builds no release packages.
-- **Cancelling:** a newer push to a pull request cancels its older run. A run on `main` that has started finishes.
+- **Cancelling:** a newer push to a pull request cancels its older run. On `main` nothing is cancelled: each push has a concurrency group of its own commit, so every `main` commit gets its own run, even when several merges land within one run's time.
 
 ## Documentation-only PRs
 

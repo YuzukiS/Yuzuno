@@ -6,6 +6,8 @@ import type { TimeDisplay } from "../../time-preferences";
 import type { Section, SectionAttachment } from "../types";
 import { briefText } from "./brief-text";
 import { briefMarkdownHtml } from "./markdown-html";
+import { calcResults } from "../../intelligent-ui/brief-formula.ts";
+import { startingValues } from "../../intelligent-ui/brief-inputs.ts";
 import { researchDeskMarkdown, type ResearchCopyWords, type ResearchResolved } from "./research-copy";
 import {
   CHART_TYPES,
@@ -25,6 +27,11 @@ import {
   type SourcesProps,
   type AttachmentsProps,
   type ResearchDeskProps,
+  type NumberInputProps,
+  type SegmentedProps,
+  type SwitchProps,
+  type CalcProps,
+  type DiagramProps,
   researchPath,
   shownRefId,
 } from "./brief-catalog";
@@ -49,6 +56,11 @@ const words = strings({
   referencedAt: (path: string) => `referenced at ${path}; it may have changed`,
   notAttached: "no longer attached to this card",
   previously: (value: string) => `previously ${value}`,
+  // An input copies as the value its section starts with (YN-16).
+  startsAt: (value: string) => `starts at ${value}`,
+  range: (min: string, max: string) => `${min} to ${max}`,
+  among: (options: string) => `one of ${options}`,
+  fromStart: "Worked out from the starting values",
 }, {
   dataAsOf: (at) => `数据截至 ${at}`,
   chart: (x, y) => `图表 · x：${x} · y：${y}`,
@@ -64,6 +76,10 @@ const words = strings({
   referencedAt: (path) => `引用自 ${path}，可能已更改`,
   notAttached: "已不属于这张卡片",
   previously: (value) => `之前为 ${value}`,
+  startsAt: (value) => `初始为 ${value}`,
+  range: (min, max) => `${min} 到 ${max}`,
+  among: (options) => `可选 ${options}`,
+  fromStart: "按初始值算出",
 });
 
 /** "&amp;" or "&#38;" would be read back as one character: keep the "&" literal. */
@@ -296,6 +312,44 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
           const where = file.snapshot ? w.snapshotOf(section.key, section.version) : file.path ? w.referencedAt(inline(file.path)) : "";
           return `- ${file.kind === "image" ? w.image : w.file}: ${inline(file.name)}${caption ? ` — ${inline(caption)}` : ""}${where ? ` (${where})` : ""}`;
         }).join("\n")];
+      }
+      // Inputs (YN-16): what the reader can set, at the value the section gives; the reader's own value is theirs.
+      case "NumberInput": {
+        const { label, value, min, max, prefix = "", unit } = part.props as NumberInputProps;
+        const number = (n: number) => `${prefix}${n}${unit ? ` ${unit}` : ""}`;
+        return [`- **${inline(label)}**: ${w.startsAt(inline(number(value)))} (${inline(w.range(number(min), number(max)))})`];
+      }
+      case "Switch": {
+        const { label, value } = part.props as SwitchProps;
+        return [`- **${inline(label)}**: ${w.startsAt(value ? b.on : b.off)}`];
+      }
+      case "Segmented": {
+        const { label, value, options } = part.props as SegmentedProps;
+        const start = options.find((option) => option.value === value)?.label ?? String(value);
+        return [`- ${label ? `**${inline(label)}**: ` : ""}${w.startsAt(inline(start))} (${w.among(options.map((option) => inline(option.label)).join(" / "))})`];
+      }
+      // A Calc copies as worked out from the starting values, the items its when hides then left out (YN-16 S2).
+      case "Calc": {
+        const { title, items } = part.props as CalcProps;
+        const results = calcResults(items, startingValues(spec.elements));
+        const lines = items.flatMap((item, index) => {
+          const { value, shown } = results[index];
+          if (!shown) return [];
+          const number = Number.isNaN(value) ? "—" : `${item.prefix ?? ""}${item.digits === undefined ? Number(value.toFixed(2)) : value.toFixed(item.digits)}${item.unit ? ` ${item.unit}` : ""}`;
+          return [`- ${inline(item.label)}: ${inline(number)}`];
+        });
+        // Nothing shown at the starting values: nothing copied, not even its title (S2 R1 P3).
+        if (!lines.length) return [];
+        return [...heading(depth, title), `_${w.fromStart}_`, lines.join("\n")];
+      }
+      // A Diagram copies as its nodes and the connections between them (YN-16 S3).
+      case "Diagram": {
+        const { title, caption, nodes, edges } = part.props as DiagramProps;
+        const name = new Map(nodes.map((node) => [node.id, node.label]));
+        return [...heading(depth, title), ...(caption ? [`_${inline(caption)}_`] : []),
+          nodes.map((node) => `- ${inline(node.label)}${node.detail ? ` — ${inline(node.detail)}` : ""}`).join("\n"),
+          edges.map((edge) => `- ${inline(name.get(edge.from) ?? edge.from)} → ${inline(name.get(edge.to) ?? edge.to)}${edge.label ? ` (${inline(edge.label)})` : ""}`).join("\n")]
+          .filter(Boolean);
       }
       case "Sources": {
         const { items } = part.props as SourcesProps;

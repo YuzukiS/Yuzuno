@@ -316,6 +316,34 @@ async fn a_fork_through_a_turn_is_a_new_agent_in_the_same_folder_and_the_source_
     ws.close_agent("oc").await.unwrap();
 }
 
+/// YN-2 S4: the user's fork leads the source's Project, even when the source
+/// is an executor: the fork is a standing Agent of its own. The source stays
+/// an executor.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_fork_of_an_executor_leads_the_sources_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (ws, _data, _cwd, [_first, second, _third]) = three(&root).await;
+    let project = ws.store.create_project("Lab", Default::default()).unwrap().id;
+    ws.store.set_agent_project("oc", Some(&project)).unwrap();
+    ws.store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,template_id,task_id,created_by,state,created_at,updated_at)
+         VALUES('oc','executor','reviewer','T-1','lead','running','now','now')", []).unwrap();
+    let key = uuid::Uuid::new_v4().to_string();
+    let outcome = ws.opencode_fork("oc", request(&key, &second, "Forked")).await.unwrap();
+    assert_eq!(outcome["state"], "completed", "{outcome}");
+    let target = outcome["agent"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(ws.store.agent_project(&target).unwrap().as_deref(), Some(project.as_str()));
+    {
+        let db = ws.store.db.read().unwrap();
+        assert!(crate::agent_roles::leads(&db, &target, &project).unwrap(), "the user's fork of an executor leads the source's Project");
+        assert_eq!(crate::agent_roles::kind(&db, "oc").unwrap(), crate::agent_roles::EXECUTOR, "the source stays an executor");
+    }
+    ws.close_agent(&target).await.unwrap();
+    ws.close_agent("oc").await.unwrap();
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_fork_whose_answer_never_came_is_uncertain_never_asked_again_and_holds_the_source_back_not_at_all() {
@@ -616,13 +644,15 @@ async fn a_fork_answered_after_its_watch_settles_that_attempt_and_the_same_reque
     ws.close_agent("oc").await.unwrap();
 }
 
-/// On a session whose messages are 2.x's, compaction, rewind and fork still
-/// read 1.19.3's: each refuses, before doing anything, until its own slice
-/// moves it (T-32 slice 3b, Lead 4983 decision A). The stand-in sends 2.x's
-/// messages here, as it does by default.
+/// On a session whose messages are 2.x's, fork still reads 1.19.3's: it
+/// refuses, before doing anything, until its own slice moves it (T-32 slice
+/// 3b, Lead 4983 decision A). A rewind goes by 2.x's own revert, staged then
+/// committed (T-61 slices 5 and 6), and compaction by 2.x's own route (T-61
+/// slice 4), never 1.19.3's. The stand-in sends 2.x's messages here, as it
+/// does by default.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn compaction_rewind_and_fork_refuse_a_session_of_2x_messages() {
+async fn on_2x_a_rewind_and_compaction_go_by_2xs_routes_and_fork_refuses() {
     program();
     let dir = tempfile::tempdir().unwrap();
     let (root, cwd) = (dir.path().canonicalize().unwrap(), dir.path().canonicalize().unwrap().join("work"));
@@ -641,13 +671,20 @@ async fn compaction_rewind_and_fork_refuse_a_session_of_2x_messages() {
     let not_yet = crate::opencode_v2::NOT_YET;
     // What each says, or nothing when it went ahead.
     let said = |result: anyhow::Result<()>| result.err().map(|e| e.to_string()).unwrap_or_default();
-    let compact = said(ws.opencode_compact("oc").await.map(drop));
-    assert!(compact.contains(not_yet) && compact.contains("没有执行 /compact"), "compaction refuses: {compact}");
-    let rewind = said(ws.opencode_revert_preview("oc", &turn).await.map(drop));
-    assert!(rewind.contains(not_yet) && rewind.contains("没有预览回退"), "rewind refuses: {rewind}");
     let fork = said(ws.opencode_fork("oc", request(&uuid::Uuid::new_v4().to_string(), &turn, "F")).await.map(drop));
     assert!(fork.contains(not_yet) && fork.contains("没有 fork"), "fork refuses: {fork}");
-    assert!(asked(&data, "oc", "POST", "/summarize").is_empty() && asked(&data, "oc", "POST", "/revert").is_empty()
-        && asked(&data, "oc", "POST", "/fork").is_empty(), "nothing was asked of OpenCode");
+    let preview = ws.opencode_revert_preview("oc", &turn).await.expect("a 2.x rewind is previewed");
+    let reverted = ws.opencode_revert_confirm("oc", preview["previewId"].as_str().unwrap()).await.expect("and confirmed");
+    assert_eq!(reverted["status"], "completed", "staged, then committed: {reverted}");
+    assert!(asked(&data, "oc", "POST", "/revert").is_empty() && asked(&data, "oc", "POST", "/fork").is_empty(),
+        "nothing of 1.19.3's was asked of OpenCode");
+    assert_eq!((asked(&data, "oc", "POST", "/revert/stage").len(), asked(&data, "oc", "POST", "/revert/commit").len()), (1, 1),
+        "2.x's stage, then its commit");
+    // Its model is the Agent's chosen one, made the session's first (D-19 (a)).
+    ws.opencode_set_model("oc", "deepseek/deepseek-flash".into()).await.unwrap();
+    let compact = said(ws.opencode_compact("oc").await.map(drop));
+    assert_eq!(compact, "", "compaction goes on 2.x");
+    assert_eq!((asked(&data, "oc", "POST", "/compact").len(), asked(&data, "oc", "POST", "/summarize").len()), (1, 0),
+        "by 2.x's own route, never 1.19.3's");
     ws.close_agent("oc").await.unwrap();
 }

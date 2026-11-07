@@ -328,6 +328,10 @@ pub(super) fn section_json(row: &Row, owner: &Owner, seen: Option<&(i64, String)
     if data["time"].is_object() {
         section["time"] = data["time"].clone();
     }
+    // What Core repaired to accept this version (YN-14); Home marks the section.
+    if data["repairs"].as_array().is_some_and(|repairs| !repairs.is_empty()) {
+        section["repairs"] = data["repairs"].clone();
+    }
     section
 }
 

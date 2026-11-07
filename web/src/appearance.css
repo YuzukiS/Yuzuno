@@ -681,6 +681,7 @@
     .permission-note,
     .pending-note,
     .turn-interrupted,
+    .turn-notice,
     .source-line-highlight .source-line-number,
     .preview-strip a,
     .catchup-item.kind-pending .catchup-item-label > span,

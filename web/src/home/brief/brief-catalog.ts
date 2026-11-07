@@ -8,6 +8,7 @@
  * only: the renderer does not carry the contract's schemas and guide text.
  */
 import type { z } from "zod";
+import type { VisibilityCondition } from "@json-render/core";
 import { API_BASE } from "../../api";
 import { timeFormatter, type TimeDisplay } from "../../time-preferences";
 import type { briefComponentProps, BriefComponent } from "../../intelligent-ui/brief-contract.ts";
@@ -40,11 +41,21 @@ export type AttachmentsProps = Props<"Attachments">;
 export type SourcesProps = Props<"Sources">;
 export type BriefTableProps = Props<"Table">;
 export type ResearchDeskProps = Props<"ResearchDesk">;
+export type NumberInputProps = Props<"NumberInput">;
+export type SwitchProps = Props<"Switch">;
+export type SegmentedProps = Props<"Segmented">;
+export type CalcProps = Props<"Calc">;
+export type ButtonProps = Props<"Button">;
+export type DiagramProps = Props<"Diagram">;
 
 export type BriefElement = {
   type: string;
   props: Record<string, unknown>;
   children?: string[];
+  /** A condition on the section's variables (YN-16), as the contract checked it. */
+  visible?: VisibilityCondition;
+  /** A Button's press (YN-16 S2): setState actions, as the contract checked them. */
+  on?: unknown;
 };
 export type BriefSpec = { root: string; elements: Record<string, BriefElement> };
 
@@ -67,6 +78,12 @@ export const BRIEF_COMPONENTS = [
   "Attachments",
   "Sources",
   "ResearchDesk",
+  "NumberInput",
+  "Switch",
+  "Segmented",
+  "Calc",
+  "Button",
+  "Diagram",
 ] as const satisfies readonly BriefComponent[];
 export const CHART_TYPES = new Set(["LineChart", "BarChart", "ScatterChart"]);
 

@@ -10,8 +10,8 @@
  * a BriefBody root), the per-block limits, and the text Agents are given
  * (hard rules, tool descriptions and brief_guide). Core runs it in the same
  * generated bundle as results, runtimes/result-validator/, and reads the text
- * from its contract.json. Rules across sections (topic counts, open asks per
- * Agent, owners, versions) are Core's.
+ * from its contract.json. Rules across sections (topic counts, owners,
+ * versions) are Core's.
  */
 import { z } from "zod";
 import {
@@ -19,6 +19,8 @@ import {
   MAX_SPEC_BYTES, ResultError, sourceTarget,
 } from "./contract.ts";
 import { clarificationSchema } from "./clarification.ts";
+import { CARD_PART_TYPES, CARD_PARTS, declaredVariable, INPUT_TYPES, interactiveGroup, selectOf, VARIABLE_NAME, type VariableKind } from "./brief-inputs.ts";
+import { FORMULA_FUNCTIONS, FORMULA_LIMITS, FormulaError, formulaType, parseFormula, type FormulaType } from "./brief-formula.ts";
 import { TASK_KEY } from "./task-key.ts";
 
 /** Bumped when a valid section's meaning changes; Core stores it with every section. */
@@ -31,7 +33,6 @@ export const BRIEF_LIMITS = {
   // Across sections; Core enforces these.
   topics: 12,
   subtopicsPerTopic: 4,
-  openAsksPerAgent: 3,
   historyDays: 30,
   // brief_get's you.recentlyLeft lists at most this many (YN-7).
   recentlyLeft: 20,
@@ -63,11 +64,32 @@ export const BRIEF_LIMITS = {
   askOptionsMax: 8,
   formFields: 8,
   formOptions: 12,
+  // Inputs and visible (YN-16): variables per section, conditions and levels
+  // in one visible, steps from a NumberInput's min to its max, and the blocks
+  // of a Group a summary names as its interactive figure.
+  variables: 16,
+  visibleConditions: 8,
+  visibleDepth: 3,
+  numberSteps: 100_000,
+  cardParts: CARD_PARTS,
+  // Calc (YN-16 S2): items per Calc, and each formula's characters, parts
+  // and levels, and formulas per section; a Button's setState actions.
+  calcItems: 12,
+  formulaChars: FORMULA_LIMITS.chars,
+  formulaTokens: FORMULA_LIMITS.tokens,
+  formulaDepth: FORMULA_LIMITS.depth,
+  formulas: FORMULA_LIMITS.perSection,
+  buttonActions: 4,
+  // Diagram (YN-16 S3): nodes and edges; Yuzuno lays it out.
+  diagramNodes: 40,
+  diagramEdges: 60,
   validForMin: 60,
   validForMax: 31_536_000,
   problems: MAX_PROBLEMS,
   // One brief_update's rejection, across its sections; Core enforces it.
   callProblems: 10,
+  // Repairs Core makes on one section before it refuses it as sent (YN-14 A1).
+  repairsPerSection: 8,
   keyPattern: BRIEF_KEY_PATTERN.source,
   // Advice only (T-176, brief-advice.ts): adjustable hints in characters
   // (Unicode code points) and references, never a limit; Core sends at most
@@ -78,6 +100,8 @@ export const BRIEF_LIMITS = {
   research: {
     claims: 12, plots: 8, rows: 40, parts: 4, sources: 40, definitions: 12, versions: 6, revisions: 12, plans: 6,
     items: 16, links: 4, values: 400, textChars: 1200, pointerChars: 200,
+    // A CSV or TSV cell (YN-7): the columns whose text picks its row, and how long a name or a cell may be.
+    keyColumns: 4, columnChars: 120, cellChars: 200,
   },
 } as const;
 const L = BRIEF_LIMITS;
@@ -95,6 +119,17 @@ const attachmentName = z
   .string()
   .regex(/^(?!\.{1,2}$)[\w.-]{1,80}$/, "Use 1-80 letters, digits, _, . or - (not . or ..).");
 const axis = z.strictObject({ label: short, unit: unit.optional() });
+// Inputs (YN-16): each declares one variable of the section, by name.
+const variableName = z
+  .string()
+  .regex(VARIABLE_NAME, "Use a letter a-z, then up to 31 letters or digits, e.g. guests.")
+  .refine((value) => !(value in Object.prototype), "Use another name: this one is reserved.");
+const affix = z.string().min(1).max(8);
+const finite = z.number().finite();
+const optionValue = z.union([finite, z.string().min(1).max(64)]);
+const inputDetail = z.string().min(1).max(300);
+const formula = z.string().min(1).max(FORMULA_LIMITS.chars);
+const digits = z.number().int().min(0).max(6);
 const column = z.string().min(1).max(80);
 
 function chartProps<X extends z.ZodType>(x: X) {
@@ -126,8 +161,10 @@ const metricValue = z.union([z.number().finite(), short]);
 const tableShape = componentProps.Table.shape;
 
 // ResearchDesk (T-9). A number is the Agent's own (a literal) or one Core
-// reads from a JSON snapshot of this section, {from, pointer}; Core says
-// which, and never calls either a check of the research.
+// reads from a snapshot of this section: from a JSON file, {from, pointer};
+// from a CSV or TSV file, {from, row, column} (YN-7), the row whose named
+// columns hold exactly that text. Core says which, and never calls either a
+// check of the research.
 const R = L.research;
 const researchText = z.string().trim().min(1).max(R.textChars);
 const researchList = <T extends z.ZodType>(item: T) => z.array(item).max(R.items).optional();
@@ -135,7 +172,16 @@ const jsonPointer = z
   .string()
   .max(R.pointerChars)
   .regex(/^(\/([^~/]|~[01])*)+$/, "Use a JSON Pointer into the attachment, e.g. /E/avg4/mean or /rows/0/value.");
-const researchNumber = z.union([z.number().finite(), z.strictObject({ from: attachmentName, pointer: jsonPointer })]);
+const csvColumn = z.string().trim().min(1).max(R.columnChars);
+const csvRow = z
+  .record(csvColumn, z.string().max(R.cellChars))
+  .refine((row) => Object.keys(row).length >= 1 && Object.keys(row).length <= R.keyColumns,
+    `Name 1 to ${R.keyColumns} columns and the text each holds in the row, e.g. {"sport": "alpha", "d": "2"}.`);
+const researchNumber = z.union([
+  z.number().finite(),
+  z.strictObject({ from: attachmentName, pointer: jsonPointer }),
+  z.strictObject({ from: attachmentName, row: csvRow, column: csvColumn }),
+]);
 const lines = z.string().regex(/^[1-9]\d{0,5}(-[1-9]\d{0,5})?$/, "Use a line or a range, e.g. 187 or 187-191.");
 const citation = z.strictObject({ source: id, lines: lines.optional() });
 const definitionVersion = z.number().int().min(1).max(99);
@@ -280,7 +326,7 @@ const researchDeskProps = z.strictObject({
         outputs: researchList(short),
         notProduced: researchList(short),
         links: z
-          .array(z.strictObject({ kind: z.enum(["task", "job"]), id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/), label: short.optional() }))
+          .array(z.strictObject({ kind: z.enum(["task", "job", "run"]), id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/), label: short.optional() }))
           .max(R.links)
           .optional(),
         note: researchText.optional(),
@@ -359,7 +405,7 @@ export const briefComponentProps = {
     items: z
       .array(
         z.strictObject({
-          kind: z.enum(["task", "pr", "ci", "job", "review", "agent", "machine"]),
+          kind: z.enum(["task", "pr", "ci", "job", "run", "review", "agent", "machine"]),
           id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/, "Use the 1-200 character id the matching yuzuno tool uses."),
           label: short.optional(),
           note: z.string().min(1).max(L.refNoteChars).optional(),
@@ -376,12 +422,85 @@ export const briefComponentProps = {
   }),
   Sources: componentProps.Sources,
   ResearchDesk: researchDeskProps,
+  // YN-16: inputs the reader sets on the card and the page; see interactive.
+  NumberInput: z.strictObject({
+    name: variableName,
+    label: short,
+    value: finite,
+    min: finite,
+    max: finite,
+    step: finite.positive().optional(),
+    prefix: affix.optional(),
+    unit: affix.optional(),
+    digits: digits.optional(),
+    control: z.enum(["stepper", "slider", "both"]).optional(),
+    detail: inputDetail.optional(),
+  }),
+  Switch: z.strictObject({ name: variableName, label: short, value: z.boolean(), detail: inputDetail.optional() }),
+  Segmented: z.strictObject({
+    name: variableName,
+    label: short.optional(),
+    value: optionValue,
+    options: z.array(z.strictObject({ value: optionValue, label: short })).min(2).max(6),
+  }),
+  // YN-16 S2: numbers worked out from the variables, and a button that sets them.
+  Calc: z.strictObject({
+    title: short.optional(),
+    layout: z.enum(["list", "metrics"]).optional(),
+    items: z
+      .array(
+        z.strictObject({
+          // A name, so later items can use it.
+          id: variableName,
+          label: short,
+          expr: formula,
+          when: formula.optional(),
+          prefix: affix.optional(),
+          unit: affix.optional(),
+          digits: digits.optional(),
+          emphasis: z.boolean().optional(),
+          detail: inputDetail.optional(),
+        }),
+      )
+      .min(1)
+      .max(L.calcItems),
+  }),
+  Button: z.strictObject({ label: short, tone: z.enum(["plain", "accent"]).optional() }),
+  // YN-16 S3: a flowchart or a diagram of parts; Yuzuno lays it out (dagre).
+  Diagram: z.strictObject({
+    title: short.optional(),
+    caption: short.optional(),
+    direction: z.enum(["down", "right"]).optional(),
+    select: variableName.optional(),
+    nodes: z
+      .array(
+        z.strictObject({
+          id,
+          label: z.string().trim().min(1).max(60),
+          shape: z.enum(["box", "round", "diamond"]).optional(),
+          tone: z.enum(["plain", "accent", "ok", "warn", "muted"]).optional(),
+          detail: z.string().trim().min(1).max(600).optional(),
+        }),
+      )
+      .min(1)
+      .max(L.diagramNodes),
+    edges: z
+      .array(
+        z.strictObject({
+          from: id,
+          to: id,
+          label: z.string().trim().min(1).max(24).optional(),
+          style: z.enum(["solid", "dashed"]).optional(),
+        }),
+      )
+      .max(L.diagramEdges),
+  }),
 };
 export type BriefComponent = keyof typeof briefComponentProps;
 type Props<K extends BriefComponent> = z.infer<(typeof briefComponentProps)[K]>;
 const CHARTS = ["LineChart", "BarChart", "ScatterChart"] as const;
 /** What a summary's figure may be (T-18); Attachments with exactly one image file. */
-const SUMMARY_FIGURES = new Set<string>([...CHARTS, "Metrics", "Table", "ResearchDesk", "Attachments"]);
+const SUMMARY_FIGURES = new Set<string>([...CHARTS, "Metrics", "Calc", "Diagram", "Table", "ResearchDesk", "Attachments"]);
 const isChart = (type: string): type is (typeof CHARTS)[number] => (CHARTS as readonly string[]).includes(type);
 
 /** What each component is for; brief_guide and the renderer's catalog use these. */
@@ -389,7 +508,7 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   BriefBody: "The root of every section body. summary and details name some of its own children by id; see Layout below.",
   Group: "A group of components with an optional title. tone accent or muted tints its background, e.g. for a summary across the top.",
   Columns: "Lays out its children side by side, each child one column (usually a Group). widths gives their relative widths, e.g. [2, 1]; equal without it. A narrow window stacks the columns in the order given.",
-  Markdown: "GitHub-flavoured Markdown: paragraphs, lists, links, tables and fenced code or log excerpts. Raw HTML is not supported.",
+  Markdown: "GitHub-flavoured Markdown: paragraphs, lists, links, tables and fenced code or log excerpts. HTML written in it is sanitized: scripts, event handlers, images, forms, buttons, frames and styles are removed, so write Markdown, not HTML.",
   Math: "A KaTeX formula; display:true sets it on its own line.",
   Checklist: "Items with done flags.",
   Plan: "Ordered steps, each todo, doing, done or blocked.",
@@ -399,16 +518,26 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   LineChart: "A line chart from inline points or a data attachment.",
   BarChart: "A bar chart from inline points or a data attachment; x is usually a label.",
   ScatterChart: "A scatter plot with numeric x, from inline points or a data attachment.",
-  LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12, or a Project task key such as YN-3), pr (owner/repo#12), ci (run id), job, review (review id), agent or machine id. layout list shows one row per item in your order, with a short note of yours; for tasks Yuzuno fills in the title, state, assignee and last update, so write none of them. While Home cannot read Core, a list keeps the states it read last and says they are out of date.",
+  LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12, or a Project task key such as YN-3), pr (owner/repo#12), ci (run id), job, run (a run of stages: the runId job_run_submit returned; Yuzuno shows its status and how many stages are done), review (review id), agent or machine id. layout list shows one row per item in your order, with a short note of yours; for tasks Yuzuno fills in the title, state, assignee and last update, so write none of them. While Home cannot read Core, a list keeps the states it read last and says they are out of date.",
   Attachments: "Shows this section's attachments by name with optional captions.",
   Sources: "Explicit HTTPS or local file references; Table rows cite them by id in sourceIds.",
   ResearchDesk: "A research question as claims with intervals, the conditions and limits of what may be said, the sources and definitions each number rests on, and candidate next steps; see research.",
+  NumberInput: "A number the reader sets with - and + (stepper), a slider or both, between min and max; it declares the variable name, starting at value.",
+  Switch: "An on/off switch; it declares the variable name, true or false, starting at value.",
+  Segmented: "One choice among 2-6 options, as a row of segments; it declares the variable name, starting at value, one of the options' values.",
+  Calc: "Numbers worked out from the section's variables as the reader sets them: each item's expr is a formula, shown with its label; when hides the item while it is false. layout list (the default) is a two-column list, metrics shows them as Metrics.",
+  Button: "A button that sets variables to fixed values when pressed, e.g. Reset; its element's on says which (see interactive).",
+  Diagram: "A flowchart or a diagram of parts, as nodes and the edges between them; Yuzuno lays it out and draws it. A node's detail shows when the reader selects it; select names a variable that holds the selected node's id.",
 } as const satisfies Record<BriefComponent, string>;
 
 const leaves = [
   "Markdown", "Math", "Checklist", "Plan", "Findings", "Metrics", "Table",
-  "LineChart", "BarChart", "ScatterChart", "LiveRefs", "Attachments", "Sources", "ResearchDesk",
+  "LineChart", "BarChart", "ScatterChart", "LiveRefs", "Attachments", "Sources", "ResearchDesk", ...INPUT_TYPES, "Calc", "Diagram",
 ] as const satisfies readonly Exclude<BriefComponent, "BriefBody" | "Group" | "Columns">[];
+// A block's condition on the variables (YN-16). Its grammar, a small part of
+// json-render's, is checked with the tree (checkVisible), where the variables
+// and the block's parent are known, with reasons that name both.
+const visibleSchema = z.unknown().optional();
 const element = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("BriefBody"),
@@ -419,19 +548,31 @@ const element = z.discriminatedUnion("type", [
     type: z.literal("Group"),
     props: briefComponentProps.Group,
     children: z.array(id).max(L.groupChildren).optional(),
+    visible: visibleSchema,
   }),
   z.strictObject({
     type: z.literal("Columns"),
     props: briefComponentProps.Columns.default({}),
     children: z.array(id).min(2).max(L.columns),
+    visible: visibleSchema,
   }),
   ...leaves.map((type) =>
     z.strictObject({
       type: z.literal(type),
       props: briefComponentProps[type],
       children: z.array(id).max(0).optional(),
+      visible: visibleSchema,
     }),
   ),
+  // Only a Button takes on (YN-16 S2): its press sets variables, checked with
+  // the tree (checkVariables) where they are known.
+  z.strictObject({
+    type: z.literal("Button"),
+    props: briefComponentProps.Button,
+    children: z.array(id).max(0).optional(),
+    visible: visibleSchema,
+    on: z.unknown().optional(),
+  }),
 ]);
 const bodySchema = z.strictObject({ root: id, elements: z.record(id, element) });
 
@@ -508,15 +649,16 @@ export const BRIEF_PROBLEM_CODES = {
   missing_source: "A sourceIds entry with no matching source.",
   chart_data: "A chart without exactly one of series or data.",
   missing_attachment: "A name not in the section's attachments.",
-  unused_attachment: "An attachment not used by a reachable Attachments block or chart data; add a reference or remove its registration with put.",
+  unused_attachment: "An attachment an edit leaves unused by a reachable Attachments block or chart data (a put's unused one is shown instead, see Repairs); add a reference or remove its registration with put.",
   chart_attachment: "A chart attachment that is not a CSV, JSON or JSONL file with a path.",
   attachment_location: "An attachment without exactly one of path or url, or with a path that is not absolute or a url that is not https.",
   duplicate_attachment: "Two attachments share a name.",
   missing_reference: "A ResearchDesk id that names no claim, plot, row, part, source, definition version or plan of that desk.",
-  research_attachment: "A ResearchDesk number read from an attachment that is not a JSON file with a path.",
+  research_attachment: "A ResearchDesk number read from an attachment of the wrong kind: a JSON Pointer needs a .json file, a CSV row a .csv or .tsv file, each with a path.",
   unsaved_definition: "A ResearchDesk definition version citing a source with neither a snapshot nor a Task method record.",
   definition_order: "A ResearchDesk revision whose definition versions do not go from older to newer.",
   too_many_values: `A ResearchDesk reading over ${L.research.values} numbers from attachments.`,
+  formula: "A Calc expr or when that does not parse, names something that is neither a variable of the section nor an earlier item, gives the wrong type, or is over its limits; the reason says at which character (see interactive).",
 } as const;
 type ProblemCode = keyof typeof BRIEF_PROBLEM_CODES;
 
@@ -529,7 +671,25 @@ export const BRIEF_ADVICE_CODES = {
   many_refs: `Over ${L.advice.refs} LiveRefs and Sources entries in one section, each target counted once per block.`,
 } as const;
 
-export const BRIEF_GUIDE_PARTS = ["sections", "ask", "content", "charts", "research", "attachments", "limits", "errors", "examples"] as const;
+/**
+ * What Core may repair in a section the strict check refuses (YN-14 A1,
+ * brief-repair.ts): it then accepts the repaired section and lists each repair.
+ */
+export const BRIEF_REPAIR_CODES = {
+  component_to_markdown: "An unknown component without children became a Markdown block of its text, HTML-escaped; one with no text was removed.",
+  component_to_group: "An unknown component with children, or a BriefBody below the root, became a Group.",
+  renamed_field: "A field given another name, or put outside props, was moved to the name the component uses (e.g. Findings file to source).",
+  dropped_field: "A field the component does not have was removed.",
+  filled_id: "A missing id was filled in, or one used twice was made unique.",
+  normalized_value: "A value in another letter case, or a listed synonym (Plan in_progress, completed, pending), became the value the component uses.",
+  filled_default: "A Finding without severity got info; a Table row's missing cell became empty.",
+  reply_options: "Ask reply options given as text, or with other field names, became {id, label}.",
+  fixed_tree: "A child naming no element was removed; an element nothing showed was added at the end of the root (removed, for an edit that unlinked it); or the root was set to the body's BriefBody.",
+  dropped_layout: "Columns widths, a BriefBody summary slot or a details entry that did not fit was removed.",
+  showed_attachment: "A put's registered attachment that nothing showed was added to an Attachments block under the root.",
+} as const;
+
+export const BRIEF_GUIDE_PARTS = ["sections", "ask", "content", "charts", "research", "interactive", "attachments", "limits", "errors", "examples"] as const;
 export type BriefGuidePart = (typeof BRIEF_GUIDE_PARTS)[number];
 
 /**
@@ -585,6 +745,7 @@ function partOf(input: unknown, path: Path): BriefGuidePart {
   const type = elementAt(input, path)?.type;
   if (type && isChart(type)) return "charts";
   if (type === "ResearchDesk") return "research";
+  if ((INTERACTIVE_TYPES as readonly string[]).includes(type ?? "") || path[3] === "visible" || path[3] === "on") return "interactive";
   return type === "Attachments" ? "attachments" : "content";
 }
 
@@ -643,7 +804,7 @@ function issueProblem(issue: z.ZodError["issues"][number], input: unknown): Brie
       const shape = fieldHints[path.map((step) => (typeof step === "number" ? "N" : step)).join(".")];
       const hint = component && found?.inProps
         ? propsHint
-        : found ? " Elements are {type, props, children?}." : shape ? ` Fields: ${signature(jsonSchema(shape), 1)}.` : "";
+        : found ? " Elements are {type, props, children?, visible?}." : shape ? ` Fields: ${signature(jsonSchema(shape), 1)}.` : "";
       const keys = issue.keys.map((key) => JSON.stringify(key)).join(", ");
       return problem("unknown_field", path, `${at} has unknown field${issue.keys.length > 1 ? "s" : ""} ${keys}.${hint}`, part);
     }
@@ -737,11 +898,48 @@ function isImage(file: { name: string; path?: string }) {
 }
 const ABSOLUTE = /^(\/|[A-Za-z]:[\\/])/;
 
-/** The section with display defaults filled in, and without its op. */
+/**
+ * A put with markdown instead of body (YN-14 A3): the body Core builds for
+ * it, one Markdown block "text" under the BriefBody, then "files", an
+ * Attachments block of every registered attachment in order; size names
+ * the card's size as summary {lead:"text", size}. Anything else is
+ * returned as it is; checkBriefSection refuses markdown with a body.
+ */
+export function withMarkdownBody(input: unknown): unknown {
+  if (!object(input) || typeof input.markdown !== "string" || input.body !== undefined) return input;
+  const { markdown, size, ...rest } = input;
+  const names = (Array.isArray(rest.attachments) ? rest.attachments : [])
+    .map((attachment) => (object(attachment) ? attachment.name : undefined))
+    .filter((name): name is string => typeof name === "string");
+  const elements: Record<string, unknown> = {
+    body: { type: "BriefBody", props: size === undefined ? {} : { summary: { lead: "text", size } }, children: ["text", ...(names.length ? ["files"] : [])] },
+    text: { type: "Markdown", props: { text: markdown } },
+  };
+  if (names.length) elements.files = { type: "Attachments", props: { items: names.map((name) => ({ name })) } };
+  return { ...rest, body: { root: "body", elements } };
+}
+
+/** What a markdown put gives wrong before its body is built (YN-14 A3). */
+export function markdownProblems(input: unknown): BriefProblem[] {
+  if (!object(input)) return [];
+  const found: BriefProblem[] = [];
+  const { markdown, size, body } = input;
+  if (markdown !== undefined && body !== undefined)
+    found.push(problem("invalid_field", "markdown", "Give body or markdown, not both: markdown is the whole body as one Markdown block.", "sections"));
+  else if (markdown !== undefined && (typeof markdown !== "string" || !markdown.trim()))
+    found.push(problem("invalid_field", "markdown", "markdown is the section's text: a non-empty string of GitHub-flavoured Markdown.", "sections"));
+  if (size !== undefined && (markdown === undefined || body !== undefined))
+    found.push(problem("invalid_field", "size", "size goes with markdown; with a body, name the size in the BriefBody summary.", "sections"));
+  else if (size !== undefined && !(CARD_SIZES as readonly unknown[]).includes(size))
+    found.push(problem("invalid_field", "size", `size is ${CARD_SIZES.join(", ")}.`, "sections"));
+  return found;
+}
+
+/** The section with display defaults filled in, and without its op; a markdown put with its body built. */
 function prepared(input: unknown): unknown {
   if (!object(input)) return input;
   const { op, ...rest } = input;
-  const section: Record<string, unknown> = op === "put" ? rest : input;
+  const section = withMarkdownBody(op === "put" ? rest : input) as Record<string, unknown>;
   const body = section.body;
   if (!object(body) || !object(body.elements)) return section;
   const elements: Record<string, unknown> = { ...body.elements };
@@ -769,16 +967,22 @@ type Attachment = NonNullable<BriefSection["attachments"]>[number];
 type ResearchNumber = z.infer<typeof researchNumber>;
 type Estimate = z.infer<typeof estimate>;
 
+/** Where Core reads one number of a desk: a JSON Pointer, or a CSV or TSV row and column (YN-7). */
+export type ResearchRead =
+  | { at: string; from: string; pointer: string }
+  | { at: string; from: string; row: Record<string, string>; column: string };
 /**
  * Every number of a desk Core reads from an attachment, with where it sits
  * (`${row or part id}.value|low|high`); Core's research read resolves these.
  */
-export function researchReads(props: ResearchDesk): { at: string; from: string; pointer: string }[] {
-  const reads: { at: string; from: string; pointer: string }[] = [];
+export function researchReads(props: ResearchDesk): ResearchRead[] {
+  const reads: ResearchRead[] = [];
   const add = (owner: string, found: Estimate) => {
     for (const field of ["value", "low", "high"] as const) {
       const number: ResearchNumber | undefined = found[field];
-      if (number !== undefined && typeof number !== "number") reads.push({ at: `${owner}.${field}`, from: number.from, pointer: number.pointer });
+      if (number === undefined || typeof number === "number") continue;
+      const at = `${owner}.${field}`;
+      reads.push("pointer" in number ? { at, from: number.from, pointer: number.pointer } : { at, from: number.from, row: number.row, column: number.column });
     }
   };
   for (const plot of props.plots)
@@ -867,8 +1071,11 @@ function checkResearch(
     if (found === undefined || typeof found === "number") return;
     reads++;
     const file = needsFile(found.from, `${path}.from`);
-    if (file && (file.path === undefined || !/\.json$/i.test(file.path)))
-      bad("research_attachment", `${path}.from`, `${desk} reads numbers from JSON files only: attachment "${found.from}" needs a path ending in .json.`);
+    if (!file) return;
+    if ("pointer" in found && (file.path === undefined || !/\.json$/i.test(file.path)))
+      bad("research_attachment", `${path}.from`, `${desk} reads a JSON Pointer from JSON files only: attachment "${found.from}" needs a path ending in .json.`);
+    if ("row" in found && (file.path === undefined || !/\.(csv|tsv)$/i.test(file.path)))
+      bad("research_attachment", `${path}.from`, `${desk} reads a row's cell from CSV or TSV files only: attachment "${found.from}" needs a path ending in .csv or .tsv.`);
   };
   const checkEstimate = (found: Estimate, path: string) => {
     for (const field of ["value", "low", "high"] as const) number(found[field], `${path}.${field}`);
@@ -936,6 +1143,223 @@ function checkResearch(
   return links;
 }
 
+/** The components brief_guide interactive describes (YN-16). */
+const INTERACTIVE_TYPES = [...INPUT_TYPES, "Calc", "Button", "Diagram"] as const;
+/** The code a formula Core cannot keep is refused with (YN-16 S2): fix the expression, not the block. */
+const FORMULA_CODE: ProblemCode = "formula";
+const COMPARISONS = ["eq", "neq", "gt", "gte", "lt", "lte"] as const;
+const CONDITION_KEYS = new Set<string>(["$state", "not", ...COMPARISONS]);
+
+/**
+ * The section's variables and every block's visible (YN-16): each input
+ * declares a variable of its own name; a visible condition, on a block inside
+ * a Group, reads declared variables only and compares each with a value of
+ * its kind. Nothing here is evaluated: the renderer does that, with
+ * json-render, for the same grammar.
+ */
+function checkVariables(spec: BriefBodySpec, add: (found: BriefProblem) => void) {
+  const bad = (code: ProblemCode, path: string, reason: string) => add(problem(code, path, reason, "interactive"));
+  const variables = new Map<string, { kind: VariableKind; options?: unknown[]; range?: [number, number] }>();
+  const parents = new Map<string, string>();
+  for (const [key, node] of Object.entries(spec.elements)) {
+    for (const child of node.children ?? []) parents.set(child, node.type);
+    const found = declaredVariable(node);
+    if (!found) continue;
+    if (variables.has(found.name))
+      bad("duplicate_id", `body.elements.${key}.props.name`, `${node.type} "${key}" declares the variable "${found.name}", which another input of this section declares too; give each input its own name.`);
+    else
+      variables.set(found.name, {
+        kind: found.kind,
+        options: node.type === "Segmented" ? (node.props as Props<"Segmented">).options.map((option) => option.value) : undefined,
+        range: node.type === "NumberInput" ? [(node.props as Props<"NumberInput">).min, (node.props as Props<"NumberInput">).max] : undefined,
+      });
+  }
+  // A Diagram's select (S3): into a Segmented's variable of texts whose options
+  // name every node, or a variable of its own, starting with nothing selected.
+  for (const [key, node] of Object.entries(spec.elements)) {
+    const found = selectOf(node);
+    if (!found) continue;
+    const path = `body.elements.${key}.props.select`;
+    const declared = variables.get(found.name);
+    if (!declared) {
+      variables.set(found.name, { kind: "text", options: ["", ...found.ids] });
+      continue;
+    }
+    const missing = found.ids.filter((one) => !declared.options?.includes(one));
+    if (declared.kind !== "text" || !declared.options)
+      bad("invalid_field", path, `${node.type} "${key}" selects into "/${found.name}", a ${declared.kind} variable; select names a variable of its own, or a Segmented's of texts with an option for every node.`);
+    else if (missing.length)
+      bad("invalid_field", path, `${node.type} "${key}" selects into "/${found.name}", whose options do not name ${missing.map((one) => JSON.stringify(one)).join(", ")}; give its Segmented an option for every node, or select into a variable of the Diagram's own.`);
+  }
+  if (variables.size > L.variables)
+    bad("too_many", "body.elements", `The section's inputs and selects declare ${variables.size} variables; the limit is ${L.variables}.`);
+  const named = [...variables.keys()].map((name) => `/${name}`).join(", ") || "none: add an input";
+  for (const [key, node] of Object.entries(spec.elements)) {
+    if (!("visible" in node) || node.visible === undefined) continue;
+    const path = `body.elements.${key}.visible`;
+    if (parents.get(key) !== "Group") {
+      bad("invalid_field", path, `"${key}" has visible, which only a block inside a Group may have: the root's own blocks${parents.get(key) === "Columns" ? " and the columns of a Columns" : ""} are always shown. Put "${key}" in a Group.`);
+      continue;
+    }
+    let conditions = 0;
+    const leaf = (value: Record<string, unknown>, at: string) => {
+      conditions++;
+      const unknown = Object.keys(value).filter((field) => !CONDITION_KEYS.has(field));
+      if (unknown.length) {
+        bad("unknown_field", at, `A condition in "${key}" visible has unknown field${unknown.length > 1 ? "s" : ""} ${unknown.map((field) => JSON.stringify(field)).join(", ")}; a condition is {"$state": "/<variable>", eq|neq|gt|gte|lt|lte?, not?}, and several combine in an array, {"$and": [...]} or {"$or": [...]}.`);
+        return;
+      }
+      const state = value.$state;
+      const name = typeof state === "string" && state.startsWith("/") ? state.slice(1) : "";
+      if (!VARIABLE_NAME.test(name)) {
+        bad("invalid_field", `${at}.$state`, `A condition in "${key}" visible needs "$state": "/" and a variable's name, e.g. "/guests"; this section's variables: ${named}.`);
+        return;
+      }
+      const variable = variables.get(name);
+      if (!variable) {
+        bad("invalid_field", `${at}.$state`, `"${key}" visible reads "/${name}", which no input of this section declares; its variables: ${named}.`);
+        return;
+      }
+      if (value.not !== undefined && value.not !== true)
+        bad("invalid_field", `${at}.not`, `A condition's not is true, to negate it, or left out.`);
+      const compared = COMPARISONS.filter((field) => value[field] !== undefined);
+      if (compared.length > 1) {
+        bad("invalid_field", at, `A condition in "${key}" visible compares with ${compared.join(" and ")}; one comparison per condition, combined with an array, $and or $or.`);
+        return;
+      }
+      const [op] = compared;
+      const literal = op === undefined ? undefined : value[op];
+      const kindOf = (one: unknown) => (typeof one === "number" && Number.isFinite(one) ? "number" : typeof one === "boolean" ? "boolean" : typeof one === "string" && one.length <= 64 ? "text" : null);
+      if (op === undefined) {
+        if (variable.kind !== "boolean")
+          bad("invalid_field", at, `"/${name}" is a ${variable.kind} variable: compare it, e.g. {"$state": "/${name}", ${variable.kind === "number" ? `"gte": 2` : `"eq": ${JSON.stringify(variable.options?.[0] ?? "a")}`}}; only a Switch's variable stands alone.`);
+      } else if (op === "eq" || op === "neq") {
+        if (kindOf(literal) !== variable.kind)
+          bad("invalid_field", `${at}.${op}`, `"/${name}" is a ${variable.kind} variable; ${op} needs a ${variable.kind}${variable.kind === "text" ? " of at most 64 characters" : ""}, not ${JSON.stringify(literal)}.`);
+        else if (variable.options && !variable.options.includes(literal))
+          bad("invalid_field", `${at}.${op}`, `"/${name}" is a Segmented's variable; ${op} ${JSON.stringify(literal)} is none of its options' values: ${variable.options.map((one) => JSON.stringify(one)).join(", ")}.`);
+      } else if (variable.kind !== "number" || kindOf(literal) !== "number")
+        bad("invalid_field", `${at}.${op}`, `${op} compares a number variable with a number; "/${name}" is a ${variable.kind} variable${variable.kind === "number" ? `, and ${JSON.stringify(literal)} is not a number` : ": use eq or neq"}.`);
+    };
+    const walk = (value: unknown, at: string, depth: number) => {
+      if (depth > L.visibleDepth) {
+        bad("invalid_field", at, `"${key}" visible nests deeper than ${L.visibleDepth} levels; keep its conditions within ${L.visibleDepth} levels of arrays, $and and $or.`);
+        return;
+      }
+      if (Array.isArray(value)) {
+        if (!value.length) bad("invalid_field", at, `An array in "${key}" visible is empty; it lists the conditions that must all hold.`);
+        // json-render reads an array's items as single conditions only.
+        value.forEach((item, index) => {
+          if (depth + 1 > L.visibleDepth) walk(item, `${at}.${index}`, depth + 1);
+          else if (object(item) && !("$and" in item) && !("$or" in item)) leaf(item, `${at}.${index}`);
+          else bad("invalid_field", `${at}.${index}`, `An array in "${key}" visible holds only conditions {"$state": ...}; nest with {"$and": [...]} or {"$or": [...]} instead.`);
+        });
+        return;
+      }
+      if (!object(value)) {
+        bad("invalid_field", at, `"${key}" visible is a condition, e.g. {"$state": "/vegan"}, an array of them, {"$and": [...]} or {"$or": [...]}; not ${JSON.stringify(value)}.`);
+        return;
+      }
+      const group = "$and" in value ? "$and" : "$or" in value ? "$or" : null;
+      if (!group) return leaf(value, at);
+      const extra = Object.keys(value).filter((field) => field !== group);
+      if (extra.length) bad("unknown_field", at, `"${key}" visible's {"${group}": [...]} has ${extra.map((field) => JSON.stringify(field)).join(", ")} beside it; ${group} stands alone.`);
+      const list = value[group];
+      if (!Array.isArray(list) || !list.length) {
+        bad("invalid_field", `${at}.${group}`, `${group} in "${key}" visible lists one or more conditions.`);
+        return;
+      }
+      list.forEach((item, index) => walk(item, `${at}.${group}.${index}`, depth + 1));
+    };
+    walk(node.visible, path, 1);
+    if (conditions > L.visibleConditions)
+      bad("too_many", path, `"${key}" visible has ${conditions} conditions; the limit is ${L.visibleConditions}.`);
+  }
+
+  // Calc formulas (S2): each parses, reads only the section's variables and
+  // the Calc's earlier items (when also its own), and gives the right type.
+  const kinds: Record<string, FormulaType> = Object.fromEntries([...variables].map(([name, { kind }]) => [name, kind]));
+  let formulas = 0;
+  for (const [key, node] of Object.entries(spec.elements)) {
+    if (node.type !== "Calc") continue;
+    const names: Record<string, FormulaType> = { ...kinds };
+    (node.props as Props<"Calc">).items.forEach((item, index) => {
+      const at = `body.elements.${key}.props.items.${index}`;
+      const own = `Calc "${key}" item "${item.id}"`;
+      if (Object.hasOwn(kinds, item.id)) bad("duplicate_id", `${at}.id`, `${own} has the name of a variable of this section; give the item another id.`);
+      else if (Object.hasOwn(names, item.id)) bad("duplicate_id", `${at}.id`, `Calc "${key}" has the item id "${item.id}" twice; ids are unique within a Calc.`);
+      const check = (field: "expr" | "when", want: FormulaType, scope: Record<string, FormulaType>) => {
+        const text = item[field];
+        if (text === undefined) return;
+        formulas++;
+        try {
+          const got = formulaType(parseFormula(text), scope);
+          if (got !== want) bad(FORMULA_CODE, `${at}.${field}`, `${own} ${field} gives a ${got}; ${field} gives ${want === "number" ? "a number" : "true or false"}.`);
+        } catch (error) {
+          if (!(error instanceof FormulaError)) throw error;
+          bad(FORMULA_CODE, `${at}.${field}`, `${own} ${field} ${JSON.stringify(text)}, at character ${error.at + 1}: ${error.reason}`);
+        }
+      };
+      check("expr", "number", names);
+      names[item.id] = "number";
+      check("when", "boolean", names);
+    });
+  }
+  if (formulas > L.formulas)
+    bad("too_many", "body.elements", `The section has ${formulas} Calc formulas (expr and when); the limit is ${L.formulas}.`);
+
+  // A Button's press (S2): only setState, of a declared variable, to a value it can take.
+  for (const [key, node] of Object.entries(spec.elements)) {
+    if (node.type !== "Button") continue;
+    const path = `body.elements.${key}.on`;
+    const on = (node as { on?: unknown }).on;
+    const shape = `on: {"press": {"action": "setState", "params": {"statePath": "/<variable>", "value": <a value it can take>}}}, or press as a list of 1-${L.buttonActions} such actions`;
+    if (on === undefined) {
+      bad("missing_field", path, `Button "${key}" needs ${shape}.`);
+      continue;
+    }
+    if (!object(on) || Object.keys(on).some((event) => event !== "press") || on.press === undefined) {
+      bad(object(on) && Object.keys(on).some((event) => event !== "press") ? "unknown_field" : "invalid_field", path,
+        `Button "${key}" on has one event, press: ${shape}.`);
+      continue;
+    }
+    const list = Array.isArray(on.press);
+    const actions: unknown[] = list ? (on.press as unknown[]) : [on.press];
+    if (!actions.length || actions.length > L.buttonActions) {
+      bad(actions.length ? "too_many" : "invalid_field", `${path}.press`, `Button "${key}" press has ${actions.length} actions; give 1 to ${L.buttonActions}.`);
+      continue;
+    }
+    actions.forEach((action, index) => {
+      const at = list ? `${path}.press.${index}` : `${path}.press`;
+      if (!object(action) || action.action !== "setState") {
+        bad("invalid_field", at, `Button "${key}" can only setState: {"action": "setState", "params": {"statePath": "/<variable>", "value": ...}}; nothing else runs from a section.`);
+        return;
+      }
+      const extra = Object.keys(action).filter((field) => field !== "action" && field !== "params");
+      if (extra.length) bad("unknown_field", at, `Button "${key}" action has unknown field${extra.length > 1 ? "s" : ""} ${extra.map((field) => JSON.stringify(field)).join(", ")}; an action is {action, params}.`);
+      const params = action.params;
+      if (!object(params) || Object.keys(params).some((field) => field !== "statePath" && field !== "value") || params.value === undefined) {
+        bad("invalid_field", `${at}.params`, `Button "${key}" setState params are {"statePath": "/<variable>", "value": ...} and nothing else.`);
+        return;
+      }
+      const name = typeof params.statePath === "string" && params.statePath.startsWith("/") ? params.statePath.slice(1) : "";
+      const variable = variables.get(name);
+      if (!variable) {
+        bad("invalid_field", `${at}.params.statePath`, `Button "${key}" sets ${JSON.stringify(params.statePath)}, which is not "/" and a variable an input of this section declares; its variables: ${named}.`);
+        return;
+      }
+      const value = params.value;
+      const kind = typeof value === "number" && Number.isFinite(value) ? "number" : typeof value === "boolean" ? "boolean" : typeof value === "string" ? "text" : null;
+      if (kind !== variable.kind)
+        bad("invalid_field", `${at}.params.value`, `"/${name}" is a ${variable.kind} variable; Button "${key}" sets it to ${JSON.stringify(value)}.`);
+      else if (variable.options && !variable.options.includes(value))
+        bad("invalid_field", `${at}.params.value`, `"/${name}" is a Segmented's variable; ${JSON.stringify(value)} is none of its options' values: ${variable.options.map((one) => JSON.stringify(one)).join(", ")}.`);
+      else if (variable.range && ((value as number) < variable.range[0] || (value as number) > variable.range[1]))
+        bad("invalid_field", `${at}.params.value`, `"/${name}" is a NumberInput's variable from ${variable.range[0]} to ${variable.range[1]}; ${value} is outside.`);
+    });
+  }
+}
+
 export function checkBriefSection(envelope: unknown, previousBody?: unknown): BriefSection {
   const input = prepared(envelope);
   const problems: BriefProblem[] = [];
@@ -945,8 +1369,11 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
   };
   const fail = () => new BriefError(problems.slice(0, MAX_PROBLEMS));
 
-  // Measured as sent, before display defaults, like result_publish.
-  const body = object(envelope) ? envelope.body : undefined;
+  for (const found of markdownProblems(envelope)) add(found);
+  if (problems.length) throw fail();
+  // Measured as sent (a markdown put's as built), before display defaults, like result_publish.
+  const built = withMarkdownBody(envelope);
+  const body = object(built) ? built.body : undefined;
   if (body !== undefined) {
     const bytes = new TextEncoder().encode(JSON.stringify(body) ?? "").length;
     if (bytes > L.bodyBytes)
@@ -1038,7 +1465,9 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
   const slots = named ? (["lead", "visual", "conditions"] as const).flatMap((slot) => (named[slot] === undefined ? [] : [[slot, named[slot]] as const])) : [];
   const SLOT_RULE = {
     lead: ["a Markdown", (key: string) => typeOf(key) === "Markdown"],
-    visual: ["a chart, Metrics, Table, ResearchDesk, or Attachments with one image file", (key: string) => {
+    visual: ["a chart, Metrics, Calc, Diagram, Table, ResearchDesk, Attachments with one image file, or a Group of inputs", (key: string) => {
+      // An interactive figure (YN-16): a Group of inputs the reader sets on the card.
+      if (typeOf(key) === "Group") return interactiveGroup(spec.elements, key);
       if (!SUMMARY_FIGURES.has(typeOf(key) ?? "")) return false;
       if (typeOf(key) !== "Attachments") return true;
       // One figure: a single image file, never a link, a table of data or a page.
@@ -1055,6 +1484,8 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
       add(problem("summary", path, `summary.${slot} "${key}" is not one of the root's own children; name a block directly under the root.`, "content"));
     else if (slots.findIndex(([, other]) => other === key) < index)
       add(problem("summary", path, `summary.${slot} "${key}" is already named in summary; each block is shown once.`, "content"));
+    else if (!fits(key) && slot === "visual" && typeOf(key) === "Group")
+      add(problem("summary", path, `summary.visual "${key}" is a Group, which is a figure only as a Group of inputs: 1-${CARD_PARTS} blocks of its own, each ${[...CARD_PART_TYPES].join(", ")}, at least one an input.`, "interactive"));
     else if (!fits(key))
       add(problem("summary", path, `summary.${slot} is ${what}; "${key}" is ${typeOf(key) === "Attachments" ? "Attachments that is not one image file" : `a ${typeOf(key)}`}.`, "content"));
   });
@@ -1124,6 +1555,47 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
       case "Attachments":
         (node.props as Props<"Attachments">).items.forEach((item, index) => needsFile(item.name, `${at}.items.${index}.name`, false));
         break;
+      case "Diagram": {
+        const { nodes, edges } = node.props as Props<"Diagram">;
+        const name = `Diagram "${key}"`;
+        unique(nodes.map((one) => one.id), `${at}.nodes`, `${name} node id`);
+        const ids = new Set(nodes.map((one) => one.id));
+        const pairs = new Set<string>();
+        edges.forEach((edge, index) => {
+          const path = `${at}.edges.${index}`;
+          const absent = [edge.from, edge.to].filter((end) => !ids.has(end));
+          if (absent.length)
+            add(problem("invalid_field", path, `${name} edge ${index + 1} joins ${absent.map((end) => `"${end}"`).join(" and ")}, which no node of the Diagram has.`, "interactive"));
+          else if (edge.from === edge.to)
+            add(problem("invalid_field", path, `${name} edge ${index + 1} goes from "${edge.from}" to itself; a step that repeats is a loop back from a later node.`, "interactive"));
+          else if (pairs.has(`${edge.from}\n${edge.to}`))
+            add(problem("duplicate_id", path, `${name} has two edges from "${edge.from}" to "${edge.to}"; give one edge, with one label.`, "interactive"));
+          pairs.add(`${edge.from}\n${edge.to}`);
+        });
+        break;
+      }
+      case "NumberInput": {
+        const { value, min, max, step = 1 } = node.props as Props<"NumberInput">;
+        const name = `NumberInput "${key}"`;
+        if (min >= max) add(problem("invalid_field", `${at}.max`, `${name} max ${max} is not greater than its min ${min}.`, "interactive"));
+        else {
+          if (value < min || value > max) add(problem("invalid_field", `${at}.value`, `${name} value ${value} is outside its min ${min} and max ${max}.`, "interactive"));
+          if ((max - min) / step > L.numberSteps)
+            add(problem("invalid_field", `${at}.step`, `${name} takes ${Math.ceil((max - min) / step)} steps of ${step} from min to max; the limit is ${L.numberSteps}. Use a larger step or a narrower range.`, "interactive"));
+        }
+        break;
+      }
+      case "Segmented": {
+        const { value, options } = node.props as Props<"Segmented">;
+        const values = options.map((option) => option.value);
+        if (new Set(values.map((one) => typeof one)).size > 1)
+          add(problem("invalid_field", `${at}.options`, `Segmented "${key}" options mix numbers and texts; give every option the same kind of value.`, "interactive"));
+        else if (new Set(values).size !== values.length)
+          add(problem("duplicate_id", `${at}.options`, `Segmented "${key}" has the option value ${JSON.stringify(values.find((one, index) => values.indexOf(one) !== index))} twice; each option has its own value.`, "interactive"));
+        else if (!values.includes(value))
+          add(problem("invalid_field", `${at}.value`, `Segmented "${key}" value ${JSON.stringify(value)} is not one of its options' values: ${values.map((one) => JSON.stringify(one)).join(", ")}.`, "interactive"));
+        break;
+      }
       case "Sources":
         for (const item of (node.props as Props<"Sources">).items) {
           if (sources.has(item.id) || !sourceTarget(item.href))
@@ -1170,6 +1642,7 @@ export function checkBriefSection(envelope: unknown, previousBody?: unknown): Br
         }
     }
   }
+  checkVariables(spec, add);
   if (refs > L.liveRefs)
     add(problem("too_many_refs", "body.elements", `The section has ${refs} LiveRefs items; the limit is ${L.liveRefs} per section, across all LiveRefs. Keep the most relevant references.`, "limits"));
   const missing = cited.find(({ source }) => !sources.has(source));
@@ -1293,8 +1766,45 @@ const componentLine = (type: BriefComponent) => {
   return formatComponentGuide(type, sentProps(type), BRIEF_COMPONENT_DESCRIPTIONS[type], spaced(notes));
 };
 
+/**
+ * The components brief_update's description names with their props (YN-14
+ * A4), so that an ordinary card needs no brief_guide read; the rest are in
+ * brief_guide content. A component added later is described there only.
+ */
+export const BRIEF_DESCRIBED_COMPONENTS = [
+  "Markdown", "Group", "Columns", "Plan", "Checklist", "Findings", "Metrics", "LiveRefs", "Table", "Attachments",
+] as const satisfies readonly BriefComponent[];
+/** Props the description's line leaves to brief_guide: rarely needed in a card. */
+const QUIET_PROPS = new Set(["sourceIds", "selectable"]);
+
+/** Props as the description shows them: `{a, b?, c: x|y, d[{…}]}`, two levels, no counts. */
+function compactProps(schema: Json, depth: number): string {
+  const properties = (schema.properties ?? {}) as Record<string, Json>;
+  const required = new Set((schema.required ?? []) as string[]);
+  const parts = Object.entries(properties).filter(([name]) => !QUIET_PROPS.has(name)).map(([name, value]) => {
+    const key = `${name}${required.has(name) || value.default !== undefined ? "" : "?"}`;
+    const options = Array.isArray(value.anyOf) ? (value.anyOf as Json[]).filter((option) => option.type !== "null") : [value];
+    const one = options.length === 1 ? options[0] : undefined;
+    if (!one) return key;
+    if (Array.isArray(one.enum)) return `${key}: ${(one.enum as unknown[]).join("|")}`;
+    const items = one.items as Json | undefined;
+    if (one.type === "array") return items?.type === "object" && items.properties && depth > 0 ? `${key}[${compactProps(items, depth - 1)}]` : `${key}[]`;
+    return one.type === "object" && one.properties && depth > 0 ? `${key}${compactProps(one, depth - 1)}` : key;
+  });
+  return `{${parts.join(", ")}}`;
+}
+
+/** The description's component line, generated so it never drifts from the catalog. */
+export const briefComponentHints = () =>
+  BRIEF_DESCRIBED_COMPONENTS.map((type) => `${type}${compactProps(jsonSchema(sentProps(type)), 2)}`).join(" ");
+
 /** Worked examples: each is a valid `put` change. */
 export const BRIEF_EXAMPLES = {
+  // The shortest card: text only (YN-14 A3), at the size its author names.
+  note: {
+    op: "put", key: "release", kind: "report", title: "core.25 is out", size: "small",
+    markdown: "**core.25** is installed. The two interface regressions you reported are fixed in core.26.",
+  },
   image: {
     op: "put", key: "preview", kind: "report", title: "Layout preview",
     attachments: [{ name: "layout.png", path: "/home/me/run/layout.png" }],
@@ -1459,6 +1969,89 @@ export const BRIEF_EXAMPLES = {
       },
     },
   },
+  interactive: {
+    op: "put",
+    key: "split-compare",
+    kind: "report",
+    title: "Run 13: which validation split",
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "compare", size: "wide" } }, children: ["lead", "compare"] },
+        lead: { type: "Markdown", props: { text: "The larger split costs **6% of training data** and halves the gap between seeds. Compare them, and see what a budget buys." } },
+        compare: { type: "Group", props: {}, children: ["split", "current", "larger", "budget", "seeds"] },
+        split: { type: "Segmented", props: { name: "split", label: "Validation split", value: "current", options: [{ value: "current", label: "Current" }, { value: "larger", label: "Larger" }] } },
+        current: { type: "Metrics", visible: { $state: "/split", eq: "current" }, props: { items: [{ label: "Training data", value: 100, unit: "%" }, { label: "Gap between seeds", value: 0.031 }] } },
+        larger: { type: "Metrics", visible: { $state: "/split", eq: "larger" }, props: { items: [{ label: "Training data", value: 94, unit: "%" }, { label: "Gap between seeds", value: 0.015 }] } },
+        budget: { type: "NumberInput", props: { name: "days", label: "Budget", value: 1, min: 1, max: 6, unit: "GPU-days" } },
+        seeds: { type: "Markdown", visible: { $state: "/days", gte: 3 }, props: { text: "Three seeds fit: enough to tell a 5% gap from noise." } },
+      },
+    },
+  },
+  calculator: {
+    op: "put",
+    key: "dinner-bill",
+    kind: "report",
+    title: "Splitting the dinner bill",
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "split", size: "wide" } }, children: ["lead", "split"] },
+        lead: { type: "Markdown", props: { text: "The bill was **¥684**. Set how many share it and the tip to see each share." } },
+        split: { type: "Group", props: {}, children: ["people", "tip", "roundUp", "shares", "reset"] },
+        people: { type: "NumberInput", props: { name: "people", label: "People", value: 4, min: 1, max: 12 } },
+        tip: { type: "Segmented", props: { name: "tip", label: "Tip", value: 10, options: [{ value: 0, label: "None" }, { value: 10, label: "10%" }, { value: 15, label: "15%" }] } },
+        roundUp: { type: "Switch", props: { name: "roundUp", label: "Round each share up", value: false } },
+        shares: {
+          type: "Calc",
+          props: {
+            layout: "metrics",
+            items: [
+              { id: "total", label: "Total", expr: "684 * (1 + tip / 100)", prefix: "¥", digits: 0 },
+              { id: "each", label: "Each", expr: "roundUp ? ceil(total / people) : round(total / people, 2)", prefix: "¥", digits: 2, emphasis: true },
+              { id: "extra", label: "Rounding adds", expr: "each * people - total", when: "roundUp && extra > 0", prefix: "¥", digits: 2 },
+            ],
+          },
+        },
+        reset: { type: "Button", props: { label: "Back to 4, 10%" }, on: { press: [{ action: "setState", params: { statePath: "/people", value: 4 } }, { action: "setState", params: { statePath: "/tip", value: 10 } }] } },
+      },
+    },
+  },
+  flowchart: {
+    op: "put",
+    key: "release-path",
+    kind: "report",
+    title: "How a change reaches main",
+    body: {
+      root: "body",
+      elements: {
+        body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "flow", size: "wide" } }, children: ["lead", "flow"] },
+        lead: { type: "Markdown", props: { text: "A change merges only after **its own CI and one review round** pass; a red result goes back to the author." } },
+        flow: {
+          type: "Diagram",
+          props: {
+            direction: "right",
+            nodes: [
+              { id: "push", label: "Push the branch", shape: "round" },
+              { id: "ci", label: "PR CI", detail: "Every test of the repository on GitHub-hosted runners." },
+              { id: "review", label: "Review round" },
+              { id: "green", label: "All green?", shape: "diamond" },
+              { id: "fix", label: "Fix and push", tone: "warn" },
+              { id: "merge", label: "Merged", shape: "round", tone: "ok" },
+            ],
+            edges: [
+              { from: "push", to: "ci" },
+              { from: "ci", to: "review" },
+              { from: "review", to: "green" },
+              { from: "green", to: "merge", label: "yes" },
+              { from: "green", to: "fix", label: "no" },
+              { from: "fix", to: "ci", style: "dashed" },
+            ],
+          },
+        },
+      },
+    },
+  },
   decision: {
     op: "put",
     key: "next-run",
@@ -1527,13 +2120,15 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   sections: [
     `This guide is the format. What to write and in which form is yuzuno_guide topic brief ("Write for Home"): one conclusion first, important limits beside it, each fact in one place, and execution evidence (logs, raw data, full test output, run and PR lists) left on its Task and linked.`,
     `What goes where: ${BRIEF_OUTCOME_HINT} Update a section when something changed, not every turn; a status past its validFor shows as stale until new facts refresh it. Details stay on the Task and its sources.`,
-    `Home content editors are set by the user per Project. brief_get returns you.capabilities. When editContent is false and writeOwnAsk is true, only create/update/resolve/remove your own Asks or send noChange; do not claim sections, convert regular content into an Ask, or write reports/status. When writeOwnAsk is false, this Brief is read-only, including no noChange writes. Ownership rules still apply to editors. Hidden old content remains in team details/history.`,
+    `A Project's leads edit its Home; the user chooses them. brief_get returns you.capabilities. When editContent is false and writeOwnAsk is true, only create/update/resolve/remove your own Asks, remove your own older sections, or send noChange; do not claim sections, convert regular content into an Ask, or write reports/status. When writeOwnAsk is false, this Brief is read-only, including no noChange writes. Ownership rules still apply to editors. Hidden old content remains in team details/history.`,
     `brief_update takes changes: [...]. put creates or replaces one section you own:`,
     `- put {op:"put", ${signature(jsonSchema(sectionSchema), 1).slice(1)}`,
     `- key: topic or topic/sub; each part 1-48 of a-z, 0-9 and -, starting with a letter or digit (round-12, round-12/review). A Brief has at most ${L.topics} topics with ${L.subtopicsPerTopic} subs each.`,
     `- kind: ask (a question for the user, see ask); report (a result the user reads and marks seen; a report the user marks seen at its latest version leaves brief_get's sections and your ownsKeys at once (a newer version stays, unseen) and stays in Home's history ${L.historyDays} days: put it again under its key to continue it on Home, as edit needs a live section); status (current state; needs status {asOf, validFor}, validFor ${L.validForMin}-${L.validForMax} seconds; greyed once asOf + validFor has passed). While a conclusion still moves, keep it in a status and refresh it with new facts; once a claim settles, write it as a report under its own key linked to its Task, which the user marks seen and history keeps, and let the status point to it or drop it. A status keeps only its current version: putting it again replaces the earlier wording.`,
     `- title: 1-${L.titleChars} characters. body: {root, elements}, see content. time: due, eta and nextUpdate, ISO 8601 with a time zone. attachments: see attachments.`,
+    `- markdown instead of body, for a section that is text: Core makes the body one Markdown block "text" under the BriefBody, then "files", an Attachments block of every registered attachment; size (${CARD_SIZES.join(", ")}) names the card's size, as summary {lead:"text", size}. Give body or markdown, not both. It works for every kind: an ask's explanation, a status's state. A later edit or patch reaches the text at /elements/text/props/text, e.g. {op:"put", key:"release", kind:"report", title:"core.25 is out", markdown:"**core.25** is installed; the two regressions are fixed in core.26.", size:"small"}.`,
     `edit {op:"edit", key, elements:{<id>: {type, props, children?}}, status?} replaces blocks of a section you own by id and keeps the rest as it was: the other blocks and their order, title, attachments, time and the ask's state. Each id is one the body already has, or a new block named as a child by a block you edit; the root is not edited (rearrange with put). Core checks the whole section again. status (kind status only) refreshes asOf. Day to day, edit the blocks that changed, e.g. {op:"edit", key:"overview", elements:{progress:{type:"Plan", props:{steps:[...]}}}}; put a section to create it or change its layout.`,
+    `patch {op:"patch", key, patch:[...], status?} changes single values of a section you own by RFC 6902 operations (add, remove, replace, move, copy, test) on its body; each path (and from) is a JSON Pointer into body, e.g. {op:"patch", key:"work", patch:[{op:"replace", path:"/elements/tasks/props/items/1/note", value:"Merged."}]}. It keeps what edit keeps and Core checks the whole section again; it may also add a block and name it under the root (/elements/<id>, then /elements/<root>/children/-). Operations apply in order; a path or from that is not in the body, a from of "" (the whole body) for move or copy, or a test whose value differs, refuses the change (patch_path, patch_test), and so does a patch that would build a body far over the limit (too_large); nothing is changed then. Use it for one note, one state or one value; edit to replace whole blocks; put to create a section or change its title.`,
     `Other changes: {op:"resolve", key} resolves your ask; {op:"remove", key} removes your section (reports and status go to history); {op:"claim", key} takes an orphaned section of your Project; change it in a later brief_update, not in the one that claims it.`,
     `brief_get's you.recentlyLeft lists your sections that left the live Brief in the last ${L.historyDays} days and are not live again, newest first, at most ${L.recentlyLeft}: {key, kind, title, version, reason, at}, reason seen (the user marked that version seen), removed or resolved; recentlyLeftMore counts the rest. An edit, resolve, remove or claim naming one of them is refused with not_found, saying why it left; put writes it again.`,
     `Only a section's owner changes it. To add to another Agent's section, put your own section under its key as topic/sub; Home shows them together with each author.`,
@@ -1549,19 +2144,21 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Use options for one choice and a form for several related answers, as in the decision and form examples.`,
     `The user's answer reaches you as an ordinary message quoting the section. The ask then shows "replied": it leaves Needs you, and brief_get lists it in you.repliedAsks (key, title, repliedAt, the reply in short, updatedSinceReply). It stays until you resolve it with {op:"resolve", key}; nothing closes it for you.`,
     `When to resolve: a preference or information you asked for, once you have taken it in; an action the reply authorizes, only after that action is confirmed done and its result is on the existing Task or a Brief section. A green CI or a whole Task being done is not that action. While it runs, or after it fails, keep the ask replied and report progress on the Task or Brief: edit keeps it replied, while put asks it again. Ask again only when the user has something new to decide. A reply executes nothing by itself: act on what the user has authorized, an explicit reply included, without asking for it again, and never infer a retry, merge or wider permission from an answer that does not grant it.`,
-    `openAsks counts your unresolved asks, open or replied; at most ${L.openAsksPerAgent} per Agent.`,
+    `brief_get's you.openAsks counts your unresolved asks, open or replied.`,
     `Answers never execute actions: nothing in a Brief merges, deploys or approves; Core approvals stay separate.`,
   ],
   content: [
-    `body is {root, elements}: elements maps ids (a letter, then letters, digits, - or _) to {type, props, children?}. root names the one BriefBody. The elements form one tree: each used once, at most ${L.depth} levels and ${L.components} components, at most ${L.bodyBytes} bytes of compact JSON. Only BriefBody, Group and Columns have children. ${SIGNATURE_LEGEND} Components:`,
-    ...(Object.keys(briefComponentProps) as BriefComponent[]).filter((type) => !isChart(type) && type !== "ResearchDesk").map(componentLine),
+    `body is {root, elements}: elements maps ids (a letter, then letters, digits, - or _) to {type, props, children?, visible?} (visible: see interactive). root names the one BriefBody. The elements form one tree: each used once, at most ${L.depth} levels and ${L.components} components, at most ${L.bodyBytes} bytes of compact JSON. Only BriefBody, Group and Columns have children. ${SIGNATURE_LEGEND} Components:`,
+    ...(Object.keys(briefComponentProps) as BriefComponent[])
+      .filter((type) => !isChart(type) && type !== "ResearchDesk" && !(INTERACTIVE_TYPES as readonly string[]).includes(type)).map(componentLine),
     `- ${CHARTS.join(", ")}: see charts.`,
     `- ResearchDesk: see research.`,
+    `- ${INTERACTIVE_TYPES.join(", ")}: see interactive.`,
     `Table and chart ids, row ids, item ids and column keys are unique. Sources hrefs are http(s) URLs or local file paths (optionally :line); Table rows cite them by id in sourceIds.`,
     `LiveRefs show Core's records, read each time Home reads the Brief and never saved in your section: your label names the item, and its state is the record's own (a task's board state, a Job's run state), not whether an Agent is working on it now. An item Core does not know shows as not found: check its id. One Core could not read just then shows as couldn't read: leave it, a later read shows its state again. A state you write in Plan, Table, Metrics or Markdown is your account as of when you wrote it (a status's asOf), not live: for the current state of a task, PR, CI run or Job, reference it, as the overview example does with its Job.`,
     `Form follows the information, unless the user or Project prefers another: a real screenshot or a labelled sketch (say which) for a UI or layout change, a chart of measured data for quantities and how they relate, a short sentence for a single state. The result, compare and decision examples show each; image shows a screenshot.`,
     `Layout: a short answer first, the first Markdown on its own or in a Group with tone accent, since its first paragraph is what a reader sees first; then a Columns of Groups for parts that sit side by side, as in the overview example. Keep each block's id across versions: edit changes one block by its id (see sections).`,
-    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, size}: lead, visual and conditions are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Table, ResearchDesk, or Attachments with one image file); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk) or large (two columns, two rows: an image, a scatter chart). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
+    `Home opens a report or status as a whole page. To lead it with what the reader needs first, give the BriefBody summary {lead, visual?, conditions?, size}: lead, visual and conditions are ids of the root's own blocks. lead is a Markdown with the conclusion; visual one figure (a chart, Metrics, Calc, Diagram, Table, ResearchDesk, Attachments with one image file, or a Group of inputs the reader sets on the card, see interactive); conditions a Markdown or Checklist of what the conclusion holds under, shown with it wherever it shows. size is the room the card takes among Home's cards: small (one column: the lead and conditions, Metrics of one or two values as big numbers; any other figure is left to the page), wide (two columns, the figure beside the text: a table, a line or bar chart, more Metrics, a research desk) or large (two columns, two rows: an image, a scatter chart, an HTML page). Name it with every summary, for what the summary shows, not for how much you wrote. A summary without one is still accepted (advice summary_size_missing), and Home guesses its card's size from its figure. A card with no visual shows instead the first kept image or single HTML page (.html or .htm) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there. A report whose body holds only its lead (one paragraph), the card's picture and files, and its conditions is the whole report: its card has no Open report. The user may give a card they pinned to their widgets another size there; your card keeps yours. The page shows them first, once, and the rest in your order; nothing is copied, so keep each in one place. details lists titled Groups of supporting detail (a method, an appendix) that start folded under their title; nothing else folds. Without summary, the page shows the body in your order. Either way, Sources and Attachments directly under the root show beside the body (after it on a narrow screen), never behind a click.`,
     `Advice: an accepted brief_update, or a validateOnly check that passes, may carry up to ${L.advice.items} advice {code, path, reason, guide} on the report and status sections it sent; for an edit, only on the blocks it replaced. They are adjustable hints from lengths and counts (limits.advice), not a score or a limit: nothing is cut, refused or rewritten, the update stays accepted, and a section whose title and captions already say enough may stay as it is. Characters are Unicode code points. Codes:`,
     ...Object.entries(BRIEF_ADVICE_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
   ],
@@ -1575,12 +2172,26 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   research: [
     componentLine("ResearchDesk"),
     `One block for a research question: what each claim may and may not say, the numbers and intervals it rests on, under which conditions, from which sources and under which definition, and what could be done next. The reader selects a claim, a row or one of its parts; the block keeps that selection across your later versions while the ids stay. Use your own ids and keep them across versions. Row and part ids share one namespace across the whole desk, every plot included: each is used once, so two plots cannot both have a row "a", nor a part the id of a row.`,
-    `Numbers: each value, low and high is a literal, shown as provided by you, or {from, pointer}: a JSON Pointer into one of this section's attachments whose path ends in .json. Yuzuno reads it from the snapshot taken when you wrote the section and shows it as read from that snapshot, with the snapshot's SHA-256 and when it was taken; a pointer that finds no number shows as such. Neither is a check of the research: a snapshot read only says the number is in that file. Yuzuno does not compare your text with the numbers or round anything for you; digits sets how many decimals are displayed, and scale a factor for display only (e.g. 100 for a fraction shown as percentage points, with unit saying so): the value as the file has it is shown beside it. At most ${R.values} numbers read from attachments per desk.`,
+    `Numbers: each value, low and high is a literal, shown as provided by you, or {from, pointer}: a JSON Pointer into one of this section's attachments whose path ends in .json, or {from, row, column} for one whose path ends in .csv or .tsv (a header row, then one row per line): row names 1 to ${R.keyColumns} columns and the text each holds, e.g. {"sport": "alpha", "d": "2"}, every one of which must match, and column is the column the number is in. Cells compare as text as written, without the spaces around them: "2" does not match "2.0". No matching row shows as missing, two or more as ambiguous, never a guess; a cell that is not a number shows as such. Yuzuno reads it from the snapshot taken when you wrote the section and shows it as read from that snapshot, with the snapshot's SHA-256 and when it was taken; a pointer that finds no number shows as such. Neither is a check of the research: a snapshot read only says the number is in that file. Yuzuno does not compare your text with the numbers or round anything for you; digits sets how many decimals are displayed, and scale a factor for display only (e.g. 100 for a fraction shown as percentage points, with unit saying so): the value as the file has it is shown beside it. At most ${R.values} numbers read from attachments per desk.`,
     `Sources: each source may name a snapshot (an attachment of this section); location, revision and sha256 are your description, shown as yours and never read. revision is a commit hash, 7 to 64 lowercase hexadecimal characters (not a branch, tag or other name); sha256 is 64 lowercase hexadecimal characters. A source with a snapshot shows the snapshot's SHA-256 and when it was taken, and whether your sha256 is the same file content; that is file identity, not a result. Yuzuno does not look at the file again later: the snapshot is as of when you wrote the section. A source may instead name a Task research record, task: {taskId, activitySeq} (taskId T-N or a Project task key such as YN-3; any key the task had still names it), one you or another Agent wrote with task_comment research: it is shown as the task keeps it (its type, title, producer and version) and needs no attachment; that is the record's identity, not a check of it. Removing the section leaves the record on its task.`,
     `Definitions: an analysis definition keeps every version you give, each citing a source with a snapshot (with lines when part of a file) or a source naming a Task method record. A version's number names one content: to change a definition, add a new version; Core refuses a version whose text, citation or cited file differs from the same version of the same desk (the element) in this section's previous version; each desk's definitions are its own. Estimates name the definition version they use; rows with the same compare id under two versions show side by side as before and after. Removing old versions is allowed, but the history then shows only what remains.`,
     `Claims: primary is the id of one row of the desk's plots (plots[].rows[].id), the row the claim leads with; not a plot or part id. plots lists plot ids. status (supported, conditional, unsupported, open) and statements are your reading and show as yours; kind criterion is a statistical criterion, interpretation your interpretation, exploratory an exploratory observation. dependsOn names the definition versions a claim rests on; when a newer version exists, the claim shows as affected through that declared dependency only. revisions are your drafts of changed wording for a claim (basis declared, or author when the author confirmed the dependency); Yuzuno shows them for review and never applies them.`,
-    `Plans: candidate next steps as a preview: the question, inputs, parameters, compute (none, cpu or gpu), budget, what they produce and what they do not. Nothing runs from the block, and opening it runs nothing; links name existing tasks or Jobs, shown with their current state like LiveRefs (they count toward the ${L.liveRefs} LiveRefs of a section). A Job that succeeded is not a result that holds.`,
+    `Plans: candidate next steps as a preview: the question, inputs, parameters, compute (none, cpu or gpu), budget, what they produce and what they do not. Nothing runs from the block, and opening it runs nothing; links name existing tasks, Jobs or runs of stages (kind run, the runId job_run_submit returned), shown with their current state like LiveRefs (they count toward the ${L.liveRefs} LiveRefs of a section). A Job that succeeded is not a result that holds.`,
     `Limits: ${R.claims} claims, ${R.plots} plots, ${R.rows} rows per plot, ${R.parts} parts per row, ${R.sources} sources, ${R.definitions} definitions with ${R.versions} versions each, ${R.revisions} revisions, ${R.plans} plans, ${R.items} entries per list, ${R.textChars} characters per text.`,
+  ],
+  interactive: [
+    `Inputs let the reader try values on Home's card and on the report page: a quantity they will scale or split (servings, a bill, a budget), a case to switch on or off, one of a few views; a Calc works out numbers from them. What the reader sets stays in their window: it is never saved, never sent to you and never runs anything, and a new version of the section, or a reload, starts again from the values you wrote. When you need the reader's answer, ask with an ask.`,
+    ...INTERACTIVE_TYPES.map(componentLine),
+    `Variables: each input declares one, under its name (a letter a-z, then up to 31 letters or digits, e.g. guests), starting at the input's value: a NumberInput's a number, a Switch's true or false, a Segmented's its options' values, all numbers or all texts, each once, value one of them. A name is declared once per section, at most ${L.variables} in all. A section's variables are its own; its card and its page each keep theirs.`,
+    `NumberInput: min is less than max and value lies between them; step (default 1) takes at most ${L.numberSteps} steps from min to max; digits is how many decimals are shown (default: as many as step, min or max has); control stepper (the default: - and + beside the number), slider, or both. prefix and unit (at most 8 characters) are shown before and after the number, e.g. "¥" or "g".`,
+    `visible, beside type and props, shows a block only while a condition on the variables holds; only a block inside a Group has one, as the root's own blocks are always shown. A condition is {"$state": "/<name>"}, true while a Switch is on, or with one comparison: eq or neq a value of the variable's kind (for a Segmented, one of its options' values), or gt, gte, lt or lte a number, for a number variable. not: true negates it. An array means all of its conditions hold; {"$and": [...]} and {"$or": [...]} combine conditions and each other: at most ${L.visibleConditions} conditions and ${L.visibleDepth} levels. Nothing else is read: no $item, $index, $cond, $bindState or $computed, and no expression in props.`,
+    `Calc formulas: expr gives a number and when true or false, from numbers (12, 0.5), true, false, "texts" (at most ${FORMULA_LIMITS.textChars} characters), the section's variables and this Calc's earlier items by id (when may also use the item's own), with + - * / % ^ (power, right to left: -2^2 is -4), < <= > >= == !=, && || !, cond ? a : b, parentheses and the functions ${Object.entries(FORMULA_FUNCTIONS).map(([name, [least, most]]) => `${name}(${least === most ? least : `${least}-${most}`})`).join(", ")}; round(x, d) rounds to d decimals (0-6) as written, halves away from zero, so round(1.005, 2) is 1.01 and round(-2.5) is -3. Arithmetic and order take numbers, && || ! take true or false, and a text only sits beside == or != with a text or a Segmented's variable on its other side. Nothing else: no =, no . or [ ], no other names or functions. At most ${FORMULA_LIMITS.chars} characters, ${FORMULA_LIMITS.tokens} parts and ${FORMULA_LIMITS.depth} levels each, ${FORMULA_LIMITS.perSection} formulas per section, ${L.calcItems} items per Calc. An item id is a name like a variable's, unique in its Calc and none of the section's variables. Numbers are shown with digits decimals in the reader's language (default up to 2); one that cannot be computed (a division by zero, the square root of a negative) shows a dash with its reason, and money is best rounded with round in its last step.`,
+    `Button: its element has on: {"press": action or a list of 1-${L.buttonActions}}, each {"action": "setState", "params": {"statePath": "/<name>", "value": v}}, where v is a value that variable can take (a Segmented's option, a NumberInput's number from min to max). Nothing else runs from a Button, and no other block takes on.`,
+    `Diagram: you give nodes and edges only; Yuzuno lays them out (top to bottom, or left to right with direction right, turned top to bottom where the window is too narrow) and draws them in the reader's theme. Use it for a process with a decision or a loop, or more than four steps that branch, and for the parts of a thing and how they connect. A node's shape diamond is a decision, round a start or an end; tone accent marks the path that matters, ok and warn an outcome, muted what is out of scope. An edge's label (at most 24 characters) names the branch, e.g. yes or no; style dashed is optional or later. An edge may go back to an earlier node (a loop); none goes from a node to itself, and two nodes have at most one edge in each direction. At most ${L.diagramNodes} nodes and ${L.diagramEdges} edges; node ids are unique. The reader selects a node by pointer or keyboard to read its detail (at most 600 characters). select names a variable that then holds the selected node's id ("" while none is), for visible and Calc to read: one of the Diagram's own, or a Segmented's of texts with an option for every node id, so the segments and the nodes select together.`,
+    `On Home: to make the card itself adjustable, name a Group of inputs as the summary's visual: 1-${L.cardParts} blocks of its own, each ${[...CARD_PART_TYPES].join(", ")}, at least one an input, and its blocks' visible conditions. The card draws that Group whole, at any size, growing to fit it, and its controls work there; the card's title and Open report still open the page, where the page's own inputs start again from your values. Name size wide or large when it has more than two inputs.`,
+    `Examples: ${JSON.stringify(BRIEF_EXAMPLES.interactive)}`,
+    JSON.stringify(BRIEF_EXAMPLES.calculator),
+    JSON.stringify(BRIEF_EXAMPLES.flowchart),
   ],
   attachments: [
     formatComponentGuide("attachments", z.array(attachmentSchema).max(L.attachments), "Files and links of this section."),
@@ -1588,14 +2199,14 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `- path: an absolute path on the machine where Core runs. Files up to 25 MB are kept as a snapshot when you write the section; larger files and directories are only referenced and marked "may have changed".`,
     `- url: an https link, shown as a link only, never embedded.`,
     `Images, data files (CSV, JSON, JSONL), PDF, logs and text (the last 200 lines are previewed) and links. Show them in the body with Attachments; charts read data files (see charts).`,
-    `Registration alone saves/references a file; it does not show it. Every attachment in a put must be used by a reachable Attachments.items entry with the exact name, or by LineChart/BarChart/ScatterChart data.attachment. Markdown/Sources mentions and disconnected blocks do not count. Multiple components may use the same name. Chart data use does not also display a file preview; add Attachments if that is wanted.`,
-    `An unused_attachment rejection leaves the old content, snapshots and ask state unchanged. Add a reachable Attachments block, reference a supported data file from a chart, or put the section without the unused registration. Checks use the final merged body, not just an edit's blocks. Existing sections/history remain readable. An unrelated edit keeps already-unused old registrations; removing a previously used attachment's last reference is rejected. A put checks every registration, including old ones.`,
+    `Registration alone saves/references a file; it does not show it. Show every attachment of a put where it belongs: in a reachable Attachments.items entry with the exact name, or as LineChart/BarChart/ScatterChart data.attachment. Markdown/Sources mentions and disconnected blocks do not count; a put's registration nothing uses is added to an Attachments block at the end of the root and listed in repairs (showed_attachment), never refused. Multiple components may use the same name. Chart data use does not also display a file preview; add Attachments if that is wanted.`,
+    `An edit is never repaired that way: one that removes a previously used attachment's last reference is refused with unused_attachment, which leaves the old content, snapshots and ask state unchanged. Add a reachable Attachments block, reference a supported data file from a chart, or put the section without that registration. Checks use the final merged body, not just an edit's blocks. Existing sections/history remain readable. An unrelated edit keeps already-unused old registrations. A put checks every registration again, old ones included, and shows an unused one.`,
     `Image preview example: ${JSON.stringify(BRIEF_EXAMPLES.image)}`,
     `Chart-only data example: ${JSON.stringify(BRIEF_EXAMPLES.status)}`,
     `Attach what the user should look at: a screenshot or a sketch (its caption says which) and the data file a chart reads. Logs, raw data, full tables and test output are execution evidence: leave them on their Task and link it with LiveRefs instead of attaching them here.`,
   ],
   limits: [
-    `- Brief: ${L.topics} topics, ${L.subtopicsPerTopic} subs per topic, ${L.openAsksPerAgent} open asks per Agent; seen reports stay ${L.historyDays} days.`,
+    `- Brief: ${L.topics} topics, ${L.subtopicsPerTopic} subs per topic; seen reports stay ${L.historyDays} days.`,
     `- Body: ${L.bodyBytes} bytes of compact JSON, ${L.components} components, ${L.depth} levels; BriefBody ${L.bodyChildren} children, Group ${L.groupChildren}, Columns 2-${L.columns}.`,
     `- Markdown: each fenced code or log block ${L.codeBlockLines} lines. Math: ${L.mathChars} characters.`,
     `- Checklist, Plan and Findings: ${L.listItems} items each. Metrics: ${L.metrics}. Sources: ${L.sources}.`,
@@ -1608,8 +2219,10 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
   errors: [
     `A rejected brief_update lists problems {code, path, reason, guide}: at most ${MAX_PROBLEMS} for each section's format and at most ${L.callProblems} in all. moreProblems says how many more Core found past ${L.callProblems}; problems past a section's ${MAX_PROBLEMS} are not found or counted. path is where in your change (e.g. body.elements.log.props.text); reason says what to change; guide names the brief_guide part to read. Fix them all and call brief_update again with a new requestId.`,
     ...Object.entries(BRIEF_PROBLEM_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
-    `- ask_only: Your current Project permission allows only your own valid asks and optional noChange. Only the user can select content editors. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
-    `Core also rejects version_conflict (a section you change was written after the version you read, or expectedVersion is ahead of the Brief; other sections' writes don't count; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), definition_changed (a ResearchDesk definition version whose text, citation or cited file or record differs from the section's previous version; see research), unsaved_definition also when Core kept no snapshot of a definition's cited file or the cited Task record is not a method record it can read, and changes that break owner, topic or open-ask rules.`,
+    `- ask_only: Your current Project permission allows only your own valid asks, removing your own older sections, and optional noChange. A Project's leads edit Home; the user chooses them. Read brief_get you.capabilities and keep internal progress in tasks and mail.`,
+    `Repairs: when a section fails these checks for a slip Core can fix without guessing, Core repairs it and accepts the update instead: the answer (and a validateOnly check that passes) lists repairs {code, path, reason, guide}, at most ${L.callProblems} in all (moreRepairs counts the rest), a section that needs more than ${L.repairsPerSection} is refused as sent, and Home marks the section while a repair stays: a put replaces them all; an edit removes those of the blocks it replaces, and those of the section as a whole (its tree, the root's layout, an ask's options) stay until a put. Send it right next time: the repairs say what Core changed. Outside the body Core repairs only an ask's reply options (reply_options), and a put's unused registration is shown in the body, never changed or removed: it never repairs key, kind, title, the ask's question or its other replies, status, time or an attachment's registration, nor an ask without a usable reply, anything over a limit, a reference to a file, source or research record, a ResearchDesk or Sources block, or content a component needs and you did not give (a Finding's source). When the repaired section still fails, the rejection lists the problems of the section as you sent it. Codes:`,
+    ...Object.entries(BRIEF_REPAIR_CODES).map(([code, meaning]) => `- ${code}: ${meaning}`),
+    `Core also rejects version_conflict (a section you change was written after the version you read, or expectedVersion is ahead of the Brief; other sections' writes don't count; the rejection includes latest: merge and retry), no_active_turn (call it during your turn), unknown_element and edit_root (an edit naming a block the section does not have, or its root), patch_path and patch_test (a patch operation whose path or from is not in the body, or a test whose value differs: nothing is changed), definition_changed (a ResearchDesk definition version whose text, citation or cited file or record differs from the section's previous version; see research), unsaved_definition also when Core kept no snapshot of a definition's cited file or the cited Task record is not a method record it can read, and changes that break owner, topic or open-ask rules.`,
   ],
   examples: [
     `Each is one change for brief_update changes.`,
@@ -1645,7 +2258,7 @@ export const BRIEF_HARD_RULES = [
   `Yuzuno Project Brief rules:`,
   `1. No Brief update is required each turn: write when something changed, for the user: conclusion first, limits beside it, evidence on its Task. A current state goes in a status, a lasting finding or decision in a short report linked to its Task, a choice for the user in an ask; result_publish never reaches Home. Load tools with tool search if needed.`,
   `2. Pass expectedVersion from brief_get. On version_conflict, re-read (the rejection has the latest), merge and retry with a new requestId.`,
-  `3. Only the user selects Home content editors. If editContent is false and writeOwnAsk is true, write only your own Asks. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
+  `3. Leads edit Home; the user chooses leads. If editContent is false and writeOwnAsk is true, write only your own Asks. If writeOwnAsk is false, this Brief is read-only. Editors still edit only their own sections; add a topic/sub to another author's topic.`,
   `4. An ask needs a question plus reply options, freeText, a form or a choice. A reply marks it replied. Resolve your asks explicitly with resolve once they are handled: a preference once taken in, an authorized action only after it is done and its result is on the Task or Brief. A reply executes nothing itself: act on what the user authorized, a reply included, and infer no retry, merge or permission it does not grant.`,
   `5. Brief content never executes actions: nothing you write merges, deploys or approves; answers come back to you as messages.`,
   `6. If brief_update is rejected, fix the listed problems and call it again. Read yuzuno_guide brief for what to write and brief_guide for formats, limits and examples.`,
@@ -1656,22 +2269,23 @@ export const BRIEF_TOOL_DESCRIPTIONS = {
     `Read your Project's Brief: its version, the live sections (key, kind, title, owner, body, ask state, status, attachments), ` +
     `you {agentId, ownsKeys, openAsks, repliedAsks (your asks the user answered, to act on and resolve), staleStatus, ` +
     `recentlyLeft (your sections that left lately and why: a report the user marked seen is no longer among the sections), recentlyLeftMore, capabilities; ` +
-    `for a Home content editor homeHint, and homePreference once the user set one: how they like results presented, current as of this read, ` +
+    `for a lead (a Home editor) homeHint, and homePreference once the user set one: how they like results presented, current as of this read, ` +
     `granting nothing} and the limits. ` +
     `keys: omit for every section with its body; [] for an index of the sections without bodies; [key, ...] for those sections in full. ` +
     `Pass its version to brief_update as expectedVersion. projectId defaults to your own Project. Nothing requires reading or updating the Brief each turn. Formats: brief_guide.`,
   brief_update:
-    `Write Brief changes when something changed; nothing requires a call each turn. Ask-only members may write only their own Asks. Pass expectedVersion (from ` +
-    `brief_get) and a new requestId (reuse it only to retry the same call). Send changes:[...] (noChange:true ` +
-    `changes nothing). Changes: put {op:"put", key, kind, title, body, ask?, status?, time?, attachments?} ` +
-    `creates or replaces a section you own; edit {op:"edit", key, elements:{<id>: block}} replaces only those ` +
-    `blocks; resolve {op:"resolve", key} resolves your ask; remove {op:"remove", key} ` +
-    `removes your section; claim {op:"claim", key} takes an orphaned section of your Project (change it in a later call). ` +
-    `key is topic or topic/sub ` +
-    `(a-z, 0-9, -); add to another Agent's section with a topic/sub key of your own. kind ask needs ask {question, reply} ` +
-    `with reply options, freeText, form or choice; kind status needs status {asOf, validFor}. body is {root, elements} ` +
-    `with a BriefBody root. A rejection lists problems {code, path, reason, guide}: fix them and retry with a new ` +
-    `requestId; on version_conflict merge with the latest it returns. validateOnly:true pre-checks without writing. ` +
+    `Write Brief changes when something changed; nothing requires a call each turn. Ask-only members may write only their own Asks. ` +
+    `Pass expectedVersion from brief_get and a new requestId (reuse it only to retry); noChange:true changes nothing. ` +
+    `Changes: put {op:"put", key, kind, title, body|markdown, ask?, status?, time?, attachments?} creates or replaces your section ` +
+    `(markdown: its text as one block); edit {op:"edit", key, elements:{<id>: block}} replaces only those blocks; ` +
+    `patch {op:"patch", key, patch:[RFC 6902 ops on the body, e.g. {op:"replace", path:"/elements/refs/props/items/3/note", value}]} ` +
+    `changes single values; resolve {op:"resolve", key} resolves your ask; remove {op:"remove", key} removes your section; ` +
+    `claim {op:"claim", key} takes an orphaned one (change it in a later call). key is topic or topic/sub (a-z, 0-9, -); ` +
+    `add to another Agent's topic with a sub-key of your own. kind ask needs ask {question, reply: options[{id, label}], ` +
+    `freeText, form or choice}; kind status needs status {asOf, validFor}. body is {root, elements} with a BriefBody root; ` +
+    `elements are {type, props, children?}: ${/* @__PURE__ */ briefComponentHints()}; the rest in brief_guide content. ` +
+    `Small slips are repaired and listed in repairs. A rejection lists problems {code, path, reason, guide}: fix them and ` +
+    `retry with a new requestId; on version_conflict merge the latest it returns. validateOnly:true pre-checks without writing. ` +
     `Content never executes actions. Formats: brief_guide.`,
   brief_guide:
     `The Project Brief format guide, generated from the contract: sections and their kinds, ask replies, body components ` +

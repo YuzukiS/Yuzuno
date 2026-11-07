@@ -325,6 +325,11 @@
     align-items: stretch;
     padding-left: 4px;
   }
+  /* The groups are the scrolling box's children, not the dock's, since the
+     box went in (#459). Centred there, each group was only as wide as its own
+     names, so one with shorter names stood a few pixels right of the others
+     (YN-17). */
+  .work-dock-scroll,
   .work-dock-group {
     align-items: stretch;
   }
@@ -426,8 +431,8 @@
 }
 
 /* One line for everything the conversation has running, beside its name:
-   what needs a look first, then what is going on. The dock's own column
-   keeps the detail, so this says the counts and opens the list (T-15). */
+   how many are running. The dock's own column keeps the detail, so this
+   says the counts and opens the list (T-15). */
 .work-activity-entry {
   display: inline-flex;
   align-items: baseline;
@@ -455,11 +460,6 @@
 }
 .work-activity-name {
   font-weight: 600;
-}
-/* Something went wrong, or stopped and is waiting: the reason to look. */
-.work-activity-entry[data-needs-look] {
-  border-color: color-mix(in srgb, var(--error-ink, var(--coral)) 45%, transparent);
-  color: var(--error-ink, var(--coral));
 }
 /* A finger needs more than a line of text is tall. */
 @media (hover: none) and (pointer: coarse) {
@@ -568,10 +568,6 @@
   color: var(--text-secondary);
   font-size: calc(8px + var(--font-adjust, 3px));
   font-weight: 650;
-}
-/* What needs a look says so in its colour as well as its place. */
-.work-activity-column-list h3[data-attention] {
-  color: var(--error-ink, var(--coral));
 }
 .work-activity-column-list ul {
   margin: 0;

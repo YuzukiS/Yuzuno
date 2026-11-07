@@ -1,13 +1,11 @@
-// T-35 S1: Executors at once, in Chromium (en-US), with every API answered
-// here (no Core, no CLI, no daily configuration). Through the real Settings:
-// the Workspace's limit and what holds a slot, a new limit saved against the
-// version read, and a number outside 1 to 64 not offered; then the task
+// T-35 S1, YN-2 S5: Executors at once, in Chromium (en-US), with every API
+// answered here (no Core, no CLI, no daily configuration). Through the real
+// Settings: each machine's number (the only limit since S5), their sum and
+// what holds a slot, with no Workspace number to set; then the task
 // board, where a card says where its executor stands (queued with its place,
 // starting, running), in English and in Chinese; on a phone, both fit.
-// S2: the Workspace's start time limit: 29 is not offered, 120 is saved with
-// the limit; in Chinese too.
-// S4: a template's own At most at once: a fraction or a negative number holds
-// the save, said at the field (in Chinese too); a whole number is saved.
+// S2: the Workspace's start time limit: 29 is not offered, 120 is saved
+// alone; in Chinese too.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-slots-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -36,9 +34,11 @@ let saved = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harne
 const templates = () => ({ workspace: saved, available: saved.templates.map((template) => ({ template, source: "workspace" })),
   defaultNamePattern: "{task} · {label}", limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false });
 // What Core keeps and answers (executor_slots.rs `executor_slots_view`).
-let slots = { version: 0, slots: 3, saved: false, startLimitSeconds: 300 };
-const slotsView = () => ({ workspace: { ...slots, default: 3 }, limits: { min: 1, max: 64, startLimitSeconds: { min: 30, max: 3600, default: 300 } },
-  inUse: { waiting: 2, starting: 1, running: 3 } });
+let slots = { version: 0, startLimitSeconds: 300 };
+const machines = [{ id: "local", name: "this Core host", version: 1, slots: 6, saved: true, default: 3, executors: 4 },
+  { id: "mini", name: "Mac mini", version: 0, slots: 3, saved: false, default: 3, executors: 0 }];
+const slotsView = () => ({ workspace: { ...slots }, limits: { min: 1, max: 64, default: 3, startLimitSeconds: { min: 30, max: 3600, default: 300 } },
+  inUse: { waiting: 2, starting: 1, running: 3 }, machines, total: 9 });
 const you = { kind: "user", id: "user", name: "You" };
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const task = (id, title, status, executorSlot) => ({ id, title, description: "", status, version: 2, projectId: "p1", progress: "", blocker: "",
@@ -71,7 +71,8 @@ await context.route("**/*", async (route) => {
     const body = JSON.parse(request.postData() || "{}");
     report.writes.push({ method, path, body });
     if (body.expectedVersion !== slots.version) return route.fulfill({ status: 400, json: { error: "version_conflict: these executor slots changed; reload before saving" } });
-    slots = { version: slots.version + 1, slots: body.slots, saved: true, startLimitSeconds: body.startLimitSeconds ?? slots.startLimitSeconds };
+    if ("slots" in body) return route.fulfill({ status: 400, json: { error: "setting_removed: executors at once is each machine's; set it in Settings → Machines" } });
+    slots = { version: slots.version + 1, startLimitSeconds: body.startLimitSeconds };
     return route.fulfill({ json: slotsView() });
   }
   if (path === "/api/executor-templates" && method === "PUT") {
@@ -157,29 +158,18 @@ try {
   await page.getByRole("button", { name: "Settings and updates" }).waitFor({ timeout: 10_000 });
   await other.goto(`https://${HOST}/other.html`);
 
-  // ---- The Workspace's limit, and what holds a slot; a new one saved.
+  // ---- Each machine's number, their sum and what holds a slot; no Workspace number (YN-2 S5).
   let box = await openEditor(page);
   const group = box.getByRole("group", { name: "How many executors run at once" });
-  const input = group.locator('input[aria-label="Executors at once"]');
-  await input.waitFor({ timeout: 10_000 });
-  assert.equal(await input.inputValue(), "3");
+  await group.getByText("Executors at once is set for each machine: this Core host 6, Mac mini 3 (default); 9 in all.", { exact: false })
+    .waitFor({ timeout: 10_000 });
   await group.getByText("In this Workspace now: 3 running, 1 starting, 2 waiting.").waitFor({ timeout: 10_000 });
-  const save = group.getByRole("button", { name: "Save executors at once" });
+  assert.equal(await group.locator('input[aria-label="Executors at once"]').count(), 0, "no Workspace number to set");
+  const save = group.getByRole("button", { name: "Save start time limit" });
   assert.equal(await save.isDisabled(), true, "nothing to save yet");
-  await input.fill("0");
-  await group.getByText("A whole number from 1 to 64.").waitFor({ timeout: 10_000 });
-  assert.equal(await save.isDisabled(), true, "0 is not offered");
-  await input.fill("5");
-  await group.getByText("Unsaved change").waitFor({ timeout: 10_000 });
-  await page.screenshot({ path: join(output, "1-settings-unsaved.png") });
-  await save.click();
-  await group.getByText("Saved.").waitFor({ timeout: 10_000 });
-  const put = report.writes.find((w) => w.path === "/api/executor-slots");
-  assert.deepEqual(put.body, { expectedVersion: 0, slots: 5, startLimitSeconds: 300 });
-  assert.equal(await save.isDisabled(), true, "what was saved is what is shown");
   assert.deepEqual(await fits(box), { box: true, wider: [] }, "the editor fits its width");
-  await group.screenshot({ path: join(output, "2-settings-saved.png") });
-  check("the Workspace's limit shown with what holds a slot; 0 not offered; 5 saved against version 0", { body: put.body });
+  await group.screenshot({ path: join(output, "1-settings-machines.png") });
+  check("each machine's number, the default marked, their sum and what holds a slot; no Workspace number to set");
 
   // ---- S2: the Workspace's start time limit.
   const limitInput = group.locator('input[aria-label="Start time limit (seconds)"]');
@@ -198,32 +188,9 @@ try {
   await save.click();
   await group.getByText("Saved.").waitFor({ timeout: 10_000 });
   const limitPut = report.writes.filter((w) => w.path === "/api/executor-slots").at(-1);
-  assert.deepEqual(limitPut.body, { expectedVersion: 1, slots: 5, startLimitSeconds: 120 });
+  assert.deepEqual(limitPut.body, { expectedVersion: 0, startLimitSeconds: 120 }, "the start time limit alone");
   assert.equal(await limitInput.inputValue(), "120");
-  check("the start time limit: 29 not offered (said in Chinese too); 120 saved with the limit against version 1", { body: limitPut.body });
-
-  // ---- A template's own limit (S4).
-  const limitField = box.locator('input[aria-label="At most at once"]');
-  const saveTemplates = box.getByRole("button", { name: "Save templates" });
-  for (const bad of ["2.5", "-1"]) {
-    await limitField.fill(bad);
-    await box.getByText("At most at once is a whole number from 1 to 64.").waitFor({ timeout: 10_000 });
-    assert.equal(await saveTemplates.isDisabled(), true, `${bad} holds the save`);
-  }
-  await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
-  await box.getByText("同时最多 是 1 到 64 之间的整数。").waitFor({ timeout: 10_000 });
-  await box.locator('input[aria-label="同时最多"]').screenshot({ path: join(output, "2b-template-limit-zh.png") });
-  await other.evaluate(() => localStorage.setItem("yuzuno.language", JSON.stringify({ language: "en" })));
-  await box.getByText("At most at once is a whole number from 1 to 64.").waitFor({ timeout: 10_000 });
-  await limitField.fill("2");
-  await box.getByText("At most this many of this template’s executors run at once, within Executors at once. Empty: no limit of its own.").waitFor({ timeout: 10_000 });
-  await saveTemplates.click();
-  // The templates' own actions: the limit group above says Saved. too.
-  await box.locator(".executor-templates-actions:not(.executor-slots-actions)").getByText("Saved.", { exact: true }).waitFor({ timeout: 10_000 });
-  const templatesPut = report.writes.find((w) => w.path === "/api/executor-templates");
-  assert.deepEqual(templatesPut.body, { expectedVersion: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude", maxConcurrent: 2 }] });
-  assert.deepEqual(await fits(box), { box: true, wider: [] }, "the editor fits its width");
-  check("a template's own limit: 2.5 and -1 hold the save, said at the field (in Chinese too); 2 is saved", { body: templatesPut.body });
+  check("the start time limit: 29 not offered (said in Chinese too); 120 saved alone against version 0", { body: limitPut.body });
 
   // ---- The board: each card says where its executor stands.
   await page.keyboard.press("Escape");
@@ -256,15 +223,15 @@ try {
   await page.screenshot({ path: join(output, "5-board-phone.png"), fullPage: false });
   await page.keyboard.press("Escape");
   box = await openEditor(page);
-  await box.locator('input[aria-label="Executors at once"]').waitFor({ timeout: 10_000 });
+  await box.locator('input[aria-label="Start time limit (seconds)"]').waitFor({ timeout: 10_000 });
   assert.deepEqual(await fits(box), { box: true, wider: [] }, "on a phone the editor fits its width");
   await box.getByRole("group", { name: "How many executors run at once" }).screenshot({ path: join(output, "6-settings-phone.png") });
   check("at 390 px the cards and the editor fit their width");
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);
-  assert.deepEqual(report.writes.map((w) => `${w.method} ${w.path}`), ["PUT /api/executor-slots", "PUT /api/executor-slots", "PUT /api/executor-templates"],
-    "the three saves, nothing else written");
+  assert.deepEqual(report.writes.map((w) => `${w.method} ${w.path}`), ["PUT /api/executor-slots"],
+    "the start time limit's save, nothing else written");
   report.status = "passed";
 } catch (error) {
   report.status = "failed";

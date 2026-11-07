@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
 import { langTag, strings, useLanguage } from "./i18n";
+import { useSaveBarPart } from "./SettingsSaveBar";
 import type { Model } from "./types";
 import {
   CLAUDE_MODES,
@@ -230,8 +231,8 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
   const chosenClaude = draft?.claudeModel ? claudeModels?.find((m) => modelName(m) === draft.claudeModel) : undefined;
   const claudeStale = !!draft?.claudeModel && claudeModels !== null && !chosenClaude;
   const anySaved = !!savedDraft && FIELDS.some((field) => savedDraft[field]);
-  async function save(change: AgentDefaultsChange, pressed: HTMLElement) {
-    if (saving) return;
+  async function save(change: AgentDefaultsChange, pressed: HTMLElement | null): Promise<boolean> {
+    if (saving) return false;
     setSaving(true);
     setError("");
     setStatus(false);
@@ -239,9 +240,11 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
       adopt(await (projectId ? changeProjectAgentDefaults(projectId, change) : changeAgentDefaults(change)));
       afterSave.current = pressed;
       setStatus(true);
+      return true;
     } catch (e) {
       // The choice stays as made, to save again or change.
       setError(errorText(e));
+      return false;
     } finally {
       setSaving(false);
     }
@@ -257,6 +260,12 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
     const at = document.activeElement;
     if (!at || at === document.body) savedLine.current?.focus();
   }, [status]);
+  // On a page with a save bar (YN-8) the change joins it; elsewhere this
+  // block has its own Save. Back to the saved choices stays a command here.
+  const inBar = useSaveBarPart(`agent-defaults:${projectId ?? "workspace"}`, changed && savedDraft && !disabled ? {
+    save: () => save(changes, null),
+    discard: () => { setError(""); setDraft(savedDraft); },
+  } : null);
   const effective = view?.effective;
   // What "no choice here" means: the built-in for the Workspace, what the project inherits for a project.
   const inherited = projectId ? view?.project?.inherited : undefined;
@@ -494,7 +503,7 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
               </select>
             </label>
           )}
-          {(changed || saving || anySaved) && (
+          {(anySaved || (!inBar && (changed || saving))) && (
             <div className="settings-row settings-row-end">
               <div className="settings-row-action">
                 {anySaved && (
@@ -516,7 +525,7 @@ export function AgentDefaults({ active, projectId, disabled = false }: { active:
                     {projectId ? t.inheritAll : t.builtInAll}
                   </button>
                 )}
-                {changed && (
+                {changed && !inBar && (
                   <button type="button" className="primary-button" disabled={locked} onClick={(event) => void save(changes, event.currentTarget)}>
                     {saving ? t.saving : t.save}
                   </button>

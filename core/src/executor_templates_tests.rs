@@ -24,12 +24,13 @@ fn ids(view: &Value) -> Vec<(String, String)> {
         .map(|a| (a["template"]["id"].as_str().unwrap().to_owned(), a["source"].as_str().unwrap().to_owned())).collect()
 }
 
-/// T-34 S1: the user keeps the Workspace's templates and each Project's own
-/// through their routes, each list against the version read. A dispatch of a
-/// task in a Project gets the Project's template of an id before the
-/// Workspace's; elsewhere, the Workspace's. A Project's go with it.
+/// T-34 S1, YN-2 S2: the user keeps the Workspace's templates through its
+/// route, against the version read. They are the only list: a page from
+/// before saving a Project's own is told where templates are, and nothing is
+/// written; a dispatch of a task in a Project gets the Workspace's. A
+/// Project's own list from before goes with it.
 #[tokio::test]
-async fn templates_are_saved_against_the_version_read_and_a_project_s_own_come_first() {
+async fn templates_are_the_workspaces_saved_against_the_version_read() {
     let dir = tempfile::tempdir().unwrap();
     let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
     let p = ws.store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into())])).unwrap().id;
@@ -43,7 +44,9 @@ async fn templates_are_saved_against_the_version_read_and_a_project_s_own_come_f
     let (status, saved) = call(&ws, "PUT", "/api/executor-templates",
         Some(json!({"expectedVersion":0,"templates":[template("reviewer", "codex"), writer.clone()]}))).await;
     assert_eq!((status, saved["workspace"]["version"].clone()), (StatusCode::OK, json!(1)), "{saved}");
-    assert_eq!(saved["workspace"]["templates"][1], writer, "kept as saved");
+    let mut kept = writer.clone();
+    kept.as_object_mut().unwrap().remove("maxConcurrent");
+    assert_eq!(saved["workspace"]["templates"][1], kept, "kept as saved, but an older page's maxConcurrent is dropped (YN-2 S5)");
     let announced: Value = serde_json::from_str(&events.try_next().expect("a kept save is announced").data).unwrap();
     assert_eq!((announced["type"].clone(), announced["executorTemplates"].clone()), (json!("workspace.changed"), json!(true)));
 
@@ -53,31 +56,29 @@ async fn templates_are_saved_against_the_version_read_and_a_project_s_own_come_f
 
     let own = json!({"id":"reviewer","label":"Project reviewer","harness":"claude"});
     let path = format!("/api/projects/{p}/executor-templates");
-    let (status, project) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":0,"templates":[own.clone()]}))).await;
-    assert_eq!((status, project["project"]["version"].clone()), (StatusCode::OK, json!(1)), "{project}");
-    let (_, seen) = call(&ws, "GET", &format!("/api/executor-templates?projectId={p}"), None).await;
-    assert_eq!(ids(&seen), [("reviewer".into(), "project".into()), ("writer".into(), "workspace".into())],
-        "the Project's reviewer stands in for the Workspace's");
-    assert_eq!(ids(&saved), [("reviewer".into(), "workspace".into()), ("writer".into(), "workspace".into())]);
-
-    let got = |project: Option<&str>, id: &str| ws.store.executor_template(project, id).unwrap()
-        .map(|(t, source)| (t.label, source));
-    assert_eq!(got(Some(&p), "reviewer"), Some(("Project reviewer".into(), "project")), "the Project's own template comes first");
-    assert_eq!(got(Some(&p), "writer"), Some(("Writer".into(), "workspace")));
-    assert_eq!(got(None, "reviewer"), Some(("Label reviewer".into(), "workspace")));
-    assert_eq!(got(Some(&p), "absent"), None);
-
-    let (status, missing) = call(&ws, "PUT", "/api/projects/nope/executor-templates", Some(json!({"expectedVersion":0,"templates":[]}))).await;
+    let (status, refused) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":0,"templates":[own]}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(refused["error"].as_str().unwrap().starts_with("setting_moved: executor templates are kept for the whole Workspace now"),
+        "a page from before is told where templates are: {refused}");
+    let rows = |key: String| -> i64 { ws.store.db.read().unwrap()
+        .query_row("SELECT COUNT(*) FROM workspace_meta WHERE key=?1", [key], |r| r.get(0)).unwrap() };
+    assert_eq!(rows(project_key(&p)), 0, "nothing was written for the Project");
+    let (status, seen) = call(&ws, "GET", &format!("/api/executor-templates?projectId={p}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(ids(&seen), [("reviewer".into(), "workspace".into()), ("writer".into(), "workspace".into())],
+        "a Project's view offers the Workspace's templates");
+    assert!(seen.get("project").is_none(), "and no list of its own: {seen}");
+    assert_eq!(seen["presets"], json!([]), "presets come from T-43");
+    assert_eq!(ws.store.executor_template("reviewer").unwrap().map(|t| t.label), Some("Label reviewer".into()));
+    assert_eq!(ws.store.executor_template("absent").unwrap(), None);
+    let (status, missing) = call(&ws, "GET", "/api/executor-templates?projectId=nope", None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{missing}");
-    // An empty list is kept, with its version moved on, so a stale view can't save over it.
-    let (_, cleared) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":1,"templates":[]}))).await;
-    assert_eq!(cleared["project"], json!({"id":p,"version":2,"templates":[]}));
-    let (status, _) = call(&ws, "PUT", &path, Some(json!({"expectedVersion":1,"templates":[own]}))).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A Project's own list from before YN-2 S2 goes with it.
+    ws.store.db.write().unwrap().execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)",
+        params![project_key(&p), json!({"version":1,"templates":[template("old", "codex")]}).to_string()]).unwrap();
     ws.store.delete_project(&p).unwrap();
-    let rows: i64 = ws.store.db.read().unwrap()
-        .query_row("SELECT COUNT(*) FROM workspace_meta WHERE key=?1", [project_key(&p)], |r| r.get(0)).unwrap();
-    assert_eq!(rows, 0, "a deleted Project's templates go with it");
+    assert_eq!(rows(project_key(&p)), 0, "a deleted Project's templates go with it");
 }
 
 /// T-34 S1, R1 de0ae592: a save keeps as it was what a later Core stored
@@ -92,7 +93,7 @@ async fn a_save_keeps_what_a_later_core_stored() {
     let later = json!({"id":"z","label":"A later shape","laterHarness":{"kind":"remote"}});
     // A later Core's templates that read, but hold what this Core refuses (R2 70093e91).
     let refused = [json!({"id":"g","label":"Another harness","harness":"gemini"}),
-        json!({"id":"m","label":"More at once","harness":"codex","maxConcurrent":65})];
+        json!({"id":"m","label":"Yet another harness","harness":"kimi"})];
     ws.store.db.write().unwrap().execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)", params![KEY,
         json!({"version":1,"laterList":"kept","templates":[{"id":"a","label":"A","harness":"codex","laterField":"kept"}, later.clone(),
             refused[0].clone(), refused[1].clone()]}).to_string()]).unwrap();
@@ -100,7 +101,7 @@ async fn a_save_keeps_what_a_later_core_stored() {
         .query_row("SELECT value FROM workspace_meta WHERE key=?1", [KEY], |r| r.get::<_, String>(0)).unwrap()).unwrap() };
     let (_, seen) = call(&ws, "GET", "/api/executor-templates", None).await;
     assert!(!ids(&seen).iter().any(|(id, _)| id == "g" || id == "m"), "a later Core template that reads but this Core refuses is not offered");
-    assert!(ws.store.executor_template(None, "m").unwrap().is_none(), "nor given to a dispatch");
+    assert!(ws.store.executor_template("m").unwrap().is_none(), "nor given to a dispatch");
     assert_eq!((ids(&seen), seen["workspace"]["laterTemplates"].clone()), (vec![("a".into(), "workspace".into())], json!(3)),
         "the view shows what it can use and says how many it can't");
 
@@ -152,12 +153,6 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         (with(json!({"instructions":"x".repeat(MAX_INSTRUCTIONS + 1)})), "A template's instructions are at most 8 KiB"),
         (with(json!({"namePattern":"{title} done"})), "A name pattern can use {task} and {label}, not {title}"),
         (with(json!({"namePattern":"{task"})), "A name pattern's `{` is not closed"),
-        // T-35 S4: one sentence for every value it can't take, serde's included.
-        (with(json!({"maxConcurrent":0})), "At most at once is a whole number from 1 to 64"),
-        (with(json!({"maxConcurrent":65})), "At most at once is a whole number from 1 to 64"),
-        (with(json!({"maxConcurrent":-1})), "At most at once is a whole number from 1 to 64"),
-        (with(json!({"maxConcurrent":2.5})), "At most at once is a whole number from 1 to 64"),
-        (with(json!({"maxConcurrent":"2"})), "At most at once is a whole number from 1 to 64"),
     ] {
         let got = refused(template.clone());
         assert!(got.starts_with(says), "{template} should be refused with {says}; got: {got}");
@@ -169,9 +164,11 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         let auto = parse_save(&[with(json!({"harness":harness,"machineId":"auto"}))], true, &[]).unwrap();
         assert_eq!(auto[0].machine_id.as_deref(), Some("auto"), "{harness}: a template may say auto");
     }
-    for (limit, kept) in [(json!(1), Some(1)), (json!(64), Some(64)), (Value::Null, None)] {
+    // YN-2 S5: a template has no limit of its own; an older page's
+    // maxConcurrent is taken and dropped, whatever it says, for one release.
+    for limit in [json!(1), json!(64), json!(0), json!(65), json!(2.5), json!("2"), Value::Null] {
         let saved = parse_save(&[with(json!({"maxConcurrent":limit}))], true, &[]).unwrap();
-        assert_eq!(saved[0].max_concurrent, kept, "{limit}");
+        assert!(serde_json::to_value(&saved[0]).unwrap().get("maxConcurrent").is_none(), "{limit} is dropped");
     }
     let off = parse_save(&[template("o", "opencode")], false, &[]).unwrap_err().to_string();
     assert_eq!(off, "OpenCode Agents aren't enabled on this Core");
@@ -249,4 +246,105 @@ async fn the_view_says_what_a_general_executor_would_be_made_with() {
     ws.store.save_project_agent_defaults(&p, &crate::agent_defaults::AgentDefaults { harness: Some("codex".into()), ..Default::default() }).unwrap();
     let (_, view) = call(&ws, "GET", &format!("/api/executor-templates?projectId={p}"), None).await;
     assert_eq!(view["general"], general("codex", "project"));
+}
+
+/// A list stored at `key`, as an earlier Core saved it.
+fn stored_at(store: &Store, key: &str, list: Value) {
+    store.db.write().unwrap().execute(
+        "INSERT INTO workspace_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![key, list.to_string()]).unwrap();
+}
+
+fn raw_at(store: &Store, key: &str) -> Value {
+    serde_json::from_str(&store.db.read().unwrap().query_row("SELECT value FROM workspace_meta WHERE key=?1", [key], |r| r.get::<_, String>(0)).unwrap()).unwrap()
+}
+
+/// YN-2 S2: on open, each Project's own templates an earlier Core kept are
+/// copied into the Workspace's list once. One the Workspace has as it is is
+/// not copied; one whose id it uses for another gets a free id and its
+/// Project's name in its label; each copy says where it came from. The
+/// Project lists stay as they were, a template this Core can't read stays in
+/// its list, and opening again copies nothing more, until an older Core saves
+/// a Project's list again: then only what changed is copied.
+#[test]
+fn project_templates_are_copied_into_the_workspace_once_and_stay_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspace.db");
+    let store = Store::open(&path).unwrap();
+    let lab = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/lab".into())])).unwrap().id;
+    let field = store.create_project("Field", BTreeMap::from([("local".into(), "/synthetic/field".into())])).unwrap().id;
+    let writer = json!({"id":"writer","label":"Writer","harness":"claude"});
+    stored_at(&store, KEY, json!({"version":4,"templates":[template("reviewer", "codex"), writer.clone()]}));
+    let lab_list = json!({"version":3,"templates":[
+        {"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Lab's way."},
+        writer.clone(),
+        {"id":"tester","label":"Tester","harness":"codex","maxConcurrent":2},
+        {"id":"g","label":"Another harness","harness":"gemini"}]});
+    stored_at(&store, &project_key(&lab), lab_list.clone());
+    stored_at(&store, &project_key(&field), json!({"version":1,"templates":[{"id":"reviewer","label":"Reviewer","harness":"claude","instructions":"Field's way."}]}));
+    drop(store);
+
+    let store = Store::open(&path).unwrap();
+    let workspace = raw_at(&store, KEY);
+    let by_id = |list: &Value, id: &str| list["templates"].as_array().unwrap().iter().find(|t| t["id"] == id).cloned();
+    assert_eq!(workspace["version"], 5, "the Workspace's list moved on once: {workspace}");
+    assert_eq!(workspace["templates"].as_array().unwrap().len(), 5,
+        "its two, Lab's reviewer and tester, and Field's reviewer; Lab's writer was already there: {workspace}");
+    assert_eq!(by_id(&workspace, "reviewer"), Some(template("reviewer", "codex")), "the Workspace's own reviewer keeps its id");
+    let copies: Vec<Value> = workspace["templates"].as_array().unwrap().iter().filter(|t| t["origin"].is_object()).cloned().collect();
+    let copy_of = |project: &str, id: &str| copies.iter().find(|t| t["origin"]["projectId"] == project && t["origin"]["id"] == id).cloned()
+        .unwrap_or_else(|| panic!("no copy of {project}'s {id}: {workspace}"));
+    let lab_reviewer = copy_of(&lab, "reviewer");
+    assert!(matches!(lab_reviewer["id"].as_str(), Some("reviewer-2" | "reviewer-3")), "a free id: {lab_reviewer}");
+    assert_eq!((lab_reviewer["label"].clone(), lab_reviewer["instructions"].clone(), lab_reviewer["origin"]["projectName"].clone()),
+        (json!("Reviewer (Lab)"), json!("Lab's way."), json!("Lab")));
+    let field_reviewer = copy_of(&field, "reviewer");
+    assert_ne!(field_reviewer["id"], lab_reviewer["id"], "each copy gets its own id");
+    assert_eq!(field_reviewer["label"], "Reviewer (Field)");
+    assert_eq!(copy_of(&lab, "tester"), json!({"id":"tester","label":"Tester","harness":"codex","maxConcurrent":2,
+        "origin":{"projectId":lab,"projectName":"Lab","id":"tester"}}), "an id the Workspace doesn't use is kept, label and all");
+    assert!(by_id(&workspace, "g").is_none(), "a template this Core can't read stays in its Project's list");
+    assert_eq!(raw_at(&store, &project_key(&lab)), lab_list, "the Project's list is left as it was");
+    let read = store.executor_templates().unwrap();
+    assert_eq!((read.templates.len(), read.later_templates), (5, 0), "every copy is one this Core can use");
+    drop(store);
+
+    let store = Store::open(&path).unwrap();
+    assert_eq!(raw_at(&store, KEY), workspace, "opening again copies nothing more");
+    // An older Core saves Lab's list again: only its changed tester is copied.
+    let mut again = lab_list.clone();
+    again["version"] = json!(4);
+    again["templates"][2]["maxConcurrent"] = json!(3);
+    stored_at(&store, &project_key(&lab), again);
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    let after = raw_at(&store, KEY);
+    assert_eq!((after["version"].clone(), after["templates"].as_array().unwrap().len()), (json!(6), 6), "{after}");
+    let changed = after["templates"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!((changed["id"].clone(), changed["label"].clone(), changed["maxConcurrent"].clone()),
+        (json!("tester-2"), json!("Tester (Lab)"), json!(3)));
+}
+
+/// YN-2 S2: copies may take the Workspace's list past 50 templates. A save
+/// keeps what it holds, but adds none past it; the view says the limit.
+#[tokio::test]
+async fn a_list_the_copy_took_past_the_limit_still_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    let p = ws.store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/lab".into())])).unwrap().id;
+    let list = |prefix: &str| -> Vec<Value> { (0..30).map(|n| template(&format!("{prefix}-{n}"), "codex")).collect() };
+    stored_at(&ws.store, KEY, json!({"version":1,"templates":list("w")}));
+    stored_at(&ws.store, &project_key(&p), json!({"version":1,"templates":list("p")}));
+    // As the next open does.
+    migrate(&ws.store.db.write().unwrap()).unwrap();
+    let (_, view) = call(&ws, "GET", "/api/executor-templates", None).await;
+    assert_eq!((view["workspace"]["templates"].as_array().unwrap().len(), view["limits"]["templates"].clone()), (60, json!(60)));
+    let all: Vec<Value> = view["workspace"]["templates"].as_array().unwrap().clone();
+    let (status, saved) = call(&ws, "PUT", "/api/executor-templates", Some(json!({"expectedVersion":2,"templates":all}))).await;
+    assert_eq!(status, StatusCode::OK, "a save keeps what the list holds: {saved}");
+    let mut more = all.clone();
+    more.push(template("extra", "codex"));
+    let (status, refused) = call(&ws, "PUT", "/api/executor-templates", Some(json!({"expectedVersion":3,"templates":more}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(refused["error"].as_str().unwrap().contains("At most 60 templates"), "{refused}");
 }

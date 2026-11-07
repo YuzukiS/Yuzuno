@@ -20,8 +20,8 @@ Every Agent has one kind:
 
 | Kind | Who makes it | What it is |
 | --- | --- | --- |
-| **standing** | You | An Agent you created, as every Agent was before. This is every Agent with no other kind. |
-| **lead** | You mark it | A standing Agent you chose as a lead of its Project. |
+| **standing** | You | An Agent of yours that leads no Project: one in no Project, or one you removed as a lead. This is every Agent with no other kind. |
+| **lead** | You, by making it there | An Agent you created, imported, forked or moved into a Project leads it ([below](#leads)), unless you removed it. |
 | **executor** | Core | An Agent made for one task by a [dispatch to a new executor](#dispatching-to-a-new-executor). |
 
 - **Where it shows.** The sidebar shows a **Lead** label under a lead's
@@ -37,23 +37,81 @@ Every Agent has one kind:
 
 ## Leads
 
-You choose a Project's leads in its settings, under **Leads**. Only open
-Agents in that Project can be chosen, and an executor cannot lead.
+An Agent you make in a Project leads it: you never have to set a lead. A
+Project's leads dispatch its tasks to executors, edit its Home and write its
+handover document; every other Agent there can only ask. In the Project's
+settings, under **Leads**, you can remove a lead or choose again. Only open
+Agents in that Project can be chosen, and an executor never leads.
 
-- **Who can set them.** Only you, through `PUT /api/projects/{id}/leads`. The
-  request is `{expectedVersion, leadAgentIds}` and the answer is
+- **Made a lead by you.** These make an Agent a lead of the Project it is in
+  afterwards:
+  - creating it in the Project (`POST /api/agents` with `projectId`, on this
+    Core host or on an SSH machine);
+  - importing a Claude Code session into it;
+  - forking a Codex or OpenCode Agent: the fork leads the source's Project,
+    even when the source is an executor, since the fork is an Agent of its own;
+  - moving it into the Project (`POST /api/agents/{id}/project`).
+
+  An imported Codex session is in no Project, so it leads none until you move
+  it. A closed Agent isn't made a lead. No Agent tool creates or moves an
+  Agent, and an executor a dispatch creates never leads.
+- **A list you saved keeps your choice.** Agents you make there from then on
+  join it. An Agent you removed stays removed while it stays in the Project.
+- **At upgrade, once.** When this Core first opens a Workspace, a Project
+  whose leads were never saved gets every open member that is not an executor
+  as its lead, and its list's version moves on. A Home editor list saved on
+  an older Core isn't consulted: a member it left out becomes a lead too. A
+  Project whose leads you saved keeps them; its other members are Ask-only
+  from then on.
+- **Who can change them.** Only you, through `PUT /api/projects/{id}/leads`.
+  The request is `{expectedVersion, leadAgentIds}` and the answer is
   `{version, leadAgentIds}`. No Agent tool sets leads, so an Agent cannot
   make itself or another a lead.
 - **Saving.** A save replaces the whole list. An Agent left out stops being a
   lead. A save against a list someone else changed meanwhile is refused.
-- **A lead belongs to its Project.** Core keeps which Project an Agent was
-  chosen to lead. It leads that Project only while it is a member there, and
-  never leads a Project it is moved to.
-- **Moving a lead.** When Core moves a lead to another Project, or out of every
-  Project, its mark ends. The list it left changes version, so a settings page
-  still showing the old list reloads before saving.
+  Core's own changes to a list (an Agent you made joining it, a lead moved
+  away) move its version on too.
+- **A lead belongs to its Project.** Core keeps which Project an Agent leads.
+  It leads that Project only while it is a member there.
+- **Moving a lead.** When you move a lead to another Project, it leads that
+  one instead; moved out of every Project, it leads none. The list it left
+  changes version, so a settings page still showing the old list reloads
+  before saving.
 - **An older Core's move.** Such a move leaves the mark in place, but it
   applies only if the Agent returns to the Project it was chosen for.
+
+### Leads edit Home
+
+A Project's leads are its Home editors. Every other member, an executor too,
+is Ask-only there.
+
+- **A lead** writes reports and status, edits and removes its own sections,
+  and claims a section whose author is gone, as content editors did before.
+  `brief_get` answers `you.capabilities.editContent: true` exactly for an open
+  lead of a Project that is not archived.
+- **An Ask-only member** may put, edit and resolve its own Asks, remove its
+  own older sections (a report or status it wrote while it edited Home), and
+  send `noChange`. It can't write, edit or claim a report or status, or turn
+  one into an Ask; such a change is refused with `ask_only`.
+- **What a former editor wrote.** A member that edited Home before and isn't
+  a lead now becomes Ask-only. Its report and status leave Home's main view
+  for the team sections, unread marks as they were; it can remove them.
+- **The separate setting is gone.** `PUT /api/projects/{id}/home-editors`, a
+  save from an older page, is refused with `setting_removed`; `GET` answers
+  the leads. `brief_get`'s `contentEditors` keeps its shape for older readers:
+  `{version, editorAgentIds, rule: "leads"}`, the leads and their version.
+  The list an older Core kept (`project_brief_editors`) stays as it is and is
+  no longer read or written.
+- **Opening the Workspace with core.24 afterwards.** core.24 reads its own
+  Home editor list again: where none was saved, every member but an executor
+  edits. The leads this Core made stay leads there, so they can still
+  dispatch from templates. An Agent made on core.24 is not a lead when this
+  Core opens the Workspace again, unless its Project's leads were never saved.
+- **Known limit: the user's routes.** Leads, templates, the handover and these
+  settings are changed through browser routes that Core guards by their
+  headers: a loopback host, no proxy headers, and `x-yuzuno-client: desktop`
+  for a write (`server.rs`, the browser guard). A process on the Core host
+  that sends those headers is treated as you, here as everywhere else.
 
 A lead can dispatch a task of its own Project to a new executor. You can
 always dispatch to a new executor. A task in no Project is dispatched to a new
@@ -61,9 +119,15 @@ executor by you only.
 
 ## Executor templates
 
-A template says what an executor is made of. You keep the Workspace's
-templates in Settings, under **Executor templates**, and a Project's own in
-its settings.
+A template says what an executor is made of: a named kind of executor that
+a dispatch can ask for. Without one, a dispatch makes a
+[general executor](#the-general-executor). Templates are the Workspace's,
+for every Project: you keep them in Settings, under **Executor templates**.
+A new template needs only a **Label** and a **Harness**; the other fields
+are under **More settings**, and left unset each inherits as described
+below. A Project's page has no templates of its own. How many executors run
+at once is each machine's number ([Executors at once](#executors-at-once)),
+not a template's or a Project's.
 
 | Field | What it is |
 | --- | --- |
@@ -73,11 +137,34 @@ its settings.
 | **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
-| **At most at once** | At most this many of the template's executors run at once, a whole number from 1 to 64; empty, it has no limit of its own. See [Executors at once](#executors-at-once). |
 
-- **Which template a dispatch gets.** A dispatch of a task in a Project uses
-  that Project's template of the named id, else the Workspace's. A task in no
-  Project uses the Workspace's.
+- **Which template a dispatch gets.** The Workspace's template of the named
+  id, whatever the task's Project. A dispatch naming an id the Workspace
+  doesn't have is refused with `template_not_found`, naming the ids it has.
+- **Presets.** Where Core ships template presets, Settings offers them under
+  **Add from a preset**. Choosing one adds an unsaved template filled from
+  it, with a free id if its id is taken; **Save templates** saves it as any
+  other edit. No Agent saves templates or presets.
+- **Templates a Project had.** Before this version, a Project could keep
+  templates of its own, used before the Workspace's of the same id. When this
+  Core first opens a Workspace, it copies each Project's own templates into
+  the Workspace's list, once, and leaves the Project's list as it was, so an
+  older Core opened later still finds it:
+  - a template the Workspace already has as it is is not copied;
+  - one whose id the Workspace uses for another template gets the first free
+    id (`reviewer-2`, `reviewer-3`, …) and its Project's name in its label,
+    such as "Reviewer (Lab)". A dispatch naming `reviewer` in that Project
+    then gets the Workspace's `reviewer`;
+  - each copy says where it came from, shown under its label as "Copied from
+    the project Lab, where its id was reviewer";
+  - a template this Core can't read stays in its Project's list.
+
+  If an older Core saves a Project's list again, the next open checks every
+  template in it again, not only what changed. One the Workspace still holds
+  as copied is skipped, but one whose copy you edited or deleted here is
+  copied in again (under another id when its own is taken). Edit or delete
+  those copies afterwards. The copies may take the list past 50 templates: a
+  save then keeps what the list holds, but can't add more.
 - **Where executors run.** On the machine the dispatch names, else the one
   its template names, else this Core host. A machine is one from the
   Machines list, or `auto`, for Core to choose one at each dispatch (see
@@ -152,7 +239,7 @@ and is chosen unless you pick a template. Core then:
   where the task has a folder: its Project's there, or on this Core host a
   worktree. A dispatch that carries a worktree, a path on this Core host,
   runs on this Core host. Of those, in order:
-  1. one with a free executor slot (its own limit not reached);
+  1. one with a free executor slot (its number not reached: its own, else 3);
   2. the most spare memory of its Jobs budget (the budget less what Jobs
      reserve now); one with no budget comes after every one with one;
   3. the most spare CPU;
@@ -195,27 +282,38 @@ makes a general executor: an executor with no template.
 
 ## Executors at once
 
-At most this many executors run at the same time in the Workspace: 3 unless
-you change it, a whole number from 1 to 64, in Settings under **Executor
-templates**. A Project can have a limit of its own, on its page, and so can
-a template (its **At most at once**; a general executor has none of its
-own) and a machine: in **Machines**, a
-registered machine's in its editor and this Core host's on its card
-(`PUT /api/machines/{id}/executor-slots`, `local` for this Core host); left
-empty, only the Workspace's applies. Only you change them. Lowering a limit
-under the executors running there stops none of them: no more start there
-until fewer hold a slot.
+Each machine has a number of executors that run on it at once: this Core
+host, and each registered machine. It is 3 unless you change it, a whole
+number from 1 to 64, in **Machines**: a registered machine's in its editor,
+this Core host's on its card (`PUT /api/machines/{id}/executor-slots`, `local`
+for this Core host; null for the default). There is no other limit: the
+Workspace runs at most the machines' numbers added up, and a Project or a
+template has none of its own. Settings, under **Executor templates**, lists
+each machine's number and the total. Only you change them. Lowering a number
+under the executors running on that machine stops none of them: no more start
+there until fewer hold a slot.
+
+- **From before (YN-2 S5).** The Workspace's number, a Project's and a
+  template's **At most at once** applied too. When this Core first opens a
+  Workspace, the Workspace's number, if you saved one, becomes this Core
+  host's own if it had none; a machine's saved number stays as it is, also
+  above the old total, and a registered machine with none runs the default.
+  What it did is kept in `workspace_meta` (`executors.slots.machines`). The
+  old numbers stay stored, unused, so an older Core opened again applies
+  them. A save of the Workspace's or a Project's number is refused with
+  `setting_removed`; a template's `maxConcurrent` from an older page is taken
+  and dropped for one release.
 
 - **The queue.** An executor dispatched while every slot is taken waits.
   Core starts the next one as soon as a slot is free, in the Jobs queue's
   order: any waiting more than 30 minutes first, then Projects in turn, each
   Project's in the order they were dispatched. Executors in no Project take
-  their turn together. One whose Project or template is at its own limit is
-  passed by the next that has room. A Project's own template of an id has
-  its own limit; a task in a Project without one uses the Workspace's
-  template, and counts with it.
+  their turn together. One whose machine is full is passed by the next that
+  has room on its own machine, so a full machine holds back none bound for
+  another.
 - **What the task shows.** Its card, and `task_get` as `executorSlot`, say
-  whether its executor is queued, with its place (`position`, 1 first),
+  whether its executor is queued, with its place (`position`, 1 first) and
+  the machine it waits for (`waitsFor`: `{machine, name, running, limit}`),
   starting (with `reason` when its start did not finish), or running. On a
   machine `auto` chose, the card's executor chip names it, with every
   candidate's numbers, or why it was left out, in its title: the lifecycle
@@ -225,12 +323,14 @@ until fewer hold a slot.
   it is closed, by anyone and in any way. A disconnect keeps it, so
   reconnecting never passes the limit. Closing one frees its slot for the
   next.
-- **Connect on a queued executor** is refused, with its place in the queue,
-  and changes nothing about it. To run more at once, raise the limit: the next
-  ones start right away.
+- **Connect on a queued executor** is refused, naming the machine it waits
+  for, how many of how many run there, and its place in the queue, and
+  changes nothing about it. To run more at once, raise that machine's number:
+  the next ones start right away.
 - **A start that fails.** A start fails when the runtime refuses it, or
   when it doesn't finish within the **start time limit**: 300 seconds unless
-  you change it, 30 to 3600, set beside Executors at once. Core then closes
+  you change it, 30 to 3600, the Workspace's, in Settings under **Executor
+  templates**. Core then closes
   the executor, keeps it, and rebuilds it once. The rebuild is a new dispatch
   of the same request by the same dispatcher. Its executor keeps the first
   one's place in the queue and works in the same folder. If that one fails
@@ -340,13 +440,12 @@ dispatchId). The mail says where to read them; it doesn't hold them.
 - **The Project's handover document** (`handover`): what the Project already
   knows, in Markdown, up to 32 KiB of text: line breaks (LF or CRLF) and
   tabs, but no other control characters; a save with one is refused at its
-  line and column. You keep it in the Project's settings,
-  under **Handover**, and a lead can propose a version for you to approve
-  (below). Each save is a new version, kept with who wrote it and
-  why, and a save against a document that changed meanwhile is refused. The
-  settings page lists the versions and shows any past one. A Project's
-  document goes with it when the Project is deleted. An archived Project's
-  document can't change.
+  line and column. The Project's leads write it
+  ([below](#a-lead-writes-it)); you read and change it in the Project's
+  settings, under **Handover**, which shows who changed it last. A save
+  against a document that changed meanwhile is refused. A Project's document
+  goes with it when the Project is deleted. An archived Project's document
+  can't change.
 - **Core's summary of the task so far** (`contextSummary`): at most 4 KiB,
   written by Core from what it holds, in this order:
   - the latest result;
@@ -359,33 +458,36 @@ dispatchId). The mail says where to read them; it doesn't hold them.
 A dispatch to an existing Agent gets neither; that Agent already has its own
 context.
 
-### A lead proposes, you decide
+### A lead writes it
 
-A lead of the Project can propose a new handover document; nothing changes
-until you approve it on Home.
+A lead of the Project writes the handover document directly: no one
+approves it, and nothing about it waits on Home.
 
-- **Reading and proposing.** Agents of the Project read the document with
-  `handover_get`. A lead proposes a whole new document with
-  `handover_propose`, against the version it read. The same rules apply as
-  for a save: 32 KiB of text, and a proposal on an older version is refused
-  with the current one named. An executor never proposes, and no Agent tool
-  approves.
-- **One at a time.** A Project has at most one proposal waiting. A lead's new
-  proposal replaces its own waiting one, which is kept as superseded; another
-  lead's is refused until you decide, naming whose waits and since when.
-- **Waiting on you.** A waiting proposal shows in Home's **Needs you**, named
-  by its lead. That lead counts as waiting on you in the attention order,
-  Ctrl/⌘+J goes to the proposal, and it is in the title's count, the system
-  notification and push. On Home its card shows the reason and the changed
-  lines.
-- **Your decision.** Approve, and it becomes a normal version, written by the
-  lead and approved by you, with the lead's reason; the history shows both.
-  Reject, and nothing changes. Either way, one mail tells the lead, with your
-  note (up to 1,000 bytes). Both are checked against the document you read
-  and the proposal: a proposal made on a version you have since replaced
-  can't be approved, and its rejection tells the lead to propose again on
-  the current version. A decided or replaced proposal leaves Needs you at
-  once.
+- **Reading.** Every member of the Project, its executors too, reads the
+  document with `handover_get`. Its answer has the document, its `version`
+  (an internal revision, for the next write), who changed it last, when and
+  with what note (`lastModified`), and `canWrite`: whether the caller may
+  write it, as a lead of the Project while the Project is not archived.
+- **Writing.** A lead writes a whole new document with `handover_update`,
+  against the `version` it read, with an optional `note` of what changed (up
+  to 200 characters; `reason`, its older name, is still accepted). It is
+  saved at once, and every executor dispatched from then on gets it. The
+  same rules apply as for your save: 32 KiB of text, and a write against an
+  older revision is refused, naming the current one. A retry with the same
+  `requestId` answers as the first write did; another payload under it is
+  refused. An executor and any other member are refused with `not_lead`.
+- **What you see.** In the Project's settings, under **Handover**: the
+  document, and one line saying who changed it last (a lead's name, or
+  you), when, and its note. You can change the document there too, with
+  an optional note. A lead's next write is checked against your save, as
+  yours is against its. No history of earlier versions is shown; Core keeps
+  each save, but nothing lists or restores them.
+- **Proposals from before.** A lead used to propose a version for you to
+  approve on Home (`handover_propose`). That tool is gone: a call to it is
+  refused, naming `handover_update`. When this Core first opens a Workspace,
+  a proposal still waiting is marked superseded, its text kept, and its lead,
+  if open, gets one mail with that text, to write it with `handover_update`
+  if it is still needed.
 
 A dispatch's materials are at most 128 KiB, counting only what the dispatcher
 can shorten: the task's own materials and the dispatch's. The template, the
@@ -411,11 +513,10 @@ things are not its to do:
   result's mail as for any result, saying the dispatch continues, and the
   task's detail heads it 阶段结果 · Step result. A delivery candidate is
   still submitted with status review.
-- **Writing Home's content.** An executor is never a Home content editor.
-  With no list chosen, every member but an executor edits; a list can't name
-  one (`invalid_editor`), and one saved before doesn't make it an editor. It
-  can still ask you its own questions, and what it wrote before shows with
-  the team's sections.
+- **Writing Home's content.** An executor is never a Home editor: it can't
+  lead (`invalid_lead`), and a list an older Core kept that names it doesn't
+  make it one. It can still ask you its own questions, and what it wrote
+  before shows with the team's sections.
 
 ## After an executor is released
 

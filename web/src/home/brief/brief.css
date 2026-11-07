@@ -18,9 +18,11 @@
   color: var(--ink);
   font-size: 0.88rem;
 }
-/* The series slots: a section's charts, and a chart drawn as a card's figure on Home (T-18). */
+/* The series slots: a section's charts, a chart drawn as a card's figure on Home (T-18), and a research desk drawn as
+ * one (YN-7). */
 .brief-body,
-.home-card-chart {
+.home-card-chart,
+.research-card {
   --brief-series-1: #2a78d6;
   --brief-series-2: #eb6834;
   --brief-series-3: #1baf7a;
@@ -30,7 +32,7 @@
   --brief-series-7: #4a3aa7;
   --brief-series-8: #e34948;
 }
-:root[data-theme="dark"] :is(.brief-body, .home-card-chart) {
+:root[data-theme="dark"] :is(.brief-body, .home-card-chart, .research-card) {
   --brief-series-1: #3987e5;
   --brief-series-2: #d95926;
   --brief-series-3: #199e70;
@@ -1374,4 +1376,385 @@ p.brief-preview-frame {
   .brief-attachments-block[data-density="low"] .brief-attachment[data-picture] .brief-image {
     --image-room: 100cqw;
   }
+}
+
+/* Inputs (YN-16): a number, a switch and a choice the reader sets, on a
+ * card or a page. Every control is a target of at least 40 px; none of them
+ * opens the report it sits in. A slider takes a drag as its own (touch-action
+ * none), so dragging it never scrolls the page under it; the stepper's
+ * buttons take a quick second tap as a tap, not a zoom. */
+.brief-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.brief-input > label,
+.brief-input-label {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.brief-input small {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+.brief-number-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.brief-number-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--input, var(--paper));
+}
+.brief-number-box:focus-within {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 1px;
+}
+.brief-number-field {
+  min-width: 2ch;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.brief-number-field:focus {
+  outline: none;
+}
+.brief-affix {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.brief-step {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft, var(--cream));
+  color: var(--ink);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.brief-step:hover:not(:disabled) {
+  background: var(--surface-hover, var(--cream));
+}
+.brief-step:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
+.brief-slider {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 360px;
+  height: 40px;
+  margin: 0;
+  accent-color: var(--accent-ink, var(--green));
+  cursor: pointer;
+  touch-action: none;
+}
+.brief-switch {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+.brief-switch-control {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  min-width: 48px;
+  min-height: 40px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.brief-switch-track {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 42px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft, var(--cream));
+  transition: background-color var(--motion-micro, 140ms) var(--ease-standard, ease);
+}
+.brief-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ink) 22%, var(--paper));
+  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+  transition: transform var(--motion-micro, 140ms) var(--ease-standard, ease);
+}
+.brief-switch-control[aria-checked="true"] .brief-switch-track {
+  border-color: var(--green);
+  background: var(--green);
+}
+.brief-switch-control[aria-checked="true"] .brief-switch-thumb {
+  background: var(--paper);
+  transform: translateX(18px);
+}
+.brief-switch-control:focus-visible,
+.brief-step:focus-visible,
+.brief-segment:focus-visible {
+  outline: 2px solid var(--focus, var(--green));
+  outline-offset: 2px;
+}
+.brief-switch-text {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.brief-switch-label {
+  cursor: pointer;
+}
+.brief-switch-state {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-soft, var(--cream));
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+.brief-segments {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-self: flex-start;
+  gap: 2px;
+  max-width: 100%;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-soft, var(--cream));
+}
+.brief-segment {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.brief-segment:hover {
+  color: var(--ink);
+}
+.brief-segment[aria-checked="true"] {
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+}
+@media (prefers-reduced-motion: reduce) {
+  .brief-switch-track,
+  .brief-switch-thumb {
+    transition: none;
+  }
+}
+
+/* Calc (YN-16 S2): numbers worked out from the inputs. A list reads as two
+ * columns, the label left and the number right in tabular figures; an
+ * emphasised item is the result to read first. Metrics layout reuses
+ * .brief-metrics. A Button only sets variables. */
+.brief-calc {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.brief-calc-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+.brief-calc-list > div {
+  display: contents;
+}
+.brief-calc-list dt,
+.brief-calc-list dd {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+.brief-calc-list dt {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.brief-calc-list dd {
+  margin: 0;
+  padding-left: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.brief-calc-list small {
+  grid-column: 1 / -1;
+  margin-top: -4px;
+  padding-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.brief-calc-list > [data-emphasis] dt,
+.brief-calc-list > [data-emphasis] dd {
+  color: var(--ink);
+  font-size: 1.05rem;
+}
+.brief-calc .brief-metrics > [data-emphasis] dd {
+  color: var(--accent-ink, var(--ink));
+}
+.brief-calc-affix {
+  margin-right: 2px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.brief-calc-none {
+  color: var(--muted);
+  cursor: help;
+}
+.brief-button-row {
+  display: flex;
+}
+.brief-button {
+  min-height: 40px;
+  touch-action: manipulation;
+}
+
+/* Diagram (YN-16 S3): laid out by Yuzuno, drawn in the theme's own colours.
+ * A node the reader can select is a button: a pointer, a focus ring, and a
+ * stronger outline once selected; its detail shows under the drawing. */
+.brief-diagram {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+.brief-diagram-frame {
+  min-width: 0;
+  overflow: hidden;
+}
+.brief-diagram-loading {
+  min-height: 80px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.brief-diagram-svg {
+  display: block;
+  font-family: inherit;
+  font-size: 13px;
+}
+.brief-diagram-edge path {
+  fill: none;
+  stroke: var(--text-secondary, var(--muted));
+  stroke-width: 1.4;
+}
+.brief-diagram-edge[data-dashed] path {
+  stroke-dasharray: 5 4;
+}
+.brief-diagram-arrow {
+  fill: var(--text-secondary, var(--muted));
+}
+.brief-diagram-edge-label rect {
+  fill: var(--paper);
+  stroke: var(--line);
+}
+.brief-diagram-edge-label text {
+  fill: var(--text-secondary, var(--ink));
+  font-size: 11.5px;
+}
+.brief-diagram-shape {
+  fill: var(--paper);
+  stroke: var(--line);
+  stroke-width: 1.2;
+}
+.brief-diagram-node text {
+  fill: var(--ink);
+  pointer-events: none;
+}
+.brief-diagram-node[data-tone="accent"] .brief-diagram-shape {
+  fill: color-mix(in srgb, var(--accent-ink, var(--green)) 14%, var(--paper));
+  stroke: var(--accent-ink, var(--green));
+}
+.brief-diagram-node[data-tone="ok"] .brief-diagram-shape {
+  fill: color-mix(in srgb, var(--green) 16%, var(--paper));
+  stroke: var(--green);
+}
+.brief-diagram-node[data-tone="warn"] .brief-diagram-shape {
+  fill: color-mix(in srgb, var(--brief-working, #c19465) 18%, var(--paper));
+  stroke: var(--brief-working, #c19465);
+}
+.brief-diagram-node[data-tone="muted"] .brief-diagram-shape {
+  fill: var(--surface-soft, var(--cream));
+  stroke-dasharray: 4 3;
+}
+.brief-diagram-node[data-tone="muted"] text {
+  fill: var(--muted);
+}
+.brief-diagram-node[role="button"] {
+  cursor: pointer;
+  outline: none;
+  /* A tap selects the node and outlines it; the browser's own tap colour would paint over its fill. */
+  -webkit-tap-highlight-color: transparent;
+}
+.brief-diagram-node[role="button"]:hover .brief-diagram-shape {
+  stroke: var(--ink);
+}
+.brief-diagram-node[role="button"]:focus-visible .brief-diagram-shape {
+  stroke: var(--focus, var(--green));
+  stroke-width: 3;
+}
+.brief-diagram-node[data-selected] .brief-diagram-shape {
+  stroke: var(--accent-ink, var(--ink));
+  stroke-width: 2.4;
+}
+.brief-diagram-detail {
+  min-height: 1.4em;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-soft, var(--cream));
+  font-size: 0.84rem;
+}
+.brief-diagram-detail p {
+  margin: 2px 0 0;
+}
+.brief-diagram-hint {
+  color: var(--muted);
+}
+.brief-diagram figcaption {
+  color: var(--muted);
+  font-size: 0.76rem;
 }

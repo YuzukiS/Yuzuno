@@ -30,6 +30,9 @@ import {PointFixOpen} from ${JSON.stringify(path.join(root, "src/point-fix.ts"))
 import {BriefDensity} from ${JSON.stringify(path.join(root, "src/home/home-density.ts"))};
 import {saveLanguagePreferences} from ${JSON.stringify(path.join(root, "src/i18n.ts"))};
 import {SummaryCard} from ${JSON.stringify(path.join(root, "src/home/SummaryCard.tsx"))};
+import {ReportOpen} from ${JSON.stringify(path.join(root, "src/home/report/report-open.ts"))};
+import {sectionMarkdown} from ${JSON.stringify(path.join(root, "src/home/brief/brief-copy.ts"))};
+window.sectionMarkdown=sectionMarkdown;
 const root=createRoot(document.getElementById('root'));
 window.chooseLanguage=(language)=>saveLanguagePreferences({language});
 window.examples=BRIEF_EXAMPLES;
@@ -38,7 +41,11 @@ window.checkBriefSection=checkBriefSection;
 window.renderSection=(section,projectId,extra={},workspaceId='',density)=>{const body=<CardFoldWorkspace.Provider value={workspaceId}><PointFixOpen.Provider value={window.pointFixOpen||null}><BriefSectionBody section={section} projectId={projectId} {...extra}/></PointFixOpen.Provider></CardFoldWorkspace.Provider>;flushSync(()=>root.render(density?<BriefDensity.Provider value={density}>{body}</BriefDensity.Provider>:body));};
 window.unmountSection=()=>flushSync(()=>root.render(null));
 // A report as its summary card on Home (T-18), read only: its figure in its frame; on the deck (extra.deck), at its size.
-window.renderCard=(section,projectId,extra={})=>flushSync(()=>root.render(<SummaryCard section={section} projectId={projectId} workspaceId="ws" agents={[]} readOnly={true} onSeen={async()=>{}} {...extra}/>));`,
+// With window.reportOpens an array, the card's way to its report page records each opening (YN-16).
+const opener=()=>window.reportOpens?(projectId,section)=>window.reportOpens.push(section.key):null;
+window.renderCard=(section,projectId,extra={})=>flushSync(()=>root.render(<ReportOpen.Provider value={opener()}><SummaryCard section={section} projectId={projectId} workspaceId="ws" agents={[]} readOnly={true} onSeen={async()=>{}} {...extra}/></ReportOpen.Provider>));
+// A card and, beside it, the same section drawn whole, as a report page beside Home (YN-16): two places.
+window.renderCardAndBody=(section,projectId)=>flushSync(()=>root.render(<ReportOpen.Provider value={opener()}><SummaryCard section={section} projectId={projectId} workspaceId="ws" agents={[]} readOnly={true} onSeen={async()=>{}} deck/><BriefSectionBody section={section} projectId={projectId}/></ReportOpen.Provider>));`,
   );
   const result = await build({
     root,
@@ -83,6 +90,8 @@ function mount(respond) {
   const { window } = dom;
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+  // dagre (YN-16 S3) clones with structuredClone, which every browser Yuzuno supports has and a jsdom window lacks.
+  window.structuredClone ??= (value) => structuredClone(value);
   window.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), method: init.method || "GET", headers: init.headers || {} });
     const { status = 200, body = {}, text } = (await respond?.(String(url))) ?? {};
@@ -614,7 +623,7 @@ test("YN-3 a small card's kept image is a View image button that opens the same 
   assert.deepEqual(page.errors, []);
 });
 
-test("YN-3 a card whose author named no summary opens as its body does: a first paragraph, or a first block shown as a small card shows figures; never more", async (t) => {
+test("YN-3 a card whose author named no summary opens as its body does: a first paragraph, or a first block as its picture, the card sized to it (PR C2); never more", async (t) => {
   const page = mount();
   t.after(page.close);
   const { document, window } = page;
@@ -640,9 +649,10 @@ test("YN-3 a card whose author named no summary opens as its body does: a first 
   window.renderCard(unnamed(["m"], { m: metrics }), PROJECT, { deck: true });
   assert.equal(lead(), null);
   assert.deepEqual([...document.querySelectorAll(".home-card-numbers dd")].map((dd) => dd.textContent), ["2", "40 k"]);
-  // An image first: View image, as a small card offers its image.
+  // An image first: its picture, the card sized to it (large, PR C2), the image opened from its frame.
   window.renderCard(unnamed(["files"], { files: { type: "Attachments", props: { items: [{ name: "shot.png" }] } } }), PROJECT, { deck: true });
-  assert.equal(document.querySelectorAll("button.home-card-image-view").length, 1);
+  assert.equal(card().dataset.cardSize, "large");
+  assert.equal(document.querySelectorAll("button.home-card-image-open").length, 1);
   // Nothing a card can show first: its title alone, never “No summary named”.
   window.renderCard(unnamed(["g", "text"], { g: { type: "Group", props: { title: "Runs" }, children: ["log"] }, log: md("Run 101"), text: md("Merged.") }), PROJECT, { deck: true });
   assert.equal(lead(), null);
@@ -845,6 +855,7 @@ test("the contract's examples render without a failed part", async (t) => {
   const { document, window } = page;
   const examples = JSON.parse(JSON.stringify(window.examples));
   const expected = {
+    note: ["core.25", "fixed in core.26"],
     image: ["layout.png", "Screenshot of the updated layout"],
     status: ["Validation loss", "−0.025", "+35 samples/s", "18k of 40k", "Loss"],
     result: ["213 of 214", "not in a release yet", "FAIL brief limits", "A stale version is accepted after a restart."],
@@ -853,8 +864,12 @@ test("the contract's examples render without a failed part", async (t) => {
     overview: ["Where we are", "one decision", "Run 12, larger batch", "Validation loss falls 6% once warm-up ends.", "Choose the run 13 split"],
     decision: ["The larger split costs about 6% of training data."],
     form: ["cannot tell a gap under about 5% from noise"],
+    interactive: ["6% of training data", "Validation split", "Current", "Larger", "Training data", "100", "Budget", "GPU-days"],
+    calculator: ["¥684", "People", "None", "15%", "Round each share up", "Total", "¥752", "Each", "¥188.10", "Back to 4, 10%"],
+    flowchart: ["its own CI and one review round", "Push the branch → PR CI", "All green? → Merged (yes)", "Fix and push → PR CI"],
   };
   const reads = {
+    note: [],
     image: [attachment("layout.png", "image", "image/png")],
     status: [attachment("loss.csv", "data", "text/csv", { caption: "Loss per step" })],
     result: [],
@@ -863,6 +878,9 @@ test("the contract's examples render without a failed part", async (t) => {
     overview: [],
     decision: [],
     form: [],
+    interactive: [],
+    calculator: [],
+    flowchart: [],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {
@@ -1450,5 +1468,412 @@ test("T-9 switching density keeps the section's state: the same nodes, a table's
   assert.ok(document.querySelector("details.brief-chart-data") === data, "the data table is the same node");
   assert.ok(data.open, "the data table stays open");
   assert.ok(document.activeElement === input, "focus stays where it was");
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-16 S1: inputs, the variables they write and the blocks they show, on a
+// card and on a page. Bodies accepted by the real contract; no Core.
+
+const recipe = (extra = {}) => ({
+  op: "put", key: "scones", kind: "report", title: "Scones",
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "try", size: "wide" } }, children: ["lead", "try", "more"] },
+    lead: { type: "Markdown", props: { text: "Scales with the guests." } },
+    try: { type: "Group", props: {}, children: ["guests", "vegan", "many"] },
+    guests: { type: "NumberInput", props: { name: "guests", label: "Guests", value: 4, min: 1, max: 12, unit: "people", control: "both", detail: "Every amount scales." } },
+    vegan: { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } },
+    many: { type: "Markdown", visible: { $state: "/guests", gte: 6 }, props: { text: "Bake on two trays." } },
+    more: { type: "Group", props: { title: "Method" }, children: ["view", "oil", "side", "top"] },
+    view: { type: "Segmented", props: { name: "view", label: "View", value: "side", options: [{ value: "side", label: "Side" }, { value: "top", label: "Top" }, { value: "cut", label: "Cut" }] } },
+    oil: { type: "Markdown", visible: { $state: "/vegan" }, props: { text: "Use olive oil instead of butter." } },
+    side: { type: "Markdown", visible: { $state: "/view", eq: "side" }, props: { text: "From the side: risen." } },
+    top: { type: "Markdown", visible: { $state: "/view", neq: "side" }, props: { text: "From above: golden." } },
+  } },
+  ...extra,
+});
+const setField = (window, field, value) => {
+  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(field, value);
+  field.dispatchEvent(new window.Event("input", { bubbles: true }));
+};
+const key = (window, target, name) => target.dispatchEvent(new window.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
+
+test("YN-16 inputs set their variables and the blocks that read them follow, requesting nothing", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.renderSection(readSection(page, recipe()), PROJECT);
+  const text = () => document.querySelector(".brief-body").textContent;
+  const field = () => document.querySelector(".brief-number-field");
+  const [minus, plus] = [...document.querySelectorAll(".brief-step")];
+  assert.equal(document.querySelector(".result-part-error"), null, "no part failed");
+  // Starting values: 4 guests, not vegan, the side view; the blocks for other values are not there at all.
+  assert.equal(field().value, "4");
+  assert.equal(field().getAttribute("role"), "spinbutton");
+  assert.equal(field().getAttribute("aria-valuetext"), "4 people");
+  assert.equal(document.querySelector(".brief-number label").textContent, "Guests");
+  assert.equal(minus.getAttribute("aria-label"), "Decrease Guests");
+  assert.ok(/From the side/.test(text()) && !/two trays|olive oil|From above/.test(text()), text());
+  // The stepper and the slider write the same variable; the block for 6 or more shows.
+  plus.click();
+  plus.click();
+  await until(() => field().value === "6", "two steps up");
+  assert.equal(document.querySelector(".brief-slider").value, "6");
+  assert.ok(/Bake on two trays/.test(text()), "shown from 6 guests");
+  setField(window, document.querySelector(".brief-slider"), "2");
+  await until(() => field().value === "2", "the slider sets it");
+  assert.ok(!/two trays/.test(text()), "hidden again under 6");
+  // Keys step and jump; the ends disable their button and nothing passes them.
+  key(window, field(), "ArrowUp");
+  await until(() => field().value === "3", "ArrowUp");
+  key(window, field(), "End");
+  await until(() => field().value === "12", "End");
+  assert.ok(plus.disabled && !minus.disabled, "+ is off at the max");
+  plus.click();
+  assert.equal(field().value, "12");
+  key(window, field(), "Home");
+  await until(() => field().value === "1" && minus.disabled, "Home");
+  // Typed text: a number is stepped into the range when the reader is done; anything else goes back.
+  field().focus();
+  setField(window, field(), "abc");
+  assert.equal(field().value, "abc", "the draft is kept while typing");
+  field().blur();
+  await until(() => field().value === "1", "not a number: the value stays");
+  field().focus();
+  setField(window, field(), "４０");
+  key(window, field(), "Enter");
+  await until(() => field().value === "12", "a full-width number past the max is kept at the max");
+  // The switch: its state, said and drawn; its block shows.
+  const toggle = document.querySelector('[role="switch"]');
+  assert.equal(toggle.getAttribute("aria-checked"), "false");
+  assert.equal(document.querySelector(".brief-switch-state").textContent, "Off");
+  document.querySelector(".brief-switch-label").click();
+  await until(() => toggle.getAttribute("aria-checked") === "true", "its label turns it on");
+  assert.equal(document.querySelector(".brief-switch-state").textContent, "On");
+  assert.ok(/olive oil/.test(text()));
+  // The segments: one choice, arrows move it and the focus, round the ends.
+  const segments = () => [...document.querySelectorAll('[role="radio"]')];
+  assert.deepEqual(segments().map((one) => [one.textContent, one.getAttribute("aria-checked"), one.tabIndex]), [["Side", "true", 0], ["Top", "false", -1], ["Cut", "false", -1]]);
+  segments()[0].focus();
+  key(window, segments()[0], "ArrowLeft");
+  await until(() => segments()[2].getAttribute("aria-checked") === "true", "ArrowLeft wraps to the last");
+  assert.ok(document.activeElement === segments()[2], "focus moves with the choice");
+  assert.ok(/From above/.test(text()) && !/From the side/.test(text()));
+  segments()[1].click();
+  await until(() => segments()[1].getAttribute("aria-checked") === "true", "a click chooses");
+  assert.equal(document.querySelector('[role="radiogroup"]').getAttribute("aria-labelledby"), document.querySelector(".brief-segmented .brief-input-label").id);
+  assert.deepEqual(page.requests, [], "nothing is asked of Core");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 a section's variables start again with each version; two places never share them", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const v3 = readSection(page, recipe());
+  window.renderSection(v3, PROJECT);
+  const plus = () => document.querySelectorAll(".brief-step")[1];
+  plus().click();
+  await until(() => document.querySelector(".brief-number-field").value === "5", "set to 5");
+  window.renderSection({ ...v3 }, PROJECT);
+  assert.equal(document.querySelector(".brief-number-field").value, "5", "the same version keeps the reader's value");
+  window.renderSection({ ...v3, version: 4 }, PROJECT);
+  await until(() => document.querySelector(".brief-number-field").value === "4", "a new version starts from its own value");
+  // The card and the page beside it: the reader sets the card; the page keeps its own.
+  window.renderCardAndBody(readSection(page, recipe()), PROJECT);
+  const fields = () => [...document.querySelectorAll(".brief-number-field")];
+  assert.equal(fields().length, 2);
+  const card = document.querySelector(".home-summary-card");
+  card.querySelectorAll(".brief-step")[1].click();
+  card.querySelectorAll(".brief-step")[1].click();
+  await until(() => fields()[0].value === "6", "the card's value");
+  assert.equal(fields()[1].value, "4", "the page's value is its own");
+  assert.ok(/two trays/.test(card.textContent), "the card shows its own block");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 a card's Group of inputs works on the card, every size; its controls never open the report", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.reportOpens = [];
+  for (const size of ["small", "wide", "large"]) {
+    const put = recipe();
+    put.body.elements.body.props.summary.size = size;
+    window.renderCard(readSection(page, put), PROJECT, { deck: true });
+    const frame = document.querySelector(".home-card-frame.kind-interactive");
+    assert.ok(frame, `${size}: the card draws its Group of inputs`);
+    assert.ok(!frame.closest("[inert]") && !frame.querySelector("[inert]"), `${size}: nothing in it is inert`);
+    assert.ok(document.querySelector(".home-summary-card").classList.contains(`size-${size}`));
+    // Only the summary: the Method group is the page's.
+    assert.ok(!/From the side/.test(frame.textContent), `${size}: only the named figure`);
+    const plus = frame.querySelectorAll(".brief-step")[1];
+    plus.click();
+    plus.click();
+    await until(() => /two trays/.test(frame.textContent), `${size}: the card's block follows its input`);
+    frame.querySelector('[role="switch"]').click();
+    setField(window, frame.querySelector(".brief-slider"), "9");
+    key(window, frame.querySelector(".brief-number-field"), "ArrowUp");
+    await until(() => frame.querySelector(".brief-number-field").value === "10", `${size}: keys work on the card`);
+    window.unmountSection();
+  }
+  assert.deepEqual(window.reportOpens, [], "no control opened the report");
+  // The card's own way there still does, and a card of only its figure and lead has none (the whole report).
+  const put = recipe();
+  window.renderCard(readSection(page, put), PROJECT, { deck: true });
+  document.querySelector(".home-report-open").click();
+  assert.deepEqual(window.reportOpens, ["scones"]);
+  delete put.body.elements.more;
+  for (const id of ["view", "oil", "side", "top"]) delete put.body.elements[id];
+  put.body.elements.body.children = ["lead", "try"];
+  window.renderCard(readSection(page, put), PROJECT, { deck: true });
+  assert.ok(document.querySelector(".home-summary-card.is-whole") && !document.querySelector(".home-report-open"), "the whole report");
+  assert.deepEqual(page.requests, []);
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 inputs speak the interface language; what the Agent wrote stays as written", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.chooseLanguage("zh-Hans");
+  window.renderSection(readSection(page, recipe()), PROJECT);
+  await until(() => document.querySelector(".brief-switch-state")?.textContent === "关", "the switch's state in Chinese");
+  const [minus, plus] = [...document.querySelectorAll(".brief-step")];
+  assert.equal(minus.getAttribute("aria-label"), "减少Guests");
+  assert.equal(plus.getAttribute("aria-label"), "增加Guests");
+  assert.equal(document.querySelector(".brief-number label").textContent, "Guests");
+  assert.equal(document.querySelector(".brief-input small").textContent, "Every amount scales.");
+  window.chooseLanguage("en");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 R1 P3: a NumberInput shows as many decimals as a value it can take, min's and max's included", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  const put = recipe();
+  put.body.elements.guests.props = { name: "guests", label: "Guests", value: 1.25, min: 0.25, max: 10 };
+  window.renderSection(readSection(page, put), PROJECT);
+  const field = () => document.querySelector(".brief-number-field");
+  assert.equal(field().value, "1.25");
+  assert.equal(field().getAttribute("aria-valuetext"), "1.25");
+  document.querySelectorAll(".brief-step")[1].click();
+  await until(() => field().value === "2.25", "one step of 1 from 1.25");
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-16 S2: a Calc works its numbers out from the variables as they change;
+// a Button sets them back. No request; nothing but the variables changes.
+const bill = () => ({
+  op: "put", key: "bill", kind: "report", title: "Bill",
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "split", size: "wide" } }, children: ["lead", "split"] },
+    lead: { type: "Markdown", props: { text: "Dinner for the team." } },
+    split: { type: "Group", props: {}, children: ["people", "tip", "roundUp", "shares", "reset"] },
+    people: { type: "NumberInput", props: { name: "people", label: "People", value: 4, min: 1, max: 12 } },
+    tip: { type: "Segmented", props: { name: "tip", label: "Tip", value: 10, options: [{ value: 0, label: "None" }, { value: 10, label: "10%" }] } },
+    roundUp: { type: "Switch", props: { name: "roundUp", label: "Round up", value: false } },
+    shares: { type: "Calc", props: { title: "Shares", items: [
+      { id: "total", label: "Total", expr: "round(600 * (1 + tip / 100), 2)", prefix: "¥", digits: 2 },
+      { id: "each", label: "Each", expr: "roundUp ? ceil(total / people) : round(total / people, 2)", prefix: "¥", digits: 2, emphasis: true, detail: "Per person" },
+      { id: "extra", label: "Rounding adds", expr: "each * people - total", when: "extra > 0.001", prefix: "¥", digits: 2 },
+      { id: "spare", label: "Per extra guest", expr: "total / (people - 4)", unit: "each" },
+    ] } },
+    reset: { type: "Button", props: { label: "Back to 4", tone: "accent" }, on: { press: [
+      { action: "setState", params: { statePath: "/people", value: 4 } },
+      { action: "setState", params: { statePath: "/roundUp", value: false } },
+    ] } },
+  } },
+});
+const row = (document, id) => document.querySelector(`.brief-calc [data-item="${id}"]`);
+const shownValue = (document, id) => row(document, id)?.querySelector("dd").textContent ?? null;
+
+test("YN-16 S2 a Calc follows its inputs, shows a dash with its reason where it cannot be worked out, and a Button sets them back", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.renderSection(readSection(page, bill()), PROJECT);
+  assert.equal(document.querySelector(".result-part-error"), null, "no part failed");
+  assert.equal(document.querySelector(".brief-calc h4").textContent, "Shares");
+  assert.deepEqual([shownValue(document, "total"), shownValue(document, "each")], ["¥660.00", "¥165.00"]);
+  assert.ok(row(document, "each").hasAttribute("data-emphasis") && /Per person/.test(row(document, "each").textContent));
+  assert.ok(!row(document, "extra"), "its when is false: no extra");
+  // 600 × 1.1 / (4 − 4): a dash that says why, never NaN or Infinity.
+  assert.equal(row(document, "spare").querySelector(".brief-calc-none").getAttribute("title"), "Can't be worked out for these values");
+  assert.ok(!/NaN|Infinity/.test(document.querySelector(".brief-calc").textContent));
+  // Inputs change the numbers.
+  const plus = document.querySelectorAll(".brief-step")[1];
+  plus.click();
+  plus.click();
+  await until(() => shownValue(document, "each") === "¥110.00", "six people");
+  assert.match(shownValue(document, "spare"), /^330 ?each$/, "a unit after the number, digits up to 2 by default");
+  document.querySelector('[role="radio"]').click();
+  await until(() => shownValue(document, "total") === "¥600.00", "no tip");
+  document.querySelector('[role="switch"]').click();
+  await until(() => shownValue(document, "each") === "¥100.00", "rounded up: 600 / 6 is whole");
+  plus.click();
+  await until(() => shownValue(document, "each") === "¥86.00" && row(document, "extra"), "seven people: rounding adds");
+  assert.equal(shownValue(document, "extra"), "¥2.00");
+  // The Button: back to 4 people, not rounded; the tip it does not name stays.
+  const reset = document.querySelector(".brief-button");
+  assert.ok(reset.classList.contains("primary-button"), "accent tone");
+  reset.click();
+  await until(() => document.querySelector(".brief-number-field").value === "4", "the Button sets the people back");
+  assert.equal(document.querySelector('[role="switch"]').getAttribute("aria-checked"), "false");
+  assert.equal(document.querySelector('[role="radio"][aria-checked="true"]').textContent, "None", "the tip it does not name stays");
+  assert.equal(shownValue(document, "each"), "¥150.00");
+  assert.deepEqual(page.requests, [], "nothing is asked of Core");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S2 a Calc's numbers are in the interface language; a stored press is only ever setState of a variable", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.chooseLanguage("zh-Hans");
+  const section = readSection(page, bill());
+  window.renderSection(section, PROJECT);
+  await until(() => row(document, "spare")?.querySelector(".brief-calc-none")?.getAttribute("title") === "按这些值无法算出", "the reason in Chinese");
+  window.chooseLanguage("en");
+  // A body Core kept before any check could carry anything under on: only setState of a variable name is run.
+  const stored = JSON.parse(JSON.stringify(section));
+  stored.version = 4;
+  stored.body.elements.reset.on.press.push(
+    { action: "setState", params: { statePath: "/people/0", value: 9 } },
+    { action: "pushState", params: { statePath: "/people", value: 9 } },
+    { action: "setState", params: { statePath: "/roundUp", value: { $state: "/people" } } },
+  );
+  stored.body.elements.reset.props.yuzunoPress = [{ statePath: "/people", value: 12 }];
+  stored.body.elements.shares.on = { press: { action: "setState", params: { statePath: "/people", value: 9 } } };
+  window.renderSection(stored, PROJECT);
+  document.querySelectorAll(".brief-step")[1].click();
+  await until(() => document.querySelector(".brief-number-field").value === "5", "five");
+  document.querySelector(".brief-button").click();
+  await until(() => document.querySelector(".brief-number-field").value === "4", "only the checked press ran");
+  assert.equal(document.querySelector('[role="switch"]').getAttribute("aria-checked"), "false");
+  assert.deepEqual(page.requests, []);
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S2 a card's Calc and Button work on the card and never open the report", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.reportOpens = [];
+  const put = bill();
+  put.body.elements.body.children.push("note");
+  put.body.elements.note = { type: "Markdown", props: { text: "More on the page." } };
+  window.renderCard(readSection(page, put), PROJECT, { deck: true });
+  const frame = document.querySelector(".home-card-frame.kind-interactive");
+  assert.ok(frame && frame.querySelector(".brief-calc") && frame.querySelector(".brief-button"));
+  frame.querySelectorAll(".brief-step")[1].click();
+  await until(() => shownValue(frame, "each") === "¥132.00", "five people on the card");
+  frame.querySelector(".brief-button").click();
+  await until(() => shownValue(frame, "each") === "¥165.00", "the card's Button");
+  assert.deepEqual(window.reportOpens, [], "no control opened the report");
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-16 S3: a Diagram laid out by Yuzuno (dagre, loaded when a body has one);
+// its nodes selected by pointer or keyboard, into its own variable or a
+// Segmented's. No request.
+const bike = () => ({
+  op: "put", key: "bike", kind: "report", title: "Bike",
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "parts", size: "wide" } }, children: ["lead", "parts", "more"] },
+    lead: { type: "Markdown", props: { text: "Seven gears, one chain." } },
+    parts: { type: "Group", props: {}, children: ["pick", "drawing"] },
+    pick: { type: "Segmented", props: { name: "part", label: "Part", value: "frame", options: [{ value: "frame", label: "Frame" }, { value: "chain", label: "Chain" }, { value: "gears", label: "Gears" }] } },
+    drawing: { type: "Diagram", props: { title: "Drive", select: "part", nodes: [
+      { id: "frame", label: "Frame", detail: "Holds it all." },
+      { id: "chain", label: "Chain", detail: "Moves the wheel." },
+      { id: "gears", label: "Rear gears", shape: "diamond", tone: "accent" },
+    ], edges: [{ from: "frame", to: "chain" }, { from: "chain", to: "gears", label: "drives" }] } },
+    more: { type: "Group", props: { title: "More" }, children: ["about", "steps"] },
+    about: { type: "Markdown", visible: { $state: "/part", eq: "chain" }, props: { text: "Oil the chain monthly." } },
+    steps: { type: "Diagram", props: { direction: "right", nodes: [{ id: "a", label: "Shift" }, { id: "b", label: "Pedal", detail: "Keep pedalling while shifting." }], edges: [{ from: "a", to: "b" }] } },
+  } },
+});
+const node = (document, scope, id) => scope.querySelector(`.brief-diagram-node[data-node="${id}"]`);
+
+test("YN-16 S3 a Diagram draws every node and edge once laid out; selecting a node shows its detail and sets the variable", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.renderSection(readSection(page, bike()), PROJECT);
+  const svg = await until(() => document.querySelector('.brief-diagram svg[aria-label="Drive"]'), "the drive diagram, laid out");
+  assert.equal(document.querySelector(".result-part-error"), null);
+  assert.equal(svg.querySelectorAll(".brief-diagram-node").length, 3);
+  assert.equal(svg.querySelectorAll(".brief-diagram-edge path").length, 2);
+  assert.ok(svg.querySelector('[data-edge="chain>gears"] .brief-diagram-edge-label').textContent === "drives");
+  assert.match(svg.getAttribute("viewBox"), /^0 0 \d+ \d+$/);
+  // The connections in words for a screen reader.
+  assert.deepEqual([...document.querySelectorAll('.brief-diagram ul[aria-label="Connections"] li')].slice(0, 2).map((li) => li.textContent), ["Frame → Chain", "Chain → Rear gears (drives)"]);
+  // The Segmented's starting value is the diagram's selected node.
+  assert.equal(node(document, svg, "frame").getAttribute("aria-pressed"), "true");
+  assert.match(svg.closest(".brief-diagram").querySelector(".brief-diagram-detail").textContent, /Frame.*Holds it all\./);
+  node(document, svg, "chain").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await until(() => node(document, svg, "chain").getAttribute("aria-pressed") === "true", "the chain selected");
+  assert.equal(document.querySelector('[role="radio"][aria-checked="true"]').textContent, "Chain", "the segments follow the nodes");
+  assert.ok(/Oil the chain monthly/.test(document.querySelector(".brief-body").textContent), "visible reads the selection");
+  // The keyboard: a node is a button; Enter or Space selects it, and pressed again it stays selected.
+  const gears = node(document, svg, "gears");
+  assert.equal(gears.getAttribute("tabindex"), "0");
+  assert.equal(gears.getAttribute("aria-label"), "Rear gears");
+  gears.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await until(() => document.querySelector('[role="radio"][aria-checked="true"]')?.textContent === "Gears", "Enter selects it");
+  gears.dispatchEvent(new window.KeyboardEvent("keydown", { key: " ", bubbles: true }));
+  await tick(30);
+  assert.equal(document.querySelector('[role="radio"][aria-checked="true"]').textContent, "Gears", "still selected");
+  // A segment selects the node.
+  document.querySelectorAll('[role="radio"]')[1].click();
+  await until(() => node(document, svg, "chain").getAttribute("aria-pressed") === "true", "a segment selects the node");
+  // A Diagram without select keeps its own selection; a node without detail says only its label.
+  const steps = [...document.querySelectorAll(".brief-diagram")][1];
+  assert.match(steps.querySelector(".brief-diagram-detail").textContent, /Select a node to read about it/);
+  node(document, steps, "b").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await until(() => /Keep pedalling/.test(steps.querySelector(".brief-diagram-detail").textContent), "its own selection");
+  assert.equal(node(document, svg, "chain").getAttribute("aria-pressed"), "true", "the other diagram's selection stays");
+  assert.deepEqual(page.requests, []);
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S3 a Diagram on a card works there and never opens the report; its labels are as written in any language", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.reportOpens = [];
+  window.chooseLanguage("zh-Hans");
+  window.renderCard(readSection(page, bike()), PROJECT, { deck: true });
+  const frame = document.querySelector(".home-card-frame.kind-interactive");
+  const svg = await until(() => frame.querySelector(".brief-diagram svg"), "the card's diagram");
+  assert.ok(!frame.closest("[inert]"));
+  assert.equal(frame.querySelector(".brief-diagram-hint"), null, "the starting selection shows its detail");
+  node(document, svg, "chain").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await until(() => frame.querySelector('[role="radio"][aria-checked="true"]')?.textContent === "Chain", "on the card");
+  assert.deepEqual(window.reportOpens, []);
+  // A Diagram alone as the visual is the card's live figure too.
+  const alone = bike();
+  alone.body.elements.body.props.summary.visual = "steps";
+  alone.body.elements.body.children = ["lead", "steps", "parts", "more"];
+  alone.body.elements.more.children = ["about"];
+  window.renderCard(readSection(page, alone), PROJECT, { deck: true });
+  const live = await until(() => document.querySelector(".home-card-frame.kind-interactive .brief-diagram svg"), "a Diagram as the visual");
+  assert.match(live.closest(".brief-diagram").querySelector(".brief-diagram-detail").textContent, /选择一个节点查看说明/);
+  window.chooseLanguage("en");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S2 R1 P3: Copy report leaves out a Calc that shows nothing at the starting values, title and all", (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { window } = page;
+  const put = bill();
+  put.body.elements.split.children.push("hiddenCalc");
+  put.body.elements.hiddenCalc = { type: "Calc", props: { title: "Only when rounding", items: [{ id: "spare", label: "Spare", expr: "people * 2", when: "roundUp" }] } };
+  const copied = window.sectionMarkdown(readSection(page, put), "en", { clock: "h24", timeZone: "UTC" });
+  assert.ok(!copied.includes("Only when rounding"), copied);
+  assert.equal(copied.split("Worked out from the starting values").length - 1, 1, "only the Calc that shows something says it");
+  assert.match(copied, /#+ Shares\n+_Worked out from the starting values_\n+- Total: ¥660\.00\n- Each: ¥165\.00/);
   assert.deepEqual(page.errors, []);
 });

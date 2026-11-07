@@ -270,15 +270,14 @@ impl Store {
         }
         let (template, source) = match &template_id {
             Some(template_id) => {
-                let found = crate::executor_templates::template_in(&tx, project.as_deref(), template_id)?;
-                let Some(found) = found else {
-                    let ids = crate::executor_templates::ids_in(&tx, project.as_deref())?;
+                let Some(found) = crate::executor_templates::template(&tx, template_id)? else {
+                    let ids = crate::executor_templates::ids(&tx)?;
                     let named = if ids.is_empty() { "none".to_owned() } else { ids.join(", ") };
-                    bail!("template_not_found: neither this task's Project nor the Workspace has an executor template {template_id}; \
+                    bail!("template_not_found: the Workspace has no executor template {template_id}; \
                         the templates it can use are: {named}. executor: {{}} makes a general executor from the defaults for new Agents");
                 };
-                found.0.validate(crate::opencode_agent::enabled())?;
-                found
+                found.validate(crate::opencode_agent::enabled())?;
+                (found, "workspace")
             }
             // Its harness is chosen now, in this transaction, so the machine
             // checks below are for the harness it is made with.

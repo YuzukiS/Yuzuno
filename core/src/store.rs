@@ -1207,6 +1207,8 @@ impl Store {
         crate::session_baseline::migrate(&db)?;
         crate::executor_archiving::migrate(&db)?;
         crate::handover::migrate(&db)?;
+        // After projects: a Project's own templates are copied into the Workspace's (YN-2 S2).
+        crate::executor_templates::migrate(&db)?;
         crate::services::migrate(&db)?;
         crate::service_jobs::migrate(&db)?;
         crate::github::store::migrate(&db)?;
@@ -1383,6 +1385,11 @@ impl Store {
             record_rows::insert(&tx, &detail.agent.id, &rows)?;
             if let Some(project) = project.as_deref() {
                 crate::projects::set_agent_project_in(&tx, &detail.agent.id, Some(project))?;
+                // The user's create (POST /api/agents) leads the Project it is
+                // created in (YN-2 S4); an executor's (with `then`) never does.
+                if machine_registered && then.is_none() {
+                    crate::agent_roles::user_added(&tx, &detail.agent.id, project)?;
+                }
             }
             if let Some(then) = then {
                 then(&tx)?;

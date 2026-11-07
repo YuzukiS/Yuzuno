@@ -207,43 +207,58 @@ async fn a_message_never_sent_is_rejected_even_once_settled_as_unknown() {
     assert_eq!((receipt.status.as_str(), receipt.error.as_deref()), ("rejected", Some(refused.to_string().as_str())));
 }
 
-/// A compaction request's answer lands only on the attempt it was sent for
-/// (T-10, Lead 3805): one from another process generation or session, under
-/// the same Turn, is never written. Giving up needs that attempt's own ended
-/// answer: one of another generation or session is refused before anything
-/// is asked of OpenCode. On a record alone, with no OpenCode running.
-#[tokio::test]
-async fn a_compaction_answer_is_its_own_attempt_s_alone() {
-    let dir = tempfile::tempdir().unwrap();
-    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
-    let mut d = agent(&dir.path().to_string_lossy());
-    let attempt = |answer: Value| json!({"id":"compact_1","status":"interrupted","items":[],
-        "_opencodeCompact":{"state":"stopped","nativePending":true,"generation":2,"session":"ses_a","message":"msg_c","part":"prt_c","answer":answer}});
-    d.turns.push(attempt(Value::Null));
-    ws.store.insert(&d).unwrap();
-    let answer = |ws: &Workspace| ws.store.detail("oc").unwrap().turns[0]["_opencodeCompact"]["answer"].clone();
-    ws.opencode_compact_answered("oc", 1, "ses_a", "compact_1", CompactAnswer::Ended).await;
-    assert!(answer(&ws).is_null(), "another process's answer: {}", answer(&ws));
-    ws.opencode_compact_answered("oc", 2, "ses_b", "compact_1", CompactAnswer::Ended).await;
-    assert!(answer(&ws).is_null(), "another session's answer: {}", answer(&ws));
-    ws.opencode_compact_answered("oc", 2, "ses_a", "compact_1", CompactAnswer::Ended).await;
-    assert_eq!((answer(&ws)["kind"].as_str(), answer(&ws)["generation"].as_u64(), answer(&ws)["session"].as_str()), (Some("ended"), Some(2), Some("ses_a")));
-    // An ended answer that is not this attempt's own: refused, nothing removed.
-    for (generation, session) in [(1, "ses_a"), (2, "ses_b")] {
-        let dir = tempfile::tempdir().unwrap();
-        let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
-        let mut d = agent(&dir.path().to_string_lossy());
-        d.turns.push(attempt(json!({"kind":"ended","status":200,"body":true,"generation":generation,"session":session})));
-        ws.store.insert(&d).unwrap();
-        let error = ws.opencode_compact_abandon("oc", "compact_1").await.unwrap_err().to_string();
-        assert!(error.contains("还没有这次压缩的请求已经结束的证据"), "{generation} {session}: {error}");
+/// A whole read settles each compaction asked for and not yet ended (T-61
+/// slice 4, #699 R1 a136ddf1): one 2.x, idle, has no record of did not run,
+/// so its Turn fails and it holds nothing back; one 1.19.3 was asked for
+/// ends unknown for good; one still waiting in 2.x's inbox (as read before
+/// or after its messages), or 2.x not idle, waits; and so does one the read
+/// may predate, begun before 2.x's answer to it, or with no answer yet
+/// (#699 R2 f4dafc6c). One asked of an earlier process, or unknown before
+/// Core kept its answer's time, counts as answered before the read began
+/// (#699 P3-a, P3-b, P3-d).
+#[test]
+fn a_whole_read_ends_a_compaction_2x_has_no_record_of_and_one_1193_was_asked_for() {
+    let compact = |id: &str, status: &str, attempt: Value| json!({"id": id, "status": status, "items": [], "_opencodeCompact": attempt});
+    let mut d = agent("/w");
+    d.turns = vec![
+        compact("compact_old", "inProgress", json!({"state": "pending", "session": "ses_1", "generation": 1})),
+        compact("compact_lost", "outcomeUnknown", json!({"state": "unknown", "input": "msg_lost", "generation": 1, "askedBy": "srv1", "answered": 100})),
+        compact("compact_waiting", "inProgress", json!({"state": "pending", "input": "msg_waiting", "generation": 1, "askedBy": "srv1", "answered": 100})),
+        compact("compact_later", "inProgress", json!({"state": "pending", "input": "msg_later", "generation": 1, "askedBy": "srv1", "answered": 300})),
+        compact("compact_asking", "inProgress", json!({"state": "pending", "input": "msg_asking", "generation": 1, "askedBy": "srv1"})),
+        compact("compact_crashed", "inProgress", json!({"state": "pending", "input": "msg_crashed", "generation": 0, "askedBy": "srv0"})),
+        compact("compact_unanswered", "outcomeUnknown", json!({"state": "unknown", "input": "msg_unanswered", "generation": 1, "askedBy": "srv1"})),
+        // Asked before Core restarted: the same generation again, a wall-clock `answered` far past this Server's ticks.
+        compact("compact_restarted", "inProgress", json!({"state": "pending", "input": "msg_restarted", "generation": 1,
+            "askedBy": "srv_before", "answered": 1_794_000_000_000u64})),
+        // Asked before Core kept the Server's name at all.
+        compact("compact_unnamed", "inProgress", json!({"state": "pending", "input": "msg_unnamed", "generation": 1, "answered": 1_794_000_000_000u64})),
+    ];
+    let (first, then) = (json!([{"id": "msg_waiting", "type": "compaction"}]), json!([]));
+    let mut busy = d.clone();
+    settle_compactions(&mut busy, &[], [&first, &then], false, 200, "srv1");
+    assert_eq!(busy.turns[1]["_opencodeCompact"]["state"], "unknown", "not idle: a record may still come");
+    let mut moved = d.clone();
+    settle_compactions(&mut moved, &[], [&then, &first], true, 200, "srv1");
+    assert_eq!(moved.turns[2]["_opencodeCompact"]["state"], "pending", "in the inbox as read after the messages too");
+    settle_compactions(&mut d, &[], [&first, &then], true, 200, "srv1");
+    for (n, why) in [(3, "a read begun before 2.x's answer to it"), (4, "no answer to it yet")] {
+        let t = &d.turns[n];
+        assert_eq!((&t["status"], &t["_opencodeCompact"]["state"]), (&json!("inProgress"), &json!("pending")), "{why}: {t:#}");
     }
-    // Its own: past that check, to the next (no OpenCode connected here).
-    let dir = tempfile::tempdir().unwrap();
-    let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
-    let mut d = agent(&dir.path().to_string_lossy());
-    d.turns.push(attempt(json!({"kind":"ended","status":200,"body":true,"generation":2,"session":"ses_a"})));
-    ws.store.insert(&d).unwrap();
-    let error = ws.opencode_compact_abandon("oc", "compact_1").await.unwrap_err().to_string();
-    assert!(error.contains("OpenCode 未连接"), "{error}");
+    for (n, why) in [(5, "an earlier process's, with no answer kept"), (6, "unknown before Core kept its answer's time"),
+        (7, "asked before Core restarted, in the same generation"), (8, "asked before Core kept its Server's name")] {
+        let t = &d.turns[n];
+        assert_eq!((&t["status"], &t["_opencodeCompact"]["state"]), (&json!("failed"), &json!("absent")),
+            "{why}: answered before this read began, and missing: {t:#}");
+    }
+    d.turns.truncate(3);
+    let (old, lost, waiting) = (&d.turns[0], &d.turns[1], &d.turns[2]);
+    assert_eq!((&old["status"], &old["_opencodeCompact"]["state"]), (&json!("outcomeUnknown"), &json!("lost")), "1.19.3's: {old:#}");
+    assert!(lost["status"] == "failed" && lost["_opencodeCompact"]["state"] == "absent"
+        && lost["error"]["message"].as_str().unwrap_or_default().contains("它没有执行"), "no record at idle: it did not run: {lost:#}");
+    assert_eq!((&waiting["status"], &waiting["_opencodeCompact"]["state"]), (&json!("inProgress"), &json!("pending")), "still waiting in the inbox");
+    assert!(compaction_blocks(&d, "x").is_some(), "the waiting one still holds new input back");
+    d.turns.pop();
+    assert!(compaction_blocks(&d, "x").is_none(), "the others hold nothing back");
 }

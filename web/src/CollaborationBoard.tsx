@@ -1506,7 +1506,7 @@ function TaskPane({
   }, [revision, load, reads]);
   const task = detail?.task;
   const owner = agents.find((agent) => agent.id === task?.assigneeAgentId);
-  // The templates a dispatch of this task can use: its Project's, then the Workspace's.
+  // The templates a dispatch can use (the Workspace's), and the general executor its Project's defaults make.
   const templatesFor = dispatching && from === "template" ? task?.projectId ?? "" : null;
   useEffect(() => {
     if (templatesFor === null) return;
@@ -1905,10 +1905,8 @@ function TaskPane({
                     <span>{t.template}</span>
                     <select value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
                       <option value="">{general ? t.generalAs(harnessNames[general.harness] ?? general.harness, general.harnessSource) : t.general}</option>
-                      {templates?.map(({ template, source }) => (
-                        <option key={template.id} value={template.id}>
-                          {source === "project" ? `${template.label} · ${t.projectTemplate}` : template.label}
-                        </option>
+                      {templates?.map(({ template }) => (
+                        <option key={template.id} value={template.id}>{template.label}</option>
                       ))}
                     </select>
                   </label>

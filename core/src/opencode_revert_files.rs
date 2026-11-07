@@ -174,10 +174,9 @@ fn inode(metadata: &std::fs::Metadata) -> u64 {
     std::os::unix::fs::MetadataExt::ino(metadata)
 }
 
-/// Where OpenCode 1.19.3 keeps what it keeps, as it works them out from the
-/// environment it runs with (`core/src/global.ts`, xdg-basedir 5.1.0,
-/// Node's `os.homedir()`): `data` holds the snapshot stores; `home`, `state`
-/// and `config` are what its `GET /path` answers, to check against.
+/// Where OpenCode keeps what it keeps, as it works them out from the
+/// environment it runs with (2.2.5 packages/util/src/global-roots.ts,
+/// xdg-basedir, Node's `os.homedir()`): `data` holds the snapshot stores.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Roots {
     pub home: String,
@@ -227,17 +226,6 @@ impl Roots {
             home,
         })
     }
-
-    /// Whether OpenCode's own `GET /path` answer agrees: the same home, state
-    /// and config. It names no data folder, so this checks the environment
-    /// it works from, not the data folder itself.
-    pub fn agrees(&self, path: &Value) -> Result<()> {
-        for (name, ours) in [("home", &self.home), ("state", &self.state), ("config", &self.config)] {
-            let theirs = path[name].as_str().with_context(|| format!("OpenCode's /path has no {name}"))?;
-            ensure!(theirs == ours, "OpenCode's {name} folder is {theirs}, not {ours} as Core started it");
-        }
-        Ok(())
-    }
 }
 
 /// `base` and `parts` joined and normalized as Node's `path.join` does, for
@@ -256,9 +244,10 @@ fn join(base: &str, parts: &[&str]) -> String {
     format!("/{}", kept.join("/"))
 }
 
-/// OpenCode's snapshot store for `project` and `worktree`
-/// (`snapshot/index.ts:71`: `Hash.fast` is SHA-1 in hex), as its `GET /path`
-/// and the session name them, in `data`.
+/// OpenCode's snapshot store for `project` and `worktree` (2.2.5
+/// core/src/snapshot.ts: `Hash.fast` is SHA-1 in hex), as its location
+/// names them for the Agent's folder (the Git top level, resolved), in
+/// `data`.
 pub fn store(data: &str, project: &str, worktree: &str) -> Result<PathBuf> {
     ensure!(!project.is_empty() && project.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
         "OpenCode's project ID is not one folder name ({project})");
@@ -278,40 +267,45 @@ pub struct Target {
     pub hash: String,
 }
 
-/// The files a revert to the user message `boundary` sends back, in
-/// OpenCode's order (`session/revert.ts:46-60`): every `patch` part after the
-/// boundary's first part, each file once, with the first such part's
-/// snapshot. `messages` are the session's, as OpenCode lists them. Each file
+/// The files a 2.x revert to the user message `boundary` sends back, in
+/// 2.x's order (T-61 slice 5; 2.2.5 core/src/session/revert.ts `plan`): each
+/// assistant message after it, in the session's order, that has a snapshot
+/// `start`, each of its `files` once, with the first such message's `start`.
+/// The files are relative to the Git `toplevel` (`Snapshot.files`); each
 /// must be a plain path inside `folder`, the Agent's own, itself inside
-/// `worktree`.
-pub fn targets(messages: &[Value], boundary: &str, worktree: &str, folder: &str) -> Result<Vec<Target>> {
-    ensure!(worktree != "/" && join(worktree, &[]) == worktree, "OpenCode's worktree is not a plain absolute path ({worktree})");
-    ensure!(folder == worktree || folder.starts_with(&format!("{worktree}/")), "The Agent's folder is not inside OpenCode's worktree");
-    let mut matched = false;
-    let mut found: Vec<Target> = Vec::new();
-    for message in messages {
-        let info = &message["info"];
-        for part in message["parts"].as_array().into_iter().flatten() {
-            if matched {
-                if part["type"] == "patch" {
-                    let hash = part["hash"].as_str().context("A patch part names no snapshot")?;
-                    ensure!(matches!(hash.len(), 40 | 64) && hash.bytes().all(|b| b.is_ascii_hexdigit()),
-                        "A patch part's snapshot is not an object ID ({hash})");
-                    for file in part["files"].as_array().context("A patch part names no files")? {
-                        let file = file.as_str().context("A patch part's file is not a path")?;
-                        if found.iter().any(|t| t.file == file) {
-                            continue;
-                        }
-                        found.push(Target { file: file.into(), rel: inside(file, worktree, folder)?, hash: hash.into() });
-                    }
-                }
-            } else if info["id"] == boundary {
-                ensure!(info["role"] == "user", "A revert goes back to a user message, not to {boundary}");
-                matched = true;
+/// `toplevel`. Refused (D-24 (a): every file known or nothing asked) when a
+/// step after the boundary is one 2.x passes over in silence: a `start` with
+/// no list of its files, or no snapshot at all beside steps that had one.
+/// With no step snapshotted (snapshots off), 2.x sends nothing back.
+pub fn targets_v2(messages: &[Value], boundary: &str, toplevel: &str, folder: &str) -> Result<Vec<Target>> {
+    ensure!(toplevel != "/" && join(toplevel, &[]) == toplevel, "OpenCode's Git top level is not a plain absolute path ({toplevel})");
+    ensure!(folder == toplevel || folder.starts_with(&format!("{toplevel}/")), "The Agent's folder is not inside OpenCode's Git top level");
+    let at = messages.iter().position(|m| m["id"] == boundary)
+        .with_context(|| format!("OpenCode would revert nothing: {boundary} is not a message of this session"))?;
+    ensure!(messages[at]["type"] == "user", "A revert goes back to a user message, not to {boundary}");
+    let (mut found, mut with, mut without): (Vec<Target>, bool, bool) = (Vec::new(), false, false);
+    for message in messages[at + 1..].iter().filter(|m| m["type"] == "assistant") {
+        let Some(start) = message["snapshot"]["start"].as_str() else {
+            without = true;
+            continue;
+        };
+        with = true;
+        ensure!(matches!(start.len(), 40 | 64) && start.bytes().all(|b| b.is_ascii_hexdigit()),
+            "A step's snapshot is not an object ID ({start})");
+        let files = message["snapshot"]["files"].as_array()
+            .context("A step after the Turn has a snapshot but no list of its files: OpenCode would send none of them back")?;
+        for file in files {
+            let rel = file.as_str().context("A step's file is not a path")?;
+            ensure!(!rel.is_empty() && !rel.starts_with('/') && join(toplevel, &[rel]) == format!("{toplevel}/{rel}"),
+                "{rel} is not a plain path inside OpenCode's Git top level");
+            if found.iter().any(|t| t.rel == rel) {
+                continue;
             }
+            let absolute = format!("{toplevel}/{rel}");
+            found.push(Target { rel: inside(&absolute, toplevel, folder)?, file: absolute, hash: start.into() });
         }
     }
-    ensure!(matched, "OpenCode would revert nothing: {boundary} is not a message of this session with any part");
+    ensure!(!(with && without), "A step after the Turn has no snapshot though others have: OpenCode would leave its changes as they are");
     Ok(found)
 }
 

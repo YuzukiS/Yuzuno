@@ -3,6 +3,8 @@ import {
   Archive,
   ArchiveRestore,
   Check,
+  ChevronLeft,
+  ChevronRight,
   ChevronsUpDown,
   Folder,
   FolderPlus,
@@ -13,11 +15,9 @@ import {
   Server,
   Settings2,
   Trash2,
-  X,
 } from "lucide-react";
 import { api, errorText, patch, post, remove } from "./api";
 import { strings, useLanguage, useStrings } from "./i18n";
-import { Avatar, Modal } from "./components";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import {
   ALL_PROJECTS,
@@ -37,11 +37,10 @@ import "./projects.css";
 import { GitHubLinks } from "./GitHubLinks";
 import { ProjectServices } from "./ProjectServices";
 import { AgentDefaults } from "./AgentDefaults";
-import { ExecutorTemplates } from "./ExecutorTemplates";
 import { ProjectHandover } from "./ProjectHandover";
 import { ReviewSettings } from "./ReviewSettings";
-import { HomeContentEditors } from "./home/HomeContentEditors";
-import { ProjectLeads } from "./ProjectLeads";
+import { ProjectMembers } from "./ProjectLeads";
+import { SaveBarScope, useSaveBarPart } from "./SettingsSaveBar";
 
 function useOutsideClose(
   open: boolean,
@@ -302,6 +301,22 @@ export function ProjectSwitcher({
 const managerText = strings({
   title: "Projects",
   description: "Group long-running work. Agents keep collaborating across projects; each project numbers its own tasks.",
+  // Settings › Projects (YN-8): the list, then a page for each.
+  backTo: "Back to Projects",
+  count: (active: number, archived: number) => (archived ? `${active} · ${archived} archived` : String(active)),
+  rowSub: (agents: number, leads: number) =>
+    `${agents} ${agents === 1 ? "Agent" : "Agents"} · ${leads} ${leads === 1 ? "lead" : "leads"}`,
+  archivedRow: "Archived · its files stay where they are",
+  projectIntro: (agents: number, leads: number) =>
+    `${agents} ${agents === 1 ? "Agent" : "Agents"}, ${leads} of them ${leads === 1 ? "a lead" : "leads"}.`,
+  unassignedRow: (count: number) => `${count} ${count === 1 ? "Agent is" : "Agents are"} in no project`,
+  unassignedHelp: "Suggested by folder; nothing moves until you choose.",
+  nameAndKey: "Name & task keys",
+  membersTitle: "Members & leads",
+  defaultsTitle: "This project’s defaults",
+  archiveOrDelete: "Archive or delete",
+  archiveHelp: "Archiving moves no files. Only a project with no Agents and no tasks can be deleted.",
+  unarchiveHelp: "Unarchiving brings it back to the list and the rail’s project menu.",
   list: "Projects",
   without: "Without a project",
   newProject: "New project",
@@ -318,9 +333,8 @@ const managerText = strings({
   create: "Create project",
   // A project
   projectName: "Project name",
-  rename: "Rename",
+  nameNeeded: "A project needs a name.",
   projectKey: "Task key prefix",
-  changeKey: "Change prefix",
   keyNote: (key: string) =>
     `Tasks in this project are numbered ${key}-1, ${key}-2 and so on; a task in no project keeps T-1. A new prefix applies to every task here at once, every key a task had still names it, and an old prefix is never given to another project. A prefix is an uppercase letter, then 1 to 9 uppercase letters or digits.`,
   archivedNote: "Archived. Its agents and tasks stay where they are and still reach you when they need you; nothing new joins it.",
@@ -328,18 +342,6 @@ const managerText = strings({
   foldersNote: "Fills in new agents’ folder on each machine. It does not limit which folders an agent may use, and changing it never moves existing agents.",
   machinesFailed: (error: string) => `Couldn’t load machines: ${error}`,
   noDefault: "No default",
-  save: "Save",
-  clear: "Clear",
-  agents: "Agents",
-  closedSuffix: " · closed",
-  removeFrom: (agent: string, project: string) => `Remove ${agent} from ${project}`,
-  removeTip: "Remove from project",
-  noAgents: "No agents yet.",
-  agentToAdd: "Agent to add",
-  addAgent: "Add an agent…",
-  fromProject: (project: string) => ` · from ${project}`,
-  add: "Add",
-  moveNote: "Moving an agent changes only where it is listed. Its folder, conversation and read state stay the same.",
   unarchive: "Unarchive",
   archive: "Archive project",
   stillLinked: (agents: number, tasks: number) =>
@@ -360,6 +362,19 @@ const managerText = strings({
 }, {
   title: "项目",
   description: "把长期工作分组。Agent 可以跨项目协作；每个项目的任务各自编号。",
+  backTo: "返回项目列表",
+  count: (active, archived) => (archived ? `${active} 个 · ${archived} 个已归档` : `${active} 个`),
+  rowSub: (agents, leads) => `${agents} 个 Agent · ${leads} 个负责人`,
+  archivedRow: "已归档 · 文件留在原处",
+  projectIntro: (agents, leads) => `${agents} 个 Agent，其中 ${leads} 个负责人。`,
+  unassignedRow: (count) => `${count} 个 Agent 不属于任何项目`,
+  unassignedHelp: "按文件夹给出建议；你选择之前什么都不移动。",
+  nameAndKey: "名称与任务编号",
+  membersTitle: "成员与负责人",
+  defaultsTitle: "这个项目的默认",
+  archiveOrDelete: "归档或删除",
+  archiveHelp: "归档不移动文件。只有没有 Agent 和任务的项目可以删除。",
+  unarchiveHelp: "取消归档后它回到项目列表和左侧的项目菜单。",
   list: "项目",
   without: "无项目",
   newProject: "新建项目",
@@ -374,9 +389,8 @@ const managerText = strings({
   folderHint: "用于预填新 Agent 的文件夹。Agent 仍可使用任何文件夹，例如别处的 worktree。",
   create: "创建项目",
   projectName: "项目名称",
-  rename: "重命名",
+  nameNeeded: "项目需要一个名称。",
   projectKey: "任务编号前缀",
-  changeKey: "更改前缀",
   keyNote: (key) =>
     `这个项目的任务编号为 ${key}-1、${key}-2 等；不属于任何项目的任务仍是 T-1 这样的编号。新前缀立即用于这里的所有任务，任务用过的每个编号仍能找到它，旧前缀也不会给其他项目。前缀以一个大写字母开头，后跟 1 到 9 个大写字母或数字。`,
   archivedNote: "已归档。它的 Agent 和任务保持原样，需要你时仍会找你；不会再有新的加入。",
@@ -384,18 +398,6 @@ const managerText = strings({
   foldersNote: "用于在每台机器上预填新 Agent 的文件夹。它不限制 Agent 可以使用哪些文件夹，更改它也不会移动现有 Agent。",
   machinesFailed: (error) => `无法加载机器：${error}`,
   noDefault: "无默认值",
-  save: "保存",
-  clear: "清除",
-  agents: "Agent",
-  closedSuffix: " · 已关闭",
-  removeFrom: (agent, project) => `将 ${agent} 移出 ${project}`,
-  removeTip: "移出项目",
-  noAgents: "还没有 Agent。",
-  agentToAdd: "要添加的 Agent",
-  addAgent: "添加 Agent…",
-  fromProject: (project) => ` · 来自 ${project}`,
-  add: "添加",
-  moveNote: "移动 Agent 只改变它列在哪里。它的文件夹、会话和已读状态保持不变。",
   unarchive: "取消归档",
   archive: "归档项目",
   stillLinked: (agents, tasks) => `仍关联 ${agents} 个 Agent 和 ${tasks} 个任务；请改为归档`,
@@ -413,11 +415,16 @@ const managerText = strings({
 });
 
 type ManagerView =
+  | { kind: "list" }
   | { kind: "project"; id: string }
   | { kind: "new" }
   | { kind: "unassigned" };
 
-export function ProjectManager({
+/** Settings › Projects (YN-8): the list of projects, then a page for each,
+ * for a new one and for the Agents in no project. A request opens one of
+ * them (`initialView`, `initialProjectId`); otherwise the list, with no
+ * project chosen for you. `open` is whether Settings is open. */
+export function ProjectsPage({
   open,
   onOpenChange,
   initialView,
@@ -429,6 +436,7 @@ export function ProjectManager({
   onCreated,
 }: {
   open: boolean;
+  /** Closes Settings: a service opened in the Portal is shown beside the conversation. */
   onOpenChange: (open: boolean) => void;
   initialView: "new" | "manage";
   initialProjectId?: string | null;
@@ -440,22 +448,19 @@ export function ProjectManager({
   onCreated: (project: Project) => void;
 }) {
   const t = useStrings(managerText);
-  const [view, setView] = useState<ManagerView>({ kind: "new" });
+  const [view, setView] = useState<ManagerView>(() =>
+    initialView === "new"
+      ? { kind: "new" }
+      : initialProjectId && projects.some((project) => project.id === initialProjectId)
+        ? { kind: "project", id: initialProjectId }
+        : { kind: "list" },
+  );
   const [machines, setMachines] = useState<WorkspaceMachine[]>([]);
   const [machineError, setMachineError] = useState("");
-  const unassigned = agents.filter((agent) => !agent.projectId);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const shown = useRef(false);
   useEffect(() => {
     if (!open) return;
-    const first = activeProjects(projects).find((project) => project.id === initialProjectId) || activeProjects(projects)[0];
-    setView(
-      initialView === "new"
-        ? { kind: "new" }
-        : first
-          ? { kind: "project", id: first.id }
-          : unassigned.length
-            ? { kind: "unassigned" }
-            : { kind: "new" },
-    );
     const controller = new AbortController();
     setMachineError("");
     api<{ machines: WorkspaceMachine[] }>("/machines", {
@@ -467,101 +472,173 @@ export function ProjectManager({
       });
     return () => controller.abort();
   }, [open]);
+  // Another view of the page starts at its top, its title focused; the first
+  // keeps the focus Settings gave the page.
+  useEffect(() => {
+    if (!shown.current) {
+      shown.current = true;
+      return;
+    }
+    heading.current?.closest(".settings-pane")?.scrollTo?.({ top: 0 });
+    heading.current?.focus();
+  }, [view]);
+  const unassigned = agents.filter((agent) => !agent.projectId);
+  const active = activeProjects(projects);
+  const archived = projects.filter((p) => !!p.archivedAt);
+  const membersOf = (id: string) => agents.filter((agent) => agent.projectId === id);
+  const leadsOf = (id: string) => membersOf(id).filter((agent) => agent.kind === "lead").length;
   const project =
     view.kind === "project"
       ? projects.find((candidate) => candidate.id === view.id)
       : undefined;
-  const listItem = (p: Project) => (
-    <button
-      key={p.id}
-      type="button"
-      className={`project-list-item ${project?.id === p.id ? "selected" : ""}`}
-      aria-current={project?.id === p.id ? "true" : undefined}
-      onClick={() => setView({ kind: "project", id: p.id })}
-    >
-      <Folder size={14} />
-      <span>{p.name}</span>
-      <small>{agents.filter((agent) => agent.projectId === p.id).length}</small>
-    </button>
+  const row = (p: Project, quiet = false) => (
+    <li key={p.id}>
+      <button
+        type="button"
+        className={`settings-list-row is-open${quiet ? " is-quiet" : ""}`}
+        onClick={() => setView({ kind: "project", id: p.id })}
+      >
+        <Folder size={15} className="settings-list-icon" aria-hidden="true" />
+        <span className="settings-list-main">
+          <span className="settings-list-title">{p.name}</span>
+          <span className="settings-list-sub">
+            {quiet ? t.archivedRow : t.rowSub(membersOf(p.id).length, leadsOf(p.id))}
+          </span>
+        </span>
+        {p.key && <span className="settings-tag is-mono">{p.key}</span>}
+        <ChevronRight size={15} className="settings-list-chev" aria-hidden="true" />
+      </button>
+    </li>
   );
-  const archived = projects.filter((p) => !!p.archivedAt);
+  const folders = unassignedFolders(agents);
+  const title =
+    view.kind === "list"
+      ? t.title
+      : view.kind === "new"
+        ? t.newTitle
+        : view.kind === "unassigned"
+          ? t.unassignedTitle
+          : project?.name ?? t.title;
+  const intro =
+    view.kind === "list"
+      ? t.description
+      : view.kind === "new"
+        ? t.newNote
+        : view.kind === "unassigned"
+          ? t.unassignedNote
+          : project
+            ? t.projectIntro(membersOf(project.id).length, leadsOf(project.id))
+            : t.gone;
+  const chip =
+    view.kind === "list" ? t.count(active.length, archived.length) : view.kind === "project" ? project?.key : undefined;
   return (
-    <Modal
-      open={open}
-      onOpenChange={onOpenChange}
-      wide
-      title={t.title}
-      description={t.description}
-    >
-      <div className="project-manager">
-        <nav className="project-list" aria-label={t.list}>
-          {activeProjects(projects).map(listItem)}
-          <button
-            type="button"
-            className={`project-list-item ${view.kind === "unassigned" ? "selected" : ""}`}
-            onClick={() => setView({ kind: "unassigned" })}
-          >
-            <span className="scope-blank" />
-            <span>{t.without}</span>
-            <small>{unassigned.length}</small>
-          </button>
-          <button
-            type="button"
-            className="quiet-button project-new"
-            onClick={() => setView({ kind: "new" })}
-          >
-            <Plus size={14} /> {t.newProject}
-          </button>
+    <section className="settings-section settings-manager settings-projects" aria-labelledby="settings-projects-title">
+      {view.kind !== "list" && (
+        <button type="button" className="settings-crumb" aria-label={t.backTo} onClick={() => setView({ kind: "list" })}>
+          <ChevronLeft size={14} aria-hidden="true" />
+          {t.title}
+        </button>
+      )}
+      <header className="settings-section-heading">
+        <div>
+          <h3 id="settings-projects-title" ref={heading} tabIndex={-1}>{title}</h3>
+          <p>{intro}</p>
+        </div>
+        {chip && <span className="settings-current">{chip}</span>}
+      </header>
+      {view.kind === "list" ? (
+        <div className="settings-group appearance-group">
+          <fieldset className="appearance-field">
+            <legend>{t.list}</legend>
+            <ul className="settings-list">
+              {active.map((p) => row(p))}
+              <li>
+                <button type="button" className="settings-list-row is-open is-add" onClick={() => setView({ kind: "new" })}>
+                  <Plus size={15} className="settings-list-icon" aria-hidden="true" />
+                  <span className="settings-list-main">
+                    <span className="settings-list-title">{t.newProject}</span>
+                  </span>
+                </button>
+              </li>
+            </ul>
+          </fieldset>
+          <fieldset className="appearance-field">
+            <legend>{t.unassignedTitle}</legend>
+            <p className="settings-block-help">{t.unassignedHelp}</p>
+            <ul className="settings-list">
+              <li>
+                {unassigned.length ? (
+                  <button type="button" className="settings-list-row is-open" onClick={() => setView({ kind: "unassigned" })}>
+                    <FolderPlus size={15} className="settings-list-icon" aria-hidden="true" />
+                    <span className="settings-list-main">
+                      <span className="settings-list-title">{t.unassignedRow(unassigned.length)}</span>
+                      <span className="settings-list-sub">
+                        {folders.map((group) => `${group.cwd} ${group.agents.length}`).join(" · ")}
+                      </span>
+                    </span>
+                    <ChevronRight size={15} className="settings-list-chev" aria-hidden="true" />
+                  </button>
+                ) : (
+                  <span className="settings-list-row">
+                    <span className="settings-list-main">
+                      <span className="settings-list-sub">{t.allAssigned}</span>
+                    </span>
+                  </span>
+                )}
+              </li>
+            </ul>
+          </fieldset>
           {archived.length > 0 && (
-            <div className="project-archived-list">
-              <span>{t.archivedList}</span>
-              {archived.map(listItem)}
-            </div>
+            <fieldset className="appearance-field">
+              <legend>{t.archivedList}</legend>
+              <ul className="settings-list">{archived.map((p) => row(p, true))}</ul>
+            </fieldset>
           )}
-        </nav>
-        <section className="project-pane">
-          {view.kind === "new" ? (
-            <NewProject
-              key="new"
-              machines={machines}
-              onCreated={(created) => {
-                onChanged();
-                onCreated(created);
-                setView({ kind: "project", id: created.id });
-              }}
-            />
-          ) : view.kind === "unassigned" ? (
-            <Unassigned
-              agents={agents}
-              projects={projects}
-              onChanged={onChanged}
-              onCreated={(created) => {
-                onChanged();
-                setView({ kind: "project", id: created.id });
-              }}
-            />
-          ) : project ? (
-            <ProjectDetail
-              key={project.id}
-              project={project}
-              projects={projects}
-              tasks={usage[project.id]?.tasks || 0}
-              agents={agents}
-              machines={machines}
-              machineError={machineError}
-              onChanged={onChanged}
-              onLeave={() => onOpenChange(false)}
-              onDeleted={() => {
-                onChanged();
-                setView({ kind: "new" });
-              }}
-            />
-          ) : (
-            <p className="project-note">{t.gone}</p>
-          )}
-        </section>
-      </div>
-    </Modal>
+        </div>
+      ) : view.kind === "new" ? (
+        <div className="settings-group appearance-group">
+          <NewProject
+            key="new"
+            machines={machines}
+            onCreated={(created) => {
+              onChanged();
+              onCreated(created);
+              setView({ kind: "project", id: created.id });
+            }}
+          />
+        </div>
+      ) : view.kind === "unassigned" ? (
+        <div className="settings-group appearance-group">
+          <Unassigned
+            agents={agents}
+            projects={projects}
+            onChanged={onChanged}
+            onCreated={(created) => {
+              onChanged();
+              setView({ kind: "project", id: created.id });
+            }}
+          />
+        </div>
+      ) : project ? (
+        // One save bar for the page (YN-8), anew for each project.
+        <SaveBarScope key={project.id}>
+        <ProjectDetail
+          project={project}
+          projects={projects}
+          tasks={usage[project.id]?.tasks || 0}
+          agents={agents}
+          machines={machines}
+          machineError={machineError}
+          onChanged={onChanged}
+          onLeave={() => onOpenChange(false)}
+          onDeleted={() => {
+            onChanged();
+            setView({ kind: "list" });
+          }}
+        />
+        </SaveBarScope>
+      ) : null}
+    </section>
   );
 }
 
@@ -581,7 +658,7 @@ function useAction() {
       setBusy(null);
     }
   };
-  return { busy, error, run };
+  return { busy, error, run, clear: () => setError("") };
 }
 
 function NewProject({
@@ -598,7 +675,7 @@ function NewProject({
   const host = machines.find((machine) => machine.id === "local");
   return (
     <form
-      className="project-form"
+      className="appearance-field project-form"
       onSubmit={async (event) => {
         event.preventDefault();
         if (!name.trim()) return;
@@ -611,8 +688,6 @@ function NewProject({
         if (created) onCreated(created);
       }}
     >
-      <h3>{t.newTitle}</h3>
-      <p className="project-note">{t.newNote}</p>
       <label>
         {t.name}
         <input
@@ -684,295 +759,238 @@ function ProjectDetail({
   const language = useLanguage();
   const [name, setName] = useState(project.name);
   const [key, setKey] = useState(project.key ?? "");
+  const nameAction = useAction();
   const keyAction = useAction();
-  // Unsaved folder edits per machine. The workspace refreshes every few
-  // seconds; only an edit that now matches what Core saved is dropped.
+  const folderAction = useAction();
+  const action = useAction();
+  const path = `/projects/${encodeURIComponent(project.id)}`;
+  // What Core saved last: this page's own save, until the Workspace's
+  // refresh (every few seconds) has caught up with it.
+  const [fresh, setFresh] = useState<Project | null>(null);
+  const base = fresh && fresh.updatedAt >= project.updatedAt ? fresh : project;
+  // Unsaved folder edits per machine; only an edit that now matches what
+  // Core saved is dropped.
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const savedDirs = JSON.stringify(project.defaultDirs);
+  const savedDirs = JSON.stringify(base.defaultDirs);
   useEffect(
     () =>
       setEdits((current) =>
         Object.fromEntries(
           Object.entries(current).filter(
             ([machine, value]) =>
-              value.trim() !== (project.defaultDirs[machine] || ""),
+              value.trim() !== (base.defaultDirs[machine] || ""),
           ),
         ),
       ),
     [savedDirs],
   );
-  const [adding, setAdding] = useState("");
-  const action = useAction();
   const members = agents.filter((agent) => agent.projectId === project.id);
-  const others = agents.filter((agent) => agent.projectId !== project.id);
   const archived = !!project.archivedAt;
-  const path = `/projects/${encodeURIComponent(project.id)}`;
-  const save = (label: string, body: Record<string, unknown>) =>
-    action.run(label, async () => {
-      const saved = await patch<Project>(path, body);
-      onChanged();
-      return saved;
-    });
-  const move = (agent: Agent, projectId: string | null) =>
-    action.run(`agent:${agent.id}`, async () => {
-      await post(`/agents/${encodeURIComponent(agent.id)}/project`, {
-        projectId,
-      });
-      onChanged();
-    });
+  const change = async (body: Record<string, unknown>) => {
+    const saved = await patch<Project>(path, body);
+    setFresh(saved);
+    onChanged();
+    return saved;
+  };
+  // The name, the task prefix and the folders join the page's save bar,
+  // each its own request (YN-8); Archive and Delete are done at once.
+  const nextName = name.trim();
+  useSaveBarPart("name", nextName !== base.name ? {
+    ready: !!nextName,
+    save: async () => !!(await nameAction.run("name", () => change({ name: nextName }))),
+    discard: () => { nameAction.clear(); setName(base.name); },
+  } : null);
+  const nextKey = key.trim();
+  const keyChanged = base.key !== undefined && nextKey !== base.key;
+  // The rule is only a hint here; Core decides and says why not.
+  const keyFits = PROJECT_KEY.test(nextKey);
+  useSaveBarPart("key", keyChanged ? {
+    ready: keyFits,
+    save: async () => !!(await keyAction.run("key", () => change({ key: nextKey }))),
+    discard: () => { keyAction.clear(); setKey(base.key ?? ""); },
+  } : null);
+  const folderChanges: Record<string, string | null> = Object.fromEntries(
+    machines.flatMap((machine) => {
+      const value = edits[machine.id];
+      return value !== undefined && value.trim() !== (base.defaultDirs[machine.id] || "") ? [[machine.id, value.trim() || null]] : [];
+    }),
+  );
+  useSaveBarPart("folders", Object.keys(folderChanges).length ? {
+    save: async () => {
+      const updated = await folderAction.run("folders", () => change({ defaultDirs: folderChanges }));
+      // Core's canonical folders show once the edits are gone.
+      if (updated) setEdits((current) => Object.fromEntries(Object.entries(current).filter(([machine]) => !(machine in folderChanges))));
+      return !!updated;
+    },
+    discard: () => { folderAction.clear(); setEdits({}); },
+  } : null);
+  // Four cards, as the design has them (YN-8): the basics, members and
+  // leads, this project's defaults, then archive or delete. The blocks with
+  // an editor of their own are mounted as they were, one block each.
   return (
-    <div className="project-form">
-      <form
-        className="project-rename"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (name.trim() && name.trim() !== project.name)
-            void save("name", { name: name.trim() });
-        }}
-      >
-        <label>
-          {t.projectName}
-          <input
-            required
-            maxLength={100}
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        <button
-          className="secondary-button"
-          disabled={
-            !!action.busy || !name.trim() || name.trim() === project.name
-          }
-        >
-          {t.rename}
-        </button>
-      </form>
-      {project.key !== undefined && (
-        <>
-          <form
-            className="project-rename project-key"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const next = key.trim();
-              // The rule is only a hint here; Core decides and says why not.
-              if (PROJECT_KEY.test(next) && next !== project.key)
-                void keyAction.run("key", async () => {
-                  const saved = await patch<Project>(path, { key: next });
-                  onChanged();
-                  return saved;
-                });
-            }}
-          >
-            <label>
-              {t.projectKey}
-              <input
-                value={key}
-                maxLength={10}
-                spellCheck={false}
-                autoComplete="off"
-                autoCapitalize="characters"
-                onChange={(event) => setKey(event.target.value.toUpperCase())}
-              />
-            </label>
-            <button
-              className="secondary-button"
-              disabled={!!keyAction.busy || !PROJECT_KEY.test(key.trim()) || key.trim() === project.key}
-            >
-              {t.changeKey}
-            </button>
-          </form>
-          <p className="project-note">{t.keyNote(project.key)}</p>
-          {keyAction.error && (
-            <p role="alert" className="inline-error">
-              {keyAction.error}
-            </p>
-          )}
-        </>
-      )}
-      <GitHubLinks key={project.id} projectId={project.id} disabled={archived} language={language} />
-      <ProjectServices key={`services:${project.id}`} projectId={project.id} machines={machines} disabled={archived} onOpened={onLeave} />
-      <ProjectLeads key={`leads:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
-      <HomeContentEditors key={`editors:${project.id}`} projectId={project.id} agents={members} disabled={archived} onChanged={onChanged} />
-      <AgentDefaults key={`defaults:${project.id}`} active projectId={project.id} disabled={archived} />
-      <ExecutorTemplates key={`templates:${project.id}`} active projectId={project.id} disabled={archived} />
-      <ProjectHandover key={`handover:${project.id}`} projectId={project.id} disabled={archived} />
-      <ReviewSettings key={`review:${project.id}`} active projectId={project.id} disabled={archived} />
+    <>
       {archived && (
         <p className="project-note project-archived-note">
           <Archive size={14} /> {t.archivedNote}
         </p>
       )}
-
-      <h3>{t.folders}</h3>
-      <p className="project-note">{t.foldersNote}</p>
-      {machineError && (
-        <p role="alert" className="inline-error">
-          {t.machinesFailed(machineError)}
-        </p>
-      )}
-      <div className="project-folders">
-        {machines.map((machine) => {
-          const saved = project.defaultDirs[machine.id] || "";
-          const value = edits[machine.id] ?? saved;
-          return (
-            <form
-              key={machine.id}
-              className="project-folder-row"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void save(`folder:${machine.id}`, {
-                  defaultDirs: { [machine.id]: value.trim() || null },
-                }).then((updated) => {
-                  // Show Core's canonical folder until the refresh arrives.
-                  if (updated)
-                    setEdits((current) => ({
-                      ...current,
-                      [machine.id]: updated.defaultDirs[machine.id] || "",
-                    }));
-                });
-              }}
-            >
-              <span className="project-machine">
-                {machine.kind === "ssh" ? (
-                  <Server size={14} />
-                ) : (
-                  <Monitor size={14} />
-                )}
-                {machine.name}
-              </span>
+      <div className="settings-group appearance-group">
+        <fieldset className="appearance-field project-form">
+          <legend>{t.nameAndKey}</legend>
+          <div className="project-rename">
+            <label>
+              {t.projectName}
               <input
-                aria-label={t.folderOn(machine.name)}
-                value={value}
-                placeholder={machine.defaultCwd || t.noDefault}
-                onChange={(event) =>
-                  setEdits({ ...edits, [machine.id]: event.target.value })
-                }
-                spellCheck={false}
-                autoCapitalize="none"
-                autoCorrect="off"
+                required
+                maxLength={100}
+                value={name}
+                aria-invalid={!nextName}
+                onChange={(event) => setName(event.target.value)}
               />
-              <button
-                className="quiet-button"
-                disabled={!!action.busy || value.trim() === saved}
-              >
-                {action.busy === `folder:${machine.id}` ? (
-                  <LoaderCircle size={13} className="spin" />
-                ) : value.trim() || !saved ? (
-                  t.save
-                ) : (
-                  t.clear
-                )}
-              </button>
-            </form>
-          );
-        })}
+            </label>
+          </div>
+          {!nextName && <p className="inline-error">{t.nameNeeded}</p>}
+          {nameAction.error && (
+            <p role="alert" className="inline-error">
+              {nameAction.error}
+            </p>
+          )}
+          {project.key !== undefined && (
+            <>
+              <div className="project-rename project-key">
+                <label>
+                  {t.projectKey}
+                  <input
+                    value={key}
+                    maxLength={10}
+                    spellCheck={false}
+                    autoComplete="off"
+                    autoCapitalize="characters"
+                    aria-invalid={keyChanged && !keyFits}
+                    onChange={(event) => setKey(event.target.value.toUpperCase())}
+                  />
+                </label>
+              </div>
+              <p className="project-note">{t.keyNote(base.key ?? project.key)}</p>
+              {keyAction.error && (
+                <p role="alert" className="inline-error">
+                  {keyAction.error}
+                </p>
+              )}
+            </>
+          )}
+        </fieldset>
+        <fieldset className="appearance-field project-form">
+          <legend>{t.folders}</legend>
+          <p className="project-note">{t.foldersNote}</p>
+          {machineError && (
+            <p role="alert" className="inline-error">
+              {t.machinesFailed(machineError)}
+            </p>
+          )}
+          <div className="project-folders">
+            {machines.map((machine) => {
+              const saved = base.defaultDirs[machine.id] || "";
+              const value = edits[machine.id] ?? saved;
+              return (
+                <div key={machine.id} className="project-folder-row">
+                  <span className="project-machine">
+                    {machine.kind === "ssh" ? (
+                      <Server size={14} />
+                    ) : (
+                      <Monitor size={14} />
+                    )}
+                    {machine.name}
+                  </span>
+                  <input
+                    aria-label={t.folderOn(machine.name)}
+                    value={value}
+                    placeholder={machine.defaultCwd || t.noDefault}
+                    onChange={(event) =>
+                      setEdits({ ...edits, [machine.id]: event.target.value })
+                    }
+                    spellCheck={false}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                  />
+                </div>
+              );
+            })}
+          </div>
+          {folderAction.error && (
+            <p role="alert" className="inline-error">
+              {folderAction.error}
+            </p>
+          )}
+        </fieldset>
+        <div className="appearance-field project-block">
+          <GitHubLinks key={project.id} projectId={project.id} disabled={archived} language={language} />
+        </div>
+        <div className="appearance-field project-block">
+          <ProjectServices key={`services:${project.id}`} projectId={project.id} machines={machines} disabled={archived} onOpened={onLeave} />
+        </div>
       </div>
 
-      <h3>
-        {t.agents} <span className="project-count">{members.length}</span>
-      </h3>
-      {members.length ? (
-        <ul className="project-members">
-          {members.map((agent) => (
-            <li key={agent.id}>
-              <Avatar agent={agent} small />
-              <span className="project-member-text">
-                <strong>
-                  {agent.name}
-                  {agent.closedAt ? t.closedSuffix : ""}
-                </strong>
-                <small title={agent.cwd}>
-                  {agent.remote?.machine.name || t.coreHost} · {agent.cwd}
-                </small>
-              </span>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={t.removeFrom(agent.name, project.name)}
-                title={t.removeTip}
-                disabled={!!action.busy}
-                onClick={() => void move(agent, null)}
-              >
-                <X size={14} />
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="project-note">{t.noAgents}</p>
-      )}
-      {!archived && others.length > 0 && (
-        <form
-          className="project-add-agent"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const agent = others.find((candidate) => candidate.id === adding);
-            if (agent) void move(agent, project.id).then(() => setAdding(""));
-          }}
-        >
-          <select
-            aria-label={t.agentToAdd}
-            value={adding}
-            onChange={(event) => setAdding(event.target.value)}
-          >
-            <option value="">{t.addAgent}</option>
-            {others.map((agent) => (
-              <option key={agent.id} value={agent.id}>
-                {agent.name}
-                {agent.projectId
-                  ? t.fromProject(projectName(agent.projectId, projects))
-                  : ""}
-                {agent.closedAt ? t.closedSuffix : ""}
-              </option>
-            ))}
-          </select>
-          <button
-            className="secondary-button"
-            disabled={!adding || !!action.busy}
-          >
-            {t.add}
-          </button>
-        </form>
-      )}
-      <p className="project-note">{t.moveNote}</p>
-
-      {action.error && (
-        <p role="alert" className="inline-error">
-          {action.error}
-        </p>
-      )}
-      <div className="modal-actions project-lifecycle">
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={!!action.busy}
-          onClick={() => void save("archive", { archived: !archived })}
-        >
-          {archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-          {archived ? t.unarchive : t.archive}
-        </button>
-        <button
-          type="button"
-          className="danger-button"
-          disabled={!!action.busy || members.length > 0 || tasks > 0}
-          title={
-            members.length || tasks
-              ? t.stillLinked(members.length, tasks)
-              : t.deleteEmpty
-          }
-          onClick={() =>
-            void action.run("delete", async () => {
-              await remove(path);
-              onDeleted();
-            })
-          }
-        >
-          <Trash2 size={14} />
-          {t.delete}
-        </button>
+      <h4 className="settings-group-title">{t.membersTitle}</h4>
+      <div className="settings-group appearance-group">
+        <ProjectMembers key={`members:${project.id}`} project={project} agents={agents} projects={projects} disabled={archived} onChanged={onChanged} />
+        <div className="appearance-field project-block">
+          <ProjectHandover key={`handover:${project.id}`} projectId={project.id} disabled={archived} />
+        </div>
       </div>
-    </div>
+
+      <h4 className="settings-group-title">{t.defaultsTitle}</h4>
+      <div className="settings-group appearance-group">
+        <div className="appearance-field project-block">
+          <AgentDefaults key={`defaults:${project.id}`} active projectId={project.id} disabled={archived} />
+        </div>
+        <div className="appearance-field project-block">
+          <ReviewSettings key={`review:${project.id}`} active projectId={project.id} disabled={archived} />
+        </div>
+      </div>
+
+      <div className="settings-group appearance-group">
+        <fieldset className="appearance-field project-form">
+          <legend>{t.archiveOrDelete}</legend>
+          <p className="project-note">{archived ? t.unarchiveHelp : t.archiveHelp}</p>
+          {action.error && (
+            <p role="alert" className="inline-error">
+              {action.error}
+            </p>
+          )}
+          <div className="modal-actions project-lifecycle">
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={!!action.busy}
+              onClick={() => void action.run("archive", () => change({ archived: !archived }))}
+            >
+              {archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+              {archived ? t.unarchive : t.archive}
+            </button>
+            <button
+              type="button"
+              className="danger-button"
+              disabled={!!action.busy || members.length > 0 || tasks > 0}
+              title={
+                members.length || tasks
+                  ? t.stillLinked(members.length, tasks)
+                  : t.deleteEmpty
+              }
+              onClick={() =>
+                void action.run("delete", async () => {
+                  await remove(path);
+                  onDeleted();
+                })
+              }
+            >
+              <Trash2 size={14} />
+              {t.delete}
+            </button>
+          </div>
+        </fieldset>
+      </div>
+    </>
   );
 }
 
@@ -1006,9 +1024,7 @@ function Unassigned({
     );
   };
   return (
-    <div className="project-form">
-      <h3>{t.unassignedTitle}</h3>
-      <p className="project-note">{t.unassignedNote}</p>
+    <div className="appearance-field project-form">
       {!groups.length && (
         <p className="project-note">{t.allAssigned}</p>
       )}

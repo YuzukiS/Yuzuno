@@ -10,13 +10,20 @@
 //! there. Slice 4b (Lead 5656): a login through Core's own calls, and the
 //! scrub after, against the stub provider. T-61 slice 1 (Lead 6884): the
 //! Workspace MCP through the Workspace's own send path, against Yuzuno's own
-//! Workspace MCP endpoint on loopback and the stub provider.
+//! Workspace MCP endpoint on loopback and the stub provider. T-61 slice 2:
+//! its requests answered. T-61 slice 3: its commands, as Core's transport
+//! reads them and through the Workspace's own send path. T-61 slice 4: its
+//! compaction, likewise. T-61 slice 5: its snapshots, where Core's Rewind
+//! reads them, and a Rewind previewed through the Workspace.
 #![cfg(target_os = "linux")]
 
 use serde_json::{json, Value};
 use std::{path::{Path, PathBuf}, time::{Duration, Instant}};
-use yuzuno_workspace::opencode::{session_of, supported, Events, FilePart, Launch, MessageId, Reply, RequestRefused, Server, Submission, EVENT_IDLE_LIMIT, TEARDOWN};
-use yuzuno_workspace::opencode_v2::{admitted, is_v2, read_messages, Cursor};
+use yuzuno_workspace::opencode::{
+    session_of, supported, CommandAnswer, CompactAdmission, Events, FilePart, Launch, MessageId, Reply, RequestRefused, Server, Submission, EVENT_IDLE_LIMIT,
+    TEARDOWN,
+};
+use yuzuno_workspace::opencode_v2::{admitted, is_v2, read_messages, Cursor, COMPACTION};
 use yuzuno_workspace::store::whole::WholeRecord;
 
 fn ended(pid: u64) -> bool {
@@ -1071,6 +1078,874 @@ async fn a_real_opencode_2x_asks_and_yuzuno_answers_through_the_workspace() {
     let t = ended(fifth).await;
     println!("probe: F the turn after a decline: {} {}", t["status"], t["error"]);
     assert!(t["status"] == "interrupted" && t["error"]["message"].as_str().unwrap_or_default().contains("declined in Yuzuno"), "ended declined");
+
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
+}
+
+/// What the commands probes give a real OpenCode 2.x (T-61 slice 3): the stub
+/// provider with two models, and three commands of its configuration
+/// (2.2.5 schema/src/config/command.ts): one of the session's model, one
+/// naming a model of its own, one run as a sub-agent.
+fn commands_config(port: u16) -> String {
+    let model = json!({"name": "Fake", "capabilities": {"tools": true}});
+    json!({"providers": {"stub": {"name": "Stub", "package": "@ai-sdk/openai-compatible",
+        "settings": {"baseURL": format!("http://127.0.0.1:{port}/v1"), "apiKey": "fixture-stub-key"},
+        "models": {"fake": model, "fake2": model}}},
+        "commands": {
+            "probe61": {"template": "probe-61 command $ARGUMENTS", "description": "Probe 61"},
+            "probe61m": {"template": "probe-61 command $ARGUMENTS", "model": "stub/fake2"},
+            "probe61s": {"template": "probe-61 command $ARGUMENTS", "subagent": true},
+        }}).to_string()
+}
+
+/// The model each stub request after the first `seen` asked for, and whether its newest user message holds `text`.
+fn models_after(log: &Path, seen: usize, text: &str) -> Vec<(String, bool)> {
+    std::fs::read_to_string(log).unwrap_or_default().lines().skip(seen).map(|l| {
+        let request: Value = serde_json::from_str(l).unwrap();
+        let user = request["messages"].as_array().unwrap().iter().rev().find(|m| m["role"] == "user").cloned().unwrap_or_default();
+        (request["model"].as_str().unwrap_or_default().to_owned(), user["content"].to_string().contains(text))
+    }).collect()
+}
+
+/// A real OpenCode 2.x runs commands as Core's transport reads them (T-61
+/// slice 3), against the stub provider: its list names and describes each,
+/// its configuration's among its own; a command is done at 2.x's 204, its
+/// message admitted under an ID of 2.x's own, newer than the one Core kept
+/// for it; an unknown name is a 404 and a command whose definition fails
+/// (`/goal` with no objective) a 500, each admitting nothing; a sub-agent's
+/// command admits nothing in the session, has a session made for it before
+/// the answer, and comes back later in a run of 2.x's own (timings printed).
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_runs_commands_as_cores_transport_reads_them() {
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    std::fs::write(directory.join("opencode.json"), commands_config(port)).unwrap();
+    let launch = Launch::new(program, directory.canonicalize().unwrap(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let model = server.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let held = || {
+        let (server, session) = (&server, session.clone());
+        async move {
+            let s = server.snapshot(&session, &[]).await.unwrap();
+            (s.inbox.as_array().unwrap().len(), s.messages.as_array().unwrap().len())
+        }
+    };
+
+    // 1. The list.
+    let listed = server.commands().await.unwrap();
+    println!("probe: 1 commands {:?}", listed.iter().map(|c| (&c.name, &c.description)).collect::<Vec<_>>());
+    let names: Vec<&str> = listed.iter().map(|c| c.name.as_str()).collect();
+    for name in ["probe61", "probe61m", "probe61s", "init", "review", "goal"] {
+        assert!(names.contains(&name), "{name} is listed: {names:?}");
+    }
+    assert!(!names.contains(&"schedule"), "schedule only with experimental.schedules: {names:?}");
+    assert_eq!(listed.iter().find(|c| c.name == "probe61").unwrap().description, "Probe 61");
+
+    // 4. An unknown name: a 404, in 2.x's words, and nothing admitted.
+    let before = held().await;
+    let unknown = server.command(&session, &MessageId::new(), "probe61nope", "x").unwrap().await;
+    println!("probe: 4 an unknown name: {unknown:?}");
+    assert!(matches!(unknown, CommandAnswer::Refused { code: 404, .. }), "{unknown:?}");
+    assert_eq!(held().await, before, "nothing admitted");
+
+    // 5. /goal with no objective: a 500 of what it does, and nothing admitted.
+    let goal = server.command(&session, &MessageId::new(), "goal", "").unwrap().await;
+    println!("probe: 5 /goal with no text: {goal:?}");
+    assert!(matches!(goal, CommandAnswer::Refused { code: 500, .. }), "{goal:?}");
+    assert_eq!(held().await, before, "nothing admitted");
+
+    // 2. probe61: done, its message admitted under 2.x's own ID, newer than Core's, and run.
+    let kept = MessageId::new();
+    let asked = Instant::now();
+    let done = server.command(&session, &kept, "probe61", "x y").unwrap().await;
+    println!("probe: 2 probe61 answered {done:?} after {:?}", asked.elapsed());
+    assert_eq!(done, CommandAnswer::Done);
+    let run = one_run(&mut events, &session).await;
+    println!("probe: 2 its run {:?}", types(&run));
+    let admitted = run.iter().find(|e| e["type"] == "session.inbox.enqueued").expect("its message admitted");
+    println!("probe: 2 admitted {}", admitted["data"]);
+    let native = admitted["data"]["inboxID"].as_str().unwrap();
+    assert_eq!(admitted["data"]["item"]["type"], "user", "a user's message");
+    assert!(native > kept.as_str(), "2.x's own ID, newer than Core's: {native} vs {}", kept.as_str());
+    assert!(admitted["data"]["item"]["payload"].to_string().contains("probe-61 command x y"), "the template, expanded");
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded");
+    assert!(models_after(&log, 0, "probe-61 command x y").iter().any(|(m, has)| *has && m == "fake"), "the stub saw it, on the session's model");
+
+    // 6. probe61s: a sub-agent's command.
+    let children = server.children(&session).await.unwrap().len();
+    let before = held().await;
+    let asked = Instant::now();
+    let sub = server.command(&session, &MessageId::new(), "probe61s", "w").unwrap().await;
+    println!("probe: 6 probe61s answered {sub:?} after {:?}", asked.elapsed());
+    assert_eq!(sub, CommandAnswer::Done);
+    let made = server.children(&session).await.unwrap();
+    println!("probe: 6 sub-agent sessions {}", made.len());
+    assert_eq!(made.len(), children + 1, "a session made for it before the answer");
+    assert_eq!(held().await, before, "nothing admitted in the session at the answer");
+    let (seen, back) = until_kind(&mut events, &session, &["session.execution.started"], 90).await;
+    println!("probe: 6 a run of 2.x's own started {back} after {:?}; seen {:?}", asked.elapsed(), types(&seen));
+    if let Some(item) = seen.iter().find(|e| e["type"] == "session.inbox.enqueued") {
+        println!("probe: 6 what came back {}", item["data"]);
+        assert_eq!(item["data"]["item"]["type"], "synthetic", "the sub-agent's result comes back as a synthetic message");
+    }
+    if back {
+        let run = one_run(&mut events, &session).await;
+        println!("probe: 6 that run {:?}, ended after {:?}", types(&run), asked.elapsed());
+    }
+    // As 2.x stores the result, and as Core's whole read takes it: never a command's input.
+    let messages = server.messages(&session).await.unwrap();
+    let stored = messages.as_array().unwrap().iter().filter(|m| m["type"] == "synthetic").cloned().collect::<Vec<_>>();
+    println!("probe: 6 the stored synthetic messages {stored:?}");
+    assert!(stored.iter().any(|m| m["metadata"]["source"] == "subagent"), "the result is stored with its source");
+    let read = read_messages(&messages);
+    assert!(read.messages.iter().any(|m| m["info"][yuzuno_workspace::opencode_v2::SUB_AGENTS_RESULT] == true), "read as a sub-agent's result");
+
+    server.shutdown().await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// A real OpenCode 2.x runs Yuzuno's commands through the Workspace (T-61
+/// slice 3, D-2 (c)), against the stub provider: a command's Turn follows
+/// the message 2.x admitted for it and completes with the stub's answer; a
+/// command's own model is the session's for it, and Core makes the Agent's
+/// chosen one the session's again before the next message; a sub-agent's
+/// command ends its Turn at 2.x's answer, saying so, and what 2.x runs of it
+/// later makes no Turn; `/goal` is refused before anything is sent (D-16).
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_runs_yuzunos_commands_through_the_workspace() {
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61commands";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let work = work.canonicalize().unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    std::fs::write(work.join("opencode.json"), commands_config(port)).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port);
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":work, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let send = |client: &str, text: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":text})).unwrap());
+        async move { ws.send_message(ID, input).await }
+    };
+    let ended = |turn: String| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..600 {
+                let d = ws.store.detail(ID).unwrap();
+                if let Some(t) = d.turns.iter().find(|t| t["id"] == turn.as_str()).filter(|t| t["status"] != "inProgress") {
+                    return t.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 60 s");
+        }
+    };
+    let requests = || std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+    let d = ws.reconnect(ID).await.unwrap();
+    assert!(ws.collaboration_status(ID).await.unwrap().ready, "connected and ready: {}", d.agent.connection_state);
+    let listed = ws.opencode_commands(ID).await.unwrap();
+    let listed = serde_json::to_value(listed).unwrap();
+    println!("probe: the menu's commands {}", listed["commands"].as_array().unwrap().iter().map(|c| c["name"].clone()).collect::<Vec<_>>().len());
+    assert!(listed["commands"].as_array().unwrap().iter().all(|c| c["name"] != "goal"), "goal is not offered");
+
+    // 2. /probe61: the Turn follows 2.x's message and completes with the stub's answer.
+    let seen = requests();
+    let first = send("c1", "/probe61 x y").await.expect("sent").turn_id.unwrap();
+    let t = ended(first.clone()).await;
+    println!("probe: 2 the command's Turn {} {}", t["status"], t["_opencodeCommand"]);
+    assert_eq!(t["status"], "completed");
+    let native = t["_opencodeCommand"]["native"].as_str().expect("followed 2.x's message");
+    assert!(native > first.as_str(), "2.x's own ID, newer than the Turn's: {native}");
+    assert!(t["items"].as_array().unwrap().iter().any(|i| i["type"] == "agentMessage" && i["text"] == "Seen."), "the stub's answer: {t:#}");
+    assert!(models_after(&log, seen, "probe-61 command x y").iter().any(|(m, has)| *has && m == "fake"), "on the Agent's model");
+
+    // 3. /probe61m: its own model for it; the next message goes on the Agent's again.
+    let seen = requests();
+    let own = send("c2", "/probe61m z").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(own).await["status"], "completed");
+    let models = models_after(&log, seen, "probe-61 command z");
+    println!("probe: 3 the command's requests {models:?}");
+    assert!(models.iter().any(|(m, has)| *has && m == "fake2"), "the command's own model");
+    let seen = requests();
+    let next = send("c3", "hello").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(next).await["status"], "completed");
+    let models = models_after(&log, seen, "hello");
+    println!("probe: 3 the next message's requests {models:?}");
+    assert!(models.iter().all(|(m, _)| m == "fake") && !models.is_empty(), "the Agent's model again");
+
+    // 6. /probe61s: ended at 2.x's answer, saying so; what 2.x runs of it later makes no Turn.
+    let asked = Instant::now();
+    let sub = send("c4", "/probe61s w").await.expect("sent").turn_id.unwrap();
+    let t = ended(sub.clone()).await;
+    println!("probe: 6 the sub-agent command's Turn {} after {:?}: {}", t["status"], asked.elapsed(), t["notice"]);
+    assert_eq!(t["status"], "completed");
+    assert_eq!(t["notice"]["kind"], "command_subagent", "{t:#}");
+    let turns = ws.store.detail(ID).unwrap().turns.len();
+    let mut came = false;
+    for _ in 0..900 {
+        came = models_after(&log, 0, "<subagent").iter().any(|(_, has)| *has);
+        if came {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    println!("probe: 6 2.x gave the sub-agent's result to the session {came} after {:?}", asked.elapsed());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let d = ws.store.detail(ID).unwrap();
+    println!("probe: 6 then: {} Turns, the Agent {}", d.turns.len(), d.agent.status);
+    assert_eq!(d.turns.len(), turns, "no Turn of Yuzuno's for what 2.x ran on its own");
+
+    // 8. /goal: refused before anything is sent (D-16).
+    let seen = requests();
+    let refused = send("c5", "/goal ship it").await.expect_err("refused").to_string();
+    println!("probe: 8 /goal: {refused}");
+    assert!(refused.contains("会在之后自行开始新的工作"));
+    assert_eq!(requests(), seen, "nothing reached the model");
+
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
+}
+
+/// What Core's translator made of `id`'s compaction from `live` events: each
+/// `opencode.compaction` of it, in order.
+fn compacted(live: &[Value], id: &MessageId) -> Vec<Value> {
+    live.iter().filter(|e| e["type"] == COMPACTION && e["data"]["id"] == id.as_str()).map(|e| e["data"].clone()).collect()
+}
+
+/// Whether a stub request after the first `seen` was 2.x's summary prompt.
+fn summary_asked(log: &Path, seen: usize) -> bool {
+    std::fs::read_to_string(log).unwrap_or_default().lines().skip(seen)
+        .any(|l| l.contains("You MUST summarize the conversation above"))
+}
+
+/// A real OpenCode 2.x compacts as Core's transport and translator read it
+/// (T-61 slice 4), against the stub provider. A compaction asked under
+/// Core's ID is admitted under it. With nothing to compact yet it fails in
+/// 2.x's words (`compaction.unavailable`), though its run succeeds. After a
+/// prompt it runs, its summary the stub's answer to 2.x's summary prompt,
+/// and ends. Each is stored under that ID as Core's whole read takes it, and
+/// read live as Core's own `opencode.compaction`. Events printed.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_compacts_under_cores_id_as_cores_transport_reads_it() {
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let (directory, root) = (dir.path().join("work"), dir.path().join("db"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    // The stub's provider, as slice 3's probes configure it (its commands unused here).
+    std::fs::write(directory.join("opencode.json"), commands_config(port)).unwrap();
+    let launch = Launch::new(program, directory.canonicalize().unwrap(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let model = server.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let mut cursor = Cursor::default();
+    let requests = || std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+
+    // 1. Nothing to compact yet: admitted, then failed in 2.x's words; its run succeeds.
+    let empty = MessageId::new();
+    let seen = requests();
+    let admitted = server.compact(&session, &empty).await.unwrap();
+    println!("probe: 1 an empty session's compaction: {admitted:?}");
+    assert_eq!(admitted, CompactAdmission::Admitted, "admitted under Core's ID");
+    let (run, ended) = until_kind(&mut events, &session, &ENDS, 60).await;
+    println!("probe: 1 its events {:?} (ended {ended})", types(&run));
+    for e in run.iter().filter(|e| e["type"].as_str().is_some_and(|t| t.starts_with("session.compaction.") || t.starts_with("session.inbox."))) {
+        println!("probe: 1 {} {}", e["type"], e["data"]);
+    }
+    assert!(ended, "its run ended");
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded", "its run succeeded");
+    let live: Vec<Value> = run.iter().flat_map(|e| cursor.read(e)).collect();
+    let read = compacted(&live, &empty);
+    println!("probe: 1 read live {read:?}");
+    let last = read.last().expect("read live as Core's own compaction event");
+    assert_eq!((&last["status"], &last["error"]["type"]), (&json!("failed"), &json!("compaction.unavailable")), "{last}");
+    println!("probe: 1 its words {}", last["error"]["message"]);
+    let stored = read_messages(&server.messages(&session).await.unwrap()).compactions;
+    println!("probe: 1 stored {stored:?}");
+    let mine = stored.iter().find(|m| m["id"] == empty.as_str()).expect("stored under Core's ID");
+    assert_eq!((&mine["status"], &mine["error"]["type"]), (&json!("failed"), &json!("compaction.unavailable")), "{mine}");
+    assert!(!summary_asked(&log, seen), "nothing was asked of the model");
+
+    // 2. A prompt, so there is something to compact.
+    assert_eq!(server.submit(&session, &MessageId::new(), "probe-61 compact one").await.unwrap(), Submission::Accepted);
+    let run = one_run(&mut events, &session).await;
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded");
+    run.iter().for_each(|e| { cursor.read(e); });
+
+    // 3. The compaction: admitted, run against the stub's summary, ended, stored.
+    let asked = MessageId::new();
+    let seen = requests();
+    let started = Instant::now();
+    let admitted = server.compact(&session, &asked).await.unwrap();
+    println!("probe: 3 the compaction: {admitted:?} after {:?}", started.elapsed());
+    assert_eq!(admitted, CompactAdmission::Admitted, "admitted under Core's ID");
+    let (run, ended) = until_kind(&mut events, &session, &ENDS, 90).await;
+    println!("probe: 3 its events {:?} (ended {ended} after {:?})", types(&run), started.elapsed());
+    for e in run.iter().filter(|e| e["type"].as_str().is_some_and(|t| t.starts_with("session.compaction.") && t != "session.compaction.delta"
+        || t.starts_with("session.inbox."))) {
+        println!("probe: 3 {} {}", e["type"], e["data"]);
+    }
+    assert!(ended, "its run ended");
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded", "its run succeeded");
+    let begun = run.iter().find(|e| e["type"] == "session.compaction.started").expect("it started");
+    assert_eq!(begun["data"]["inputID"], asked.as_str(), "started under Core's ID");
+    assert!(summary_asked(&log, seen), "2.x asked the stub for its summary");
+    let live: Vec<Value> = run.iter().flat_map(|e| cursor.read(e)).collect();
+    let read = compacted(&live, &asked);
+    println!("probe: 3 read live {:?}", read.iter().map(|c| c["status"].clone()).collect::<Vec<_>>());
+    assert_eq!(read.first().map(|c| c["status"].clone()), Some(json!("running")), "read running first");
+    let last = read.last().unwrap();
+    assert_eq!(last["status"], "completed", "{last}");
+    assert!(last["summary"].as_str().unwrap_or_default().contains("probe-61 compaction summary"), "its summary, live: {last}");
+    let stored = read_messages(&server.messages(&session).await.unwrap()).compactions;
+    let mine = stored.iter().find(|m| m["id"] == asked.as_str()).expect("stored under Core's ID");
+    println!("probe: 3 stored {mine}");
+    assert_eq!(mine["status"], "completed");
+    assert!(mine["summary"].as_str().unwrap_or_default().contains("probe-61 compaction summary"), "its summary, stored: {mine}");
+
+    // 4. The next prompt runs after it.
+    let seen = requests();
+    assert_eq!(server.submit(&session, &MessageId::new(), "probe-61 after").await.unwrap(), Submission::Accepted);
+    let run = one_run(&mut events, &session).await;
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded");
+    let carried = std::fs::read_to_string(&log).unwrap_or_default().lines().skip(seen).any(|l| l.contains("probe-61 compaction summary"));
+    println!("probe: 4 the next prompt's requests carry the summary: {carried}");
+
+    server.shutdown().await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// A real OpenCode 2.x compacts through the Workspace (T-61 slice 4, D-2
+/// (c)), against the stub provider: with nothing to compact yet, the
+/// `/compact` Turn fails in 2.x's words; after a message it completes, its
+/// compaction item's text the stub's summary, and its input makes no Turn
+/// of its own; the next message goes.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, and no network"]
+async fn a_real_opencode_2x_compacts_through_the_workspace() {
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61compact";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let work = work.canonicalize().unwrap();
+    let (mut stub, port, _log) = stub_provider(dir.path());
+    std::fs::write(work.join("opencode.json"), commands_config(port)).unwrap();
+    let ws = Workspace::new(dir.path().join("data"), work.to_string_lossy().into(), "unused".into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port);
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":work, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let send = |client: &str, text: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":text})).unwrap());
+        async move { ws.send_message(ID, input).await }
+    };
+    let ended = |turn: String| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..900 {
+                let d = ws.store.detail(ID).unwrap();
+                if let Some(t) = d.turns.iter().find(|t| t["id"] == turn.as_str()).filter(|t| t["status"] != "inProgress") {
+                    return t.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 90 s");
+        }
+    };
+    let d = ws.reconnect(ID).await.unwrap();
+    assert!(ws.collaboration_status(ID).await.unwrap().ready, "connected and ready: {}", d.agent.connection_state);
+
+    // 1. Nothing to compact yet: the Turn fails in 2.x's words.
+    let answer = ws.opencode_compact(ID).await.expect("admitted");
+    let t = ended(answer["turnId"].as_str().unwrap().to_owned()).await;
+    println!("probe: 1 the empty session's /compact Turn {} {} {}", t["status"], t["error"], t["_opencodeCompact"]);
+    assert_eq!((&t["status"], &t["_opencodeCompact"]["state"]), (&json!("failed"), &json!("failed")), "{t:#}");
+    assert!(t["error"]["message"].as_str().unwrap_or_default().contains("Nothing to compact yet"), "in 2.x's words: {t:#}");
+
+    // 2. A message, then /compact: completed, with the stub's summary.
+    let first = send("c1", "probe-61 compact one").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(first).await["status"], "completed");
+    let started = Instant::now();
+    let answer = ws.opencode_compact(ID).await.expect("admitted");
+    let t = ended(answer["turnId"].as_str().unwrap().to_owned()).await;
+    println!("probe: 2 the /compact Turn {} after {:?}: {}", t["status"], started.elapsed(), t["_opencodeCompact"]);
+    assert_eq!((&t["status"], &t["_opencodeCompact"]["state"]), (&json!("completed"), &json!("completed")), "{t:#}");
+    let item = t["items"].as_array().unwrap().iter().find(|i| i["type"] == "contextCompaction").expect("its compaction item");
+    assert!(item["text"].as_str().unwrap_or_default().contains("probe-61 compaction summary"), "the stub's summary: {item}");
+    let d = ws.store.detail(ID).unwrap();
+    println!("probe: 2 Turns {:?}", d.turns.iter().map(|t| (t["id"].clone(), t["status"].clone())).collect::<Vec<_>>());
+    assert_eq!(d.turns.len(), 3, "its input made no Turn of its own");
+
+    // 3. The next message goes.
+    let next = send("c2", "probe-61 after").await.expect("the next message goes").turn_id.unwrap();
+    assert_eq!(ended(next).await["status"], "completed");
+
+    ws.close_agent(ID).await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+    endpoint.abort();
+}
+
+/// A Git repository for the Rewind probes (T-61 slice 5): `repo/work` (the
+/// Agent's folder) holds `a.txt` = "one", `repo/sibling.txt` is in the
+/// worktree but outside the folder, `outside/x.txt` outside the repository,
+/// all committed by a synthetic author; and the stub's provider configured in
+/// the folder, every permission allowed so that `write` asks nothing. The
+/// folder and the repository, resolved.
+fn rewind_repo(dir: &Path, port: u16) -> (PathBuf, PathBuf) {
+    let (repo, outside) = (dir.join("repo"), dir.join("outside"));
+    std::fs::create_dir_all(repo.join("work")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(repo.join("work/a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join("sibling.txt"), "sib\n").unwrap();
+    std::fs::write(outside.join("x.txt"), "x\n").unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").current_dir(&repo).args(["-c", "user.name=Probe", "-c", "user.email=probe@example.invalid"])
+            .args(args).env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "probe"]);
+    let mut config: Value = serde_json::from_str(&commands_config(port)).unwrap();
+    config["permissions"] = json!([{"action": "*", "resource": "*", "effect": "allow"}]);
+    std::fs::write(repo.join("work/opencode.json"), config.to_string()).unwrap();
+    (repo.join("work").canonicalize().unwrap(), repo.canonicalize().unwrap())
+}
+
+/// The sha256 of a file's bytes, as Core's revert check states it.
+fn file_state(bytes: &[u8]) -> yuzuno_workspace::opencode_revert_files::State {
+    use sha2::Digest;
+    yuzuno_workspace::opencode_revert_files::State::File {
+        size: bytes.len() as u64, sha256: sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect(), executable: false,
+    }
+}
+
+/// A real OpenCode 2.x keeps each step's snapshot where Core's Rewind reads
+/// it (T-61 slice 5, D-23 (a)), against the stub provider. A Turn that
+/// writes two files of the folder and one outside it: each of its steps has
+/// `snapshot.start` and `end`, and its files are the folder's two, relative
+/// to the Git top level, never the one outside. The store is in the data
+/// folder Core gives it, by 2.x's location's project and the SHA-1 of the
+/// resolved top level, its `alternates` naming the repository's objects.
+/// From there Core's own check reads each file as the Turn found it, and
+/// writes nothing.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
+async fn a_real_opencode_2x_keeps_each_steps_snapshot_where_cores_rewind_reads_it() {
+    use yuzuno_workspace::opencode_revert_files::{self as files, Root, State, BOUNDS};
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("db");
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, _log) = stub_provider(dir.path());
+    let (folder, repo) = rewind_repo(dir.path(), port);
+    let launch = Launch::new(program, folder.clone(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let model = server.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+
+    let (turn_a, turn_b) = (MessageId::new(), MessageId::new());
+    for (turn, prompt) in [(&turn_a, "probe-61 write"), (&turn_b, "probe-61 three")] {
+        assert_eq!(server.submit(&session, turn, prompt).await.unwrap(), Submission::Accepted);
+        let run = one_run(&mut events, &session).await;
+        println!("probe: {prompt}: its run {:?}", types(&run));
+        assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded", "{prompt}");
+    }
+    let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/new.txt"), read("repo/sibling.txt")),
+        ("three\n".into(), "new\n".into(), "changed".into()), "the tools ran");
+
+    // 1. Each step's snapshot.
+    let messages = server.messages(&session).await.unwrap();
+    let list = messages.as_array().unwrap();
+    for m in list.iter().filter(|m| m["type"] == "assistant") {
+        println!("probe: 1 step {} snapshot {}", m["id"], m["snapshot"]);
+        assert!(m["snapshot"]["start"].is_string() && m["snapshot"]["end"].is_string(), "each step's start and end: {m}");
+    }
+    let from = list.iter().position(|m| m["id"] == turn_a.as_str()).expect("turn A's message");
+    let until = list.iter().position(|m| m["id"] == turn_b.as_str()).expect("turn B's message");
+    let mut changed: Vec<String> = list[from..until].iter().filter(|m| m["type"] == "assistant")
+        .flat_map(|m| m["snapshot"]["files"].as_array().cloned().unwrap_or_default()).filter_map(|f| f.as_str().map(str::to_owned)).collect();
+    changed.sort();
+    changed.dedup();
+    assert_eq!(changed, ["work/a.txt", "work/new.txt"], "the folder's files, relative to the top level, not sibling.txt");
+
+    // 2. Where the store is, and what Core's check reads from it.
+    let location = server.location(folder.to_str().unwrap()).await.unwrap();
+    println!("probe: 2 location {location}");
+    let info = server.session(&session).await.unwrap();
+    let project = location["project"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(info["projectID"], project.as_str(), "the session's project is the location's");
+    let toplevel = PathBuf::from(location["project"]["directory"].as_str().unwrap()).canonicalize().unwrap();
+    assert_eq!(toplevel, repo, "the project's directory is the Git top level");
+    assert_eq!(PathBuf::from(location["directory"].as_str().unwrap()).canonicalize().unwrap(), folder, "the folder, resolved");
+    let data = launch.data.join("opencode");
+    let store = files::store(data.to_str().unwrap(), &project, repo.to_str().unwrap()).unwrap();
+    println!("probe: 2 store {}", store.display());
+    assert!(store.join("HEAD").is_file(), "the store, in the data folder Core gave it: {}", store.display());
+    let alternates = std::fs::read_to_string(store.join("objects/info/alternates")).unwrap_or_default();
+    println!("probe: 2 alternates {alternates:?}");
+    assert!(alternates.lines().any(|l| Path::new(l.trim()) == repo.join(".git/objects")), "the repository's objects: {alternates:?}");
+    let targets = files::targets_v2(list, turn_a.as_str(), repo.to_str().unwrap(), folder.to_str().unwrap()).unwrap();
+    println!("probe: 2 targets {targets:?}");
+    let root_of = folder.clone();
+    let at = tokio::task::spawn_blocking(move || Root::of(&root_of)).await.unwrap().unwrap();
+    let (entries, _) = files::plan(&store, &repo, &[], &targets, &folder, at, BOUNDS).await.unwrap();
+    let seen: Vec<(String, State, State)> = entries.into_iter().map(|e| (e.target.rel, e.expected, e.current)).collect();
+    assert_eq!(seen, vec![
+        ("work/a.txt".to_owned(), file_state(b"one\n"), file_state(b"three\n")),
+        ("work/new.txt".to_owned(), State::Absent, file_state(b"new\n")),
+    ], "each file as the Turn found it, and as it is now");
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/new.txt"), read("repo/sibling.txt"), read("outside/x.txt")),
+        ("three\n".into(), "new\n".into(), "changed".into(), "x\n".into()), "nothing written");
+
+    server.shutdown().await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// The sha256 of every file under `dir` but those under `skip`, by path:
+/// what a revert must leave as it was.
+fn hashes(dir: &Path, skip: &[&Path]) -> std::collections::BTreeMap<PathBuf, String> {
+    use sha2::Digest;
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).unwrap() {
+            let path = entry.unwrap().path();
+            if skip.iter().any(|s| path.starts_with(s)) {
+                continue;
+            }
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file() {
+                let sum = sha2::Sha256::digest(std::fs::read(&path).unwrap()).iter().map(|b| format!("{b:02x}")).collect();
+                out.insert(path, sum);
+            }
+        }
+    }
+    out
+}
+
+/// One prompt of the stub's, under a new ID, run to its end: the ID, and
+/// the run's events.
+async fn prompt_run(server: &Server, events: &mut Events, session: &str, prompt: &str) -> (MessageId, Vec<Value>) {
+    let turn = MessageId::new();
+    assert_eq!(server.submit(session, &turn, prompt).await.unwrap(), Submission::Accepted);
+    let run = one_run(events, session).await;
+    println!("probe: {prompt}: its run {:?}", types(&run));
+    assert_eq!(run.last().unwrap()["type"], "session.execution.succeeded", "{prompt}");
+    (turn, run)
+}
+
+/// A real OpenCode 2.x stages, commits and refuses a revert as Core's
+/// transport reads them (T-61 slice 6, D-24, D-26 (a), D-27 (a)), against
+/// the stub provider.
+/// - Refused before anything changes, and read as refused: a message the
+///   session does not hold (404), and a running session (409).
+/// - A stage sends back each file of the folder's later steps, nothing
+///   else, keeps the revert, and keeps the messages; its answer lists what
+///   changed.
+/// - Its commit deletes the messages from the Turn on, touching no file,
+///   and its `session.revert.committed` is read as Core's own
+///   `opencode.reverted`.
+/// - A prompt, and a compaction, commit a held revert before they are
+///   admitted.
+/// - A restore that fails part way (a folder it cannot remove from)
+///   answers 500, read as unknown: no revert kept, the file checked out
+///   first already back.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
+async fn a_real_opencode_2x_stages_and_commits_a_revert_as_cores_transport_reads_them() {
+    use std::os::unix::fs::PermissionsExt;
+    use yuzuno_workspace::opencode::RevertAnswer;
+    use yuzuno_workspace::opencode_v2::REVERTED;
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("db");
+    std::fs::create_dir(&root).unwrap();
+    let (mut stub, port, _log) = stub_provider(dir.path());
+    let (folder, repo) = rewind_repo(dir.path(), port);
+    let launch = Launch::new(program, folder.clone(), &root, dir.path().join("cache"));
+    let server = Server::start(&launch).await.unwrap();
+    println!("probe: ready; /api/info says version {}", server.version());
+    let model = server.models().await.unwrap().into_iter().find(|m| m.id() == "stub/fake").expect("the stub's model is listed");
+    let mut events = server.subscribe(EVENT_IDLE_LIMIT).await.unwrap();
+    let session = server.create_session("probe").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&session, &model, None).await.unwrap();
+    let (turn_a, _) = prompt_run(&server, &mut events, &session, "probe-61 write").await;
+    let (turn_b, _) = prompt_run(&server, &mut events, &session, "probe-61 three").await;
+    let read = |rel: &str| std::fs::read_to_string(dir.path().join(rel)).ok();
+    let some = |text: &str| Some(text.to_owned());
+    // Every file outside the Agent's folder (the repository's own Git folder aside, which Git may refresh).
+    let (outside, git) = (dir.path().join("outside"), repo.join(".git"));
+    let others = || {
+        let mut all = hashes(&repo, &[&folder, &git]);
+        all.extend(hashes(&outside, &[]));
+        all
+    };
+    let before = others();
+    let ids = |list: &Value| list.as_array().unwrap().iter().filter_map(|m| m["id"].as_str().map(str::to_owned)).collect::<Vec<_>>();
+
+    // 6. Refused before anything changes: a message the session does not hold, and a running session.
+    let unknown = MessageId::new();
+    let answer = server.stage(&session, unknown.as_str()).unwrap().await;
+    println!("probe: 6 an unknown message: {answer:?}");
+    assert!(matches!(&answer, RevertAnswer::Refused(s) if s.code == 404), "read as refused: {answer:?}");
+    let busy = server.create_session("probe-busy").await.unwrap()["id"].as_str().unwrap().to_owned();
+    server.switch_model(&busy, &model, None).await.unwrap();
+    let slow = MessageId::new();
+    assert_eq!(server.submit(&busy, &slow, "probe-4a slow").await.unwrap(), Submission::Accepted);
+    let (seen, started) = until_kind(&mut events, &busy, &["session.execution.started"], 30).await;
+    assert!(started, "its run started: {:?}", types(&seen));
+    let answer = server.stage(&busy, slow.as_str()).unwrap().await;
+    println!("probe: 6 a running session: {answer:?}");
+    assert!(matches!(&answer, RevertAnswer::Refused(s) if s.code == 409), "read as refused: {answer:?}");
+    server.abort(&busy).await.unwrap();
+    let (seen, ended) = until_kind(&mut events, &busy, &ENDS, 30).await;
+    assert!(ended, "the slow run ended: {:?}", types(&seen));
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/new.txt")), (some("three\n"), some("new\n")), "nothing sent back by a refusal");
+
+    // 3. Staged to Turn A: the folder's files back as A found them, nothing else, the messages kept.
+    let answer = server.stage(&session, turn_a.as_str()).unwrap().await;
+    println!("probe: 3 staged: {answer:?}");
+    let RevertAnswer::Answered(staged) = answer else { panic!("answered: {answer:?}") };
+    assert_eq!(staged["revert"]["messageID"], turn_a.as_str(), "the session holds the revert to A: {staged}");
+    let mut changed: Vec<(String, String)> = staged["revert"]["files"].as_array().unwrap().iter()
+        .map(|f| (f["file"].as_str().unwrap_or_default().to_owned(), f["status"].as_str().unwrap_or_default().to_owned())).collect();
+    changed.sort();
+    assert_eq!(changed, [("work/a.txt".to_owned(), "modified".to_owned()), ("work/new.txt".to_owned(), "deleted".to_owned())], "{staged}");
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/new.txt")), (some("one\n"), None), "sent back");
+    assert_eq!(others(), before, "nothing outside the folder changed (sibling.txt stays as A's shell left it)");
+    assert_eq!(server.session(&session).await.unwrap()["revert"]["messageID"], turn_a.as_str(), "kept in the session");
+    let listed = ids(&server.messages(&session).await.unwrap());
+    assert!(listed.contains(&turn_a.as_str().to_owned()) && listed.contains(&turn_b.as_str().to_owned()), "the messages stay: {listed:?}");
+
+    // 4. Committed: the messages from A on are deleted, no file is touched, and Core reads its event as its own.
+    server.commit(&session).await.unwrap();
+    let (seen, committed) = until_kind(&mut events, &session, &["session.revert.committed"], 10).await;
+    let event = seen.last().unwrap();
+    println!("probe: 4 {} {}", event["type"], event["data"]);
+    assert!(committed, "{:?}", types(&seen));
+    assert_eq!((&event["data"]["sessionID"], &event["data"]["to"]), (&json!(session), &json!(turn_a.as_str())), "{event}");
+    let read_as = Cursor::default().read(event);
+    println!("probe: 4 read as {read_as:?}");
+    assert!(read_as.iter().any(|e| e["type"] == REVERTED && e["data"]["to"] == turn_a.as_str()), "read as Core's own: {read_as:?}");
+    let listed = ids(&server.messages(&session).await.unwrap());
+    println!("probe: 4 left {listed:?}");
+    assert!(!listed.contains(&turn_a.as_str().to_owned()) && !listed.contains(&turn_b.as_str().to_owned()), "deleted: {listed:?}");
+    assert!(server.session(&session).await.unwrap()["revert"].is_null(), "no revert held");
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/new.txt")), (some("one\n"), None), "the commit touches no file");
+
+    // 7. A prompt while a revert is held commits it before it is admitted.
+    let (turn_c, _) = prompt_run(&server, &mut events, &session, "probe-61 three").await;
+    let RevertAnswer::Answered(_) = server.stage(&session, turn_c.as_str()).unwrap().await else { panic!("staged to C") };
+    assert_eq!(read("repo/work/a.txt"), some("one\n"));
+    let (turn_d, run) = prompt_run(&server, &mut events, &session, "probe-61 three").await;
+    let kinds = types(&run);
+    let committed = kinds.iter().position(|t| t == "session.revert.committed").expect("committed by the prompt");
+    let enqueued = kinds.iter().position(|t| t == "session.inbox.enqueued").expect("the prompt admitted");
+    println!("probe: 7 committed at {committed}, admitted at {enqueued}");
+    assert!(committed < enqueued, "committed before admitted: {kinds:?}");
+    let listed = ids(&server.messages(&session).await.unwrap());
+    assert!(!listed.contains(&turn_c.as_str().to_owned()) && listed.contains(&turn_d.as_str().to_owned()), "{listed:?}");
+
+    // 10. A compaction while a revert is held commits it before it is admitted.
+    let RevertAnswer::Answered(_) = server.stage(&session, turn_d.as_str()).unwrap().await else { panic!("staged to D") };
+    let compaction = MessageId::new();
+    assert_eq!(server.compact(&session, &compaction).await.unwrap(), CompactAdmission::Admitted);
+    let (run, ended) = until_kind(&mut events, &session, &ENDS, 60).await;
+    let kinds = types(&run);
+    println!("probe: 10 {kinds:?}");
+    assert!(ended, "its run ended");
+    let committed = kinds.iter().position(|t| t == "session.revert.committed").expect("committed by the compaction");
+    let enqueued = kinds.iter().position(|t| t == "session.inbox.enqueued").expect("the compaction admitted");
+    assert!(committed < enqueued, "committed before admitted: {kinds:?}");
+    assert!(!ids(&server.messages(&session).await.unwrap()).contains(&turn_d.as_str().to_owned()), "D's message deleted");
+
+    // 8. A restore that fails part way: sub/ can't be removed from, so a.txt goes back and sub/b.txt stays.
+    std::fs::create_dir(folder.join("sub")).unwrap();
+    let (turn_e, _) = prompt_run(&server, &mut events, &session, "probe-61 nested").await;
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/sub/b.txt")), (some("four\n"), some("b\n")));
+    std::fs::set_permissions(folder.join("sub"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let answer = server.stage(&session, turn_e.as_str()).unwrap().await;
+    std::fs::set_permissions(folder.join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    println!("probe: 8 a restore that fails part way: {answer:?}");
+    assert!(matches!(&answer, RevertAnswer::Unknown(why) if why.contains("500")), "read as unknown: {answer:?}");
+    assert!(server.session(&session).await.unwrap()["revert"].is_null(), "no revert kept");
+    assert_eq!((read("repo/work/a.txt"), read("repo/work/sub/b.txt")), (some("one\n"), some("b\n")),
+        "a.txt, checked out first, is back; sub/b.txt stays");
+    assert!(ids(&server.messages(&session).await.unwrap()).contains(&turn_e.as_str().to_owned()), "E's message stays");
+
+    server.shutdown().await.unwrap();
+    stub.kill().ok();
+    stub.wait().ok();
+}
+
+/// A Rewind through the Workspace on a real OpenCode 2.x (T-61 slices 5
+/// and 6, D-2 (c)), against the stub provider.
+/// - Previewed: the files 2.x would send back, each as the Turn found it
+///   and as it is now, and the Turns that leave; nothing written.
+/// - Confirmed: each file back and checked, the Turns gone from the
+///   record, their messages deleted from 2.x's session, nothing asked of
+///   the model; the Agent goes on.
+/// - A restore that fails part way: unknown, each file listed as it is now,
+///   Core's backup named, the Agent held back while any file differs from
+///   before, and free once all are as before again.
+#[tokio::test]
+#[ignore = "needs a real OpenCode 2.x, named by YUZUNO_OPENCODE_PROBE, python3, git, and no network"]
+async fn a_real_opencode_2x_rewind_is_confirmed_through_the_workspace() {
+    use std::os::unix::fs::PermissionsExt;
+    use yuzuno_workspace::{model::{AgentDetail, MessageInput}, workspace::Workspace};
+    const ID: &str = "probe61rewind";
+    let program = PathBuf::from(std::env::var_os("YUZUNO_OPENCODE_PROBE").expect("YUZUNO_OPENCODE_PROBE names the executable"));
+    std::env::set_var("YUZUNO_OPENCODE_BIN", &program);
+    let dir = tempfile::tempdir().unwrap();
+    let (mut stub, port, log) = stub_provider(dir.path());
+    let (folder, _repo) = rewind_repo(dir.path(), port);
+    let ws = Workspace::new(dir.path().join("data"), folder.to_string_lossy().into(), "unused".into()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mcp_port = listener.local_addr().unwrap().port();
+    ws.start_collaboration(mcp_port);
+    let app = yuzuno_workspace::collaboration_mcp::router(ws.clone(), mcp_port);
+    let endpoint = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let agent: AgentDetail = serde_json::from_value(json!({"agent": {
+        "id":ID, "name":"OpenCode", "cwd":folder, "model":"stub/fake", "color":"sage", "harness":"opencode",
+        "threadId":null, "status":"offline", "createdAt":"", "updatedAt":"",
+        "unreadCount":0, "pendingCount":0, "lastSeq":0, "reviewedSeq":0
+    },"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    ws.store.insert(&agent).unwrap();
+    let send = |client: &str, text: &str| {
+        let (ws, input) = (ws.clone(), serde_json::from_value::<MessageInput>(json!({"clientMessageId":client,"text":text})).unwrap());
+        async move { ws.send_message(ID, input).await }
+    };
+    let ended = |turn: String| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..900 {
+                let d = ws.store.detail(ID).unwrap();
+                if d.agent.status == "idle" && d.turns.iter().any(|t| t["id"] == turn.as_str() && t["status"] != "inProgress") {
+                    return d.turns.iter().find(|t| t["id"] == turn.as_str()).unwrap().clone();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("the turn did not end within 90 s");
+        }
+    };
+    let turn_ids = || ws.store.detail(ID).unwrap().turns.iter().filter_map(|t| t["id"].as_str().map(str::to_owned)).collect::<Vec<_>>();
+    let read = |rel: &str| std::fs::read_to_string(folder.join(rel)).ok();
+    let some = |text: &str| Some(text.to_owned());
+    ws.reconnect(ID).await.unwrap();
+    let a = send("c1", "probe-61 write").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(a.clone()).await["status"], "completed");
+    let b = send("c2", "probe-61 three").await.expect("sent").turn_id.unwrap();
+    assert_eq!(ended(b.clone()).await["status"], "completed");
+    let requests = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+
+    // Previewed.
+    let preview = ws.opencode_revert_preview(ID, &a).await.expect("a 2.x Rewind is previewed");
+    println!("probe: the preview {preview}");
+    let state = |s: yuzuno_workspace::opencode_revert_files::State| serde_json::to_value(s).unwrap();
+    let path = |rel: &str| folder.join(rel).to_string_lossy().into_owned();
+    assert_eq!(preview["files"], json!([
+        {"path": path("a.txt"), "expected": state(file_state(b"one\n")), "current": state(file_state(b"three\n"))},
+        {"path": path("new.txt"), "expected": state(yuzuno_workspace::opencode_revert_files::State::Absent), "current": state(file_state(b"new\n"))},
+    ]), "the folder's files as the Turn found them and as they are: {preview}");
+    assert_eq!(preview["removedTurns"], 2, "{preview}");
+    assert_eq!((read("a.txt"), read("new.txt")), (some("three\n"), some("new\n")), "nothing written");
+
+    // Confirmed.
+    let outcome = ws.opencode_revert_confirm(ID, preview["previewId"].as_str().unwrap()).await.expect("confirmed");
+    println!("probe: the confirm {outcome}");
+    assert_eq!((&outcome["status"], &outcome["draft"]), (&json!("completed"), &json!("probe-61 write")), "{outcome}");
+    assert_eq!(outcome["files"], json!([{"path": path("a.txt"), "outcome": "verified"}, {"path": path("new.txt"), "outcome": "verified"}]), "{outcome}");
+    assert_eq!((read("a.txt"), read("new.txt")), (some("one\n"), None), "sent back");
+    assert!(turn_ids().is_empty(), "the Turns leave the record: {:?}", turn_ids());
+    assert!(ws.pending_rewind(ID).await.unwrap()["attempt"].is_null(), "none left to check");
+    assert_eq!(std::fs::read_to_string(&log).unwrap_or_default().lines().count(), requests, "nothing asked of the model");
+
+    // The Agent goes on, and 2.x has deleted the reverted messages: the model is sent none of them.
+    std::fs::create_dir(folder.join("sub")).unwrap();
+    let nested = send("c3", "probe-61 nested").await.expect("the Agent goes on").turn_id.unwrap();
+    assert_eq!(ended(nested.clone()).await["status"], "completed");
+    assert_eq!(turn_ids(), vec![nested.clone()]);
+    let sent: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().skip(requests)
+        .map(|line| serde_json::from_str::<Value>(line).unwrap()["messages"].to_string()).collect();
+    assert!(sent.iter().any(|m| m.contains("probe-61 nested")), "the next prompt was asked: {sent:?}");
+    assert!(!sent.iter().any(|m| m.contains("probe-61 write") || m.contains("probe-61 three")), "no reverted message is sent: {sent:?}");
+
+    // A restore that fails part way: sub/ can't be removed from.
+    let preview = ws.opencode_revert_preview(ID, &nested).await.expect("previewed");
+    let key = preview["previewId"].as_str().unwrap().to_owned();
+    std::fs::set_permissions(folder.join("sub"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let outcome = ws.opencode_revert_confirm(ID, &key).await;
+    std::fs::set_permissions(folder.join("sub"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let outcome = outcome.expect("answered");
+    println!("probe: a restore that fails part way {outcome}");
+    assert_eq!(outcome["status"], "unknown", "{outcome}");
+    assert_eq!(outcome["files"], json!([{"path": path("a.txt"), "outcome": "verified"}, {"path": path("sub/b.txt"), "outcome": "notRestored"}]),
+        "a.txt back, sub/b.txt not: {outcome}");
+    let backup = dir.path().join("data/opencode").join(ID).join("revert").join(&key);
+    assert!(outcome["message"].as_str().unwrap().contains(&backup.display().to_string()), "Core's backup is named: {outcome}");
+    assert!(ws.send_message(ID, serde_json::from_value(json!({"clientMessageId":"c4","text":"held"})).unwrap()).await.is_err(), "held back");
+    let checked = ws.rewind_check(ID, &key).await.unwrap();
+    println!("probe: checked {checked}");
+    assert_eq!(checked["status"], "unknown", "a.txt differs from before: {checked}");
+    std::fs::write(folder.join("a.txt"), std::fs::read(backup.join("0.bin")).unwrap()).unwrap();
+    let checked = ws.rewind_check(ID, &key).await.unwrap();
+    println!("probe: checked again {checked}");
+    assert_eq!(checked["status"], "unchanged", "all as before: {checked}");
+    assert_eq!(turn_ids(), vec![nested]);
+    assert!(ws.pending_rewind(ID).await.unwrap()["attempt"].is_null(), "the Agent goes on");
 
     ws.close_agent(ID).await.unwrap();
     stub.kill().ok();

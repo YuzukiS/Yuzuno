@@ -634,21 +634,17 @@ try {
       }
     });
 
-    await step(`${theme}: Settings has the desktop app under Updates, in the eight-category settings center`, async () => {
+    await step(`${theme}: Settings has the desktop app under Updates, in the settings center's pages`, async () => {
       await page.getByRole("button", { name: "Settings and updates", exact: true }).click();
       const settings = page.locator(".modal.settings-modal");
       await settings.waitFor();
       try {
-        // The eight categories in order, each tab named in full for assistive technology; beside its icon each
-        // shows a short name, hidden from it (T-187: the narrow icon sidebar).
-        const full = ["Appearance & interaction", "Notifications & attention", "Agents & runtime", "Connections & devices", "Projects & collaboration", "Jobs & resources", "Data, privacy & recovery", "Updates & about"];
-        const tabs = settings.getByRole("tab");
-        assert.equal(await tabs.count(), full.length);
-        for (const [index, name] of full.entries())
-          assert.equal(await tabs.nth(index).getAttribute("id"), await settings.getByRole("tab", { name, exact: true }).getAttribute("id"), `tab ${index + 1} is "${name}"`);
-        assert.deepEqual(await settings.locator(".settings-nav [role=tab] .settings-nav-label").allInnerTexts(),
-          ["Appearance", "Notifications", "Agents", "Connections", "Projects", "Jobs", "Data", "Updates"]);
-        const desktop = settings.locator('#settings-panel-updates [aria-label="Desktop app"]');
+        // The pages in order, in their four groups (YN-8).
+        const full = ["Appearance", "Typing & time", "Language", "Shortcuts", "Notifications", "Move to another device",
+          "Projects", "Machines", "Agent defaults", "Executors", "Home", "Phone access",
+          "Storage", "Backup & restore", "Diagnostics", "Updates", "Runtime", "About & help"];
+        assert.deepEqual(await settings.locator(".settings-nav [role=tab] .settings-nav-label").allInnerTexts(), full);
+        const desktop = settings.locator('#settings-page [aria-label="Desktop app"]');
         await desktop.waitFor();
         assert.match(await desktop.textContent(), /updated separately/);
         assert.equal(await desktop.locator("button").count(), 0, "no desktop buttons in a browser");

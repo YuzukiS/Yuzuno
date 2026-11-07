@@ -226,71 +226,51 @@
   font-weight: 400;
 }
 
-/* Projects dialog */
-.project-manager {
-  display: grid;
-  grid-template-columns: minmax(170px, 210px) minmax(0, 1fr);
-  gap: 22px;
-  margin-top: 18px;
-  min-height: 380px;
-}
-.project-list {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding-right: 16px;
-  border-right: 1px solid var(--line);
-}
-.project-list-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 9px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--ink);
-  text-align: left;
-}
-.project-list-item:hover {
-  background: var(--surface-hover);
-}
-.project-list-item.selected {
-  background: var(--surface-soft);
-  font-weight: 560;
-}
-.project-list-item span:not(.scope-blank) {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.project-list-item small,
+/* Settings › Projects › a project (YN-8 S2a): each block with an editor
+   of its own is one block of a card, without the frame it had alone. */
 .project-count {
   color: var(--text-quiet);
   font-weight: 400;
 }
-.project-new {
+.project-block > :is(.github-panel, .services-panel) {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.project-block > :is(.project-leads, .home-editor-settings) {
+  padding-block: 0;
+  border-top: 0;
+}
+.project-block > .settings-section {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+/* A block of a card: its legend as close to what follows as Appearance's,
+   and archive or delete as a row of its own, not a dialog's footer. */
+.appearance-field.project-form > legend {
+  margin-bottom: 0;
+}
+.appearance-field .project-lifecycle {
   justify-content: flex-start;
-  margin-top: 6px;
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
-.project-archived-list {
-  display: grid;
-  gap: 3px;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+/* Its words at the size of the card's other help lines. */
+.project-block > :is(.project-leads, .home-editor-settings) p {
+  font-size: calc(10px + var(--font-adjust, 3px));
 }
-.project-archived-list > span {
-  padding: 0 9px 4px;
-  font-size: calc(9px + var(--font-adjust, 3px));
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-quiet);
-}
-.project-pane {
-  min-width: 0;
+/* Its title at the size of the card's other blocks' legends. */
+.project-block > section > header :is(h3, h4),
+.project-block > section > :is(h3, h4):first-child {
+  margin: 0;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+  font-weight: 550;
+  letter-spacing: 0;
 }
 .project-form {
   display: grid;
@@ -338,7 +318,7 @@
 }
 .project-rename {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: end;
   gap: 9px;
 }
@@ -348,7 +328,7 @@
 }
 .project-folder-row {
   display: grid;
-  grid-template-columns: minmax(110px, 150px) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(110px, 150px) minmax(0, 1fr);
   align-items: center;
   gap: 8px;
 }
@@ -472,16 +452,8 @@
 }
 
 @media (max-width: 720px) {
-  .project-manager {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .project-list {
-    padding: 0 0 12px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
   .project-folder-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
   }
   .project-machine {
     grid-column: 1 / -1;
@@ -521,12 +493,11 @@
   }
 }
 
-/* The scope trigger, its options and the projects list ease their hover and
-   selection colours (T-19). */
+/* The scope trigger and its options ease their hover and selection colours
+   (T-19). */
 .workspace-scope,
 .scope-option,
-.scope-menu-actions button,
-.project-list-item {
+.scope-menu-actions button {
   transition:
     background-color var(--motion-micro) var(--ease-standard),
     border-color var(--motion-micro) var(--ease-standard);

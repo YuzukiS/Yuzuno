@@ -18,6 +18,10 @@
 // conversation whose only work is five reviews — one running, two passed,
 // one cancelled by the reader, and the oldest asking for changes — on a
 // coarse 951x669 screen with the dock at 2, then at 0.
+//
+// Since YN-17 S2 (the user's decision) the column has no "Needs a look"
+// group and the entry no "N need a look": the review asking for changes is
+// listed first in Reviews, with its state, and the entry counts what runs.
 //   YUZUNO_UI_DIST=<isolated build> node tools/t15-review-count.mjs
 // T15_LANG=zh-Hans reads the same screens in Chinese. That exact value: a
 // language this does not know falls back to English and passes, which is
@@ -39,9 +43,9 @@ const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"} ${what}`); if
 
 // The words the column and the entry are read by, and a review's name.
 const words = lang === "zh-Hans"
-  ? { reviews: "审查", attention: "需要注意", openReviews: "打开审查", needsLook: "1 个待查看", running: "1 个在进行",
+  ? { reviews: "审查", gone: /需要注意|待查看/, openReviews: "打开审查", running: "1 个在进行",
       name: (round) => `PR #459 · 第 ${round} 轮` }
-  : { reviews: "Reviews", attention: "Needs a look", openReviews: "Open Reviews", needsLook: "1 need a look", running: "1 running",
+  : { reviews: "Reviews", gone: /Needs a look|need a look/i, openReviews: "Open Reviews", running: "1 running",
       name: (round) => `PR #459 · round ${round}` };
 
 const agent = {
@@ -78,7 +82,9 @@ const reviewPage = {
 // What Work activity should hold whatever the dock draws: every review but
 // the cancelled one; the one that asked for changes apart, under its own
 // heading; the rest under Reviews.
-const counted = { attention: [words.name(1)], reviews: [words.name(5), words.name(4), words.name(2)] };
+// In the column's order: the one asking for changes, the running one, then
+// the two that passed. The cancelled one is counted by nobody.
+const counted = { reviews: [words.name(1), words.name(5), words.name(4), words.name(2)] };
 const detail = {
   agent, pending: [], messageReceipts: [], artifacts: [],
   turns: Array.from({ length: 8 }, (_, i) => ({
@@ -165,6 +171,7 @@ async function look(limit) {
       for (const section of col.querySelectorAll("section"))
         groups[section.getAttribute("aria-label")] = [...section.querySelectorAll(".work-activity-row")].map((b) => ({
           name: (b.querySelector(".work-activity-row-name")?.textContent || "").trim(),
+          state: b.getAttribute("data-state"),
           list: b.classList.contains("work-activity-row-list"),
           disabled: b.disabled,
         }));
@@ -184,18 +191,20 @@ const opened = (page) => page.evaluate(() => window.__opened.map((d) => ({ ...d 
   check(seen.dockRows.length === 2 && seen.dockRows[0] === words.name(5) && seen.dockRows[1] === words.name(4),
     `the dock still draws its two, the running one and the newest (${JSON.stringify(seen.dockRows)})`);
   check(seen.dockMore === 1, `with the rest behind its "+N more" (${seen.dockMore})`);
-  check(seen.entryNeedsLook === true && !!seen.entrySays?.includes(words.needsLook),
-    `the entry counts the review past the dock's two that asked for changes (${JSON.stringify(seen.entrySays)}, marked ${seen.entryNeedsLook})`);
-  check(!!seen.entrySays?.includes(words.running), `and the one running (${JSON.stringify(seen.entrySays)})`);
+  check(!!seen.entrySays?.includes(words.running), `the entry counts the one running (${JSON.stringify(seen.entrySays)})`);
+  check(!words.gone.test(seen.entrySays || "") && seen.entryNeedsLook === false,
+    `and names nothing as needing a look (${JSON.stringify(seen.entrySays)}, marked ${seen.entryNeedsLook})`);
   check(column.there, `the entry opens the column (${column.there})`);
-  check(JSON.stringify(named(column.groups[words.attention])) === JSON.stringify(counted.attention),
-    `which lists that review under ${words.attention} (${JSON.stringify(named(column.groups[words.attention]))})`);
+  check(!Object.keys(column.groups).some((label) => words.gone.test(label)),
+    `which has no "needs a look" group (${JSON.stringify(Object.keys(column.groups))})`);
   check(JSON.stringify(named(column.groups[words.reviews])) === JSON.stringify(counted.reviews),
-    `and every other review under ${words.reviews}, not only the dock's two (${JSON.stringify(named(column.groups[words.reviews]))})`);
+    `and lists every review under ${words.reviews}, the one past the dock's two that asked for changes first (${JSON.stringify(named(column.groups[words.reviews]))})`);
+  const asking = (column.groups[words.reviews] || []).find((r) => r.name === words.name(1));
+  check(asking?.state === "exception", `with its state (${asking?.state})`);
   const all = Object.values(column.groups).flatMap(named);
   check(!all.includes(words.name(3)), `the one the reader cancelled counted by nobody (${JSON.stringify(all)})`);
   // The review past the dock's two opens itself.
-  if (column.there && named(column.groups[words.attention]).length) {
+  if (column.there && named(column.groups[words.reviews]).includes(words.name(1))) {
     await page.locator(".work-activity-column section .work-activity-row", { hasText: words.name(1) }).first().click();
     await page.waitForTimeout(500);
     const asked = await opened(page);
@@ -215,9 +224,9 @@ const opened = (page) => page.evaluate(() => window.__opened.map((d) => ({ ...d 
     `at 0 the dock draws no review (${seen.dockRows.length} drawn, ${seen.dockMore} more)`);
   check(!seen.dockShown, `and, with nothing else on it, no dock at all (${seen.dockShown})`);
   check(seen.entryThere, `but the entry is there for them (${seen.entryThere})`);
-  check(seen.entryNeedsLook === true && !!seen.entrySays?.includes(words.needsLook) && !!seen.entrySays?.includes(words.running),
+  check(seen.entryNeedsLook === false && !words.gone.test(seen.entrySays || "") && !!seen.entrySays?.includes(words.running),
     `saying what it said with the dock at 2 (${JSON.stringify(seen.entrySays)}, marked ${seen.entryNeedsLook})`);
-  check(JSON.stringify(named(column.groups[words.attention])) === JSON.stringify(counted.attention)
+  check(!Object.keys(column.groups).some((label) => words.gone.test(label))
     && JSON.stringify(named(column.groups[words.reviews])) === JSON.stringify(counted.reviews),
     `and its column lists the same reviews (${JSON.stringify(Object.fromEntries(Object.entries(column.groups).map(([k, v]) => [k, named(v)])))})`);
   const list = (column.groups[words.reviews] || []).find((r) => r.list);
