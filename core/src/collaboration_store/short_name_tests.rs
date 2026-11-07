@@ -50,7 +50,7 @@ fn a_short_name_is_one_trimmed_line_of_at_most_16_characters_and_null_or_empty_c
     assert_eq!(renamed["task"]["shortName"], "设备偏好");
     assert_eq!(renamed["activity"]["changes"]["shortName"], "设备偏好", "the change as kept");
     // Where it is read: the task's current view and its compact row.
-    let current = s.collaboration_call(None, "task_get", json!({"taskId":id})).unwrap();
+    let current = s.collaboration_call(None, "task_get", json!({"taskId":id,"view":"current"})).unwrap();
     assert_eq!(current["current"]["shortName"], "设备偏好", "{current}");
     let rows = s.collaboration_call(None, "task_list", json!({"compact":true})).unwrap();
     let row = rows["tasks"].as_array().unwrap().iter().find(|t| t["id"] == json!(id)).unwrap().clone();
@@ -59,7 +59,10 @@ fn a_short_name_is_one_trimmed_line_of_at_most_16_characters_and_null_or_empty_c
     let cleared = update(2, Value::Null);
     assert!(cleared["task"].get("shortName").is_none(), "{}", cleared["task"]);
     assert_eq!(cleared["activity"]["changes"]["shortName"], Value::Null);
-    assert_eq!(s.collaboration_call(None, "task_get", json!({"taskId":id})).unwrap()["current"]["shortName"], Value::Null);
+    assert_eq!(s.collaboration_call(None, "task_get", json!({"taskId":id,"view":"current"})).unwrap()["current"]["shortName"], Value::Null);
+    let rows = s.collaboration_call(None, "task_list", json!({"compact":true})).unwrap();
+    let row = rows["tasks"].as_array().unwrap().iter().find(|t| t["id"] == json!(id)).unwrap().clone();
+    assert!(row.get("shortName").is_none(), "a compact row without one stays short: {row}");
     update(3, json!("x"));
     assert!(update(4, json!("   "))["task"].get("shortName").is_none(), "an empty one is none");
 }

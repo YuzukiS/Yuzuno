@@ -177,7 +177,7 @@ async fn the_listing_names_its_task_by_its_key_and_its_template_by_its_label() {
     let e1 = listed(s, "e1");
     assert_eq!(e1["task"], json!({"id":"YN-1","title":"Keyed work","shortName":null}), "its key, not T-<n>: {e1}");
     // A short name given (T-43): the row says what it is doing by it.
-    let version = s.collaboration_call(None, "task_get", json!({"taskId":"YN-1"})).unwrap()["current"]["version"].clone();
+    let version = s.collaboration_call(None, "task_get", json!({"taskId":"YN-1","view":"current"})).unwrap()["current"]["version"].clone();
     s.collaboration_call(None, "task_update", json!({"requestId":"named","taskId":"YN-1","expectedVersion":version,
         "patch":{"shortName":"Keyed export"}})).unwrap();
     assert_eq!(listed(s, "e1")["task"]["shortName"], "Keyed export");
