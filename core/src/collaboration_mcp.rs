@@ -173,8 +173,20 @@ const INSTRUCTIONS: &str = "Your Agent identity is fixed by Yuzuno. Use peer_rea
 /// The server instructions: the collaboration rules and where the working
 /// guide is (T-131), then the Project Brief's hard rules (T-85). Claude
 /// re-announces server instructions after a compaction, so the rules survive it.
-fn server_instructions() -> String {
+pub(crate) fn server_instructions() -> String {
     format!("{INSTRUCTIONS} {}\n\n{}", crate::guide::INSTRUCTION, crate::project_brief::hard_rules())
+}
+
+/// The release this Core runs, as the MCP server's version (YN-5): the
+/// manifest's release ID, or for a development build `development-` and the
+/// first 12 hex of its tool list's digest, so two builds with different
+/// tools never report the same version. Before, every Core said 0.1.0.
+pub(crate) fn server_version() -> String {
+    let release = crate::guide::release();
+    match release["releaseId"].as_str() {
+        Some(id) if release["managed"] == true => id.to_owned(),
+        _ => format!("development-{}", &crate::session_baseline::catalog_digest()[..12]),
+    }
 }
 
 #[derive(Clone)]
@@ -187,10 +199,7 @@ struct CollaborationHandler {
 impl ServerHandler for CollaborationHandler {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                "yuzuno-collaboration",
-                env!("CARGO_PKG_VERSION"),
-            ))
+            .with_server_info(Implementation::new("yuzuno-collaboration", server_version()))
             .with_instructions(server_instructions())
     }
 
@@ -595,6 +604,29 @@ mod tests {
             config !=
             agent_http_config(&reopened, "agent-a", "http://127.0.0.1:4321").unwrap()
         );
+    }
+
+    /// YN-5: the version a client is told names this Core's release, or for
+    /// a development build its tool list, never the crate's fixed version.
+    #[tokio::test]
+    async fn the_server_version_names_this_cores_release_not_the_crate() {
+        let (_directory, ws) = fixture();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let token = ws.store.collaboration_mcp_token("agent-a").unwrap();
+        let app = router(ws.clone(), port);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let transport = StreamableHttpClientTransport::with_client(
+            reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap(),
+            StreamableHttpClientTransportConfig::with_uri(format!("http://127.0.0.1:{port}/mcp/agent-a")).auth_header(token),
+        );
+        let client = tokio::time::timeout(Duration::from_secs(10), ().serve(transport)).await.unwrap().unwrap();
+        let version = client.peer_info().unwrap().server_info.version.clone();
+        assert_ne!(version, env!("CARGO_PKG_VERSION"));
+        let digest = version.strip_prefix("development-").unwrap_or_default();
+        assert!(digest.len() == 12 && digest.bytes().all(|b| b.is_ascii_hexdigit()), "{version}");
+        let _ = client.cancel().await;
+        server.abort();
     }
 
     #[tokio::test]
