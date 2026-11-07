@@ -566,6 +566,50 @@ test("a report the user marks seen leaves brief_get, and you.recentlyLeft says w
   assert.match(sections, /An edit, resolve, remove or claim naming one of them is refused with not_found, saying why it left; put writes it again\./);
 });
 
+test("a LiveRefs item and a ResearchDesk plan's link may name a run of stages, and the guide says what it shows (YN-7)", () => {
+  const refs = { key: "sweep", kind: "status", title: "Sweep", status: { asOf: "2026-11-07T00:00:00Z", validFor: 3600 },
+    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["refs"] },
+      refs: { type: "LiveRefs", props: { items: [{ kind: "run", id: "0c2b5486-e986-4a30-864d-d3b03e73e07b", label: "lr sweep" }] } } } } };
+  assert.doesNotThrow(() => checkBriefSection(refs), "a LiveRefs item may name a run of stages");
+  assert.equal(checkBriefSection(refs).body.elements.refs.props.items[0].kind, "run");
+  const desk = structuredClone(benchmark);
+  desk.body.elements.desk.props.plans[0].links = [{ kind: "run", id: "0c2b5486-e986-4a30-864d-d3b03e73e07b" }];
+  assert.doesNotThrow(() => checkBriefSection(desk), "a plan's link may name a run of stages");
+  assert.equal(checkBriefSection(desk).body.elements.desk.props.plans[0].links[0].kind, "run");
+  assert.match(BRIEF_COMPONENT_DESCRIPTIONS.LiveRefs, /run \(a run of stages: the runId job_run_submit returned; Yuzuno shows its status and how many stages are done\)/);
+  assert.match(briefGuide("research"), /links name existing tasks, Jobs or runs of stages \(kind run, the runId job_run_submit returned\)/);
+});
+
+// YN-7 item 3: a number may be a CSV or TSV row's cell, the row named by the
+// text its key columns hold; each read form only from its own kind of file.
+test("a ResearchDesk number may be a CSV row's cell named by its key columns, and the guide says how it matches (YN-7)", () => {
+  const cell = { from: "table.csv", row: { sport: "alpha", d: "2" }, column: "auc" };
+  const withCsv = (number, path = "/home/me/study/table.csv") => {
+    const copy = structuredClone(doseStudy);
+    copy.attachments.push({ name: "table.csv", path });
+    copy.body.elements.desk.props.plots[0].rows[0].estimate.value = number;
+    return copy;
+  };
+  assert.doesNotThrow(() => checkBriefSection(withCsv(cell)), "a row's cell from a .csv");
+  assert.doesNotThrow(() => checkBriefSection(withCsv(cell, "/home/me/study/table.TSV")), "a row's cell from a .tsv");
+  assert.deepEqual(researchReads(checkBriefSection(withCsv(cell)).body.elements.desk.props)[0], { at: "low-v2.value", ...cell });
+  // table.csv then holds no read and is flagged too; the read's own problem is the one here.
+  const fromJson = problems(withCsv({ ...cell, from: "results.json" })).find((found) => found.code === "research_attachment");
+  assert.equal(fromJson.code, "research_attachment");
+  assert.match(fromJson.reason, /reads a row's cell from CSV or TSV files only/);
+  assert.equal(first(withCsv({ from: "table.csv", pointer: "/0/auc" })).code, "research_attachment", "a JSON Pointer is not a CSV read");
+  const wide = first(withCsv({ ...cell, row: { a: "1", b: "2", c: "3", d: "4", e: "5" } }));
+  assert.equal(wide.code, "invalid_field");
+  assert.match(wide.reason, /Name 1 to 4 columns/);
+  assert.equal(first(withCsv({ ...cell, row: {} })).code, "invalid_field", "a row names at least one column");
+  assert.equal(first(withCsv({ ...cell, column: " " })).code, "invalid_field", "a column has a name");
+  assert.equal(first(withCsv({ ...cell, pointer: "/0" })).code, "invalid_field", "a pointer or a row, not both");
+  assert.equal(BRIEF_PROBLEM_CODES.research_attachment, "A ResearchDesk number read from an attachment of the wrong kind: a JSON Pointer needs a .json file, a CSV row a .csv or .tsv file, each with a path.");
+  const guide = briefGuide("research");
+  assert.match(guide, /\{from, row, column\} for one whose path ends in \.csv or \.tsv/);
+  assert.match(guide, /Cells compare as text as written, without the spaces around them: "2" does not match "2\.0"\. No matching row shows as missing, two or more as ambiguous, never a guess/);
+});
+
 test("contract.json carries the brief, generated from this file", async () => {
   const committed = JSON.parse(await readFile(new URL("../../runtimes/result-validator/contract.json", import.meta.url), "utf8"));
   const brief = describeBrief();
@@ -641,7 +685,7 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   assert.equal(rejected((p) => { p.definitions[0].versions[1].version = 1; }).code, "duplicate_id");
   assert.equal(rejected((p) => { p.revisions[0].definition = { id: "recovery", from: 2, to: 1 }; }).code, "definition_order");
   assert.equal(rejected((p) => { p.revisions[0].claim = "nowhere"; }).code, "missing_reference");
-  // Numbers come only from this section's JSON attachments.
+  // Numbers come only from this section's attachments; a JSON Pointer only from a JSON file.
   const unregistered = rejected((p) => { p.plots[0].rows[0].estimate.value.from = "other.json"; });
   assert.equal(unregistered.code, "missing_attachment");
   assert.equal(unregistered.path, "body.elements.desk.props.plots.0.rows.0.estimate.value.from");
@@ -712,4 +756,12 @@ test("the research guide states the revision form and the desk-wide row and part
     assert.equal(found.code, "duplicate_id", id);
     assert.match(found.reason, new RegExp(`row and part id "${id}" is used twice`), id);
   }
+});
+
+// YN-3 PR C2: Agents read on the guide that an attached HTML page shows on its card, and when a card is the whole report.
+test("YN-3 the guide says a card with no visual shows its first kept image or HTML page, working, and that a card holding all its body is the whole report", () => {
+  const content = briefGuide("content");
+  assert.match(content, /A card with no visual shows instead the first kept image or single HTML page \(\.html or \.htm\) its Attachments show, and names up to three other files under it; an HTML page shows working on the card, in the same sandbox as its Preview, and opens large from there\./);
+  assert.match(content, /A report whose body holds only its lead \(one paragraph\), the card's picture and files, and its conditions is the whole report: its card has no Open report\./);
+  assert.match(content, /large \(two columns, two rows: an image, a scatter chart, an HTML page\)/);
 });

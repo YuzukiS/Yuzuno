@@ -2,7 +2,8 @@
 //!
 //! The contract (brief-contract.ts) checks a desk's ids and references with
 //! every brief_update. Here is what only Core can do with it: read the
-//! numbers it takes from this section's JSON snapshots, say what Core knows
+//! numbers it takes from this section's snapshots (a JSON Pointer into a JSON
+//! file, or a CSV or TSV row's cell, YN-7), say what Core knows
 //! of each source's snapshot, for one version of the section; and keep a
 //! definition version to one content across the section's versions.
 //!
@@ -34,18 +35,36 @@ use crate::store::Store;
 /// Numbers one desk may read from snapshots, as the contract's research.values.
 const READS: usize = 400;
 
+/// Where in its file a number sits: a JSON Pointer, or a CSV or TSV row,
+/// named by the text its key columns hold, and the column (YN-7).
+#[derive(Debug, PartialEq)]
+enum Place {
+    Pointer(String),
+    Cell { row: Vec<(String, String)>, column: String },
+}
+
 /// Where each number of a desk that names a snapshot sits: (`${row or part
-/// id}.value|low|high`, attachment, JSON Pointer), as the contract's
-/// researchReads lists them.
-fn reads(props: &Value) -> Vec<(String, String, String)> {
+/// id}.value|low|high`, attachment, place), as the contract's researchReads
+/// lists them.
+fn reads(props: &Value) -> Vec<(String, String, Place)> {
     let mut found = vec![];
     let mut add = |owner: &Value, estimate: &Value| {
         let Some(owner) = owner.as_str() else { return };
         for field in ["value", "low", "high"] {
             let number = &estimate[field];
-            if let (Some(from), Some(pointer)) = (number["from"].as_str(), number["pointer"].as_str()) {
-                found.push((format!("{owner}.{field}"), from.to_owned(), pointer.to_owned()));
-            }
+            let Some(from) = number["from"].as_str() else { continue };
+            let place = match (number["pointer"].as_str(), number["row"].as_object(), number["column"].as_str()) {
+                (Some(pointer), _, _) => Place::Pointer(pointer.to_owned()),
+                (None, Some(row), Some(column)) => {
+                    // Names and text compare without the spaces around them, as cells do.
+                    let text = |text: &Value| text.as_str().unwrap_or_default().trim().to_owned();
+                    let mut row: Vec<_> = row.iter().map(|(name, value)| (name.trim().to_owned(), text(value))).collect();
+                    row.sort();
+                    Place::Cell { row, column: column.trim().to_owned() }
+                }
+                _ => continue,
+            };
+            found.push((format!("{owner}.{field}"), from.to_owned(), place));
         }
     };
     for plot in props["plots"].as_array().into_iter().flatten() {
@@ -63,16 +82,63 @@ fn attachment<'a>(row: &'a Row, name: &str) -> Option<&'a Value> {
     row.data["attachments"].as_array().into_iter().flatten().find(|a| a["name"] == name)
 }
 
-/// One snapshot's JSON, or why it cannot be read: only an attachment of
-/// this section version that Core kept a copy of, with a .json path.
-fn parse(cache: &Path, row: &Row, name: &str) -> Result<Value, &'static str> {
+/// One snapshot as a desk reads it: a JSON file's value, or a CSV or TSV
+/// file's header and rows, each cell's text as written.
+enum Parsed {
+    Json(Value),
+    Table { header: Vec<String>, rows: Vec<Vec<String>> },
+}
+
+/// One snapshot, or why it cannot be read: only an attachment of this
+/// section version that Core kept a copy of, with a .json, .csv or .tsv path.
+fn parse(cache: &Path, row: &Row, name: &str) -> Result<Parsed, &'static str> {
     let (path, attachment) = attachments::snapshot_of(cache, row, name).map_err(|missing| missing.code)?;
-    if !attachment["path"].as_str().is_some_and(|path| path.to_ascii_lowercase().ends_with(".json")) {
-        return Err("not_json");
+    let named = attachment["path"].as_str().unwrap_or_default().to_ascii_lowercase();
+    let table = named.ends_with(".csv") || named.ends_with(".tsv");
+    if !named.ends_with(".json") && !table {
+        return Err("unsupported");
     }
     // Snapshots are at most 25 MB (staging) and a section has at most 12.
     let bytes = std::fs::read(path).map_err(|_| "unreadable")?;
-    serde_json::from_slice(&bytes).map_err(|_| "not_json")
+    if table {
+        let (header, rows) = attachments::text_table(&bytes, &named).map_err(|_| "not_csv")?;
+        return Ok(Parsed::Table { header, rows });
+    }
+    serde_json::from_slice(&bytes).map(Parsed::Json).map_err(|_| "not_json")
+}
+
+/// One number from a snapshot: at a JSON Pointer of a JSON file, or in a CSV
+/// or TSV row's cell (YN-7). A row is the one whose every named column holds
+/// that text, as written apart from the spaces around it; none, or a column
+/// the file does not have, is missing, two or more ambiguous: nothing is
+/// guessed. A place of the other kind than its file cannot be read.
+fn read(file: &Result<Parsed, &'static str>, place: &Place) -> Value {
+    let number = |found: Option<f64>| match found.filter(|n| n.is_finite()) {
+        Some(number) => json!({"status":"read","value":number}),
+        None => json!({"status":"not_number"}),
+    };
+    match (file, place) {
+        (Ok(Parsed::Json(json)), Place::Pointer(pointer)) => match json.pointer(pointer) {
+            Some(found) => number(found.as_f64()),
+            None => json!({"status":"missing"}),
+        },
+        (Ok(Parsed::Table { header, rows }), Place::Cell { row, column }) => {
+            let index = |name: &str| header.iter().position(|cell| cell == name);
+            let keys: Option<Vec<(usize, &str)>> = row.iter().map(|(name, text)| index(name.as_str()).map(|at| (at, text.as_str()))).collect();
+            let (Some(at), Some(keys)) = (index(column.as_str()), keys) else { return json!({"status":"missing"}) };
+            let mut matching = rows.iter().filter(|cells| keys.iter().all(|(i, text)| cells.get(*i).map(|cell| cell.trim()) == Some(*text)));
+            match (matching.next(), matching.next()) {
+                (None, _) => json!({"status":"missing"}),
+                (Some(_), Some(_)) => json!({"status":"ambiguous"}),
+                (Some(cells), None) => number(cells.get(at).and_then(|cell| cell.trim().parse::<f64>().ok())),
+            }
+        }
+        (Ok(Parsed::Table { .. }), Place::Pointer(_)) => json!({"status":"unavailable","reason":"not_json"}),
+        (Ok(Parsed::Json(_)), Place::Cell { .. }) => json!({"status":"unavailable","reason":"not_csv"}),
+        (Err("unsupported"), Place::Pointer(_)) => json!({"status":"unavailable","reason":"not_json"}),
+        (Err("unsupported"), Place::Cell { .. }) => json!({"status":"unavailable","reason":"not_csv"}),
+        (Err(reason), _) => json!({"status":"unavailable","reason":reason}),
+    }
 }
 
 /// What Core knows of one source's snapshot. The Agent's sha256 is compared
@@ -120,23 +186,13 @@ pub(super) fn desk(store: &Store, cache: &Path, project: &str, key: &str, elemen
     };
     let props = &node["props"];
     // Each snapshot parsed once per read.
-    let mut parsed: HashMap<String, Result<Value, &'static str>> = HashMap::new();
+    let mut parsed: HashMap<String, Result<Parsed, &'static str>> = HashMap::new();
     let mut values = Map::new();
-    for (at, from, pointer) in reads(props).into_iter().take(READS) {
+    for (at, from, place) in reads(props).into_iter().take(READS) {
         let file = parsed.entry(from.clone()).or_insert_with(|| parse(cache, &row, &from));
-        let read = match file {
-            Ok(json) => match json.pointer(&pointer) {
-                Some(found) => match found.as_f64().filter(|n| n.is_finite()) {
-                    Some(number) => json!({"status":"read","value":number}),
-                    None => json!({"status":"not_number"}),
-                },
-                None => json!({"status":"missing"}),
-            },
-            Err(reason) => json!({"status":"unavailable","reason":reason}),
-        };
-        let mut read = read;
-        read["from"] = json!(from);
-        values.insert(at, read);
+        let mut found = read(file, &place);
+        found["from"] = json!(from);
+        values.insert(at, found);
     }
     let mut sources = Map::new();
     let mut db = None;
@@ -335,11 +391,15 @@ mod tests {
     fn reads_list_every_number_named_by_a_snapshot() {
         let props = json!({"plots":[{"rows":[
             {"id":"r1","estimate":{"value":{"from":"a.json","pointer":"/m"},"low":1.0,"high":{"from":"a.json","pointer":"/h"}},
-             "parts":[{"id":"p1","estimate":{"value":{"from":"b.json","pointer":"/x/0"}}}]}]}]});
+             "parts":[{"id":"p1","estimate":{"value":{"from":"b.json","pointer":"/x/0"}}},
+                      {"id":"p2","estimate":{"value":{"from":"c.csv","row":{"sport":"alpha","d":"2"},"column":"auc"}}}]}]}]});
+        let pointer = |at: &str| Place::Pointer(at.to_owned());
+        let cell = Place::Cell { row: vec![("d".into(), "2".into()), ("sport".into(), "alpha".into())], column: "auc".into() };
         assert_eq!(reads(&props), vec![
-            ("r1.value".to_owned(), "a.json".to_owned(), "/m".to_owned()),
-            ("r1.high".to_owned(), "a.json".to_owned(), "/h".to_owned()),
-            ("p1.value".to_owned(), "b.json".to_owned(), "/x/0".to_owned()),
+            ("r1.value".to_owned(), "a.json".to_owned(), pointer("/m")),
+            ("r1.high".to_owned(), "a.json".to_owned(), pointer("/h")),
+            ("p1.value".to_owned(), "b.json".to_owned(), pointer("/x/0")),
+            ("p2.value".to_owned(), "c.csv".to_owned(), cell),
         ]);
     }
 }

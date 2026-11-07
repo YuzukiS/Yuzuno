@@ -229,8 +229,7 @@ impl std::error::Error for RequestRefused {}
 pub enum Submission {
     /// OpenCode took it: 2.x's prompt answers with the message as it
     /// durably admitted it, under the ID it was sent with, or says the ID is
-    /// one it holds already (T-32 slice 4a). A command's answer (1.19.3's
-    /// route) says only that the run started.
+    /// one it holds already (T-32 slice 4a).
     Accepted,
     /// A 4xx: OpenCode refused the request before taking it (an unknown
     /// session, an invalid body, wrong credentials).
@@ -385,29 +384,48 @@ impl FilePart {
     }
 }
 
-/// A command OpenCode's configuration defines (`/config`'s `command`, T-10),
-/// and only what lists and runs it. Its template, which may hold shell lines
-/// (`!`) or paths, and everything else of `/config` (provider keys and
-/// options among it) are never kept.
+/// A command OpenCode offers (`GET /api/command`, T-10, T-61 slice 3): its
+/// name and description, all 2.x lists of one. Its template, which may
+/// hold shell lines (`!`) or paths, its agent and its model stay
+/// OpenCode's: 2.x says nothing of them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CommandChoice {
     pub name: String,
     pub description: String,
-    /// Whether its template takes arguments (`$ARGUMENTS`, `$1`–`$9`).
-    pub takes_arguments: bool,
-    /// Whether it runs as a sub-agent (`subtask`).
-    pub subtask: bool,
-    /// The model it runs with by its own configuration, which OpenCode uses
-    /// over the caller's (`session/prompt.ts` command): its own `model`,
-    /// else that of the agent it names.
-    pub model: Option<String>,
 }
 
-/// Whether a command template takes arguments: OpenCode replaces
-/// `$ARGUMENTS` and `$1`–`$9` in it.
-fn takes_arguments(template: &str) -> bool {
-    template.contains("$ARGUMENTS") || (1..=9).any(|n| template.contains(&format!("${n}")))
+/// What 2.x answered a command with (`POST /api/session/:id/command`, T-61
+/// slice 3). It answers once it has admitted what the command makes of its
+/// text, or done what the command does, not at the end of any run.
+#[derive(Debug, PartialEq)]
+pub enum CommandAnswer {
+    /// 204: done. What it admitted, if anything, is under an ID of 2.x's
+    /// own, as its events and record show: the request carries no ID.
+    Done,
+    /// A 4xx, with which 2.x ran nothing (404 `CommandNotFoundError` for a
+    /// name it does not define, or the session's), or a 500
+    /// (`CommandExecutionError`): what the command does failed, possibly
+    /// after it admitted a message, which only the session's record tells.
+    /// 2.x's words of why, as `command_words` keeps them.
+    Refused { code: u16, message: String },
+    /// No answer, a lost connection or an unexpected status: it may or may
+    /// not have run. It is never sent again.
+    Unknown(String),
 }
+
+/// 2.x's own words of why it refused or failed a command (`message`), at
+/// most `COMMAND_WORDS` characters; else its status.
+async fn command_words(response: Response) -> String {
+    let code = response.status().as_u16();
+    let answered: Value = response.json().await.unwrap_or_default();
+    let message = answered["message"].as_str().or(answered["data"]["message"].as_str()).unwrap_or_default();
+    if message.trim().is_empty() {
+        return format!("HTTP {code}");
+    }
+    message.chars().take(COMMAND_WORDS).collect()
+}
+
+const COMMAND_WORDS: usize = 500;
 
 /// Variant names mildest first, as OpenCode derives them (`none`, `low`, …,
 /// `max`, `provider/transform.ts`); other names after them, by name.
@@ -874,71 +892,45 @@ impl Server {
         Ok(models)
     }
 
-    /// The commands OpenCode's configuration defines now, by name. Nothing
-    /// else of `/config` is kept, not even a command's template.
-    ///
-    /// 2.x lists its own (`GET /api/command`, T-32 slice 4a), naming and
-    /// describing each only; 1.19.3's `/config` is read where that route is
-    /// not there, as the stand-in keeps it until the commands slice. Running
-    /// one is still 1.19.3's route (`command`), which 2.x refuses.
+    /// The commands OpenCode offers now, by name (`GET /api/command`, T-32
+    /// slice 4a): its configuration's, its own (`init`, `review`, `goal`, …)
+    /// and its MCP servers' prompts. Each is named and described only.
     pub async fn commands(&self) -> Result<Vec<CommandChoice>> {
-        match self.data(Method::GET, "/api/command", &[], None).await {
-            Ok(listed) => {
-                let mut commands: Vec<CommandChoice> = listed.as_array().context("OpenCode's commands is not a list")?.iter()
-                    .filter_map(|command| Some(CommandChoice {
-                        name: command["name"].as_str()?.to_owned(),
-                        description: command["description"].as_str().unwrap_or_default().into(),
-                        // 2.x's list says nothing of a command's template, agent or model.
-                        takes_arguments: true,
-                        subtask: false,
-                        model: None,
-                    })).collect();
-                commands.sort_by(|a, b| a.name.cmp(&b.name));
-                return Ok(commands);
-            }
-            Err(error) if error.downcast_ref::<HttpStatus>().is_some_and(|s| s.code == 404) => {}
-            Err(error) => return Err(error),
-        }
-        let config = self.json(Method::GET, "/config", None).await?;
-        let named = |model: &Value| model.as_str().filter(|m| !m.is_empty()).map(str::to_owned);
-        let mut commands: Vec<CommandChoice> = config["command"].as_object().into_iter().flatten().map(|(name, info)| CommandChoice {
-            name: name.clone(),
-            description: info["description"].as_str().unwrap_or_default().into(),
-            takes_arguments: takes_arguments(info["template"].as_str().unwrap_or_default()),
-            subtask: info["subtask"] == true,
-            model: named(&info["model"]).or_else(|| info["agent"].as_str().and_then(|agent| named(&config["agent"][agent]["model"]))),
-        }).collect();
+        let listed = self.data(Method::GET, "/api/command", &[], None).await?;
+        let mut commands: Vec<CommandChoice> = listed.as_array().context("OpenCode's commands is not a list")?.iter()
+            .filter_map(|command| Some(CommandChoice {
+                name: command["name"].as_str()?.to_owned(),
+                description: command["description"].as_str().unwrap_or_default().into(),
+            })).collect();
         commands.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(commands)
     }
 
-    /// The request that runs the command `name` with `arguments` under `id`,
-    /// once: an ID this server was given before is refused here, whatever
-    /// became of it. `model` is `"provider/model"`, as the command endpoint
-    /// takes it. OpenCode 1.19.3 answers only once the run has ended, and
-    /// every failure as 400 (`handlers/session.ts` command), so the request
-    /// has no time limit of its own, and holds nothing of this server: it
-    /// does not keep OpenCode from being stopped. Its answer says nothing a
-    /// caller can wait for about delivery.
-    pub fn command(&self, session: &str, id: &MessageId, name: &str, arguments: &str, model: Option<&str>, variant: Option<&str>)
-        -> Result<impl std::future::Future<Output = Submission> + Send + 'static> {
-        let path = format!("/session/{}/command", segment(session)?);
+    /// The request that runs the command `name` with `text` in the session
+    /// (`POST /api/session/:id/command {name, text}`, T-61 slice 3), once
+    /// for `id`, Core's ID of its Turn: an ID this server was given before
+    /// is refused here, whatever became of it. 2.x's request carries no ID
+    /// and no model: what it admits gets an ID of 2.x's own, with the
+    /// session's model unless the command names one. 2.x answers once the
+    /// command has admitted its message, which can wait on the template's
+    /// shell lines or an MCP server, so the request has no time limit of
+    /// its own, and holds nothing of this server: it does not keep OpenCode
+    /// from being stopped.
+    pub fn command(&self, session: &str, id: &MessageId, name: &str, text: &str)
+        -> Result<impl std::future::Future<Output = CommandAnswer> + Send + 'static> {
+        let path = format!("/api/session/{}/command", segment(session)?);
         ensure!(self.submitted.lock().unwrap().insert(id.clone()),
             "Message {} was submitted already; it is never sent again", id.as_str());
-        let mut body = json!({"messageID": id.as_str(), "command": name, "arguments": arguments});
-        if let Some(model) = model {
-            body["model"] = model.into();
-        }
-        if let Some(variant) = variant {
-            body["variant"] = variant.into();
-        }
-        let request = self.request(Method::POST, &path).json(&body);
+        let request = self.request(Method::POST, &path).json(&json!({"name": name, "text": text}));
         Ok(async move {
             match request.send().await {
-                Err(error) => Submission::Unknown(format!("OpenCode did not answer: {error}")),
-                Ok(response) if response.status().is_success() => Submission::Accepted,
-                Ok(response) if response.status().is_client_error() => Submission::Refused(status(response).await),
-                Ok(response) => Submission::Unknown(status(response).await.to_string()),
+                Err(error) => CommandAnswer::Unknown(format!("OpenCode did not answer: {error}")),
+                Ok(response) if response.status().is_success() => CommandAnswer::Done,
+                Ok(response) if response.status().is_client_error() || response.status().as_u16() == 500 => {
+                    let code = response.status().as_u16();
+                    CommandAnswer::Refused { code, message: command_words(response).await }
+                }
+                Ok(response) => CommandAnswer::Unknown(status(response).await.to_string()),
             }
         })
     }

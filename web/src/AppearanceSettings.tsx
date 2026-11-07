@@ -36,6 +36,7 @@ import {
 } from "./appearance-file";
 import { strings, useLanguage, type Language } from "./i18n";
 import { SaveStatus, saveRefusalReason } from "./SaveStatus";
+import { SettingsSlider } from "./SettingsSlider";
 import type { SaveOutcome } from "./device-storage";
 
 // Appearance's words (T-189), in the interface language. Values and the file
@@ -128,8 +129,8 @@ const agentLists: { value: AgentListDensity; icon: typeof Sun; rows: number }[] 
   { value: "compact", icon: Rows4, rows: 3 },
 ];
 const dockOrder: (keyof DockLimits)[] = ["jobs", "actions", "reviews", "subAgents"];
-/** One count on a slider, its name before it and its value, or what 0
- * means, after. */
+/** One count on Settings' slider (YN-8): its name before it, its value
+ * beside it, and what 0 means said when it is 0. */
 function CountSlider({
   name,
   label,
@@ -146,23 +147,7 @@ function CountSlider({
   zero: string;
   onChange: (value: number) => void;
 }) {
-  const shown = value === 0 ? zero : String(value);
-  return (
-    <label className="dock-limit">
-      <span>{label}</span>
-      <input
-        type="range"
-        name={name}
-        min={0}
-        max={max}
-        step={1}
-        value={value}
-        aria-valuetext={shown}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
-      <output aria-hidden="true">{shown}</output>
-    </label>
-  );
+  return <SettingsSlider className="dock-limit" name={name} label={label} value={value} min={0} max={max} zero={zero} onChange={onChange} />;
 }
 
 /** Appearance, one category of Settings: how Yuzuno looks on this device.
@@ -287,28 +272,20 @@ export function AppearanceSection() {
         <fieldset className="appearance-field">
           <legend>{t.textSize}</legend>
           <p className="appearance-help">{t.textSizeHelp}</p>
-          <div className="font-size-slider">
-            <span className="font-size-end" aria-hidden="true" style={{ fontSize: MIN_FONT_SIZE }}>
-              Aa
-            </span>
-            <input
-              type="range"
-              name="appearance-font-size"
-              min={MIN_FONT_SIZE}
-              max={MAX_FONT_SIZE}
-              step={1}
-              value={appearance.fontSize}
-              aria-label={t.textSize}
-              aria-valuetext={`${appearance.fontSize} px`}
-              onChange={(event) => update({ fontSize: Number(event.target.value) })}
-            />
-            <span className="font-size-end" aria-hidden="true" style={{ fontSize: MAX_FONT_SIZE }}>
-              Aa
-            </span>
-            <output className="font-size-value" aria-hidden="true">
-              {appearance.fontSize} px
-            </output>
-          </div>
+          <SettingsSlider
+            name="appearance-font-size"
+            label={t.textSize}
+            hideLabel
+            value={appearance.fontSize}
+            min={MIN_FONT_SIZE}
+            max={MAX_FONT_SIZE}
+            unit="px"
+            ends={<>
+              <span style={{ fontSize: MIN_FONT_SIZE }}>Aa</span>
+              <span style={{ fontSize: MAX_FONT_SIZE }}>Aa</span>
+            </>}
+            onChange={(fontSize) => update({ fontSize })}
+          />
         </fieldset>
         <fieldset className="appearance-field">
           <legend>{t.agentList}</legend>

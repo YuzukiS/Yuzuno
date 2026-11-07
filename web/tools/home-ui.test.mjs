@@ -1759,8 +1759,10 @@ function pinnedNotes() {
   home.projects.forEach((panel, n) => panel.brief.sections.forEach((s, i) => (s.id = 100 * (n + 1) + i)));
   const notes = home.projects[0].brief.sections.find((s) => s.key === "notes");
   Object.assign(notes, { seen: null, body: { root: "body", elements: {
-    body: { type: "BriefBody", props: { summary: { lead: "text", size: "wide" } }, children: ["text"] },
+    body: { type: "BriefBody", props: { summary: { lead: "text", size: "wide" } }, children: ["text", "more"] },
     text: { type: "Markdown", props: { text: "Notes body" } },
+    // More than its card shows: its page is reached from the card (a whole report has none, PR C2).
+    more: { type: "Markdown", props: { text: "Notes the card leaves to the page." } },
   } } });
   return home;
 }
@@ -1871,8 +1873,10 @@ function homeImages() {
   const app = home.projects.find((entry) => entry.project.id === "p-app");
   const shot = { name: "screen.png", kind: "image", mime: "image/png", size: 9, snapshot: true, mayChange: false, takenAt: "2026-10-22T09:00:00Z" };
   const files = { root: "body", elements: {
-    body: { type: "BriefBody", props: {}, children: ["files"] },
+    body: { type: "BriefBody", props: {}, children: ["files", "more"] },
     files: { type: "Attachments", props: { items: [{ name: "screen.png", caption: "Login screen" }] } },
+    // More than its card shows: its page is reached from the card (a whole report has none, PR C2).
+    more: { type: "Markdown", props: { text: "Two screens.\n\nThe page says which is which." } },
   } };
   app.brief.sections.push(
     section("shots", "report", "Screens", 4, owner("b", "Hana"), { body: files, attachments: [shot], seen: { version: 4, at: at(9) } }),
@@ -3107,6 +3111,55 @@ test("YN-3 answered Asks are small answer cards on the deck: two share a row of 
   }
 });
 
+// PR C1's review (P3, the Lead's ruling of 04:33Z): a render packs the deck once and keeps its one
+// ResizeObserver; only a change of the deck's size packs it again, in the next frame.
+test("YN-3 a deck keeps one ResizeObserver over Home's renders; a render packs it once, a size change once more in the next frame", async () => {
+  const made = [];
+  const passes = new Map();
+  const p = await mount({
+    before: (w) => {
+      w.ResizeObserver = class {
+        constructor(seen) { this.seen = seen; made.push(this); }
+        observe(target) { this.target = target; }
+        disconnect() { this.off = true; }
+      };
+      // Each packing pass reads its grid's columns once.
+      const own = w.getComputedStyle.bind(w);
+      w.getComputedStyle = (element, pseudo) => {
+        if (element?.classList?.contains("home-brief")) passes.set(element, (passes.get(element) ?? 0) + 1);
+        return own(element, pseudo);
+      };
+    },
+  });
+  try {
+    const decks = () => made.filter((observer) => observer.target?.classList?.contains("home-brief"));
+    await waitFor(() => decks().length > 0, "a deck is watched");
+    await pause(100);
+    const watched = decks().length;
+    // Home reads again: its panels render again.
+    p.doc.querySelector('[aria-label="Refresh Home"]').click();
+    await waitFor(() => p.calls.filter((call) => call.url.endsWith("/api/home")).length >= 2, "Home read again");
+    await pause(150);
+    assert.equal(decks().length, watched, "one observer per deck, not one per render");
+    assert.ok(decks().every((observer) => !observer.off), "each still watching");
+    // Its first report is of the size just packed: nothing; a later one packs once, in the next frame.
+    const deck = decks()[0];
+    const count = () => passes.get(deck.target) ?? 0;
+    const before = count();
+    deck.seen([{ target: deck.target }]);
+    await pause(60);
+    assert.equal(count(), before, "the first report packs nothing more");
+    deck.seen([{ target: deck.target }]);
+    deck.seen([{ target: deck.target }]);
+    await waitFor(() => count() > before, "a size change packs again");
+    await pause(60);
+    assert.equal(count(), before + 1, "once, for two reports in one frame");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 // YN-3, the user's item: Return sends a reply from Home as it does from the conversation's composer.
 test("YN-3 Enter sends a reply from Home as the composer's Return does: from an Ask, Reply again and a report's Reply; Shift+Enter and Enter while an input method composes do not", async () => {
   const p = await mount({ home: deckFixture() });
@@ -3144,6 +3197,198 @@ test("YN-3 Enter sends a reply from Home as the composer's Return does: from an 
     assert.equal(replies().length, 2, "not while an input method composes");
     enter(reply);
     await waitFor(() => replies().length === 3, "Enter sends the report's reply");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// YN-3 PR C2: a single-file HTML page works on its card (the user's decision of 03:09Z), asked for from Core as
+// a card preview (the interface on YN-3 and YN-10, as #679 builds it) only once the card is in view.
+const pageFile = (name, extra = {}) => ({ name, kind: "text", mime: "text/plain; charset=utf-8", size: 2048, snapshot: true, mayChange: false, takenAt: at(60), ...extra });
+const pageBody = (lead, size, ...names) => ({ root: "body", elements: {
+  body: { type: "BriefBody", props: { summary: { lead: "lead", ...(size ? { size } : {}) } }, children: ["lead", "shown"] },
+  lead: { type: "Markdown", props: { text: lead } },
+  shown: { type: "Attachments", props: { items: names.map((name) => ({ name })) } },
+} });
+function pageFixture() {
+  const home = homeFixture();
+  const mori = owner("a", "Mori");
+  home.projects.find((entry) => entry.project.id === "p-app").brief.sections.push(
+    section("ring", "report", "Ring design", 3, mori, { id: 601, body: pageBody("The ring design, working.", null, "ring.html", "ring.png"),
+      attachments: [pageFile("ring.html"), pageFile("ring.png", { kind: "image", mime: "image/png" })] }),
+    section("spec", "report", "Spec page", 2, mori, { id: 602, body: pageBody("The spec.\n\nA second paragraph the card leaves to the page.", null, "spec.html"),
+      attachments: [pageFile("spec.html")] }),
+    section("tiny", "report", "Tiny page", 1, mori, { id: 603, body: pageBody("A small one.", "small", "tiny.html"), attachments: [pageFile("tiny.html")] }),
+    section("trend", "report", "Loss trend", 1, mori, { id: 604, body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "chart", size: "small" } }, children: ["lead", "chart"] },
+      lead: { type: "Markdown", props: { text: "Loss falls." } },
+      chart: { type: "LineChart", props: { id: "c", title: "Loss", data: { attachment: "loss.csv", x: "step", series: [{ name: "A", column: "a" }] } } },
+    } }, attachments: [pageFile("loss.csv", { kind: "data", mime: "text/csv" })] }),
+    section("method", "report", "Method page", 1, mori, { id: 605, body: pageBody("The method, working.", null, "method.html", "method.pdf"),
+      attachments: [pageFile("method.html"), pageFile("method.pdf", { kind: "pdf", mime: "application/pdf" })] }),
+  );
+  return home;
+}
+// Cards come into view when the test says so.
+function watchedViews(w) {
+  const views = [];
+  w.IntersectionObserver = class {
+    constructor(seen) { this.seen = seen; views.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() { this.off = true; }
+  };
+  return () => views.filter((view) => !view.off).forEach((view) => view.seen([{ isIntersecting: true, target: view.target }]));
+}
+// Core's card previews, as #679 answers them; `refuse` answers instead, when given.
+function cardPreviews(p, refuse = null) {
+  const asked = [];
+  asked.proofs = [];
+  const base = p.w.fetch;
+  p.w.fetch = async (url, init = {}) => {
+    const text = (status, body) => ({ ok: status === 200, status, text: async () => body, json: async () => JSON.parse(body) });
+    if (url.endsWith("/api/previews") && init.method === "POST") {
+      const body = JSON.parse(init.body);
+      asked.push(body);
+      if (refuse) return text(refuse[0], refuse[1]);
+      return text(200, JSON.stringify({
+        name: body.name, size: 2048, sha256: "a".repeat(64), takenAt: at(0), expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        version: body.version, port: 47390, url: `http://127.0.0.1:47390/v/tok-${body.section}`, place: "card", reused: false,
+        proof: { challenge: `c-${body.section}`, answer: `a-${body.section}`, url: `http://127.0.0.1:47390/.well-known/yuzuno-preview/c-${body.section}` },
+      }));
+    }
+    const proof = /\/\.well-known\/yuzuno-preview\/c-(\w+)$/.exec(url);
+    if (proof) {
+      asked.proofs.push(url);
+      return text(200, `a-${proof[1]}`);
+    }
+    return base(url, init);
+  };
+  return asked;
+}
+
+test("YN-3 a card's HTML page works on its card once in view: one card preview, proven, in the Portal's sandbox; Open large; a page that goes elsewhere is not shown", async () => {
+  let show;
+  const p = await mount({ home: pageFixture(), before: (w) => (show = watchedViews(w)) });
+  try {
+    const asked = cardPreviews(p);
+    const ring = () => card(p, "p-app", "ring");
+    await waitFor(() => ring()?.querySelector(".home-card-page"), "the ring card's page frame");
+    assert.equal(ring().dataset.cardSize, "large", "a page with no size named: large");
+    assert.equal(asked.length, 0, "nothing asked for before the card is in view");
+    show();
+    await waitFor(() => ring().querySelector("iframe.home-card-page-frame"), "the page is shown");
+    assert.deepEqual(asked.filter((body) => body.section === "ring"),
+      [{ kind: "briefAttachment", projectId: "p-app", section: "ring", name: "ring.html", version: 3, place: "card" }], "one card preview of this version");
+    const frame = ring().querySelector("iframe.home-card-page-frame");
+    assert.deepEqual([frame.getAttribute("src"), frame.getAttribute("sandbox"), frame.getAttribute("referrerpolicy"), frame.getAttribute("allow")],
+      ["http://127.0.0.1:47390/v/tok-ring", "allow-scripts", "no-referrer", ""]);
+    assert.ok(asked.proofs.includes("http://127.0.0.1:47390/.well-known/yuzuno-preview/c-ring"), "proven reachable from this browser first");
+    assert.ok(ring().querySelector('button[aria-label="Open ring.html large"]'), "Open large");
+    // A small card's page: one line that opens it, no frame, nothing asked for.
+    const tiny = card(p, "p-app", "tiny");
+    assert.equal(tiny.dataset.cardSize, "small");
+    assert.equal(tiny.querySelector("iframe"), null);
+    assert.match(tiny.querySelector(".home-card-page-line").textContent, /tiny\.html · 2\.0 KB/);
+    assert.equal(asked.filter((body) => body.section === "tiny").length, 0);
+    // Its other files, named under the picture.
+    assert.deepEqual([...ring().querySelectorAll(".home-card-file")].map((chip) => chip.textContent.trim()), ["ring.png"]);
+    // The page goes elsewhere: the card says so and offers it back.
+    frame.dispatchEvent(new p.w.Event("load"));
+    frame.dispatchEvent(new p.w.Event("load"));
+    await waitFor(() => /loaded something else/.test(ring().querySelector(".home-card-page").textContent), "the card no longer shows it");
+    assert.equal(ring().querySelector("iframe"), null);
+    p.button("Back to the page", ring()).click();
+    await waitFor(() => ring().querySelector("iframe.home-card-page-frame"), "back to the page");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("YN-3 a card's page shown when its author writes a new version: the new version's page, not loaded something else (PR C2's review)", async () => {
+  let show;
+  const p = await mount({ home: pageFixture(), before: (w) => (show = watchedViews(w)) });
+  try {
+    const asked = cardPreviews(p);
+    const ring = () => card(p, "p-app", "ring");
+    await waitFor(() => ring()?.querySelector(".home-card-page"), "the ring card's page frame");
+    show();
+    await waitFor(() => ring().querySelector("iframe.home-card-page-frame"), "version 3's page is shown");
+    ring().querySelector("iframe.home-card-page-frame").dispatchEvent(new p.w.Event("load"));
+    // The author writes version 4; Core serves its page at the same address, as a stub may.
+    Object.assign(p.state.home.projects.find((entry) => entry.project.id === "p-app").brief.sections.find((s) => s.key === "ring"), { version: 4 });
+    p.event({ type: "workspace.changed", scope: "brief" });
+    await waitFor(() => ring().dataset.sectionVersion === "4", "Home read version 4");
+    show();
+    await waitFor(() => asked.some((body) => body.section === "ring" && body.version === 4), "version 4's page asked for");
+    await waitFor(() => ring().querySelector("iframe.home-card-page-frame") && ring().querySelector(".home-card-page").dataset.pageState === "ready", "version 4's page is shown");
+    ring().querySelector("iframe.home-card-page-frame").dispatchEvent(new p.w.Event("load"));
+    await pause(50);
+    assert.doesNotMatch(ring().querySelector(".home-card-page").textContent, /loaded something else/, "its first load is the page");
+    assert.ok(ring().querySelector("iframe.home-card-page-frame"), "the page stays shown");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("YN-3 where a card's page can't be shown, the card names the file and offers its Preview: an older Core, phone access without previews, another version", async () => {
+  for (const [why, refuse, note] of [
+    ["an older Core refuses the field", [422, "Failed to deserialize the JSON body into the target type: unknown field `place`"], /can't show it on the card/],
+    ["phone access without previews", [400, JSON.stringify({ error: "preview_unavailable_remote: phone access does not include previews" })], /Phone access doesn't include previews/],
+    ["a version other than the card's", null, /can't show it on the card/],
+  ]) {
+    let show;
+    const home = pageFixture();
+    const p = await mount({ home, before: (w) => (show = watchedViews(w)) });
+    try {
+      const asked = cardPreviews(p, refuse);
+      if (!refuse) {
+        // Core serves another version than the card's: not this card's page.
+        const ring = home.projects.find((entry) => entry.project.id === "p-app").brief.sections.find((s) => s.key === "ring");
+        const base = p.w.fetch;
+        p.w.fetch = async (url, init = {}) => {
+          const answer = await base(url, init);
+          if (!url.endsWith("/api/previews")) return answer;
+          const body = await answer.json();
+          return { ok: true, status: 200, json: async () => ({ ...body, version: ring.version + 1 }), text: async () => JSON.stringify({ ...body, version: ring.version + 1 }) };
+        };
+      }
+      await waitFor(() => card(p, "p-app", "ring")?.querySelector(".home-card-page"), "the ring card's page frame");
+      show();
+      const ring = () => card(p, "p-app", "ring");
+      await waitFor(() => ring().querySelector(".home-card-page-static"), `the static card: ${why}`);
+      assert.ok(asked.length >= 1, why);
+      assert.equal(ring().querySelector("iframe"), null, why);
+      assert.match(ring().querySelector(".home-card-page-static").textContent, /ring\.html · 2\.0 KB/, why);
+      assert.match(ring().querySelector(".home-card-page-static").textContent, note, why);
+      assert.ok(p.button("Preview", ring().querySelector(".home-card-page-static")), `${why}: its Preview`);
+      assert.deepEqual(p.errors, []);
+    } finally {
+      p.close();
+    }
+  }
+});
+
+test("YN-3 a report whose body holds only what its card shows is the whole report: no Open report, its title not a link; with more, both stay", async () => {
+  const p = await mount({ home: pageFixture(), before: (w) => watchedViews(w) });
+  try {
+    await waitFor(() => card(p, "p-app", "ring") && card(p, "p-app", "spec"), "both cards");
+    const ring = card(p, "p-app", "ring"), spec = card(p, "p-app", "spec");
+    assert.ok(ring.classList.contains("is-whole"), "the card is the report");
+    assert.equal(p.button("Open report", ring), undefined, "no Open report");
+    assert.equal(ring.querySelector(".home-summary-title-link"), null, "its title is not a link");
+    assert.ok(!spec.classList.contains("is-whole"));
+    assert.ok(p.button("Open report", spec), "a card that leaves more to its page keeps Open report");
+    assert.ok(spec.querySelector(".home-summary-title-link"));
+    // What the card can only name keeps its page linked (PR C2's review): a chart on a small card, a PDF beside the page.
+    const trend = card(p, "p-app", "trend"), method = card(p, "p-app", "method");
+    assert.equal(trend.dataset.cardSize, "small");
+    assert.match(trend.textContent, /Line chart · on the report/);
+    assert.ok(!trend.classList.contains("is-whole") && p.button("Open report", trend), "a chart named as on the report, and the report linked");
+    assert.ok(!method.classList.contains("is-whole") && p.button("Open report", method), "the PDF opens on the report page");
+    assert.equal(method.querySelector(".home-card-file").disabled, false, "its chip opens it there");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

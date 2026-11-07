@@ -424,7 +424,7 @@ test('the submit form shows what earlier runs of the same name or command sugges
     await until(() => p.doc.querySelector('.job-suggestion'));
     assert.deepEqual(asked.at(-1), { taskId: 'T-38', name: 'K4 calibration', argv: JSON.stringify(['/bin/sh', '-c', 'python3 calib.py']) });
     assert.equal(p.doc.querySelector('.job-suggestion p').textContent,
-      'The last measured run of this name or command in this task peaked at 2.6 GiB RAM and 1.20 CPU cores. Suggested: 4.0 GiB RAM and 1.8 CPU (peak × 1.5, rounded up). Your limits stay as you set them.');
+      'The last measured run of this name or command in this task peaked at 2.6 GiB RAM and 1.20 CPU cores. Suggested: 4.0 GiB RAM and 1.8 CPU (RAM: peak × 1.3 or peak + 1 GiB, whichever is more; CPU: × 1.5; rounded up). Your limits stay as you set them.');
     // Shown, never applied: what is in the fields is sent.
     await set(p, 'RAM limit', '20480'); await set(p, 'CPU quota', '4');
     assert.ok(p.doc.querySelector('.job-suggestion'), 'still shown');
@@ -1081,6 +1081,57 @@ test('the dock keeps its marks while a refresh or a return to the conversation i
     release(); await wait();
     assert.deepEqual(p.errors, []);
   } finally { release(); p.close(); }
+});
+
+test("a job's detail shows the suggestion it kept at submission beside its request, with what to do about it, in English and Chinese (YN-6 S3)", async () => {
+  const runs = n => Array.from({ length: n }, (_, i) => ({ jobId: `earlier-${i}`, taskRef: 'T-47', status: 'succeeded', memoryPeakMiB: 7168, averageCpuCores: 1 }));
+  const kept = (asked, verdict, extra = {}) => ({ memoryMiB: 9728, cpuMillis: 1500, memoryPeakMiB: 7168, averageCpuCores: 1, scope: 'task', hitMemoryLimit: false,
+    basedOn: runs(5), note: 'A suggestion only; nothing was changed.', request: { memoryMiB: asked, verdict, advice: verdict === 'within' ? null : 'Core advice for Agents' }, ...extra });
+  const finished = { ...job, status: 'succeeded', reserved: false, reason: 'Command exited 0', finishedAt: new Date().toISOString(), resources: { ...resources, memoryMiB: 16384 } };
+  let current = { ...finished, suggestion: kept(16384, 'far_above') };
+  const p = mount(url => url === '/api/jobs/job-one' ? current : page([current]));
+  const line = () => p.doc.querySelector('.job-kept-suggestion');
+  // Refresh, in either language, until the line is no longer `text`.
+  const refresh = async text => { p.doc.querySelector('[aria-label="Refresh jobs"],[aria-label="刷新 Job"]').click(); await until(() => (line()?.textContent ?? null) !== text); };
+  try {
+    await until(() => p.doc.querySelector('.conversation-job'));
+    p.doc.querySelector('.conversation-job').click(); await until(() => line());
+    assert.equal(line().textContent, 'Asked 16.0 GiB · suggested 9.5 GiB from 5 earlier runs (peak 7.0 GiB)'
+      + 'More than 1.5 × the suggestion: all of it is held in the shared budget while the job waits and runs. To ask less, cancel and submit again, or lower its memory limit once it runs.');
+    assert.equal(line().previousElementSibling.textContent, 'Suggested RAM');
+    assert.ok(!line().textContent.includes('Core advice for Agents'), "the panel says it in the reader's language, not Core's advice to Agents");
+    // Below the peak: the risk, marked. The Project's runs say whose, and a run stopped at its limit is named.
+    let before = line().textContent;
+    current = { ...finished, resources: { ...resources, memoryMiB: 4096 }, suggestion: kept(4096, 'below_peak', { scope: 'project', hitMemoryLimit: true, basedOn: runs(1) }) };
+    await refresh(before);
+    assert.equal(line().textContent, "Asked 4.0 GiB · suggested 9.5 GiB from 1 earlier run of this command in this Project's other tasks (peak 7.0 GiB; one was stopped at its memory limit)"
+      + 'Below the peak of those runs: it may be stopped at its memory limit.');
+    assert.ok(line().querySelector('small.job-below-peak'), 'the risk below the peak is marked');
+    // Within: the line alone. What was asked stays what the suggestion was beside, after a lowering too.
+    before = line().textContent;
+    current = { ...finished, resources: { ...resources, memoryMiB: 8192 }, suggestion: kept(10240, 'within') };
+    await refresh(before);
+    assert.equal(line().textContent, 'Asked 10.0 GiB · suggested 9.5 GiB from 5 earlier runs (peak 7.0 GiB)');
+    assert.equal(line().querySelector('small'), null);
+    p.window.localStorage.setItem('yuzuno.language', JSON.stringify({ language: 'zh-Hans' }));
+    p.window.dispatchEvent(new p.window.StorageEvent('storage', { key: 'yuzuno.language' }));
+    await until(() => line()?.previousElementSibling.textContent === '建议内存');
+    assert.equal(line().textContent, '申请 10.0 GiB · 按之前 5 次运行建议 9.5 GiB（峰值 7.0 GiB）');
+    before = line().textContent;
+    current = { ...finished, suggestion: kept(16384, 'far_above') };
+    await refresh(before);
+    assert.equal(line().querySelector('small').textContent, '超过建议值的 1.5 倍：排队和运行期间，申请的全部内存都占着共享预算。要少申请，可取消后重新提交，或在它运行后降低内存上限。');
+    // None kept (no measured run), or a job from before suggestions were kept: no row.
+    for (const none of [{ ...finished, suggestion: null }, finished]) {
+      current = { ...finished, suggestion: kept(16384, 'far_above') };
+      await refresh(null);
+      current = none;
+      await refresh(line().textContent);
+      assert.equal(line(), null);
+    }
+    assert.ok(p.doc.querySelector('.job-log'), 'the detail is still open');
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
 });
 
 test("a review's reasons follow a language change in Jobs too; one this version doesn't know keeps its code (T-189)", async () => {

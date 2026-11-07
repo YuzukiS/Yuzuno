@@ -214,11 +214,9 @@ test("an Appearance export reads as its Appearance group; a newer file, an unusa
   page.close();
 });
 
-test("Settings → Appearance & interaction offers it, and its editor opens in place", async () => {
+test("Settings → This device has a page for it, and its editor opens in place", async () => {
   const page = mount({ settings: true });
-  (await until(() => page.document.querySelector("#settings-tab-appearance"), "the Settings categories")).click();
-  const open = await until(() => [...page.document.querySelectorAll(".settings-entries button")].find((b) => b.textContent === "Move preferences"), "its entry");
-  open.click();
+  (await until(() => page.document.querySelector("#settings-tab-transfer"), "its page of Settings")).click();
   await until(() => page.document.querySelector("#settings-editor-transfer:not([hidden]) #settings-transfer"), "the editor");
   page.close();
 });

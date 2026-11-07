@@ -3,7 +3,7 @@ use super::{Resources, COLLECTOR_CPU, COLLECTOR_MEMORY};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-pub(super) const SCOPE: &str = "Per attempt, local worker cgroup including its wrapper, excluding the collector. Worker wall time uses monotonic start/exit and includes pauses. Unknown measurements are null. Memory peaks are not additive; reused jobs did not execute in this run.";
+pub(super) const SCOPE: &str = "Per attempt, local worker cgroup including its wrapper, excluding the collector. Worker wall time uses monotonic start/exit and includes pauses. Unknown measurements are null. Memory peaks are not additive; reused jobs did not execute in this run. For an attempt whose leftover processes were stopped, counters are read just before that stop: what they used while being stopped (up to 3 s, then SIGKILL) is not counted.";
 
 /// Below this worker wall time no average CPU is given (T-29): its CPU time
 /// over its wall time says little. cpuMillis is a budget per 100 ms CFS period,

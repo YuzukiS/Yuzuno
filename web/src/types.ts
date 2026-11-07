@@ -197,6 +197,11 @@ export interface NativeTurn {
   /** Set when you ended this Turn because Codex's own history didn't have it
    * (T-198): when it was found missing and when you ended it. */
   missingNative?: { checkedAt: string; endedAt: string } | null;
+  /** Why a Turn ended with no run of its own (T-61 slice 3): an OpenCode
+   * command that started none (`command_no_turn`, its name) or ran in a
+   * background sub-agent (`command_subagent`, that sub-agent). Worded here;
+   * a kind this version doesn't know shows nothing. */
+  notice?: { kind: string; detail?: string } | null;
   /** Native turn start and completion, in Unix seconds. */
   startedAt?: number | null;
   completedAt?: number | null;

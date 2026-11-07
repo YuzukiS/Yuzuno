@@ -6,8 +6,9 @@ daily Core.
 - A first "calibration" Job holds about 900 MiB and keeps one core busy for
   4 s, then succeeds; Core measures its peak memory and average cores.
 - A second submission of the same name answers with a suggestion computed
-  from that measurement (peak × 1.5, RAM rounded up to 512 MiB and at least
-  1 GiB, CPU rounded up to 100 mCPU), based on the first Job, while its own
+  from that measurement (RAM the larger of peak × 1.3 and peak + 1 GiB,
+  rounded up to 512 MiB, since YN-6 S2; CPU × 1.5, rounded up to 100 mCPU),
+  based on the first Job, while its own
   request stays as sent.
 - A run whose stage has that name answers with the same suggestion for it.
 - The submit form's question (GET /api/jobs/suggestion) gives the same, and
@@ -136,7 +137,7 @@ def main():
         assert done['resourceSummary']['measurement'] == 'complete', done['resourceSummary']
         peak, cores = actual['memoryPeakMiB'], actual['averageCpuCores']
         assert 900 <= peak < 1100 and cores is not None and cores > 0.5, actual
-        memory = max(1024, up_to(peak * 1.5, 512))
+        memory = max(1024, up_to(max(peak * 1.3, peak + 1024), 512))
         cpu = max(100, up_to(cores * 1.5 * 1000, 100))
         REPORT['expected'] = {'memoryMiB': memory, 'cpuMillis': cpu}
         check('the calibration is measured: peak %.0f MiB, %.2f average cores' % (peak, cores))

@@ -151,14 +151,13 @@ const shot = async (page, name) => {
   await page.screenshot({ path: resolve(output, name), animations: "disabled" });
   report.screenshots.push(name);
 };
-/** Settings → Notifications & attention, as the window shows it. */
+/** Settings → Notifications, as the window shows it. */
 async function openNotifications(page) {
   await page.getByRole("button", { name: "Settings and updates" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.waitFor();
-  const picker = dialog.getByRole("combobox", { name: "Settings category", exact: true });
-  if (await picker.isVisible()) await picker.selectOption("notifications");
-  else await dialog.getByRole("tab", { name: "Notifications & attention" }).click();
+  // Its page of Settings; on a phone the list of pages comes first (YN-8).
+  await dialog.locator("#settings-tab-notifications").click();
   const editor = dialog.locator("#settings-notifications");
   await editor.waitFor();
   return editor;

@@ -431,6 +431,16 @@ pub(super) fn snapshot_file(store: &Store, cache: &Path, project: &str, key: &st
     }))
 }
 
+/// A CSV or TSV file's header and rows, each cell's text as written (YN-7:
+/// a research desk reads one cell by its row's text and its column); an
+/// error for any other kind of file or one that is not UTF-8.
+pub(super) fn text_table(bytes: &[u8], name: &str) -> Result<(Vec<String>, Vec<Vec<String>>), String> {
+    match Table::parse(bytes, name)? {
+        Table::Text { header, rows } => Ok((header, rows)),
+        Table::Objects(_) => Err("Not a CSV or TSV file".into()),
+    }
+}
+
 /// A data file's rows: a CSV (or TSV) with a header row, a JSON array of
 /// objects, or JSONL with one object per line.
 enum Table {

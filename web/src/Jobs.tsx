@@ -137,6 +137,18 @@ type Job = {
   limitChanges?: { by: { kind: string; name: string }; at: string; fromMiB: number; toMiB: number }[] | null;
   /** The last lowering that did not take, and why. */
   limitRefusal?: { at: string; toMiB: number; state: string; reason: string } | null;
+  /** What earlier measured runs of the same Job suggested when it was
+   * submitted, beside its own request (YN-6 S2): null without any; a Job
+   * submitted before that has none. */
+  suggestion?: KeptSuggestion | null;
+};
+type KeptSuggestion = {
+  memoryMiB: number;
+  memoryPeakMiB: number;
+  scope?: "task" | "project";
+  hitMemoryLimit?: boolean;
+  basedOn: unknown[];
+  request?: { memoryMiB: number; verdict: "far_above" | "below_peak" | "within" } | null;
 };
 /** The queue head a job started ahead of, as Core recorded it then. */
 type PassedHead = { jobId: string; name: string; waits: string; need: Resources; room: Resources; headNeed: Resources };
@@ -1498,6 +1510,8 @@ function JobDetail({
   const [lowering, setLowering] = useState(false);
   const [limitDraft, setLimitDraft] = useState("");
   const lowered = job.limitChanges?.length ? job.limitChanges[job.limitChanges.length - 1] : null;
+  const kept =
+    typeof job.suggestion?.memoryMiB === "number" && typeof job.suggestion.memoryPeakMiB === "number" ? job.suggestion : null;
   return (
     <>
       <JobDetailHeading
@@ -1683,6 +1697,23 @@ function JobDetail({
           )}
           <dt>{t.resources}</dt>
           <dd>{t.resourceLine(job.resources.cpuMillis / 1000, memory(job.resources.memoryMiB), memory(job.resources.swapMiB))}</dd>
+          {kept && (
+            <>
+              <dt>{t.suggestedRam}</dt>
+              <dd className="job-kept-suggestion">
+                {t.keptSuggestion(
+                  memory(kept.request?.memoryMiB ?? job.resources.memoryMiB),
+                  memory(kept.memoryMiB),
+                  kept.basedOn.length,
+                  memory(kept.memoryPeakMiB),
+                  kept.scope === "project",
+                  !!kept.hitMemoryLimit,
+                )}
+                {kept.request?.verdict === "far_above" && <small>{t.farAboveSuggestion}</small>}
+                {kept.request?.verdict === "below_peak" && <small className="job-below-peak">{t.belowPeak}</small>}
+              </dd>
+            </>
+          )}
           {lowered && (
             <>
               <dt>{t.memoryLimit}</dt>
@@ -1838,6 +1869,8 @@ type Suggestion = {
   memoryPeakMiB: number;
   averageCpuCores: number | null;
   basedOn: { jobId: string }[];
+  /** Whose runs it is from: this task's, or (with none of its own) its Project's (YN-6 S2). */
+  scope?: "task" | "project";
 };
 /** The suggestion for the draft, asked again a moment after it changes; null
  * without one. It is only shown: the limits change only if the user says so. */
@@ -1997,6 +2030,7 @@ function JobForm({
                 suggestion.averageCpuCores === null ? null : suggestion.averageCpuCores.toFixed(2),
                 memory(suggestion.memoryMiB),
                 suggestion.cpuMillis === null ? null : (suggestion.cpuMillis / 1000).toFixed(1),
+                suggestion.scope === "project",
               )}
             </p>
             <button

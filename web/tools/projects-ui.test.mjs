@@ -756,8 +756,10 @@ test("Machines opens from the Workspace menu, reads nothing while open, and open
     agents: { a: { unreadCount: 2, reviewedSeq: 3 } } });
   try {
     await fromScopeMenu(page, "Machines");
-    // The page says "Loading machines…" until /api/machines is answered.
-    const dialog = await waitFor(() => /Core host/.test(dialogOf(page)?.textContent || "") && dialogOf(page), "the Machines page lists Core host");
+    // Settings › Machines (YN-8). The page says "Loading machines…" until
+    // /api/machines is answered; Settings' other pages say "Core host" too.
+    const machinesPage = () => page.document.querySelector("#settings-editor-machines:not([hidden])");
+    const dialog = await waitFor(() => /Not checked yet/.test(machinesPage()?.textContent || "") && machinesPage(), "the Machines page lists Core host");
     assert.match(dialog.textContent, /Machines/);
     assert.match(dialog.textContent, /Core host/);
     assert.match(dialog.textContent, /Not checked yet/);
