@@ -225,7 +225,6 @@ import {
   orderByAttention,
   unseenEnd,
   waitingSince,
-  proposersWaiting,
   type NeedsJump,
   type NeedsTarget,
 } from "./attention";
@@ -1665,8 +1664,8 @@ export function App() {
       m.agentId === selected && m.receipt.status === "sending" && m.receipt.input.clientMessageId === r.input.clientMessageId))),
   );
   // The Home tab counts what Needs you lists, only what waits for the user's
-  // decision (YN-3): requests and questions, open Asks, handover proposals and
-  // executors the user dispatched. Turns that ended unseen stay with their
+  // decision (YN-3): requests and questions, open Asks and executors the user
+  // dispatched. Turns that ended unseen stay with their
   // conversations and the Agent list's mark: Home does not list or count them.
   const totalPending = activeAgents.reduce((n, a) => n + a.pendingCount, 0);
   const [openAsks, reportNeedsYou, needsYouItems] = useOpenAsks(workspaceId, !homeOpen && !previewMode, asksRevision);
@@ -1730,7 +1729,7 @@ export function App() {
     [needsYouItems, activeAgents],
   );
   const lastNeedsJump = useRef<NeedsJump | null>(null);
-  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; proposalId?: string; n: number } | null>(null);
+  const [homeJump, setHomeJump] = useState<{ projectId: string | null; sectionKey?: string; n: number } | null>(null);
   const goNextNeedsYou = () => {
     const shown: NeedsTarget | null = homeOpen
       ? lastNeedsJump.current && lastNeedsJump.current.target.kind !== "agent" ? lastNeedsJump.current.target : null
@@ -1743,8 +1742,7 @@ export function App() {
       selectAgent(target.agentId);
     } else {
       goHome();
-      setHomeJump((last) => ({ projectId: target.projectId, n: (last?.n ?? 0) + 1,
-        ...(target.kind === "handover" ? { proposalId: target.proposalId } : { sectionKey: target.sectionKey }) }));
+      setHomeJump((last) => ({ projectId: target.projectId, n: (last?.n ?? 0) + 1, sectionKey: target.sectionKey }));
     }
   };
   const nextNeedsYou = useRef(goNextNeedsYou);
@@ -3225,7 +3223,7 @@ export function App() {
   // ordered within each group as grouping keeps the list's order.
   const filteredAgents =
     appearance.agentOrder === "attention"
-      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems), waiting: proposersWaiting(needsYouItems) })
+      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems) })
       : searched;
 
   return (
@@ -3486,7 +3484,7 @@ export function App() {
               agentScope === "closed" ? agents.map(row) : (
                 <ExecutorRail agents={agents} listKey={key} workspaceId={workspaceId} selectedId={homeOpen ? null : selected}
                   searching={!!search.trim()} renderAgent={row}
-                  order={appearance.agentOrder === "attention" ? { seen: turnSeen, waiting: proposersWaiting(needsYouItems) } : undefined} />
+                  order={appearance.agentOrder === "attention" ? { seen: turnSeen } : undefined} />
               );
             return groups ? (
               <GroupedAgents

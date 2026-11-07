@@ -977,6 +977,35 @@ async fn live_references_show_core_state_or_not_found() {
     let _ = project;
 }
 
+/// YN-7 item 4: a section may name a run of stages. It shows the run's status
+/// as Jobs derives it, how many stages are done, its task's key and the Job of
+/// its newest attempt, where Jobs shows the run; an id no run has is not found.
+#[tokio::test]
+async fn a_live_reference_to_a_run_shows_its_status_stages_task_and_newest_job() {
+    let (_dir, ws, _project) = lab();
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Sweep"})).unwrap();
+    let task_id: String = ws.store.db.read().unwrap().query_row("SELECT id FROM collaboration_tasks", [], |r| r.get(0)).unwrap();
+    {
+        let db = ws.store.db.write().unwrap();
+        db.execute("INSERT INTO local_job_runs(id,task_id,agent_id,data) VALUES('run-1',?1,'a',?2)", rusqlite::params![task_id,
+            json!({"id":"run-1","taskId":task_id,"taskRef":"T-1","name":"lr sweep","cancelRequestedAt":null,
+                "stages":[{"key":"prep","needs":[]},{"key":"train","needs":["prep"]}]}).to_string()]).unwrap();
+        for (job, stage, status) in [("job-prep", "prep", "succeeded"), ("job-train", "train", "running")] {
+            db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'a',?3,?4)", rusqlite::params![job, task_id, status,
+                json!({"id":job,"name":stage,"status":status,"run":{"id":"run-1","stage":stage,"attempt":1}}).to_string()]).unwrap();
+            db.execute("INSERT INTO local_job_run_attempts(run_id,stage,attempt,job_id) VALUES('run-1',?1,1,?2)", [stage, job]).unwrap();
+        }
+    }
+    let mut change = put("refs", "report");
+    change["body"] = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["refs"]},
+        "refs":{"type":"LiveRefs","props":{"items":[{"kind":"run","id":"run-1"},{"kind":"run","id":"nope"}]}}}});
+    accept(&ws, "a", input("a1", 0, vec![change])).await;
+    let refs = section(&brief(&ws, "a"), "refs")["refs"].clone();
+    assert_eq!(refs["run:run-1"], json!({"kind":"run","id":"run-1","found":true,"title":"lr sweep","state":"running","tone":"active",
+        "taskId":"T-1","stages":{"done":1,"total":2},"jobId":"job-train"}), "the run as Jobs has it, its newest Job to open it by");
+    assert_eq!(refs["run:nope"], json!({"kind":"run","id":"nope","found":false}));
+}
+
 /// T-56: a section may name a task by any key it has or had; it shows with
 /// the key it has now, through a Project key change too.
 #[tokio::test]

@@ -5,6 +5,7 @@ import {
   ClipboardList,
   Cpu,
   GitPullRequest,
+  Layers,
   ScanSearch,
   Server,
   UserRound,
@@ -28,6 +29,7 @@ const kinds: Record<LiveRefKind, { icon: LucideIcon }> = {
   pr: { icon: GitPullRequest },
   ci: { icon: Workflow },
   job: { icon: Cpu },
+  run: { icon: Layers },
   review: { icon: ScanSearch },
   agent: { icon: Bot },
   machine: { icon: Server },
@@ -66,6 +68,11 @@ function opening(ref: LiveRef, brief: BriefContextValue, state: LiveRefState | u
       };
     case "job":
       return { open: () => openJobs({ jobId: id }) };
+    case "run": {
+      // Jobs shows a run with every stage on any of its Jobs: its newest attempt's.
+      const jobId = state?.jobId;
+      return jobId ? { open: () => openJobs({ jobId }) } : null;
+    }
     case "review":
       // Jobs opens one review directly only within its task.
       return state?.taskId
@@ -119,6 +126,7 @@ function Chip({ item }: { item: LiveRef }) {
         state?.state && (
           <em className="brief-ref-state" data-tone={state.tone || "neutral"}>
             {state.state}
+            {state.stages && ` · ${t.refStages(state.stages.done, state.stages.total)}`}
           </em>
         )
       )}
@@ -152,7 +160,7 @@ function Chip({ item }: { item: LiveRef }) {
 /** What Core says of one item now, as a list row shows it; a change in it
  * is a change the reader is told about. */
 const factsOf = (state: LiveRefState | undefined) =>
-  state ? JSON.stringify([state.found, state.unavailable, state.title, state.state, state.assignee?.id, state.updatedAt, state.archived, state.key]) : "";
+  state ? JSON.stringify([state.found, state.unavailable, state.title, state.state, state.assignee?.id, state.updatedAt, state.archived, state.key, state.stages]) : "";
 
 /**
  * One item as a row of a list the Agent ordered (T-9): Core's title and
@@ -188,7 +196,9 @@ function Row({ item, stale, readAt }: { item: LiveRef; stale: boolean; readAt: s
   const name = (state?.found && state.title) || item.label || id;
   // A task's state in the board's own words; others as Core reports them.
   const word = state?.state
-    ? item.kind === "task" ? (boardText(language).statuses as Record<string, string>)[state.state] ?? state.state : state.state
+    ? (item.kind === "task" ? (boardText(language).statuses as Record<string, string>)[state.state] ?? state.state : state.state) +
+      // A run's stages, beside its state (YN-7).
+      (state.stages ? ` · ${t.refStages(state.stages.done, state.stages.total)}` : "")
     : null;
   const tone = state ? (state.found ? state.tone || "neutral" : "missing") : undefined;
   const lead = (

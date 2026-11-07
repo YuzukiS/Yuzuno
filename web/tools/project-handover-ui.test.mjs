@@ -1,6 +1,7 @@
-// T-34 S3a: a project's handover document on its settings page. A save is a
-// new version against the version read; a conflict says so and offers a
-// reload; past versions stay readable. Fixture HTTP only; no Core.
+// T-34 S3a, YN-2 S3: a project's handover document on its settings page. A
+// save is checked against the revision read, with an optional note; a
+// conflict says so and offers a reload; the page says who changed it last and
+// shows no history. Fixture HTTP only; no Core.
 import "./jsdom-guard.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -48,14 +49,18 @@ async function until(check, what, ms = 3000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
-// As Core answers (handover::read_in).
-const answer = (versions) => ({
-  projectId: "p1",
-  version: versions.length,
-  markdown: versions.at(-1)?.markdown ?? "",
-  history: [...versions].reverse().map(({ markdown, ...v }) => ({ ...v, bytes: markdown.length })),
-  limit: 64,
-});
+// As Core answers (handover::read_in): the latest save's text, its revision, and who made it.
+const answer = (saves) => {
+  const last = saves.at(-1);
+  return {
+    projectId: "p1",
+    version: saves.length,
+    markdown: last?.markdown ?? "",
+    lastModified: last ? { by: last.by, at: last.at, note: last.note ?? null } : null,
+    limit: 64,
+  };
+};
+const you = { id: "user", name: "You" };
 
 function mount(route) {
   const calls = [];
@@ -88,45 +93,39 @@ async function type(page, label, value) {
 const button = (page, text) => [...page.document.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
 const puts = (page) => page.calls.filter((c) => c.method === "PUT");
 
-test("a project's handover is saved as a new version against the version read, and its past versions stay readable", async () => {
-  const versions = [];
+test("a project's handover is saved against the revision read, with an optional note, and says who changed it last", async () => {
+  const saves = [];
   let conflict = false;
   const page = mount((url, method, body) => {
-    if (url.includes("version=")) {
-      const n = Number(url.split("version=")[1]);
-      return [200, { projectId: "p1", past: { ...versions[n - 1], bytes: versions[n - 1].markdown.length } }];
-    }
     if (method === "PUT") {
-      if (conflict || body.expectedVersion !== versions.length) return [400, { error: "version_conflict: this Project's handover changed; reload before saving" }];
-      versions.push({ version: versions.length + 1, markdown: body.markdown, writtenBy: { id: "user", name: "You" }, reason: body.reason ?? null, at: "2026-11-05T08:00:00Z" });
+      if (conflict || body.expectedVersion !== saves.length) return [400, { error: "version_conflict: this Project's handover changed; reload before saving" }];
+      saves.push({ markdown: body.markdown, by: you, note: body.note ?? null, at: "2026-11-05T08:00:00Z" });
     }
-    return [200, answer(versions)];
+    return [200, answer(saves)];
   });
   page.window.renderHandover("p1");
   const section = () => page.document.querySelector("#project-settings-handover");
-  await until(() => /No version yet\./.test(section()?.textContent ?? ""), "the empty document");
+  await until(() => field(page, "Handover document"), "the document");
+  assert.match(section().textContent, /Not written yet\./, "a document never saved says so, with no version");
   assert.equal(button(page, "Save handover").disabled, true, "nothing to save after loading");
 
   await type(page, "Handover document", "# Lab\nBuild with make.");
-  await type(page, "Why this change", "First notes");
+  await type(page, "Note", "First notes");
   assert.match(section().textContent, /22 of 64 bytes/);
   assert.match(section().textContent, /Unsaved changes/);
   button(page, "Save handover").click();
-  await until(() => /Saved\./.test(section().textContent), "the saved version");
-  assert.deepEqual(puts(page)[0].body, { expectedVersion: 0, markdown: "# Lab\nBuild with make.", reason: "First notes" },
-    "a save names the version it was read at");
-  assert.match(section().textContent, /Version 1/);
-  assert.match(section().textContent, /First notes/);
-  assert.equal(field(page, "Why this change").value, "", "the reason goes with the version saved");
+  await until(() => /Saved\./.test(section().textContent), "the save");
+  assert.deepEqual(puts(page)[0].body, { expectedVersion: 0, markdown: "# Lab\nBuild with make.", note: "First notes" },
+    "a save names the revision it was read at");
+  assert.match(section().textContent, /Last changed by you, .* · First notes/, "who changed it last, and the note");
+  assert.equal(field(page, "Note").value, "", "the note goes with the save");
 
   await type(page, "Handover document", "# Lab\nBuild with make; test with make check.");
   button(page, "Save handover").click();
-  await until(() => /Version 2/.test(section().textContent), "the second version");
+  await until(() => puts(page).length === 2 && /Saved\./.test(section().textContent), "the second save");
   assert.equal(puts(page)[1].body.expectedVersion, 1);
-  assert.equal("reason" in puts(page)[1].body, false, "no reason, none sent");
-  button(page, "Show version 1").click();
-  await until(() => page.document.querySelector(".project-handover-past"), "the past version");
-  assert.equal(page.document.querySelector(".project-handover-past").textContent, "# Lab\nBuild with make.", "a past version stays readable");
+  assert.equal("note" in puts(page)[1].body, false, "no note, none sent");
+  assert.doesNotMatch(section().textContent, /Version \d|Show version|Restore/, "no history is shown");
 
   conflict = true;
   await type(page, "Handover document", "Overwritten");
@@ -145,7 +144,7 @@ test("a project's handover is saved as a new version against the version read, a
 });
 
 test("an archived project's handover is shown but can't change", async () => {
-  const page = mount(() => [200, answer([{ version: 1, markdown: "Kept", writtenBy: { id: "user", name: "You" }, reason: null, at: "2026-11-05T08:00:00Z" }])]);
+  const page = mount(() => [200, answer([{ markdown: "Kept", by: you, note: null, at: "2026-11-05T08:00:00Z" }])]);
   page.window.renderHandover("p1", true);
   await until(() => page.document.querySelector('[aria-label="Handover document"]')?.value === "Kept", "the document");
   assert.equal(field(page, "Handover document").disabled, true, "an archived project's document can't change");
@@ -153,57 +152,42 @@ test("an archived project's handover is shown but can't change", async () => {
   assert.deepEqual(page.errors, []);
 });
 
-// #605 R2 fc8c3d78: Core counts the trimmed reason in UTF-8 bytes, so the field does too.
-test("a reason is counted in bytes, as Core counts it: one over the limit is not sent, one at 999 bytes is", async () => {
-  const versions = [];
+// As Core counts it (handover::MAX_NOTE): the trimmed note, in characters.
+test("a note is counted in characters, as Core counts it: one over 200 is not sent, one at 200 is", async () => {
+  const saves = [];
   const page = mount((url, method, body) => {
-    if (method === "PUT") versions.push({ version: versions.length + 1, markdown: body.markdown, writtenBy: { id: "user", name: "You" },
-      reason: body.reason ?? null, at: "2026-11-05T08:00:00Z" });
-    return [200, answer(versions)];
+    if (method === "PUT") saves.push({ markdown: body.markdown, by: you, note: body.note ?? null, at: "2026-11-05T08:00:00Z" });
+    return [200, answer(saves)];
   });
   page.window.renderHandover("p1");
   const section = () => page.document.querySelector("#project-settings-handover");
-  await until(() => /No version yet\./.test(section()?.textContent ?? ""), "the empty document");
+  await until(() => field(page, "Handover document"), "the document");
+  assert.ok(field(page, "Note"), "a save takes an optional note");
   await type(page, "Handover document", "# Lab");
-  // 400 characters, 1,200 bytes: under a 1,000-character limit, over Core's 1,000 bytes.
-  await type(page, "Why this change", "说".repeat(400));
-  assert.match(section().textContent, /1200 of 1000 bytes\./, "the reason's size is shown in bytes");
-  assert.match(section().textContent, /At most 1000 bytes\./);
-  assert.equal(button(page, "Save handover").disabled, true, "a reason over its limit in bytes is not sent");
-  await type(page, "Why this change", "a".repeat(999));
-  assert.match(section().textContent, /999 of 1000 bytes\./);
+  await type(page, "Note", "说".repeat(201));
+  assert.match(section().textContent, /201 of 200 characters\./, "the note's size is shown in characters");
+  assert.match(section().textContent, /At most 200 characters\./);
+  assert.equal(button(page, "Save handover").disabled, true, "a note over its limit is not sent");
+  await type(page, "Note", "说".repeat(200));
+  assert.match(section().textContent, /200 of 200 characters\./);
   button(page, "Save handover").click();
-  await until(() => /Saved\./.test(section().textContent), "the saved version");
-  assert.equal(puts(page).length, 1);
-  assert.equal(puts(page)[0].body.reason, "a".repeat(999), "a reason within the limit is sent whole");
+  await until(() => /Saved\./.test(section().textContent), "the save");
+  assert.equal(puts(page)[0].body.note, "说".repeat(200), "a note within the limit is sent whole");
   assert.deepEqual(page.errors, []);
 });
 
-// #612 R4: a save answers with the waiting proposal; one that doesn't say keeps it.
-test("a waiting proposal is still said after a save, and leaves with the answer that says it was decided", async () => {
-  const versions = [{ version: 1, markdown: "# Lab", writtenBy: { id: "user", name: "You" }, reason: null, at: "2026-11-05T08:00:00Z" }];
-  // As Core lists a proposal (handover_proposals::summary).
-  const proposal = { id: "h1", projectId: "p1", proposer: { id: "a", name: "Mori" }, baseVersion: 1, reason: "Say how to test", at: "2026-11-05T09:00:00Z", state: "pending" };
-  // What each save answers: as Core now does, as an older Core did (no proposal), and after a decision elsewhere.
-  const saves = [{ proposal }, {}, { proposal: null }];
-  const page = mount((url, method, body) => {
-    if (method === "PUT") {
-      versions.push({ version: versions.length + 1, markdown: body.markdown, writtenBy: { id: "user", name: "You" }, reason: null, at: "2026-11-05T10:00:00Z" });
-      return [200, { ...answer(versions), ...saves.shift() }];
-    }
-    return [200, { ...answer(versions), proposal }];
-  });
+test("the settings page shows who changed the handover last after a lead's handover_update (YN-2 S3)", async () => {
+  // As Core answers once a lead wrote with handover_update: the lead's name, when, and its note.
+  const saves = [
+    { markdown: "# Lab", by: you, note: null, at: "2026-11-05T08:00:00Z" },
+    { markdown: "# Lab\nTest with make check.", by: { id: "lead", name: "Dev Lead" }, note: "Say how to test", at: "2026-11-05T09:00:00Z" },
+  ];
+  const page = mount(() => [200, answer(saves)]);
   page.window.renderHandover("p1");
   const section = () => page.document.querySelector("#project-settings-handover");
-  const said = () => /Mori proposed a new version; it waits for your decision on Home\./.test(section()?.textContent ?? "");
-  await until(said, "the waiting proposal");
-  for (const [n, still, why] of [[2, true, "the save answers with the proposal still waiting"],
-    [3, true, "a save answer from an older Core leaves the notice"], [4, false, "a decided proposal leaves with the answer"]]) {
-    await type(page, "Handover document", `# Lab\nVersion ${n}.`);
-    button(page, "Save handover").click();
-    // The version list, not the text typed (a textarea's default value follows it): the save's answer is in.
-    await until(() => [...section().querySelectorAll(".project-handover-version")].some((v) => v.textContent === `Version ${n}`), `version ${n}`);
-    assert.equal(said(), still, why);
-  }
+  await until(() => field(page, "Handover document")?.value === "# Lab\nTest with make check.", "the lead's document");
+  assert.match(section().textContent, /Last changed by Dev Lead, .* · Say how to test/, "the lead, when, and its note");
+  assert.match(section().textContent, /The project's leads write it; you can change it here too\./);
+  assert.doesNotMatch(section().textContent, /Version \d|Show version|Restore/, "no history and no restore");
   assert.deepEqual(page.errors, []);
 });

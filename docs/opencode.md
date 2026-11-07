@@ -45,15 +45,7 @@ yet; 2.x keeps a note of each change in the session. The models come from
 2.x's list (`/api/model`), and interrupting is 2.x's interrupt. A session's
 status is read from the sessions 2.x lists as running (`/api/session/active`).
 
-Still to move: permission requests and questions, commands, compaction,
-rewind and fork.
-- **Permission requests and questions:** answered in 1.19.3's shape until
-  their part. One of 2.x's own is shown at once with "not yet on OpenCode
-  2.x", and can't be answered in Yuzuno: its run waits on it until you
-  interrupt the turn, which ends the request too.
-- **Commands:** listed from 2.x's own list (names and descriptions), but
-  running one is still 1.19.3's route, which 2.x doesn't have, so a command
-  is refused with "not yet on OpenCode 2.x".
+Still to move: compaction, rewind and fork.
 - **Compaction, rewind and fork:** they still read 1.19.3's messages, so on a
   session of 2.x's they refuse before doing anything ("not yet on OpenCode
   2.x"). Core's tests of them use a 1.19.3 mode of its stand-in OpenCode,
@@ -130,11 +122,23 @@ a new one.
   reconnecting the Agent has OpenCode try it again, on the same process.
   Nothing OpenCode answers about it is shown or kept with the credential in
   it.
-- **Requests:** a permission OpenCode asks for is answered **Allow once** or
-  **Reject**; nothing lasting is offered. OpenCode rejects the session's other
-  waiting requests along with a rejected one. Its questions are answered in
-  its own form. On OpenCode 2.x not yet: its own requests are shown with
-  "not yet on OpenCode 2.x" and no answer.
+- **Requests:** a permission OpenCode asks for (the tool and what it acts
+  on, as OpenCode names them) is answered **Allow once** or **Reject**;
+  nothing lasting is offered, and Yuzuno never saves a permission rule in
+  OpenCode. A reject ends the turn, which shows as declined, and OpenCode
+  rejects the session's other waiting requests with it. OpenCode's
+  questions are answered in their card, each with one of its choices or, where
+  it takes it, text of your own; declining one ends the turn the same way. A
+  form Yuzuno can't fill (one that isn't a question or a web search
+  provider's choice, or that asks for a secret, something done outside
+  OpenCode, or an answer the card doesn't take) says why and can only be
+  declined, or the turn interrupted. An answer OpenCode can't take is refused
+  with its reason and can be given again. Only a question's answer is kept in
+  Yuzuno's journal. A request asked by a sub-agent is answered in its own
+  session. OpenCode ends a declined turn as it ends one when it stops, with
+  no end of its own: Yuzuno tells it declined only as it sees that end
+  happen. Read afterwards (its event stream broke meanwhile, or Core
+  restarted), such a turn shows its outcome as unknown.
 - **Images:** a message can carry images, as for Codex and Claude, when the
   Agent has a model chosen in its settings that OpenCode lists as reading
   images. With OpenCode's own default, or a model that doesn't read images,
@@ -142,20 +146,31 @@ a new one.
   itself would give such a model a line of text in place of each image and
   send the rest. Large images are scaled or compressed as for Claude; the
   conversation shows the originals.
-- **Commands:** typing `/` lists the commands OpenCode's configuration
-  defines (2.x's own list; `/config`'s `command` for 1.19.3): their names and
-  descriptions only, never a template or anything else of the configuration.
-  On OpenCode 2.x a command is refused for now ("not yet on OpenCode 2.x"). A message
-  `/<name> [arguments]` for a listed one runs as that command, once, under
-  the message's ID: OpenCode expands its template, shell lines (`!`)
-  included, as it would in OpenCode itself. A command that names a model of
-  its own, or an agent that has one, runs with that model; otherwise the
-  Agent's chosen model and variant go with it. A command can't carry images:
-  the message is refused and the draft keeps its text and images. Any other
-  text, an unlisted `/<name>` included, is sent as a message. A command that
-  runs as a sub-agent asks through that sub-agent's session. Delivery is
-  confirmed when OpenCode stores the message; one whose shell lines run
-  longer than about 20 seconds shows as unconfirmed until it is.
+- **Commands:** typing `/` lists the commands OpenCode offers (2.x's own
+  list: its configuration's, its own such as `init` and `review`, and its MCP
+  servers' prompts): their names and descriptions only, never a template.
+  A message `/<name> [arguments]` for a listed one runs as that command, once,
+  and only while the Agent is idle. OpenCode expands its template, shell
+  lines (`!`) included, as it would itself, and admits the result as a
+  message of its own, which the Turn follows; delivery is confirmed once
+  OpenCode admits it. One whose shell lines run longer than about 15 seconds
+  shows as unconfirmed until then.
+  - The Agent's chosen model and variant are made the session's first, as
+    for a message. A command that names a model or an agent of its own makes
+    those the session's, and they stay so: Yuzuno makes its chosen model the
+    session's again before the next message, but never switches the agent.
+  - A command that admits nothing and leaves OpenCode idle (such as
+    `/goal pause`) ends its Turn saying so.
+  - A command that runs as a sub-agent ends its Turn at once, saying so.
+    OpenCode runs it in the background and later hands its result to the
+    session in a run of its own, which is no Yuzuno Turn. Its permission
+    requests and questions still come to this Agent.
+  - `/goal` and `/schedule` start work of their own later, in runs Yuzuno
+    cannot follow yet: they are not offered, and a message naming them is
+    refused.
+  - A command can't carry images: the message is refused and the draft keeps
+    its text and images.
+  - Any other text, an unlisted `/<name>` included, is sent as a message.
 - **Adding to a running turn:** while OpenCode works, a message sent with
   the composer's "send while working" joins that turn. OpenCode stores it at
   once and answers it from its next step, in the same run, as its own TUI does
@@ -242,6 +257,4 @@ Agent or from your own OpenCode to another, and never imports a 1.x
 ## Not yet
 
 Remote machines, and following OpenCode's sub-agent sessions. (Rewind is
-OpenCode's own revert: see [Rewind](rewind.md#opencode).) Commands OpenCode makes of its MCP servers'
-prompts and of its skills are not in its configuration, so they are not
-listed, and `/<name>` for one is sent as text.
+OpenCode's own revert: see [Rewind](rewind.md#opencode).)

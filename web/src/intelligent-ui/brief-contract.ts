@@ -280,7 +280,7 @@ const researchDeskProps = z.strictObject({
         outputs: researchList(short),
         notProduced: researchList(short),
         links: z
-          .array(z.strictObject({ kind: z.enum(["task", "job"]), id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/), label: short.optional() }))
+          .array(z.strictObject({ kind: z.enum(["task", "job", "run"]), id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/), label: short.optional() }))
           .max(R.links)
           .optional(),
         note: researchText.optional(),
@@ -359,7 +359,7 @@ export const briefComponentProps = {
     items: z
       .array(
         z.strictObject({
-          kind: z.enum(["task", "pr", "ci", "job", "review", "agent", "machine"]),
+          kind: z.enum(["task", "pr", "ci", "job", "run", "review", "agent", "machine"]),
           id: z.string().regex(/^[^\u0000-\u001f\u007f]{1,200}$/, "Use the 1-200 character id the matching yuzuno tool uses."),
           label: short.optional(),
           note: z.string().min(1).max(L.refNoteChars).optional(),
@@ -399,7 +399,7 @@ export const BRIEF_COMPONENT_DESCRIPTIONS = {
   LineChart: "A line chart from inline points or a data attachment.",
   BarChart: "A bar chart from inline points or a data attachment; x is usually a label.",
   ScatterChart: "A scatter plot with numeric x, from inline points or a data attachment.",
-  LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12, or a Project task key such as YN-3), pr (owner/repo#12), ci (run id), job, review (review id), agent or machine id. layout list shows one row per item in your order, with a short note of yours; for tasks Yuzuno fills in the title, state, assignee and last update, so write none of them. While Home cannot read Core, a list keeps the states it read last and says they are out of date.",
+  LiveRefs: "References that Yuzuno shows with their current state: task (e.g. T-12, or a Project task key such as YN-3), pr (owner/repo#12), ci (run id), job, run (a run of stages: the runId job_run_submit returned; Yuzuno shows its status and how many stages are done), review (review id), agent or machine id. layout list shows one row per item in your order, with a short note of yours; for tasks Yuzuno fills in the title, state, assignee and last update, so write none of them. While Home cannot read Core, a list keeps the states it read last and says they are out of date.",
   Attachments: "Shows this section's attachments by name with optional captions.",
   Sources: "Explicit HTTPS or local file references; Table rows cite them by id in sourceIds.",
   ResearchDesk: "A research question as claims with intervals, the conditions and limits of what may be said, the sources and definitions each number rests on, and candidate next steps; see research.",
@@ -1579,7 +1579,7 @@ const guideParts = (): Record<BriefGuidePart, string[]> => (built ??= {
     `Sources: each source may name a snapshot (an attachment of this section); location, revision and sha256 are your description, shown as yours and never read. revision is a commit hash, 7 to 64 lowercase hexadecimal characters (not a branch, tag or other name); sha256 is 64 lowercase hexadecimal characters. A source with a snapshot shows the snapshot's SHA-256 and when it was taken, and whether your sha256 is the same file content; that is file identity, not a result. Yuzuno does not look at the file again later: the snapshot is as of when you wrote the section. A source may instead name a Task research record, task: {taskId, activitySeq} (taskId T-N or a Project task key such as YN-3; any key the task had still names it), one you or another Agent wrote with task_comment research: it is shown as the task keeps it (its type, title, producer and version) and needs no attachment; that is the record's identity, not a check of it. Removing the section leaves the record on its task.`,
     `Definitions: an analysis definition keeps every version you give, each citing a source with a snapshot (with lines when part of a file) or a source naming a Task method record. A version's number names one content: to change a definition, add a new version; Core refuses a version whose text, citation or cited file differs from the same version of the same desk (the element) in this section's previous version; each desk's definitions are its own. Estimates name the definition version they use; rows with the same compare id under two versions show side by side as before and after. Removing old versions is allowed, but the history then shows only what remains.`,
     `Claims: primary is the id of one row of the desk's plots (plots[].rows[].id), the row the claim leads with; not a plot or part id. plots lists plot ids. status (supported, conditional, unsupported, open) and statements are your reading and show as yours; kind criterion is a statistical criterion, interpretation your interpretation, exploratory an exploratory observation. dependsOn names the definition versions a claim rests on; when a newer version exists, the claim shows as affected through that declared dependency only. revisions are your drafts of changed wording for a claim (basis declared, or author when the author confirmed the dependency); Yuzuno shows them for review and never applies them.`,
-    `Plans: candidate next steps as a preview: the question, inputs, parameters, compute (none, cpu or gpu), budget, what they produce and what they do not. Nothing runs from the block, and opening it runs nothing; links name existing tasks or Jobs, shown with their current state like LiveRefs (they count toward the ${L.liveRefs} LiveRefs of a section). A Job that succeeded is not a result that holds.`,
+    `Plans: candidate next steps as a preview: the question, inputs, parameters, compute (none, cpu or gpu), budget, what they produce and what they do not. Nothing runs from the block, and opening it runs nothing; links name existing tasks, Jobs or runs of stages (kind run, the runId job_run_submit returned), shown with their current state like LiveRefs (they count toward the ${L.liveRefs} LiveRefs of a section). A Job that succeeded is not a result that holds.`,
     `Limits: ${R.claims} claims, ${R.plots} plots, ${R.rows} rows per plot, ${R.parts} parts per row, ${R.sources} sources, ${R.definitions} definitions with ${R.versions} versions each, ${R.revisions} revisions, ${R.plans} plans, ${R.items} entries per list, ${R.textChars} characters per text.`,
   ],
   attachments: [

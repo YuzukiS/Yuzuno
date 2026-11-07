@@ -364,8 +364,8 @@ async fn a_device_changed_while_another_is_sent_to_is_not_sent_to() {
             Answer::Accepted
         }));
         let working = notices::AgentState { id: "a".into(), name: "Builder".into(), status: "working".into(), turn: Some("t1".into()), ..Default::default() };
-        let before = Read { agents: vec![working.clone()], asks: vec![], proposals: vec![] };
-        let after = Read { agents: vec![notices::AgentState { status: "idle".into(), ..working }], asks: vec![], proposals: vec![] };
+        let before = Read { agents: vec![working.clone()], asks: vec![] };
+        let after = Read { agents: vec![notices::AgentState { status: "idle".into(), ..working }], asks: vec![] };
         deliver(ws.clone(), notices::notices(&before, &after)).await;
         assert_eq!(*sent.lock().unwrap(), vec![ENDPOINT.to_owned()], "the other device was {change}");
     }
@@ -396,38 +396,4 @@ async fn a_refused_send_stops_the_subscription_and_says_why() {
     let stopped = state_now(&ws);
     assert_eq!((stopped["state"].as_str(), stopped["reason"].as_str()), (Some("failed"), Some("The push service refused it (HTTP 403): BadJwtToken.")));
     assert!(stopped["stoppedAt"].is_string());
-}
-
-/// T-34 S3b (#612 R2 fe7b6464): the push read holds the handover proposals
-/// Home shows. A pending proposal of an archived Project is not in it, as
-/// Home's order leaves the Project out, and is back once it is unarchived; a
-/// lead's superseding proposal leaves one entry under the same notice tag.
-#[tokio::test]
-async fn the_push_read_holds_the_handover_proposals_home_shows() {
-    let (_dir, ws) = workspace();
-    let p = ws.store.create_project("Lab", Default::default()).unwrap().id;
-    let detail: crate::model::AgentDetail = serde_json::from_value(json!({"agent":{"id":"lead","name":"Mori","cwd":"/synthetic/work",
-        "model":"","harness":"claude","color":"sage","status":"offline","createdAt":"now","updatedAt":"now","unreadCount":0,
-        "pendingCount":0,"lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
-    ws.store.insert(&detail).unwrap();
-    ws.store.set_agent_project("lead", Some(&p)).unwrap();
-    crate::agent_roles::save(&ws.store, &p, 0, vec!["lead".into()]).unwrap();
-    ws.store.save_handover(&p, 0, "# Lab", None).unwrap();
-    let propose = |request: &'static str| ws.collaboration_call(Some("lead"), "handover_propose",
-        json!({"requestId":request,"expectedVersion":1,"markdown":format!("# Lab\n{request}")}));
-    propose("first").await.unwrap();
-    let ids = |read: &notices::Read| read.proposals.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-    let shown = read_now(&ws.store).unwrap();
-    assert_eq!(ids(&shown).len(), 1, "a waiting proposal is in the push read");
-    let archive = |archived| crate::projects::ProjectChange { name: None, key: None, default_dirs: Default::default(), archived: Some(archived) };
-    ws.store.update_project(&p, archive(true)).unwrap();
-    assert!(read_now(&ws.store).unwrap().proposals.is_empty(), "an archived Project's proposal is not in the push read, as Home doesn't show it");
-    ws.store.update_project(&p, archive(false)).unwrap();
-    assert_eq!(ids(&read_now(&ws.store).unwrap()), ids(&shown), "unarchived, it is back");
-    propose("second").await.unwrap();
-    let after = read_now(&ws.store).unwrap();
-    assert_eq!(after.proposals.len(), 1, "the lead's new proposal supersedes its own: one entry");
-    let told = notices::notices(&shown, &after);
-    assert_eq!(told.iter().map(|n| n.tag.clone()).collect::<Vec<_>>(), vec![format!("yuzuno:needsYou:handover:{p}:lead")],
-        "a superseding proposal's notice shares the earlier one's tag");
 }

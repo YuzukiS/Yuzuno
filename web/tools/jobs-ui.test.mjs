@@ -424,7 +424,7 @@ test('the submit form shows what earlier runs of the same name or command sugges
     await until(() => p.doc.querySelector('.job-suggestion'));
     assert.deepEqual(asked.at(-1), { taskId: 'T-38', name: 'K4 calibration', argv: JSON.stringify(['/bin/sh', '-c', 'python3 calib.py']) });
     assert.equal(p.doc.querySelector('.job-suggestion p').textContent,
-      'The last measured run of this name or command in this task peaked at 2.6 GiB RAM and 1.20 CPU cores. Suggested: 4.0 GiB RAM and 1.8 CPU (peak × 1.5, rounded up). Your limits stay as you set them.');
+      'The last measured run of this name or command in this task peaked at 2.6 GiB RAM and 1.20 CPU cores. Suggested: 4.0 GiB RAM and 1.8 CPU (RAM: peak × 1.3 or peak + 1 GiB, whichever is more; CPU: × 1.5; rounded up). Your limits stay as you set them.');
     // Shown, never applied: what is in the fields is sent.
     await set(p, 'RAM limit', '20480'); await set(p, 'CPU quota', '4');
     assert.ok(p.doc.querySelector('.job-suggestion'), 'still shown');

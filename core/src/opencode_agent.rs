@@ -49,15 +49,17 @@
 //! own default is can't be known before it answers. Either is refused before
 //! anything is sent.
 //!
-//! A command (T-10) OpenCode's configuration defines (`/config`'s `command`)
-//! runs when the user sends `/<name> [arguments]` for it: a Turn as a prompt
-//! is, recorded under its message ID before it is sent (`POST
-//! /session/:id/command`) and confirmed by the message OpenCode stores under
-//! it. That request is answered only when the run ends, so it goes in the
-//! background and its answer decides nothing once the message exists. A
-//! command's own model, or its agent's, is OpenCode's choice over the
-//! Agent's, whose model and variant go only with one that names none. It
-//! takes no images. Text from anyone else is always a prompt.
+//! A command (T-10) OpenCode offers (`GET /api/command`) runs when the user
+//! sends `/<name> [arguments]` for it, while the Agent is idle: a Turn as a
+//! prompt is, recorded under Core's ID before it is sent (`POST
+//! /api/session/:id/command {name, text}`, T-61 slice 3), with the Agent's
+//! model made the session's first. 2.x's request carries no ID: the Turn
+//! follows the first message 2.x admits after it (`command_input`), under an
+//! ID of 2.x's own. A model or agent the command names stays the session's.
+//! One that admits nothing, or runs as a sub-agent in the background, ends
+//! its Turn saying so; `goal` and `schedule`, which start work of their own
+//! later, are refused. It takes no images. Text from anyone else is always
+//! a prompt.
 //!
 //! A message the user adds to the running Turn (T-10, "send while working")
 //! goes as a prompt under a message ID of its own, recorded in that Turn
@@ -92,7 +94,7 @@
 //! machines.
 use crate::{
     model::{ensure_agent_open, now, AgentDetail, ContextUsage, PendingRequest, UsageSeen},
-    opencode::{self, CommandChoice, CompactAnswer, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
+    opencode::{self, CommandAnswer, CommandChoice, CompactAnswer, Events, Launch, Mcp, MessageId, ModelChoice, Reply, Server, Snapshot, Submission},
     rpc::OutcomeUnknown,
     store::{Sel, Store},
     workspace::Workspace,
@@ -101,7 +103,7 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::PathBuf,
     sync::{atomic::Ordering, Arc, Weak},
     time::Duration,
@@ -129,6 +131,22 @@ const MCP_SETTLE: Duration = Duration::from_secs(opencode::MCP_STARTUP.as_secs()
 /// them (probe diag 4523e39b: "No tool named yuzuno_peers_list"). 2.x has no
 /// route to ask whether it has; five times that is waited instead.
 const MCP_TOOLS_SETTLE: Duration = Duration::from_millis(500);
+/// How long a message's admission finding the Workspace MCP ready stands for
+/// its send (S1 R1 fec92b0a): the two run one after the other, and 2.x drops
+/// a folder's servers only after an hour idle.
+const MCP_FRESH: Duration = Duration::from_secs(10);
+
+/// Why the Workspace MCP is checked (`opencode_mcp`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum McpCheck {
+    /// Before a message's receipt: always asked of OpenCode.
+    Admit,
+    /// Before the message goes: what its admission confirmed on this
+    /// connection within MCP_FRESH stands; else asked.
+    Send,
+    /// A reconnect of a live connection: asked, with a failed server tried again.
+    Retry,
+}
 
 /// An Agent's OpenCode process, started but not yet attached (T-10 Fork),
 /// with where its snapshots are known to be kept, or why not.
@@ -162,6 +180,9 @@ pub(crate) struct Connection {
     /// (T-32 slice 4b, R3 b2b46a5f of #621): 2.x keeps its attempts in
     /// memory, so an attempt is this process's alone.
     pub logins: Arc<std::sync::Mutex<HashSet<String>>>,
+    /// When a message's admission last found the Workspace MCP ready on this
+    /// connection (`opencode_mcp`): its send stands on that within MCP_FRESH.
+    mcp_confirmed: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 /// In memory only, for one connection (T-10, contract on T-10 #757): each
@@ -208,7 +229,7 @@ impl Connection {
     fn new(generation: u64, server: Arc<Server>, session: String, children: BTreeMap<String, Value>,
         files: std::result::Result<crate::opencode_revert_files::Started, String>) -> Self {
         Self { generation, server, session, children: Arc::new(std::sync::Mutex::new(children)), usage: Arc::default(), removals: Arc::default(),
-            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default() }
+            files: Arc::new(files), cursor: Arc::default(), logins: Arc::default(), mcp_confirmed: Arc::default() }
     }
 
     /// Each listed model's context window, as OpenCode lists them now.
@@ -446,11 +467,29 @@ async fn compact_model(server: &Server, d: &AgentDetail, messages: &Value) -> Re
 /// Images go only to a chosen model that reads them, as OpenCode lists it now.
 /// A command can carry no images here (T-10).
 const IMAGES_WITH_COMMAND: &str = "OpenCode 命令不能附带图片；这条消息没有发送，草稿保留";
-/// How long a command's start is waited for: its answer comes only when its run ends.
+/// How long a command's answer is waited for: 2.x answers once the command
+/// admitted its message, which can wait on its template's shell lines or an
+/// MCP server's prompt (T-61 slice 3). `/compact` waits as long for its start.
 const COMMAND_START: Duration = Duration::from_secs(15);
+/// 2.x's commands that start work of their own, later, in runs no message
+/// starts (`goal`'s rounds, `schedule`'s jobs): refused by name until Core
+/// can follow such runs (T-61 slice 3, D-16 (a), D-5 (a)).
+pub(crate) const STARTS_WORK: [&str; 2] = ["goal", "schedule"];
+const COMMAND_STARTS_WORK: &str = "OpenCode 的这条命令会在之后自行开始新的工作，Yuzuno 还不能跟踪；这条消息没有发送，草稿保留";
+/// The notice a command Turn ends with when 2.x ran it without a run of its
+/// own to follow (Lead 7125): `turn.notice {kind, detail?}`, which the web
+/// words in the language it shows. A command 2.x ran that admitted nothing
+/// and left the session idle (`/goal pause`, a plugin's own command; D-14 (a)),
+/// its detail the command's name.
+const COMMAND_NO_TURN: &str = "command_no_turn";
+/// A sub-agent's command (D-15 (a)): 2.x runs it in a session of its own, in
+/// the background, and later gives its result to the Agent's session in a
+/// run no message of Yuzuno's starts. Its detail: the sub-agent's agent as
+/// 2.x lists that session, else the command's name.
+const COMMAND_SUBAGENT: &str = "command_subagent";
 
-/// The command a message names as `/<name> [arguments]`, if OpenCode's
-/// configuration defines `<name>` now (T-10); None for any other text,
+/// The command a message names as `/<name> [arguments]`, if OpenCode
+/// offers `<name>` now (T-10, `Server::commands`); None for any other text,
 /// which is a prompt. A list it cannot read refuses the message rather than
 /// sending a command's name to the model as text.
 async fn listed_command(server: &Server, text: &str) -> Result<Option<(CommandChoice, String)>> {
@@ -461,6 +500,11 @@ async fn listed_command(server: &Server, text: &str) -> Result<Option<(CommandCh
     }
     let commands = server.commands().await.context("没有读到 OpenCode 的命令；这条消息没有发送，草稿保留")?;
     Ok(commands.into_iter().find(|c| c.name == name).map(|c| (c, arguments.to_owned())))
+}
+
+/// Whether `text` names, as `/<name>`, a command that starts work of its own (`STARTS_WORK`).
+fn names_work(text: &str) -> bool {
+    text.strip_prefix('/').and_then(|rest| rest.split(char::is_whitespace).next()).is_some_and(|name| STARTS_WORK.contains(&name))
 }
 
 /// A command runs as a Turn of its own, so it is not added to a running one.
@@ -691,7 +735,7 @@ impl Workspace {
             // again on the same process and a failed one tried again (T-61
             // slice 1); one just started reported it as it attached. Its
             // readiness shows on the record; a reconnect is not refused for it.
-            Ok(c) if live => { let _ = self.opencode_mcp(id, &agent, &c, true).await; }
+            Ok(c) if live => { let _ = self.opencode_mcp(id, &agent, &c, McpCheck::Retry).await; }
             Ok(_) => {}
             Err(error) => {
                 self.failed(id, &error).await;
@@ -871,20 +915,32 @@ impl Workspace {
         Ok(c)
     }
 
-    /// The connection's event stream, read until its generation is gone. It
-    /// holds neither the Workspace nor the server, so dropping the Workspace
-    /// ends OpenCode and then this.
-    /// Before a message, and on a reconnect (`retry`), with Workspace MCP on:
+    /// Before a message (`check`), and on a reconnect, with Workspace MCP on:
     /// the Agent's Workspace MCP handed to its OpenCode again
     /// (`workspace_mcp`), so that one OpenCode dropped with the Agent's folder
     /// is back before the message goes (T-61 slice 1); readiness as OpenCode
-    /// then reports it; and the message refused unless it is ready.
-    async fn opencode_mcp(&self, id: &str, agent: &crate::model::Agent, c: &Connection, retry: bool) -> Result<()> {
-        if let Some(config) = self.collaboration_http_config(agent).await? {
-            let state = workspace_mcp(&c.server, &config, retry).await;
-            self.opencode_mcp_reported(id, c.generation, state).await;
+    /// then reports it; and the message refused unless it is ready. A
+    /// message's admission asks OpenCode; its send then does not ask again
+    /// when that admission confirmed it on this connection within MCP_FRESH
+    /// (S1 R1 fec92b0a), which a new connection never inherits.
+    async fn opencode_mcp(&self, id: &str, agent: &crate::model::Agent, c: &Connection, check: McpCheck) -> Result<()> {
+        let fresh = c.mcp_confirmed.lock().unwrap().is_some_and(|at| at.elapsed() < MCP_FRESH);
+        if check != McpCheck::Send || !fresh {
+            if let Some(config) = self.collaboration_http_config(agent).await? {
+                let state = workspace_mcp(&c.server, &config, check == McpCheck::Retry).await;
+                self.opencode_mcp_reported(id, c.generation, state).await;
+            }
         }
-        self.require_collaboration(id).await
+        let ready = self.require_collaboration(id).await;
+        {
+            let mut confirmed = c.mcp_confirmed.lock().unwrap();
+            match (&ready, check) {
+                (Ok(()), McpCheck::Admit) => *confirmed = Some(Instant::now()),
+                (Ok(()), _) => {}
+                (Err(_), _) => *confirmed = None,
+            }
+        }
+        ready
     }
 
     /// Readiness of connection `generation`, as its OpenCode reported the
@@ -898,6 +954,9 @@ impl Workspace {
         }
     }
 
+    /// The connection's event stream, read until its generation is gone. It
+    /// holds neither the Workspace nor the server, so dropping the Workspace
+    /// ends OpenCode and then this.
     fn opencode_watch(self: &Arc<Self>, id: &str, generation: u64, mut events: Events, server: Weak<Server>) {
         let (ws, id) = (Arc::downgrade(self), id.to_owned());
         tokio::spawn(async move {
@@ -1070,10 +1129,16 @@ impl Workspace {
             return;
         }
         let journal = format!("opencode/{kind}");
-        let kept = match &read[..] {
+        let mut kept = match &read[..] {
             [gathered] if streamed => journaled(gathered),
             _ => journaled(event),
         };
+        // What a form other than a question was answered with is not kept (T-61 slice 2, D-11 (a)).
+        if kind == "form.replied" && !read.iter().any(|one| one["data"]["question"] == true) {
+            if let Some(data) = kept.to_mut()["data"].as_object_mut() {
+                data.remove("answer");
+            }
+        }
         if session != c.session {
             // A sub-agent's requests are the Agent's to answer; nothing else
             // of it changes the record. Any other session's is not the Agent's.
@@ -1176,7 +1241,11 @@ impl Workspace {
             takes_images(model.as_ref())?;
             ensure!(listed_command(&c.server, &input.text).await?.is_none(), IMAGES_WITH_COMMAND);
         }
-        self.opencode_mcp(id, &detail.agent, &c, false).await
+        // A command that starts work of its own later, when OpenCode offers it: refused before a receipt (D-16 (a)).
+        if names_work(&input.text) {
+            ensure!(listed_command(&c.server, &input.text).await?.is_none(), COMMAND_STARTS_WORK);
+        }
+        self.opencode_mcp(id, &detail.agent, &c, McpCheck::Admit).await
     }
 
     /// Before the receipt of a message added to the running Turn `expected`
@@ -1193,7 +1262,7 @@ impl Workspace {
             takes_images(model.as_ref())?;
         }
         ensure!(listed_command(&c.server, &input.text).await?.is_none(), COMMAND_WHILE_RUNNING);
-        self.opencode_mcp(id, &detail.agent, &c, false).await
+        self.opencode_mcp(id, &detail.agent, &c, McpCheck::Admit).await
     }
 
     /// Under the Agent gate, before a message: what a restart of Core leaves
@@ -1276,7 +1345,7 @@ impl Workspace {
         }
         joinable(&d, expected)?;
         let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode 连接已断开；补充消息未发送，草稿保留")?;
-        self.opencode_mcp(id, &d.agent, &c, false).await?;
+        self.opencode_mcp(id, &d.agent, &c, McpCheck::Send).await?;
         let model = chosen(&c.server, &d.agent.model).await?;
         let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
         ensure!(listed_command(&c.server, text).await?.is_none(), COMMAND_WHILE_RUNNING);
@@ -1427,7 +1496,7 @@ impl Workspace {
         }
         ensure!(!busy(&d), "OpenCode 正在执行或等待回应；这条消息没有发送");
         let c = self.opencode_ensure(id).await?;
-        self.opencode_mcp(id, &d.agent, &c, false).await?;
+        self.opencode_mcp(id, &d.agent, &c, McpCheck::Send).await?;
         // The model and variant it goes with, as OpenCode lists them now (or its own).
         let model = chosen(&c.server, &d.agent.model).await?;
         let variant = chosen_variant(model.as_ref(), d.agent.settings.reasoning_effort.as_deref())?;
@@ -1435,6 +1504,7 @@ impl Workspace {
         // that command, with no images.
         let command = if commands { listed_command(&c.server, &text).await? } else { None };
         ensure!(command.is_none() || images.is_empty(), IMAGES_WITH_COMMAND);
+        ensure!(command.as_ref().is_none_or(|(listed, _)| !STARTS_WORK.contains(&listed.name.as_str())), COMMAND_STARTS_WORK);
         // Its images, for that model only, each this Agent's own and as it
         // was saved, read off the async workers: what OpenCode is given and
         // what the conversation shows.
@@ -1444,11 +1514,17 @@ impl Workspace {
             tokio::task::spawn_blocking(move || anyhow::Ok((crate::input_images::opencode_images(&root, &agent, &images)?,
                 crate::input_images::history_images(&root, &agent, &images)))).await??
         };
-        // A prompt's model is made the session's before its Turn is recorded (R3 4051b7d4), as an added message's
-        // is: a read or switch that fails rejects it, with no Turn. A command's model goes with the command.
-        if command.is_none() {
-            choose_for(&c, model.as_ref(), variant.as_deref()).await?;
-        }
+        // The model is made the session's before its Turn is recorded (R3 4051b7d4), as an added message's
+        // is: a read or switch that fails rejects it, with no Turn. A command too, as 2.x's own TUI does: its
+        // request carries no model, and one the command names is 2.x's choice over this (T-61 slice 3).
+        choose_for(&c, model.as_ref(), variant.as_deref()).await?;
+        // A sub-agent's command admits nothing in this session: what tells is the sub-agent session 2.x makes
+        // for it (D-15 (a)), so the ones there before are read first. A read that fails rejects it, with no Turn.
+        let before: BTreeSet<String> = match &command {
+            Some(_) => sub_agents(&c.server, &c.session).await.context("没有读到 OpenCode 的子会话；这条消息没有发送，草稿保留")?
+                .into_keys().collect(),
+            None => BTreeSet::new(),
+        };
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
         let message = MessageId::new();
         let turn = message.as_str().to_owned();
@@ -1456,16 +1532,21 @@ impl Workspace {
         // became of it.
         let words = (!text.is_empty()).then(|| json!({"type":"text","text":text}));
         let (requested, client, content) = (turn.clone(), client_id.map(str::to_owned), Value::Array(words.into_iter().chain(shown).collect()));
-        let (named, arguments, own_model) = command.as_ref().map_or((None, None, None), |(c, a)| (Some(c.name.clone()), Some(a.clone()), c.model.clone()));
+        let (named, arguments) = command.as_ref().map_or((None, None), |(c, a)| (Some(c.name.clone()), Some(a.clone())));
+        let awaited = named.clone();
         // A new input: what was measured before it is last known (T-10).
         c.unmeasured();
         self.record_update(id, "opencode/turnRequested", json!({"turnId":turn,"messageId":turn,"clientMessageId":client_id,"text":text,
             "images":images,"model":model.as_ref().map(ModelChoice::id),"variant":variant,
-            "command":named,"arguments":arguments,"commandModel":own_model}),
+            "command":named,"arguments":arguments}),
             Sel::Turns(vec![turn.clone()]), move |d| {
             stale(d);
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
+            // What 2.x admits for it comes under an ID of its own (`command_input`).
+            if let Some(name) = awaited {
+                entry["_opencodeCommand"] = json!({"name":name,"awaiting":true});
+            }
             entry["items"] = json!([{"id":format!("{requested}:input"),"type":"userMessage","content":content,"nativeMessageId":requested}]);
             let started = entry["_yuzunoStartedAt"].as_i64();
             crate::conversation_time::stamp_message(&mut entry["items"][0], started, "core");
@@ -1477,19 +1558,11 @@ impl Workspace {
         }).await?;
         self.changed(id);
         *sent = true;
-        let submitted = match &command {
-            // A command's own model is OpenCode's choice over the Agent's:
-            // the Agent's model and variant go only with one that names none.
-            Some((command, arguments)) => {
-                let (model, variant) = if command.model.is_some() { (None, None) } else { (model.as_ref().map(ModelChoice::id), variant.as_deref()) };
-                self.opencode_command_started(id, &c, &message, &command.name, arguments, model.as_deref(), variant).await
-            }
-            None => c.server.submit_with(&c.session, &message, &text, &files).await,
-        };
+        if let Some((command, arguments)) = &command {
+            return self.opencode_run_command(id, &c, &message, &command.name, arguments, &before, sent).await;
+        }
+        let submitted = c.server.submit_with(&c.session, &message, &text, &files).await;
         let refused = match &submitted {
-            // 2.x has no 1.19.3 route to run a command: it answers 405 (T-32 slice 4a), until the commands slice.
-            Ok(Submission::Refused(status)) if status.code == 405 && command.is_some() =>
-                Some(format!("{}；命令没有执行", crate::opencode_v2::NOT_YET)),
             Ok(Submission::Refused(status)) => Some(format!("OpenCode 拒绝了这条消息（HTTP {}），它没有收下：{}", status.code, status.body)),
             // Refused here, before any request.
             Err(error) => Some(format!("消息没有发送：{error}")),
@@ -1497,15 +1570,7 @@ impl Workspace {
         };
         if let Some(message) = refused {
             *sent = false;
-            let (failed, error) = (turn.clone(), message.clone());
-            self.record_update(id, "opencode/promptRefused", json!({"turnId":turn,"error":message}), Sel::Turns(vec![turn.clone()]), move |d| {
-                let entry = d.turn_mut(&failed);
-                entry["status"] = "failed".into();
-                entry["error"] = json!({"message":error});
-                d.agent.status = "idle".into();
-            }).await?;
-            self.changed(id);
-            bail!(message);
+            return Err(self.opencode_refused(id, &turn, message).await);
         }
         // Accepted (204) or no answer at all: only the stored message says it
         // arrived, looked for by the ID it was sent under.
@@ -1513,61 +1578,174 @@ impl Workspace {
             return Ok(json!({"turnId":turn}));
         }
         let detail = match &submitted { Ok(Submission::Unknown(reason)) => reason.clone(), _ => "HTTP 204".into() };
-        let unconfirmed = turn.clone();
-        self.record_update(id, "opencode/deliveryUnconfirmed", json!({"turnId":turn,"submission":detail}), Sel::Turns(vec![turn.clone()]), move |d| {
-            d.turn_mut(&unconfirmed)["deliveryUnconfirmed"] = true.into();
-        }).await?;
-        self.changed(id);
-        Err(OutcomeUnknown(format!("OpenCode 没有按这条消息的编号确认收到它（{detail}）；不会重发。若它已收下，结果仍会显示在这一轮。")).into())
+        Err(self.opencode_unconfirmed(id, &turn, &detail,
+            format!("OpenCode 没有按这条消息的编号确认收到它（{detail}）；不会重发。若它已收下，结果仍会显示在这一轮。")).await)
     }
 
-    /// Starts a command under `message` (T-10), its request held open for
-    /// the run (`Server::command`), and says what is known of its start:
-    /// refused when OpenCode answered 400 and its record, read after that
-    /// answer, has no message under that ID (as for an unknown command,
-    /// refused before it runs); accepted once OpenCode stored the message, or
-    /// answered; otherwise unknown: after COMMAND_START, or when that record
-    /// could not be read. A 400 once the message exists is the run's own
-    /// failure, which OpenCode's record of the Turn tells, as for a prompt.
-    async fn opencode_command_started(&self, id: &str, c: &Connection, message: &MessageId, name: &str, arguments: &str,
-        model: Option<&str>, variant: Option<&str>) -> Result<Submission> {
-        let request = c.server.command(&c.session, message, name, arguments, model, variant)?;
-        let (tx, mut answer) = tokio::sync::oneshot::channel();
+    /// The Turn `turn` OpenCode took nothing of, refused by it or here before
+    /// any request: failed with `message`, the Agent idle. The error to answer with.
+    async fn opencode_refused(&self, id: &str, turn: &str, message: String) -> anyhow::Error {
+        let (failed, error) = (turn.to_owned(), message.clone());
+        let written = self.record_update(id, "opencode/promptRefused", json!({"turnId":turn,"error":message}), Sel::Turns(vec![turn.to_owned()]),
+            move |d| {
+                let entry = d.turn_mut(&failed);
+                entry["status"] = "failed".into();
+                entry["error"] = json!({"message":error});
+                d.agent.status = "idle".into();
+            }).await;
+        self.changed(id);
+        match written {
+            Ok(_) => anyhow::anyhow!(message),
+            Err(error) => error,
+        }
+    }
+
+    /// The Turn `turn` whose delivery OpenCode did not confirm (`detail`):
+    /// marked so, and never sent again. The error to answer with: unknown.
+    async fn opencode_unconfirmed(&self, id: &str, turn: &str, detail: &str, message: String) -> anyhow::Error {
+        let unconfirmed = turn.to_owned();
+        let written = self.record_update(id, "opencode/deliveryUnconfirmed", json!({"turnId":turn,"submission":detail}),
+            Sel::Turns(vec![turn.to_owned()]), move |d| {
+                d.turn_mut(&unconfirmed)["deliveryUnconfirmed"] = true.into();
+            }).await;
+        self.changed(id);
+        match written {
+            Ok(_) => OutcomeUnknown(message).into(),
+            Err(error) => error,
+        }
+    }
+
+    /// Runs a command OpenCode offers (T-61 slice 3) under `message`, its
+    /// Turn's ID, recorded already, and says what became of it. 2.x's request
+    /// carries no ID: what the command admits comes under one of 2.x's own,
+    /// and the Turn follows the first user's or synthetic message 2.x admits
+    /// after it (`command_input`, D-13 (a)), as a prompt's follows its own.
+    /// 2.x's answer, within COMMAND_START, decides the rest:
+    /// - done, with nothing followed yet: a sub-agent session 2.x made for it
+    ///   ends the Turn at once (D-15 (a)); else, once CONFIRM_LIMIT and a
+    ///   whole read find nothing admitted and the session idle, it ran
+    ///   without starting a run (D-14 (a)); else unknown;
+    /// - refused (a 4xx) or failed (a 500): a command can admit its message
+    ///   before it fails, so a whole read decides: the Turn follows what it
+    ///   admitted, else it is refused with 2.x's words; unknown if unread;
+    /// - no answer: unknown, unless what it admitted is found.
+    ///
+    /// It is never sent again.
+    #[allow(clippy::too_many_arguments)]
+    async fn opencode_run_command(&self, id: &str, c: &Connection, message: &MessageId, name: &str, text: &str,
+        before: &BTreeSet<String>, sent: &mut bool) -> Result<Value> {
+        let turn = message.as_str().to_owned();
+        let request = match c.server.command(&c.session, message, name, text) {
+            Ok(request) => request,
+            Err(error) => {
+                *sent = false;
+                return Err(self.opencode_refused(id, &turn, format!("消息没有发送：{error}")).await);
+            }
+        };
+        // In the background, so that what the answer waits on (shell lines, an MCP server) never holds the Agent.
+        let (tx, answer) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let _ = tx.send(request.await);
         });
-        // Whether OpenCode holds the message: by the event that confirmed
-        // it, else by its record; None when that record could not be read.
-        let stored = || async {
-            if self.send_view(id).await.is_ok_and(|d| d.turns.iter().any(|t| t["id"] == message.as_str() && t["_opencodeConfirmed"] == true)) {
+        let answer = match tokio::time::timeout(COMMAND_START, answer).await {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(_)) => CommandAnswer::Unknown("the command's request ended without an answer".into()),
+            Err(_) => CommandAnswer::Unknown(format!("no answer within {} s", COMMAND_START.as_secs())),
+        };
+        let followed = json!({"turnId":turn});
+        let unknown = |detail: String| {
+            let message = format!("OpenCode 没有确认这条命令收下了什么（{detail}）；不会重发。若它已执行，结果仍会显示在这一轮。");
+            (detail, message)
+        };
+        match answer {
+            CommandAnswer::Done => {
+                if self.opencode_followed(id, &turn).await {
+                    return Ok(followed);
+                }
+                // A sub-agent's command admits nothing here: 2.x made its session before it answered.
+                let made = sub_agents(&c.server, &c.session).await.ok()
+                    .and_then(|now| now.into_iter().find(|(child, _)| !before.contains(child)));
+                if let Some((_, child)) = made {
+                    let detail = child["agent"].as_str().filter(|a| !a.is_empty()).unwrap_or(name).to_owned();
+                    return self.opencode_command_ended(id, &turn, "opencode/commandInBackground", COMMAND_SUBAGENT, detail).await;
+                }
+                let found = self.opencode_command_found(id, c, &turn, true).await;
+                if found == Some(true) {
+                    return Ok(followed);
+                }
+                // Nothing of it admitted, and nothing running.
+                let idle = found == Some(false) && c.server.session_status(&c.session).await.is_ok_and(|status| status["type"] == "idle");
+                if idle {
+                    return self.opencode_command_ended(id, &turn, "opencode/commandRanNothing", COMMAND_NO_TURN, name.to_owned()).await;
+                }
+                let (detail, message) = unknown("HTTP 204".into());
+                Err(self.opencode_unconfirmed(id, &turn, &detail, message).await)
+            }
+            CommandAnswer::Unknown(reason) => {
+                if self.opencode_command_found(id, c, &turn, true).await == Some(true) {
+                    return Ok(followed);
+                }
+                let (detail, message) = unknown(reason);
+                Err(self.opencode_unconfirmed(id, &turn, &detail, message).await)
+            }
+            CommandAnswer::Refused { code, message: words } => {
+                match self.opencode_command_found(id, c, &turn, false).await {
+                    Some(true) => Ok(followed),
+                    Some(false) => {
+                        *sent = false;
+                        Err(self.opencode_refused(id, &turn, format!("OpenCode 没有执行 /{name}（HTTP {code}）：{words}")).await)
+                    }
+                    None => {
+                        let (detail, message) = unknown(format!("HTTP {code}: {words}; its record could not be read"));
+                        Err(self.opencode_unconfirmed(id, &turn, &detail, message).await)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether `turn` follows what OpenCode admitted for it, as the record holds it now.
+    async fn opencode_followed(&self, id: &str, turn: &str) -> bool {
+        self.send_view(id).await.is_ok_and(|d| d.turns.iter().any(|t| t["id"] == turn && t["_opencodeConfirmed"] == true))
+    }
+
+    /// Whether the command Turn `turn` follows what 2.x admitted for it:
+    /// within CONFIRM_LIMIT of its events (`wait`), else after a whole read
+    /// of the session, which finds what they missed (`command_input`); None
+    /// when that read failed.
+    async fn opencode_command_found(&self, id: &str, c: &Connection, turn: &str, wait: bool) -> Option<bool> {
+        let deadline = Instant::now() + if wait { CONFIRM_LIMIT } else { Duration::ZERO };
+        loop {
+            if self.opencode_followed(id, turn).await {
                 return Some(true);
             }
-            c.server.message(&c.session, message).await.ok().map(|m| m.is_some())
-        };
-        let deadline = Instant::now() + COMMAND_START;
-        loop {
-            match answer.try_recv() {
-                Ok(Submission::Refused(status)) => {
-                    return Ok(match stored().await {
-                        Some(true) => Submission::Accepted,
-                        Some(false) => Submission::Refused(status),
-                        None => Submission::Unknown(format!("{status}, and its record of the message could not be read")),
-                    });
-                }
-                Ok(other) => return Ok(other),
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    return Ok(Submission::Unknown("the command's request ended without an answer".into()));
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
-            }
-            if stored().await == Some(true) {
-                return Ok(Submission::Accepted);
-            }
             if Instant::now() >= deadline {
-                return Ok(Submission::Unknown("no answer yet: a command's request is answered when its run ends".into()));
+                break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        self.opencode_resync(id, c).await.ok()?;
+        Some(self.opencode_followed(id, turn).await)
+    }
+
+    /// A command Turn that ends as OpenCode answered it, with nothing of
+    /// its own to follow (D-14 (a), D-15 (a)): completed, with the notice of
+    /// why (`kind`, `detail`). What 2.x admits after this is not its.
+    async fn opencode_command_ended(&self, id: &str, turn: &str, journal: &str, kind: &str, detail: String) -> Result<Value> {
+        let ended = turn.to_owned();
+        let notice = json!({"kind":kind,"detail":detail});
+        let kept = notice.clone();
+        self.record_update(id, journal, json!({"turnId":turn,"notice":notice}), Sel::Turns(vec![turn.to_owned()]), move |d| {
+            let Some(entry) = d.turns.iter_mut().find(|t| t["id"] == ended.as_str() && t["status"] == "inProgress") else { return };
+            entry["_opencodeCommand"]["awaiting"] = false.into();
+            entry["status"] = "completed".into();
+            entry["notice"] = kept;
+            // Delivered: its receipt is bound to it, as a prompt's is once stored.
+            confirm(d, &ended);
+            refresh_status(d);
+        }).await?;
+        self.changed(id);
+        Ok(json!({"turnId":turn}))
     }
 
     /// Whether OpenCode stored the message sent under `message`, by its own
@@ -1862,9 +2040,6 @@ impl Workspace {
             let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
             ensure!(p.params["_runtimeGeneration"] == c.generation && c.owns(asked),
                 "这个请求属于已经结束的 OpenCode 连接；不会把回答发给新的进程");
-            if let Some(not_yet) = p.params["_opencodeNotYet"].as_str() {
-                bail!("{not_yet}");
-            }
             let answer = answer(&p, &reply)?;
             store.update_meta(&agent, "request/replied", &json!({"requestId":request}), |m| {
                 if let Some(p) = m.pending.iter_mut().find(|p| p.id == request) {
@@ -1875,13 +2050,47 @@ impl Workspace {
         }).await?;
         let Some((p, c, answer)) = checked else { return Ok(false) };
         let native = p.params["id"].as_str().unwrap_or_default();
-        // OpenCode checks it is pending in that same session before answering.
+        // 2.x answers only a request pending in the session named (404 otherwise, answering nothing).
         let asked = p.params["_opencodeSession"].as_str().unwrap_or_default();
+        // A refusal ends the run as a shutdown does (D-7): marked first, as the end can come before the answer to it.
+        if answer.declines() {
+            c.cursor.lock().unwrap().declining(asked, true);
+        }
         let sent = match &answer {
             Answer::Permission(reply) => c.server.reply_permission(asked, native, *reply).await,
-            Answer::Question(answers) => c.server.reply_question(asked, native, answers).await,
-            Answer::RejectQuestion => c.server.reject_question(asked, native).await,
+            Answer::Form(value) => c.server.reply_form(asked, native, value).await,
+            Answer::Decline => c.server.cancel_form(asked, native).await,
         };
+        let request = request_id.to_owned();
+        // What 2.x refused: an answer it can't take leaves the request
+        // pending and answerable (D-9 (a)); one it no longer holds is gone.
+        let refused = sent.as_ref().err().and_then(|e| e.downcast_ref::<opencode::RequestRefused>()).map(|r| match r {
+            opencode::RequestRefused::Invalid { .. } => "invalid",
+            opencode::RequestRefused::Gone { .. } => "gone",
+            opencode::RequestRefused::Other { .. } => "other",
+        });
+        // Unmarked only when 2.x refused the answer, as the run then goes on. With no answer to it (a timeout,
+        // a cut connection) 2.x may have taken it and ended the run as a shutdown: the mark stays, and the
+        // run's next end clears it (S2 R1 55c8cdcb).
+        if answer.declines() && matches!(refused, Some("invalid" | "gone")) {
+            c.cursor.lock().unwrap().declining(asked, false);
+        }
+        if let (Err(error), Some(kind @ ("invalid" | "gone"))) = (&sent, refused) {
+            let message = error.to_string();
+            let journal = if kind == "invalid" { "opencode/requestAnswerRefused" } else { "opencode/requestGone" };
+            self.record_update(id, journal, json!({"requestId":request_id,"error":message}), Sel::Open, move |d| {
+                if kind == "invalid" {
+                    if let Some(p) = d.pending.iter_mut().find(|p| p.id == request) {
+                        p.params["_responseSent"] = false.into();
+                    }
+                } else {
+                    d.pending.retain(|p| p.id != request);
+                }
+                refresh_status(d);
+            }).await?;
+            self.changed(id);
+            return Err(sent.unwrap_err());
+        }
         let request = request_id.to_owned();
         match sent {
             Ok(()) => {
@@ -1978,9 +2187,6 @@ async fn stop(server: Arc<Server>) -> Result<()> {
     }
 }
 
-/// The remote MCP server OpenCode is given for this Agent, and whether it
-/// reached it. A failed request is reported, not raised: readiness is
-/// separate from the connection, which still serves reading and stopping.
 /// The Agent's Workspace MCP handed to its OpenCode, and how OpenCode then
 /// lists it (T-61 slice 1). It is added each time with the same
 /// configuration: 2.x changes nothing for a server it holds, and adds back
@@ -1990,7 +2196,9 @@ async fn stop(server: Arc<Server>) -> Result<()> {
 /// server it lists as failed again, which the same configuration does not.
 /// One still connecting is waited for, at most MCP_SETTLE; one this call
 /// connected, MCP_TOOLS_SETTLE more, until 2.x offers its tools. Nothing
-/// OpenCode answers is kept with the bearer in it.
+/// OpenCode answers is kept with the bearer in it. A failed request is
+/// reported in what it returns, never raised: readiness is separate from the
+/// connection, which still serves reading and stopping.
 async fn workspace_mcp(server: &Server, config: &Value, retry: bool) -> Mcp {
     let url = config["url"].as_str().unwrap_or_default();
     let Some(bearer) = config["headers"]["Authorization"].as_str().and_then(|h| h.strip_prefix("Bearer ")) else {
@@ -2215,7 +2423,7 @@ fn measure(d: &mut AgentDetail, c: &Connection, info: &Value) {
     }
     let (Some(at), Some(parent), Some(answer)) = (info["time"]["completed"].as_i64(), info["parentID"].as_str(), info["id"].as_str())
         else { return };
-    let Some(index) = d.turns.iter().position(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some() || t["_opencodeFollowed"] == parent)
+    let Some(index) = d.turns.iter().position(|t| answers_to(t, parent) || t["_opencodeFollowed"] == parent)
         else { return };
     // An answer to an earlier input, completed late, says nothing of now:
     // one to an earlier Turn (every change holds the newest one, last; R5
@@ -2283,7 +2491,7 @@ fn context_used(tokens: &Value) -> Option<u64> {
 /// later user message of OpenCode's own that it went on under, such as a
 /// compaction's continuation (`followed`; OpenCode's IDs ascend).
 fn latest_input(turn: &Value) -> Option<&str> {
-    let input = turn["_opencodeLastInput"].as_str().or_else(|| turn["id"].as_str());
+    let input = turn["_opencodeLastInput"].as_str().or_else(|| turn["_opencodeCommand"]["native"].as_str()).or_else(|| turn["id"].as_str());
     match (input, turn["_opencodeFollowed"].as_str()) {
         (Some(input), Some(after)) if after > input => Some(after),
         (input, _) => input,
@@ -2342,8 +2550,7 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
     // How a turn that ended while no stream was open ended, as its idle message says (2.x).
     for end in &ended {
         let Some(error) = &end.error else { continue };
-        if let Some(turn) = d.turns.iter_mut().find(|t| t["status"] == "inProgress"
-            && (t["id"] == end.user.as_str() || t["_opencodeInputs"].get(&end.user).is_some())) {
+        if let Some(turn) = d.turns.iter_mut().find(|t| t["status"] == "inProgress" && answers_to(t, &end.user)) {
             turn["_opencodeSessionError"] = error.clone();
         }
     }
@@ -2383,6 +2590,7 @@ fn message(d: &mut AgentDetail, info: &Value) {
     let Some(id) = info["id"].as_str() else { return };
     match info["role"].as_str() {
         Some("user") => {
+            command_input(d, info);
             confirm(d, id);
             confirm_input(d, id);
             compaction_message(d, info);
@@ -2392,9 +2600,9 @@ fn message(d: &mut AgentDetail, info: &Value) {
             if compaction_summary(d, info) {
                 return;
             }
-            // Its Turn: the one whose prompt it answers, or whose added message (T-10).
+            // Its Turn: the one whose prompt it answers, or whose added message (T-10), or command's (T-61 slice 3).
             let Some(parent) = info["parentID"].as_str() else { return };
-            let Some(turn) = d.turns.iter_mut().find(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some()) else {
+            let Some(turn) = d.turns.iter_mut().find(|t| answers_to(t, parent)) else {
                 return;
             };
             if !turn["_opencodeAnswers"].is_object() {
@@ -2405,7 +2613,7 @@ fn message(d: &mut AgentDetail, info: &Value) {
         // A shell command of 2.x's (T-32 slice 4a, D2): its Turn's, as the message before it says; no answer.
         Some("shell") => {
             let Some(parent) = info["parentID"].as_str() else { return };
-            let Some(turn) = d.turns.iter_mut().find(|t| t["id"] == parent || t["_opencodeInputs"].get(parent).is_some()) else {
+            let Some(turn) = d.turns.iter_mut().find(|t| answers_to(t, parent)) else {
                 return;
             };
             if !turn["_opencodeShells"].is_object() {
@@ -2415,6 +2623,36 @@ fn message(d: &mut AgentDetail, info: &Value) {
         }
         _ => {}
     }
+}
+
+/// Whether OpenCode's message `message` is one of `turn`'s inputs, which
+/// its answers answer: its prompt, a message added to it (T-10), or what 2.x
+/// admitted for its command (`command_input`).
+fn answers_to(turn: &Value, message: &str) -> bool {
+    turn["id"] == message || turn["_opencodeInputs"].get(message).is_some() || turn["_opencodeCommand"]["native"] == message
+}
+
+/// What 2.x admitted for the command the running Turn sent (T-61 slice 3,
+/// D-13 (a)): the first user's or synthetic message after it in the
+/// Agent's session, under an ID of 2.x's own, as its events or a whole read
+/// show it; never one this connection saw delivered without its admission
+/// (`_opencodeUnseen`), which could be anything 2.x queued, nor a sub-agent's
+/// result (`SUB_AGENTS_RESULT`), which 2.x hands the session in a run of its
+/// own and can deliver before Core has seen that a command ran as a sub-agent
+/// (probe p1 fecf3048: 200 ms after the answer, with the stub). The Turn answers
+/// to it from then on, as a prompt's to its own (`answers_to`), and it was
+/// delivered.
+fn command_input(d: &mut AgentDetail, info: &Value) {
+    let Some(id) = info["id"].as_str() else { return };
+    if info["_opencodeUnseen"] == true || info[crate::opencode_v2::SUB_AGENTS_RESULT] == true || d.turns.iter().any(|t| answers_to(t, id)) {
+        return;
+    }
+    let Some(turn) = running(d).filter(|t| t["_opencodeCommand"]["awaiting"] == true) else { return };
+    // 2.x's message IDs ascend, as Core's do (`followed`): only one admitted after the command was sent is its.
+    let Some(sent) = turn["id"].as_str().filter(|sent| id > *sent).map(str::to_owned) else { return };
+    turn["_opencodeCommand"]["awaiting"] = false.into();
+    turn["_opencodeCommand"]["native"] = id.into();
+    confirm(d, &sent);
 }
 
 /// OpenCode stored the prompt sent under `turn`: it was delivered. The
@@ -2466,7 +2704,7 @@ fn confirm_input(d: &mut AgentDetail, input: &str) {
 /// message. OpenCode's message IDs ascend. Noted after a prompt alone too:
 /// its answers are the newest of the Turn's context usage (T-10).
 fn followed(d: &mut AgentDetail, id: &str) {
-    if d.turns.iter().any(|t| t["id"] == id || t["_opencodeInputs"].get(id).is_some()) {
+    if d.turns.iter().any(|t| answers_to(t, id)) {
         return;
     }
     let Some(turn) = running(d).filter(|t| t["_opencodeCompact"].is_null()) else { return };
@@ -2767,7 +3005,13 @@ fn settle(turn: &mut Value) {
             return;
         }
     }
-    if let Some(error) = answers.iter().map(|a| &a["error"]).find(|e| e.is_object()) {
+    // A run 2.x stopped as Core refused one of its requests (T-61 slice 2,
+    // D-7 (a)): declined, whatever its answer's own error says ("Step interrupted").
+    let declined = turn["_opencodeSessionError"]["data"]["message"] == crate::opencode_v2::DECLINED;
+    if declined {
+        turn["status"] = "interrupted".into();
+        turn["error"] = json!({"message": crate::opencode_v2::DECLINED, "native": turn["_opencodeSessionError"].clone()});
+    } else if let Some(error) = answers.iter().map(|a| &a["error"]).find(|e| e.is_object()) {
         let interrupted = error["name"] == "MessageAbortedError";
         turn["status"] = if interrupted { "interrupted" } else { "failed" }.into();
         turn["error"] = json!({"message":error_text(error),"native":error});
@@ -2866,7 +3110,7 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
     if d.pending.iter().any(|p| !p.stale && p.params["id"] == native && p.params["_runtimeGeneration"] == generation) {
         return;
     }
-    let mut params = request.clone();
+    let mut params = crate::opencode_v2::request_of(request);
     params["_runtimeGeneration"] = generation.into();
     params["_opencodeSession"] = session.into();
     if let Some(child) = child {
@@ -2874,11 +3118,6 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
         params["_opencodeChild"] = child.clone();
     }
     params["_responseSent"] = false.into();
-    // 2.x's own request: shown with why it can't be answered here yet, so its
-    // run is seen to wait on it (T-32 slice 4a, until slice 5).
-    if crate::opencode_v2::is_v2_request(request) {
-        params["_opencodeNotYet"] = format!("{}；这个请求还不能在 Yuzuno 里回答，只能中断这一轮", crate::opencode_v2::NOT_YET).into();
-    }
     if let Some(turn) = d.turns.iter().rev().find(|t| t["status"] == "inProgress").and_then(|t| t["id"].as_str()) {
         params["turnId"] = turn.into();
     }
@@ -2894,24 +3133,38 @@ fn ask(d: &mut AgentDetail, method: &str, generation: u64, session: &str, child:
 
 enum Answer {
     Permission(Reply),
-    Question(Vec<Vec<String>>),
-    RejectQuestion,
+    /// A form's answer as 2.x takes it, by field key (`form_answer`).
+    Form(Value),
+    /// The form declined: its tool fails, and its run ends (D-7).
+    Decline,
+}
+
+impl Answer {
+    /// Whether it ends the run that asked (D-7 (a)): a rejected permission
+    /// request (2.x rejects the session's others with it) or a declined form.
+    fn declines(&self) -> bool {
+        matches!(self, Answer::Permission(Reply::Reject) | Answer::Decline)
+    }
 }
 
 /// `{"decision":"once"|"reject"}` for a permission; `{"answers":[[label…]…]}`
-/// (one list per question) or `{"decision":"reject"}` for a question.
+/// (one list per question) or `{"decision":"reject"}` for a question (T-61
+/// slice 2: 2.x's form). A form Yuzuno can't fill takes only the decline.
 fn answer(p: &PendingRequest, response: &Value) -> Result<Answer> {
     match (p.method.as_str(), response["decision"].as_str()) {
         (PERMISSION, Some("once")) => Ok(Answer::Permission(Reply::Once)),
         (PERMISSION, Some("reject")) => Ok(Answer::Permission(Reply::Reject)),
         (PERMISSION, _) => bail!("OpenCode 权限请求只接受 once 或 reject"),
-        (QUESTION, Some("reject")) => Ok(Answer::RejectQuestion),
+        (QUESTION, Some("reject")) => Ok(Answer::Decline),
         (QUESTION, None) => {
+            if let Some(why) = p.params["_opencodeUnfillable"].as_str() {
+                bail!("Yuzuno 填不了这个 OpenCode 表单（{why}）；只能拒绝，或中断这一轮");
+            }
             let answers: Vec<Vec<String>> = serde_json::from_value(response["answers"].clone())
                 .map_err(|_| anyhow!("回答应为每个问题一组选项文字"))?;
             let asked = p.params["questions"].as_array().map_or(0, Vec::len);
             ensure!(answers.len() == asked, "这个请求有 {asked} 个问题，回答了 {} 个", answers.len());
-            Ok(Answer::Question(answers))
+            Ok(Answer::Form(crate::opencode_v2::form_answer(&p.params, &answers)?))
         }
         _ => bail!("不是可以回答的 OpenCode 请求"),
     }

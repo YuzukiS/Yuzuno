@@ -94,8 +94,16 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource, d
   // Which of its sub-agents asks (T-10), on the line Codex's sub-agents use: OpenCode's title for it, else its agent.
   const child = request.params._opencodeChild as { title?: unknown; agent?: unknown } | undefined;
   const subAgent = child ? (typeof child.title === "string" && child.title) || (typeof child.agent === "string" && child.agent ? `@${child.agent}` : "") : "";
-  const patterns = Array.isArray(request.params.patterns) ? request.params.patterns.map(String) : [];
+  // 2.x names the tool `action` and what it acts on `resources`, and may explain why in `message` (T-61);
+  // 1.19.3's records name them `permission` and `patterns`, with `metadata`.
+  const v2 = typeof request.params.action === "string";
+  const tool = String(request.params.action || request.params.permission || t.aTool);
+  const resources = (Array.isArray(request.params.resources) ? request.params.resources
+    : Array.isArray(request.params.patterns) ? request.params.patterns : []).map(String);
+  const message = typeof request.params.message === "string" ? request.params.message.trim() : "";
   const metadata = request.params.metadata && Object.keys(request.params.metadata).length ? request.params.metadata : null;
+  // A 2.x form Yuzuno's card can't fill (T-61): Core says why, and it can only be declined.
+  const unfillable = question && typeof request.params._opencodeUnfillable === "string" ? request.params._opencodeUnfillable : "";
   return <section ref={motion.card} className={`pending-card opencode-request${highlightSource ? " source-highlight" : ""}`} id={`request-${request.id}`} tabIndex={-1} lang={langTag(language)}>
     <div className="pending-heading">
       {question ? <MessageSquare size={17} /> : <ShieldCheck size={17} />}
@@ -106,7 +114,13 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource, d
     {request.stale && <p className="inline-error">{t.staleOpen}</p>}
     {notYet && <p className="inline-error" lang="">{notYet}</p>}
     {request.params._responseSent && <p className="field-hint" ref={motion.hint}>{t.sentOpen}</p>}
-    {question ? <form onSubmit={e => { e.preventDefault(); void respond({ answers: questions.map(answer) }); }}>
+    {unfillable ? <>
+      <p>{t.cantAnswer}<span lang="">{unfillable}</span>{t.period}</p>
+      <div className="opencode-actions">
+        <button type="button" className="secondary-button" disabled={locked} onClick={() => void respond({ decision: "reject" })}>{sending && <LoaderCircle size={14} className="spin" />}{t.decline}</button>
+      </div>
+      <p className="field-hint">{t.declineEnds}</p>
+    </> : question ? <form onSubmit={e => { e.preventDefault(); void respond({ answers: questions.map(answer) }); }}>
       <fieldset disabled={locked} className="opencode-question-fields">
         {questions.map((q, index) => <fieldset key={index}>
           <legend lang="">{q.question}</legend>
@@ -126,14 +140,15 @@ export function OpenCodeRequest({ request, refresh, disabled, highlightSource, d
         <button type="button" className="secondary-button" disabled={locked} onClick={() => void respond({ decision: "reject" })}>{t.decline}</button>
       </div>
     </form> : <>
-      <p>{t.asksUse}<strong>{String(request.params.permission || t.aTool)}</strong>{patterns.length ? t.forColon : t.period}</p>
-      {patterns.length > 0 && <pre className="opencode-request-input">{patterns.join("\n")}</pre>}
+      <p>{t.asksUse}<strong>{tool}</strong>{resources.length ? t.forColon : t.period}</p>
+      {resources.length > 0 && <pre className="opencode-request-input">{resources.join("\n")}</pre>}
+      {message && <p lang="">{message}</p>}
       {metadata && <pre className="opencode-request-input">{JSON.stringify(metadata, null, 2)}</pre>}
       <div className="opencode-actions">
         <button className="primary-button" disabled={locked} onClick={() => void respond({ decision: "once" })}>{sending && <LoaderCircle size={14} className="spin" />}{t.allowOnce}</button>
         <button className="secondary-button" disabled={locked} onClick={() => void respond({ decision: "reject" })}>{t.reject}</button>
       </div>
-      <p className="field-hint">{t.openHint}</p>
+      <p className="field-hint">{v2 ? t.openHintEnds : t.openHint}</p>
     </>}
     {error && !(unconfirmedAnswer.unconfirmed && request.params._responseSent) && <p role="alert" className="inline-error">{shownError(error, t)}</p>}
     {unconfirmedAnswer.unconfirmed && !request.params._responseSent && <AnswerAgain onClick={() => { setError(""); unconfirmedAnswer.answerAgain(); }} />}

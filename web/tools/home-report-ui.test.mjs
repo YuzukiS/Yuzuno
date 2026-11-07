@@ -8,6 +8,7 @@ import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { checkBriefSection } from "../src/intelligent-ui/brief-contract.ts";
+import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
 
 // T-18: a section's report, a page over Home. The real Home, with Core
 // answered here and the app's links stood in for. Synthetic data only; no
@@ -97,7 +98,7 @@ const linkTo = (version, extra = {}) => ({ workspaceId: "ws-1", projectId: "p1",
 const address = (version) => `#/report?w=ws-1&p=p1&k=eval&v=${version}&s=7`;
 const back = { workspaceId: "ws-1", agentId: "a", turnId: "t1", itemId: "i-2" };
 
-function mount(read) {
+function mount(read, answer = () => undefined) {
   const errors = [];
   const requests = [];
   const copied = [];
@@ -115,7 +116,7 @@ function mount(read) {
   window.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), method: init.method || "GET", body: init.body ?? null });
     // Home's read may be held (a promise) or refused (an Error), as Core's can.
-    const body = String(url) === "/api/home" ? await read() : String(url) === "/api/machine-load" ? machine : { repositories: [], links: [] };
+    const body = String(url) === "/api/home" ? await read() : String(url) === "/api/machine-load" ? machine : answer(String(url)) ?? { repositories: [], links: [] };
     if (body instanceof Error) {
       const refused = { error: body.message };
       return { ok: false, status: 503, json: async () => refused, text: async () => JSON.stringify(refused) };
@@ -136,8 +137,8 @@ function mount(read) {
   };
   return { window, document, errors, requests, copied, report, card, button, press, close: () => window.close() };
 }
-async function openHome(read, incoming = null) {
-  const page = mount(read);
+async function openHome(read, incoming = null, answer) {
+  const page = mount(read, answer);
   page.window.renderHome(incoming);
   await until(() => page.document.querySelector(".home-panel"), "Home read");
   await tick(40);
@@ -575,3 +576,89 @@ test("a reply's Open on Home while a report is open lands on its card once the r
   assert.deepEqual(page.window.actions.filter(([kind]) => kind === "back"), []);
   assert.deepEqual(page.errors, []);
 });
+
+// YN-7 item 8: a card's conditions box is named by its Checklist's own title, and its open items come first, each
+// group in the author's order, so a fold hides what is done first. (The fold and its count need layout: the browser
+// check home-desk-cards-check.mjs.) The report page keeps the author's order under "Conditions".
+test("a card's Checklist conditions take the Checklist's title, open items first, each group in the author's order (YN-7)", async (t) => {
+  const body = reportBody();
+  body.elements.holds = { type: "Checklist", props: { title: "Before the test run", items: [
+    { id: "protocol", text: "Protocol written", done: true }, { id: "cache", text: "Unlabelled inputs cached", done: true },
+    { id: "freeze", text: "Freeze the new method", done: false }, { id: "seeds", text: "Seeds fixed", done: true },
+    { id: "register", text: "Register the run", done: false } ] } };
+  checkBriefSection({ key: "gate", kind: "report", title: "Test gate", body });
+  const page = await openHome(() => homeData([section("gate", 9, 1, { title: "Test gate", body })]));
+  t.after(page.close);
+  const box = page.card("gate").querySelector(".home-card-conditions");
+  assert.equal(box.getAttribute("aria-label"), "Before the test run", "the box is named by the Checklist's title");
+  assert.equal(box.querySelector(".home-card-conditions-label").textContent, "Before the test run");
+  const chips = [...box.querySelectorAll(".home-card-condition-chips li")];
+  assert.deepEqual(chips.map((li) => li.textContent), ["Freeze the new method", "Register the run", "Protocol written", "Unlabelled inputs cached", "Seeds fixed"],
+    "open items first, each group in the author's order");
+  assert.deepEqual(chips.map((li) => li.hasAttribute("data-done")), [false, false, true, true, true]);
+  page.card("gate").querySelector(".home-report-open").click();
+  const report = await until(page.report, "the report");
+  assert.equal(report.querySelector(".report-conditions-label").textContent, "Conditions", "the page keeps its label");
+  assert.deepEqual([...report.querySelectorAll(".report-conditions li")].map((li) => li.textContent.trim()),
+    ["Protocol written", "Unlabelled inputs cached", "Freeze the new method", "Seeds fixed", "Register the run"], "and the author's order");
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-7 item 7: a research desk named as a wide card's visual draws its lead claim, with the author's status, and the
+// interval of the row it leads with, each number read as the report page reads it; a small card names it in a line.
+const deskWith = (size) => {
+  const desk = doseStudy.body.elements.desk;
+  const second = { id: "c2", title: "The low dose's effect is unclear", statement: "Its interval crosses zero under the v2 outcome.", status: "open", primary: "low-v2" };
+  return { root: "body", elements: { ...doseStudy.body.elements,
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "desk", size } }, children: ["lead", "desk"] },
+    lead: { type: "Markdown", props: { text: "Against placebo, the high dose shortens recovery under the v2 outcome." } },
+    desk: { ...desk, props: { ...desk.props, claims: [...desk.props.claims, second] } } } };
+};
+/** Core's research read of the desk, from the fixture files, as research.rs answers it. */
+function deskRead(version) {
+  const values = {};
+  for (const plot of doseStudy.body.elements.desk.props.plots)
+    for (const row of plot.rows)
+      for (const [id, estimate] of [[row.id, row.estimate], ...(row.parts ?? []).map((part) => [part.id, part.estimate])])
+        for (const field of ["value", "low", "high"]) {
+          const number = estimate[field];
+          if (!number || typeof number !== "object") continue;
+          const found = number.pointer.split("/").slice(1).reduce((value, part) => value?.[part], fixtureFiles[number.from]);
+          values[`${id}.${field}`] = typeof found === "number" ? { status: "read", value: found, from: number.from } : { status: "missing", from: number.from };
+        }
+  return { key: "dose", version, elementId: "desk", values, sources: {} };
+}
+test("a wide card's research desk shows its lead claim with the author's status and the interval it leads with, read as its page reads it (YN-7)", async (t) => {
+  for (const size of ["wide", "small"]) checkBriefSection({ ...doseStudy, key: "dose", body: deskWith(size) });
+  const page = await openHome(() => homeData([section("dose", 12, 3, { title: doseStudy.title, body: deskWith("wide") }),
+    section("dose-small", 13, 3, { title: "Dose study, small", body: deskWith("small") })]), null,
+  (url) => (url.startsWith("/api/projects/p1/brief/research/dose/desk?") ? deskRead(3) : undefined));
+  t.after(page.close);
+  const card = page.card("dose");
+  assert.equal(card.dataset.cardSize, "wide");
+  const desk = card.querySelector(".home-card-frame.kind-desk .research-card");
+  assert.ok(desk, "drawn in the card's frame");
+  assert.equal(desk.querySelector(".research-card-question").textContent, "Does the higher dose shorten recovery?");
+  assert.equal(desk.querySelector(".research-status").textContent, "Holds under conditions (the author's reading)");
+  assert.equal(desk.querySelector(".research-status").dataset.status, "conditional");
+  assert.equal(desk.querySelector(".research-card-claim").textContent, "High dose shortens recovery");
+  assert.equal(desk.querySelector(".research-card-plot-title").textContent, "Recovery time vs placebo (v2)");
+  // The claim's primary row, its numbers from the snapshot as the page reads them; signed, the reference being 0.
+  const value = await until(() => desk.querySelector('.research-row-value .research-origin[data-origin="read"]')?.closest(".research-row-value"), "the read numbers");
+  assert.equal(desk.querySelector(".research-row-label").textContent, "High dose");
+  assert.equal(value.querySelector("b").textContent, "−2.04");
+  assert.equal(value.querySelector(".research-row-interval").textContent, " [−3.12, −0.96]");
+  assert.equal(desk.querySelectorAll(".research-row").length, 1, "only the row the claim leads with");
+  assert.equal(desk.querySelector(".research-card-more").textContent, "+1 claim · interactive on the report page");
+  assert.equal(card.querySelector(".home-card-desk"), null, "not the question and counts alone");
+  assert.equal(page.requests.filter((request) => request.url === "/api/projects/p1/brief/research/dose/desk?version=3").length, 1);
+  // A small card names the desk in a line and reads nothing for it.
+  const small = page.card("dose-small");
+  assert.equal(small.dataset.cardSize, "small");
+  assert.equal(small.querySelector(".research-card"), null);
+  assert.ok(small.querySelector(".home-card-figure-note"), "a line naming it");
+  assert.equal(page.requests.filter((request) => request.url.includes("/research/dose-small/")).length, 0);
+  assert.ok(page.requests.every((request) => request.method === "GET" || request.url.endsWith("/github_repositories")), JSON.stringify(page.requests.map((r) => [r.method, r.url])));
+  assert.deepEqual(page.errors, []);
+});
+

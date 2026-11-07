@@ -7,6 +7,12 @@ listens on there, and a path). Only the user opens it, from the Projects
 dialog. Yuzuno never starts, stops or scans a service, and never makes one
 public.
 
+A service that a local Job serves (`job_submit` with `service`) runs in that
+Job's command, in the foreground. A command that starts its server in the
+background and exits ends the Job, and the server is stopped with whatever
+else the command left, 5 s after it exits (see
+[Jobs on this machine](research-jobs-local.md#when-something-goes-wrong)).
+
 ## Where it runs
 
 Three computers can be involved: the client (browser or desktop app), the

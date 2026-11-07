@@ -1,11 +1,13 @@
-//! The commands an OpenCode Agent can be sent (T-10), as its own OpenCode's
-//! configuration defines them now (`GET /config`'s `command`), read from the
-//! running connection, in the shape the slash menu reads for Claude
-//! (`claude_commands`). Only a command's name, a single-line description,
-//! whether it takes arguments and whether it runs as a sub-agent pass:
-//! never its template, model or agent, nor anything else of `/config`,
-//! which holds provider keys and options. Reading starts no OpenCode and
-//! runs nothing a command does; a message runs one (`opencode_agent`).
+//! The commands an OpenCode Agent can be sent (T-10), as its own OpenCode
+//! offers them now (2.x's `GET /api/command`: its configuration's, its own
+//! and its MCP servers' prompts, T-61 slice 3), read from the running
+//! connection, in the shape the slash menu reads for Claude
+//! (`claude_commands`). Only a command's name and a single-line description
+//! pass: 2.x lists nothing more of one, never its template, model or agent.
+//! The commands that start work of their own later (`goal`, `schedule`),
+//! which Yuzuno refuses to send (D-16 (a)), are not offered. Reading starts
+//! no OpenCode and runs nothing a command does; a message runs one
+//! (`opencode_agent`).
 use crate::{opencode::CommandChoice, server::ApiError, workspace::Workspace};
 use anyhow::{ensure, Result};
 use axum::{
@@ -25,9 +27,8 @@ struct Command {
     description: String,
     argument_hint: String,
     aliases: Vec<String>,
-    /// Always `custom`: OpenCode's configuration defines every one.
+    /// Always `custom`: OpenCode's, none of Yuzuno's own.
     source: &'static str,
-    subtask: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -74,7 +75,7 @@ fn listed(commands: Vec<CommandChoice>, session: String) -> View {
     };
     let mut commands: Vec<Command> = commands
         .into_iter()
-        .filter(|c| token(&c.name))
+        .filter(|c| token(&c.name) && !crate::opencode_agent::STARTS_WORK.contains(&c.name.as_str()))
         .map(|c| Command {
             description: c
                 .description
@@ -85,10 +86,10 @@ fn listed(commands: Vec<CommandChoice>, session: String) -> View {
                 .chars()
                 .take(300)
                 .collect(),
-            argument_hint: if c.takes_arguments { "<arguments>".into() } else { String::new() },
+            // 2.x says nothing of what a command takes: any text after its name goes with it.
+            argument_hint: "<arguments>".into(),
             aliases: vec![],
             source: "custom",
-            subtask: c.subtask,
             name: c.name,
         })
         .collect();
@@ -103,7 +104,7 @@ fn listed(commands: Vec<CommandChoice>, session: String) -> View {
         commands,
         total,
         truncated: total > MAX_COMMANDS,
-        // Every command is OpenCode's configured one: none is a Skill.
+        // Every command is one OpenCode lists as a command: none is a Skill.
         skills_known: true,
     }
 }
@@ -149,21 +150,19 @@ mod tests {
     use serde_json::json;
 
     fn choice(name: &str, description: &str) -> CommandChoice {
-        CommandChoice { name: name.into(), description: description.into(), takes_arguments: false, subtask: false, model: None }
+        CommandChoice { name: name.into(), description: description.into() }
     }
 
     #[test]
     fn a_listed_view_has_the_command_list_shape_and_nothing_else() {
-        let mut review = choice("review", "Review\nthe change");
-        review.takes_arguments = true;
-        review.subtask = true;
-        review.model = Some("example/model-a".into());
-        let view = serde_json::to_value(listed(vec![review, choice("bad name", ""), choice("/x", ""), choice("a://b", "")], "ses_1".into())).unwrap();
+        let listed = listed(vec![choice("review", "Review\nthe change"), choice("bad name", ""), choice("/x", ""), choice("a://b", ""),
+            choice("goal", "Work towards a goal"), choice("schedule", "Run later")], "ses_1".into());
+        let view = serde_json::to_value(listed).unwrap();
         let observed = view["observedAt"].clone();
         assert!(observed.is_string());
         assert_eq!(view, json!({"state":"ready","reason":"listed","source":"session","sessionId":"ses_1","observedAt":observed,
-            "commands":[{"name":"review","description":"Review the change","argumentHint":"<arguments>","aliases":[],"source":"custom","subtask":true}],
-            "total":1,"truncated":false,"skillsKnown":true}));
+            "commands":[{"name":"review","description":"Review the change","argumentHint":"<arguments>","aliases":[],"source":"custom"}],
+            "total":1,"truncated":false,"skillsKnown":true}), "goal and schedule, which start work of their own, are not offered");
     }
 
     #[test]
