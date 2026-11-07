@@ -5,9 +5,10 @@
  * two, large two columns and, on a four-column deck, two rows. A full item
  * (an Ask, a heading) takes its row. The grid places them as its own row
  * flow does, never dense, so the order on screen and the keyboard's order
- * stay the deck's. Where that flow would leave a cell empty, the card before
- * it takes it: the card to its left grows to the row's end, or, where that
- * card is taller, the card above it grows down. A large card keeps its
+ * stay the deck's. Where that flow would leave a row short, its cards share
+ * the rest, from the last back; where a taller card makes a cell empty, the
+ * card before it takes it: the card to its left grows to the row's end, or,
+ * where that card is taller, the card above it grows down. A large card keeps its
  * second row only when another card reaches that row beside it; otherwise it
  * is one row, as on two columns.
  *
@@ -70,6 +71,20 @@ export function packDeck(items: readonly DeckItem[], columns: number): DeckSpan[
     });
     if (lone < 0) break;
     sizes[lone].rows = 1;
+  }
+  // A row of one-row cards that ends short shares what is left, a column at a
+  // time from its last card back: two small cards on four columns are two
+  // columns each, not one and three (YN-3, the answer cards). Rows a taller
+  // card reaches are left to the filling below.
+  {
+    const laid = flow(sizes, columns);
+    const rows = new Map<number, number[]>();
+    laid.forEach((box, i) => rows.set(box.row, [...(rows.get(box.row) ?? []), i]));
+    for (const [row, members] of rows) {
+      if (laid.some((box) => box.rows > 1 && box.row <= row && box.row + box.rows > row)) continue;
+      let free = columns - members.reduce((sum, i) => sum + sizes[i].cols, 0);
+      for (let k = members.length - 1; free > 0; k = k > 0 ? k - 1 : members.length - 1, free--) sizes[members[k]].cols++;
+    }
   }
   const boxes = flow(sizes, columns);
   const height = boxes.reduce((most, box) => Math.max(most, box.row + box.rows), 0);
