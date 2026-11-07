@@ -3,6 +3,8 @@ import { LoaderCircle, MessageSquareReply, RotateCcw, Send, Trash2 } from "lucid
 import { errorText, HttpError, shortcutModifier } from "../api";
 import { useLanguage, useStrings } from "../i18n";
 import { useSurfaceIn } from "../surface";
+import { returnKey, returnSends, useDevicePreferences } from "../device-preferences";
+import { touchKeyboard } from "../touch-input";
 import type { Agent, MessageReceipt } from "../types";
 import { Clarification } from "../intelligent-ui/ClarificationForm";
 import {
@@ -140,6 +142,9 @@ function TextReply({
   label: string;
 }) {
   const t = useStrings(homeText);
+  // Return sends as it does from the conversation's composer (YN-3): this device's choice, never while an input
+  // method composes; Shift+Return makes a new line.
+  const { sendKey } = useDevicePreferences();
   const submit = () => {
     const value = text.trim();
     if (!value || disabled || held || busy) return;
@@ -163,7 +168,7 @@ function TextReply({
         disabled={disabled}
         onChange={(event) => onText(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+          if (returnKey(event.nativeEvent, sendKey, touchKeyboard)) {
             event.preventDefault();
             submit();
           }
@@ -173,7 +178,7 @@ function TextReply({
         type="submit"
         className="primary-button"
         disabled={disabled || held || busy || !text.trim()}
-        title={t.sendTitle(shortcutModifier)}
+        title={returnSends(sendKey, touchKeyboard()) ? t.sendTitleReturn : t.sendTitle(shortcutModifier)}
       >
         {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
         {t.send}

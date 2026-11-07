@@ -14,6 +14,8 @@
 //    the answered Asks under their heading; status out of date last, closed),
 //    and with no hole: every cell of its grid, and of Out of date's once
 //    opened, is a card's (PR B; 1920 px too, where the deck has four columns);
+//  - in Chinese, Enter sends a reply from Home as from the composer: Shift+Enter
+//    makes a new line, Enter while an input method composes sends nothing (PR B);
 //  - nothing is wider than the window, and nothing is sent but reads.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/home-cards-check.mjs
 import assert from "node:assert/strict";
@@ -29,7 +31,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "YN-3", runs: [], posts: [], unexpected: [], errors: [] };
+const report = { task: "YN-3", runs: [], posts: [], replies: [], unexpected: [], errors: [] };
 const HOST = "yuzuno-cards.test";
 const at = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 
@@ -143,7 +145,8 @@ try {
 }
 assert.deepEqual(report.unexpected, [], "nothing was asked of another host");
 assert.deepEqual(report.errors, [], "no page errors");
-assert.deepEqual(report.posts, [], "nothing but reads");
+assert.deepEqual(report.posts, [], "nothing but reads, and the replies sent by Enter");
+assert.deepEqual(report.replies.map((r) => r.run), runs.filter((r) => r.language === "zh-Hans").map((r) => r.name), "one reply by Enter in each Chinese run");
 console.log(`home-cards-check: ${report.runs.length} runs, ${report.runs.reduce((n, r) => n + r.checks.length, 0)} checks`);
 
 async function check(run) {
@@ -174,6 +177,12 @@ async function check(run) {
     // The Project's linked repositories: a list read sent as a POST, which starts no sync (home-api.ts),
     // as home-ui.test.mjs counts it too.
     if (path === "/api/collaboration/github_repositories") return route.fulfill({ json: { repositories: [], links: [] } });
+    // A reply sent from Home, which the check sends by Enter: answered as Core receives one.
+    if (method === "POST" && path === "/api/projects/p-orch/brief/reply") {
+      const body = JSON.parse(request.postData() || "{}");
+      report.replies.push({ run: run.name, body });
+      return route.fulfill({ json: { input: { ...body, expectedTurnId: null, question: null }, status: "accepted", turnId: "t-enter", error: null } });
+    }
     if (method !== "GET") {
       // Marking a conversation read is a read receipt, not a change to Home.
       if (/^\/api\/agents\/\w\/review$/.test(path)) return route.fulfill({ json: { ok: true } });
@@ -389,6 +398,25 @@ async function check(run) {
     await tokenizer.locator(".home-fold").click();
     await tokenizer.locator(".home-card-body").waitFor({ state: "hidden", timeout: 10_000 });
     pass("replied Asks in short (one line where the pane is wide), the reply in short, Updated only after the owner's change; unfolded, Reply again", rows);
+
+    // ---- Enter sends a reply from Home, in Chinese (the user's item): Shift+Enter a new line, nothing while composing.
+    if (run.language === "zh-Hans") {
+      const field = card("overnight").locator("textarea").first();
+      await field.scrollIntoViewIfNeeded();
+      await field.fill("好的，今晚跑");
+      await field.press("Shift+Enter");
+      assert.match(await field.inputValue(), /\n$/, "Shift+Enter makes a new line");
+      await field.evaluate((el) => el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true })));
+      await page.waitForTimeout(250);
+      const mine = () => report.replies.filter((r) => r.run === run.name);
+      assert.equal(mine().length, 0, "neither Shift+Enter nor Enter while composing sends");
+      await field.press("Enter");
+      for (let tries = 0; tries < 40 && mine().length === 0; tries++) await page.waitForTimeout(125);
+      assert.equal(mine().length, 1, "Enter sends");
+      assert.equal(mine()[0].body.text, "好的，今晚跑");
+      await cardShot("overnight", "enter-sent");
+      pass("Enter sends a reply from Home; Shift+Enter makes a new line; Enter while composing sends nothing");
+    }
   } finally {
     await context.close();
   }

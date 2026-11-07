@@ -3046,3 +3046,46 @@ test("YN-3 the deck and My widgets are laid out with no holes, in order: each ca
     p.close();
   }
 });
+
+// YN-3, the user's item: Return sends a reply from Home as it does from the conversation's composer.
+test("YN-3 Enter sends a reply from Home as the composer's Return does: from an Ask, Reply again and a report's Reply; Shift+Enter and Enter while an input method composes do not", async () => {
+  const p = await mount({ home: deckFixture() });
+  const enter = (field, init = {}) => field.dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init }));
+  const replies = () => p.posts(/\/brief\/reply$/);
+  try {
+    const release = () => card(p, "p-app", "release");
+    await waitFor(() => release()?.querySelector("textarea"), "the Ask's reply field");
+    const field = release().querySelector("textarea");
+    await type(p, field, "Ship it after the docs fix");
+    enter(field, { isComposing: true });
+    enter(field, { shiftKey: true });
+    await pause(150);
+    assert.equal(replies().length, 0, "neither Enter while an input method composes nor Shift+Enter sends");
+    enter(field);
+    await waitFor(() => replies().length === 1, "Enter sends the Ask's reply");
+    assert.equal(replies()[0].body.text, "Ship it after the docs fix");
+    // Reply again, on an Ask the user answered before this visit.
+    const tokenizer = card(p, "p-app", "tokenizer");
+    tokenizer.querySelector(".home-fold").click();
+    await waitFor(() => p.button("Reply again", tokenizer), "Reply again");
+    p.button("Reply again", tokenizer).click();
+    await waitFor(() => tokenizer.querySelector("textarea"), "the field again");
+    await type(p, tokenizer.querySelector("textarea"), "Switch after the rebuild");
+    enter(tokenizer.querySelector("textarea"));
+    await waitFor(() => replies().length === 2, "Enter sends the reply again");
+    // A report's Reply.
+    const notes = card(p, "p-app", "notes");
+    notes.querySelector(".home-reply-open").click();
+    await waitFor(() => notes.querySelector(".home-card-reply textarea"), "the report's reply field");
+    const reply = notes.querySelector(".home-card-reply textarea");
+    await type(p, reply, "Thanks");
+    enter(reply, { isComposing: true });
+    await pause(150);
+    assert.equal(replies().length, 2, "not while an input method composes");
+    enter(reply);
+    await waitFor(() => replies().length === 3, "Enter sends the report's reply");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
