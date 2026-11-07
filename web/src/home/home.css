@@ -120,8 +120,10 @@
   grid-column: span var(--deck-cols);
   grid-row: span var(--deck-rows);
 }
-.home-widget-grid .home-widget-slot.size-large[data-deck-rows="1"] > .home-summary-card {
-  min-height: 260px;
+@container deck (min-width: 1248px) {
+  .home-widget-grid .home-widget-slot.size-large[data-deck-rows="1"] > .home-summary-card {
+    min-height: 260px;
+  }
 }
 .home-widget-column-head {
   display: flex;
@@ -1082,8 +1084,11 @@ ul.home-widget {
   grid-column: span var(--deck-cols);
   grid-row: span var(--deck-rows);
 }
-.home-brief .home-summary-card.size-large[data-deck-rows="1"] {
-  min-height: 260px;
+/* Only where a large card's two rows give it 536 px (four columns). */
+@container deck (min-width: 1248px) {
+  .home-brief .home-summary-card.size-large[data-deck-rows="1"] {
+    min-height: 260px;
+  }
 }
 
 /* Below the top ranks, about 600 px of body; "Show more" lifts it. */
