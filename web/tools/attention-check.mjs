@@ -150,7 +150,8 @@ async function check(run) {
   const phone = !!run.isMobile;
   const rail = () => page.locator(".agent-list .agent-row");
   const ids = () => rail().evaluateAll((rows) => rows.map((row) => row.dataset.agentId));
-  const label = (id) => page.locator(`.agent-row[data-agent-id="${id}"] .agent-runtime`).textContent();
+  // The row's status words, kept on its island (T-43 v4-2).
+  const label = (id) => page.locator(`.agent-row[data-agent-id="${id}"] .agent-island`).getAttribute("data-status");
   const title = () => page.locator(".conversation-title h1").textContent();
   const settled = () => page.waitForTimeout(300);
   // Home by its toolbar button; on a phone, from the list's way back first.
@@ -183,8 +184,10 @@ async function check(run) {
     assert.deepEqual(await ids(), ["c", "a", "b", "d"]);
     assert.equal(await label("a"), "Failed · unseen");
     assert.equal(await label("b"), "Finished · unseen");
-    assert.match(await page.locator('.agent-row[data-agent-id="c"]').textContent(), /2 needs you/);
-    // An unseen label takes its own line, so the name beside the avatar is whole.
+    // Needs you is the island's (T-43 v4-2): its two lines, said once, no bell.
+    assert.equal(await page.locator('.agent-row[data-agent-id="c"] .agent-island').getAttribute("data-state"), "waiting");
+    assert.equal(await page.locator('.agent-row[data-agent-id="c"] .needs-you').count(), 0);
+    // An unseen label is the island's, so the name beside it is whole.
     for (const id of ["a", "b"]) {
       const name = await page.locator(`.agent-row[data-agent-id="${id}"] .agent-name`).evaluate((el) => ({ text: el.textContent, clipped: el.scrollWidth > el.clientWidth + 1 }));
       assert.equal(name.clipped, false, `${id}'s name is whole: ${JSON.stringify(name)}`);

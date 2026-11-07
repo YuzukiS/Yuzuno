@@ -24,8 +24,9 @@ Every Agent has one kind:
 | **lead** | You, by making it there | An Agent you created, imported, forked or moved into a Project leads it ([below](#leads)), unless you removed it. |
 | **executor** | Core | An Agent made for one task by a [dispatch to a new executor](#dispatching-to-a-new-executor). |
 
-- **Where it shows.** The sidebar shows a **Lead** or **Executor** label under
-  the Agent's name. Agents see each Agent's kind in `peers_list` (`lead`,
+- **Where it shows.** The sidebar shows a **Lead** label beside a lead's
+  name, and an executor's row its state, in its ring (see
+  [An executor's lifecycle](#an-executors-lifecycle)). Agents see each Agent's kind in `peers_list` (`lead`,
   `executor` or `standing`), and can list only one kind with its `kind`
   filter.
 - **How it is stored.** Core keeps the kind in a table of its own,
@@ -632,20 +633,105 @@ first that holds names the state:
 | 4 | `closed` | 已关闭 · Closed | It is closed for another reason: closed by hand, or a failed start that Core rebuilt as a new executor. |
 | 5 | `queued` | 排队中 · Queued | It waits for an executor slot; `position` is its place, 1 first. |
 | 6 | `starting` | 启动中 · Starting | It holds a slot and its runtime is starting. |
-| 7 | `delivering` | 交付待放行 · Awaiting release | Its result is in, on its own dispatch, and its task is in review. |
+| 7 | `delivering` | 已交 · Handed in | Its result is in, on its own dispatch, and its task is in review. |
 | 8 | `running` | 运行中 · Running | Anything else: it is at work. |
 
-Each also names its task (`task.id`, `task.title`), who dispatched it
-(`dispatcher`: `user`, or an Agent with its ID and name), and since when
-(`since`). An executor at work whose task is blocked also has the blocker
-(`blocked`); its state stays what it is.
+Each also names its task (`task.id`, the key the task has now, such as
+`YN-3`, or `T-<n>` while it has none; `task.title`), who dispatched it
+(`dispatcher`: `user`, or an Agent with its ID and name), the template it
+was made from (`template`: its `id`, and its `label` as its dispatch's
+materials give it), when it was dispatched (`dispatchedAt`), and since when
+it is in its state (`since`). An executor at work whose task is blocked also
+has the blocker (`blocked`); its state stays what it is.
 
 - **The sidebar.** In each Project's list, leads come first, then the
   other Agents, then a 任务执行者 · Executors group and, folded by default,
   已归档 · Archived. With attention order, executors are ordered by: waiting
-  on you, or failed; delivered, awaiting release; running; archiving;
+  on you, or failed; handed in; running; archiving;
   queued or starting. A failed executor shows there only while its task is
-  blocked on it; a released one, under Archived and in Closed.
+  blocked on it; a released one, under Archived and in Closed. While some
+  wait for a slot, the group's heading says how many are queued and how
+  many run.
+- **Every Agent's row** has no avatar. Line one is a standing Agent's or a
+  lead's name, and an executor's activity: what it is doing, after its
+  state's word ("Needs you: approve the design note", "Handed in #688 ·
+  waiting for the lead"; Working has no word). Line two is what a standing
+  Agent last said, or an executor's task key and its clock, small and grey.
+  At the row's top right is its ring (灵动环, `AgentIsland.tsx` over
+  `agent-island.ts`), then the "…" of its actions where you are (the row
+  selected, or the keyboard on its link or on the "…"). The executor's name,
+  template and PR are in its ring's title. A row is never more than three
+  lines, and its height follows what it says.
+  The states are 空闲 Idle, 在做 Working, 已交 · 等负责人 Handed in, 等你
+  Needs you, 排队 Queued, 离线 Offline, 完成 Done, 出错 Failed and 已归档
+  Archived.
+  - An executor's comes from its one state, the first of these that holds:
+    released or archiving (archived, with what an archiving one waits for);
+    its start failed (failed, with why); closed (archived); queued or
+    starting (queued, with its place); a request or question waiting for
+    you (needs you: what it asks is its work summary); its Turn failed
+    (failed); offline or disconnected (offline); delivering (handed in, or
+    working while a Turn runs: it is on its next slice); otherwise working.
+    Its activity is its task's blocker, else its work summary, else what
+    its state is at (a result to check, its unfinished Jobs and CI), else
+    its task's title.
+  - A standing Agent's comes from its runtime: closed; offline; a request
+    waiting; an error, or a Turn that failed and this device hasn't shown;
+    working (compacting too, and an idle Agent's unfinished Jobs or CI); a
+    Turn ended with updates unread (done); otherwise idle.
+- **Its clock** runs while it works (an executor's time on its task since
+  its dispatch), needs you (since its oldest wait in Home's Needs you), is
+  handed in (since it handed in) and is queued. For idle, offline, done and
+  failed it says how long ago, and for an archived executor its whole time,
+  which no longer runs. A standing Agent's runtime gives no start for its
+  Turn, so its Working shows no clock.
+- **The ring is the state** (22 px, strokes only): Working is an arc that
+  turns, its length the progress (a fixed quarter until templates carry
+  their steps); Handed in, an outer arc of its review rounds (k of 2) round
+  an inner ring; Needs you, a bold ring that breathes; Queued, dots that
+  turn slowly; Offline, dashes; Idle, a thin ring; Done ✓, Failed ✕ and
+  Archived (a box) carry a mark inside. Unread updates are a count beside
+  its top left. Under reduced motion nothing turns or breathes.
+- **Its forms.** One outline grows out of the ring and shrinks back into it.
+  - At rest a ring, except needs you and failed, which are the row as the
+    island (the outline round the whole row) until handled. A row is three
+    lines at most.
+  - A passing event grows a pill left out of the ring for about three
+    seconds (five for bad news): its PR merged, a review asked for changes
+    or passed, its checks failed or turned green, it handed in, it started
+    after queuing, new messages came. The pill takes its width from line
+    one, whose words wrap rather than being covered, so the row may grow
+    while it shows; the ring keeps its place. Nothing on the row's first
+    showing or its PR's first reading, and nothing while the row is the
+    island. A Job's end grows none yet: the rail reads how many Jobs run,
+    not how each ended.
+  - Each change animates the outline from the ring's circle, or from where
+    it was, in 320 ms, and back into the ring in 300 ms; nothing moves under
+    reduced motion.
+- **A click on the row** opens the Agent's conversation, the text of a row
+  island included, and changes no island. **A click on the ring** goes
+  straight to its state's place: needs you, to its item in Home's Needs you,
+  scrolled to and highlighted; an executor's, to its task (why its start
+  failed, its result, its place in the queue, or the task); a Turn that
+  failed, or updates unread, to the conversation. Its label says where
+  ("Answer its question on Home"). A ring with nowhere of its own (idle,
+  offline, a standing Agent at work) is no button: the row's click is its.
+  The ring's button takes presses 28 px wide with a mouse and 40 px on
+  touch, with nothing drawn; on hover or focus the ring grows a little (its
+  strokes thicken under reduced motion), and hover on the rest of the row
+  only darkens its background, with no border. There are no cards.
+- With the compact Agent list (Settings → Appearance), every row is line
+  one and its ring; needs you and failed keep their word on line two.
+- **Its PR** comes from `GET /api/executors/live`: for each open executor
+  (not archived, its Agent not closed) whose task links a PR, the open or
+  draft one with the highest number, else the highest-numbered; its state;
+  the checks on its head as Core last read them (`unknown` when Core last
+  saw them for another commit); and the review rounds on that head, the
+  approvals since the newest that asked for changes, and whether one is
+  under way. A review whose reviewer never started is no round. The read
+  uses Core's records only and never asks GitHub; the web reads it again on
+  every collaboration change, which a GitHub refresh, a link and a review
+  each announce. Two rounds count as approved, the standard flow.
 - **The task's card** shows its executor and its state, with its place
   while it is queued.
 - **Home's Needs you** lists, for an executor you dispatched, a result

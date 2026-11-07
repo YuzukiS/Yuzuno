@@ -2882,7 +2882,8 @@ const attentionHome = () => {
 // The window opens on Sora, whose last Turn hasn't ended: nothing is seen before the test looks.
 const startOnSora = { "yuzuno.selected.ws-home": JSON.stringify("c") };
 const railIds = (p) => [...p.doc.querySelectorAll(".agent-list .agent-row")].map((row) => row.dataset.agentId);
-const railLabel = (p, id) => p.doc.querySelector(`.agent-row[data-agent-id="${id}"] .agent-runtime`)?.textContent ?? null;
+// The status words the row has for it, on its island (T-43 v4-2).
+const railLabel = (p, id) => p.doc.querySelector(`.agent-row[data-agent-id="${id}"] .agent-island`)?.getAttribute("data-status") ?? null;
 const shown = (p) => p.doc.querySelector(".conversation-title h1")?.textContent ?? null;
 
 test("Needs you lists an open question and opens its conversation; a Turn that ended unseen is not listed there, only marked on the Agent list, and stays this device's (YN-3)", async () => {

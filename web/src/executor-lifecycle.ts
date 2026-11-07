@@ -12,7 +12,13 @@ export type ExecutorState = "queued" | "starting" | "running" | "delivering" | "
 export type ExecutorLifecycle = {
   state: ExecutorState;
   agentId: string;
+  /** Its task: `id` is the key it has now (YN-3), `T-<n>` while it has none (T-43 S2). */
   task?: { id: string; title: string } | null;
+  /** The template it was made from (T-43 S2); `label` as its dispatch's materials give it, null for an older
+   * dispatch. An empty `id` is an executor made from no template. */
+  template?: { id: string; label?: string | null } | null;
+  /** When it was dispatched: its time on the task starts here (T-43 S2). */
+  dispatchedAt?: string | null;
   /** Who dispatched it; absent from a release's answer, which doesn't say. */
   dispatcher?: { kind: "user" } | { kind: "agent"; id: string; name?: string | null };
   since?: string | null;
@@ -30,7 +36,7 @@ export const lifecycleText = strings(
       queued: "Queued",
       starting: "Starting",
       running: "Running",
-      delivering: "Awaiting release",
+      delivering: "Handed in",
       archiving: "Archiving",
       archived: "Archived",
       failed: "Failed",
@@ -39,6 +45,10 @@ export const lifecycleText = strings(
     queuedAt: (position: number) => `Queued · ${position} in line`,
     executor: "Executor",
     executors: "Task executors",
+    // How many wait for a slot and how many run (T-43 S2, g7): the queue
+    // first, so a narrow rail that cuts the line keeps it.
+    slotUse: (running: number, queued: number) => `${queued} queued · ${running} running`,
+    slotUseTitle: "Running: started and not yet archived. Queued: waiting for an executor slot (each machine's limit, in Machines).",
     archived: "Archived",
     archivedToggle: (folded: boolean, count: number) => `${folded ? "Show" : "Hide"} ${count} archived ${count === 1 ? "executor" : "executors"}`,
     archivingReason: (reason: string) => `Archiving: ${reason}`,
@@ -51,7 +61,7 @@ export const lifecycleText = strings(
       queued: "排队中",
       starting: "启动中",
       running: "运行中",
-      delivering: "交付待放行",
+      delivering: "已交",
       archiving: "归档中",
       archived: "已归档",
       failed: "失败",
@@ -60,6 +70,8 @@ export const lifecycleText = strings(
     queuedAt: (position) => `排队中 · 第 ${position} 位`,
     executor: "执行者",
     executors: "任务执行者",
+    slotUse: (running, queued) => `${queued} 排队 · ${running} 运行`,
+    slotUseTitle: "运行：已启动、尚未归档。排队：在等执行者槽位（每台机器的上限，在「机器」里）。",
     archived: "已归档",
     archivedToggle: (folded, count) => `${folded ? "显示" : "隐藏"} ${count} 个已归档的执行者`,
     archivingReason: (reason) => `归档中：${reason}`,

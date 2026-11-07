@@ -78,27 +78,26 @@ const rows = () => page.evaluate(() => {
     rows: [...document.querySelectorAll(".agent-row")].map((row) => {
     const name = row.querySelector(".agent-name");
     const menu = row.querySelector(".agent-row-menu");
-    const status = row.querySelector(".agent-runtime");
+    // The status is the row's ring (T-43 v10.1), at line one's end. Its
+    // button takes presses a little past the ring, on purpose: the ring is
+    // what must show whole.
+    const status = row.querySelector(".agent-island");
+    const ring = row.querySelector(".agent-island .island-ringbox");
     const activity = row.querySelector(".agent-work-summary");
     const box = menu?.getBoundingClientRect();
     return { selected: row.classList.contains("selected"), name: w(name),
       text: name?.textContent, shows: name ? Math.round((name.clientWidth / name.scrollWidth) * 100) : null,
       menuShown: menu ? getComputedStyle(menu).opacity !== "0" : null,
-      status: status?.textContent?.trim() ?? null,
-      statusWhole: status ? status.scrollWidth <= status.clientWidth + 1 : null,
+      status: status?.dataset.status ?? null,
+      statusWhole: ring ? (() => {
+        const s = ring.getBoundingClientRect(), b = row.getBoundingClientRect();
+        return s.width >= 20 && s.left >= b.left - 0.5 && s.right <= b.right + 0.5 && s.top >= b.top - 0.5 && s.bottom <= b.bottom + 0.5;
+      })() : null,
       activityClipped: activity ? activity.scrollWidth > activity.clientWidth + 1 : null,
       height: Math.round(row.getBoundingClientRect().height),
       menuHit: box ? Math.round(Math.min(box.width, box.height)) : null,
-      // The avatar stands beside the two lines, not above them: a row that
-      // lost its grid would still read correctly but look wrong (T-15).
-      beside: (() => {
-        const a = row.querySelector(".agent-rail-avatar")?.getBoundingClientRect();
-        const n = name?.getBoundingClientRect();
-        if (!a || !n) return null;
-        const lines = row.querySelector(".agent-row-state")?.getBoundingClientRect();
-        const middle = lines ? (n.top + lines.bottom) / 2 : n.top + n.height / 2;
-        return { leftOf: Math.round(n.left - a.right), offCentre: Math.round(Math.abs((a.top + a.bottom) / 2 - middle)) };
-      })(),
+      // No avatar on an Agent row (T-43 v4-2): the name has line one to itself.
+      avatar: !!row.querySelector(".agent-rail-avatar, .avatar"),
       // The button must not sit over the words on the second line.
       menuClear: (() => {
         if (!box || !status) return null;
@@ -156,18 +155,16 @@ const reached = await page.evaluate(async () => {
 check(reached.ok, `the \u2026 on an unselected row still takes focus (${reached.why ?? "focused"})`);
 check(reached.opacity === "1" && reached.events === "auto",
   `and shows itself once focused (opacity ${reached.opacity}, pointer-events ${reached.events})`);
-// Line two: the status word keeps its whole self, the activity after it gives way.
-check(before.every((r) => r.statusWhole), `every status word is shown whole (${before.map((r) => r.status).join(", ")})`);
+// The ring keeps its whole self; the activity on line two gives way.
+check(before.every((r) => r.statusWhole), `every ring is shown whole, inside its row (${before.map((r) => r.status).join(", ")})`);
 check(before.filter((r) => r.activityClipped !== null).every((r) => r.activityClipped),
-  "the activity after it is what runs out of room");
+  "the activity beside it is what runs out of room");
 check(before.every((r) => r.height >= 44), `a row is still at least 44px tall (${before.map((r) => r.height).join(", ")})`);
-check(before.every((r) => r.menuHit >= 36), `the \u2026 keeps a touch target of at least 36px (${before[0].menuHit})`);
-check(before.every((r) => r.beside && r.beside.leftOf >= 0),
-  `the avatar stands beside the name, not above it (gap ${before.map((r) => r.beside?.leftOf).join(", ")})`);
-check(before.every((r) => r.beside && r.beside.offCentre <= 3),
-  `and is centred against both lines (off by ${before.map((r) => r.beside?.offCentre).join(", ")})`);
+// Where it shows (T-43: elsewhere it takes no width beside the ring).
+check(before.filter((r) => r.menuShown).every((r) => r.menuHit >= 36), `the \u2026 keeps a touch target of at least 36px where it shows (${before.filter((r) => r.menuShown).map((r) => r.menuHit).join(", ")})`);
+check(before.every((r) => !r.avatar), "no avatar on any Agent row");
 check(before.every((r) => r.menuClear !== false),
-  "the \u2026 does not sit over the status word");
+  "the \u2026 does not sit over the ring");
 console.log(`rows fully on screen: ${seen.fits}`);
 // The acceptance for keeping a 220px rail: these names can be told apart by
 // what is on the screen, not by what a pointer would reveal.

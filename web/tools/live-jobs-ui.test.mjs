@@ -108,8 +108,8 @@ function mount() {
   ];
   dom.window.renderRows(rows);
   const label = (id) =>
-    dom.window.document.querySelector(`[data-agent-id="${id}"] .agent-runtime`)
-      ?.textContent;
+    dom.window.document.querySelector(`[data-agent-id="${id}"] .agent-island`)
+      ?.getAttribute("data-status");
   return { window: dom.window, calls, errors, replies, rows, label, close: () => dom.window.close() };
 }
 

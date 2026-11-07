@@ -67,6 +67,10 @@ export function ExecutorRail({
   const [open, toggle] = useArchivedOpen(workspaceId);
   const parts = railParts(agents, order);
   const archivedShown = open.has(listKey) || searching || parts.archived.some((a) => a.id === selectedId);
+  // While some wait for a slot, how many run and how many wait (T-43 S2).
+  const states = parts.executors.map((a) => a.executor?.state);
+  const running = states.filter((s) => s === "running" || s === "delivering").length;
+  const queued = states.filter((s) => s === "queued" || s === "starting").length;
   return (
     <>
       {parts.members.map(renderAgent)}
@@ -74,6 +78,9 @@ export function ExecutorRail({
         <section className="rail-executors" aria-label={t.executors} data-rail-part="executors">
           <h3 className="rail-subgroup-head">
             <span>{t.executors}</span>
+            {queued > 0 && (
+              <span className="rail-subgroup-slots" title={`${t.slotUse(running, queued)}\n${t.slotUseTitle}`}>{t.slotUse(running, queued)}</span>
+            )}
             <span className="rail-subgroup-count">{parts.executors.length}</span>
           </h3>
           {parts.executors.map(renderAgent)}

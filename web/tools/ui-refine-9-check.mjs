@@ -265,6 +265,9 @@ async function open({ theme = "dark", width = 1440, height = 900, motion = "redu
       "/api/jobs/runs": { runs: [{ id: "run-demo", name: "SampleResearch experiment sweep" }], hasMore: false },
       "/api/ci/live": { agents: { "dev-4": { running: 1, discovering: 0, check: 0 } } },
       "/api/ci": noCiRuns, "/api/reviews": noReviews,
+      // The Machines page's executor limits read (T-35), answered empty as
+      // the catch-all did; the check was written before it existed.
+      "/api/executor-slots": {},
     }[path];
     if (json) return route.fulfill({ json });
     if (path.startsWith("/api/")) {
@@ -531,13 +534,15 @@ try {
       return { first };
     });
 
-    await step(`${theme}: a single wait, Job or CI, stays beside the Agent's name`, async () => {
+    // T-43 v4-2: the wait is the island's, beside the name at the row's right end, inside the row.
+    await step(`${theme}: a single wait, Job or CI, is the island's, beside the Agent's name and inside its row`, async () => {
       const row = (id) => page.locator(`[data-agent-id="${id}"]`);
-      await page.waitForFunction(() => document.querySelector('[data-agent-id="dev-4"] .agent-runtime')?.textContent === "Waiting · CI");
+      await page.waitForFunction(() => document.querySelector('[data-agent-id="dev-4"] .agent-island')?.dataset.status === "Waiting · CI");
       const place = async (id) => row(id).evaluate((el) => {
         const name = el.querySelector(".agent-name").getBoundingClientRect();
-        const state = el.querySelector(".agent-runtime").getBoundingClientRect();
-        return { label: el.querySelector(".agent-runtime").textContent, beside: state.top < name.bottom && state.left >= name.right };
+        const island = el.querySelector(".agent-island");
+        const state = island.getBoundingClientRect(), box = el.getBoundingClientRect();
+        return { label: island.dataset.status, beside: state.left >= name.right && state.left >= box.left && state.right <= box.right };
       });
       assert.deepEqual(await place("dev-3"), { label: "Waiting · Job", beside: true });
       assert.deepEqual(await place("dev-4"), { label: "Waiting · CI", beside: true });

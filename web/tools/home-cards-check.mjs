@@ -300,8 +300,9 @@ async function check(run) {
     assert.equal(await needs.locator("[data-unseen]").count(), 0, "no Turn end in Needs you");
     assert.equal(await needs.locator("h2 .nav-count").innerText(), "3");
     assert.match(await page.title(), /^\(3\) /, "the tab title counts the same rows");
-    const marks = await page.locator(".agent-row").evaluateAll((rows) => Object.fromEntries(rows.map((row) => [row.dataset.agentId, row.querySelector(".agent-runtime")?.className.match(/unseen-(\w+)/)?.[1] ?? null])));
-    if (!run.phone) assert.deepEqual([marks.l, marks.r], ["finished", "failed"], "the Agent list marks them");
+    const marks = await page.locator(".agent-row").evaluateAll((rows) => Object.fromEntries(rows.map((row) => [row.dataset.agentId, row.querySelector(".agent-island")?.dataset.state ?? null])));
+    // A Turn end not seen is its island's state (T-43 v4-2): done, or failed.
+    if (!run.phone) assert.deepEqual([marks.l, marks.r], ["done", "failed"], "the Agent list marks them");
     pass("Needs you lists the Ask, the request and the executor's result, no Turn end; the title counts 3; the Agent list marks the ends", { marks });
 
     // ---- No horizontal overflow; the whole Home.
