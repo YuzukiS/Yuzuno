@@ -95,9 +95,10 @@ test("next needs you goes through Home's Needs you in Core's order, each Agent o
     { kind: "approval", projectId: "p2", agentId: "answered", requestId: "r3", since: "" },
     { kind: "approval", projectId: "p2", agentId: "gone", requestId: "r4", since: "" },
   ];
-  const targets = needsYouTargets(items, agents);
-  // Only what waits for the user's decision: "done" and "broke" ended Turns
-  // this device has not shown; the Agent list marks them (YN-3).
+  // Nothing seen on this device ({}, which the round once took and no longer
+  // needs): only what waits for the user's decision is in it. "done" and
+  // "broke" ended Turns this device has not shown; the Agent list marks them (YN-3).
+  const targets = needsYouTargets(items, agents, {});
   assert.deepEqual(targets, [
     { kind: "agent", agentId: "p1-agent" },
     { kind: "ask", projectId: "p1", sectionKey: "decide" },

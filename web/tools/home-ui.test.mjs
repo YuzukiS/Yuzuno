@@ -2910,9 +2910,9 @@ test("the tab title, the app badge and Home's count are Needs you's rows, an exe
   try {
     await waitFor(() => p.doc.querySelector('[data-needs-you="executor:b:delivering"]'), "Hana's result waits for its release");
     // Mori's Ask, Sora's request and question, Hana's result: four rows, four counted.
-    const rows = p.doc.querySelectorAll(".home-needs-you .home-needs-list > li").length;
-    assert.equal(rows, 4);
     await waitFor(() => p.doc.title === "(4) Yuzuno · test", `the title counts every row: ${p.doc.title}`);
+    const rows = p.doc.querySelectorAll(".home-needs-you .home-needs-list > li").length;
+    assert.equal(rows, 4, "four rows, no Turn end among them");
     assert.equal(badges.at(-1), 4);
     assert.equal(p.doc.querySelector(".catchup-nav .nav-count").textContent, "4", "the Home tab's count");
     assert.equal(p.doc.querySelector(".home-needs-you h2 .nav-count").textContent, "4", "Needs you's own count");
