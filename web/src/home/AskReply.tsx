@@ -232,14 +232,17 @@ const formVersions = draftStore<FormBegun>("yuzuno.home-ask-form-versions.v1");
  * replied and whom it waits for: the reply is labelled as the user's.
  * `face`: the answer card shows the reply and Reply again itself, so until a
  * reply is sent from here the replied block is not drawn again; each step of
- * `againRequest` is the card's Reply again, as the button below is. */
+ * `againRequest` is the card's Reply again, as the button below is.
+ * `onReplied`: Core accepted a reply sent from here, to that version of the
+ * ask (YN-21: its card becomes the answer card). */
 export function AskReply({
   section,
   inRow = false,
   face = false,
   againRequest = 0,
+  onReplied,
   ...context
-}: ReplyContext & { section: Section; inRow?: boolean; face?: boolean; againRequest?: number }) {
+}: ReplyContext & { section: Section; inRow?: boolean; face?: boolean; againRequest?: number; onReplied?: (version: number) => void }) {
   const language = useLanguage();
   const t = homeText(language);
   const ask = section.ask!;
@@ -419,6 +422,7 @@ export function AskReply({
     setSentText(shown);
     setAgain(false);
     setDelivered((n) => n + 1);
+    onReplied?.(version);
     return value;
   };
   // What an unconfirmed reply said, as it went: what this window showed as
@@ -443,6 +447,7 @@ export function AskReply({
     setSentText(previewOf(was));
     setAgain(false);
     setDelivered((n) => n + 1);
+    if (version !== null) onReplied?.(version);
     // Delivered to an earlier version of the ask: this one is still open.
     if (version !== null && version !== section.version) setSentBefore(version);
     // The draft that reply was sent from goes with it; one written since is
