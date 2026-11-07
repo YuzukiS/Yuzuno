@@ -3,9 +3,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  checkResultSpec, describeContract, describeGuide, parseResultSpec, ResultError, COMPONENT_DESCRIPTIONS, componentProps,
-  GUIDE_TOOL, MAX_DESCRIPTION_LENGTH,
-  DISPLAY_DEFAULTS, MAX_PROBLEMS, MAX_SPEC_BYTES, MAX_SPEC_LENGTH, RESULT_LIMITS, RESULT_TOOL, SCHEMA_VERSION,
+  checkResultSpec, describeContract, describeFenceGuide, parseResultSpec, ResultError, COMPONENT_DESCRIPTIONS, componentProps,
+  ACT_COMPONENTS, FENCE_COMPONENTS, FENCE_NOTICE, MAX_DESCRIPTION_LENGTH,
+  DISPLAY_DEFAULTS, MAX_PROBLEMS, MAX_SPEC_BYTES, MAX_SPEC_LENGTH, RESULT_LIMITS, SCHEMA_VERSION,
 } from "../src/intelligent-ui/contract.ts";
 import { catalog } from "../src/intelligent-ui/spec.ts";
 import { comparisonExample, reportExample } from "../src/intelligent-ui/examples.ts";
@@ -76,80 +76,44 @@ test("a submitted result is measured in UTF-8 bytes, a reply's block in characte
   assert.ok(checkResultSpec(sized(200)));
 });
 
-test("the tool is described from the contract alone", () => {
+test("what Core is told about results comes from the contract alone: the notice and the fence guide (YN-14 A5)", () => {
   const first = describeContract();
   assert.deepEqual(describeContract(), first, "deterministic");
-  assert.equal(first.name, RESULT_TOOL);
+  assert.deepEqual(Object.keys(first), ["schemaVersion", "limits", "capability", "fenceGuide", "maxDescriptionLength"], "no tool, input schema or tool guide");
   assert.equal(first.schemaVersion, SCHEMA_VERSION);
   assert.deepEqual(first.limits, RESULT_LIMITS);
-  // The full guide has every component's props and purpose, and the rules.
-  for (const [type, description] of Object.entries(COMPONENT_DESCRIPTIONS))
-    assert.ok(first.guide.text.includes(`- ${type} {`) && first.guide.text.includes(description), type);
-  assert.match(first.guide.text, /title defaults to "Table"/);
-  assert.match(first.guide.text, /at most one Continue, Clarification or TaskStatus/);
-  assert.match(first.guide.text, /Publishing a form does not authorize any action or permission request/);
-  assert.match(first.guide.text, /rows and bars cite them by id in sourceIds/);
-  // Every limit the validator enforces is stated: string lengths, item
-  // counts, ids, and which Clarification field type has which props.
-  for (const limit of ["unit≤30", "href≤2000", "title≤160", "summary≤2000", "string≤500|number|boolean|null",
-    "rows[≤100]", "data[1-24]", "items[≤30]", "fields[1-8]", "options[2-12]", 'type="single"', "1-64 characters"])
-    assert.ok(first.guide.text.includes(limit), limit);
-  // The entry and the guide both say how to publish.
-  for (const text of [first.description, first.guide.text]) {
-    assert.match(text, /plain text/);
-    assert.match(text, new RegExp(`after ${RESULT_LIMITS.rejectedPerTurn} rejections in a Turn, answer in text`));
-    assert.match(text, new RegExp(`At most ${RESULT_LIMITS.chainsPerTurn} results per Turn`));
-    assert.match(text, new RegExp(`at most ${RESULT_LIMITS.versionsPerChain} versions`));
-    assert.match(text, /yuzuno\.activeTurnId/);
-    assert.match(text, /at the end of this Turn, below your reply: do not repeat it, its JSON or a yuzuno-ui block/);
-  }
-  for (const type of Object.keys(componentProps)) assert.ok(first.description.includes(type), type);
   assert.deepEqual(RESULT_LIMITS, { chainsPerTurn: 3, versionsPerChain: 5, rejectedPerTurn: 3 });
-  // The once-per-session notice: short, optional, and never the format.
-  assert.ok(first.capability.length < 500, first.capability.length);
-  assert.match(first.capability, new RegExp(`yuzuno ${RESULT_TOOL} tool`));
-  assert.match(first.capability, new RegExp(GUIDE_TOOL));
-  assert.match(first.capability, /plain text/);
-  assert.match(first.capability, /text only/);
-  assert.match(first.capability, /do not repeat an accepted result/);
-  assert.doesNotMatch(first.capability, /root|elements|\{|yuzuno-ui/);
-  assert.deepEqual(first.inputSchema.required, ["requestId", "expectedTurnId", "spec"]);
-  assert.equal(first.inputSchema.additionalProperties, false);
-  assert.deepEqual(Object.keys(first.inputSchema.properties), ["requestId", "expectedTurnId", "spec", "revisesResultId"]);
-  assert.ok(!/agentId|turnId/.test(JSON.stringify(first.inputSchema)), "identity is never an argument");
+  // The once-per-session notice: how to show a result in a reply, short.
+  assert.equal(first.capability, FENCE_NOTICE);
+  assert.ok(first.capability.length < 700, first.capability.length);
+  assert.match(first.capability, /one yuzuno-ui fenced block in your reply: one sentence of plain text first/);
+  assert.match(first.capability, /"root" first, then the elements in the order they are shown/);
+  assert.match(first.capability, /At most one block per reply; it only displays\. A form, a choice or a status change goes to a Home Ask instead\./);
+  assert.match(first.capability, /yuzuno_guide topic results/);
+  assert.doesNotMatch(first.capability, /result_publish|result_guide/);
+  // The fence guide: every display component with its props and purpose, none that acts.
+  for (const type of FENCE_COMPONENTS) {
+    assert.ok(first.fenceGuide.includes(`- ${type} {`), type);
+    assert.ok(first.fenceGuide.includes(COMPONENT_DESCRIPTIONS[type]), type);
+  }
+  for (const type of ACT_COMPONENTS) assert.ok(!first.fenceGuide.includes(`- ${type} {`), type);
+  // Every catalog component is one or the other: shown in a reply, or refused there.
+  assert.deepEqual([...FENCE_COMPONENTS, ...ACT_COMPONENTS].sort(), Object.keys(componentProps).sort());
+  assert.match(first.fenceGuide, /title defaults to "Table"/);
+  assert.match(first.fenceGuide, /root names a Result/);
+  assert.match(first.fenceGuide, /rows and bars cite them by id in sourceIds/);
+  assert.match(first.fenceGuide, /="a"\|"b" the only values a prop takes/);
+  assert.doesNotMatch(first.fenceGuide, /result_publish|result_guide/);
+  for (const limit of ["unit≤30", "href≤2000", "title≤160", "summary≤2000", "rows[≤100]", "data[1-24]", "1-64 characters"])
+    assert.ok(first.fenceGuide.includes(limit), limit);
 });
 
-test("every description Agents are given fits the shortest supported client, and the entry names the guide early", () => {
+test("the notice fits the shortest supported client; the fence guide is read from yuzuno_guide", () => {
   const contract = describeContract();
   assert.equal(MAX_DESCRIPTION_LENGTH, 2048, "Claude Code 2.1.280 keeps 2048 UTF-16 code units");
   assert.equal(contract.maxDescriptionLength, MAX_DESCRIPTION_LENGTH);
-  // String length is UTF-16 code units, as the client counts them.
-  for (const [name, text] of [["entry", contract.description], ["guide tool", contract.guideTool.description], ["notice", contract.capability]])
-    assert.ok(text.length <= MAX_DESCRIPTION_LENGTH, `${name}: ${text.length}`);
-  // A client that cuts harder still keeps where to read the rest.
-  assert.ok(contract.description.indexOf(GUIDE_TOOL) < 256, contract.description.indexOf(GUIDE_TOOL));
-  // The full guide does not fit: it is a tool answer, never a description.
-  assert.ok(contract.guide.text.length > MAX_DESCRIPTION_LENGTH, contract.guide.text.length);
-  for (const property of Object.values(contract.guideTool.inputSchema.properties))
-    assert.ok(property.description.length <= MAX_DESCRIPTION_LENGTH);
-});
-
-test("the guide is one text in parts, whole or for some components, in catalog order", () => {
-  const { guide, guideTool } = describeContract();
-  assert.equal(guideTool.name, GUIDE_TOOL);
-  assert.deepEqual(guideTool.inputSchema.properties.components.items.enum, Object.keys(componentProps));
-  assert.equal(guideTool.inputSchema.additionalProperties, false);
-  assert.deepEqual(guide.components.map((part) => part.type), Object.keys(componentProps));
-  assert.equal(describeGuide(), guide.text);
-  assert.equal(guide.text, [guide.header, guide.usage, "Components:", ...guide.components.map((part) => part.text), "Rules:", guide.rules].join("\n"));
-  const some = describeGuide(["Continue", "Table"]);
-  assert.ok(some.indexOf("- Table {") < some.indexOf("- Continue {"), "catalog order, not request order");
-  assert.ok(!some.includes("- BarChart {") && some.includes(guide.rules) && some.includes(guide.usage));
-  assert.throws(() => describeGuide(["Chart"]), /Unknown component: Chart/);
-  // A prop's allowed values come from its schema (T-131), and the header says how to read them.
-  const status = guide.components.find((part) => part.type === "TaskStatus").text;
-  assert.match(status, /^- TaskStatus \{taskId, status="todo"\|"doing"\|"blocked"\|"review"\|"done"\|"cancelled", reason≤\d+\}: /);
-  assert.match(guide.header, /="a"\|"b" the only values a prop takes/);
+  assert.ok(contract.capability.length <= MAX_DESCRIPTION_LENGTH, contract.capability.length);
+  assert.equal(describeFenceGuide(), contract.fenceGuide);
 });
 
 test("the renderer's catalog describes the same components", () => {

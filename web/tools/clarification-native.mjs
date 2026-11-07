@@ -1,4 +1,6 @@
 // Opt-in real Codex form acceptance: owned Core, database, browser and drafts only.
+// Retired (YN-14 A5): Core no longer offers the result_publish MCP tool this
+// script asks Codex to call. Kept as history; it no longer runs against a current Core.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, writeFile, open, readFile } from "node:fs/promises";

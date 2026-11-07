@@ -97,8 +97,8 @@ prerequisites.
 and committed; packaging checks the bundle against the hash in its
 `contract.json`, and Core runs only the bundle its own build names. Core does
 not require it to verify a release, so an older package without it remains a
-valid previous or rollback release; that release just has no `result_publish`
-validator.
+valid previous or rollback release; that release just has no result or
+Brief validator.
 
 Register a reviewed candidate with the running installation's packaged helper:
 

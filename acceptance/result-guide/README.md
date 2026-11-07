@@ -1,5 +1,7 @@
 # T-86: result_publish's short entry and the full guide
 
+> **Retired (YN-14 A5).** Core no longer offers the `result_publish` and `result_guide` MCP tools, so these scripts no longer run against a current Core. They and the record below are kept as history.
+
 ## Problem
 
 Claude Code 2.1.280 keeps the first 2048 UTF-16 code units of an MCP tool's

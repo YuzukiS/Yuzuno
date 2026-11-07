@@ -511,7 +511,7 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   // T-154: no turn has to end with a Brief update; outcomes have a place.
   const rules = BRIEF_HARD_RULES.split("\n");
   assert.match(rules[1], /No Brief update is required each turn: write when something changed/);
-  assert.match(rules[1], /status.*report linked to its Task.*ask; result_publish never reaches Home/);
+  assert.match(rules[1], /status.*report linked to its Task.*ask; yuzuno-ui blocks never reach Home/);
   assert.doesNotMatch(BRIEF_HARD_RULES, /requiresTurnUpdate|noChange/);
   for (const description of Object.values(BRIEF_TOOL_DESCRIPTIONS)) assert.doesNotMatch(description, /requiresTurnUpdate|per turn\b|each turn then/);
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_get, /keys: omit for every section with its body; \[\] for an index/);
