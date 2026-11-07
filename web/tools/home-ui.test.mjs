@@ -1270,7 +1270,7 @@ test("a summary card says what it is, when its data is from and that nobody keep
     // These bodies name no summary: each card shows how its body opens, as a folded
     // card does (YN-3): the first paragraph of an accent Group or a Markdown, and
     // nothing after it; a body opening with a plain Group gives none.
-    const lead = (root) => root.querySelector(".home-summary-lead")?.textContent ?? null;
+    const lead = (root) => root.querySelector(".home-summary-lead")?.textContent.trim() ?? null;
     assert.equal(lead(overview), "Release core.15 is out; two lines wait for main.");
     assert.equal(lead(layout), "Daily runs core.12.");
     assert.equal(lead(evidence), null, "a body opening with a plain Group gives no paragraph");

@@ -618,14 +618,18 @@ test("YN-3 a card whose author named no summary opens as its body does: a first 
   const page = mount();
   t.after(page.close);
   const { document, window } = page;
-  const unnamed = (top, elements) => readSection(page, {
-    op: "put", key: "plain", kind: "report", title: "Plain",
-    attachments: [{ name: "shot.png", path: "/runs/shot.png" }],
-    body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: top }, ...elements } },
-  }, { attachments: [attachment("shot.png", "image", "image/png")] });
+  // The image is registered only where the body shows it, as the contract asks.
+  const unnamed = (top, elements) => {
+    const image = top.includes("files");
+    return readSection(page, {
+      op: "put", key: "plain", kind: "report", title: "Plain",
+      ...(image ? { attachments: [{ name: "shot.png", path: "/runs/shot.png" }] } : {}),
+      body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: top }, ...elements } },
+    }, { attachments: image ? [attachment("shot.png", "image", "image/png")] : [] });
+  };
   const md = (text) => ({ type: "Markdown", props: { text } });
   const metrics = { type: "Metrics", props: { items: [{ label: "Shards", value: 2 }, { label: "Lines", value: 40, unit: "k" }] } };
-  const lead = () => document.querySelector(".home-summary-lead")?.textContent ?? null;
+  const lead = () => document.querySelector(".home-summary-lead")?.textContent.trim() ?? null;
   const card = () => document.querySelector("article.home-summary-card");
   // Text first: its first paragraph, the rest left to its page.
   window.renderCard(unnamed(["text", "m"], { text: md("Two shards rebuilt.\n\nThe rest below."), m: metrics }), PROJECT, { deck: true });
