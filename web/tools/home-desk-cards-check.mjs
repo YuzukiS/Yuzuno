@@ -187,6 +187,35 @@ async function check(run) {
     await card("dose").waitFor({ timeout: 15_000 });
     assert.equal(await page.locator(".home-view").first().getAttribute("lang"), run.language, "Home in the chosen language");
 
+    // ---- Conditions: the Checklist's title, open items first, the fold counts the open ones it hides.
+    const box = card("gate").locator(".home-card-conditions");
+    const conditions = async () => box.evaluate((el) => {
+      const chips = [...el.querySelectorAll(".home-card-condition-chips li")];
+      return { label: el.querySelector(".home-card-conditions-label").textContent, aria: el.getAttribute("aria-label"),
+        order: chips.map((li) => (li.hasAttribute("data-done") ? "done" : "open")),
+        hidden: chips.map((li) => li.hidden), toggle: el.querySelector(".home-card-conditions-toggle")?.textContent ?? null };
+    });
+    const folded = await conditions();
+    await shot(card("gate"), "conditions-folded");
+    assert.deepEqual([folded.label, folded.aria], ["Before the test run", "Before the test run"]);
+    assert.deepEqual(folded.order, ["open", "open", "open", "open", "open", "done", "done", "done", "done"], "open items first");
+    const hidden = folded.hidden.filter(Boolean).length;
+    const hiddenOpen = folded.order.filter((kind, i) => kind === "open" && folded.hidden[i]).length;
+    assert.ok(hidden > 1, `two lines cannot hold all nine: ${JSON.stringify(folded)}`);
+    assert.ok(hiddenOpen > 0, `five long open items do not fit two lines: ${JSON.stringify(folded)}`);
+    // What is folded is the end of the list: no open item folded while a done one shows.
+    assert.ok(folded.hidden.every((h, i) => !h || folded.hidden.slice(i).every(Boolean)), JSON.stringify(folded));
+    const said = folded.toggle.match(w.fold);
+    assert.ok(said, `the fold says it: ${folded.toggle}`);
+    assert.deepEqual([Number(said[1]), Number(said[2] ?? 0)], [hidden, hiddenOpen], `${folded.toggle} for ${JSON.stringify(folded)}`);
+    await box.locator(".home-card-conditions-toggle").click();
+    await page.waitForFunction(() => document.querySelectorAll("#home-section-p-desk-gate .home-card-condition-chips li[hidden]").length === 0, null, { timeout: 5000 });
+    const opened = await conditions();
+    assert.equal(opened.toggle, w.fewer);
+    await shot(card("gate"), "conditions-open");
+    pass("the Checklist's title names the box; open items first; the fold names how many it hides and how many are open; Show all opens them",
+      { hidden, hiddenOpen, toggle: folded.toggle });
+
     // ---- The desk on a wide and a large card: its lead claim, status, the read interval, inside its frame.
     const desks = {};
     for (const key of ["dose", "dose-large"]) {
@@ -216,35 +245,6 @@ async function check(run) {
       assert.ok(d.inside && !d.sideways, `${key}: inside its frame: ${JSON.stringify(d)}`);
     }
     pass("a wide and a large card draw the desk's lead claim, its status and the read interval inside the frame", desks);
-
-    // ---- Conditions: the Checklist's title, open items first, the fold counts the open ones it hides.
-    const box = card("gate").locator(".home-card-conditions");
-    const conditions = async () => box.evaluate((el) => {
-      const chips = [...el.querySelectorAll(".home-card-condition-chips li")];
-      return { label: el.querySelector(".home-card-conditions-label").textContent, aria: el.getAttribute("aria-label"),
-        order: chips.map((li) => (li.hasAttribute("data-done") ? "done" : "open")),
-        hidden: chips.map((li) => li.hidden), toggle: el.querySelector(".home-card-conditions-toggle")?.textContent ?? null };
-    });
-    const folded = await conditions();
-    await shot(card("gate"), "conditions-folded");
-    assert.deepEqual([folded.label, folded.aria], ["Before the test run", "Before the test run"]);
-    assert.deepEqual(folded.order, ["open", "open", "open", "open", "open", "done", "done", "done", "done"], "open items first");
-    const hidden = folded.hidden.filter(Boolean).length;
-    const hiddenOpen = folded.order.filter((kind, i) => kind === "open" && folded.hidden[i]).length;
-    assert.ok(hidden > 1, `two lines cannot hold all nine: ${JSON.stringify(folded)}`);
-    assert.ok(hiddenOpen > 0, `five long open items do not fit two lines: ${JSON.stringify(folded)}`);
-    // What is folded is the end of the list: no open item folded while a done one shows.
-    assert.ok(folded.hidden.every((h, i) => !h || folded.hidden.slice(i).every(Boolean)), JSON.stringify(folded));
-    const said = folded.toggle.match(w.fold);
-    assert.ok(said, `the fold says it: ${folded.toggle}`);
-    assert.deepEqual([Number(said[1]), Number(said[2] ?? 0)], [hidden, hiddenOpen], `${folded.toggle} for ${JSON.stringify(folded)}`);
-    await box.locator(".home-card-conditions-toggle").click();
-    await page.waitForFunction(() => document.querySelectorAll("#home-section-p-desk-gate .home-card-condition-chips li[hidden]").length === 0, null, { timeout: 5000 });
-    const opened = await conditions();
-    assert.equal(opened.toggle, w.fewer);
-    await shot(card("gate"), "conditions-open");
-    pass("the Checklist's title names the box; open items first; the fold names how many it hides and how many are open; Show all opens them",
-      { hidden, hiddenOpen, toggle: folded.toggle });
 
     // ---- Nothing wider than the window; the whole Home.
     const widths = await page.evaluate(() => ({ page: document.scrollingElement.scrollWidth, window: innerWidth }));
