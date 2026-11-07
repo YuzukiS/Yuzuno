@@ -229,6 +229,9 @@ if path.startswith('git/ref/heads/') and path[len('git/ref/heads/'):] in s.get('
 if path=='branches/main': out(200,{'commit':{'sha':s.get('branchMain',s['main'])}})
 if path=='git/ref/pull/11/merge':
     out(200,{'object':{'sha':s['merge']}}) if s['merge'] else out(404,{})
+if path.startswith('compare/'):
+    key=path[len('compare/'):].split('?')[0]
+    out(200,s['compare'][key]) if key in s.get('compare',{}) else out(404,{'message':'Not Found'})
 down=s.get('commitDown')
 if path.startswith('git/commits/') and (down is True or down==path.split('/')[-1]): out(502,{'message':'Bad gateway'})
 if path.startswith('git/commits/'):
@@ -1179,6 +1182,140 @@ async fn a_head_tested_on_an_older_main_merges_through_a_batch_on_the_current_ma
         "the merge, then Core closes its batch PR and deletes its branch"
     );
     assert_eq!(e["batch"]["cleanup"], "done");
+}
+
+/// Main moved on to sha('c') after the PR's CI ran, and GitHub never moved the
+/// PR's merge ref: it stays main_sha() + head, as in the T-37 lab (finding F1,
+/// over 19 minutes). The compare of the two mains names main_sha() as their
+/// merge base, so the ref's main is an older main. The batch's own CI ran on
+/// the current main.
+fn main_moved_ref_stale(s: &mut Value) {
+    let to = sha('c');
+    s["commits"][&to] = json!({"sha":to,"tree":sha('6'),"parents":[main_sha()]});
+    s["commits"][&batch_merge_ref()]["parents"] = json!([to, batch_commit()]);
+    s["main"] = json!(to);
+    s["compare"] = json!({format!("{}...{}", main_sha(), to): {"base":main_sha(),"mergeBase":main_sha(),"commits":1}});
+}
+/// Backdate when the entry's last check first saw its merge ref as it is.
+fn age_merge_ref(lab: &Lab, seconds: i64) {
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_entries SET data=json_set(data,'$.lastEvidence.mergeRef.since',json_extract(data,'$.lastEvidence.mergeRef.since')-?1)", [seconds])
+        .unwrap();
+}
+
+/// T-37 lab finding F1: a merge ref GitHub never moves to the current main kept
+/// the entry waiting until wait_timeout. CI on the PR checked out that ref, so
+/// it cannot have tested the current main: the entry goes to the batch at once.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_ref_github_never_moves_to_the_current_main_batches_in_one_tick() {
+    let lab = lab_with(main_moved_ref_stale);
+    let e = lab.release(Some("lead"), "r1").await.unwrap();
+    let branch = format!("queue/merge-{}", e["id"].as_str().unwrap());
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "{e}");
+    assert!(
+        e["detail"].as_str().unwrap().contains("Core opened batch #900"),
+        "a merge ref on an older main goes to the batch in the first check: {}",
+        e["detail"]
+    );
+    assert_eq!(
+        writes(lab.dir.path()),
+        ["POST repos/owner/repo/git/refs", "POST repos/owner/repo/merges", "POST repos/owner/repo/pulls"],
+        "the batch: its branch, the head merged into it, and its draft PR"
+    );
+    let create = calls(lab.dir.path()).into_iter().find(|c| c["method"] == "POST").unwrap();
+    assert_eq!(create["body"], json!({"ref":format!("refs/heads/{branch}"),"sha":sha('c')}), "the batch is built on the current main");
+    assert!(
+        !calls(lab.dir.path()).iter().any(|c| c["endpoint"].as_str().unwrap().ends_with("/logs")),
+        "no job log is read: CI behind a stale merge ref cannot have tested the current main"
+    );
+    change(lab.dir.path(), batch_green);
+    let e = lab.step().await;
+    assert_eq!(e["state"], "merged", "CI on the batch proved the merge: {e}");
+    assert_eq!(e["lastEvidence"]["gate"]["kind"], "batch");
+    assert_eq!(e["merge"]["post"]["ok"], true, "{e}");
+}
+
+/// A merge ref GitHub has not computed is waited for, but only two minutes:
+/// then Core builds the batch with its own merge.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_ref_github_has_not_computed_is_waited_for_two_minutes_then_batched() {
+    let lab = lab_with(|s| {
+        main_moved_ref_stale(s);
+        s["merge"] = Value::Null;
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.entry().await["state"], "waiting");
+    assert!(writes(lab.dir.path()).is_empty(), "within the two minutes Core writes nothing");
+    age_merge_ref(&lab, 100);
+    lab.step().await;
+    assert!(writes(lab.dir.path()).is_empty(), "nor before they end");
+    age_merge_ref(&lab, 21);
+    let e = lab.step().await;
+    assert!(
+        e["detail"].as_str().unwrap().contains("Core opened batch #900"),
+        "after two minutes without a merge ref Core builds the batch itself: {}",
+        e["detail"]
+    );
+    assert_eq!(writes(lab.dir.path()).len(), 3, "its branch, its merge and its draft PR");
+}
+
+/// T-37 lab finding F2: GitHub runs no CI for a PR with merge conflicts, so
+/// the entry waited for runs until wait_timeout. GitHub's own verdict stops it
+/// at once, and the task and the mail say what to do next.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_conflicting_pr_without_ci_stops_with_conflict_in_one_tick() {
+    let lab = lab_with(|s| {
+        s["pull"]["mergeable"] = json!(false);
+        s["pull"]["mergeable_state"] = json!("dirty");
+        s["runs"] = json!([]);
+        s["merge"] = Value::Null;
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("conflict")), "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("cannot merge into its base"), "{}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty(), "a conflict writes nothing to GitHub");
+    assert!(
+        !calls(lab.dir.path()).iter().any(|c| c["endpoint"].as_str().unwrap().contains("head_sha=")),
+        "it stops before waiting for runs GitHub will never start"
+    );
+    let next = "merges the current main into the PR branch";
+    assert!(
+        lab.comments().iter().any(|c| c.contains("stopped (conflict)") && c.contains(next)),
+        "the task says what to do next: {:?}",
+        lab.comments()
+    );
+    for agent in ["lead", "dev"] {
+        assert!(
+            lab.mail(agent).iter().any(|m| m["body"].as_str().unwrap().contains(next)),
+            "{agent} is told what to do next: {:?}",
+            lab.mail(agent)
+        );
+    }
+}
+
+/// While GitHub is still computing whether the PR can merge, nothing is
+/// decided: the entry waits for its runs as before.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pr_whose_mergeability_github_is_computing_waits_for_its_runs() {
+    let lab = lab_with(|s| {
+        s["pull"]["mergeable"] = Value::Null;
+        s["pull"]["mergeable_state"] = json!("unknown");
+        s["runs"] = json!([]);
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "waiting", "{e}");
+    assert_eq!(e["detail"], "No run of workflow CI on the head yet");
 }
 
 #[cfg(unix)]
