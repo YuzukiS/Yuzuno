@@ -47,6 +47,9 @@ pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
 /// template has no limit of its own any more, only each machine has. For
 /// one release a save that sends it is taken and the value dropped; the
 /// release after refuses it as unknown.
+/// What `limits.maxConcurrent` still answers, for that same release: a
+/// template page from before S5 reads its field's bound from it.
+const OLDER_PAGES_MAX_CONCURRENT: u32 = 64;
 const FIELDS: [&str; 12] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
     "permissionMode", "machineId", "instructions", "maxConcurrent", "origin"];
 /// The Project lists the migration has copied, each at the version it read.
@@ -526,7 +529,8 @@ fn view(workspace: &Templates) -> Value {
         "presets": presets(),
         "defaultNamePattern": DEFAULT_NAME_PATTERN,
         // A list the migration took past the limit keeps what it holds.
-        "limits": {"templates": MAX_TEMPLATES.max(workspace.templates.len()), "instructionsBytes": MAX_INSTRUCTIONS},
+        "limits": {"templates": MAX_TEMPLATES.max(workspace.templates.len()), "instructionsBytes": MAX_INSTRUCTIONS,
+            "maxConcurrent": OLDER_PAGES_MAX_CONCURRENT},
         "opencodeEnabled": crate::opencode_agent::enabled(),
         "appliesTo": "Dispatches from a template from now on; executors already created keep their own settings.",
     })

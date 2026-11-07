@@ -255,7 +255,8 @@ async fn executors_past_the_slots_wait_their_turn_and_start_when_a_slot_is_free(
         .json(&json!({})).send().await.unwrap();
     assert_eq!(refused.status(), reqwest::StatusCode::BAD_REQUEST);
     let refused = refused.json::<Value>().await.unwrap()["error"].as_str().unwrap_or_default().to_owned();
-    assert!(refused.starts_with("executor_queued: this executor waits for an executor slot (number 1 in the queue)"), "{refused}");
+    assert!(refused.starts_with("executor_queued: this executor waits for a slot on this Core host (2 of 2 running there; number 1 in the queue)"),
+        "{refused}");
     let third = ws.store.agent(&executors[2]).unwrap();
     assert_eq!((third.connection_state.as_str(), third.status.as_str(), third.error.as_deref()), ("disconnected", "offline", None),
         "a refused Connect changes nothing");
