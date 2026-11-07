@@ -132,7 +132,8 @@ export function ProjectMembers({ project, agents, projects, disabled, onChanged 
       setSaving(false);
     }
   }
-  const inBar = useSaveBarPart(`leads:${projectId}`, changed && saved
+  // An archived project's leads don't change: a change left from before is not sent (#722 R1 note).
+  const inBar = useSaveBarPart(`leads:${projectId}`, changed && saved && !disabled
     ? { save, discard: () => { setError(""); setIds(saved.leadAgentIds); } }
     : null);
   async function move(agent: Agent, to: string | null) {

@@ -201,9 +201,13 @@ test("the Core host budget in Settings takes the whole host, keeps the default a
     assert.doesNotMatch(text(form), /ceiling/i, "no share of the host is called a ceiling");
     assert.match(text(form), /4\.2 CPU and 8320 MiB/, "collectors are counted in the example");
     assert.match(text(form), /Running jobs keep their original limits/, "saving says running jobs keep their limits");
-    const input = (name) => form.querySelector(`input[name="${name}"]`);
-    assert.deepEqual(["cpu", "memory", "swap"].map((name) => [input(name).min, input(name).max]), [["0.2", "4096"], ["128", "67108864"], ["0", "67108864"]], "the inputs take Core bounds, not the host size");
-    assert.deepEqual(["cpu", "memory", "swap"].map((name) => form.querySelector(`label[for="${input(name).id}"]`)?.textContent), ["CPU quota", "RAM (MiB)", "Swap (MiB)"], "each input is named by its label");
+    // A slider each (YN-8): its track is the whole host, while a typed value may go to Core's bounds.
+    const input = (name) => form.querySelector(`input[type="range"][name="${name}"]`);
+    const typed = (name) => input(name).closest(".settings-slider").querySelector('input[type="number"]');
+    assert.deepEqual(["cpu", "memory", "swap"].map((name) => [input(name).min, input(name).max]), [["0.2", "32"], ["128", "40107"], ["0", "16384"]], "each track is the whole host");
+    assert.deepEqual(["cpu", "memory", "swap"].map((name) => typed(name).max), ["4096", "67108864", "67108864"], "a typed value may go to Core bounds, not only the host size");
+    assert.deepEqual(["cpu", "memory", "swap"].map((name) => [input(name).getAttribute("aria-label"), typed(name).getAttribute("aria-label")]),
+      [["CPU quota", "CPU quota (CPU)"], ["RAM", "RAM (MiB)"], ["Swap", "Swap (MiB)"]], "each slider and its typed value are named");
     await type(p, input("cpu"), "32");
     await type(p, input("memory"), "40107");
     await type(p, input("swap"), "16384");
@@ -233,8 +237,8 @@ test("Jobs at once shows the number in effect with its default, and the budget s
     p.window.renderHost();
     await until(() => p.doc.querySelector('input[name="maxActive"]'), "the budget is read");
     const form = p.group("This host's Job budget");
-    const slots = () => form.querySelector('input[name="maxActive"]');
-    assert.equal(form.querySelector(`label[for="${slots().id}"]`)?.textContent, "Jobs at once", "the field is named Jobs at once");
+    const slots = () => form.querySelector('input[type="range"][name="maxActive"]');
+    assert.equal(slots().getAttribute("aria-label"), "Jobs at once", "the slider is named Jobs at once");
     assert.equal(slots().value, "4", "the field shows the number in effect");
     assert.deepEqual([slots().min, slots().max, slots().step], ["1", "16", "1"], "the field takes the bounds Core gives");
     assert.equal(now(form), "In effect: 4 at once (default).", "the default is said to be the default");
@@ -273,14 +277,14 @@ test("Jobs at once shows the number in effect with its default, and the budget s
     assert.equal(alert(form), refusal, "the refusal is shown as Core said it");
     assert.equal(slots().value, "12", "the typed number stays to try again");
     assert.equal(now(form), "In effect: 4 at once (default).", "what is in effect stays as Core last said");
-    // Out of range, the field itself stops the save.
-    await type(p, slots(), "17");
-    await pause();
-    assert.equal(slots().validity.rangeOverflow, true, "17 is out of the range");
+    // Out of range: a typed 17 is kept to the range (YN-8: a slider), and nothing is sent by typing.
     const sent = p.posts().length;
-    button(form, "Save budget").click();
-    await pause(60);
-    assert.equal(p.posts().length, sent, "nothing is sent out of range");
+    const typedSlots = slots().closest(".settings-slider").querySelector('input[type="number"]');
+    await type(p, typedSlots, "17");
+    typedSlots.dispatchEvent(new p.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await pause();
+    assert.equal(slots().value, "16", "17 is kept to the range's 16");
+    assert.equal(p.posts().length, sent, "nothing is sent by typing");
     assert.deepEqual(p.errors, [], "no page errors");
   } finally { p.close(); }
   // A Core before T-55: no field, and the budget goes without it.
@@ -323,8 +327,9 @@ test("the disk reserve, the Windows ceiling and each GPU admission and sharing a
     assert.equal(reserve().value, "", "the field is empty again for the default");
     // Windows ceiling.
     const windows = p.group("Windows jobs");
-    const ceiling = () => windows.querySelector('input[name="windowsMaxJobs"]');
-    assert.deepEqual([ceiling().value, ceiling().placeholder, ceiling().min, ceiling().max], ["", "Default (2)", "1", "64"], "the Windows ceiling starts at its default");
+    const ceiling = () => windows.querySelector('input[type="range"][name="windowsMaxJobs"]');
+    assert.deepEqual([ceiling().value, ceiling().min, ceiling().max], ["2", "1", "64"], "the Windows ceiling starts at its default, shown on its slider");
+    assert.equal(now(windows), "In effect: 2 at once (default).", "and said to be the default");
     assert.match(text(windows), /only a ceiling: Windows jobs still share this host's CPU and RAM budget/, "the ceiling is said to be no extra budget");
     await type(p, ceiling(), "3");
     button(windows, "Save").click();
@@ -500,7 +505,7 @@ test("in Chinese the Core host editor reads in Chinese, with names and Core word
     assert.equal(section.querySelector("h3").textContent, "Core 主机预算", "the editor title is Chinese");
     assert.equal(section.getAttribute("lang"), "zh-Hans", "the editor says it is Chinese");
     const form = p.group("此主机的 Job 预算");
-    assert.equal(form.querySelector(`label[for="${form.querySelector('input[name="maxActive"]').id}"]`).textContent, "同时运行的 Job 数", "the field label is Chinese");
+    assert.equal(form.querySelector('input[type="range"][name="maxActive"]').getAttribute("aria-label"), "同时运行的 Job 数", "the slider's name is Chinese");
     assert.equal(now(form), "当前生效：同时最多 4 个（默认）。", "what is in effect is said in Chinese");
     assert.match(text(section), /WSL/, "the machine name stays as it came");
     assert.match(text(p.group("磁盘保留")), /10 GiB, or a tenth of a filesystem smaller than 100 GiB/, "Core rule stays as it came");

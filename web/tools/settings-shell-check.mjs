@@ -26,6 +26,20 @@ const agents = [
   // On an SSH machine, so the status bar shows the machines.
   { ...base, id: "maple", name: "Maple", harness: "claude", projectId: "orchard", cwd: "/srv/lab/x", remote: { machine: { ...lab } } },
 ];
+// The Core host's Job budget (S3b part 2): a whole host to draw the tracks on, and
+// what two running Jobs hold now.
+const hostBudget = {
+  machine: { name: "Fixture Core", memoryAvailableMiB: 20480, scope: "fixture", logicalCpus: 16, memoryTotalMiB: 32768, swapTotalMiB: 8192, hostHeadroomMiB: 2048 },
+  budget: { cpuMillis: 8000, memoryMiB: 16384, swapMiB: 0 },
+  budgetBounds: { minimum: { cpuMillis: 200, memoryMiB: 128, swapMiB: 0 }, maximum: { cpuMillis: 16000, memoryMiB: 32768, swapMiB: 8192 } },
+  reserved: { cpuMillis: 2000, memoryMiB: 4096, swapMiB: 0 },
+  queuedCount: 0,
+  activeCount: 2,
+  maxActive: 4,
+  maxActiveSet: false,
+  maxActiveDefault: 4,
+  maxActiveBounds: { minimum: 1, maximum: 16 },
+};
 const projects = [
   { id: "garden", name: "Garden", defaultDirs: { local: "/fixture/garden" }, createdAt: "", updatedAt: "" },
   { id: "orchard", name: "Orchard", defaultDirs: { local: "/fixture/orchard" }, createdAt: "", updatedAt: "" },
@@ -70,7 +84,7 @@ async function open({ width, height, language = "en", theme = "light", phone = f
       case "/api/models": return respond({ models: [] });
       case "/api/machines": return respond({ machines });
       case "/api/jobs": return respond(noJobs);
-      case "/api/jobs/budget": return respond(idleJobsBudget);
+      case "/api/jobs/budget": return respond(hostBudget);
       case "/api/jobs/live": return respond(noLiveJobs);
       case "/api/ci": return respond(noCiRuns);
       case "/api/reviews": return respond(noReviews);
@@ -327,15 +341,65 @@ try {
       await dialog.locator("#settings-block-jobs").evaluate((el) => el.scrollIntoView({ block: "start" }));
       await page.waitForTimeout(100);
       await page.screenshot({ path: resolve(output, `machines-host-jobs-${width}x${height}-${language}-${theme}.png`) });
+      // S3b part 2: the Core host's Job budget as sliders, each track the whole
+      // host with what running Jobs hold drawn on it; its executor limit too;
+      // a change shows the page's one save bar.
+      const hostJobs = dialog.locator("#settings-jobs-budget");
+      assert.deepEqual(await hostJobs.locator("input[type=range]").evaluateAll((list) => list.map((el) => [el.name, el.value, el.max])),
+        [["maxActive", "4", "16"], ["cpu", "8", "16"], ["memory", "16384", "32768"], ["swap", "0", "8192"]], `${label}: four sliders on the whole host`);
+      assert.deepEqual(await hostJobs.locator(".settings-slider").evaluateAll((list) => list.map((el) => Math.round(parseFloat(el.style.getPropertyValue("--settings-slider-used")) * 10) / 10)),
+        [6.7, 11.4, 12.2, 0], `${label}: what running Jobs hold (2 Jobs, 2 CPU, 4096 MiB, no swap), drawn on each track`);
+      assert.equal(await dialog.locator('[data-machine-id="local"] .machine-executor-limit input[type=range]').count(), 1, `${label}: the executor limit is a slider`);
+      assert.equal(await hostJobs.getByRole("button", { name: language === "en" ? "Save budget" : "保存预算" }).count(), 0, `${label}: no Save of its own on the page`);
+      const hostBar = dialog.locator(".settings-savebar");
+      await hostJobs.locator('input[type=range][name="cpu"]').fill("10");
+      await hostBar.waitFor({ state: "visible" });
+      assert.equal(await hostBar.locator("span").first().innerText(), language === "en" ? "1 change not saved" : "1 处更改还没保存");
+      await noOverflow(page, `${label} Core host with the bar`);
+      await inCards("Core host with the bar");
+      await page.screenshot({ path: resolve(output, `machines-host-savebar-${width}x${height}-${language}-${theme}.png`) });
+      await hostBar.getByRole("button", { name: language === "en" ? "Discard" : "放弃" }).click();
+      await hostBar.waitFor({ state: "hidden" });
+      assert.equal(await hostJobs.locator('input[type=range][name="cpu"]').inputValue(), "8", `${label}: Discard is back to what was saved`);
       await dialog.locator(".settings-crumb").click();
       await dialog.locator('[data-machine-row="lab"]').click();
       await dialog.locator('article[data-machine-id="lab"]').waitFor();
-      assert.equal(await dialog.locator("#settings-block-jobs").count(), 0, `${label}: an SSH machine's Jobs are in its editor`);
+      assert.equal(await dialog.locator("#settings-block-jobs").count(), 0, `${label}: an SSH machine's Jobs are in its own settings`);
       await noOverflow(page, `${label} Lab box`);
       await inCards("Lab box");
       await page.screenshot({ path: resolve(output, `machines-ssh-${width}x${height}-${language}-${theme}.png`) });
+      // S3b: Lab box's settings are its page's: its connection, then Jobs and
+      // executors with two sliders and the limit mode's three cards; a change
+      // shows the page's one save bar, in view at the pane's foot.
+      const ms = dialog.locator(".machine-settings");
+      await ms.locator("input[type=range]").first().waitFor();
+      assert.deepEqual(await ms.locator("legend").allInnerTexts(), language === "en" ? ["Connection", "Jobs and executors"] : ["连接", "Job 与执行者"]);
+      assert.equal(await ms.locator("input[type=range]").count(), 2, `${label}: Jobs at once and executors at once are sliders`);
+      assert.equal(await ms.locator(".theme-choice").count(), 3, `${label}: the limit mode's three cards`);
+      assert.equal(await ms.locator(".theme-choice input:checked").getAttribute("value"), "legacy", `${label}: a machine saved before limits holds none`);
+      const machineBar = dialog.locator(".settings-savebar");
+      assert.equal(await machineBar.isVisible(), false, `${label}: no bar before a change`);
+      await ms.locator(".machine-settings-jobs").evaluate((el) => el.scrollIntoView({ block: "start" }));
+      await page.waitForTimeout(100);
+      await page.screenshot({ path: resolve(output, `machines-ssh-jobs-${width}x${height}-${language}-${theme}.png`) });
+      await ms.locator(".theme-choice").first().click();
+      await machineBar.waitFor({ state: "visible" });
+      assert.equal(await machineBar.locator("span").first().innerText(), language === "en" ? "1 change not saved" : "1 处更改还没保存");
+      const barPlace = await machineBar.evaluate((el) => {
+        let pane = el.parentElement;
+        while (pane && !(pane.scrollHeight > pane.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(pane).overflowY))) pane = pane.parentElement;
+        const b = el.getBoundingClientRect(), p = (pane ?? document.documentElement).getBoundingClientRect();
+        return { inside: b.top >= p.top - 1 && b.bottom <= Math.min(p.bottom, innerHeight) + 1, atFoot: Math.abs(Math.min(p.bottom, innerHeight) - b.bottom) <= 24 };
+      });
+      assert.deepEqual(barPlace, { inside: true, atFoot: true }, `${label}: the bar is in view at the foot of the pane`);
+      await noOverflow(page, `${label} Lab box with the bar`);
+      await inCards("Lab box with the bar");
+      await page.screenshot({ path: resolve(output, `machines-ssh-savebar-${width}x${height}-${language}-${theme}.png`) });
+      await machineBar.getByRole("button", { name: language === "en" ? "Discard" : "放弃" }).click();
+      await machineBar.waitFor({ state: "hidden" });
+      assert.equal(await ms.locator(".theme-choice input:checked").getAttribute("value"), "legacy", `${label}: Discard is back to what was saved`);
       await context.close();
-      check(`${label}: the list first; the Core host's page with its Job budget and Lab box's page, every control inside its card`);
+      check(`${label}: the list first; the Core host's page with its Job budget as sliders on the whole host, one save bar, and Lab box's page, every control inside its card; Lab box's settings in two blocks with sliders and three cards, one save bar in view, Discard`);
     }
   }
 
