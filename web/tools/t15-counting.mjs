@@ -190,9 +190,16 @@ const look = () => {
   console.log(`\n--- P1: a sub-agent and a background task together ---`);
   console.log(`  entry "${both.counts}"  groups ${JSON.stringify(both.groups.map((g) => g.label))}`);
   check(both.open, "the column opens");
-  // The union, not whichever registered last: one failed and one running.
-  check(both.digits.includes(1) && both.counts.split("·").length >= 2,
-    `both kinds are counted, not one overwriting the other ("${both.counts}")`);
+  // The union, not whichever registered last: one failed and one running,
+  // each in its own kind's group. The entry counts the one running; since
+  // YN-17 S2 the failed one is not counted there, so the column is where
+  // both kinds are read.
+  const kinds = Object.fromEntries(both.groups.map((g) => [g.label, g.states]));
+  const sub = both.groups.find((g) => /Sub-agents|子 Agent/.test(g.label));
+  const bg = both.groups.find((g) => /Background|后台/.test(g.label));
+  check(both.digits.includes(1) && JSON.stringify(sub?.states) === JSON.stringify(["exception"])
+    && JSON.stringify(bg?.states) === JSON.stringify(["current"]),
+    `both kinds are listed, not one overwriting the other ("${both.counts}", ${JSON.stringify(kinds)})`);
   const labels = both.groups.map((g) => g.label).join(" | ");
   check(/Background|后台/.test(labels), `the background tasks have a group of their own (${labels})`);
   // The failed sub-agent is in its own kind's group (YN-17 S2); what matters
