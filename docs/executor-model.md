@@ -202,10 +202,11 @@ not a template's or a Project's.
   permissions, machine, and the size of its instructions in bytes, not
   their text. It also gives the list's version, how many templates a newer
   Core saved that this one can't offer, and `general`, what `executor: {}`
-  makes for the caller's Project. With `full: true` each also carries
-  `template`, the template as saved with all its fields, for a lead to change
-  and send back whole with `executor_templates_change`. Reading changes
-  nothing.
+  makes for the caller's Project. With `full: true`, for leads of a Project
+  only, each also carries `template`, the template as saved with all its
+  fields, for a lead to change and send back whole with
+  `executor_templates_change`; an executor or another member is refused
+  (`not_lead`). Reading changes nothing.
 - **After a newer Core.** Templates and fields that a newer Core saved and
   this one can't read or use, such as another harness or machine, are not
   shown or offered to a dispatch, and a save here keeps them as they were.

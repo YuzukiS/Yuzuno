@@ -233,6 +233,28 @@ async fn a_change_adds_and_removes_templates() {
     assert_eq!(ids, ["dev", "docs"]);
 }
 
+/// A lead reads the templates whole with `full`, each as saved, to send one
+/// back changed; an executor, another member or an Agent of no Project
+/// can't, and lists them without their instructions.
+#[tokio::test]
+async fn only_a_lead_reads_the_templates_whole() {
+    let (_dir, ws, _) = fixture().await;
+    let list = crate::executor_templates::LIST_TOOL;
+    let full = ws.collaboration_call(Some("lead"), list, json!({"full":true})).await.unwrap();
+    let stored = saved(&ws).stored_templates();
+    assert_eq!((full["templates"][0]["template"].clone(), full["templates"][1]["template"].clone()), (stored[0].clone(), stored[1].clone()));
+    assert_eq!(full["templates"][0]["template"]["instructions"], "Work as Dev.");
+    assert_eq!(full["templates"][0]["instructionsBytes"], "Work as Dev.".len(), "the listed fields stay");
+    for agent in ["exec", "member", "outsider"] {
+        let refused = error_of(ws.collaboration_call(Some(agent), list, json!({"full":true})).await);
+        assert!(refused.starts_with("not_lead: only a lead of a Project reads the templates whole"), "{agent}: {refused}");
+        let listed = ws.collaboration_call(Some(agent), list, json!({})).await.unwrap();
+        assert!(listed["templates"][0].get("template").is_none() && !listed.to_string().contains("Work as Dev."), "{agent}: {listed}");
+    }
+    let wrong = error_of(ws.collaboration_call(Some("lead"), list, json!({"full":"yes"})).await);
+    assert_eq!(wrong, "invalid_input: full is true or false");
+}
+
 /// The tool is in every Agent's list, its description whole in every
 /// supported client.
 #[test]

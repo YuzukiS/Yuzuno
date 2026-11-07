@@ -767,8 +767,8 @@ pub(crate) const LIST_TOOL: &str = "executor_templates_list";
 pub(crate) fn tool_definition() -> Value {
     json!({
         "name": LIST_TOOL,
-        "description": "List the Workspace's executor templates, to choose one for task_dispatch with executor {templateId}. Each template has its id and label; whenToChoose, a line saying what work it is for (absent if its template has none); deliveryMode: pr (the work is delivered as a pull request), direct-commit (committed without one) or none (no repository change: the result is the deliverable); steps, what its executors follow, each {kind, label?, rounds? (review), approver? (gate: user, lead or either; unset is user)}, its delivery mode's default when it sets none; these are descriptive: Core does not track steps or hold PR, review or merge operations to a mode. Each also names its harness (codex, claude or opencode), model, reasoningEffort, permissionPreset (Codex) or permissionMode (Claude Code) and machineId (local, a machine's id or auto); an unset one inherits the defaults for new Agents. instructionsBytes is the size of the instructions its executors get with their materials (0 for none). general says what executor {} makes for your Project. laterTemplates counts templates a newer Core saved that this one can't offer. With full true each also has template: the template as saved, every field, to change and send back whole with executor_templates_change. The user saves templates in Settings, and a lead with executor_templates_change; version is the list's version, its expectedVersion.",
-        "inputSchema": {"type":"object","properties":{"full":{"type":"boolean","description":"Also give each template as saved (YN-24), instructions included."}},"required":[],"additionalProperties":false},
+        "description": "List the Workspace's executor templates, to choose one for task_dispatch with executor {templateId}. Each template has its id and label; whenToChoose, a line saying what work it is for (absent if its template has none); deliveryMode: pr (the work is delivered as a pull request), direct-commit (committed without one) or none (no repository change: the result is the deliverable); steps, what its executors follow, each {kind, label?, rounds? (review), approver? (gate: user, lead or either; unset is user)}, its delivery mode's default when it sets none; these are descriptive: Core does not track steps or hold PR, review or merge operations to a mode. Each also names its harness (codex, claude or opencode), model, reasoningEffort, permissionPreset (Codex) or permissionMode (Claude Code) and machineId (local, a machine's id or auto); an unset one inherits the defaults for new Agents. instructionsBytes is the size of the instructions its executors get with their materials (0 for none). general says what executor {} makes for your Project. laterTemplates counts templates a newer Core saved that this one can't offer. With full true, for leads of a Project only, each also has template: the template as saved, every field, to change and send back whole with executor_templates_change. The user saves templates in Settings, and a lead with executor_templates_change; version is the list's version, its expectedVersion.",
+        "inputSchema": {"type":"object","properties":{"full":{"type":"boolean","description":"Also give each template as saved, instructions included: for leads of a Project only (YN-24)."}},"required":[],"additionalProperties":false},
     })
 }
 
@@ -811,6 +811,19 @@ fn list_for(store: &Store, actor: Option<&str>, full: bool) -> Result<Value> {
     }))
 }
 
+/// Whether `actor` may read the templates whole (`full`, YN-24): a lead of
+/// its Project, as one that changes them; executors and other members list
+/// them without their instructions.
+fn reads_whole(db: &Connection, actor: &str) -> Result<()> {
+    let project: Option<String> = db.query_row("SELECT project_id FROM project_agents WHERE agent_id=?1", [actor], |r| r.get(0)).optional()?;
+    let leads = match project {
+        Some(project) => crate::agent_roles::leads(db, actor, &project)?,
+        None => false,
+    };
+    ensure!(leads, "not_lead: only a lead of a Project reads the templates whole (full); without full, executor_templates_list lists them without their instructions");
+    Ok(())
+}
+
 pub async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, input: Value) -> Result<Value> {
     let input = input.as_object().ok_or_else(|| anyhow::anyhow!("invalid_input: expected an object"))?;
     if let Some(key) = input.keys().find(|k| k.as_str() != "full") {
@@ -822,7 +835,12 @@ pub async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, 
         Some(_) => bail!("invalid_input: full is true or false"),
     };
     match operation.as_str() {
-        LIST_TOOL => ws.stored(move |store| list_for(store, actor.as_deref(), full)).await,
+        LIST_TOOL => ws.stored(move |store| {
+            if let (true, Some(actor)) = (full, actor.as_deref()) {
+                reads_whole(&*store.db.read()?, actor)?;
+            }
+            list_for(store, actor.as_deref(), full)
+        }).await,
         _ => bail!("unknown_operation: {operation}"),
     }
 }
