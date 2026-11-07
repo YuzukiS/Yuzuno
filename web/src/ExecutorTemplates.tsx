@@ -31,7 +31,7 @@ const text = strings({
   more: "More settings",
   moreSet: (n: number) => `More settings (${n} set)`,
   origin: (project: string, id: string) => `Copied from the project ${project}, where its id was ${id}.`,
-  lastChanged: "Last changed:",
+  lastChanged: "Last changed: ",
   you: "You",
   labelNeeded: "A template needs a label.",
   projectTitle: "Executors",
@@ -625,7 +625,7 @@ function LastChange({ change, t }: { change: TemplateChange; t: Text }) {
   const reason = change.reason?.trim();
   return (
     <p className="settings-row-help executor-template-changed">
-      {t.lastChanged} {who}
+      {t.lastChanged}{who}
       {Number.isFinite(ms) && <> · <time dateTime={moment(ms, time).dateTime} title={moment(ms, time).title}>{changedAt(time).format(ms)}</time></>}
       {reason && <> · {reason}</>}
     </p>

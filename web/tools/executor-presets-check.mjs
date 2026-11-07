@@ -168,7 +168,7 @@ try {
         await shot(page, design, `${tag}-2-design-first`);
         const dev = box.locator(".executor-template").first();
         assert.match(await dev.locator(".executor-template-changed").textContent(), language === "en"
-          ? /^Last changed: Dev Lead · .+ · Say how to test before review$/ : /^上次修改：\s?Dev Lead · .+ · Say how to test before review$/, `${tag}: its last change`);
+          ? /^Last changed: Dev Lead · .+ · Say how to test before review$/ : /^上次修改：Dev Lead · .+ · Say how to test before review$/, `${tag}: its last change`);
         await shot(page, dev, `${tag}-3-saved-template`);
         check(`${tag}: the ten presets in the page's language, two added as unsaved templates, each card fitting its width`);
 
