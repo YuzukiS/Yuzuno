@@ -1310,6 +1310,8 @@ async fn the_workspace_mcp_bearer_is_never_shown_or_kept_from_what_opencode_answ
         let bearer = shown.bearer();
         let error = shown.ws.collaboration_status(ID).await.unwrap().error.unwrap();
         assert!(!error.contains(&bearer), "the bearer is shown in the readiness error: {error}");
+        // A refusal is its status and kind only: what OpenCode answered (here, the request quoted back) is not repeated.
+        assert!(!error.contains("schema rejection"), "OpenCode's answer is repeated in the readiness error: {error}");
         assert!(error.contains(shown_as), "says what OpenCode reported, {shown_as}: {error}");
         let refused = shown.send("c1", "hello").await.unwrap_err().to_string();
         assert!(!refused.contains(&bearer), "the bearer is shown in the refusal: {refused}");

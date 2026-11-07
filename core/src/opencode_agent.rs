@@ -122,6 +122,13 @@ const MCP_NAME: &str = "yuzuno";
 /// How long a Workspace MCP server OpenCode lists as still connecting is
 /// waited for: as long as Core lets it take to connect, and a little more.
 const MCP_SETTLE: Duration = Duration::from_secs(opencode::MCP_STARTUP.as_secs() + 2);
+/// How long a message waits after Core has just connected the Workspace MCP
+/// in its OpenCode: 2.x offers a server's tools to the model from a registry
+/// it reloads 100 ms after the server's tools change (2.2.5
+/// core/src/tool/mcp.ts), not at once, so a step started sooner has none of
+/// them (probe diag 4523e39b: "No tool named yuzuno_peers_list"). 2.x has no
+/// route to ask whether it has; five times that is waited instead.
+const MCP_TOOLS_SETTLE: Duration = Duration::from_millis(500);
 
 /// An Agent's OpenCode process, started but not yet attached (T-10 Fork),
 /// with where its snapshots are known to be kept, or why not.
@@ -1981,14 +1988,16 @@ async fn stop(server: Arc<Server>) -> Result<()> {
 /// without session events and on a reload (2.2.5
 /// core/src/location-activity.ts). `retry` (a reconnect) also has it try a
 /// server it lists as failed again, which the same configuration does not.
-/// One still connecting is waited for, at most MCP_SETTLE. Nothing OpenCode
-/// answers is kept with the bearer in it.
+/// One still connecting is waited for, at most MCP_SETTLE; one this call
+/// connected, MCP_TOOLS_SETTLE more, until 2.x offers its tools. Nothing
+/// OpenCode answers is kept with the bearer in it.
 async fn workspace_mcp(server: &Server, config: &Value, retry: bool) -> Mcp {
     let url = config["url"].as_str().unwrap_or_default();
     let Some(bearer) = config["headers"]["Authorization"].as_str().and_then(|h| h.strip_prefix("Bearer ")) else {
         return Mcp::NotConnected(json!({"status":"unknown","error":"Workspace MCP credential is missing"}));
     };
     let refused = |error: anyhow::Error| Mcp::NotConnected(json!({"status":"refused","error":error.to_string()}));
+    let before = server.mcp(MCP_NAME).await.ok();
     if let Err(error) = server.add_mcp(MCP_NAME, url, bearer).await {
         return without(refused(error), bearer);
     }
@@ -1999,6 +2008,10 @@ async fn workspace_mcp(server: &Server, config: &Value, retry: bool) -> Mcp {
             return without(refused(error), bearer);
         }
         state = settled(server).await;
+    }
+    // Connected by this call: its tools are offered from 2.x's next reload of its registry.
+    if state == Mcp::Connected && before != Some(Mcp::Connected) {
+        tokio::time::sleep(MCP_TOOLS_SETTLE).await;
     }
     without(state, bearer)
 }

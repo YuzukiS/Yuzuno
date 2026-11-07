@@ -652,10 +652,8 @@ fn holding(dir: &Path, needle: &[u8]) -> Vec<PathBuf> {
         let path = entry.path();
         match entry.file_type() {
             Ok(kind) if kind.is_dir() => found.extend(holding(&path, needle)),
-            Ok(kind) if kind.is_file() => {
-                if std::fs::read(&path).is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle)) {
-                    found.push(path);
-                }
+            Ok(kind) if kind.is_file() && std::fs::read(&path).is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle)) => {
+                found.push(path);
             }
             _ => {}
         }
@@ -767,9 +765,14 @@ async fn a_real_opencode_2x_reaches_the_workspace_mcp_through_cores_send_path() 
     println!("probe: OpenCode unloaded the idle folder: {unloaded}");
     assert!(unloaded, "OpenCode logs that it unloaded the folder within 100 s");
 
-    // 4. The next message adds it back, and goes.
+    // 4. The next message adds it back, and goes; its first step is offered the Workspace tools already (2.x
+    // registers a server's tools a moment after it connects: Core waits for that, MCP_TOOLS_SETTLE).
+    let before = requests().len();
     let second = send("p2").await.unwrap_or_else(|refused| panic!("refused after OpenCode unloaded the folder: {refused}"));
     assert_eq!(finished(&second.turn_id.unwrap()).await, "completed");
+    let first_step = requests()[before..].iter().find(|r| r["tools"] == true).cloned().expect("a step of the next message");
+    assert!(first_step["toolNames"].as_array().unwrap().iter().any(|n| n == "yuzuno_peers_list"),
+        "the next message's first step is offered the Workspace tools");
     println!("probe: after the folder came back, MCP sessions opened {}; tool results seen {}", opened.load(Ordering::SeqCst), reached(&requests()));
     assert_eq!(opened.load(Ordering::SeqCst), 2, "added back: a new MCP session");
     assert_eq!(reached(&requests()), 2, "and the Workspace tool reached again");
