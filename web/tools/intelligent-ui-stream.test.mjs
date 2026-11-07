@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BlockStream, PENDING } from "../src/intelligent-ui/stream.ts";
-import { checkElement, checkSpec, MAX_SPEC_LENGTH, ResultError } from "../src/intelligent-ui/contract.ts";
+import { checkElement, checkSpec, DISPLAY_ONLY_REASON, MAX_SPEC_LENGTH, ResultError } from "../src/intelligent-ui/contract.ts";
+import { clarificationExample } from "../src/intelligent-ui/clarification.ts";
 import { parseReply } from "../src/intelligent-ui/message.ts";
 import { comparisonExample, reportExample } from "../src/intelligent-ui/examples.ts";
 
@@ -58,9 +59,9 @@ test("a block written a character at a time draws only checked elements, each as
         assert.equal(view.root, "result");
       }
       const last = views(text).at(-1);
-      // Everything is drawn once written, but the part that acts: it waits for the whole check.
+      // Everything is drawn once written.
       for (const [key, element] of Object.entries(final.elements))
-        assert.equal(last.elements[key].type, element.type === "Continue" ? PENDING : element.type, `${name}: ${key} at the end`);
+        assert.equal(last.elements[key].type, element.type, `${name}: ${key} at the end`);
     }
   }
 });
@@ -72,8 +73,8 @@ test("written root first and in display order, the first part comes long before 
     const root = all.findIndex(Boolean);
     const part = all.findIndex((view) => drawnKeys(view).length > 1);
     assert.ok(root > 0 && root < text.length * 0.25, `${name}: the root at ${root} of ${text.length}`);
-    // A part is drawn whole: one that is most of the block (the table) comes near its end.
-    const by = name === "table" ? text.length - 1 : text.length * 0.8;
+    // A part is drawn whole: one that is most of the block (a table) comes near its end.
+    const by = name === "report" ? text.length * 0.8 : text.length - 1;
     assert.ok(part > root && part < by, `${name}: the first part at ${part} of ${text.length}`);
   }
 });
@@ -141,6 +142,52 @@ test("text that cannot be JSON stops the drawing for good", () => {
   const big = new BlockStream();
   assert.ok(big.update(head).view());
   assert.equal(big.update(head + " ".repeat(MAX_SPEC_LENGTH)).view(), null);
+});
+
+// YN-14 A5: a reply's block only displays. A part that acts is refused once
+// the block closes, so nothing of the block is drawn while it is written.
+const acts = {
+  Continue: { label: "Go on", instruction: "Explore the selected run." },
+  Clarification: clarificationExample,
+  TaskStatus: { taskId: "T-1", status: "review", reason: "Synthetic proposal." },
+};
+const withAct = (type) => ({
+  root: "result",
+  elements: {
+    result: { type: "Result", props: { title: "Twenty runs", summary: "Synthetic sample." }, children: ["note", "act"] },
+    note: { type: "Text", props: { text: "Illustrative values only." } },
+    act: { type, props: acts[type] },
+  },
+});
+
+test("a block with Continue, Clarification or TaskStatus is refused: they go to a Home Ask", () => {
+  for (const type of Object.keys(acts)) {
+    const spec = withAct(type);
+    // Valid as a stored result, which still renders and answers it.
+    assert.equal(checkSpec(structuredClone(spec)).spec.elements.act.type, type);
+    const segments = parseReply(`One sentence first.\n\n\`\`\`yuzuno-ui\n${JSON.stringify(spec)}\n\`\`\``, true);
+    assert.deepEqual(segments.map((segment) => segment.kind), ["text", "invalid"], type);
+    assert.deepEqual(segments[1].problem, { code: "display_only", reason: DISPLAY_ONLY_REASON, path: "elements.act.type" }, type);
+  }
+  assert.equal(DISPLAY_ONLY_REASON, "Forms, choices and status changes go to a Home Ask; a reply block only displays.");
+  // Refused first, even when the part's own props are wrong.
+  const wrong = withAct("TaskStatus");
+  wrong.elements.act.props = {};
+  assert.equal(parseReply(`\`\`\`yuzuno-ui\n${JSON.stringify(wrong)}\n\`\`\``, true)[0].problem.code, "display_only");
+});
+
+test("while a block with a part that acts is written, nothing of it is drawn and no room is kept for the part", () => {
+  for (const type of Object.keys(acts)) {
+    const text = JSON.stringify(withAct(type), null, 2);
+    const typed = text.indexOf(`"${type}"`) + type.length + 2;
+    const all = views(text);
+    assert.ok(all.slice(0, typed).some(Boolean), `${type}: the root and its text are drawn before the part's type is read`);
+    for (const [at, view] of all.entries()) {
+      if (at >= typed - 1) assert.equal(view, null, `${type}: nothing drawn from its type on, at ${at}`);
+      for (const element of Object.values(view?.elements ?? {}))
+        assert.ok(element.type !== type && !["form", "task"].includes(element.props?.kind), `${type}: no skeleton for it`);
+    }
+  }
 });
 
 test("an element outside the catalog, or missing a prop, is a placeholder and never drawn", () => {

@@ -141,9 +141,9 @@ test("shows Core's outcome: applied, declined, refused as stale, unanswered and 
     await tick();
     assert.match(page.text(), /replaced this proposal/);
     assert.deepEqual(page.buttons(), []);
-    page.render({ view: null, readOnly: "Ask the Agent to publish this proposal with result_publish so you can confirm it here." });
+    page.render({ view: null, readOnly: "This proposal can't be confirmed here: ask the Agent to put it in a Home Ask." });
     await tick();
-    assert.match(page.text(), /Ask the Agent to publish this proposal/);
+    assert.match(page.text(), /ask the Agent to put it in a Home Ask/);
     assert.deepEqual(page.errors, []);
   } finally {
     page.close();

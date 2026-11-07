@@ -1,7 +1,9 @@
 //! A task status change an Agent proposes in a result (T-39).
 //!
-//! An Agent proposes it with one TaskStatus component in `result_publish`:
-//! an existing task (T-N), a status and a reason. Publishing changes nothing.
+//! An Agent proposed it with one TaskStatus component in a stored result
+//! (`result_publish`, no longer an MCP tool since YN-14 A5; stored proposals
+//! are still decided here): an existing task (T-N), a status and a reason.
+//! Publishing changes nothing.
 //! The card shows the task as Core reads it now; the user may change the
 //! status or the reason, then confirms or declines. Only a confirmation
 //! changes the task, through the ordinary `task_update` as the user, with the

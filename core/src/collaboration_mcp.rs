@@ -167,8 +167,7 @@ const INSTRUCTIONS: &str = "Your Agent identity is fixed by Yuzuno. Use peer_rea
     A task is an outcome, not a turn: finishing a turn does not complete a task. \
     Submit results with task_submit_result; keep the same task across retries. \
     For dispatched work retain dispatchId from the assignment message; result notification is automatic. \
-    result_publish optionally shows the user a table or chart; plain answers need no tool. \
-    result_guide has its full component guide.";
+    A yuzuno-ui block in a reply shows a display-only result; yuzuno_guide topic results has its components.";
 
 /// The server instructions: the collaboration rules and where the working
 /// guide is (T-131), then the Project Brief's hard rules (T-85). Claude
@@ -242,14 +241,6 @@ impl ServerHandler for CollaborationHandler {
             })).into());
         }
         // Read-only and the same for every Agent: the guide needs no Turn.
-        if request.name == crate::results::GUIDE_TOOL {
-            return Ok(match crate::results::guide(&Value::Object(arguments)) {
-                Ok(guide) => CallToolResult::structured(guide),
-                Err(problem) => CallToolResult::structured_error(problem),
-            }
-            .into());
-        }
-        // So is the working guide.
         if request.name == crate::guide::TOOL {
             return Ok(match crate::guide::answer(&Value::Object(arguments)) {
                 Ok(guide) => CallToolResult::structured(guide),
@@ -257,17 +248,8 @@ impl ServerHandler for CollaborationHandler {
             }
             .into());
         }
-        // A rejected result is the Agent's to fix: its problems are the answer.
-        if request.name == crate::results::TOOL {
-            return Ok(match self.ws.result_publish(&self.actor, Value::Object(arguments)).await {
-                Ok(Ok(published)) => CallToolResult::structured(published),
-                Ok(Err(rejected)) => CallToolResult::structured_error(rejected),
-                Err(error) => CallToolResult::structured_error(json!({"error": error.to_string()})),
-            }
-            .into());
-        }
-        // So is a rejected Brief update: its problems, and on a version
-        // conflict the latest Brief.
+        // A rejected Brief update is the Agent's to fix: its problems, and on
+        // a version conflict the latest Brief.
         if request.name == crate::project_brief::UPDATE_TOOL {
             return Ok(match crate::project_brief::update_tool(&self.ws, &self.actor, Value::Object(arguments)).await {
                 Ok(Ok(accepted)) => CallToolResult::structured(accepted),
@@ -860,7 +842,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn result_publish_is_listed_pinned_to_the_running_turn_and_rejections_are_errors() {
+    async fn the_result_tools_are_gone_and_peers_list_still_names_the_running_turn() {
         let (_directory, ws) = fixture();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -873,50 +855,25 @@ mod tests {
                 .auth_header(token),
         );
         let client = tokio::time::timeout(Duration::from_secs(10), ().serve(transport)).await.unwrap().unwrap();
+        // A result now shows through a yuzuno-ui block in the reply (YN-14 A5).
         let tools = client.list_all_tools().await.unwrap();
-        let tool = tools.iter().find(|tool| tool.name == crate::results::TOOL).unwrap();
-        assert!(tool.input_schema["properties"].get("expectedTurnId").is_some());
+        for name in ["result_publish", "result_guide"] {
+            assert!(tools.iter().all(|tool| tool.name != name), "{name}");
+        }
         let active = || async {
             client.call_tool(CallToolRequestParams::new("peers_list")).await.unwrap()
                 .structured_content.unwrap()["yuzuno"]["activeTurnId"].clone()
         };
-        assert_eq!(active().await, Value::Null, "an offline Agent has no Turn to publish to");
-        // The guide needs no Turn: any Agent reads it, whole or in part.
-        let guide = tools.iter().find(|tool| tool.name == crate::results::GUIDE_TOOL).unwrap();
-        assert!(guide.input_schema["properties"].get("components").is_some());
-        let whole = client.call_tool(CallToolRequestParams::new(crate::results::GUIDE_TOOL)).await.unwrap();
-        assert_ne!(whole.is_error, Some(true));
-        assert!(whole.structured_content.unwrap()["guide"].as_str().unwrap().contains("- BarChart {"));
-        let unknown = client.call_tool(CallToolRequestParams::new(crate::results::GUIDE_TOOL).with_arguments(
-            json!({"components":["Chart"]}).as_object().unwrap().clone(),
-        )).await.unwrap();
-        assert_eq!(unknown.is_error, Some(true));
+        assert_eq!(active().await, Value::Null, "an offline Agent has no running Turn");
         ws.store.update("agent-a", "test/running", &json!({}), |d| {
             d.turns.push(json!({"id":"turn-1","status":"inProgress","items":[]}));
             d.agent.status = "working".into();
             d.agent.connection_state = "connected".into();
         }).unwrap();
         assert_eq!(active().await, "turn-1");
-        let publish = |request: &str, spec: Value| {
-            CallToolRequestParams::new(crate::results::TOOL).with_arguments(
-                json!({"requestId":request,"expectedTurnId":"turn-1","spec":spec}).as_object().unwrap().clone(),
-            )
-        };
-        let rejected = client.call_tool(publish("bad", json!({"root":"r","elements":{}}))).await.unwrap();
-        assert_eq!(rejected.is_error, Some(true));
-        let rejected = rejected.structured_content.unwrap();
-        assert_eq!(rejected["problems"][0]["code"], "component_count");
-        assert_eq!(rejected["rejectionsLeft"], 2);
-        assert_eq!(rejected["guide"]["tool"], crate::results::GUIDE_TOOL);
-        let spec = json!({"root":"r","elements":{"r":{"type":"Result","props":{"title":"Done","summary":"One line."}}}});
-        let accepted = client.call_tool(publish("good", spec)).await.unwrap();
-        assert_ne!(accepted.is_error, Some(true));
-        let accepted = accepted.structured_content.unwrap();
-        assert_eq!((accepted["turnId"].clone(), accepted["version"].clone()), (json!("turn-1"), json!(1)));
-        let claimed = client.call_tool(CallToolRequestParams::new(crate::results::TOOL).with_arguments(
-            json!({"requestId":"x","expectedTurnId":"turn-1","spec":{},"agentId":"agent-b"}).as_object().unwrap().clone(),
-        )).await.unwrap();
-        assert_eq!(claimed.is_error, Some(true));
+        for name in ["result_publish", "result_guide"] {
+            assert!(client.call_tool(CallToolRequestParams::new(name)).await.is_err(), "{name}");
+        }
         let _ = client.cancel().await;
         server.abort();
     }
@@ -966,7 +923,7 @@ mod tests {
     #[test]
     fn the_instructions_fit_the_shortest_supported_client() {
         assert!(INSTRUCTIONS.encode_utf16().count() <= crate::results::max_description_length());
-        assert!(INSTRUCTIONS.contains(crate::results::GUIDE_TOOL));
+        assert!(INSTRUCTIONS.contains("yuzuno-ui") && INSTRUCTIONS.contains(crate::guide::TOOL));
     }
 
     #[tokio::test]
@@ -979,7 +936,7 @@ mod tests {
         let units = instructions.encode_utf16().count();
         assert!(units <= crate::results::max_description_length(), "{units}");
         assert!(instructions.ends_with(crate::project_brief::hard_rules()));
-        for tool in ["brief_get", "brief_update", "brief_guide", crate::results::GUIDE_TOOL, crate::guide::TOOL] {
+        for tool in ["brief_get", "brief_update", "brief_guide", crate::guide::TOOL] {
             assert!(instructions.contains(tool), "{tool}");
         }
     }

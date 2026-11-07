@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  checkSpec,
   parseSpec,
   parseResultSpec,
   sourceTarget,
@@ -97,7 +98,7 @@ test("checks tree shape, missing children, cycles, disconnected and shared nodes
   for (const children of [
     ["result"],
     ["missing"],
-    ["options", "options", "sources", "continue"],
+    ["options", "options", "sources"],
   ]) {
     const spec = copy();
     spec.elements.result.children = children;
@@ -153,16 +154,22 @@ test("rejects missing sources, duplicate source identities, leaf children and mu
     (s) => (s.elements.sources.props.items = []),
     (s) =>
       s.elements.sources.props.items.push(s.elements.sources.props.items[0]),
-    (s) => (s.elements.options.children = ["continue"]),
-    (s) => {
-      s.elements.again = s.elements.continue;
-      s.elements.result.children.push("again");
-    },
+    (s) => (s.elements.options.children = ["sources"]),
   ]) {
     const spec = copy();
     mutate(spec);
     assert.throws(() => parseSpec(JSON.stringify(spec)));
   }
+  // A stored result (published before YN-14 A5) may end in one continuation,
+  // never two; a reply's block may have none (intelligent-ui-stream.test.mjs).
+  const next = { type: "Continue", props: { label: "Go on", instruction: "Explore the selected option." } };
+  const once = copy();
+  once.elements.next = next;
+  once.elements.result.children.push("next");
+  assert.equal(checkSpec(structuredClone(once)).spec.elements.next.type, "Continue");
+  once.elements.again = structuredClone(next);
+  once.elements.result.children.push("again");
+  assert.throws(() => checkSpec(once), (error) => error.code === "extra_action");
 });
 test("sources permit explicit web links and existing local line references only", () => {
   for (const href of [

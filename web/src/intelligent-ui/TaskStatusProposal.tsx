@@ -45,7 +45,7 @@ const cardText = strings({
   checkAgain: "Check again",
   lostAfter: "sends the same decision once more; Core never applies it twice.",
   only: "Only your confirmation changes the task. Nothing else here does.",
-  publish: "Ask the Agent to publish this proposal with result_publish so you can confirm it here.",
+  publish: "This proposal can't be confirmed here: ask the Agent to put it in a Home Ask.",
   readOnly: "This proposal is read-only here. Open its original conversation to decide it.",
 }, {
   aria: (id) => `${id} 的状态变更提议`,
@@ -71,7 +71,7 @@ const cardText = strings({
   checkAgain: "再次检查",
   lostAfter: "会再发送一次同样的决定；Core 不会重复执行。",
   only: "只有你的确认会改变任务。这里的其他操作都不会。",
-  publish: "请让 Agent 用 result_publish 发布这个提议，你就能在这里确认。",
+  publish: "这个提议不能在这里确认：请让 Agent 在 Home 里发一个提问。",
   readOnly: "这个提议在这里是只读的。请打开它的原始会话来决定。",
 });
 

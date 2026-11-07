@@ -1,11 +1,15 @@
-//! Interactive results an Agent publishes with `result_publish` (T-37).
+//! Interactive results: the store of results an Agent published (T-37),
+//! and the validator Core runs for them and for Project Brief sections.
 //!
-//! The format, its checks and the tool's description are defined once, in
-//! web/src/intelligent-ui/contract.ts. Core compiles in the description
-//! generated from it (runtimes/result-validator/contract.json), so listing
-//! tools needs no Node, and checks a submission by running the generated
-//! bundle beside it in one lazily started Node process. Nothing here restates
-//! the format. Without Node or the bundle only this tool is unavailable.
+//! No MCP tool publishes a result since YN-14 A5: an Agent shows one in its
+//! reply as a yuzuno-ui block, which the web draws and checks itself, and a
+//! form or status change for the user goes to a Home Ask. What stays here is
+//! what results stored before need (they are still shown, answered and
+//! confirmed), the store path that wrote them (`Workspace::result_publish`,
+//! which tests use to write results as Core did), the notice and the fence
+//! guide generated in web/src/intelligent-ui/contract.ts
+//! (runtimes/result-validator/contract.json), and the generated bundle beside
+//! it, run in one lazily started Node process.
 //!
 //! Who published a result, and in which session and Turn, is what Core
 //! records for the authenticated Agent when the call arrives. The Agent's
@@ -34,9 +38,9 @@ use tokio::{
     time::Instant,
 };
 
+/// The operation a stored result's receipt names (collaboration_requests),
+/// once the MCP tool's name.
 pub const TOOL: &str = "result_publish";
-/// The read-only tool whose answer is the full guide to `TOOL`.
-pub const GUIDE_TOOL: &str = "result_guide";
 
 /// Waiting for the validator, starting it and checking, all together; well
 /// under the 30 s Harnesses allow a tool call.
@@ -56,34 +60,14 @@ const HEAP: &str = "--max-old-space-size=64";
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Contract {
-    name: String,
     schema_version: u64,
     limits: Limits,
+    /// How a reply's yuzuno-ui block shows a result (YN-14 A5).
     capability: String,
-    description: String,
-    input_schema: Value,
-    guide: Guide,
-    guide_tool: Value,
+    /// yuzuno_guide topic results' component list.
+    fence_guide: String,
     max_description_length: usize,
     validator: BundleFile,
-}
-
-/// The full guide in the parts contract.ts joins (joinGuide): Core answers
-/// the guide tool by joining the same parts, never by restating them.
-#[derive(Deserialize)]
-struct Guide {
-    header: String,
-    usage: String,
-    components: Vec<GuidePart>,
-    rules: String,
-    text: String,
-}
-
-#[derive(Deserialize)]
-struct GuidePart {
-    #[serde(rename = "type")]
-    component: String,
-    text: String,
 }
 
 #[derive(Deserialize)]
@@ -108,15 +92,10 @@ fn contract() -> &'static Contract {
     })
 }
 
-/// The tool as Agents see it; Codex's enabled_tools names the same entry.
-pub fn tool_definition() -> Value {
-    let contract = contract();
-    json!({"name":contract.name,"description":contract.description,"inputSchema":contract.input_schema})
-}
-
-/// The guide tool as Agents see it.
-pub fn guide_tool_definition() -> Value {
-    contract().guide_tool.clone()
+/// yuzuno_guide topic results' component list: each display component of
+/// a reply's yuzuno-ui block with its props, generated from the contract.
+pub fn fence_guide() -> &'static str {
+    &contract().fence_guide
 }
 
 /// The longest description a supported native client shows whole, in UTF-16
@@ -125,68 +104,10 @@ pub fn max_description_length() -> usize {
     contract().max_description_length
 }
 
-/// The guide tool's answer: the whole guide, or the usage, the named
-/// components and the rules. Ok(Err(..)) names what is wrong with the input.
-pub fn guide(input: &Value) -> Result<Value, Value> {
-    let guide = &contract().guide;
-    let known = |name: &str| guide.components.iter().any(|part| part.component == name);
-    let not_a_list = || json!({"error":"components is a non-empty list of component names; omit it for the whole guide."});
-    let wanted = match input.get("components") {
-        None | Some(Value::Null) => None,
-        Some(Value::Array(names)) if !names.is_empty() => {
-            let Some(names) = names.iter().map(Value::as_str).collect::<Option<Vec<&str>>>() else {
-                return Err(not_a_list());
-            };
-            let unknown: Vec<&str> = names.iter().copied().filter(|name| !known(name)).collect();
-            if !unknown.is_empty() {
-                return Err(json!({"error":format!(
-                    "Unknown component: {}. Components: {}.",
-                    unknown.join(", "),
-                    guide.components.iter().map(|part| part.component.as_str()).collect::<Vec<_>>().join(", ")
-                )}));
-            }
-            Some(names)
-        }
-        Some(_) => return Err(not_a_list()),
-    };
-    let chosen: Vec<&GuidePart> = guide.components.iter()
-        .filter(|part| wanted.as_ref().is_none_or(|names| names.contains(&part.component.as_str())))
-        .collect();
-    let text = if wanted.is_none() {
-        guide.text.clone()
-    } else {
-        let mut lines = vec![guide.header.as_str(), guide.usage.as_str(), "Components:"];
-        lines.extend(chosen.iter().map(|part| part.text.as_str()));
-        lines.extend(["Rules:", guide.rules.as_str()]);
-        lines.join("\n")
-    };
-    Ok(json!({
-        "schemaVersion": contract().schema_version,
-        "components": chosen.iter().map(|part| part.component.as_str()).collect::<Vec<_>>(),
-        "guide": text,
-    }))
-}
-
-/// Where a rejection's problems are explained: the guide tool, and the
-/// components the problems are in (from their `elements.<key>` paths).
-fn guide_hint(problems: &Value, spec: &Value) -> Value {
-    let mut components: Vec<&str> = Vec::new();
-    for problem in problems.as_array().into_iter().flatten() {
-        let key = problem["path"].as_str()
-            .and_then(|path| path.strip_prefix("elements."))
-            .and_then(|rest| rest.split('.').next());
-        let component = key.and_then(|key| spec["elements"][key]["type"].as_str())
-            .filter(|component| contract().guide.components.iter().any(|part| part.component == *component));
-        if let Some(component) = component.filter(|component| !components.contains(component)) {
-            components.push(component);
-        }
-    }
-    json!({"tool":GUIDE_TOOL,"components":components})
-}
-
-/// One short paragraph telling an Agent with the Yuzuno MCP that it can show
-/// results, generated with the tool's description. Given once per session:
-/// Claude's system prompt append, Codex's developer instructions at start.
+/// One short paragraph telling an Agent with the Yuzuno MCP how to show a
+/// result in a reply (a yuzuno-ui block, YN-14 A5), generated in the
+/// contract. Given once per session: Claude's system prompt append, Codex's
+/// developer instructions at start.
 pub fn capability_notice() -> &'static str {
     &contract().capability
 }
@@ -237,7 +158,7 @@ const RELEASE_FILE: &str = "runtimes/result-validator/validator.mjs";
 
 /// `YUZUNO_RESULT_VALIDATOR` for a managed release: its own verified copy,
 /// or empty when it has none (an older release), which only leaves
-/// result_publish without a validator.
+/// result checks without a validator.
 pub fn release_validator(release: &crate::updates::package::Bundle) -> PathBuf {
     if release.manifest.files.contains_key(RELEASE_FILE) {
         release.path.join(RELEASE_FILE)
@@ -780,12 +701,12 @@ pub(crate) async fn publish(
         );
         within_limits(&tx, &turn, &request)?;
         let answer = match (revision(&tx, &turn, &request)?, checked) {
-            (Err(problem), _) => reject(&tx, &turn, &request, json!([problem]), &input["spec"])?,
-            (Ok(_), Checked::Rejected { problems }) => reject(&tx, &turn, &request, problems, &input["spec"])?,
+            (Err(problem), _) => reject(&tx, &turn, &request, json!([problem]))?,
+            (Ok(_), Checked::Rejected { problems }) => reject(&tx, &turn, &request, problems)?,
             (Ok(extends), Checked::Accepted { spec, defaults, schema_version }) => {
                 // A proposed task change names a task only Core can look up.
                 match crate::task_proposals::publish_problems(&tx, &spec)? {
-                    Some(problems) => reject(&tx, &turn, &request, problems, &input["spec"])?,
+                    Some(problems) => reject(&tx, &turn, &request, problems)?,
                     None => accept(&tx, &turn, &request, extends, spec, defaults, schema_version, &input["spec"])?,
                 }
             }
@@ -807,7 +728,7 @@ pub(crate) async fn publish(
     Ok(answer)
 }
 
-fn reject(db: &Connection, turn: &Pinned, request: &Request, problems: Value, spec: &Value) -> Result<Result<Value, Value>> {
+fn reject(db: &Connection, turn: &Pinned, request: &Request, problems: Value) -> Result<Result<Value, Value>> {
     db.execute(
         "INSERT INTO interactive_result_rejections(agent_id,session_id,turn_id,request_id,problems_json,created_at)
          VALUES(?1,?2,?3,?4,?5,?6)",
@@ -815,13 +736,12 @@ fn reject(db: &Connection, turn: &Pinned, request: &Request, problems: Value, sp
     )?;
     let left = (contract().limits.rejected_per_turn - rejections(db, turn)?).max(0);
     let error = if left > 0 {
-        "result_rejected: nothing was shown. Fix these problems and call again with a new requestId; result_guide has every component's exact props and rules"
+        "result_rejected: nothing was shown. Fix these problems and call again with a new requestId; yuzuno_guide topic results has every component's props"
     } else {
         "result_rejected: nothing was shown and no attempts are left in this Turn; answer in text"
     };
-    let guide = guide_hint(&problems, spec);
     Ok(Err(json!({"accepted":false,"error":error,"problems":problems,"rejectionsLeft":left,
-        "guide":guide,"schemaVersion":contract().schema_version})))
+        "schemaVersion":contract().schema_version})))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1035,62 +955,26 @@ mod tests {
     #[test]
     fn the_notice_follows_configured_developer_instructions_and_stands_alone_otherwise() {
         let notice = capability_notice();
-        assert!(notice.contains(TOOL) && notice.len() < 500);
+        assert!(notice.contains("yuzuno-ui") && !notice.contains(TOOL) && notice.len() < 700, "{notice}");
         assert_eq!(compose(None, notice), notice);
         assert_eq!(compose(Some("  \n"), notice), notice);
         assert_eq!(compose(Some("Keep replies short.\n"), notice), format!("Keep replies short.\n\n{notice}"));
     }
 
+    /// YN-14 A5: no MCP tool publishes a result or answers with its guide;
+    /// yuzuno_guide's results topic carries the fence guide instead.
     #[test]
-    fn the_listed_tool_is_the_generated_contract_and_names_no_identity() {
+    fn no_result_tool_is_listed_and_the_fence_guide_lists_only_what_displays() {
         let tools = crate::collaboration_store::tool_definitions();
-        let tool = tools.iter().find(|t| t["name"] == TOOL).expect("listed with the other tools");
-        assert_eq!(tool, &tool_definition());
-        let schema = &tool["inputSchema"];
-        assert_eq!(schema["required"], json!(["requestId", "expectedTurnId", "spec"]));
-        assert_eq!(schema["additionalProperties"], false);
-        let properties: Vec<_> = schema["properties"].as_object().unwrap().keys().cloned().collect();
-        for key in &properties {
-            assert!(!key.contains("agent") && !key.contains("session") && key != "turnId", "{key}");
+        for name in ["result_publish", "result_guide"] {
+            assert!(!tools.iter().any(|tool| tool["name"] == name), "{name} is gone");
         }
-        assert!(tool["description"].as_str().unwrap().contains("plain text"));
-        // Codex is granted exactly the listed catalog.
-        let rmcp_tool: rmcp::model::Tool = serde_json::from_value(tool.clone()).unwrap();
-        assert_eq!(rmcp_tool.name, TOOL);
-    }
-
-    #[test]
-    fn the_guide_tool_joins_the_contracts_parts_whole_or_for_some_components() {
-        let tools = crate::collaboration_store::tool_definitions();
-        let listed = tools.iter().find(|t| t["name"] == GUIDE_TOOL).expect("listed with the other tools");
-        assert_eq!(listed, &guide_tool_definition());
-        let rmcp_tool: rmcp::model::Tool = serde_json::from_value(listed.clone()).unwrap();
-        assert_eq!(rmcp_tool.name, GUIDE_TOOL);
-        let whole = guide(&json!({})).unwrap();
-        assert_eq!(whole["guide"], contract().guide.text);
-        assert_eq!(whole["schemaVersion"], contract().schema_version);
-        let all: Vec<&str> = contract().guide.components.iter().map(|part| part.component.as_str()).collect();
-        assert_eq!(whole["components"], json!(all));
-        let text = whole["guide"].as_str().unwrap();
-        for needed in ["- Table {", "- BarChart {", "- Sources {", "- Continue {", "- Clarification {", "- TaskStatus {",
-            "at most one Continue, Clarification or TaskStatus", "does not authorize any action or permission request",
-            "TaskStatus is available through result_publish"] {
-            assert!(text.contains(needed), "{needed}");
+        let guide = fence_guide();
+        for shown in ["- Result {", "- Section {", "- Text {", "- Metrics {", "- Table {", "- BarChart {", "- Sources {"] {
+            assert!(guide.contains(shown), "{shown}");
         }
-        assert_eq!(guide(&json!({"components":null})).unwrap(), whole);
-        // Some components: the usage and rules stay, in catalog order.
-        let some = guide(&json!({"components":["Continue","Table"]})).unwrap();
-        assert_eq!(some["components"], json!(["Table","Continue"]));
-        let text = some["guide"].as_str().unwrap();
-        assert!(text.contains("- Table {") && text.contains("- Continue {") && !text.contains("- BarChart {"));
-        assert!(text.contains(&contract().guide.rules) && text.contains(&contract().guide.usage));
-        let unknown = guide(&json!({"components":["Chart"]})).unwrap_err();
-        assert!(unknown["error"].as_str().unwrap().contains("Unknown component: Chart. Components: Clarification"), "{unknown}");
-        // Anything but a list of names says what components must be.
-        for bad in [json!({"components":[]}), json!({"components":"Table"}), json!({"components":[1]}),
-            json!({"components":["Table", 1]})] {
-            let error = guide(&bad).unwrap_err();
-            assert!(error["error"].as_str().unwrap().contains("list of component names"), "{bad}: {error}");
+        for acts in ["- Continue {", "- Clarification {", "- TaskStatus {", "result_publish", "result_guide"] {
+            assert!(!guide.contains(acts), "{acts}");
         }
     }
 
@@ -1103,28 +987,19 @@ mod tests {
             assert!(length <= limit, "{}: {length}", tool["name"]);
         }
         assert!(capability_notice().encode_utf16().count() <= limit);
-        let entry = tool_definition()["description"].as_str().unwrap().to_owned();
-        assert!(entry.find(GUIDE_TOOL).is_some_and(|at| at < 256), "the entry names the guide in its first sentences");
-        // The full guide does not fit: it is a tool answer, never a description.
-        assert!(contract().guide.text.encode_utf16().count() > limit);
     }
 
+    /// A rejection on the store path (Workspace::result_publish) still says
+    /// what to fix, and points at the fence guide now.
     #[tokio::test]
-    async fn a_rejection_names_the_guide_and_the_components_its_problems_are_in() {
+    async fn a_rejection_says_what_to_fix_and_where_the_components_are() {
         let (_dir, ws) = fixture();
         let mut mismatched = spec(Some("Options"));
         mismatched["elements"]["table"]["props"]["rows"][0]["cells"] = json!({"other":"x"});
         let rejected = publish_as(&ws, "a", input("bad-table", "t1", mismatched)).await.unwrap().unwrap_err();
         assert_eq!(rejected["problems"][0]["code"], "row_mismatch");
-        assert_eq!(rejected["guide"], json!({"tool":GUIDE_TOOL,"components":["Table"]}));
-        assert!(rejected["error"].as_str().unwrap().contains(GUIDE_TOOL));
-        // An unknown type is in no component's guide; the guide is still named.
-        let unknown = publish_as(&ws, "a", input("bad-type", "t1", invalid())).await.unwrap().unwrap_err();
-        assert_eq!(unknown["guide"], json!({"tool":GUIDE_TOOL,"components":[]}));
-        // The last attempt says to answer in text, and still names the guide.
-        let last = publish_as(&ws, "a", input("bad-3", "t1", invalid())).await.unwrap().unwrap_err();
-        assert_eq!(last["rejectionsLeft"], 0);
-        assert_eq!(last["guide"]["tool"], GUIDE_TOOL);
+        assert!(rejected.get("guide").is_none(), "{rejected}");
+        assert!(rejected["error"].as_str().unwrap().contains("yuzuno_guide topic results"));
     }
 
     #[tokio::test]

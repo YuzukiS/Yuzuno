@@ -43,7 +43,7 @@ window.renderReply=(props)=>flushSync(()=>root.render(<AgentReply identity="a" o
 const spec = {
   root: "result",
   elements: {
-    result: { type: "Result", props: { title: "Two options", summary: "B is cheaper." }, children: ["options", "sources", "next"] },
+    result: { type: "Result", props: { title: "Two options", summary: "B is cheaper." }, children: ["options", "sources"] },
     options: {
       type: "Table",
       props: {
@@ -58,7 +58,6 @@ const spec = {
       },
     },
     sources: { type: "Sources", props: { items: [{ id: "price", label: "Price list", href: "https://example.com/prices" }] } },
-    next: { type: "Continue", props: { label: "Continue with selection", instruction: "Compare the selected plan.", requiresSelection: true } },
   },
 };
 const body = JSON.stringify(spec);
@@ -112,23 +111,23 @@ test("a block being written draws its checked parts in order, keeps room for the
   assert.equal(card.getAttribute("aria-busy"), "true");
   assert.match(card.querySelector(".result-live[role=status]").textContent, /Generating interactive result…/);
   const pending = [...card.querySelectorAll(".result-pending")].map((p) => [p.dataset.kind, p.style.minHeight]);
-  assert.deepEqual(pending, [["table", "180px"], ["line", ""], ["line", ""]]);
+  assert.deepEqual(pending, [["table", "180px"], ["line", ""]]);
   assert.doesNotMatch(page.text(), /Plan Alder/, "a part still being written shows nothing of itself");
   assert.doesNotMatch(page.text(), /"root"|"type"/, "the JSON is never shown while it is written");
   assert.equal(card.querySelector(".result-original"), null, "its JSON is offered once it is whole");
-  // The table has closed: drawn whole, the sources and the continuation still to come.
+  // The table has closed: drawn whole, the sources still to come.
   page.window.renderReply({ text: upTo('"sources":'), complete: false });
   await until(() => /Plan Alder/.test(page.text()), "the table");
   assert.equal(page.live(), card, "the same card");
   assert.match(page.text(), /Plan Birch/);
-  assert.deepEqual([...card.querySelectorAll(".result-pending")].map((p) => p.dataset.kind), ["line", "line"]);
-  // Written whole, its continuation is still a placeholder: it acts, so it waits for the whole check.
+  assert.deepEqual([...card.querySelectorAll(".result-pending")].map((p) => p.dataset.kind), ["line"]);
+  // Written whole but not closed: every part drawn, still inert until the whole check.
   page.window.renderReply({ text: upTo(null), complete: false });
   await tick();
   assert.equal(page.live(), card);
   assert.match(card.textContent, /Price list/);
-  assert.equal(card.querySelectorAll(".result-pending").length, 1);
-  assert.ok(![...card.querySelectorAll("button")].some((b) => /Continue with selection/.test(b.textContent)));
+  assert.equal(card.querySelectorAll(".result-pending").length, 0);
+  assert.ok(card.hasAttribute("inert"));
   // Closed and checked whole: the same card, now usable, nothing in place of a part.
   page.window.renderReply({ text: closed(), complete: false });
   await until(() => !page.live() && page.card(), "the card once checked");
@@ -137,7 +136,6 @@ test("a block being written draws its checked parts in order, keeps room for the
   assert.equal(card.getAttribute("aria-busy"), null);
   assert.equal(card.querySelector(".result-live"), null);
   assert.equal(card.querySelectorAll(".result-pending").length, 0);
-  assert.ok([...card.querySelectorAll("button")].some((b) => /Continue with selection/.test(b.textContent)));
   assert.ok(card.querySelector(".result-original"), "its JSON can be read now");
   assert.match(page.text(), /Pick one\./);
   // A row chosen, then the same text again: the same card, the choice kept.

@@ -56,7 +56,7 @@ const samples = {
   comparison: {
     root: "result",
     elements: {
-      result: { type: "Result", props: { title: "Three layouts", summary: "Illustrative comparison: pick one to explore." }, children: ["options", "sources", "next"] },
+      result: { type: "Result", props: { title: "Three layouts", summary: "Illustrative comparison: pick one to explore." }, children: ["options", "sources"] },
       options: { type: "Table", props: { id: "options", title: "Options", selectable: true, columns: [{ key: "name", label: "Option" },
         { key: "strength", label: "Strength" }, { key: "tradeoff", label: "Trade-off" }], rows: [
         { id: "dock", cells: { name: "Side dock", strength: "Follows the reading position", tradeoff: "A slim side column" }, sourceIds: ["notes"] },
@@ -67,7 +67,6 @@ const samples = {
       ] } },
       sources: { type: "Sources", props: { items: [{ id: "notes", label: "Design notes", href: "docs/example-notes.md:12" },
         { id: "survey", label: "Survey summary", href: "https://example.com/survey" }, { id: "spec", label: "Layout spec", href: "docs/example-spec.md" }] } },
-      next: { type: "Continue", props: { label: "Continue with selection", instruction: "Explore the selected layout.", requiresSelection: true } },
     },
   },
 };
