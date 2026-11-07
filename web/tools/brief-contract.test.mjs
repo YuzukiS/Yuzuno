@@ -60,7 +60,9 @@ const everyComponent = {
     elements: {
       body: { type: "BriefBody", props: {}, children: ["intro", "split", "refs", "files", "sources", "desk", "inputs"] },
       // YN-16: inputs, and a block they show only for some values.
-      inputs: { type: "Group", props: { title: "Try it" }, children: ["guests", "vegan", "view", "hint"] },
+      inputs: { type: "Group", props: { title: "Try it" }, children: ["guests", "vegan", "view", "hint", "amounts", "reset"] },
+      amounts: { type: "Calc", props: { items: [{ id: "flour", label: "Flour", expr: "250 * guests / 4", unit: "g", digits: 0 }, { id: "oil", label: "Oil", expr: "flour / 10", when: "vegan" }] } },
+      reset: { type: "Button", props: { label: "Reset" }, on: { press: { action: "setState", params: { statePath: "/guests", value: 4 } } } },
       guests: { type: "NumberInput", props: { name: "guests", label: "Guests", value: 4, min: 1, max: 12, step: 1, unit: "people", control: "both", detail: "Scales every amount" } },
       vegan: { type: "Switch", props: { name: "vegan", label: "Vegan", value: false } },
       view: { type: "Segmented", props: { name: "view", label: "View", value: 2, options: [{ value: 1, label: "One" }, { value: 2, label: "Two" }] } },
@@ -1000,7 +1002,7 @@ test("YN-16 a summary may name a Group of inputs as its visual, the card's own f
   ]) {
     const found = first(used(group(children)));
     assert.deepEqual([found.code, found.path, found.guide], ["summary", "body.elements.body.props.summary.visual", "brief_guide interactive"], why);
-    assert.match(found.reason, /summary\.visual "box" is a Group, which is a figure only as a Group of inputs: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Markdown, Metrics, at least one an input/);
+    assert.match(found.reason, /summary\.visual "box" is a Group, which is a figure only as a Group of inputs: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Markdown, Metrics, at least one an input/);
   }
   const seven = used(group(["guests", "vegan", "note", "m"]));
   Object.assign(seven.body.elements, Object.fromEntries(items(3, (i) => [`x${i}`, { type: "Markdown", props: { text: `${i}` } }])));
@@ -1021,11 +1023,134 @@ test("YN-16 the guide's interactive part states what the checks check", () => {
   assert.match(part, /only a block inside a Group has one, as the root's own blocks are always shown/);
   assert.match(part, /eq or neq a value of the variable's kind \(for a Segmented, one of its options' values\), or gt, gte, lt or lte a number/);
   assert.match(part, /at most 8 conditions and 3 levels\. Nothing else is read: no \$item, \$index, \$cond, \$bindState or \$computed/);
-  assert.match(part, /name a Group of inputs as the summary's visual: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Markdown, Metrics, at least one an input/);
+  assert.match(part, /name a Group of inputs as the summary's visual: 1-6 blocks of its own, each NumberInput, Switch, Segmented, Button, Calc, Markdown, Metrics, at least one an input/);
   assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.interactive)));
   assert.match(briefGuide("content"), /\{type, props, children\?, visible\?\} \(visible: see interactive\)/);
-  assert.match(briefGuide("content"), /^- NumberInput, Switch, Segmented: see interactive\.$/m);
+  assert.match(briefGuide("content"), /^- NumberInput, Switch, Segmented, Calc, Button: see interactive\.$/m);
   assert.match(briefGuide("content"), /or a Group of inputs the reader sets on the card, see interactive\)/);
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_guide, /research, interactive, attachments/);
   assert.equal(BRIEF_LIMITS.variables, 16);
+});
+
+// YN-16 S2: Calc formulas and a Button's press.
+const calc = (items, extra = {}) => ({ type: "Calc", props: { items, ...extra } });
+const press = (on) => ({ type: "Button", props: { label: "Reset" }, on });
+const setState = (statePath, value) => ({ action: "setState", params: { statePath, value } });
+
+test("YN-16 S2 a Calc's formulas read the section's variables and its earlier items, and give their type", () => {
+  const items = [
+    { id: "flour", label: "Flour", expr: "250 * guests / 4", unit: "g", digits: 0 },
+    { id: "fat", label: "Fat", expr: "vegan ? flour / 10 : flour / 8" },
+    { id: "trays", label: "Trays", expr: "ceil(guests / 6)", when: "trays > 1 && view == 'top'", emphasis: true },
+  ];
+  assert.ok(checkBriefSection(inGroup({ guests, vegan, view, sums: calc(items, { layout: "metrics", title: "Amounts" }) })));
+  assert.ok(checkBriefSection(BRIEF_EXAMPLES.calculator));
+  const refusedAt = (item, field) => {
+    const found = problems(inGroup({ guests, vegan, view, sums: calc([items[0], item]) }));
+    assert.equal(found[0].guide, "brief_guide interactive");
+    assert.equal(found[0].path, `body.elements.sums.props.items.1.${field}`);
+    return found[0];
+  };
+  for (const [expr, reason] of [
+    ["fetch('x')", /item "x" expr "fetch\('x'\)", at character 1: fetch\(\) is not a formula function/],
+    ["flour = 2", /at character 7: = assigns/],
+    ["window.location", /at character 7: \. reads a property/],
+    ["salt * 2", /at character 1: "salt" is neither a variable of this section nor an earlier item of this Calc; it may use guests, vegan, view, flour/],
+    ["x + 1", /"x" is neither/],
+    ["vegan", /expr gives a boolean; expr gives a number/],
+    ["view", /expr gives a text/],
+    ["guests +", /the formula ends where a value is expected/],
+  ]) {
+    const found = refusedAt({ id: "x", label: "X", expr }, "expr");
+    assert.equal(found.code, "formula", expr);
+    assert.match(found.reason, reason, expr);
+  }
+  assert.match(refusedAt({ id: "x", label: "X", expr: "1", when: "guests" }, "when").reason, /when gives a number; when gives true or false/);
+  assert.equal(refusedAt({ id: "x", label: "X", expr: "1", when: "later > 1" }, "when").code, "formula");
+  assert.match(briefGuide("errors"), /^- formula: A Calc expr or when that does not parse.*the reason says at which character \(see interactive\)\.$/m);
+  // An item reads only earlier items: a later one, or one of another Calc, is unknown.
+  const order = problems(inGroup({ guests, sums: calc([{ id: "a", label: "A", expr: "b + 1" }, { id: "b", label: "B", expr: "2" }]) }));
+  assert.match(order[0].reason, /"b" is neither a variable of this section nor an earlier item/);
+  const other = problems(inGroup({ guests, one: calc([{ id: "a", label: "A", expr: "1" }]), two: calc([{ id: "b", label: "B", expr: "a" }]) }));
+  assert.equal(other[0].path, "body.elements.two.props.items.0.expr");
+});
+
+test("YN-16 S2 a Calc item's id is a name, once in its Calc and none of the variables; formulas are bounded", () => {
+  const item = (id, expr = "1") => ({ id, label: id, expr });
+  assert.equal(first(inGroup({ guests, sums: calc([item("total-sum")]) })).path, "body.elements.sums.props.items.0.id");
+  const twice = first(inGroup({ guests, sums: calc([item("a"), item("a")]) }));
+  assert.deepEqual([twice.code, twice.path], ["duplicate_id", "body.elements.sums.props.items.1.id"]);
+  const shadow = first(inGroup({ guests, sums: calc([item("guests")]) }));
+  assert.deepEqual([shadow.code, shadow.path], ["duplicate_id", "body.elements.sums.props.items.0.id"]);
+  assert.match(shadow.reason, /has the name of a variable of this section/);
+  assert.ok(checkBriefSection(inGroup({ one: calc([item("a")]), two: calc([item("a")]) })), "each Calc has its own ids");
+  assert.equal(first(inGroup({ sums: calc(items(13, (i) => item(`a${i}`))) })).code, "too_many");
+  // 48 formulas in a section, expr and when together.
+  const many = (count) => Object.fromEntries(items(Math.ceil(count / 12), (c) => [`c${c}`, calc(items(Math.min(12, count - c * 12), (i) => item(`a${i}`)))]));
+  assert.ok(checkBriefSection(inGroup(many(48))));
+  const over = first(inGroup(many(49)));
+  assert.deepEqual([over.code, over.path], ["too_many", "body.elements"]);
+  assert.match(over.reason, /49 Calc formulas \(expr and when\); the limit is 48/);
+  assert.equal(first(inGroup({ sums: calc([item("a", "1+".repeat(120) + "1")]) })).code, "too_long", "the schema's own length");
+});
+
+test("YN-16 S2 only a Button takes on, and its press only sets declared variables to values they take", () => {
+  const ok = (on) => assert.ok(checkBriefSection(inGroup({ guests, vegan, view, reset: press(on) })), JSON.stringify(on));
+  ok({ press: setState("/guests", 4) });
+  ok({ press: [setState("/guests", 1), setState("/vegan", true), setState("/view", "top"), setState("/guests", 12)] });
+  const refusedOn = (on) => problems(inGroup({ guests, vegan, view, reset: press(on) }))[0];
+  for (const [on, code, path, reason] of [
+    [undefined, "missing_field", "body.elements.reset.on", /Button "reset" needs on: \{"press": \{"action": "setState"/],
+    [{ click: setState("/guests", 4) }, "unknown_field", "body.elements.reset.on", /on has one event, press/],
+    [{ press: [] }, "invalid_field", "body.elements.reset.on.press", /press has 0 actions; give 1 to 4/],
+    [{ press: items(5, () => setState("/guests", 4)) }, "too_many", "body.elements.reset.on.press", /press has 5 actions/],
+    [{ press: { action: "pushState", params: { statePath: "/guests", value: 4 } } }, "invalid_field", "body.elements.reset.on.press", /can only setState/],
+    [{ press: { action: "fetch", params: { url: "https://example.com" } } }, "invalid_field", "body.elements.reset.on.press", /nothing else runs from a section/],
+    [{ press: { ...setState("/guests", 4), confirm: true } }, "unknown_field", "body.elements.reset.on.press", /unknown field "confirm"/],
+    [{ press: { action: "setState", params: { statePath: "/guests", value: 4, extra: 1 } } }, "invalid_field", "body.elements.reset.on.press.params", /params are \{"statePath"/],
+    [{ press: setState("/salt", 4) }, "invalid_field", "body.elements.reset.on.press.params.statePath", /sets "\/salt", which is not "\/" and a variable an input of this section declares/],
+    [{ press: setState("guests", 4) }, "invalid_field", "body.elements.reset.on.press.params.statePath", /which is not "\/"/],
+    [{ press: setState("/guests", "4") }, "invalid_field", "body.elements.reset.on.press.params.value", /"\/guests" is a number variable; Button "reset" sets it to "4"/],
+    [{ press: setState("/guests", 13) }, "invalid_field", "body.elements.reset.on.press.params.value", /from 1 to 12; 13 is outside/],
+    [{ press: setState("/view", "front") }, "invalid_field", "body.elements.reset.on.press.params.value", /"front" is none of its options' values/],
+    [{ press: [setState("/guests", 4), setState("/vegan", 1)] }, "invalid_field", "body.elements.reset.on.press.1.params.value", /boolean variable/],
+  ]) {
+    const found = refusedOn(on);
+    assert.deepEqual([found.code, found.path, found.guide], [code, path, "brief_guide interactive"], JSON.stringify(on));
+    assert.match(found.reason, reason, JSON.stringify(on));
+  }
+  // Any other block with on is refused by its shape, as before.
+  const calcOn = first(inGroup({ guests, sums: { ...calc([{ id: "a", label: "A", expr: "1" }]), on: { press: setState("/guests", 4) } } }));
+  assert.deepEqual([calcOn.code, calcOn.path], ["unknown_field", "body.elements.sums"]);
+});
+
+test("YN-16 S2 a Calc may be a summary's visual, and a Group of inputs may hold a Calc and a Button", () => {
+  const body = (visual, box) => ({
+    key: "demo", kind: "report", title: "Demo",
+    body: { root: "body", elements: {
+      body: { type: "BriefBody", props: { summary: { lead: "lead", visual, size: "wide" } }, children: ["lead", "box"] },
+      lead: { type: "Markdown", props: { text: "Amounts." } },
+      box, guests, sums: calc([{ id: "a", label: "A", expr: "guests * 2" }]), reset: press({ press: setState("/guests", 4) }),
+    } },
+  });
+  const group = { type: "Group", props: {}, children: ["guests", "sums", "reset"] };
+  assert.ok(checkBriefSection(body("box", group)));
+  // A Calc alone as the visual: its inputs elsewhere, the card works it out from the starting values.
+  const alone = body("sums", { type: "Group", props: {}, children: ["guests", "reset"] });
+  alone.body.elements.body.children = ["lead", "sums", "box"];
+  assert.ok(checkBriefSection(alone));
+});
+
+test("YN-16 S2 the guide gives the formula language, the functions and the Button's press as checked", () => {
+  const part = briefGuide("interactive");
+  for (const type of ["Calc", "Button"]) assert.ok(part.includes(`- ${type} {`), type);
+  assert.match(part, /with \+ - \* \/ % \^ \(power, right to left: -2\^2 is -4\), < <= > >= == !=, && \|\| !, cond \? a : b/);
+  assert.match(part, /round\(1-2\), floor\(1\), ceil\(1\), abs\(1\), sqrt\(1\), min\(2-4\), max\(2-4\), clamp\(3\)/);
+  assert.match(part, /round\(1\.005, 2\) is 1\.01/);
+  assert.match(part, /no =, no \. or \[ \], no other names or functions\. At most 240 characters, 80 parts and 8 levels each, 48 formulas per section, 12 items per Calc/);
+  assert.match(part, /when may also use the item's own/);
+  assert.match(part, /on: \{"press": action or a list of 1-4\}, each \{"action": "setState", "params": \{"statePath": "\/<name>", "value": v\}\}.*Nothing else runs from a Button, and no other block takes on\./);
+  assert.ok(part.includes(JSON.stringify(BRIEF_EXAMPLES.calculator)));
+  assert.match(briefGuide("content"), /visual one figure \(a chart, Metrics, Calc, Table/);
+  assert.equal(BRIEF_LIMITS.formulas, 48);
 });

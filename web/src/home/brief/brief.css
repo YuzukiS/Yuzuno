@@ -1583,3 +1583,71 @@ p.brief-preview-frame {
     transition: none;
   }
 }
+
+/* Calc (YN-16 S2): numbers worked out from the inputs. A list reads as two
+ * columns, the label left and the number right in tabular figures; an
+ * emphasised item is the result to read first. Metrics layout reuses
+ * .brief-metrics. A Button only sets variables. */
+.brief-calc {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.brief-calc-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+.brief-calc-list > div {
+  display: contents;
+}
+.brief-calc-list dt,
+.brief-calc-list dd {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+.brief-calc-list dt {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.brief-calc-list dd {
+  margin: 0;
+  padding-left: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.brief-calc-list small {
+  grid-column: 1 / -1;
+  margin-top: -4px;
+  padding-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+.brief-calc-list > [data-emphasis] dt,
+.brief-calc-list > [data-emphasis] dd {
+  color: var(--ink);
+  font-size: 1.05rem;
+}
+.brief-calc .brief-metrics > [data-emphasis] dd {
+  color: var(--accent-ink, var(--ink));
+}
+.brief-calc-affix {
+  margin-right: 2px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.brief-calc-none {
+  color: var(--muted);
+  cursor: help;
+}
+.brief-button-row {
+  display: flex;
+}
+.brief-button {
+  min-height: 40px;
+  touch-action: manipulation;
+}

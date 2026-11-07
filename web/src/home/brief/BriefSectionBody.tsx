@@ -22,6 +22,8 @@ import { BriefLiveRefs } from "./LiveRefs";
 import { BriefAttachments } from "./AttachmentView";
 import { BriefResearchDesk } from "./ResearchDesk";
 import { BriefNumberInput, BriefSegmented, BriefSwitch } from "./Inputs";
+import { BriefButton, BriefCalc, type Press } from "./Calc";
+import { VARIABLE_NAME } from "../../intelligent-ui/brief-inputs.ts";
 import { useSectionStore } from "./brief-state";
 import { useBriefDensity } from "../home-density";
 import type { BlockChanges } from "./block-changes";
@@ -160,6 +162,8 @@ const registry: ComponentRegistry = {
   NumberInput: part(BriefNumberInput),
   Switch: part(BriefSwitch),
   Segmented: part(BriefSegmented),
+  Calc: part(BriefCalc),
+  Button: part(BriefButton),
 };
 const noActions = Object.freeze({});
 function BriefSources(props: SourcesProps) {
@@ -193,9 +197,33 @@ function resultShim(spec: BriefSpec, title: string): ResultSpec {
   return { root: "root", elements } as ResultSpec;
 }
 
-/** An element as the contract keeps it: its type, props, children and visible condition. */
-function keptElement({ type, props, children, visible }: BriefSpec["elements"][string]) {
-  return { type, props, ...(children === undefined ? {} : { children }), ...(visible === undefined ? {} : { visible }) };
+/** The prop BriefSectionBody gives a Button: what its press sets (YN-16 S2). */
+const PRESS = "yuzunoPress";
+
+/** A Button's press as setState actions of variables, each `{statePath: "/name", value}`; anything else is left out. */
+function pressOf(on: unknown): Press {
+  const press = on && typeof on === "object" && !Array.isArray(on) ? (on as { press?: unknown }).press : undefined;
+  const actions: unknown[] = Array.isArray(press) ? press : press === undefined ? [] : [press];
+  return actions.flatMap((action) => {
+    const { action: kind, params } = (action && typeof action === "object" ? action : {}) as { action?: unknown; params?: { statePath?: unknown; value?: unknown } };
+    const path = params?.statePath;
+    const value = params?.value;
+    const fits = typeof value === "boolean" || typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
+    return kind === "setState" && typeof path === "string" && VARIABLE_NAME.test(path.slice(1)) && path.startsWith("/") && fits
+      ? [{ statePath: path, value: value as Press[number]["value"] }]
+      : [];
+  });
+}
+
+/** An element as the contract keeps it: its type, props, children and visible condition; a Button's press as its own prop. */
+function keptElement({ type, props, children, visible, on }: BriefSpec["elements"][string]) {
+  const { [PRESS]: _given, ...own } = props ?? {};
+  return {
+    type,
+    props: type === "Button" ? { ...own, [PRESS]: pressOf(on) } : own,
+    ...(children === undefined ? {} : { children }),
+    ...(visible === undefined ? {} : { visible }),
+  };
 }
 
 type BodyProps = {
@@ -239,10 +267,14 @@ function SectionBodyParts({ section, projectId, changes, onOpenAgent, onOpenMach
     const elements = Object.fromEntries(
       Object.entries(section.body.elements).map(([key, given]) => {
         const change = changes?.get(key);
-        // What json-render would also run from an element and the contract
-        // never accepts (YN-16): event bindings, watches and repeats. A body
-        // keeps its type, props, children and visible condition only.
-        const kept = given && ("on" in given || "watch" in given || "repeat" in given) ? keptElement(given) : given;
+        // What json-render would also run from an element (YN-16): event
+        // bindings, watches and repeats. A body keeps its type, props,
+        // children and visible condition only; a Button's press is read here,
+        // as setState of its section's variables and nothing else, and
+        // Yuzuno's Button runs it (Calc.tsx), never json-render's actions.
+        const kept = given && (given.type === "Button" || PRESS in (given.props ?? {}) || "on" in given || "watch" in given || "repeat" in given)
+          ? keptElement(given)
+          : given;
         const node =
           kept && (change || (kept.props && CHANGE in kept.props))
             ? { ...kept, props: { ...kept.props, [CHANGE]: change } }

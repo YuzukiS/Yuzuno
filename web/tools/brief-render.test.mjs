@@ -860,6 +860,7 @@ test("the contract's examples render without a failed part", async (t) => {
     decision: ["The larger split costs about 6% of training data."],
     form: ["cannot tell a gap under about 5% from noise"],
     interactive: ["6% of training data", "Validation split", "Current", "Larger", "Training data", "100", "Budget", "GPU-days"],
+    calculator: ["¥684", "People", "None", "15%", "Round each share up", "Total", "¥752", "Each", "¥188.10", "Back to 4, 10%"],
   };
   const reads = {
     image: [attachment("layout.png", "image", "image/png")],
@@ -871,6 +872,7 @@ test("the contract's examples render without a failed part", async (t) => {
     decision: [],
     form: [],
     interactive: [],
+    calculator: [],
   };
   assert.deepEqual(Object.keys(expected).sort(), Object.keys(examples).sort(), "every example is checked");
   for (const [name, put] of Object.entries(examples)) {
@@ -1649,5 +1651,117 @@ test("YN-16 R1 P3: a NumberInput shows as many decimals as a value it can take, 
   assert.equal(field().getAttribute("aria-valuetext"), "1.25");
   document.querySelectorAll(".brief-step")[1].click();
   await until(() => field().value === "2.25", "one step of 1 from 1.25");
+  assert.deepEqual(page.errors, []);
+});
+
+// YN-16 S2: a Calc works its numbers out from the variables as they change;
+// a Button sets them back. No request; nothing but the variables changes.
+const bill = () => ({
+  op: "put", key: "bill", kind: "report", title: "Bill",
+  body: { root: "body", elements: {
+    body: { type: "BriefBody", props: { summary: { lead: "lead", visual: "split", size: "wide" } }, children: ["lead", "split"] },
+    lead: { type: "Markdown", props: { text: "Dinner for the team." } },
+    split: { type: "Group", props: {}, children: ["people", "tip", "roundUp", "shares", "reset"] },
+    people: { type: "NumberInput", props: { name: "people", label: "People", value: 4, min: 1, max: 12 } },
+    tip: { type: "Segmented", props: { name: "tip", label: "Tip", value: 10, options: [{ value: 0, label: "None" }, { value: 10, label: "10%" }] } },
+    roundUp: { type: "Switch", props: { name: "roundUp", label: "Round up", value: false } },
+    shares: { type: "Calc", props: { title: "Shares", items: [
+      { id: "total", label: "Total", expr: "round(600 * (1 + tip / 100), 2)", prefix: "¥", digits: 2 },
+      { id: "each", label: "Each", expr: "roundUp ? ceil(total / people) : round(total / people, 2)", prefix: "¥", digits: 2, emphasis: true, detail: "Per person" },
+      { id: "extra", label: "Rounding adds", expr: "each * people - total", when: "extra > 0.001", prefix: "¥", digits: 2 },
+      { id: "spare", label: "Per extra guest", expr: "total / (people - 4)", unit: "each" },
+    ] } },
+    reset: { type: "Button", props: { label: "Back to 4", tone: "accent" }, on: { press: [
+      { action: "setState", params: { statePath: "/people", value: 4 } },
+      { action: "setState", params: { statePath: "/roundUp", value: false } },
+    ] } },
+  } },
+});
+const row = (document, id) => document.querySelector(`.brief-calc [data-item="${id}"]`);
+const shownValue = (document, id) => row(document, id)?.querySelector("dd").textContent ?? null;
+
+test("YN-16 S2 a Calc follows its inputs, shows a dash with its reason where it cannot be worked out, and a Button sets them back", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.renderSection(readSection(page, bill()), PROJECT);
+  assert.equal(document.querySelector(".result-part-error"), null, "no part failed");
+  assert.equal(document.querySelector(".brief-calc h4").textContent, "Shares");
+  assert.deepEqual([shownValue(document, "total"), shownValue(document, "each")], ["¥660.00", "¥165.00"]);
+  assert.ok(row(document, "each").hasAttribute("data-emphasis") && /Per person/.test(row(document, "each").textContent));
+  assert.ok(!row(document, "extra"), "its when is false: no extra");
+  // 600 × 1.1 / (4 − 4): a dash that says why, never NaN or Infinity.
+  assert.equal(row(document, "spare").querySelector(".brief-calc-none").getAttribute("title"), "Can't be worked out for these values");
+  assert.ok(!/NaN|Infinity/.test(document.querySelector(".brief-calc").textContent));
+  // Inputs change the numbers.
+  const plus = document.querySelectorAll(".brief-step")[1];
+  plus.click();
+  plus.click();
+  await until(() => shownValue(document, "each") === "¥110.00", "six people");
+  assert.match(shownValue(document, "spare"), /^330 ?each$/, "a unit after the number, digits up to 2 by default");
+  document.querySelector('[role="radio"]').click();
+  await until(() => shownValue(document, "total") === "¥600.00", "no tip");
+  document.querySelector('[role="switch"]').click();
+  await until(() => shownValue(document, "each") === "¥100.00", "rounded up: 600 / 6 is whole");
+  plus.click();
+  await until(() => shownValue(document, "each") === "¥86.00" && row(document, "extra"), "seven people: rounding adds");
+  assert.equal(shownValue(document, "extra"), "¥2.00");
+  // The Button: back to 4 people, not rounded; the tip it does not name stays.
+  const reset = document.querySelector(".brief-button");
+  assert.ok(reset.classList.contains("primary-button"), "accent tone");
+  reset.click();
+  await until(() => document.querySelector(".brief-number-field").value === "4", "the Button sets the people back");
+  assert.equal(document.querySelector('[role="switch"]').getAttribute("aria-checked"), "false");
+  assert.equal(document.querySelector('[role="radio"][aria-checked="true"]').textContent, "None", "the tip it does not name stays");
+  assert.equal(shownValue(document, "each"), "¥150.00");
+  assert.deepEqual(page.requests, [], "nothing is asked of Core");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S2 a Calc's numbers are in the interface language; a stored press is only ever setState of a variable", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.chooseLanguage("zh-Hans");
+  const section = readSection(page, bill());
+  window.renderSection(section, PROJECT);
+  await until(() => row(document, "spare")?.querySelector(".brief-calc-none")?.getAttribute("title") === "按这些值无法算出", "the reason in Chinese");
+  window.chooseLanguage("en");
+  // A body Core kept before any check could carry anything under on: only setState of a variable name is run.
+  const stored = JSON.parse(JSON.stringify(section));
+  stored.version = 4;
+  stored.body.elements.reset.on.press.push(
+    { action: "setState", params: { statePath: "/people/0", value: 9 } },
+    { action: "pushState", params: { statePath: "/people", value: 9 } },
+    { action: "setState", params: { statePath: "/roundUp", value: { $state: "/people" } } },
+  );
+  stored.body.elements.reset.props.yuzunoPress = [{ statePath: "/people", value: 12 }];
+  stored.body.elements.shares.on = { press: { action: "setState", params: { statePath: "/people", value: 9 } } };
+  window.renderSection(stored, PROJECT);
+  document.querySelectorAll(".brief-step")[1].click();
+  await until(() => document.querySelector(".brief-number-field").value === "5", "five");
+  document.querySelector(".brief-button").click();
+  await until(() => document.querySelector(".brief-number-field").value === "4", "only the checked press ran");
+  assert.equal(document.querySelector('[role="switch"]').getAttribute("aria-checked"), "false");
+  assert.deepEqual(page.requests, []);
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-16 S2 a card's Calc and Button work on the card and never open the report", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const { document, window } = page;
+  window.reportOpens = [];
+  const put = bill();
+  put.body.elements.body.children.push("note");
+  put.body.elements.note = { type: "Markdown", props: { text: "More on the page." } };
+  window.renderCard(readSection(page, put), PROJECT, { deck: true });
+  const frame = document.querySelector(".home-card-frame.kind-interactive");
+  assert.ok(frame && frame.querySelector(".brief-calc") && frame.querySelector(".brief-button"));
+  frame.querySelectorAll(".brief-step")[1].click();
+  await until(() => shownValue(frame, "each") === "¥132.00", "five people on the card");
+  frame.querySelector(".brief-button").click();
+  await until(() => shownValue(frame, "each") === "¥165.00", "the card's Button");
+  assert.deepEqual(window.reportOpens, [], "no control opened the report");
   assert.deepEqual(page.errors, []);
 });

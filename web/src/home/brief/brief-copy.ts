@@ -6,6 +6,8 @@ import type { TimeDisplay } from "../../time-preferences";
 import type { Section, SectionAttachment } from "../types";
 import { briefText } from "./brief-text";
 import { briefMarkdownHtml } from "./markdown-html";
+import { calcResults } from "../../intelligent-ui/brief-formula.ts";
+import { startingValues } from "../../intelligent-ui/brief-inputs.ts";
 import { researchDeskMarkdown, type ResearchCopyWords, type ResearchResolved } from "./research-copy";
 import {
   CHART_TYPES,
@@ -28,6 +30,7 @@ import {
   type NumberInputProps,
   type SegmentedProps,
   type SwitchProps,
+  type CalcProps,
   researchPath,
   shownRefId,
 } from "./brief-catalog";
@@ -56,6 +59,7 @@ const words = strings({
   startsAt: (value: string) => `starts at ${value}`,
   range: (min: string, max: string) => `${min} to ${max}`,
   among: (options: string) => `one of ${options}`,
+  fromStart: "Worked out from the starting values",
 }, {
   dataAsOf: (at) => `数据截至 ${at}`,
   chart: (x, y) => `图表 · x：${x} · y：${y}`,
@@ -74,6 +78,7 @@ const words = strings({
   startsAt: (value) => `初始为 ${value}`,
   range: (min, max) => `${min} 到 ${max}`,
   among: (options) => `可选 ${options}`,
+  fromStart: "按初始值算出",
 });
 
 /** "&amp;" or "&#38;" would be read back as one character: keep the "&" literal. */
@@ -321,6 +326,18 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
         const { label, value, options } = part.props as SegmentedProps;
         const start = options.find((option) => option.value === value)?.label ?? String(value);
         return [`- ${label ? `**${inline(label)}**: ` : ""}${w.startsAt(inline(start))} (${w.among(options.map((option) => inline(option.label)).join(" / "))})`];
+      }
+      // A Calc copies as worked out from the starting values, the items its when hides then left out (YN-16 S2).
+      case "Calc": {
+        const { title, items } = part.props as CalcProps;
+        const results = calcResults(items, startingValues(spec.elements));
+        const lines = items.flatMap((item, index) => {
+          const { value, shown } = results[index];
+          if (!shown) return [];
+          const number = Number.isNaN(value) ? "—" : `${item.prefix ?? ""}${item.digits === undefined ? Number(value.toFixed(2)) : value.toFixed(item.digits)}${item.unit ? ` ${item.unit}` : ""}`;
+          return [`- ${inline(item.label)}: ${inline(number)}`];
+        });
+        return [...heading(depth, title), `_${w.fromStart}_`, lines.join("\n")];
       }
       case "Sources": {
         const { items } = part.props as SourcesProps;
