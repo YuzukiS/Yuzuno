@@ -1952,7 +1952,9 @@ test("YN-16 S4 Steps walk one at a time with Back, Next and a dot each; a Timeli
   assert.equal(open.getAttribute("aria-expanded"), "true");
   window.chooseLanguage("zh-Hans");
   window.renderSection(readSection(page, bikeShot(), { attachments: [keptPng()] }), PROJECT);
-  await until(() => /第 1 步，共 3 步/.test(document.querySelector(".brief-step-card")?.textContent ?? ""), "Chinese steps");
+  // The same section redrawn keeps the step the reader is on: the third.
+  await until(() => /第 3 步，共 3 步/.test(document.querySelector(".brief-step-card")?.textContent ?? ""), "Chinese steps, still on the third");
+  assert.equal(document.querySelectorAll(".brief-step-move")[0].textContent, "上一步");
   assert.match(document.querySelector(".brief-timeline").textContent, /2026年3月14日/);
   window.chooseLanguage("en");
   assert.deepEqual(page.errors, []);
