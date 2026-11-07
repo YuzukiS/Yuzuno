@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
+  BRIEF_DESCRIBED_COMPONENTS, briefComponentHints,
   BRIEF_COMPONENT_DESCRIPTIONS, BRIEF_EXAMPLES, BRIEF_GUIDE_PARTS, BRIEF_HARD_RULES, BRIEF_KEY_PATTERN, BRIEF_LIMITS, BRIEF_OUTCOME_HINT,
   BRIEF_PROBLEM_CODES, BRIEF_SCHEMA_VERSION, BRIEF_TOOL_DESCRIPTIONS, BriefError, DESCRIPTION_CAP, briefComponentProps,
   briefGuide, checkBriefSection, describeBrief, fencedBlockLines, researchReads,
@@ -498,8 +499,8 @@ test("schema problems name the field, the component's props and the guide part",
 test("hard rules, tool descriptions and the guide are generated within their caps", () => {
   assert.ok(BRIEF_HARD_RULES.length <= 1500, `${BRIEF_HARD_RULES.length} characters`);
   for (const [name, description] of Object.entries(BRIEF_TOOL_DESCRIPTIONS)) {
-    // brief_update grows with its ops (YN-14: patch, markdown); every tool stays within DESCRIPTION_CAP.
-    assert.ok(description.length <= (name === "brief_update" ? 1500 : 1200), `${name}: ${description.length} characters`);
+    // brief_update carries its ops and the common components' props (YN-14); every tool stays within DESCRIPTION_CAP.
+    assert.ok(description.length <= (name === "brief_update" ? DESCRIPTION_CAP : 1200), `${name}: ${description.length} characters`);
     assert.ok(description.length <= DESCRIPTION_CAP);
     assert.match(description, /brief_guide/, `${name} names the guide`);
   }
@@ -808,6 +809,23 @@ test("a put with markdown instead of body gets the body Core builds for it (YN-1
   assert.deepEqual(at({ key: "r", kind: "report", title: "R" }), ["missing_field", "body"], "neither is still a missing body");
   assert.match(briefGuide("sections"), /^- markdown instead of body, for a section that is text: Core makes the body one Markdown block "text"/m);
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /body\|markdown/);
+});
+
+test("brief_update's description names the common components with their props, generated from the catalog (YN-14 A4)", () => {
+  const hints = briefComponentHints();
+  assert.ok(BRIEF_TOOL_DESCRIPTIONS.brief_update.includes(`elements are {type, props, children?}: ${hints}; the rest in brief_guide content.`));
+  for (const type of BRIEF_DESCRIBED_COMPONENTS) {
+    assert.ok(Object.hasOwn(briefComponentProps, type), type);
+    const shape = briefComponentProps[type].shape;
+    const shown = hints.match(new RegExp(`(?:^| )${type}\\{(.*?)\\}(?= [A-Z]|$)`))?.[1] ?? "";
+    for (const prop of Object.keys(shape).filter((prop) => !["sourceIds", "selectable"].includes(prop)))
+      assert.match(shown, new RegExp(`\\b${prop}\\b`), `${type} shows ${prop}`);
+  }
+  assert.match(hints, /Findings\{title\?, items\[\{id, source, severity: info\|low\|medium\|high\|critical, text\}\]\}/);
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /reply: options\[\{id, label\}\]/);
+  // Truthful about HTML in Markdown (YN-14 S4): sanitized, not refused.
+  assert.match(BRIEF_COMPONENT_DESCRIPTIONS.Markdown, /HTML written in it is sanitized/);
+  assert.doesNotMatch(briefGuide(), /Raw HTML is not supported/);
 });
 
 // YN-16 S1: inputs, the variables they declare and the visible conditions
