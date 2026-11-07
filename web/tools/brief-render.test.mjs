@@ -2013,7 +2013,9 @@ test("YN-16 S4 R1 P3: walking Steps stays within a list a later version shortens
   window.renderSection(readSection(page, put, { attachments: [keptPng()] }), PROJECT);
   const steps = () => document.querySelector('.brief-steps[data-mode="walk"]');
   const next = () => steps().querySelectorAll(".brief-step-move")[1];
+  // One press at a time, as a reader's taps arrive: each is drawn before the next.
   next().click();
+  await until(() => /Step 2 of 3/.test(steps().textContent), "on the second of three");
   next().click();
   await until(() => /Step 3 of 3/.test(steps().textContent), "on the last of three");
   // A later version has two steps: the reader is on the last there is.
