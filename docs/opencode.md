@@ -185,10 +185,10 @@ a new one.
   - OpenCode admits it under Yuzuno's own ID and answers at once. If that
     answer is lost, Yuzuno looks for the compaction by its ID and never asks
     again. One it can't find stays unknown, and holds new messages back,
-    until the session is read whole again (a reconnect does). If OpenCode,
-    idle, then has no record of it, it did not run: the Turn fails saying
-    so, and new messages go again. A compaction left unfinished by OpenCode
-    1.19.3 ends unknown at that read, and holds nothing back.
+    until the session is read whole again (a reconnect does, the connection
+    live or not). If OpenCode, idle, then has no record of it, it did not
+    run: the Turn fails saying so, and new messages go again. One asked for
+    as OpenCode 1.19.3's ends unknown at that read, and holds nothing back.
   - It is refused while the session holds a revert, as OpenCode would apply
     the revert first. A compaction OpenCode starts by itself (automatic) is
     no Turn; it only makes the context usage shown out of date.

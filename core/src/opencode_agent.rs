@@ -696,7 +696,14 @@ impl Workspace {
             // again on the same process and a failed one tried again (T-61
             // slice 1); one just started reported it as it attached. Its
             // readiness shows on the record; a reconnect is not refused for it.
-            Ok(c) if live => { let _ = self.opencode_mcp(id, &agent, &c, McpCheck::Retry).await; }
+            Ok(c) if live => {
+                let _ = self.opencode_mcp(id, &agent, &c, McpCheck::Retry).await;
+                // A compaction whose end is not known is read again whole, as its refusal asks: on a connection
+                // already live nothing else would read it (#699 R1 a136ddf1). A failed read leaves it as it was.
+                if self.send_view(id).await.is_ok_and(|d| compaction_blocks(&d, "").is_some()) {
+                    let _ = self.opencode_resync(id, &c).await;
+                }
+            }
             Ok(_) => {}
             Err(error) => {
                 self.failed(id, &error).await;
@@ -2422,19 +2429,24 @@ fn apply_snapshot(d: &mut AgentDetail, generation: u64, session: &str, snapshot:
         }
     }
     status(d, &snapshot.status);
-    // The whole session read (T-61 slice 4): what became of each compaction
-    // asked for, by its ID, as 2.x stores it, whatever its events could
-    // tell, by this process or one before it.
-    let idle = snapshot.status["type"] == "idle";
+    settle_compactions(d, &compactions, &snapshot.inbox, snapshot.status["type"] == "idle");
+}
+
+/// What a whole read of the session (T-61 slice 4) says of each compaction
+/// asked for and not yet ended: by its ID, as 2.x stores it (`compactions`)
+/// or still waits to run it (`inbox`), whatever its events could tell, by
+/// this process or one before it. One asked of OpenCode 1.19.3 (T-10, no
+/// input ID: an empty 2.x session read as 1.19.3's before slice 4) has an
+/// answer this Core no longer reads, so nothing more of it can come.
+pub(crate) fn settle_compactions(d: &mut AgentDetail, compactions: &[Value], inbox: &Value, idle: bool) {
     for turn in d.turns.iter_mut().filter(|t| matches!(t["_opencodeCompact"]["state"].as_str(), Some("pending" | "unknown"))) {
         let Some(input) = turn["_opencodeCompact"]["input"].as_str().map(str::to_owned) else {
-            // Asked of OpenCode 1.19.3 (T-10), whose answer this Core no longer reads: nothing more of it can come.
             compaction_lost(turn);
             continue;
         };
         if let Some(stored) = compactions.iter().find(|m| m["id"] == input.as_str()) {
             compaction_seen(turn, stored);
-        } else if !snapshot.inbox.as_array().into_iter().flatten().any(|item| item["id"] == input.as_str()) {
+        } else if !inbox.as_array().into_iter().flatten().any(|item| item["id"] == input.as_str()) {
             turn["_opencodeCompact"]["absent"] = true.into();
         }
         settle_compaction(turn, idle);

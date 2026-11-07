@@ -206,3 +206,32 @@ async fn a_message_never_sent_is_rejected_even_once_settled_as_unknown() {
     let receipt = &ws.store.detail("oc").unwrap().message_receipts[0];
     assert_eq!((receipt.status.as_str(), receipt.error.as_deref()), ("rejected", Some(refused.to_string().as_str())));
 }
+
+/// A whole read settles each compaction asked for and not yet ended (T-61
+/// slice 4, #699 R1 a136ddf1): one 2.x, idle, has no record of did not run,
+/// so its Turn fails and it holds nothing back; one 1.19.3 was asked for
+/// ends unknown for good; one still waiting in 2.x's inbox, or 2.x not idle,
+/// waits.
+#[test]
+fn a_whole_read_ends_a_compaction_2x_has_no_record_of_and_one_1193_was_asked_for() {
+    let compact = |id: &str, status: &str, attempt: Value| json!({"id": id, "status": status, "items": [], "_opencodeCompact": attempt});
+    let mut d = agent("/w");
+    d.turns = vec![
+        compact("compact_old", "inProgress", json!({"state": "pending", "session": "ses_1", "generation": 1})),
+        compact("compact_lost", "outcomeUnknown", json!({"state": "unknown", "input": "msg_lost", "generation": 1})),
+        compact("compact_waiting", "inProgress", json!({"state": "pending", "input": "msg_waiting", "generation": 1})),
+    ];
+    let inbox = json!([{"id": "msg_waiting", "type": "compaction"}]);
+    let mut busy = d.clone();
+    settle_compactions(&mut busy, &[], &inbox, false);
+    assert_eq!(busy.turns[1]["_opencodeCompact"]["state"], "unknown", "not idle: a record may still come");
+    settle_compactions(&mut d, &[], &inbox, true);
+    let (old, lost, waiting) = (&d.turns[0], &d.turns[1], &d.turns[2]);
+    assert_eq!((&old["status"], &old["_opencodeCompact"]["state"]), (&json!("outcomeUnknown"), &json!("lost")), "1.19.3's: {old:#}");
+    assert!(lost["status"] == "failed" && lost["_opencodeCompact"]["state"] == "absent"
+        && lost["error"]["message"].as_str().unwrap_or_default().contains("它没有执行"), "no record at idle: it did not run: {lost:#}");
+    assert_eq!((&waiting["status"], &waiting["_opencodeCompact"]["state"]), (&json!("inProgress"), &json!("pending")), "still waiting in the inbox");
+    assert!(compaction_blocks(&d, "x").is_some(), "the waiting one still holds new input back");
+    d.turns.pop();
+    assert!(compaction_blocks(&d, "x").is_none(), "the others hold nothing back");
+}
