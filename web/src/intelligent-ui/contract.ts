@@ -102,7 +102,7 @@ export const COMPONENT_DESCRIPTIONS = {
   Section: "A titled group.",
   Text: "Plain text, without HTML.",
   Metrics: "Up to six reported metrics.",
-  Table: "A searchable sortable table. Rows may be selected for a follow-up draft.",
+  Table: "A searchable sortable table; selectable lets the user mark rows.",
   BarChart: "A bar chart with equivalent selectable data table.",
   Sources: "Explicit HTTPS or local file references.",
   Continue: "A user-clicked button that appends instruction and current selection to a draft.",
@@ -267,7 +267,8 @@ export function parseSpec(raw: string): ResultSpec {
   return parseResultSpec(raw).spec;
 }
 
-/** A reply's JSON block, validated, and the display defaults it needed; throws ResultError. */
+/** A reply's JSON block, validated, and the display defaults it needed; throws ResultError.
+ * A block only displays: one with a part that acts (ACT_COMPONENTS) is refused. */
 export function parseResultSpec(raw: string): { spec: ResultSpec; defaults: string[] } {
   if (raw.length > MAX_SPEC_LENGTH)
     throw new ResultError("too_large", `Result exceeds ${MAX_SPEC_LENGTH} characters.`);
@@ -277,7 +278,20 @@ export function parseResultSpec(raw: string): { spec: ResultSpec; defaults: stri
   } catch (error) {
     throw new ResultError("invalid_json", error instanceof Error ? error.message : "Invalid JSON.");
   }
+  const act = actIn(json);
+  if (act !== null) throw new ResultError("display_only", DISPLAY_ONLY_REASON, `elements.${act}.type`);
   return checkSpec(json);
+}
+
+/** The first element of a block that is one of ACT_COMPONENTS, or null. */
+function actIn(json: unknown): string | null {
+  const elements = json && typeof json === "object" ? (json as { elements?: unknown }).elements : null;
+  if (!elements || typeof elements !== "object" || Array.isArray(elements)) return null;
+  for (const [key, element] of Object.entries(elements)) {
+    const type = element && typeof element === "object" ? (element as { type?: unknown }).type : null;
+    if ((ACT_COMPONENTS as readonly unknown[]).includes(type)) return key;
+  }
+  return null;
 }
 
 const utf8 = new TextEncoder();
@@ -503,10 +517,16 @@ function componentGuide(type: Component): string {
 }
 
 /**
- * The components a reply's yuzuno-ui block shows (YN-14 A5): display only.
- * Clarification, TaskStatus and Continue were result_publish's, whose
- * stored results Core still renders and answers; no new one is published.
+ * The parts that act. A reply's yuzuno-ui block only displays (YN-14 A5), so
+ * a block with one of them is refused (parseResultSpec). Results stored
+ * before, published with result_publish, keep them: Core still renders and
+ * answers those (checkSpec).
  */
+export const ACT_COMPONENTS = ["Continue", "Clarification", "TaskStatus"] as const satisfies readonly Component[];
+/** Why a reply's block with a part that acts is refused. */
+export const DISPLAY_ONLY_REASON = "Forms, choices and status changes go to a Home Ask; a reply block only displays.";
+
+/** The components a reply's yuzuno-ui block shows (YN-14 A5): display only. */
 export const FENCE_COMPONENTS = ["Result", "Section", "Text", "Metrics", "Table", "BarChart", "Sources"] as const satisfies readonly Component[];
 
 /** How an Agent shows a result in a conversation (YN-14 A5), as a reply's yuzuno-ui block. */

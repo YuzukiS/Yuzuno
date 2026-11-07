@@ -221,6 +221,7 @@ export function ResultUnavailable({
 function stateOf(problem: ResultProblem): Unavailable {
   if (problem.code === "unfinished") return "unfinished";
   if (problem.code === "multiple_results") return "multiple";
+  if (problem.code === "display_only") return "acts";
   return "format";
 }
 

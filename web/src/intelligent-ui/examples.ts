@@ -6,9 +6,9 @@ export const comparisonExample = {
       props: {
         title: "Conversation navigation",
         summary:
-          "Sample comparison. Pick the direction you would like to explore.",
+          "Sample comparison of three directions.",
       },
-      children: ["options", "sources", "continue"],
+      children: ["options", "sources"],
     },
     options: {
       type: "Table",
@@ -62,15 +62,6 @@ export const comparisonExample = {
         ],
       },
     },
-    continue: {
-      type: "Continue",
-      props: {
-        label: "Continue with selection",
-        instruction:
-          "Explore the selected navigation option and explain the next small improvement.",
-        requiresSelection: true,
-      },
-    },
   },
 };
 export const reportExample = {
@@ -80,9 +71,9 @@ export const reportExample = {
       type: "Result",
       props: {
         title: "Where the wait goes",
-        summary: "Illustrative data only. Select a stage to ask about it.",
+        summary: "Illustrative data only.",
       },
-      children: ["metrics", "chart", "continue"],
+      children: ["metrics", "chart"],
     },
     metrics: {
       type: "Metrics",
@@ -110,22 +101,13 @@ export const reportExample = {
         ],
       },
     },
-    continue: {
-      type: "Continue",
-      props: {
-        label: "Explore selection",
-        instruction:
-          "Explain what we would measure to investigate the selected stage.",
-        requiresSelection: true,
-      },
-    },
   },
 };
 
 /**
  * What the request button adds to a draft: one editable line of intent. How
- * to build a result is the result_publish tool's own description; a draft
- * never carries the format. A sentence comes first, so the reply says
+ * to build a result is the fence guide Agents get (the capability notice and
+ * yuzuno_guide topic results); a draft never carries the format. A sentence comes first, so the reply says
  * something while the result is written (YN-15).
  */
 export function interactiveRequest(kind: "comparison" | "report") {

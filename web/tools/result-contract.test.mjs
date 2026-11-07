@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   checkResultSpec, describeContract, describeFenceGuide, parseResultSpec, ResultError, COMPONENT_DESCRIPTIONS, componentProps,
-  FENCE_COMPONENTS, FENCE_NOTICE, MAX_DESCRIPTION_LENGTH,
+  ACT_COMPONENTS, FENCE_COMPONENTS, FENCE_NOTICE, MAX_DESCRIPTION_LENGTH,
   DISPLAY_DEFAULTS, MAX_PROBLEMS, MAX_SPEC_BYTES, MAX_SPEC_LENGTH, RESULT_LIMITS, SCHEMA_VERSION,
 } from "../src/intelligent-ui/contract.ts";
 import { catalog } from "../src/intelligent-ui/spec.ts";
@@ -96,7 +96,9 @@ test("what Core is told about results comes from the contract alone: the notice 
     assert.ok(first.fenceGuide.includes(`- ${type} {`), type);
     assert.ok(first.fenceGuide.includes(COMPONENT_DESCRIPTIONS[type]), type);
   }
-  for (const type of ["Clarification", "TaskStatus", "Continue"]) assert.ok(!first.fenceGuide.includes(`- ${type} {`), type);
+  for (const type of ACT_COMPONENTS) assert.ok(!first.fenceGuide.includes(`- ${type} {`), type);
+  // Every catalog component is one or the other: shown in a reply, or refused there.
+  assert.deepEqual([...FENCE_COMPONENTS, ...ACT_COMPONENTS].sort(), Object.keys(componentProps).sort());
   assert.match(first.fenceGuide, /title defaults to "Table"/);
   assert.match(first.fenceGuide, /root names a Result/);
   assert.match(first.fenceGuide, /rows and bars cite them by id in sourceIds/);

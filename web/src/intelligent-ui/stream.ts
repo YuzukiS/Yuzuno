@@ -1,4 +1,4 @@
-import { checkElement, MAX_SPEC_LENGTH, type ResultSpec } from "./contract.ts";
+import { ACT_COMPONENTS, checkElement, MAX_SPEC_LENGTH, type ResultSpec } from "./contract.ts";
 import type { ReserveKind } from "./result-reserve.ts";
 
 /**
@@ -13,13 +13,14 @@ import type { ReserveKind } from "./result-reserve.ts";
  * component with all of its props, never a value written halfway. The others
  * a drawn element names as children stand as placeholders (PENDING) in their
  * place, sized by their kind once their `type` is known. Nothing is drawn
- * until the root, a Result, has closed. Parts that act (Continue,
- * Clarification, TaskStatus) stay placeholders until the whole block is
- * checked. What is drawn is a tree within checkSpec's bounds (six levels, 32
- * components, each element once), so no cycle can loop the renderer.
+ * until the root, a Result, has closed. What is drawn is a tree within
+ * checkSpec's bounds (six levels, 32 components, each element once), so no
+ * cycle can loop the renderer.
  *
- * Text that cannot be JSON, or more of it than a block may hold, stops the
- * drawing: the block is then only being generated, as before. Once the block
+ * Text that cannot be JSON, more of it than a block may hold, or an element
+ * of a type that acts (Continue, Clarification, TaskStatus: a reply's block
+ * only displays, YN-14 A5) stops the drawing: the block is then only being
+ * generated, as before, and no room is kept for such a part. Once the block
  * is closed it is checked whole (parseResultSpec, in message.ts), and only
  * that decides what is shown.
  */
@@ -39,11 +40,9 @@ const KINDS: Partial<Record<string, ReserveKind>> = {
   Table: "table",
   BarChart: "chart",
   Metrics: "metrics",
-  Clarification: "form",
-  TaskStatus: "task",
 };
-/** Parts that act: drawn only once the whole result has been checked. */
-const ACTS = new Set(["Continue", "Clarification", "TaskStatus"]);
+/** Parts that act: a block with one is refused once closed, so it is not drawn. */
+const ACTS: ReadonlySet<string> = new Set(ACT_COMPONENTS);
 const MAX_DEPTH = 6;
 const MAX_COMPONENTS = 32;
 
@@ -182,6 +181,7 @@ export class BlockStream {
     else if (frame.role === "element" && frame.key === "type" && frame.name !== undefined) {
       const type = decode();
       if (type !== null) this.typed.set(frame.name, type);
+      if (type !== null && ACTS.has(type)) this.broken = true;
     }
   }
 
@@ -287,7 +287,7 @@ export class BlockStream {
         count += 1;
         children.push(child);
         const found = this.element(child);
-        if (found?.element && found.element.type !== "Result" && !ACTS.has(found.element.type)) {
+        if (found?.element && found.element.type !== "Result") {
           elements[child] = found.element;
           drawn.push([child, found.element]);
         } else {

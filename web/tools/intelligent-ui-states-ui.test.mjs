@@ -337,7 +337,7 @@ test("the words around a result follow the language; what the Agent wrote and th
   assert.equal(page.requests.length, 0, "no requests, no messages, no model calls");
 });
 
-test("a form in a reply says why it can't be answered here in the interface language; its questions as written", async (t) => {
+test("a form in a reply is refused in the interface language: forms go to a Home Ask (YN-14 A5)", async (t) => {
   const { clarificationExample } = await import("../src/intelligent-ui/clarification.ts");
   const page = mount();
   t.after(page.close);
@@ -350,9 +350,10 @@ test("a form in a reply says why it can't be answered here in the interface lang
     },
   };
   page.window.renderReply({ text: reply(JSON.stringify(spec)) });
-  await until(() => page.document.querySelector(".clarification-delivery"), "the form's notice");
-  assert.equal(page.document.querySelector(".clarification-delivery").textContent, "请让 Agent 发布这个表单，这样你的答案才能关联到原始会话。");
-  assert.match(page.text(), /Working directory必填/);
-  assert.match(page.text(), /Development preview/);
+  const note = await until(() => page.document.querySelector('[data-result-state="acts"]'), "the refusal");
+  assert.equal(note.querySelector("p[role=status] span").textContent, "此交互结果无法显示：回复里的结果只用于展示。表单、选择和状态变更会以提问的形式出现在 Home。");
+  assert.ok(note.textContent.includes("代码display_only"), "the validator's code as it is");
+  assert.ok(note.textContent.includes("Forms, choices and status changes go to a Home Ask; a reply block only displays."), "its reason as it is");
+  assert.equal(page.document.querySelector("form, input, textarea, .clarification-delivery"), null, "no form is drawn");
   assert.equal(page.requests.length, 0, "nothing is sent");
 });

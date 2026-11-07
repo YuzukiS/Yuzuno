@@ -397,7 +397,10 @@ mod tests {
     #[test]
     fn links_become_topic_pointers_and_every_anchor_resolves() {
         for topic in &TOPICS {
-            let text = text(topic);
+            let whole = text(topic);
+            // The results topic ends in generated component signatures, not
+            // markdown: there `[≤12](string)` is an array of strings.
+            let text = whole.strip_suffix(crate::results::fence_guide()).unwrap_or(&whole);
             for line in text.lines() {
                 // Only web links keep markdown link syntax.
                 let mut rest = line;
