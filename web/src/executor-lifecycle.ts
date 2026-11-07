@@ -95,9 +95,9 @@ export const isArchived = (agent: Agent) => agent.kind === "executor" && agent.e
 /** The executors' attention order (docs/executor-model.md): waiting on you,
  * or failed; delivered, awaiting release; running; archiving; queued or
  * starting. */
-export function executorRank(agent: Agent, seen: TurnSeen, waiting?: ReadonlySet<string>): number {
+export function executorRank(agent: Agent, seen: TurnSeen): number {
   const state = agent.executor?.state;
-  if (state === "failed" || (!agent.closedAt && attentionRank(agent, seen, waiting) === "needsYou")) return 0;
+  if (state === "failed" || (!agent.closedAt && attentionRank(agent, seen) === "needsYou")) return 0;
   if (state === "delivering") return 1;
   if (state === "archiving") return 3;
   if (state === "queued" || state === "starting") return 4;
@@ -112,13 +112,13 @@ export type RailParts = { members: Agent[]; executors: Agent[]; archived: Agent[
  * other Agents, as given; then its executors (with `order`, the attention
  * order of executorRank, ties as given); and its archived executors.
  */
-export function railParts(agents: readonly Agent[], order?: { seen: TurnSeen; waiting?: ReadonlySet<string> }): RailParts {
+export function railParts(agents: readonly Agent[], order?: { seen: TurnSeen }): RailParts {
   const members = agents.filter((a) => a.kind !== "executor");
   const leads = members.filter((a) => a.kind === "lead");
   const executors = agents.filter(inExecutors);
   const ranked = order
     ? executors
-        .map((agent, index) => ({ agent, index, rank: executorRank(agent, order.seen, order.waiting) }))
+        .map((agent, index) => ({ agent, index, rank: executorRank(agent, order.seen) }))
         .sort((a, b) => a.rank - b.rank || a.index - b.index)
         .map((r) => r.agent)
     : executors;

@@ -6,7 +6,7 @@ mod executor_archiving;
 mod executor_lifecycle;
 pub mod executor_templates;
 pub mod handover;
-pub mod handover_proposals;
+pub mod handover_tools;
 mod executor_dispatch;
 mod executor_release;
 mod executor_slots;

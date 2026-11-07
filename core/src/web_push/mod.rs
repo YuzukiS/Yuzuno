@@ -359,10 +359,7 @@ fn read_now(store: &Store) -> Result<Read> {
         turn: a.work_summary.as_ref().and_then(|s| s.turn_id.clone()),
         request: a.work_summary.as_ref().and_then(|s| s.request_id.clone()),
     }).collect();
-    let proposals = crate::handover_proposals::waiting(store)?.into_iter().map(|p| notices::ProposalState {
-        project: p.project, id: p.id, proposer_id: p.proposer_id, proposer_name: p.proposer_name,
-    }).collect();
-    Ok(Read { agents, asks, proposals })
+    Ok(Read { agents, asks })
 }
 
 /// A message after which the Agent list or Home's Asks may read otherwise.

@@ -1,4 +1,3 @@
-import type { HandoverProposalSummary } from "../project-handover";
 /**
  * What Home reads from Core (GET /api/home and its companions). Core owns
  * these facts. Section bodies are written by Agents and checked by the
@@ -140,8 +139,6 @@ export type ProjectPanel = {
   };
   errors: { agentId: string; agentName: string; message: string; at: string }[];
   pending: (PendingRequest & { agentName: string })[];
-  /** A lead's handover proposal waiting for the user (T-34 S3b). */
-  handoverProposal?: HandoverProposalSummary | null;
   jobs: HomeJob[];
   brief: { version: number; sections: Section[]; teamSections?: Section[]; history: Section[] };
   /** Live sections changed since the user last marked them seen. */
@@ -157,7 +154,7 @@ export type ProjectPanel = {
 };
 
 export type NeedsYouItem = {
-  kind: "approval" | "ask" | "question" | "handover" | "executor";
+  kind: "approval" | "ask" | "question" | "executor";
   projectId: string | null;
   agentId: string;
   agentName: string;
@@ -166,8 +163,6 @@ export type NeedsYouItem = {
   /** A question's Turn and Item (T-42). */
   turnId?: string;
   itemId?: string;
-  /** A lead's handover proposal (T-34 S3b), named by its proposer. */
-  proposalId?: string;
   /** An executor the user dispatched (T-36 S3): its result waits for the
    * user's release, its start failed, or its task is blocked while it runs. */
   state?: "delivering" | "failed" | "blocked";
