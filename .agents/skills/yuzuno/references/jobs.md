@@ -72,6 +72,7 @@ A running local Job that holds far more memory than it uses can have its limit l
 
 A local `job_submit` may declare `service` to link its command to a Project's preview entry. Opening or closing that preview does not start or stop the Job. An external service, with no linked Job, stays outside these controls.
 
+- A service's command runs the server in the foreground. A local Job's command that starts something in the background and exits ends its Job: whatever it leaves in the Job's cgroup is stopped 5 s after it exits and named in the reason (YN-6 S4), so a backgrounded server stops with it.
 - The service view keeps three observations separate: its Job and listener ownership, its declared HTTP health check, and whether the current browser can reach it. One passing observation does not prove the others. No health check means not configured.
 - The user's **Stop service** choice records an intention to keep that service stopped and asks its current Job to cancel. A cancellation request is not proof the process has exited. That intention survives Core restart; ordinary `job_submit(serviceId)` cannot silently clear it.
 - **Start again** is an explicit user action for one new Job. Core uses the retained launch specification, checks the previous run and guarded inputs, and applies the existing resource admission rules. It preserves the previous run's history. It does not extend the current run or recover anything after a Core restart by itself.
