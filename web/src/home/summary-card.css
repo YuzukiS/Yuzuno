@@ -261,6 +261,12 @@ button.home-card-image-open:focus-visible .brief-image-zoom {
 :is(.home-brief, .home-widget-grid) .home-summary-card.size-wide .home-card-frame-body {
   height: 140px;
 }
+/* A desk drawn as its lead claim (YN-7) has lines that wrap where the card is one column (a phone): its frame grows
+   to hold them, as a card grows to hold its conditions, rather than cut its interval or what the page has. */
+:is(.home-brief, .home-widget-grid) .home-summary-card.size-wide .home-card-frame.kind-desk .home-card-frame-body {
+  height: auto;
+  min-height: 140px;
+}
 :is(.home-brief, .home-widget-grid) .home-summary-card.size-large .home-card-frame,
 :is(.home-brief, .home-widget-grid) .home-summary-card.size-large .home-card-frame-body {
   flex: 1 1 auto;

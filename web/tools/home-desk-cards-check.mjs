@@ -242,9 +242,9 @@ async function check(run) {
       const d = desks[key];
       assert.equal(d.size, size, key);
       assert.deepEqual([d.status, d.claim, d.value, d.interval, d.more, d.rows], [w.status, "High dose shortens recovery", "−2.04", " [−3.12, −0.96]", w.more, 1], `${key}: ${JSON.stringify(d)}`);
-      assert.ok(d.inside && !d.sideways, `${key}: inside its frame: ${JSON.stringify(d)}`);
+      assert.ok(d.inside && !d.sideways && !d.cut, `${key}: inside its frame, nothing cut: ${JSON.stringify(d)}`);
     }
-    pass("a wide and a large card draw the desk's lead claim, its status and the read interval inside the frame", desks);
+    pass("a wide and a large card draw the desk's lead claim, its status and the read interval inside the frame, nothing cut", desks);
 
     // ---- Nothing wider than the window; the whole Home.
     const widths = await page.evaluate(() => ({ page: document.scrollingElement.scrollWidth, window: innerWidth }));
