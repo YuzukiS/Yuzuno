@@ -149,8 +149,11 @@ test("the sidebar lists a Project's leads, its other Agents, its task executors 
     assert.ok(executors, "a task executors group");
     assert.equal(executors.querySelector(".rail-subgroup-head").textContent, "Task executors1 queued · 3 running6",
       "while one waits for a slot, how many wait and how many run");
-    assert.match(executors.querySelector(".rail-subgroup-slots").title, /^1 queued · 3 running\nRunning: started and not yet archived\. Queued: waiting for an executor slot \(each machine's limit, in Machines\)\./,
-      "the whole count in its title, where a narrow rail cuts the line");
+    // What the counts mean, in its tip and for assistive technology (YN-44): no native title.
+    const slots = executors.querySelector(".rail-subgroup-slots");
+    assert.equal(slots.textContent, "1 queued · 3 running");
+    assert.equal(slots.hasAttribute("title"), false);
+    assert.match(slots.getAttribute("aria-description"), /^Running: started and not yet archived\. Queued: waiting for an executor slot \(each machine's limit, in Machines\)\./);
     assert.deepEqual([...executors.querySelectorAll("article[data-agent-id]")].map((r) => r.dataset.agentId), ["f", "d", "e", "r", "g", "q"]);
     // Each executor's row says its one state; a lead's badge says Lead.
     assert.equal(p.badge("l"), "Lead");

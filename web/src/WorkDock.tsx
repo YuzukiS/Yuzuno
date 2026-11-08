@@ -53,6 +53,7 @@ const column = strings({
 
 const entry = strings({
   label: "Work activity",
+  gathers: "Jobs, CI, reviews and sub-agents",
   // Each kind says its own thing; there is never a total across them.
   running: (n: number) => `${n} running`,
   unknown: (n: number) => `${n} not recognised`,
@@ -60,6 +61,7 @@ const entry = strings({
   open: "Open the list",
 }, {
   label: "工作活动",
+  gathers: "Job、CI、审查和子 Agent",
   running: (n) => `${n} 个在进行`,
   unknown: (n) => `${n} 个无法识别`,
   quiet: "没有在进行的工作",
@@ -67,17 +69,13 @@ const entry = strings({
 });
 
 const text = strings({
-  open: (label: string) => `${label} · open the list`,
   openLabel: (label: string) => `${label}: open the list`,
-  moreTitle: (count: number) => `${count} more · open the list`,
-  moreLabel: (label: string, count: number) => `${label}: ${count} more, open the list`,
   more: (count: number) => `${count} more`,
+  moreLabel: (label: string, count: number) => `${label}: ${count} more, open the list`,
 }, {
-  open: (label) => `${label} · 打开列表`,
   openLabel: (label) => `${label}：打开列表`,
-  moreTitle: (count) => `另有 ${count} 个 · 打开列表`,
-  moreLabel: (label, count) => `${label}：另有 ${count} 个，打开列表`,
   more: (count) => `另有 ${count} 个`,
+  moreLabel: (label, count) => `${label}：另有 ${count} 个，打开列表`,
 });
 
 const marks: Record<string, LucideIcon> = {
@@ -448,6 +446,7 @@ export function WorkActivityEntry({
     activity.unrecognized > 0 ? t.unknown(activity.unrecognized) : null,
   ].filter(Boolean);
   return (
+    <Tip side="bottom" describe={false} content={<TipText title={t.label} body={t.gathers} />}>
     <button
       type="button"
       className="work-activity-entry"
@@ -455,7 +454,6 @@ export function WorkActivityEntry({
       // are the counts a screen reader says and the words voice control
       // listens for. An aria-label would be a second copy of them, free to
       // drift from the first (T-15, Dev 7).
-      title={t.label}
       aria-expanded={expanded}
       onClick={(event) => open(event.currentTarget)}
     >
@@ -463,6 +461,7 @@ export function WorkActivityEntry({
       <span className="sr-only">{t.label}: </span>
       <span className="work-activity-counts">{parts.join(" · ") || t.quiet}</span>
     </button>
+    </Tip>
   );
 }
 
@@ -483,7 +482,6 @@ export function WorkDockGroup({
       <button
         type="button"
         className="work-dock-heading"
-        title={t.open(label)}
         aria-label={t.openLabel(label)}
         onClick={(event) => onOpen(event.currentTarget)}
       >
@@ -589,10 +587,10 @@ export function WorkDockMore({
 }) {
   const t = useStrings(text);
   return (
+    <Tip side="right" describe={false} content={<TipText title={t.more(count)} />}>
     <button
       type="button"
       className="work-dock-more"
-      title={t.moreTitle(count)}
       aria-label={t.moreLabel(label, count)}
       onClick={(event) => onOpen(event.currentTarget)}
     >
@@ -603,5 +601,6 @@ export function WorkDockMore({
         <small>{t.more(count)}</small>
       </span>
     </button>
+    </Tip>
   );
 }
