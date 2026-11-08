@@ -1746,6 +1746,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': listed})
         if key == ('GET', 'api', 'model'):
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_models()})
+        if key == ('GET', 'api', 'model', 'default'):
+            # The model 2.x runs a session on with none of its own (2.2.5 core/src/model.ts `default`): mode
+            # `defaultModel`'s, else the first it lists (all are released 0 here); null with none (YN-48).
+            listed, wanted = v2_models(), modes['defaultModel'] or {}
+            found = next((m for m in listed if m['providerID'] == wanted.get('providerID') and m['id'] == wanted.get('modelID')),
+                         None if wanted else (listed[0] if listed else None))
+            return self.reply(200, {'location': {'directory': str(WORK)}, 'data': found})
         if key == ('GET', 'api', 'provider'):
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_providers()})
         if parts[:1] == ['api']:

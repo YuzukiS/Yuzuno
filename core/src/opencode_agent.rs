@@ -433,6 +433,20 @@ fn unlisted(model: &str) -> String {
     }
 }
 
+/// The model a message is sent to, as its Turn shows it while it waits
+/// (YN-48): `{id, name}` of the Agent's chosen model, else of the one
+/// OpenCode runs a session on with none chosen (`default`: true). Read
+/// before the message goes; one OpenCode doesn't say is none, and the
+/// message goes all the same.
+async fn calling(server: &Server, chosen: Option<&ModelChoice>) -> Option<Value> {
+    let shown = |model: &ModelChoice| format!("{} · {}", model.provider_name, model.name);
+    if let Some(model) = chosen {
+        return Some(json!({"id": model.id(), "name": shown(model)}));
+    }
+    let (id, name) = server.default_model().await.ok().flatten()?;
+    Some(json!({"id": id, "name": name, "default": true}))
+}
+
 /// The model chosen for an Agent, as its OpenCode lists it now; None for
 /// OpenCode's own default. One it no longer lists is refused.
 async fn chosen(server: &Server, model: &str) -> Result<Option<ModelChoice>> {
@@ -568,8 +582,11 @@ impl Workspace {
         // Where each provider gets its access (YN-47), from 2.x's integrations, which a
         // release older than logins lacks: unknown then, or when they could not be read.
         let sources = if opencode::login_supported(version) { c.server.provider_sources().await.ok() } else { None };
+        // What "Harness default" is now (YN-48): the model OpenCode runs a session on with none chosen.
+        let default = c.server.default_model().await.ok().flatten()
+            .map(|(id, name)| models.iter().find(|m| m.id() == id).map(offered).unwrap_or_else(|| json!({"id":id,"model":id,"displayName":name})));
         Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"providers":offered_providers(&models, sources.as_ref()),
-            "opencode":native}))
+            "opencode":native,"default":default}))
     }
 
     /// Chooses the model for an Agent's next messages, keeping its variant.
@@ -1580,6 +1597,9 @@ impl Workspace {
                 .into_keys().collect(),
             None => BTreeSet::new(),
         };
+        // The model it goes to, shown while its Turn waits (YN-48): read before the check below, which is the last
+        // await before the Turn is recorded and the message sent.
+        let calling = calling(&c.server, model.as_ref()).await;
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
         let message = MessageId::new();
         let turn = message.as_str().to_owned();
@@ -1598,6 +1618,9 @@ impl Workspace {
             stale(d);
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
+            if let Some(calling) = calling {
+                entry["_opencodeModel"] = calling;
+            }
             // What 2.x admits for it comes under an ID of its own (`command_input`).
             if let Some(name) = awaited {
                 entry["_opencodeCommand"] = json!({"name":name,"awaiting":true});
@@ -2589,6 +2612,14 @@ fn message(d: &mut AgentDetail, info: &Value) {
                 turn["_opencodeAnswers"] = json!({});
             }
             turn["_opencodeAnswers"][id] = json!({"completed":info["time"]["completed"],"error":info["error"],"finish":info["finish"],"parent":parent});
+            // The model its step runs on, as 2.x says, while it runs (YN-48): another than the one the Turn was sent to
+            // is shown by its ID.
+            if let (true, Some(provider), Some(model)) = (turn["status"] == "inProgress", info["providerID"].as_str(), info["modelID"].as_str()) {
+                let named = format!("{provider}/{model}");
+                if turn["_opencodeModel"]["id"] != named.as_str() {
+                    turn["_opencodeModel"] = json!({"id": named, "name": named});
+                }
+            }
         }
         // A shell command of 2.x's (T-32 slice 4a, D2): its Turn's, as the message before it says; no answer.
         Some("shell") => {
@@ -2699,6 +2730,10 @@ fn part(d: &mut AgentDetail, part: &Value) {
     let (Some(message), Some(id)) = (part["messageID"].as_str(), part["id"].as_str()) else { return };
     let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some() || t["_opencodeShells"].get(message).is_some())
         else { return };
+    // Its answer goes on: what OpenCode waited on before is over (YN-48).
+    if let Some(fields) = turn.as_object_mut() {
+        fields.remove("_opencodeRetry");
+    }
     let item = match part["type"].as_str() {
         Some("shell") => json!({"id":id,"type":"commandExecution","command":part["command"],"status":part["status"],
             "aggregatedOutput":part["output"],"exitCode":part["exit"],"nativeMessageId":message}),
@@ -2858,7 +2893,16 @@ fn tool_status(status: Option<&str>) -> &'static str {
 }
 
 fn status(d: &mut AgentDetail, status: &Value) {
+    // What OpenCode waits on before trying its provider again (YN-48), until its answer goes on.
+    if status["type"] == "retry" {
+        if let Some(turn) = running(d) {
+            turn["_opencodeRetry"] = json!({"attempt":status["attempt"],"next":status["next"],"message":status["message"]});
+        }
+    }
     if status["type"] == "idle" {
+        if let Some(fields) = running(d).and_then(Value::as_object_mut) {
+            fields.remove("_opencodeRetry");
+        }
         // A compaction whose end was unknown is no longer running, and may still be settled.
         if let Some(turn) = d.turns.iter_mut().rev().find(|t| matches!(t["_opencodeCompact"]["state"].as_str(), Some("pending" | "unknown"))) {
             settle_compaction(turn, true);

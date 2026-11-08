@@ -843,7 +843,9 @@ impl Open {
                 vec![updated(shell_part(&id, &d["shell"], &d["output"]["output"]))]
             }
             "session.execution.started" => vec![status("busy")],
-            "session.retry.scheduled" => vec![status("retry")],
+            // What 2.x waits on (YN-48): the attempt next, when, and why the last one failed.
+            "session.retry.scheduled" => vec![made("session.status", json!({"sessionID": session, "status": {"type": "retry",
+                "attempt": d["attempt"], "next": d["at"], "message": d["error"]["message"]}}))],
             "session.execution.succeeded" => self.ended(event, vec![status("idle")]),
             "session.execution.failed" => self.ended(event, vec![failed(error(&d["error"], Some(EXECUTION_FAILED))), status("idle")]),
             // A run Core declined a request of ends as one shutting down does: declined (D-7 (a)).

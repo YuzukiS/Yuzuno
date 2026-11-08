@@ -56,6 +56,7 @@ import { InputReading } from "./input-reading";
 import { deliveryNote } from "./delivery-note";
 import { SubAgentAnchors } from "./SubAgentPanels";
 import { ActivityElapsed } from "./ActivityElapsed";
+import { OpenCodeWaiting } from "./OpenCodeWaiting";
 import { activityStartedAt } from "./activity-time";
 import { timeMarkKey, turnFooter, type Moment } from "./conversation-time";
 import type { TimeDisplay } from "./time-preferences";
@@ -831,6 +832,8 @@ export function Turn({
   time,
   backgroundShells,
   inputNumbers,
+  onStop,
+  onChangeModel,
 }: {
   turn: NativeTurn;
   index: number;
@@ -859,6 +862,10 @@ export function Turn({
   /** The number of each of the person's inputs among all of them, by
    * `${turnId}\n${itemId}`, where the inputs read so far say (T-6). */
   inputNumbers?: ReadonlyMap<string, number>;
+  /** Stops the Agent's running Turn, and opens its model settings: offered
+   * while an OpenCode Turn has shown nothing for a while (YN-48). */
+  onStop?: () => void;
+  onChangeModel?: () => void;
 }) {
   // Set once the turn is on screen: tool blocks that arrive after that are
   // live and unfold into place.
@@ -1239,7 +1246,16 @@ export function Turn({
             {(activity.state === "working" || activity.state === "compacting") && (
               <ActivityElapsed startedAt={activityStartedAt(turn, activity.state)} />
             )}
+            {/* The model an OpenCode Turn's message went to (YN-48). */}
+            {agent.harness === "opencode" && (turn._opencodeModel?.name || turn._opencodeModel?.id) && (
+              <span className="activity-model" title={turn._opencodeModel.default ? t.modelDefault : undefined}>
+                <span aria-hidden="true">· </span>{turn._opencodeModel.name || turn._opencodeModel.id}
+              </span>
+            )}
           </div>
+        )}
+        {running && agent.harness === "opencode" && (
+          <OpenCodeWaiting turn={turn} hasOutput={blocks.length > 0} onStop={onStop} onChangeModel={onChangeModel} />
         )}
         {turn.error != null && (
           <div role="alert" className="inline-error">

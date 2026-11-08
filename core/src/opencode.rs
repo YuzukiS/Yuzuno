@@ -913,6 +913,21 @@ impl Server {
         Ok(models)
     }
 
+    /// The model 2.x runs a session on when none was made the session's: its
+    /// configuration's `model`, else its newest enabled chat model (`GET
+    /// /api/model/default`; 2.2.5 core/src/model.ts `default`), as
+    /// `<provider>/<model>` and as shown, its provider's name (`GET
+    /// /api/provider`) and its own; None when it has none (YN-48). Only its
+    /// IDs and names are read.
+    pub async fn default_model(&self) -> Result<Option<(String, String)>> {
+        let model = self.data(Method::GET, "/api/model/default", &[], None).await?;
+        let (Some(provider), Some(id)) = (model["providerID"].as_str(), model["id"].as_str()) else { return Ok(None) };
+        let providers = self.data(Method::GET, "/api/provider", &[], None).await?;
+        let provider_name = providers.as_array().into_iter().flatten().find(|p| p["id"] == provider)
+            .and_then(|p| p["name"].as_str()).unwrap_or(provider);
+        Ok(Some((format!("{provider}/{id}"), format!("{provider_name} · {}", model["name"].as_str().unwrap_or(id)))))
+    }
+
     /// The commands OpenCode offers now, by name (`GET /api/command`, T-32
     /// slice 4a): its configuration's, its own (`init`, `review`, `goal`, …)
     /// and its MCP servers' prompts. Each is named and described only.

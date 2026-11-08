@@ -236,6 +236,14 @@ export interface NativeTurn {
   _yuzunoCompactionId?: string | null;
   /** An OpenCode Agent's /compact (T-10, T-61 slice 4): what Core knows of it. */
   _opencodeCompact?: { state?: string; input?: string | null };
+  /** An OpenCode Turn's model while it runs (YN-48): the one its message
+   * went to, by ID and as shown; `default` when it is OpenCode's own
+   * default; by ID only when OpenCode's answer named another. */
+  _opencodeModel?: { id?: string; name?: string; default?: boolean };
+  /** What OpenCode waits on before trying its provider again (YN-48): the
+   * attempt next, when (Unix ms) and why the last one failed, as OpenCode
+   * said it. Gone once its answer goes on. */
+  _opencodeRetry?: { attempt?: number | null; next?: number | null; message?: string | null };
   /** Interactive results published in this Turn with result_publish: the
    * latest version of each, in publication order (see core/src/results.rs). */
   _yuzunoResults?: PublishedResultRef[];
