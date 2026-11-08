@@ -969,34 +969,67 @@ impl Workspace {
 
     /// The connection's event stream, read until its generation is gone. It
     /// holds neither the Workspace nor the server, so dropping the Workspace
-    /// ends OpenCode and then this.
+    /// ends OpenCode and then this. Each event is applied in a task of its
+    /// own, and so is opening the stream again (YN-48): one that panics ends
+    /// only that task. A panicking event is read as the stream breaking,
+    /// logged with its cause, then the stream opened again and the session
+    /// read whole (`opencode_resubscribe`, within RESUBSCRIBE); and if that
+    /// fails, or panics too, the connection ends (`opencode_disconnected`):
+    /// the Agent says so and its running Turn is settled as unknown. Never is
+    /// the Agent left working with nothing more of its session read.
     fn opencode_watch(self: &Arc<Self>, id: &str, generation: u64, mut events: Events, server: Weak<Server>) {
         let (ws, id) = (Arc::downgrade(self), id.to_owned());
         tokio::spawn(async move {
             loop {
                 let next = events.next().await;
                 let Some(workspace) = ws.upgrade() else { return };
-                match next {
-                    Ok(Some(event)) => workspace.dispatch_opencode_event(&id, generation, event).await,
-                    ended => {
-                        if workspace.opencode_current(&id, generation).is_none() {
-                            return;
-                        }
-                        let reason = match ended {
-                            Err(error) => error.to_string(),
-                            _ => "OpenCode 结束了事件流".into(),
-                        };
-                        match workspace.opencode_resubscribe(&id, generation, &server).await {
-                            Some(again) => events = again,
-                            None => {
-                                workspace.opencode_disconnected(&id, generation, &reason).await;
-                                return;
+                let reason = match next {
+                    Ok(Some(event)) => {
+                        let (applying, agent) = (workspace.clone(), id.clone());
+                        match tokio::spawn(async move { applying.dispatch_opencode_event(&agent, generation, event).await }).await {
+                            Ok(()) => continue,
+                            Err(failed) => {
+                                let cause = failure(failed);
+                                eprintln!("Workspace OpenCode event of Agent {id} failed: {cause}; its stream is opened again");
+                                format!("Core 处理 OpenCode 的事件时出错：{cause}")
                             }
                         }
+                    }
+                    Err(error) => error.to_string(),
+                    Ok(None) => "OpenCode 结束了事件流".into(),
+                };
+                if workspace.opencode_current(&id, generation).is_none() {
+                    return;
+                }
+                workspace.opencode_unpoison(&id, generation);
+                let (opening, agent, held) = (workspace.clone(), id.clone(), server.clone());
+                match tokio::spawn(async move { opening.opencode_resubscribe(&agent, generation, &held).await }).await {
+                    Ok(Some(again)) => events = again,
+                    Ok(None) => {
+                        workspace.opencode_disconnected(&id, generation, &reason).await;
+                        return;
+                    }
+                    Err(failed) => {
+                        let cause = failure(failed);
+                        eprintln!("Workspace OpenCode stream of Agent {id} was not opened again: {cause}");
+                        workspace.opencode_disconnected(&id, generation, &format!("{reason}；再次读取时也出错：{cause}")).await;
+                        return;
                     }
                 }
             }
         });
+    }
+
+    /// After a task of connection `generation` panicked (`opencode_watch`):
+    /// what it held is used again, not left poisoned; reading the session
+    /// whole next makes what it read consistent again.
+    fn opencode_unpoison(&self, id: &str, generation: u64) {
+        let Some(c) = self.opencode_current(id, generation) else { return };
+        c.cursor.clear_poison();
+        c.usage.clear_poison();
+        c.children.clear_poison();
+        c.logins.clear_poison();
+        c.mcp_confirmed.clear_poison();
     }
 
     async fn opencode_resubscribe(&self, id: &str, generation: u64, server: &Weak<Server>) -> Option<Events> {
@@ -1122,6 +1155,11 @@ impl Workspace {
     }
 
     fn opencode_event(&self, id: &str, generation: u64, event: &Value) {
+        // A test's own event whose application panics, for what reading the stream does then (YN-48).
+        #[cfg(test)]
+        if event["type"] == "yuzuno.test.panic" {
+            panic!("an event whose application panics, sent by a test");
+        }
         let Some(c) = self.opencode_current(id, generation) else { return };
         let Some(session) = opencode::session_of(event) else { return };
         let kind = event["type"].as_str().unwrap_or("unknown");
@@ -2966,6 +3004,18 @@ fn ended(d: &mut AgentDetail, message: &str) {
 fn restarted(d: &mut AgentDetail) {
     ended(d, "OpenCode 进程已重新启动；这一轮的结果未确认，不会重发。原 Session 与历史保留。");
     d.pending.clear();
+}
+
+/// Why a task ended without its answer: what it panicked with, else how it
+/// was cancelled.
+fn failure(failed: tokio::task::JoinError) -> String {
+    if !failed.is_panic() {
+        return failed.to_string();
+    }
+    let payload = failed.into_panic();
+    payload.downcast_ref::<&str>().map(|said| (*said).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic with no message".into())
 }
 
 fn refresh_status(d: &mut AgentDetail) {
