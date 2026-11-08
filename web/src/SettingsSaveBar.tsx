@@ -95,11 +95,13 @@ export function SaveBarScope({ children, hidden = false }: {
   const ready = [...parts.values()].every((part) => part.ready !== false);
   // A new change after a save clears what that save came to, once it has
   // been read: a failed block that stays changed keeps its "wasn't saved".
+  // With no change left (its block took what Core has instead, YN-49), a
+  // "wasn't saved" names nothing any more and goes.
   const seen = useRef(count);
   useEffect(() => {
-    if (count > seen.current && outcome?.failed === 0) setOutcome(null);
+    if ((count > seen.current && outcome?.failed === 0) || (count === 0 && !busy && (outcome?.failed ?? 0) > 0)) setOutcome(null);
     seen.current = count;
-  }, [count, outcome]);
+  }, [count, outcome, busy]);
   const line = useRef<HTMLSpanElement>(null);
   const pressed = useRef(false);
   useLayoutEffect(() => {
