@@ -425,6 +425,15 @@ fn a_dispatch_runs_on_its_machine_in_its_projects_folder_there() {
     let refused: i64 = store.db.read().unwrap().query_row(
         "SELECT COUNT(*) FROM executor_dispatches WHERE request_id IN ('unknown','no-folder','worktree','given','contained')", [], |r| r.get(0)).unwrap();
     assert_eq!(refused, 0, "nothing was written for a refused one");
+
+    // YN-37: an unknown machine's refusal names where this executor could
+    // run instead, by id and name only; a Codex one, not where Agents are contained.
+    let unknown = begun(&store, None, with("unknown", json!({"templateId":"reviewer","machineId":"laptop"}))).err().unwrap();
+    assert_eq!(unknown, "machine_not_found: no registered machine is laptop; this executor can run on \
+        local (this Core host), lab-box (Lab box), boxed (Boxed). machines_list lists them");
+    let codex = begun(&store, None, with("unknown-codex", json!({"templateId":"coder","machineId":"laptop"}))).err().unwrap();
+    assert!(codex.contains("this executor can run on local (this Core host), lab-box (Lab box). machines_list"), "{codex}");
+    assert!(!unknown.contains("192.0.2.10") && !codex.contains("tester@"), "no connection detail: {unknown} / {codex}");
 }
 
 /// T-34 (R3 d51396b7): an executor is created under the work permit its

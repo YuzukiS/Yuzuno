@@ -343,11 +343,34 @@ and is chosen unless you pick a template. Core then:
   the update is done: one that had not been made goes ahead then, and nothing
   was written for it before. A retry of one already made is refused during
   the update too, and gets its recorded answer after it.
-- **Which machine.** A dispatch's `machineId` names a machine from the
-  Machines list, `local` for this Core host, or `auto`. Left out, the
-  template's machine holds, else this Core host (a general executor has no
-  machine of its own). A machine that isn't registered, or can't run the
-  executor's harness, is refused before anything is written.
+- **Which machine.** A dispatch's `machineId` names a machine by its id:
+  `local` for this Core host, a registered machine's id, or `auto`. The
+  machine is the dispatch's choice; a template's machine is only its default.
+  Left out, the template's machine holds, else this Core host (a general
+  executor has no machine of its own). A machine that isn't registered, or
+  can't run the executor's harness, is refused before anything is written.
+  An id no machine has is refused naming the machines this executor could run
+  on, each by id and name (`local (this Core host), <id> (<name>)`).
+- **Finding a machine's id.** In Settings → Machines, each machine's page
+  shows its id with a copy button, and says it is the id a dispatch names.
+  The Core host's is `local`. (YN-37)
+- **What a lead reads of the machines.** `machines_list` lists the machines a
+  dispatch can name, for a lead choosing one. For each it gives the id, the
+  name, the kind (`local`, this Core host, or `ssh`), the harnesses an
+  executor there can use (OpenCode on this Core host only, no Codex on a
+  machine that keeps its Agents contained), its executor slots (`limit`;
+  `running`, those starting or running there; `waiting`, those queued for a
+  slot there), `connected` (whether Core holds a live connection to an Agent
+  there now; always true for this Core host, and false says only that none
+  is connected, not that the machine is down), `lastCheck` (when the user's
+  newest manual check ran and whether it reached the machine, or null) and
+  `projectFolder` (whether the caller's Project has a folder there, which an
+  executor on another machine works in). A machine is named only by its id
+  and name: no SSH destination, user, port, key, executable, folder, data
+  root or check error is given. Windows on this PC runs Jobs only, never an
+  executor, so it is not listed. Only leads of a Project, and you, read it;
+  an executor or another member is refused (`not_lead`). Reading changes
+  nothing.
 - **`auto`.** Core chooses the machine when it dispatches, from this Core
   host and every registered machine that can run the executor's harness and
   where the task has a folder: its Project's there, or on this Core host a

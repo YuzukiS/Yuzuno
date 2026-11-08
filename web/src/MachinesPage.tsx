@@ -14,7 +14,7 @@ import {
   Wifi,
 } from "lucide-react";
 import { api, errorText, remove } from "./api";
-import { Avatar } from "./components";
+import { Avatar, CopyButton } from "./components";
 import {
   checkAge,
   harnessLabel,
@@ -204,6 +204,10 @@ const text = strings({
   ok: "OK",
   cancel: "Cancel",
   removeMachine: "Remove machine",
+  // YN-37: the id a dispatch names it by (task_dispatch machineId).
+  machineId: "Machine ID",
+  copyId: "Copy ID",
+  idNote: "A dispatch to this machine names it by this ID (machineId).",
   defaultFolder: "Default folder",
   codex: "Codex executable",
   atLastCheck: "At last check",
@@ -242,6 +246,9 @@ const text = strings({
   ok: "好",
   cancel: "取消",
   removeMachine: "移除机器",
+  machineId: "机器 ID",
+  copyId: "复制 ID",
+  idNote: "派发到这台机器时，用这个 ID（machineId）指定它。",
   defaultFolder: "默认文件夹",
   codex: "Codex 可执行文件",
   atLastCheck: "上次检查时",
@@ -491,6 +498,13 @@ export function MachinesPage({
                   {checkErrors[machine.id]}
                 </p>
               )}
+              {/* The id a dispatch names it by, to copy (YN-37): the Core host's is local. */}
+              <div className="machine-id" role="group" aria-label={t.machineId}>
+                <span className="machine-id-label">{t.machineId}</span>
+                <code className="machine-id-value">{machine.id}</code>
+                <CopyButton text={machine.id} label={t.copyId} />
+                <p className="machine-id-note">{t.idNote}</p>
+              </div>
               <dl className="machine-facts">
                 <div>
                   <dt>{t.defaultFolder}</dt>

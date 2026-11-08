@@ -88,6 +88,10 @@ impl Workspace {
             return tokio::spawn(crate::executor_templates::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Executor template operation ended unexpectedly")?;
         }
+        if operation == crate::machine_list::TOOL {
+            return tokio::spawn(crate::machine_list::call(self.clone(), actor.map(str::to_owned), input))
+                .await.context("Listing the machines ended unexpectedly")?;
+        }
         if operation == "executor_release" {
             // Its close is awaited in turn; a dropped request does not stop it.
             return tokio::spawn(crate::executor_release::call(self.clone(), actor.map(str::to_owned), input))

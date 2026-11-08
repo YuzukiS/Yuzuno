@@ -51,6 +51,7 @@ pub mod db;
 pub mod events;
 pub mod gpu_sampler;
 pub mod machine_load;
+mod machine_list;
 pub mod machines;
 pub mod model;
 pub mod message_content;
