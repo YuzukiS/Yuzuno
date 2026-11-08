@@ -139,7 +139,7 @@ test("a backup notice only for a run newly known to have failed, once, naming no
     kind: "backupFailed",
     tag: "yuzuno:backupFailed:ws-1:op-26",
     title: "The daily backup failed",
-    body: "The backup due at 2026-10-26 03:00 UTC did not finish. Open Settings → Backup to see why.",
+    body: "The backup due at 2026-10-26 03:00 UTC did not finish. Open Settings → Backup & restore to see why.",
     backup: { workspaceId: "ws-1" },
   });
   assert.doesNotMatch(JSON.stringify(failed), /backups\/daily|Not enough space|GiB/);
@@ -156,7 +156,7 @@ test("a backup notice only for a run newly known to have failed, once, naming no
   assert.deepEqual([notStarted.title, notStarted.tag, notStarted.body], [
     "The daily backup didn’t start",
     "yuzuno:backupFailed:ws-1:2026-10-26T03:00:00Z",
-    "The backup due at 2026-10-26 03:00 UTC could not begin. Open Settings → Backup to see why.",
+    "The backup due at 2026-10-26 03:00 UTC could not begin. Open Settings → Backup & restore to see why.",
   ]);
   // The next day's run failing after this one did: a notice of its own.
   const next = events.backupNotice("ws-1", run("failed"), run("failed", { slot: "2026-10-27T03:00:00Z", operationId: "op-27" }));
