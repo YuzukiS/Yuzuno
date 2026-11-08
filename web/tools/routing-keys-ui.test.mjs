@@ -324,5 +324,5 @@ test("where the routes refuse (the phone entry), the page says where keys are ch
   const page = mount({ route: () => [403, { error: "Proxied request: a phone uses Core's remote entry" }] });
   await until(() => page.document.querySelector(".routing-read-error"), "the refusal");
   assert.match(page.document.querySelector(".routing-read-error").textContent, /only from your own browser on this computer/);
-  assert.equal(page.document.querySelector(".settings-group"), null, "no rows to change");
+  assert.ok(!page.document.querySelector(".settings-group"), "no rows to change");
 });
