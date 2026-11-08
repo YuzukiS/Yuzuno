@@ -3181,7 +3181,8 @@ test("the desktop app's taskbar button gets the same count, once per change, its
       // updates, notifications) are not this test's concern.
       w.__TAURI_INTERNALS__ = {};
       w.__TAURI__ = { core: { invoke: async (command, args) => {
-        if (command === "desktop_badge") sent.push(args);
+        // A copy made here: the page's own object has the page's prototypes.
+        if (command === "desktop_badge") sent.push({ ...args });
         return null;
       } } };
     },
