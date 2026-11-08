@@ -823,7 +823,8 @@ mod routing {
         store.save_routing_policy(0, policy).unwrap().unwrap();
 
         // The first candidate whose conditions hold: DeepSeek on its key, on this Core host.
-        let plan = routed(&store, dispatch(&task(&store, "One", Some(&p), None), "one"), true);
+        let one = task(&store, "One", Some(&p), None);
+        let plan = routed(&store, dispatch(&one, "one"), true);
         assert_eq!((plan.template.harness.as_str(), plan.template.model.as_deref(), plan.machine.as_str()),
             ("opencode", Some("deepseek/deepseek-flash"), "local"));
         assert_eq!(plan.profile, Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() }));
@@ -831,6 +832,9 @@ mod routing {
         let route = route_of(&store, &plan.dispatch.agent_id).unwrap();
         assert_eq!((route["chosen"].clone(), route["at"].clone(), route["excluded"].clone()), (json!("c-deepseek"), json!("dispatch"), json!([])));
         create(&store, &plan);
+        store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+        let current = store.collaboration_call(None, "task_get", json!({"taskId": one, "view": "current"})).unwrap();
+        assert_eq!(current["current"]["executorSlot"]["route"]["chosen"], "c-deepseek", "the task shows why: {current}");
 
         // A fixed template starts as it says, with no route and no profile.
         let mut input = dispatch(&task(&store, "Two", Some(&p), None), "two");
@@ -857,6 +861,7 @@ mod routing {
         let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
         assert_eq!((route["waiting"].clone(), route["chosen"].clone()), (json!(true), Value::Null));
         create(&store, &waits);
+        store.collaboration_call(None, "task_dispatch", waits.dispatch.input.clone()).unwrap();
         assert!(crate::routing_policy::dispatch::waiting(&*store.db.read().unwrap(), &waits.dispatch.agent_id).unwrap());
         let listed = store.routing_waiting().unwrap();
         assert_eq!(listed.iter().map(|(a, h, m, _)| (a.clone(), h.clone(), m.clone())).collect::<Vec<_>>(),
