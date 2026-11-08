@@ -126,7 +126,9 @@ const editorField = (page, id, label) => [...card(page, id).querySelectorAll(".r
 const byLabel = (page, label) => page.document.querySelector(`[aria-label="${label}"]`);
 async function opened(page) {
   await until(() => cards(page).length > 0, "the candidates");
-  await until(() => !/not added yet|还没添加/.test(cards(page)[0].textContent), "the keys read");
+  await until(() => ["/routing/keys", "/routing/accounts"].every((path) => page.calls.some((c) => c.url.endsWith(path))), "the keys and accounts asked for");
+  await tick();
+  await tick();
 }
 async function save(page, words = "Save") {
   // The bar's Save appears once the change has joined it (an effect after the render).
@@ -187,6 +189,7 @@ test("a new candidate: tool, model, effort, a Codex account and a condition; wha
   const id = cards(page)[2].dataset.cand;
   assert.match(id, /^c-[0-9a-z]{6}$/);
   assert.equal(titles(page)[2], "Claude Code · sonnet");
+  assert.equal(editorField(page, id, "Reasoning effort"), undefined, "a reasoning effort is Codex's only");
   await set(page, editorField(page, id, "Tool"), "codex");
   assert.equal(editorField(page, id, "Model").value, "gpt-6.1-sol", "a tool's first model");
   await set(page, editorField(page, id, "Reasoning effort"), "high");
@@ -195,8 +198,8 @@ test("a new candidate: tool, model, effort, a Codex account and a condition; wha
   await set(page, editorField(page, id, "Account or key"), "home:work");
   button(page, "Subscription left", card(page, id)).click();
   await tick();
-  await set(page, editorField(page, id, "Model"), "");
-  assert.ok(card(page, id).textContent.includes("A model is needed."));
+  await set(page, editorField(page, id, "Model"), "gpt 6.1");
+  assert.ok(card(page, id).textContent.includes("A model is one name, without spaces."), "as Core's check would refuse it");
   assert.match(bar(page).textContent, /Correct the marked block to save/);
   assert.equal(button(page, "Save", bar(page)).disabled, true);
   await set(page, editorField(page, id, "Model"), "gpt-6.1-sol");
@@ -269,15 +272,24 @@ test("the preset 「闲时 DeepSeek 优先」 replaces the list once confirmed, 
   await tick();
   assert.deepEqual(titles(page), ["OpenCode · deepseek-flash", "Claude Code · opus", "Codex · gpt-6.1-sol", "Claude Code · opus", "Codex · gpt-6.1-sol"]);
   assert.deepEqual(chips(cards(page)[0]), ["DeepSeek 闲时 · 离高峰至少 30 分钟", "今日本项 ≤ $5"]);
+  // No OpenAI key in this Workspace: its candidate says so, and holds the save until it has one or goes (Core refuses a key not set).
   assert.match(cards(page)[4].querySelector(".routing-cand-sub").textContent, /API key openai · 还没添加/, "a provider without a key says so");
+  assert.ok(cards(page)[4].querySelector(".settings-tag.is-error"), "marked to fix");
+  await until(() => button(page, "保存", bar(page)), "the bar");
+  assert.equal(button(page, "保存", bar(page)).disabled, true, "held while a key is missing");
+  button(page, `编辑 Codex · gpt-6.1-sol · API`).click();
+  await until(() => cards(page)[4].querySelector(".routing-edit"), "its editor");
+  assert.match(cards(page)[4].querySelector(".routing-edit").textContent, /还没有 key openai：在下面的「账号和密钥」里添加，或换一个。/);
+  button(page, "删除这一项", cards(page)[4]).click();
+  await tick();
   await save(page, "保存");
   await until(() => puts(page).length === 1, "the save");
   const sent = puts(page)[0].body.policy.candidates;
   assert.deepEqual(sent.map((c) => c.credential), [
     { kind: "apiKey", keyId: "deepseek-main" }, { kind: "pool", manager: "cswap", accounts: "all", pick: "mostRemaining" }, { kind: "login" },
-    { kind: "apiKey", keyId: "anthropic" }, { kind: "apiKey", keyId: "openai" }]);
+    { kind: "apiKey", keyId: "anthropic" }]);
   assert.deepEqual(sent[0].conditions[0], { kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 });
-  assert.equal(new Set(sent.map((c) => c.id)).size, 5, "each its own id");
+  assert.equal(new Set(sent.map((c) => c.id)).size, 4, "each its own id");
 });
 
 test("routing off, the Workspace cap, a weekly schedule of its own and a pool of chosen accounts", async () => {

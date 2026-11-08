@@ -46,6 +46,7 @@ const text = strings({
   keyLocal: "this host",
   key1p: "1Password",
   keyMissing: (id: string) => `API key ${id} · not added yet: add it under Accounts and keys`,
+  keyPending: (id: string) => `API key ${id}`,
   codexHome: (label: string) => `Codex account: ${label}`,
   codexHomeMissing: (id: string) => `Codex account ${id} · not in the list`,
   chipPeakOff: (m?: number) => (m ? `DeepSeek off-peak · at least ${m} min before peak` : "DeepSeek off-peak"),
@@ -66,6 +67,7 @@ const text = strings({
   // The editor.
   label: "Name",
   labelPlaceholder: "Empty: tool and model",
+  modelPlaceholder: "The tool's default",
   harness: "Tool",
   model: "Model",
   effort: "Reasoning effort",
@@ -98,7 +100,7 @@ const text = strings({
   dayOf: (n: number, day: string) => `Period ${n}: ${day}`,
   from: (n: number) => `Period ${n}: from`,
   to: (n: number) => `Period ${n}: to`,
-  toHelp: "00:00 as the end is midnight.",
+  toHelp: "An end at or before the start runs past midnight; 00:00 as the end is midnight.",
   removeSlot: (n: number) => `Remove period ${n}`,
   addSlot: "Add a period",
   minLeft: "At least this many minutes left in it",
@@ -115,15 +117,19 @@ const text = strings({
   done: "Done",
   // Problems.
   needsFix: "Needs a fix",
-  modelNeeded: "A model is needed.",
+  modelSpaces: "A model is one name, without spaces.",
+  modelOpencode: "An OpenCode model is <provider>/<model>, such as deepseek/deepseek-flash.",
+  keyNeeded: (id: string) => `The key ${id} isn't added yet: add it under Accounts and keys below, or choose another.`,
+  homeNeeded: (id: string) => `The Codex account ${id} isn't listed: add it under Accounts and keys below, or choose another.`,
   labelTooLong: "A name is at most 60 characters.",
   credNotFit: "This tool can't use that account or key.",
   poolEmpty: "Choose an account, or all.",
   quotaEmpty: "Give a 5-hour or weekly share, or remove the condition.",
-  capBad: "A daily spend above $0.",
-  slotsEmpty: "A time window needs a period with a day.",
-  slotBad: (n: number) => `Period ${n} ends before it starts.`,
-  minBad: "Minutes are 0 or more.",
+  capBad: "A daily spend above $0, at most $10,000.",
+  slotsEmpty: "A time window needs a period.",
+  slotNoDay: (n: number) => `Period ${n} needs a day.`,
+  slotBad: (n: number) => `Period ${n} starts and ends at the same time.`,
+  minBad: "1 to 1440 minutes.",
   // Below the list.
   add: "Add a candidate",
   max: (n: number) => `At most ${n} candidates.`,
@@ -175,6 +181,7 @@ const text = strings({
   keyLocal: "本机密钥库",
   key1p: "1Password",
   keyMissing: (id) => `API key ${id} · 还没添加：在「账号和密钥」里添加`,
+  keyPending: (id) => `API key ${id}`,
   codexHome: (label) => `Codex 账号：${label}`,
   codexHomeMissing: (id) => `Codex 账号 ${id} · 不在列表里`,
   chipPeakOff: (m) => (m ? `DeepSeek 闲时 · 离高峰至少 ${m} 分钟` : "DeepSeek 闲时"),
@@ -194,6 +201,7 @@ const text = strings({
   moreSlots: (n) => ` 等 ${n + 1} 段`,
   label: "名称",
   labelPlaceholder: "不填就用工具和模型",
+  modelPlaceholder: "工具的默认模型",
   harness: "工具",
   model: "模型",
   effort: "推理强度",
@@ -226,7 +234,7 @@ const text = strings({
   dayOf: (n, day) => `时段 ${n}：${day}`,
   from: (n) => `时段 ${n}：开始`,
   to: (n) => `时段 ${n}：结束`,
-  toHelp: "结束填 00:00 就是到午夜。",
+  toHelp: "结束早于或等于开始就是跨过午夜；结束填 00:00 就是到午夜。",
   removeSlot: (n) => `删除时段 ${n}`,
   addSlot: "添加时段",
   minLeft: "至少还剩多少分钟",
@@ -242,15 +250,19 @@ const text = strings({
   remove: "删除这一项",
   done: "完成",
   needsFix: "需要修改",
-  modelNeeded: "需要填模型。",
+  modelSpaces: "模型是一个名字，不带空格。",
+  modelOpencode: "OpenCode 的模型写成 <提供方>/<模型>，例如 deepseek/deepseek-flash。",
+  keyNeeded: (id) => `还没有 key ${id}：在下面的「账号和密钥」里添加，或换一个。`,
+  homeNeeded: (id) => `Codex 账号 ${id} 不在列表里：在下面的「账号和密钥」里添加，或换一个。`,
   labelTooLong: "名称最多 60 个字。",
   credNotFit: "这个工具用不了这个账号或 key。",
   poolEmpty: "选一个账号，或全部。",
   quotaEmpty: "填 5 小时或本周的下限，或删掉这个条件。",
-  capBad: "每日花费要大于 $0。",
-  slotsEmpty: "时间窗口至少要有一个选了日子的时段。",
-  slotBad: (n) => `时段 ${n} 的结束早于开始。`,
-  minBad: "分钟数不能是负数。",
+  capBad: "每日花费要大于 $0，最多 $10,000。",
+  slotsEmpty: "时间窗口至少要有一个时段。",
+  slotNoDay: (n) => `时段 ${n} 要选至少一天。`,
+  slotBad: (n) => `时段 ${n} 的开始和结束是同一时间。`,
+  minBad: "1 到 1440 分钟。",
   add: "添加候选",
   max: (n) => `最多 ${n} 项。`,
   presets: "预设：",
@@ -275,8 +287,6 @@ const text = strings({
 type Text = ReturnType<typeof text>;
 
 const savedAt = timeFormatter({ month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-const minutesOf = (hhmm: string) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
-
 /** A schedule in a few words: its zone, its first period's days and hours, and how many more. */
 function scheduleWords(schedule: Schedule, t: Text): string {
   const slot = schedule.slots[0];
@@ -298,38 +308,56 @@ function chipText(c: AnyCondition, t: Text): string {
 const chipIcon = (c: AnyCondition) => (c.kind === "timeWindow" ? Clock : c.kind === "quota" ? Gauge : c.kind === "dailyApiCap" ? Wallet : CircleHelp);
 
 /** What a candidate's account or key is, in a line. */
-function credentialWords(c: Candidate, t: Text, keys: RoutingKey[], accounts: AccountsView | null): { text: string; missing: boolean } {
+function credentialWords(c: Candidate, t: Text, keys: RoutingKey[] | null, accounts: AccountsView | null): { text: string; missing: boolean } {
   const cred = c.credential;
   if (cred.kind === "login") return { text: c.harness === "codex" ? t.loginCodex : c.harness === "claude" ? t.loginClaude : t.loginOpencode, missing: false };
   if (cred.kind === "pool") return { text: t.pool(cred.accounts === "all" ? "all" : cred.accounts.length), missing: false };
   if (cred.kind === "apiKey") {
+    if (!keys) return { text: t.keyPending(cred.keyId), missing: false };
     const key = keys.find((k) => k.id === cred.keyId);
     return key ? { text: t.key(providerName[key.provider] ?? key.provider, key.source === "local" ? t.keyLocal : t.key1p), missing: false } : { text: t.keyMissing(cred.keyId), missing: true };
   }
   const home = accounts?.codexHomes.find((h) => h.id === cred.id);
   return home ? { text: t.codexHome(home.label), missing: false } : { text: t.codexHomeMissing(cred.id), missing: !!accounts };
 }
-const titleOf = (c: Candidate) => c.label?.trim() || `${harnessName[c.harness] ?? c.harness} · ${modelShort(c.model) || "?"}`;
+const titleOf = (c: Candidate) => c.label?.trim() || [harnessName[c.harness] ?? c.harness, modelShort(c.model ?? "")].filter(Boolean).join(" · ");
 /** A candidate's name where its card's API tag isn't beside it (labels,
  * announcements, a newer version's order): one with an API key says so, so
  * "Claude Code · opus" by subscription and by API key are told apart. */
 const nameOf = (c: Candidate) => (c.label?.trim() || c.credential.kind !== "apiKey" ? titleOf(c) : `${titleOf(c)} · API`);
 
-/** What keeps a candidate from being saved, by where it is ("" the candidate, else a condition's place). */
-function problemsOf(c: Candidate, t: Text): { at: string; text: string }[] {
+const minutesOf = (hhmm: string) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
+const usdFits = (n: number | undefined) => n != null && n > 0 && n <= 10_000;
+
+/** What keeps a candidate from being saved, by where it is ("" the candidate,
+ * else a condition's place), as Core's check (YN-34 S3a) would refuse it, so
+ * it is said here before a save. */
+function problemsOf(c: Candidate, t: Text, keys: RoutingKey[] | null, accounts: AccountsView | null): { at: string; text: string }[] {
   const list: { at: string; text: string }[] = [];
-  if (!c.model.trim()) list.push({ at: "", text: t.modelNeeded });
+  const model = c.model ?? "";
+  if (/\s/.test(model)) list.push({ at: "", text: t.modelSpaces });
+  else if (c.harness === "opencode" && model && !/^[^/\s]+\/[^\s]+$/.test(model)) list.push({ at: "", text: t.modelOpencode });
   if ((c.label ?? "").trim().length > 60) list.push({ at: "", text: t.labelTooLong });
-  if (!credentialFits(c.harness, c.credential)) list.push({ at: "", text: t.credNotFit });
-  if (c.credential.kind === "pool" && Array.isArray(c.credential.accounts) && c.credential.accounts.length === 0) list.push({ at: "", text: t.poolEmpty });
+  const cred = c.credential;
+  if (!credentialFits(c.harness, cred)) list.push({ at: "", text: t.credNotFit });
+  else if (cred.kind === "apiKey" && keys) {
+    const key = keys.find((k) => k.id === cred.keyId);
+    if (!key) list.push({ at: "", text: t.keyNeeded(cred.keyId) });
+    else if (!keyFits(c.harness, key.provider)) list.push({ at: "", text: t.credNotFit });
+  } else if (cred.kind === "codexHome" && accounts && !accounts.codexHomes.some((h) => h.id === cred.id)) list.push({ at: "", text: t.homeNeeded(cred.id) });
+  if (cred.kind === "pool" && Array.isArray(cred.accounts) && cred.accounts.length === 0) list.push({ at: "", text: t.poolEmpty });
   c.conditions.forEach((cond, i) => {
     if (!isKnown(cond)) return;
-    if (cond.kind === "quota" && cond.fiveHourLeftPct == null && cond.weekLeftPct == null) list.push({ at: String(i), text: t.quotaEmpty });
-    if (cond.kind === "dailyApiCap" && !(cond.usd > 0)) list.push({ at: String(i), text: t.capBad });
+    const at = String(i);
+    if (cond.kind === "quota" && cond.fiveHourLeftPct == null && cond.weekLeftPct == null) list.push({ at, text: t.quotaEmpty });
+    if (cond.kind === "dailyApiCap" && !usdFits(cond.usd)) list.push({ at, text: t.capBad });
     if (cond.kind === "timeWindow") {
-      if (!cond.schedule.slots.some((s) => s.days.length)) list.push({ at: String(i), text: t.slotsEmpty });
-      cond.schedule.slots.forEach((s, n) => { if (minutesOf(s.to) <= minutesOf(s.from)) list.push({ at: String(i), text: t.slotBad(n + 1) }); });
-      if (cond.minMinutesLeft != null && cond.minMinutesLeft < 0) list.push({ at: String(i), text: t.minBad });
+      if (!cond.schedule.slots.length) list.push({ at, text: t.slotsEmpty });
+      cond.schedule.slots.forEach((s, n) => {
+        if (!s.days.length) list.push({ at, text: t.slotNoDay(n + 1) });
+        else if (minutesOf(s.from) === minutesOf(s.to)) list.push({ at, text: t.slotBad(n + 1) });
+      });
+      if (cond.minMinutesLeft != null && !(cond.minMinutesLeft >= 1 && cond.minMinutesLeft <= 1440)) list.push({ at, text: t.minBad });
     }
   });
   return list;
@@ -344,7 +372,8 @@ export function ExecutorRouting({ active }: { active: boolean }) {
   const [view, setView] = useState<PolicyView | null>(null);
   const [draft, setDraft] = useState<Policy | null>(null);
   const [readError, setReadError] = useState("");
-  const [keys, setKeys] = useState<RoutingKey[]>([]);
+  // null until read: a key a candidate names is called missing only from a list that was read.
+  const [keys, setKeys] = useState<RoutingKey[] | null>(null);
   const [accounts, setAccounts] = useState<AccountsView | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [conflict, setConflict] = useState<PolicyView | null>(null);
@@ -391,8 +420,9 @@ export function ExecutorRouting({ active }: { active: boolean }) {
 
   const policy = draft;
   const changed = !!view && !!policy && JSON.stringify(policy) !== JSON.stringify(view.policy);
-  const problems = new Map((policy?.candidates ?? []).map((c) => [c.id, problemsOf(c, t)]));
-  const invalid = [...problems.values()].some((p) => p.length > 0) || (policy?.dailyApiCapUsd != null && !(policy.dailyApiCapUsd > 0));
+  const problems = new Map((policy?.candidates ?? []).map((c) => [c.id, problemsOf(c, t, keys, accounts)]));
+  const capBad = policy?.dailyApiCapUsd != null && !usdFits(policy.dailyApiCapUsd);
+  const invalid = [...problems.values()].some((p) => p.length > 0) || capBad;
   const edit = (change: (p: Policy) => Policy) => { setDraft((p) => (p ? change(p) : p)); setRefused(null); setSaveError(""); };
   const editCandidate = (id: string, change: (c: Candidate) => Candidate) =>
     edit((p) => ({ ...p, candidates: p.candidates.map((c) => (c.id === id ? change(c) : c)) }));
@@ -434,7 +464,7 @@ export function ExecutorRouting({ active }: { active: boolean }) {
     setOpen(id);
   };
   const applyPreset = (preset: PresetId) => {
-    edit((p) => ({ ...p, candidates: presetCandidates(preset, keys, p.candidates.map((c) => c.id)).slice(0, limit) }));
+    edit((p) => ({ ...p, candidates: presetCandidates(preset, keys ?? [], p.candidates.map((c) => c.id)).slice(0, limit) }));
     setAsking(null);
     setOpen(null);
   };
@@ -519,13 +549,13 @@ export function ExecutorRouting({ active }: { active: boolean }) {
               <label className="routing-inline-field">
                 <span>{t.capInput}</span>
                 <input type="number" className="settings-input routing-number" min={0} step={1} inputMode="decimal" placeholder={t.capNone}
-                  aria-label={t.capInput} value={policy.dailyApiCapUsd ?? ""} aria-invalid={(policy.dailyApiCapUsd != null && !(policy.dailyApiCapUsd > 0)) || undefined}
+                  aria-label={t.capInput} value={policy.dailyApiCapUsd ?? ""} aria-invalid={capBad || undefined}
                   onChange={(e) => edit((p) => {
                     const { dailyApiCapUsd: _, ...rest } = p;
                     return e.target.value === "" ? (rest as Policy) : { ...rest, dailyApiCapUsd: Number(e.target.value) };
                   })} />
               </label>
-              {policy.dailyApiCapUsd != null && !(policy.dailyApiCapUsd > 0) && <span className="inline-error">{t.capBad}</span>}
+              {capBad && <span className="inline-error">{t.capBad}</span>}
             </div>
           </div>
         </div>
@@ -536,7 +566,7 @@ export function ExecutorRouting({ active }: { active: boolean }) {
 
 /** The candidates as cards, reordered by a handle's drag, its arrow keys, or the arrows beside each card. */
 function CandidateList({ policy, t, keys, accounts, open, problems, refusedId, refusedCondition, colourOf, onOpen, onMove, onEdit, onRemove }: {
-  policy: Policy; t: Text; keys: RoutingKey[]; accounts: AccountsView | null; open: string | null;
+  policy: Policy; t: Text; keys: RoutingKey[] | null; accounts: AccountsView | null; open: string | null;
   problems: Map<string, { at: string; text: string }[]>; refusedId?: string; refusedCondition?: number;
   colourOf: (id: string) => number; onOpen: (id: string | null) => void; onMove: (from: number, to: number, focus?: boolean) => void;
   onEdit: (id: string, change: (c: Candidate) => Candidate) => void; onRemove: (id: string) => void;
@@ -622,7 +652,7 @@ function CandidateList({ policy, t, keys, accounts, open, problems, refusedId, r
                 {readingBound && <span className="routing-chip"><CircleHelp size={13} aria-hidden="true" /><span>{c.unknown === "pass" ? t.chipPass : t.chipSkip}</span></span>}
               </div>
               {expanded && (
-                <CandidateEditor c={c} t={t} keys={keys} accounts={accounts} issues={issues} refusedCondition={refusedId === c.id ? refusedCondition : undefined}
+                <CandidateEditor c={c} t={t} keys={keys ?? []} accounts={accounts} issues={issues} refusedCondition={refusedId === c.id ? refusedCondition : undefined}
                   onEdit={(change) => onEdit(c.id, change)} onRemove={() => onRemove(c.id)} onClose={() => onOpen(null)} />
               )}
             </div>
@@ -677,17 +707,23 @@ function CandidateEditor({ c, t, keys, accounts, issues, refusedCondition, onEdi
         <label className="routing-field"><span>{t.harness}</span>
           <select className="settings-select" value={c.harness} onChange={(e) => {
             const harness = e.target.value as Harness;
-            onEdit((x) => ({ ...x, harness, model: MODEL_HINTS[harness][0], ...(credentialFits(harness, x.credential) && (x.credential.kind !== "apiKey" || keys.some((k) => k.id === (x.credential as { keyId: string }).keyId && keyFits(harness, k.provider))) ? {} : { credential: { kind: "login" } as Credential }) }));
+            onEdit((x) => {
+              const { reasoningEffort: _, ...rest } = x;
+              const keyKept = x.credential.kind !== "apiKey" || keys.some((k) => k.id === (x.credential as { keyId: string }).keyId && keyFits(harness, k.provider));
+              // A reasoning effort is Codex's only (S3a); an account or key the new tool can't use goes back to the host's login.
+              return { ...(harness === "codex" ? x : rest), harness, model: MODEL_HINTS[harness][0],
+                ...(credentialFits(harness, x.credential) && keyKept ? {} : { credential: { kind: "login" } as Credential }) } as Candidate;
+            });
           }}>
             {HARNESSES.map((h) => <option key={h} value={h}>{harnessName[h]}</option>)}
           </select>
         </label>
         <label className="routing-field"><span>{t.model}</span>
-          <input className="settings-input" value={c.model} list={`routing-models-${c.harness}`} spellCheck={false} aria-invalid={!c.model.trim() || undefined}
+          <input className="settings-input" value={c.model ?? ""} list={`routing-models-${c.harness}`} spellCheck={false} placeholder={t.modelPlaceholder}
             onChange={(e) => onEdit((x) => ({ ...x, model: e.target.value }))} />
           <datalist id={`routing-models-${c.harness}`}>{MODEL_HINTS[c.harness].map((m) => <option key={m} value={m} />)}</datalist>
         </label>
-        {c.harness !== "opencode" && (
+        {c.harness === "codex" && (
           <label className="routing-field"><span>{t.effort}</span>
             <select className="settings-select" value={c.reasoningEffort ?? ""} onChange={(e) => field("reasoningEffort", e.target.value)}>
               <option value="">{t.effortDefault}</option>
@@ -833,12 +869,14 @@ function ConditionEditor({ cond, n, t, onChange }: { cond: AnyCondition; n: numb
         ))}
       </ol>
       <div className="routing-form-actions">
-        <button type="button" className="quiet-button" onClick={() => setSlots([...schedule.slots, { days: [1, 2, 3, 4, 5], from: "09:00", to: "18:00" }])}><Plus size={13} /> {t.addSlot}</button>
+        <button type="button" className="quiet-button" disabled={schedule.slots.length >= 16}
+          onClick={() => setSlots([...schedule.slots, { days: [1, 2, 3, 4, 5], from: "09:00", to: "18:00" }])}><Plus size={13} /> {t.addSlot}</button>
         <span className="settings-row-meta">{t.toHelp}</span>
       </div>
       <label className="routing-inline-field">{t.minLeft}
-        <input type="number" className="settings-input routing-number" min={0} step={5} value={cond.minMinutesLeft ?? ""}
-          onChange={(e) => { const next = { ...cond }; const v = numberOrUnset(e.target.value); if (v == null) delete next.minMinutesLeft; else next.minMinutesLeft = v; onChange(next); }} />
+        <input type="number" className="settings-input routing-number" min={1} max={1440} step={5} value={cond.minMinutesLeft ?? ""}
+          aria-invalid={(cond.minMinutesLeft != null && cond.minMinutesLeft > 1440) || undefined}
+          onChange={(e) => { const next = { ...cond }; const v = numberOrUnset(e.target.value); if (!v) delete next.minMinutesLeft; else next.minMinutesLeft = v; onChange(next); }} />
         {t.minutes}
       </label>
     </div>
