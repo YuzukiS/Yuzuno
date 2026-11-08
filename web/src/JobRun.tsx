@@ -136,6 +136,7 @@ const text = strings({
     running: "Running",
     waiting: "Waiting",
     blocked: "Stopped at its cost limit",
+    checkpointed: "A stage stopped at checkpoint",
     succeeded: "Completed",
     failed: "A stage did not succeed",
     unknown: "A stage's outcome is unknown",
@@ -152,6 +153,7 @@ const text = strings({
     succeeded: "Completed",
     failed: "Failed",
     cancelled: "Cancelled",
+    checkpointed: "Stopped at checkpoint",
     rejected: "Inputs rejected",
     interrupted: "Interrupted",
     unknown: "Outcome unknown",
@@ -245,6 +247,7 @@ const text = strings({
     running: "运行中",
     waiting: "等待中",
     blocked: "已在成本上限处停止",
+    checkpointed: "有阶段已于检查点停止",
     succeeded: "已完成",
     failed: "有阶段未成功",
     unknown: "有阶段的结果未知",
@@ -261,6 +264,7 @@ const text = strings({
     succeeded: "已完成",
     failed: "失败",
     cancelled: "已取消",
+    checkpointed: "已于检查点停止",
     rejected: "输入被拒绝",
     interrupted: "已中断",
     unknown: "结果未知",
@@ -421,8 +425,10 @@ export function RunCard({
   if (!run) return error ? <p className="inline-error" role="alert">{error}</p> : null;
   const mine = run.stages.find((s) => s.attempts.some((a) => a.id === jobId));
   const latest = mine?.attempts[mine.attempts.length - 1];
-  const retryable = !run.cancelRequestedAt && latest?.id === jobId && ended.has(latest.status);
-  const live = ["queued", "running", "waiting", "blocked", "failed"].includes(run.status);
+  // A stage stopped at a checkpoint resumes from it (the user's Resume on
+  // its attempt), not from scratch (YN-30).
+  const retryable = !run.cancelRequestedAt && latest?.id === jobId && ended.has(latest.status) && mine?.status !== "checkpointed";
+  const live = ["queued", "running", "waiting", "blocked", "failed", "checkpointed"].includes(run.status);
   const said = (run.status === "queued" && run.queue && t.queuedFor[run.queue.waitingFor]) || t.run[run.status] || run.status;
   const awaiting = run.stages.some((stage) => stage.analysis?.state === "waiting");
   return (

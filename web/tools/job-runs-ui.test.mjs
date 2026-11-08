@@ -126,6 +126,42 @@ test('a queued run says what it waits for, shows the reason beside its stage, an
   } finally { p.close(); }
 });
 
+// YN-30: a stage the user stopped at a checkpoint is shown so in its run, offers its attempt's Resume from checkpoint
+// (the stage's next attempt) instead of a fresh Retry stage, and the run can still be cancelled.
+test('a stage stopped at a checkpoint resumes from it, not as a fresh retry, and its run can be cancelled (YN-30)', async () => {
+  const reason = "Stopped at the user's request at a verified checkpoint; only the user resumes it";
+  const stopped = { ...base, id: 'job-8', name: 'Sweep · train', status: 'cancelled', reserved: false, cursor: 8, startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(), reason, run: { id: 'run-1', stage: 'train', attempt: 1 }, checkpoint: { signal: 'SIGTERM', graceSeconds: 60, stoppedExitCode: 75 },
+    checkpointStop: { state: 'checkpointed', reason: 'Stopped at a verified checkpoint; only the user resumes it' },
+    result: { reason, evidence: {}, checkpoint: { ok: true, files: [{ path: 'last.ckpt', bytes: 12, sha256: 'cd'.repeat(32) }] } } };
+  const stoppedRun = { id: 'run-1', name: 'Sweep', experiment: null, status: 'checkpointed', costLimitUsd: null, cancelRequestedAt: null,
+    cost: { knownUsd: 0, unknownEntries: 0, attemptsRunning: 0, complete: true },
+    stages: [
+      { key: 'train', status: 'checkpointed', needs: [], retry: null, reusedFrom: null, attempts: [{ id: 'job-8', status: 'cancelled', reason, run: { attempt: 1 } }] },
+      { key: 'eval', status: 'waiting', needs: ['train'], retry: null, reusedFrom: null, attempts: [{ id: 'job-9', status: 'waiting',
+        reason: 'Upstream stage train attempt 1 was stopped at a checkpoint by the user', run: { attempt: 1 } }] }] };
+  const p = mount(url => {
+    if (url === '/api/jobs/job-8') return stopped;
+    if (url === '/api/jobs/job-8/resume-checkpoint') return { ...stopped, id: 'job-10', status: 'queued', run: { id: 'run-1', stage: 'train', attempt: 2 }, checkpointStop: null };
+    if (url === '/api/jobs/runs/run-1') return stoppedRun;
+    return { jobs: [stopped], liveJobs: [], hasMore: false, nextBefore: null };
+  });
+  try {
+    await open(p);
+    await until(() => row(p, '· train'));
+    row(p, '· train').click();
+    await until(() => p.doc.querySelector('.job-run'));
+    const card = p.doc.querySelector('.job-run');
+    assert.equal(card.querySelector('.job-card-heading small').textContent, 'A stage stopped at checkpoint');
+    assert.equal(card.querySelector('.job-run-stage .job-state').textContent.trim(), 'Stopped at checkpoint');
+    assert.equal(!!button(p, 'Retry stage'), false, 'not restarted from scratch');
+    assert.equal(!!button(p, 'Cancel run'), true);
+    button(p, 'Resume from checkpoint').click();
+    await until(() => p.calls.some(c => c.url === '/api/jobs/job-8/resume-checkpoint'));
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test("a run's cost and an attempt's say what recorded none, and a known $0 stays $0 (T-17)", async () => {
   // A run's total as Core now gives it, and an attempt's own usage summary
   // as the host writes it, read in a fresh panel each.

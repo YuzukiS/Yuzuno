@@ -1063,6 +1063,29 @@ async fn a_live_reference_to_a_queued_run_says_what_it_waits_for_and_is_not_acti
         "waitingFor":"gpu","taskId":"T-1","stages":{"done":0,"total":2},"jobId":"job-eval"}));
 }
 
+/// YN-30: a queued Job, as a queued run, is waiting its turn and not at
+/// work: its reference reads neutral; a running one stays active.
+#[tokio::test]
+async fn a_live_reference_to_a_queued_job_is_neutral_and_a_running_one_active() {
+    let (_dir, ws, _project) = lab();
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Sweep"})).unwrap();
+    let task_id: String = ws.store.db.read().unwrap().query_row("SELECT id FROM collaboration_tasks", [], |r| r.get(0)).unwrap();
+    {
+        let db = ws.store.db.write().unwrap();
+        for (job, status) in [("job-q", "queued"), ("job-r", "running")] {
+            db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'a',?3,?4)", rusqlite::params![job, task_id, status,
+                json!({"id":job,"name":job,"status":status,"taskId":task_id}).to_string()]).unwrap();
+        }
+    }
+    let mut change = put("jobs", "report");
+    change["body"] = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["refs"]},
+        "refs":{"type":"LiveRefs","props":{"items":[{"kind":"job","id":"job-q"},{"kind":"job","id":"job-r"}]}}}});
+    accept(&ws, "a", input("j1", 0, vec![change])).await;
+    let refs = section(&brief(&ws, "a"), "jobs")["refs"].clone();
+    assert_eq!((refs["job:job-q"]["state"].clone(), refs["job:job-q"]["tone"].clone()), (json!("queued"), json!("neutral")));
+    assert_eq!((refs["job:job-r"]["state"].clone(), refs["job:job-r"]["tone"].clone()), (json!("running"), json!("active")));
+}
+
 /// T-56: a section may name a task by any key it has or had; it shows with
 /// the key it has now, through a Project key change too.
 #[tokio::test]

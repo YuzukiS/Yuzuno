@@ -282,7 +282,8 @@ pub(crate) struct Submit {
     #[serde(skip)]
     requested_machine: Option<String>,
     /// How the command saves and exits when the user stops it at a
-    /// checkpoint (T-109). This host's standalone Jobs only.
+    /// checkpoint (T-109). This host's Jobs only: standalone, or a run's
+    /// stage (YN-30), whose resume is that stage's next attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     checkpoint: Option<Checkpoint>,
     /// The verified checkpoint a resumed Job continues from: set only by the
@@ -453,25 +454,7 @@ impl Submit {
             !self.request_id.trim().is_empty() && self.request_id.len() <= 128,
             "requestId must contain 1–128 bytes"
         );
-        if let Some(checkpoint) = &self.checkpoint {
-            // An alias is checked again once resolved (job_submit).
-            ensure!(
-                self.machine_id.is_none() || self.alias(),
-                "Stop at a checkpoint is available for Jobs on this Core's host only; omit checkpoint with machineId"
-            );
-            ensure!(
-                matches!(checkpoint.signal.as_str(), "SIGTERM" | "SIGINT" | "SIGUSR1"),
-                "checkpoint.signal must be SIGTERM, SIGINT or SIGUSR1"
-            );
-            ensure!(
-                (10..=900).contains(&checkpoint.grace_seconds) && checkpoint.grace_seconds < self.timeout_seconds,
-                "checkpoint.graceSeconds must be 10–900 and shorter than timeoutSeconds"
-            );
-            ensure!(
-                (1..=125).contains(&checkpoint.stopped_exit_code),
-                "checkpoint.stoppedExitCode must be 1–125, never 0: a stop must not look like a finished run"
-            );
-        }
+        self.validate_checkpoint()?;
         if let Some(machine) = self.machine_id.as_ref().filter(|_| !self.alias()) {
             // What Core can enforce or see on this host does not exist there.
             ensure!(!machine.trim().is_empty() && machine.len() <= 128, "machineId must contain 1–128 bytes");
@@ -520,6 +503,29 @@ impl Submit {
         self.validate_command()
     }
     /// Everything but the request identity, which a run's stage takes from its run.
+    /// A declared checkpoint's protocol, for a Job and for a run's stage.
+    fn validate_checkpoint(&self) -> Result<()> {
+        if let Some(checkpoint) = &self.checkpoint {
+            // An alias is checked again once resolved (job_submit).
+            ensure!(
+                self.machine_id.is_none() || self.alias(),
+                "Stop at a checkpoint is available for Jobs on this Core's host only; omit checkpoint with machineId"
+            );
+            ensure!(
+                matches!(checkpoint.signal.as_str(), "SIGTERM" | "SIGINT" | "SIGUSR1"),
+                "checkpoint.signal must be SIGTERM, SIGINT or SIGUSR1"
+            );
+            ensure!(
+                (10..=900).contains(&checkpoint.grace_seconds) && checkpoint.grace_seconds < self.timeout_seconds,
+                "checkpoint.graceSeconds must be 10–900 and shorter than timeoutSeconds"
+            );
+            ensure!(
+                (1..=125).contains(&checkpoint.stopped_exit_code),
+                "checkpoint.stoppedExitCode must be 1–125, never 0: a stop must not look like a finished run"
+            );
+        }
+        Ok(())
+    }
     fn validate_command(&self) -> Result<()> {
         ensure!(
             !self.name.trim().is_empty() && self.name.len() <= 160,
@@ -1731,12 +1737,16 @@ const SERVICE: &str = "The web service this command serves on this Core's host, 
 
 /// checkpoint in short; the guide's jobs topic has the whole protocol.
 const CHECKPOINT: &str = "For a command that can save and exit at a safe point when the user asks (Stop at checkpoint), on this \
-    Core's host only: not with machineId, not in a run's stages. On the user's stop the attempt's wrapper sends signal to the command \
+    Core's host only: not with machineId. On the user's stop the attempt's wrapper sends signal to the command \
     itself (not through a shell around it). It saves into $YUZUNO_CHECKPOINT_DIR (new for each attempt), writes manifest.json there \
     last ({\"attempt\": $YUZUNO_JOB_ATTEMPT, \"nonce\": the nonce in the JSON file at $YUZUNO_CHECKPOINT_REQUEST, \"files\": [{\"path\"}]}) \
     and exits stoppedExitCode within graceSeconds. Only then, with Core's own SHA-256 of every file, is it resumable; otherwise it is \
     stopped like a cancel and is not. Resuming is the user's choice: a new attempt of the same command with $YUZUNO_RESUME_FROM set to \
     that manifest. Unlike pause, this frees the job's memory.";
+/// What a stage's checkpoint adds: the resume is the stage's next attempt.
+const STAGE_CHECKPOINT: &str = "For a stage, the stop and resume are of its running attempt; the resume is the stage's next \
+    attempt (same frozen inputs, counted in its attempts), and stages that need it wait until it succeeds. An Agent's job_run_retry \
+    of a stage stopped at a verified checkpoint is refused; a retry of a resumed attempt resumes from the same checkpoint.";
 
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let string = json!({"type":"string"});
@@ -1776,8 +1786,6 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         map.remove("taskId");
         // A run's stages run on this host in this version.
         map.remove("machineId");
-        // A stage's retry repeats its command; it never resumes one.
-        map.remove("checkpoint");
     }
     // Only job_submit takes machineId; a run's stages keep the host-only text.
     properties["inputs"]["description"] = format!("{INPUTS} {REMOTE_INPUTS}").into();
@@ -1788,6 +1796,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     stage["waitForAnalysis"] = json!({"type":"boolean","default":false,"description":"After success, persist a run gate until its owner Agent or the user explicitly continues or cancels using job_run_decide. The succeeded Job releases all resources. Only dependants wait; independent stages proceed. The final stage also needs a decision. Reused results get a fresh gate. False preserves automatic chaining."});
     stage["retry"] = json!({"type":"object","description":"Automatic retries for outcomes the project declares to be retryable infrastructure failures, never by default. attempts counts every attempt (2-5). exitCodes: the command's exit codes that mean such a failure (for example an API disconnect); interrupted: the host restarted under it. Out-of-memory, timeout, cancellation, unknown outcomes, rejected inputs, failed artifact checks and other exit codes are never retried automatically.",
         "properties":{"attempts":{"type":"integer","minimum":2,"maximum":5},"exitCodes":{"type":"array","items":{"type":"integer","minimum":1,"maximum":255},"maxItems":16},"interrupted":{"type":"boolean","default":false}},"required":["attempts"],"additionalProperties":false});
+    stage["checkpoint"]["description"] = format!("{CHECKPOINT} {STAGE_CHECKPOINT}").into();
     stage["reuse"] = json!({"type":"string","description":"Job ID of an earlier succeeded attempt to use instead of running this stage. Accepted only if its command, env, code identity, artifact contract and upstream artifacts equal this stage's and its artifacts verify unchanged now; otherwise the submission is refused with the reason."});
     let stage_required = json!(["key","cwd","argv","resources"]);
     let make = |name: &str, description: &str, p: Value, required: Vec<&str>| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":p,"required":required,"additionalProperties":false}});
