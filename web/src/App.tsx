@@ -223,6 +223,7 @@ import { HomeReplyLinks, homeReplyText, type HomeReplyLinksApi } from "./home-re
 import { reportText } from "./home/report/report-text";
 import { Home, type HomeTarget } from "./home/Home";
 import {
+  askingAgents,
   needsYouTargets,
   nextTarget,
   orderByAttention,
@@ -233,6 +234,7 @@ import {
 } from "./attention";
 import { markTurnSeen, useTurnSeen } from "./turn-seen";
 import { useOpenAsks } from "./home/open-asks";
+import { GateAsks } from "./GateAsks";
 import { useBackupRun, useSystemNotifications } from "./useSystemNotifications";
 import { OpenCodeRevertHost } from "./Rewind";
 import { OpenCodeForkHost, type OpenCodeForkOutcome } from "./ForkOpenCode";
@@ -1774,6 +1776,12 @@ export function App() {
   // conversations and the Agent list's mark: Home does not list or count them.
   const totalPending = activeAgents.reduce((n, a) => n + a.pendingCount, 0);
   const [openAsks, reportNeedsYou, needsYouItems] = useOpenAsks(workspaceId, !homeOpen && !previewMode, asksRevision);
+  // The open Agent's gate asks on Home (T-43 S4): the approvals an executor
+  // asked for, answered in its Overview or Conversation as on Home.
+  const gateAskItems = agent ? (needsYouItems ?? []).filter((item) => item.kind === "ask" && item.gate && item.agentId === agent.id) : [];
+  const gateAsks = gateAskItems.length ? (
+    <GateAsks items={gateAskItems} workspaceId={workspaceId} agents={activeAgents} readOnly={previewMode} onSent={() => asksRefresh.now()} />
+  ) : null;
   // This device's system notifications, where it chose them and its system
   // allows them (T-188). A preview's sample Workspace has none.
   const backupRun = useBackupRun(backupRevision, !previewMode);
@@ -3464,7 +3472,7 @@ export function App() {
   // ordered within each group as grouping keeps the list's order.
   const filteredAgents =
     appearance.agentOrder === "attention"
-      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems) })
+      ? orderByAttention(searched, { seen: turnSeen, since: waitingSince(needsYouItems), asking: askingAgents(needsYouItems) })
       : searched;
 
   return (
@@ -3691,6 +3699,8 @@ export function App() {
           {(() => {
             // How long each has waited for you, from Home's Needs you (T-43 S2).
             const waited = waitingSince(needsYouItems);
+            // Executors whose gate asks wait on Home (T-43 S4).
+            const asking = askingAgents(needsYouItems);
             const row = (a: Agent) => {
             const unseen = unseenEnd(a, turnSeen);
             return (
@@ -3714,6 +3724,7 @@ export function App() {
                 a.status === "idle"
               }
               waitingSince={waited.get(a.id) ?? null}
+              asking={asking.has(a.id)}
               compacting={a.id === selected && compacting}
               onSelect={() => openFromList(a.id)}
               onOpenHome={(agentId) => {
@@ -4382,6 +4393,7 @@ export function App() {
                     scope={turnScope ?? ""}
                     onShown={previewsShown}
                   />
+                  {!overviewShown && gateAsks}
                   {!overviewShown && pending.map((request) => (
                     <PendingCard
                       key={request.id}
@@ -4475,7 +4487,8 @@ export function App() {
             {overviewShown && (
               <ExecutorOverview
                 agent={agent}
-                revision={`${boardRevision}:${jobsRevision}:${mergeQueueRevision}`}
+                revision={`${boardRevision}:${jobsRevision}:${mergeQueueRevision}:${asksRevision}`}
+                asks={gateAsks}
                 // The same cards as in its Conversation, shown here instead while this tab is.
                 requests={pending.length ? pending.map((request) => (
                   <PendingCard

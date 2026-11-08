@@ -1,0 +1,49 @@
+/* An executor's gate asks (T-43 S4): the Overview's waiting banner, and the
+   same card in its Conversation. Home's own reply sits inside. */
+.gate-asks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.gate-ask {
+  border: 1px solid color-mix(in srgb, var(--island-attention) 38%, transparent);
+  background: color-mix(in srgb, var(--island-attention) 9%, var(--paper));
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  /* Its own ink: in a Conversation the inherited colour is the transcript's,
+     which dark mode leaves faint on this tint. */
+  color: var(--ink);
+}
+.gate-ask h3 {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--island-attention);
+}
+.gate-ask h3 span {
+  color: var(--ink);
+  font-weight: 500;
+}
+.gate-ask-question {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.gate-ask-body {
+  min-width: 0;
+  overflow-x: auto;
+}
+.gate-ask .note,
+.gate-ask-loading {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+.gate-ask-error {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--coral);
+}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { attentionRank, needsYouTargets, nextTarget, orderByAttention, unseenEnd, waitingSince } from "../src/attention.ts";
+import { askingAgents, attentionRank, needsYouTargets, nextTarget, orderByAttention, unseenEnd, waitingSince } from "../src/attention.ts";
 
 // Who needs the user, and in what order (T-42).
 const agent = (id, extra = {}) => ({
@@ -75,6 +75,23 @@ test("waiting since takes each Agent's oldest request or question, and no Ask", 
     { kind: "approval", agentId: "c", since: "not a time" },
   ]);
   assert.deepEqual([...since], [["a", Date.parse("2026-11-05T00:00:01Z")]]);
+});
+
+test("an executor's gate ask waits on the user: its wait counts, it needs you, and it goes with those waiting (T-43 S4)", () => {
+  const items = [
+    { kind: "ask", agentId: "g", since: "2026-11-05T00:00:03Z", gate: { taskId: "YN-1", step: 3 } },
+    { kind: "ask", agentId: "b", since: "2026-11-05T00:00:00Z" },
+    { kind: "approval", agentId: "w", since: "2026-11-05T00:00:04Z" },
+  ];
+  assert.deepEqual([...waitingSince(items)], [["g", Date.parse("2026-11-05T00:00:03Z")], ["w", Date.parse("2026-11-05T00:00:04Z")]],
+    "a gate's ask counts, a plain one doesn't");
+  assert.deepEqual([...askingAgents(items)], ["g"]);
+  assert.deepEqual([...askingAgents(null)], []);
+  // g has no request of its own: its gate's ask puts it with those waiting, oldest first.
+  const order = orderByAttention([agent("idle"), agent("w", { pendingCount: 1 }), agent("g")],
+    { seen: {}, since: waitingSince(items), asking: askingAgents(items) });
+  assert.deepEqual(ids(order), ["g", "w", "idle"]);
+  assert.deepEqual(ids(orderByAttention([agent("idle"), agent("g")], { seen: {} })), ["idle", "g"], "without it, as before");
 });
 
 test("next needs you goes through Home's Needs you in Core's order, each Agent once; a Turn end not seen here is no place in it (YN-3)", () => {

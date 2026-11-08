@@ -144,6 +144,30 @@ fn a_job_after_the_gate_is_not_the_job_before_it() {
     assert_eq!(step_states(&steps, &open)[1]["ref"]["id"], "j-after");
 }
 
+/// A gate its executor asked you about with its own Home Ask (T-43 S4, the
+/// user's option D): waiting for you while the ask is open, with the ask as
+/// its record, and nothing after it begun; done once you answered or it was
+/// resolved. An ask of another step leaves a gate as it was.
+#[test]
+fn a_gate_waits_for_its_ask_and_is_done_once_you_answer() {
+    let steps: Vec<Value> = ["materials", "work", "result", "gate", "work", "pr"].iter().map(|k| json!({"kind":k})).collect();
+    let ask = |step: u64, state: &str| json!({"step":step,"projectId":"p1","key":"gates/design","version":2,"state":state,
+        "since":"2026-11-07T10:05:00Z","repliedAt":null});
+    let facts = |asks: Vec<Value>| Facts { lifecycle: "running".into(), read_at: Some("2026-11-07T09:00:00Z".into()),
+        results: vec![json!({"id":"note","reportedAt":"2026-11-07T10:00:00Z"})], asks, ..Facts::default() };
+    let open = facts(vec![ask(3, "open")]);
+    assert_eq!(states(&steps, &open), ["materials:done", "work:done", "result:done", "gate:blocked", "work:todo", "pr:todo"]);
+    assert_eq!(step_states(&steps, &open)[3]["ref"], json!({"kind":"ask","projectId":"p1","key":"gates/design","version":2,"state":"open",
+        "since":"2026-11-07T10:05:00Z","repliedAt":null}));
+    for answered in ["replied", "resolved"] {
+        assert_eq!(states(&steps, &facts(vec![ask(3, answered)]))[3..5], ["gate:done", "work:doing"], "{answered}");
+    }
+    // Two asks at one gate (a runbook's irreversible steps): waiting while one is open.
+    assert_eq!(states(&steps, &facts(vec![ask(3, "replied"), ask(3, "open")]))[3], "gate:blocked");
+    // An ask naming another step: the gate is the next to do, not waiting for you.
+    assert_eq!(states(&steps, &facts(vec![ask(1, "open")]))[3..5], ["gate:todo", "work:todo"]);
+}
+
 /// The route's read: none for another Agent; an executor's lifecycle, task,
 /// steps (its delivery mode's when its dispatch kept no template), PR with
 /// its diff size, CI, review and its own Jobs.

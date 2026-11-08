@@ -139,6 +139,7 @@ export function AgentRailRow({
   idle = false,
   unseen = null,
   waitingSince = null,
+  asking = false,
   compacting = false,
   onSelect,
   onOpenHome,
@@ -155,6 +156,8 @@ export function AgentRailRow({
   idle?: boolean;
   /** Its oldest wait in Home's Needs you (ms): how long it has waited for you. */
   waitingSince?: number | null;
+  /** An executor whose gate ask waits on Home (T-43 S4): it needs you. */
+  asking?: boolean;
   /** It is the open Agent and it is compacting. */
   compacting?: boolean;
   onSelect: () => void;
@@ -188,7 +191,7 @@ export function AgentRailRow({
   // An executor's one state (T-43 S2): its row's second line says it, in
   // place of a runtime status and a lifecycle badge, and says it once.
   const pr = useExecutorPR(agent.id);
-  const executor = lifecycle ? executorView({ agent, lifecycle, unseen, waiting: waiting?.label ?? null, pr, waitingSince }) : null;
+  const executor = lifecycle ? executorView({ agent, lifecycle, unseen, waiting: waiting?.label ?? null, pr, waitingSince, asking }) : null;
   const shown = executor ? stateText(executor, language) : label;
   // Its template beside its state when its name doesn't already say it; one
   // made from no template (an empty id) says Executor there.

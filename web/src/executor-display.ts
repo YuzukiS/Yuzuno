@@ -88,6 +88,8 @@ export type ExecutorFacts = {
   pr?: ExecutorPR | null;
   /** Its oldest wait in Home's Needs you (ms). */
   waitingSince?: number | null;
+  /** It asked you on Home to approve a gate step and waits for the answer (T-43 S4). */
+  asking?: boolean;
 };
 
 const time = (iso: string | null | undefined) => {
@@ -100,8 +102,8 @@ const time = (iso: string | null | undefined) => {
  * 1. archived: done, released; 2. archiving: done, with what it waits for;
  * 3. failed (its start, or closed while its task is blocked on it): failed,
  * with why; 4. closed: stopped; 5. queued or starting: queued;
- * 6. requests or questions waiting, or a runtime waiting: needs you, for
- * how long (what it asks is its work summary);
+ * 6. requests or questions waiting, a gate's ask on Home (T-43 S4), or a
+ * runtime waiting: needs you, for how long (what it asks is its work summary);
  * 7. its Turn failed: failed; 8. offline or disconnected: stopped;
  * 9. delivering (its result in, its task in review): review, at its PR, else
  * awaiting release; 10. otherwise working: its task's blocker, a result to
@@ -129,7 +131,7 @@ export function executorView(facts: ExecutorFacts): ExecutorView {
       return view("queued", { kind: "starting" });
   }
   // What it asks is the row's work summary, under this line: said once.
-  if (agent.pendingCount > 0 || agent.status === "waiting") return view("needsYou", null, null, facts.waitingSince ?? null);
+  if (agent.pendingCount > 0 || agent.status === "waiting" || facts.asking) return view("needsYou", null, null, facts.waitingSince ?? null);
   if (agent.status === "error" || facts.unseen === "failed") return view("failed", { kind: "turnFailed" });
   if (agent.status === "offline" || agent.disconnectedAt) return view("stopped", { kind: "offline" });
   if (lifecycle.state === "delivering") return view("review", pr ? { kind: "pr", status: pr.status } : { kind: "awaitingRelease" });

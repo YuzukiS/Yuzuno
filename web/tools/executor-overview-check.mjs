@@ -11,6 +11,10 @@
 // - the waiting executor's request card is in its Overview only;
 // - on a phone each tab, the task link and the steps toggle are 44 px tall;
 // - its Conversation shows the composer again; back to the Overview.
+// - T-43 S4: two executors at a gate asked on Home with their own Asks (a
+//   design note, an irreversible runbook step): each Overview has the Ask's
+//   card inside the pane, its gate step waits for you, its row's ring says
+//   needs you, and its Conversation shows the same card instead.
 // Screenshots of each, for the design Ask.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-overview-check.mjs
 import assert from "node:assert/strict";
@@ -25,7 +29,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "T-43 S3", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], measures: {} };
+const report = { task: "T-43 S3/S4", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], measures: {} };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -39,6 +43,7 @@ const base = { goal: "", cwd: "/fixture/app", model: "gpt-6", color: "sage", har
 const lifecycle = (id, key, title, template, extra = {}) => ({ state: "running", agentId: id, dispatcher: { kind: "agent", id: "lead", name: "Dev Lead 2" },
   task: { id: key, title }, template, dispatchedAt: ago(72.5), since: ago(6.5), ...extra });
 const RED = { id: "red-first", label: "Red first" }, DESIGN = { id: "design-first", label: "Design first" };
+const RUNBOOK = { id: "gated-runbook", label: "Gated runbook" };
 // Synthetic executors (names and texts made up for this check).
 const agents = [
   { ...base, id: "lead", name: "Dev Lead 2", kind: "lead", status: "working", workSummary: { kind: "progress", source: "agent", text: "Merging #702" } },
@@ -50,6 +55,13 @@ const agents = [
     executor: lifecycle("yn21", "YN-21", "Export and import device preferences", DESIGN) },
   { ...base, id: "yn29", name: "YN-29 · Small fix", kind: "executor", closedAt: ago(30), releasedAt: ago(30), releasedBy: "user",
     executor: lifecycle("yn29", "YN-29", "Status bar wording", { id: "small-fix", label: "Small fix" }, { state: "archived", since: ago(30) }) },
+  // T-43 S4: at a gate, asked on Home.
+  { ...base, id: "yn30", name: "YN-30 · Design first", kind: "executor", status: "idle",
+    workSummary: { kind: "progress", source: "agent", text: "在 Home 请你批准设计说明" },
+    executor: lifecycle("yn30", "YN-30", "设置页：导出/导入设备偏好", DESIGN, { task: { id: "YN-30", title: "设置页：导出/导入设备偏好", shortName: "导出设备偏好" } }) },
+  { ...base, id: "yn31", name: "YN-31 · Gated runbook", kind: "executor", status: "idle",
+    workSummary: { kind: "progress", source: "agent", text: "在 Home 请你批准第 2 步" },
+    executor: lifecycle("yn31", "YN-31", "轮换发布签名密钥（合成示例）", RUNBOOK, { task: { id: "YN-31", title: "轮换发布签名密钥（合成示例）", shortName: "轮换签名密钥" } }) },
 ];
 const approval = { id: "q1", agentId: "yn21", method: "item/commandExecution/requestApproval", createdAt: ago(12),
   params: { command: "npm run build", cwd: "/fixture/app/.worktrees/yn-21", reason: "Build the design note's preview" } };
@@ -104,10 +116,58 @@ const overview = {
     result: { id: "r29", summary: "One line changed; the focused check passed; merged as #705.\nNo behaviour change, so no red test.", reportedAt: ago(35), status: "accepted" },
   },
 };
+const gateRef = (key) => ({ kind: "ask", projectId: "p1", key, version: 2, state: "open", since: ago(12), repliedAt: null });
+overview.yn30 = {
+  agentId: "yn30", lifecycle: agents[4].executor, task: { id: "YN-30", title: agents[4].executor.task.title, status: "doing" },
+  template: { ...DESIGN, deliveryMode: "pr" }, materials: materials("/fixture/app/.worktrees/yn-30", "导出/导入覆盖外观、语言、通知三类偏好；旧文件可导入；两轮审查"),
+  steps: [
+    { kind: "materials", state: "done", ref: { kind: "mail", readAt: ago(70) } },
+    { kind: "result", label: "设计说明作为结果提交", state: "done", ref: { kind: "result", id: "2b7e41c09d", reportedAt: ago(14) } },
+    { kind: "gate", label: "批准设计说明", approver: "user", state: "blocked", ref: gateRef("gates/yn-30") },
+    { kind: "work", label: "切片实现（3 片）", state: "todo" },
+    { kind: "job", label: "每片证据 Job", state: "todo" },
+    { kind: "pr", state: "todo" }, { kind: "review", rounds: 2, state: "todo" }, { kind: "ci", state: "todo" }, { kind: "merge", state: "todo" },
+  ],
+  jobs: [], pullRequest: null, merge: null,
+  result: { id: "2b7e41c09d", summary: "设计说明：接口 3 个、状态 2 个、证据格式。批准前只读。", reportedAt: ago(14), status: "submitted" },
+};
+overview.yn31 = {
+  agentId: "yn31", lifecycle: agents[5].executor, task: { id: "YN-31", title: agents[5].executor.task.title, status: "doing" },
+  template: { ...RUNBOOK, deliveryMode: "none" }, materials: materials("/fixture/app/.worktrees/yn-31", "每个不可逆步骤先批准；第一处检查失败就停"),
+  steps: [
+    { kind: "materials", state: "done", ref: { kind: "mail", readAt: ago(70) } },
+    { kind: "work", label: "预检", state: "done" },
+    { kind: "result", label: "步骤计划（含回滚）", state: "done", ref: { kind: "result", id: "5c1d09ab77", reportedAt: ago(16) } },
+    { kind: "gate", label: "批准不可逆步骤", approver: "user", state: "blocked", ref: gateRef("gates/yn-31") },
+    { kind: "work", label: "逐步执行与验证", state: "todo" },
+    { kind: "result", label: "后检报告", state: "todo" },
+  ],
+  jobs: [], pullRequest: null, merge: null,
+  result: { id: "5c1d09ab77", summary: "步骤计划：4 步，其中第 2 步不可逆；每步有回滚。", reportedAt: ago(16), status: "submitted" },
+};
+// Their Asks, as Home shows them (synthetic texts).
+const markdown = (text) => ({ root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["note"] }, note: { type: "Markdown", props: { text } } } });
+const gateAsk = (owner, name, key, step, title, question, text, options, extra = {}) => ({
+  key, kind: "ask", title, version: 2, owner: { agentId: owner, name, state: "active" }, updatedAt: ago(12), updatedTurnId: null,
+  body: markdown(text), attachments: [], refs: {}, seen: null, history: false,
+  ask: { question, state: "open", gate: { taskId: owner.toUpperCase().replace("YN", "YN-"), step }, reply: { options, ...extra } },
+});
+const gateAsks = [
+  gateAsk("yn30", "YN-30 · Design first", "gates/yn-30", 2, "批准设计说明（YN-30）", "导出文件用一个 JSON（含版本号）还是三个文件？",
+    "设计说明推荐一个文件：外观、语言、通知三类偏好放在一起，带版本号；旧格式仍可导入。完整说明在任务结果 2b7e41c0。",
+    [{ id: "one", label: "批准：一个 JSON（推荐）" }, { id: "three", label: "批准：三个文件" }, { id: "revise", label: "改一下再批" }],
+    { freeText: { prompt: "要改什么？" } }),
+  gateAsk("yn31", "YN-31 · Gated runbook", "gates/yn-31", 3, "批准第 2 步：轮换签名密钥（YN-31）", "可以执行第 2 步吗？它不可逆。",
+    "- **命令**：`release-keys rotate --key signing`\n- **目标**：发布签名密钥（合成示例）\n- **风险**：旧密钥签过的安装包要重新签名\n- **回滚**：旧密钥保留 7 天，可用 `release-keys restore` 恢复",
+    [{ id: "go", label: "批准执行" }, { id: "stop", label: "先不执行" }]),
+];
 const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture/app" }, createdAt: "", updatedAt: "" }];
-const home = () => ({ generatedAt: ago(0), order: ["p1"], needsYou: [], projects: [{ project: { id: "p1", name: "Yuzuno" },
-  agents: { working: 2, idle: 0, waiting: 1, error: 0, offline: 0, total: 4 }, errors: [], pending: [], jobs: [], unseen: 0, missing: [],
-  brief: { version: 1, history: [], sections: [] } }] });
+const home = () => ({ generatedAt: ago(0), order: ["p1"],
+  needsYou: gateAsks.map((a) => ({ kind: "ask", projectId: "p1", agentId: a.owner.agentId, agentName: a.owner.name, sectionKey: a.key,
+    title: a.title, since: ago(12), gate: a.ask.gate })),
+  projects: [{ project: { id: "p1", name: "Yuzuno" },
+    agents: { working: 2, idle: 2, waiting: 1, error: 0, offline: 0, total: 6 }, errors: [], pending: [], jobs: [], unseen: 0, missing: [],
+    brief: { version: 3, history: [], sections: gateAsks } }] });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
@@ -167,6 +227,7 @@ const measure = (page) => page.evaluate(() => {
     overflowX: panel.scrollWidth > panel.clientWidth + 1, wide, overlaps: steps.filter((s) => s.overlap).map((s) => s.text), steps: steps.length,
     tabs: height(".executor-tabs [role=tab]"), link: height(".executor-overview-chips .chip.link"), more: height(".executor-overview-card .more"),
     conversation: shown(".conversation-body"), composer: shown(".composer-area"), cards: panel.querySelectorAll(".pending-card").length,
+    gates: panel.querySelectorAll(".gate-ask .home-ask-options").length, bodyGates: document.querySelectorAll(".conversation-body .gate-ask").length,
     bodyCards: document.querySelectorAll(".conversation-body .pending-card").length,
   };
 });
@@ -208,8 +269,9 @@ async function run({ width, height, theme, lang = "en" }) {
   try {
     await page.goto(`https://${HOST}/`);
     await page.locator('.agent-list article[data-agent-id="yn29"]').waitFor({ timeout: 15_000 });
-    for (const id of ["yn22", "yn21", "yn29"]) {
+    for (const id of ["yn22", "yn21", "yn29", "yn30", "yn31"]) {
       await open(id);
+      if (id === "yn30" || id === "yn31") await page.locator("#executor-overview .gate-ask .home-ask-options").waitFor({ timeout: 10_000 });
       const m = await measure(page);
       report.measures[`${tag}-${id}`] = m;
       assert.equal(m.overflowX, false, `${tag} ${id}: nothing wider than the Overview`);
@@ -224,9 +286,55 @@ async function run({ width, height, theme, lang = "en" }) {
         assert.equal(m.cards, 1, `${tag}: its request's card in its Overview`);
         assert.equal(m.bodyCards, 0, `${tag}: and not also in its hidden Conversation`);
       }
+      if (id === "yn30" || id === "yn31") {
+        assert.equal(m.gates, 1, `${tag} ${id}: its gate's Ask in its Overview, with Home's reply`);
+        assert.equal(m.bodyGates, 0, `${tag} ${id}: and not also in its hidden Conversation`);
+        // A phone shows the list or the conversation: its ring is checked where the list shows beside it.
+        if (!phone) assert.equal(await page.locator(`.agent-list article[data-agent-id="${id}"] .agent-island`).getAttribute("data-state"), "waiting", `${tag} ${id}: its ring needs you`);
+        await page.locator("#executor-overview .gate-ask").scrollIntoViewIfNeeded();
+      }
       await shot(`${id}-overview`);
       check(`${tag} ${id}: its Overview, inside the pane, nothing overlapping`);
     }
+    // yn30: the same card in its Conversation.
+    await open("yn30");
+    await press(page.getByRole("tab", { name: lang === "zh" ? "会话" : "Conversation" }));
+    await page.locator(".conversation-body .gate-ask .home-ask-options").waitFor({ timeout: 10_000 });
+    await page.locator(".conversation-body .gate-ask").scrollIntoViewIfNeeded();
+    // Its question and Send to read against the card in each theme: their
+    // colours, and which rules set them, are kept in the report.
+    const legible = await page.evaluate(() => {
+      const card = document.querySelector(".conversation-body .gate-ask");
+      // Any CSS colour (color-mix gives color(srgb …)) as the rgb a canvas paints it.
+      const rgb = (css) => {
+        const c = document.createElement("canvas");
+        c.width = c.height = 1;
+        const x = c.getContext("2d");
+        x.fillStyle = "#000";
+        x.fillStyle = css;
+        x.fillRect(0, 0, 1, 1);
+        return [...x.getImageData(0, 0, 1, 1).data].slice(0, 3);
+      };
+      const lum = ([r, g, b]) => [r, g, b].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
+        .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+      const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+      // The card's own background: a tint mixed into the opaque paper.
+      const ground = rgb(getComputedStyle(card).backgroundColor);
+      const rules = (el) => [...document.styleSheets].flatMap((sheet) => { try { return [...sheet.cssRules]; } catch { return []; } })
+        .flatMap((rule) => rule.cssRules ? [...rule.cssRules] : [rule])
+        .filter((rule) => rule.selectorText && rule.style?.color && el.matches(rule.selectorText)).map((rule) => `${rule.selectorText} { color: ${rule.style.color} }`);
+      return ["gate-ask-question", "home-reply-target label"].map((name) => {
+        const el = card.querySelector(name === "gate-ask-question" ? ".gate-ask-question" : ".home-reply-target label");
+        const color = getComputedStyle(el).color;
+        return { name, color, ground, ratio: Math.round(ratio(rgb(color), ground) * 100) / 100, rules: rules(el) };
+      });
+    });
+    report.measures[`${tag}-yn30-conversation-legible`] = legible;
+    for (const { name, ratio } of legible) assert.ok(ratio >= 4.5, `${tag}: the gate card's ${name} reads at ${ratio}:1, under 4.5:1`);
+    await shot("yn30-conversation");
+    await press(page.getByRole("tab", { name: lang === "zh" ? "概览" : "Overview" }));
+    await page.locator("#executor-overview .executor-overview-head").waitFor({ timeout: 5_000 });
+    check(`${tag}: a gate's Ask in its Conversation too, when that tab shows`);
     // yn22: all its steps, then its Conversation and back.
     await open("yn22");
     await press(page.locator("#executor-overview .executor-overview-card .more"));

@@ -98,6 +98,8 @@ export type Section = {
     repliedAt?: string;
     replyText?: string;
     deferredUntil?: string;
+    /** An executor's gate (T-43 S4): the step of its task's template this asks you to approve. */
+    gate?: AskGate;
   };
   status?: { asOf: string; validFor: number; stale: boolean };
   time?: { due?: string; eta?: string; nextUpdate?: string };
@@ -178,9 +180,14 @@ export type NeedsYouItem = {
   state?: "delivering" | "failed" | "blocked";
   taskId?: string;
   reason?: string | null;
+  /** An ask that is an executor's gate (T-43 S4): its executor waits for your answer. */
+  gate?: AskGate;
   title: string;
   since: string;
 };
+
+/** The step of its task's template an executor's ask is the approval of (T-43 S4), counted from 0. */
+export type AskGate = { taskId: string; step: number };
 
 export type HomeData = {
   generatedAt: string;

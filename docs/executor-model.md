@@ -813,7 +813,10 @@ keeps the tab you chose last. A standing Agent or a lead has no tabs.
     task links a PR; `review` is the newest round on the PR's head
     (`changes_requested` fails it; a round of an earlier head doesn't count);
     `ci` is the head's checks; `merge` its merge entry's, or done once the PR
-    is merged. Materials, work and a gate have no record of their own: each
+    is merged. A gate its executor asked you about (below) is waiting for
+    you while that Ask is open and done once you answered it or it was
+    resolved; the steps after it stay as they are meanwhile. Materials, work
+    and a gate it asked nothing about have no record of their own: each
     is done once a step after it has begun (materials also once the dispatch
     mail was read). A gate ends a stage: the stage after it begins only once
     each result asked for before the gate is in, and only its own Jobs, made
@@ -822,6 +825,10 @@ keeps the tab you chose last. A standing Agent or a lead has no tabs.
     under way while it runs (materials, work or a result), waiting for you
     while it waits (those, or a gate);
   - what it is doing now (its work summary);
+  - the approvals it asked for on Home (its gates' Asks, below), each with
+    its question, what it says and Home's own reply, answered there: the
+    same Ask, so an answer there is the answer on Home and in its
+    Conversation, which shows the same card while the Overview doesn't;
   - while it needs you, its requests' own cards, answered there (and not
     also in its Conversation while the Overview shows);
   - its PR's changes as GitHub counts them (`+additions −deletions · files`,
@@ -832,7 +839,23 @@ keeps the tab you chose last. A standing Agent or a lead has no tabs.
   - its result, when it has handed one in.
 
   The read uses Core's records only and never asks GitHub; the web reads it
-  again on every collaboration, Jobs or merge queue change.
+  again on every collaboration, Jobs, merge queue or Home Ask change.
+- **Gates (T-43 S4).** An executor at a gate step of its template asks for
+  the approval with its own Home Ask, which names it:
+  `ask: {question, reply, gate: {taskId, step}}`, the step counted from 0
+  as the template lists its steps. This is the user's choice of 2026-11-08
+  (design/t43-gates, option D): one record, the Ask, rather than a gate
+  record of its own. Core takes such an Ask only from the executor of that
+  task's dispatch and only for a step of its template whose kind is `gate`
+  (`gate_not_yours`, `gate_step_unknown`); an Ask without `gate` is as
+  before. Home lists it in Needs you with its `gate`; the sidebar shows its
+  executor waiting for you (the needs-you ring, its time from the Ask's)
+  and among those waiting; its Overview shows the step waiting and the
+  Ask's card, answered in place. A gate whose approver is `either` is also
+  mailed to its dispatcher, whose mailed approval counts too: the executor
+  then resolves its own Ask. A `lead` gate goes to its dispatcher by mail
+  instead. Core does not stop an executor that goes on without the answer:
+  that rests on its instructions.
 - **The Conversation** is the conversation as for any Agent, with the
   composer. Behind the Overview it stays open, hidden: choosing it again
   puts it back where it was read. A jump into it (a source from Home or the

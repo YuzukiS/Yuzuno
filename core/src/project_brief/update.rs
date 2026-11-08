@@ -669,6 +669,15 @@ fn rules(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> Res
                         }
                     }
                 }
+                // An executor's gate (T-43 S4): its own task's, at a gate step.
+                let gate = &change.section["ask"]["gate"];
+                if change.kind == "ask" && gate.is_object() {
+                    let (task, step) = (gate["taskId"].as_str().unwrap_or_default(), gate["step"].as_u64().unwrap_or(u64::MAX));
+                    if let Err((code, why)) = crate::collaboration_store::executor_overview::may_ask_gate(db, &ctx.agent, task.trim(), step)? {
+                        problems.push(problem(code, format!("{at}.ask.gate"), why, "ask"));
+                        continue;
+                    }
+                }
                 planned.insert(key.into(), Planned { owner: ctx.agent.clone(), open_ask: change.kind == "ask" });
             }
             // Changes no owner, kind or ask state; the blocks are `edited`'s

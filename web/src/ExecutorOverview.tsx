@@ -67,6 +67,7 @@ const text = strings({
   } as Record<string, string>,
   stepState: { done: "done", doing: "under way", blocked: "waiting for you", failed: "failed", todo: "not yet" } as Record<StepState, string>,
   reviewRounds: (rounds: number) => `${rounds} rounds`,
+  ask: { open: "asked on Home", replied: "answered", resolved: "answered" } as Record<string, string>,
   approver: { user: "By you", lead: "By a lead", either: "By you or a lead" } as Record<string, string>,
   now: "Doing now",
   nothingNow: "Nothing reported yet.",
@@ -118,6 +119,7 @@ const text = strings({
   },
   stepState: { done: "完成", doing: "进行中", blocked: "等你", failed: "失败", todo: "未开始" },
   reviewRounds: (rounds) => `${rounds} 轮`,
+  ask: { open: "已在 Home 提问", replied: "已回答", resolved: "已回答" },
   approver: { user: "由你批", lead: "由负责人批", either: "由你或负责人批" },
   now: "正在做",
   nothingNow: "还没有报告。",
@@ -168,6 +170,8 @@ function stepRef(step: Step, t: ReturnType<typeof text>): string {
     case "review": return [s("round") && t.round(Number(s("round"))), s("conclusion")].filter(Boolean).join(" · ");
     case "ci": return s("state");
     case "merge": return s("state");
+    // Its gate's Home Ask (T-43 S4).
+    case "ask": return t.ask[s("state")] ?? "";
     default: return "";
   }
 }
@@ -180,13 +184,16 @@ function stepRef(step: Step, t: ReturnType<typeof text>): string {
  * entry), each with its own conclusion; and its result. The same records as
  * its Conversation, read another way.
  */
-export function ExecutorOverview({ agent, revision, requests, onOpenTask }: {
+export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }: {
   agent: Agent;
   /** Read again when this changes: a collaboration, Jobs or merge change. */
   revision: string;
   /** Its native requests' cards, answered here while this tab shows: the
    * same cards its Conversation shows otherwise. */
   requests?: ReactNode;
+  /** Its gate asks on Home (T-43 S4), answered here: the same cards its
+   * Conversation shows. */
+  asks?: ReactNode;
   onOpenTask: (taskId: string) => void;
 }) {
   const language = useLanguage();
@@ -234,6 +241,8 @@ export function ExecutorOverview({ agent, revision, requests, onOpenTask }: {
           {data.task && <button type="button" className="chip link" onClick={() => onOpenTask(data.task!.id)}>{t.openTask}</button>}
         </div>
       </header>
+      {/* The approvals it asked for on Home (T-43 S4), each answered in place. */}
+      {asks}
       {/* Its requests' own cards say Needs you; a question it asked to be
           answered later is in the panel under this tab. */}
       {waiting && (requests ? (
