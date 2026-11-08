@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { RotateCcw } from "lucide-react";
-import { errorText } from "./api";
+import { errorText, HttpError } from "./api";
 import type { Candidate, Policy } from "./executor-routing";
 import { strings, useLanguage, type Language } from "./i18n";
 import type { AccountsView, RoutingKey } from "./routing-keys";
@@ -31,6 +31,8 @@ const text = strings({
   stretch: (from: string, to: string) => `${from}–${to}`,
   unavailable: "Simulating by time comes with routing itself (YN-34 S3b).",
   failed: "Couldn't simulate:",
+  held: "The week shows again once the marked block is corrected.",
+  refused: "Core can't simulate this draft yet:",
 }, {
   title: "按时间模拟",
   help: "按上面现在的顺序，未来七天 Core 会选谁。读数按现在的算，只有时间在变；色带是会选的候选（它的颜色），斜线是没有可用的、新开的执行者会排队。",
@@ -50,6 +52,8 @@ const text = strings({
   stretch: (from, to) => `${from}–${to}`,
   unavailable: "按时间模拟要等路由本身（YN-34 S3b）。",
   failed: "没能模拟：",
+  held: "改好标出的那一块，这里会再显示这一周。",
+  refused: "Core 还模拟不了这份草稿：",
 });
 type Text = ReturnType<typeof text>;
 
@@ -77,8 +81,8 @@ function stretches(segments: Segment[], rowStart: number) {
 
 /** Settings → Executor routing → Simulate by time (YN-49 S4b): a week of
  * who would be chosen, a time to look at closely, and what to assume used up. */
-export function RoutingSimulate({ policy, active, names, colourOf, accounts, keys }: {
-  policy: Policy; active: boolean; names: (c: Candidate) => string; colourOf: (id: string) => number;
+export function RoutingSimulate({ policy, active, held = false, names, colourOf, accounts, keys }: {
+  policy: Policy; active: boolean; held?: boolean; names: (c: Candidate) => string; colourOf: (id: string) => number;
   accounts: AccountsView | null; keys: RoutingKey[] | null;
 }) {
   const language = useLanguage();
@@ -94,6 +98,7 @@ export function RoutingSimulate({ policy, active, names, colourOf, accounts, key
   const [segments, setSegments] = useState<Segment[] | null | undefined>(undefined);
   const [record, setRecord] = useState<RouteRecord | null>(null);
   const [error, setError] = useState("");
+  const [refused, setRefused] = useState("");
   // What is assumed, as Core takes it: only what is on.
   const sent: Assume = useMemo(() => ({
     ...(assume.accountsUsedUp.length ? { accountsUsedUp: assume.accountsUsedUp } : {}),
@@ -104,21 +109,28 @@ export function RoutingSimulate({ policy, active, names, colourOf, accounts, key
   const key = JSON.stringify([policy, sent]);
   // Nothing assumed is no assumption: not sent at all.
   const assumed = Object.keys(sent).length ? sent : undefined;
-  // The week, asked again a moment after the order or an assumption changes.
+  // The week, asked again a moment after the order or an assumption changes;
+  // not while the page already knows the order can't be saved (`held`).
   useEffect(() => {
-    if (!active) return;
+    if (!active || held) return;
     const controller = new AbortController();
     const wait = window.setTimeout(() => {
       simulate(policy, new Date(start).toISOString(), new Date(start + DAYS * DAY * 60_000).toISOString(), STEP, assumed, controller.signal)
-        .then((next) => { if (!controller.signal.aborted) { setSegments(next); setError(""); } })
-        .catch((e) => { if (!controller.signal.aborted) setError(errorText(e)); });
+        .then((next) => { if (!controller.signal.aborted) { setSegments(next); setError(""); setRefused(""); } })
+        .catch((e) => {
+          if (controller.signal.aborted) return;
+          // A draft Core refuses (400) is a note, not an error.
+          const refusal = e instanceof HttpError && e.status === 400;
+          setRefused(refusal ? errorText(e) : "");
+          setError(refusal ? "" : errorText(e));
+        });
     }, 350);
     return () => { window.clearTimeout(wait); controller.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, key, start]);
+  }, [active, key, start, held]);
   // The picked time, with its reasons.
   useEffect(() => {
-    if (!active || segments === null) return;
+    if (!active || held || segments === null) return;
     const controller = new AbortController();
     const wait = window.setTimeout(() => {
       evaluate(policy, new Date(pickedAt).toISOString(), assumed, controller.signal)
@@ -127,7 +139,7 @@ export function RoutingSimulate({ policy, active, names, colourOf, accounts, key
     }, 250);
     return () => { window.clearTimeout(wait); controller.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, key, pickedAt, segments === null]);
+  }, [active, key, pickedAt, segments === null, held]);
 
   const byId = new Map(policy.candidates.map((c, i) => [c.id, { c, i }]));
   const label = (id: string | null) => (id && byId.get(id) ? names(byId.get(id)!.c) : t.noneShort);
@@ -142,6 +154,13 @@ export function RoutingSimulate({ policy, active, names, colourOf, accounts, key
   const onePassword = policy.candidates.some((c) => c.credential.kind === "apiKey" && keys?.find((k) => k.id === (c.credential as { keyId: string }).keyId)?.source === "1password");
 
   if (segments === null) return <section className="routing-simulate"><h4 className="settings-group-title">{t.title}</h4><p className="settings-block-help">{t.unavailable}</p></section>;
+  // A week or a time of another order isn't shown for this one.
+  if (held || refused) return (
+    <section className="routing-simulate">
+      <h4 className="settings-group-title">{t.title}</h4>
+      <p className="settings-block-help routing-sim-held">{held ? t.held : <>{t.refused} <span lang="en">{refused}</span></>}</p>
+    </section>
+  );
   return (
     <section className="routing-simulate" aria-labelledby="routing-simulate-title">
       <h4 id="routing-simulate-title" className="settings-group-title">{t.title}</h4>

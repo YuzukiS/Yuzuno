@@ -234,3 +234,27 @@ test("the picked time's reasons carry their candidates' numbers and names", asyn
   await until(() => q(page, ".routing-sim-why li"), "the reasons");
   assert.deepEqual([...page.document.querySelectorAll(".routing-sim-why li")].map((li) => li.textContent), ["1OpenCode · deepseek-flash · API: DeepSeek's peak price"]);
 });
+
+test("an order the page can't save isn't simulated: a quiet note stands in for the week until it is corrected", async () => {
+  const server = core();
+  const page = mount(server);
+  await until(() => q(page, ".routing-strip") && server.asked.evaluate.some((b) => b.at), "the week and the picked time");
+  const before = { simulate: server.asked.simulate.length, evaluate: server.asked.evaluate.length };
+  await set(page, q(page, '[aria-label="At most $ a day, all API keys"]'), "0");
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.deepEqual({ simulate: server.asked.simulate.length, evaluate: server.asked.evaluate.length }, before, "nothing asked while the cap can't be saved");
+  assert.equal(q(page, ".routing-sim-held")?.textContent, "The week shows again once the marked block is corrected.");
+  assert.ok(!q(page, ".routing-strip") && !q(page, ".routing-sim-result"), "no week or time of the order before the change");
+  assert.ok(!q(page, ".routing-simulate .inline-error"), "no error");
+  await set(page, q(page, '[aria-label="At most $ a day, all API keys"]'), "25");
+  await until(() => server.asked.simulate.length > before.simulate, "asked again once corrected");
+  assert.equal(server.asked.simulate.at(-1).policy.dailyApiCapUsd, 25);
+  await until(() => q(page, ".routing-strip"), "the week again");
+});
+
+test("an order Core refuses to simulate is a note with Core's words, not an error", async () => {
+  const page = mount(core({ simulate: () => [400, { code: "invalid", error: "candidates[0].model: a model has no spaces", path: "candidates[0].model" }] }));
+  await until(() => q(page, ".routing-sim-held"), "the note");
+  assert.equal(q(page, ".routing-sim-held").textContent, "Core can't simulate this draft yet: candidates[0].model: a model has no spaces");
+  assert.ok(!q(page, ".routing-simulate .inline-error") && !q(page, ".routing-strip"), "no error, no week");
+});

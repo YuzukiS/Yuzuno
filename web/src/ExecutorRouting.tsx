@@ -203,7 +203,7 @@ export function ExecutorRouting({ active }: { active: boolean }) {
           </div>
         )}
         {policy.enabled && policy.candidates.length > 0 && (
-          <RoutingSimulate policy={policy} active={active} names={nameOf} colourOf={colourOf} accounts={accounts} keys={keys} />
+          <RoutingSimulate policy={policy} active={active} held={invalid} names={nameOf} colourOf={colourOf} accounts={accounts} keys={keys} />
         )}
         <div className="settings-group routing-workspace">
           <div className="settings-row">
