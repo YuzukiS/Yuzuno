@@ -37,6 +37,7 @@ import { ReviewSettings } from "./ReviewSettings";
 import { AutoContinueDefault } from "./QuotaResume";
 import { AgentDefaults } from "./AgentDefaults";
 import { ExecutorTemplates } from "./ExecutorTemplates";
+import { ExecutorRouting } from "./ExecutorRouting";
 import { RoutingKeys } from "./RoutingKeys";
 import { HomePresentationSettings } from "./HomePresentationSettings";
 import { NotificationSettings } from "./NotificationSettings";
@@ -1064,6 +1065,7 @@ export function WorkspaceUpdates({
           {tab === "transfer" && <DeviceTransferSection />}
           {tab === "agent-defaults" && <AgentDefaults active={open} />}
           {tab === "executor-templates" && <ExecutorTemplates active={open} />}
+          {tab === "executor-routing" && <ExecutorRouting active={open && visible} />}
           {tab === "routing-keys" && <RoutingKeys active={open && visible} />}
           {tab === "review" && <ReviewSettings active={open} />}
           {tab === "auto-continue" && <AutoContinueDefault active={open} />}
