@@ -11,7 +11,9 @@ use tokio::{io::AsyncReadExt, process::Command};
 pub(super) const DISK_BUDGET: u64 = 256 * 1024 * 1024;
 const METADATA_BUDGET: usize = 16 * 1024 * 1024;
 
-pub(super) struct Git {
+/// Also the merge queue's store for redoing a merge (YN-33): the same
+/// isolation, budget and deadline.
+pub(crate) struct Git {
     pub path: PathBuf,
 }
 
@@ -138,6 +140,13 @@ impl Git {
     }
 
     pub async fn run(&self, args: &[&str], limit: usize) -> Result<Vec<u8>> {
+        Ok(self.run_accepting(args, limit, &[0]).await?.1)
+    }
+
+    /// `run`, where any of the `accepted` exit codes is an answer, not a
+    /// failure (`git merge-tree` exits 1 for a merge with conflicts), with
+    /// the code it exited with.
+    pub async fn run_accepting(&self, args: &[&str], limit: usize, accepted: &[i32]) -> Result<(i32, Vec<u8>)> {
         let used = disk_usage(&self.path)?;
         ensure!(
             used < DISK_BUDGET,
@@ -185,15 +194,13 @@ impl Git {
             let status = child.wait().await?;
             // Never publish Git diagnostics: credential/transport output may
             // contain host details. Repository text is returned only as data.
-            ensure!(
-                status.success(),
-                "Fixed Git objects are unavailable or this source operation failed"
-            );
+            let code = status.code().filter(|code| accepted.contains(code));
+            let code = code.context("Fixed Git objects are unavailable or this source operation failed")?;
             ensure!(
                 disk_usage(&self.path)? <= DISK_BUDGET,
                 "Review object storage budget exhausted (256 MiB)"
             );
-            Ok::<_, anyhow::Error>(out)
+            Ok::<_, anyhow::Error>((code, out))
         };
         let monitor = async {
             loop {
@@ -204,7 +211,7 @@ impl Git {
                 );
             }
             #[allow(unreachable_code)]
-            Ok::<Vec<u8>, anyhow::Error>(Vec::new())
+            Ok::<(i32, Vec<u8>), anyhow::Error>((0, Vec::new()))
         };
         // This future owns the process group, including on outer review timeout
         // or cancellation. Each network/object operation has its own deadline.

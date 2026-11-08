@@ -8,7 +8,7 @@ mod mcp;
 pub(crate) mod policy;
 mod reviewer;
 pub(crate) mod settings;
-mod source;
+pub(crate) mod source;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;

@@ -2,7 +2,7 @@
 //! arbitrary revisions, URLs or worktree paths.
 mod added_source;
 mod arguments;
-mod git;
+pub(crate) mod git;
 pub(super) mod scope;
 mod search_recovery;
 #[cfg(test)]

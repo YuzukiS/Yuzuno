@@ -210,6 +210,36 @@ fn rounds_at(db: &Connection, link: &str, head: &str) -> Result<Vec<Value>> {
         .collect();
     rows
 }
+/// Every completed review round at `head` on any PR of the repository (YN-33):
+/// a merged-in head counts as reviewed by a passing one of them.
+fn rounds_in_repository(db: &Connection, repository_id: i64, head: &str) -> Result<Vec<Value>> {
+    let mut q = db.prepare(
+        "SELECT link_id,data FROM pr_reviews WHERE link_id LIKE ?1 AND status='completed' AND json_extract(data,'$.headSha')=?2 ORDER BY rowid",
+    )?;
+    let rows = q
+        .query_map(params![format!("{repository_id}:pull:%"), head], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .map(|r| {
+            let (link, data) = r?;
+            let mut round = serde_json::from_str::<Value>(&data)?;
+            round["linkId"] = json!(link);
+            Ok(round)
+        })
+        .collect();
+    rows
+}
+/// The rounds the review check reads for `entry` (YN-33): every completed
+/// round at the head the last round reviewed, and for each merged-in head the
+/// entry's proof calls reviewed, every completed round at it in the repository.
+fn merged_rounds(db: &Connection, entry: &Value) -> Result<Vec<(String, Vec<Value>)>> {
+    let repository_id = entry["repositoryId"].as_i64().unwrap_or(0);
+    let mut out = Vec::new();
+    for m in entry["reviewMerges"]["merges"].as_array().into_iter().flatten().filter(|m| m["why"]["kind"] == "reviewed") {
+        let sha = m["mergedIn"].as_str().unwrap_or("").to_owned();
+        let rounds = rounds_in_repository(db, repository_id, &sha)?;
+        out.push((sha, rounds));
+    }
+    Ok(out)
+}
 /// The newest completed review of a PR link (on any task), and whether a
 /// round of it is still running.
 fn review(db: &Connection, link: &str) -> Result<(Option<Value>, bool)> {
@@ -267,6 +297,9 @@ fn releaser(store: &Store, db: &Connection, actor: Option<&str>, task: &collab::
 /// Everything a release needs before GitHub is read, checked again when it
 /// is committed.
 pub(super) struct Plan {
+    /// The head the last round reviewed, when it is not the released head: the
+    /// release then needs the proof that the head adds only merges (YN-33).
+    pub reviewed: Option<String>,
     pub task: String,
     pub reference: String,
     pub repository_id: i64,
@@ -276,7 +309,10 @@ pub(super) struct Plan {
     pub author: TaskActor,
     pub source: Value,
 }
-fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue) -> Result<Plan> {
+/// `proof`: the entry's proof that the released head is the reviewed head
+/// plus merges (YN-33), once read; before it is, the reviewed head's round is
+/// checked alone and the plan names that head.
+fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, proof: Option<&Value>) -> Result<Plan> {
     let (task, _) = collab::task_key(db, &input.task_id)?;
     let reference = collab::task_number(db, &task)?;
     let shared = collab::load_task(db, &task)?;
@@ -311,8 +347,17 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue) ->
         "merge_queue_disabled: the merge queue is off for {repository}; only the user can turn it on, in Projects → repositories"
     );
     let (latest, running) = review(db, &link)?;
-    let at_head = rounds_at(db, &link, &input.head_sha)?;
-    match checks::review(&json!({"headSha":input.head_sha}), latest.as_ref(), running, &at_head) {
+    let reviewed = latest.as_ref().and_then(|r| r["headSha"].as_str()).unwrap_or(&input.head_sha).to_owned();
+    let at_reviewed = rounds_at(db, &link, &reviewed)?;
+    let later = reviewed != input.head_sha && !running;
+    let candidate = match proof {
+        Some(proof) => json!({"headSha":input.head_sha,"repositoryId":repository_id,"reviewMerges":proof}),
+        // Before the proof is read, only the reviewed head's round is checked.
+        None if later => json!({"headSha":input.head_sha,"reviewMerges":{"head":input.head_sha,"reviewedHead":reviewed,"merges":[]}}),
+        None => json!({"headSha":input.head_sha}),
+    };
+    let merged = merged_rounds(db, &candidate)?;
+    match checks::review(&candidate, latest.as_ref(), running, &at_reviewed, &merged) {
         Ok(_) => {}
         Err(Hold::Wait(detail)) => bail!("review_running: {detail}"),
         Err(Hold::Stop(reason, detail)) => bail!("{reason}: {detail}"),
@@ -328,6 +373,7 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue) ->
         bail!("merge_already_queued: entry {id} for #{number} is {state}");
     }
     Ok(Plan {
+        reviewed: later.then_some(reviewed),
         task,
         reference,
         repository_id,
@@ -623,12 +669,27 @@ pub(super) struct Recorded {
 }
 
 impl Store {
-    /// The newest completed round of the PR, whether one is running, and every
-    /// completed round at `head`.
-    pub(super) fn merge_review(&self, link: &str, head: &str) -> Result<(Option<Value>, bool, Vec<Value>)> {
+    /// The newest completed round of the PR, whether one is running, every
+    /// completed round at the head it reviewed, and the rounds at each head the
+    /// entry's proof calls reviewed (YN-33).
+    pub(super) fn merge_review(&self, entry: &Value) -> Result<(Option<Value>, bool, Vec<Value>, Vec<(String, Vec<Value>)>)> {
         let db = self.db.read()?;
+        let link = entry["linkId"].as_str().context("The entry has no PR link")?;
         let (latest, running) = review(&db, link)?;
-        Ok((latest, running, rounds_at(&db, link, head)?))
+        let reviewed = latest.as_ref().and_then(|r| r["headSha"].as_str()).or(entry["headSha"].as_str()).unwrap_or("").to_owned();
+        Ok((latest, running, rounds_at(&db, link, &reviewed)?, merged_rounds(&db, entry)?))
+    }
+    /// A passing completed round at `head` on any PR of the repository with no
+    /// P0–P2 finding in any round there (YN-33): the newest such round, with
+    /// its link and base.
+    pub(super) fn merge_reviewed_head(&self, repository_id: i64, head: &str) -> Result<Option<Value>> {
+        let db = self.db.read()?;
+        let rounds = rounds_in_repository(&db, repository_id, head)?;
+        let blocking = rounds.iter().any(|r| r["findings"].as_array().into_iter().flatten().any(|f| f["priority"].as_u64().is_some_and(|p| p <= 2)));
+        if blocking {
+            return Ok(None);
+        }
+        Ok(rounds.into_iter().rev().find(crate::pr_review::policy::passes))
     }
 
     /// The release's checks before anything is read from GitHub, or the
@@ -639,18 +700,23 @@ impl Store {
         if let Some(old) = previous(&db, actor, "merge_enqueue", &input.request_id, &value)? {
             return Ok(Err(old));
         }
-        Ok(Ok(plan(self, &db, actor, input)?))
+        Ok(Ok(plan(self, &db, actor, input, None)?))
     }
 
     /// Commit a release, checking everything again inside the transaction.
-    pub(super) fn merge_enqueue(&self, actor: Option<&str>, input: &Enqueue, pr: &Value, main: &str) -> Result<Value> {
+    pub(super) fn merge_enqueue(&self, actor: Option<&str>, input: &Enqueue, pr: &Value, main: &str, proof: Option<Value>) -> Result<Value> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let value = serde_json::to_value(input)?;
         if let Some(old) = previous(&tx, actor, "merge_enqueue", &input.request_id, &value)? {
             return Ok(old);
         }
-        let p = plan(self, &tx, actor, input)?;
+        let p = plan(self, &tx, actor, input, proof.as_ref())?;
+        // The head the last round reviewed did not change since the proof was
+        // read; a release needing one carries it.
+        ensure!(p.reviewed.is_none() || proof.is_some(), "review_not_passing: the last review round no longer reviewed the head the proof was read for; release again");
+        // A round at the released head itself since then needs no proof.
+        let proof = proof.filter(|_| p.reviewed.is_some());
         ensure!(
             pr["head"]["sha"] == input.head_sha,
             "head_moved: the PR head is {}, not {}",
@@ -665,7 +731,7 @@ impl Store {
         let e = json!({"id":id,"entryId":id,"taskId":p.task,"taskReference":p.reference,"repositoryId":p.repository_id,
             "repository":p.repository,"number":p.number,"url":format!("https://github.com/{}/pull/{}",p.repository,p.number),
             "linkId":p.link,"headSha":input.head_sha,"baseBranch":pr["base"]["ref"],"mainAtRelease":main,"mainAnchoredAt":at,
-            "requireWorkflows":input.require_workflows.clone().unwrap_or_default(),"note":input.note,
+            "requireWorkflows":input.require_workflows.clone().unwrap_or_default(),"note":input.note,"reviewMerges":proof,
             "release":{"by":p.author,"requestId":input.request_id,"at":at,"source":p.source,"reviewId":latest.as_ref().map(|r| r["id"].clone())},
             "state":"queued","reason":null,"detail":"Released; Core checks it before anything else happens.","attempt":0,"checks":0,
             "waits":0,"readFailures":0,"waitingSince":null,"nextCheck":0,"evidence":null,"lastEvidence":null,"batch":null,"merge":null,
@@ -676,8 +742,13 @@ impl Store {
         )?;
         receipt(&tx, actor, "merge_enqueue", &input.request_id, &value, &id)?;
         let head: String = input.head_sha.chars().take(12).collect();
+        let merges = match &e["reviewMerges"]["merges"] {
+            Value::Array(m) => format!(" Its last review round read {}; this head adds only {} merge(s) of heads that need no review of their own, each redone by Core with the same tree.",
+                short(&e["reviewMerges"]["reviewedHead"]), m.len()),
+            _ => String::new(),
+        };
         collab::activity(&tx, &p.task, "comment", &p.author, &p.source, json!({"mergeEntryId":id,
-            "body":format!("Merge queue: released #{} at {head} on main {} (entry {id}). The release says the review pair is complete. Core checks the last round at this head, CI and main, and merges the PR as a merge commit pinned to this head once every check holds, while the queue is on for {}.",
+            "body":format!("Merge queue: released #{} at {head} on main {} (entry {id}). The release says the review pair is complete.{merges} Core checks the last round at this head, CI and main, and merges the PR as a merge commit pinned to this head once every check holds, while the queue is on for {}.",
                 p.number, &main[..12.min(main.len())], p.repository)}))?;
         tx.commit()?;
         Ok(e)

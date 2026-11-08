@@ -7,6 +7,7 @@
 //! for the repository is on; `writes` holds every write it can make.
 mod checks;
 mod landing;
+mod merges;
 mod remote;
 mod revert;
 pub(crate) mod store;
@@ -30,6 +31,10 @@ use std::sync::{Arc, OnceLock};
 pub(crate) struct State {
     started: OnceLock<()>,
     pub wake: Arc<tokio::sync::Notify>,
+    /// A test's local repository holding the commits whose merges Core redoes
+    /// (YN-33), instead of fetching them from GitHub.
+    #[cfg(test)]
+    pub objects: std::sync::Mutex<Option<std::path::PathBuf>>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -195,7 +200,24 @@ async fn enqueue(ws: &Arc<Workspace>, actor: Option<String>, input: Value) -> Re
         Err(existing) => return Ok(existing),
     };
     let (pr, main) = remote::release_reads(ws, &plan.repository, plan.number).await?;
-    let entry = ws.stored(move |s| s.merge_enqueue(actor.as_deref(), &i, &pr, &main)).await?;
+    // The last round reviewed an earlier head (YN-33): the release needs the
+    // proof that this head adds only merges that need no review of their own.
+    let proof = match &plan.reviewed {
+        Some(reviewed) => {
+            let base = pr["base"]["ref"].as_str().context("The PR has no base branch")?.to_owned();
+            let target = merges::Target { repo: &plan.repository, repository: plan.repository_id, base: &base };
+            match merges::prove(ws, &target, &i.head_sha, reviewed).await? {
+                Ok(proof) => Some(proof),
+                Err(checks::Hold::Stop(reason, detail)) => bail!(
+                    "{reason}: The last completed review round reviewed {}, not the released head {}, and the head is not that head plus merges that need no review of their own: {detail}",
+                    &reviewed[..12.min(reviewed.len())], &i.head_sha[..12]
+                ),
+                Err(checks::Hold::Wait(detail)) => bail!("review_running: {detail}"),
+            }
+        }
+        None => None,
+    };
+    let entry = ws.stored(move |s| s.merge_enqueue(actor.as_deref(), &i, &pr, &main, proof)).await?;
     ws.changes.send(json!({"mergeQueue":true,"collaboration":true}));
     ws.collaboration_wakeup.notify_one();
     ws.merge_queue.wake.notify_one();
@@ -388,7 +410,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     vec![
         def(
             "merge_enqueue",
-            "Release one reviewed PR head into Core's merge queue. Only the task's dispatching lead, or the user, may release; the task's executor may not, and the user must first turn the queue on for the repository. That switch is the user's own, in Projects → repositories; no Agent tool reaches it. While the queue is off, Core writes nothing to GitHub. Releasing states that the project's review pair is complete: Core checks that the last completed review round of this PR reviewed exactly headSha and passes the review policy, and that no round at headSha found a P0–P2 issue, and refuses otherwise. Core then checks on fresh GitHub reads that the PR is open at headSha and has no merge conflict (a conflicting PR stops at once with conflict: GitHub runs no CI for it), main CI since the release is not red, every workflow run on the head finished green, and every CI job checked out exactly the merge of the current main and the head. If CI tested an older main, Core opens a CI-only batch PR on the current main, or stacked on the batch ahead of it (a chain of batches, merged in order), and waits for its CI. Under the repository's relaxed policy (the user's choice) CI on an older main counts: Core instead checks that its own merge of the head into the current main is clean (a branch with no PR) and that main CI is not red now, and waits while it is. Once every check holds, Core merges the PR as a merge commit pinned to headSha, checks that the merge commit is main plus the head with the tested tree, removes its batch, and follows main's push CI. The outcome and its evidence are written to the task and mailed to you and the task's executor. Core never reruns CI. Retry an identical request with the same requestId.",
+            "Release one reviewed PR head into Core's merge queue. Only the task's dispatching lead, or the user, may release; the task's executor may not, and the user must first turn the queue on for the repository. That switch is the user's own, in Projects → repositories; no Agent tool reaches it. While the queue is off, Core writes nothing to GitHub. Releasing states that the project's review pair is complete: Core checks that the last completed review round of this PR reviewed exactly headSha and passes the review policy, and that no round at headSha found a P0–P2 issue, and refuses otherwise. A head that adds only merges after that round (of commits on main or of other reviewed heads) passes too, once Core has redone each merge to exactly its tree; see docs/merge-queue.md. Core then checks on fresh GitHub reads that the PR is open at headSha and has no merge conflict (a conflicting PR stops at once with conflict: GitHub runs no CI for it), main CI since the release is not red, every workflow run on the head finished green, and every CI job checked out exactly the merge of the current main and the head. If CI tested an older main, Core opens a CI-only batch PR on the current main, or stacked on the batch ahead of it (a chain of batches, merged in order), and waits for its CI. Under the repository's relaxed policy (the user's choice) CI on an older main counts: Core instead checks that its own merge of the head into the current main is clean (a branch with no PR) and that main CI is not red now, and waits while it is. Once every check holds, Core merges the PR as a merge commit pinned to headSha, checks that the merge commit is main plus the head with the tested tree, removes its batch, and follows main's push CI. The outcome and its evidence are written to the task and mailed to you and the task's executor. Core never reruns CI. Retry an identical request with the same requestId.",
             json!({"requestId":text,"taskId":task,"pullUrl":{"type":"string","description":"https://github.com/<owner>/<repo>/pull/<number>, linked to the task"},"headSha":head,
                 "note":{"type":"string","maxLength":2000},"requireWorkflows":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":100},"description":"Workflows that must also have run green on the head besides CI, for example Desktop macOS."}}),
             &["requestId", "taskId", "pullUrl", "headSha"],

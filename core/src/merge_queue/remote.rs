@@ -86,7 +86,6 @@ fn target(entry: &Value) -> Result<Target> {
 pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, Check<()>)> {
     let t = target(entry)?;
     let (repo, number, head) = (t.repo.clone(), t.number, t.head.clone());
-    let link = entry["linkId"].as_str().context("The entry has no PR link")?.to_owned();
     let mut evidence = json!({"checkedAt":crate::model::now()});
     macro_rules! hold {
         ($decision:expr) => {
@@ -99,9 +98,9 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
     hold!(checks::pull(entry, &pr));
     hold!(checks::conflicting(&pr));
-    let released = head.clone();
-    let (latest, running, at_head) = ws.stored(move |s| s.merge_review(&link, &released)).await?;
-    evidence["review"] = hold!(checks::review(entry, latest.as_ref(), running, &at_head));
+    let reading = entry.clone();
+    let (latest, running, at_reviewed, merged) = ws.stored(move |s| s.merge_review(&reading)).await?;
+    evidence["review"] = hold!(checks::review(entry, latest.as_ref(), running, &at_reviewed, &merged));
 
     let by_ref = read(ws, format!("repos/{repo}/git/ref/heads/{}", t.base)).await?;
     let by_branch = read(ws, format!("repos/{repo}/branches/{}", segment(&t.base))).await?;
@@ -325,11 +324,25 @@ async fn open_batch(ws: &Arc<Workspace>, t: &Target, entry: &Value, main: &str, 
 /// Whether `older` is an ancestor of `main`, from GitHub's compare of the two
 /// (their merge base is `older`). One read, holding a GitHub slot.
 async fn older_main(ws: &Arc<Workspace>, repo: &str, older: &str, main: &str) -> Result<bool> {
+    ancestor(ws, repo, older, main).await
+}
+/// Whether `older` is `newer` or one of its ancestors (YN-33: on the base
+/// branch), from GitHub's compare of the two.
+pub(super) async fn ancestor(ws: &Arc<Workspace>, repo: &str, older: &str, newer: &str) -> Result<bool> {
+    Ok(compare(ws, repo, older, newer).await?["mergeBase"] == older)
+}
+/// The merge base GitHub's compare of `a` and `b` names (YN-33).
+pub(super) async fn merge_base(ws: &Arc<Workspace>, repo: &str, a: &str, b: &str) -> Result<String> {
+    let compared = compare(ws, repo, a, b).await?;
+    Ok(compared["mergeBase"].as_str().context("GitHub's compare named no merge base")?.to_owned())
+}
+/// GitHub's compare of `a` and `b`: its base and merge base. One read,
+/// holding a GitHub slot.
+async fn compare(ws: &Arc<Workspace>, repo: &str, a: &str, b: &str) -> Result<Value> {
     let cooldown = ws.stored(crate::ci_monitor::read_cooldown).await?;
     ensure!(cooldown <= chrono::Utc::now().timestamp(), "rate_limited: GitHub reads are cooling down until {cooldown}");
     let _slot = ws.github.slots.acquire().await?;
-    let compared = ws.github.client.comparison_identity(repo, older, main).await?;
-    Ok(compared["mergeBase"] == older)
+    ws.github.client.comparison_identity(repo, a, b).await
 }
 
 /// Every job of a CI run attempt, each with its log's checkout line resolved
