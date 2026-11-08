@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import { Bell, ChevronDown, Folder, Minus, Plus } from "lucide-react";
 import type { ProjectGroupStyle } from "./appearance";
 import { strings, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import { isArchived } from "./executor-lifecycle";
 import { groupSummary, type ProjectGroup } from "./project-groups";
 import type { Agent } from "./types";
@@ -9,7 +10,6 @@ import "./project-groups.css";
 
 // A group's own controls and marks; its name is the project's (T-189).
 const text = strings({
-  toggle: (folded: boolean, name: string) => `${folded ? "Open" : "Fold"} ${name}`,
   count: (count: number) => `${count} ${count === 1 ? "agent" : "agents"}`,
   newIn: (name: string) => `New agent in ${name}`,
   newWithout: "New agent without a project",
@@ -18,7 +18,6 @@ const text = strings({
   unread: (count: number) => `${count} unread`,
   listJoin: ", ",
 }, {
-  toggle: (folded, name) => `${folded ? "展开" : "折叠"} ${name}`,
   count: (count) => `${count} 个 Agent`,
   newIn: (name) => `在 ${name} 中新建 Agent`,
   newWithout: "新建不属于任何项目的 Agent",
@@ -215,7 +214,6 @@ function GroupSection({
           className="project-group-toggle"
           aria-expanded={!folded}
           aria-controls={body}
-          title={t.toggle(folded, group.name)}
           onClick={onToggle}
         >
           <ChevronDown size={12} className="project-group-chevron" aria-hidden="true" />
@@ -233,15 +231,16 @@ function GroupSection({
           </span>
         </button>
         {group.creatable && (
-          <button
-            type="button"
-            className="project-group-add"
-            aria-label={t.newIn(group.name)}
-            title={group.projectId ? t.newIn(group.name) : t.newWithout}
-            onClick={onCreate}
-          >
-            <Plus size={13} aria-hidden="true" />
-          </button>
+          <Tip side="bottom" describe={false} content={<TipText title={group.projectId ? t.newIn(group.name) : t.newWithout} />}>
+            <button
+              type="button"
+              className="project-group-add"
+              aria-label={group.projectId ? t.newIn(group.name) : t.newWithout}
+              onClick={onCreate}
+            >
+              <Plus size={13} aria-hidden="true" />
+            </button>
+          </Tip>
         )}
       </div>
       <div className="project-group-body" id={body} inert={folded}>
@@ -261,25 +260,28 @@ function Summary({ needs, working, unread }: ReturnType<typeof groupSummary>) {
   ].filter(Boolean);
   if (!said.length) return null;
   return (
-    <span className="project-group-summary" aria-label={said.join(t.listJoin)} title={said.join(" · ")}>
-      {needs > 0 && (
-        <span className="project-group-mark is-attention" aria-hidden="true">
-          <Bell size={9} />
-          {needs}
-        </span>
-      )}
-      {working > 0 && (
-        <span className="project-group-mark" aria-hidden="true">
-          <span className="status-dot working" />
-          {working}
-        </span>
-      )}
-      {unread > 0 && (
-        <span className="project-group-mark" aria-hidden="true">
-          <span className="project-group-ring" />
-          {unread}
-        </span>
-      )}
-    </span>
+    // Its marks in words (YN-44): what each count is.
+    <Tip side="bottom" describe={false} content={<TipText title={said[0]} meta={said.slice(1)} />}>
+      <span className="project-group-summary" aria-label={said.join(t.listJoin)}>
+        {needs > 0 && (
+          <span className="project-group-mark is-attention" aria-hidden="true">
+            <Bell size={9} />
+            {needs}
+          </span>
+        )}
+        {working > 0 && (
+          <span className="project-group-mark" aria-hidden="true">
+            <span className="status-dot working" />
+            {working}
+          </span>
+        )}
+        {unread > 0 && (
+          <span className="project-group-mark" aria-hidden="true">
+            <span className="project-group-ring" />
+            {unread}
+          </span>
+        )}
+      </span>
+    </Tip>
   );
 }

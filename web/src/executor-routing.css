@@ -121,3 +121,136 @@
   .routing-home .icon-button { grid-column: 2; grid-row: 1; }
   .routing-seg { flex-wrap: wrap; }
 }
+
+/* ---- The candidate order (S4a). A candidate's colour follows it (--cc); its number is its place. */
+.executor-routing {
+  --route-c1: #2a78d6; --route-c2: #eb6834; --route-c3: #1baf7a; --route-c4: #eda100;
+  --route-c5: #e87ba4; --route-c6: #008300; --route-c7: #6250d6; --route-c8: #e34948;
+  display: grid;
+  gap: 12px;
+}
+:root[data-theme="dark"] .executor-routing {
+  --route-c1: #3987e5; --route-c2: #d95926; --route-c3: #199e70; --route-c4: #c98500;
+  --route-c5: #d55181; --route-c6: #008300; --route-c7: #9085e9; --route-c8: #e66767;
+}
+.executor-routing .settings-input {
+  width: min(18rem, 100%);
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}
+.executor-routing .settings-input[aria-invalid="true"] { border-color: var(--danger, #c4453c); }
+.executor-routing .settings-select { width: auto; max-width: 100%; }
+.routing-head-switch { display: inline-flex; flex: none; align-items: center; gap: 8px; color: var(--ink); font-size: calc(10.5px + var(--font-adjust, 3px)); }
+.routing-off-note { margin: 0; }
+.routing-order-head { display: grid; gap: 2px; }
+.routing-order-head .settings-group-title { display: flex; align-items: center; gap: 8px; margin: 0; }
+.routing-order-head .settings-block-help { margin: 0; }
+.routing-none { margin: 0; }
+
+.routing-list { position: relative; display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.routing-list.is-off .routing-cand-main, .routing-list.is-off .routing-chips { opacity: .6; }
+.routing-cand {
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-soft) 38%, var(--surface-raised));
+  transition: box-shadow .12s ease, border-color .12s ease;
+}
+.routing-cand.is-disabled .routing-cand-main, .routing-cand.is-disabled .routing-chips { opacity: .55; }
+.routing-cand.is-dragging { z-index: 5; box-shadow: 0 10px 30px #0003; cursor: grabbing; }
+.routing-cand.is-refused { border-color: var(--danger, #c4453c); }
+.routing-cand-head { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 12px 6px 6px; }
+.routing-grip {
+  display: inline-grid; place-items: center; flex: none; width: 28px; height: 34px; padding: 0;
+  border: 0; border-radius: 7px; background: transparent; color: var(--text-quiet); cursor: grab; touch-action: none;
+}
+.routing-grip:hover, .routing-grip:focus-visible { background: color-mix(in srgb, currentColor 8%, transparent); color: var(--ink); }
+.routing-grip:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.routing-num {
+  display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 7px;
+  background: var(--cc); color: #fff; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1;
+}
+.routing-num.is-light { color: #0b0b0b; }
+.routing-cand-main { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.routing-cand-title {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px;
+  color: var(--ink); font-size: calc(11px + var(--font-adjust, 3px)); font-weight: 600;
+}
+.routing-cand-title > span:first-child { overflow-wrap: anywhere; }
+.routing-cand-sub { color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px)); overflow-wrap: anywhere; }
+.routing-cand-sub.is-missing { color: var(--warning-ink, var(--text-secondary)); }
+.routing-cand-end { display: flex; flex: none; align-items: center; gap: 6px; }
+.routing-move { display: inline-flex; gap: 2px; }
+.routing-cand-body { display: grid; gap: 8px; min-width: 0; padding: 0 14px 12px 44px; }
+.routing-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.routing-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 2px 9px 2px 7px; border-radius: 7px;
+  background: color-mix(in srgb, var(--text-quiet) 12%, transparent); color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px)); line-height: 1.6;
+}
+.routing-chip > span { overflow-wrap: anywhere; }
+.routing-drop-line { position: absolute; left: 6px; right: 6px; height: 3px; border-radius: 2px; background: var(--accent-ink); pointer-events: none; list-style: none; }
+
+/* A candidate being edited, in its card. */
+.routing-edit {
+  display: grid; gap: 12px; margin-top: 2px; padding: 12px; min-width: 0;
+  border: 1px dashed var(--line); border-radius: 10px; background: color-mix(in srgb, var(--surface-raised) 80%, transparent);
+}
+.routing-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 10px 14px; }
+.routing-edit-grid .settings-input, .routing-edit-grid .settings-select { width: 100%; }
+.routing-field-wide { grid-column: 1 / -1; }
+.routing-pool, .routing-unknown { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.routing-pool legend, .routing-unknown legend { float: left; width: 100%; padding: 0; margin-bottom: 2px; }
+.routing-pool label, .routing-unknown label, .routing-pool-accounts label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
+.routing-pool-accounts { display: flex; flex-wrap: wrap; gap: 6px 16px; width: 100%; }
+.routing-conditions { display: grid; gap: 6px; }
+.routing-conds { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.routing-cond {
+  position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0;
+  padding: 8px 40px 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--text-quiet) 8%, transparent);
+  color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.routing-cond.is-refused { box-shadow: inset 0 0 0 1px var(--danger, #c4453c); }
+.routing-cond-kind { color: var(--ink); font-weight: 600; }
+.routing-cond-remove { position: absolute; top: 4px; right: 4px; }
+.routing-cond-error { flex-basis: 100%; }
+.routing-inline-field { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.executor-routing .routing-number { width: 6em; }
+.executor-routing .routing-time { width: 8em; }
+.routing-add-menu { display: flex; flex-wrap: wrap; gap: 6px; }
+.routing-window { display: grid; gap: 8px; flex: 1; min-width: 0; }
+.routing-window-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.routing-slots { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.routing-slot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
+.routing-days { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.routing-days button {
+  min-width: 34px; min-height: 30px; padding: 2px 6px; border: 0; background: transparent; color: var(--text-secondary);
+  font: inherit; font-size: calc(9px + var(--font-adjust, 3px)); cursor: pointer;
+}
+.routing-days button + button { border-left: 1px solid var(--line); }
+.routing-days button[aria-pressed="true"] { background: var(--accent-wash, color-mix(in srgb, var(--accent-ink) 14%, transparent)); color: var(--accent-ink); font-weight: 600; }
+.routing-days button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.routing-list-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.routing-list-foot .quiet-button[aria-pressed="true"] { color: var(--accent-ink); }
+.routing-conflict { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.routing-conflict p { margin: 0; }
+.routing-conflict-order { margin: 0; padding-left: 1.6em; color: var(--ink); }
+.routing-refused { margin: 0; }
+
+/* A phone: the card's controls under its title; 40 px targets. */
+.settings-center.is-phone .executor-routing :is(button, select, .settings-input):not(.routing-chip) { min-height: 40px; }
+.settings-center.is-phone .routing-days button { min-width: 40px; }
+.settings-center.is-phone .routing-cand-head { flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px 6px 4px; }
+.settings-center.is-phone .routing-cand-main { flex-basis: calc(100% - 80px); }
+.settings-center.is-phone .routing-cand-end { justify-content: flex-start; gap: 12px; width: 100%; padding-left: 34px; }
+.settings-center.is-phone .routing-cand-end > .icon-button:last-child { margin-left: auto; }
+.settings-center.is-phone .routing-cand-body { padding: 0 10px 10px 12px; }
+.settings-center.is-phone .routing-grip { width: 40px; height: 40px; }
+.settings-center.is-phone .routing-edit { padding: 10px; }

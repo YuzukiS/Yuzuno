@@ -107,6 +107,12 @@ for line in sys.stdin:
     assert_eq!(left("work"), Some((json!(50.0), json!(90.0))), "the listed home, read in that home: {read}");
     assert!(codex.iter().all(|c| c["source"] == "codex" && c["stale"] == false));
 
+    // A home taken off the list leaves the readings at the next refresh; the host's login stays (#800 R1 P3).
+    ws.store.save_codex_homes(&[]).unwrap();
+    ws.refresh_quotas(&Needs { cswap: false, codex: true }).await.unwrap();
+    let (_, codex) = view(&ws.store.quotas().unwrap(), Utc::now());
+    assert_eq!(codex.as_array().unwrap().iter().map(|c| c["home"].clone()).collect::<Vec<_>>(), [json!("login")], "{codex}");
+
     // claude-swap that cannot be read is kept as unavailable, with its reason.
     ws.store.save_cswap_settings(&crate::routing_accounts::CswapSettings { command: dir.path().join("missing-cswap").display().to_string() }).unwrap();
     ws.refresh_quotas(&Needs { cswap: true, codex: false }).await.unwrap();

@@ -133,9 +133,11 @@ fn account_reading<'a>(candidate: &Value, inputs: &'a Inputs) -> Option<&'a Valu
     }
 }
 
-/// A codex reading, as the stale flag and the preview's assumption leave it.
-fn codex_used_up(reading: &Value, inputs: &Inputs) -> bool {
+/// Whether the preview assumes this account used up: a Codex reading by its home,
+/// a claude-swap account (a Claude login's active one) by its fingerprint.
+fn assumed_used_up(reading: &Value, inputs: &Inputs) -> bool {
     reading["home"].as_str().is_some_and(|h| inputs.assume.codex_used_up.iter().any(|u| u == h))
+        || reading["fingerprint"].as_str().is_some_and(|f| inputs.assume.accounts_used_up.iter().any(|u| u == f))
 }
 
 fn check_condition(candidate: &Value, condition: &Value, inputs: &Inputs) -> Check {
@@ -145,7 +147,7 @@ fn check_condition(candidate: &Value, condition: &Value, inputs: &Inputs) -> Che
             let Some(reading) = account_reading(candidate, inputs) else {
                 return Check::Unknown(reason("quotaUnknown", "No quota reading for this account yet", "这个账号还没有额度读数"));
             };
-            if codex_used_up(reading, inputs) {
+            if assumed_used_up(reading, inputs) {
                 return Check::Fails(reason("quotaLow", "Assumed used up", "假设已用完"));
             }
             quota_holds(condition, reading)

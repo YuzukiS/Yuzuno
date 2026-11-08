@@ -151,10 +151,11 @@ pub(super) async fn prove(ws: &Arc<Workspace>, t: &Target<'_>, head: &str, revie
     Ok(Ok(json!({"head":head,"reviewedHead":reviewed,"main":main,"merges":merges,"at":crate::model::now()})))
 }
 
-/// The private object store the merges are redone in: the review's shallow
-/// blob:none store of these commits, fetched from GitHub; a test names a
-/// local repository holding them instead.
-async fn store(ws: &Arc<Workspace>, directory: &std::path::Path, repo: &str, commits: &[&str]) -> Result<Git> {
+/// The private object store the merges are redone in, and acknowledged
+/// binary files are read from (YN-52): the review's shallow blob:none store
+/// of these commits, fetched from GitHub; a test names a local repository
+/// holding them instead.
+pub(super) async fn store(ws: &Arc<Workspace>, directory: &std::path::Path, repo: &str, commits: &[&str]) -> Result<Git> {
     #[cfg(test)]
     if let Some(path) = ws.merge_queue.objects.lock().unwrap().clone() {
         return Ok(Git { path });

@@ -57,3 +57,26 @@ export async function readTip(w, focusable) {
   await closeTip(w, focusable);
   return lines;
 }
+
+/**
+ * Rests a mouse on `target` (a trigger the keyboard cannot focus, such as a
+ * chip) until its tip shows, returns the tip's lines, and moves the mouse
+ * off it again.
+ */
+export async function hoverTip(w, target, { seconds = 3 } = {}) {
+  target.dispatchEvent(new w.PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" }));
+  const deadline = Date.now() + seconds * 1000;
+  let tip = shownTip(w);
+  while (!tip) {
+    if (Date.now() > deadline) throw new Error("no tip opened on a resting pointer");
+    await pause(20);
+    tip = shownTip(w);
+  }
+  const lines = tipLines(tip);
+  target.dispatchEvent(new w.PointerEvent("pointerout", { bubbles: true, pointerType: "mouse", relatedTarget: w.document.body }));
+  while (shownTip(w)) {
+    if (Date.now() > deadline + 3000) throw new Error("the tip did not close on leaving");
+    await pause(20);
+  }
+  return lines;
+}

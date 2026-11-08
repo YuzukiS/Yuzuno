@@ -234,6 +234,8 @@ pub fn check_homes(homes: &[CodexHome]) -> Result<()> {
     let uid = rustix::process::geteuid().as_raw();
     for (i, home) in homes.iter().enumerate() {
         crate::routing_keys::check_id(&home.id)?;
+        // Routing's readings and policy name the host's own login `login` (#800 R1 P2).
+        ensure!(home.id != "login", "login names the host's own Codex login, which needs no entry; give this Codex home another id");
         let label = home.label.trim();
         ensure!(!label.is_empty() && label.chars().count() <= 60, "A Codex home's label is 1 to 60 characters");
         let path = Path::new(&home.home);
