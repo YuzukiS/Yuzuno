@@ -1367,7 +1367,8 @@ pub async fn call(
         "job_run_get" => {
             let q: RunReference = serde_json::from_value(input)?;
             ws.stored(move |s| {
-                let mut run = s.run(&q.run_id)?;
+                // The whole ID, or a unique prefix of it, as for Jobs (YN-30).
+                let mut run = s.run(&s.resolve_id(ids::Kind::Run, &q.run_id)?)?;
                 // What became of the run's own mail (T-50).
                 run["mail"] = s.mail_notifications(&run["notifications"])?;
                 Ok(run)
@@ -1386,11 +1387,18 @@ pub async fn call(
             .await
         }
         "job_run_decide" => {
-            let decision = decision.context("Missing analysis decision")?;
+            let mut decision = decision.context("Missing analysis decision")?;
             if decision.continues() {
                 local_or_replay(&ws, &actor, "job_run_decide", &decision.request_id).await?;
             }
-            let value = ws.stored(move |s| s.decide_run(actor.as_deref(), &decision)).await?;
+            // Resolved first, so the decision is kept, and compared on a
+            // repeat, with the whole run ID however it was named.
+            let value = ws
+                .stored(move |s| {
+                    decision.run_id = s.resolve_id(ids::Kind::Run, &decision.run_id)?;
+                    s.decide_run(actor.as_deref(), &decision)
+                })
+                .await?;
             changed(&ws);
             ws.jobs.wake.notify_one();
             Ok(value)
@@ -1399,7 +1407,7 @@ pub async fn call(
             let q: RunRetry = serde_json::from_value(input)?;
             local_or_replay(&ws, &actor, "job_run_retry", &q.request_id).await?;
             let run = ws
-                .stored(move |s| s.retry_stage(actor.as_deref(), &q.request_id, &q.run_id, &q.stage))
+                .stored(move |s| s.retry_stage(actor.as_deref(), &q.request_id, &s.resolve_id(ids::Kind::Run, &q.run_id)?, &q.stage))
                 .await?;
             changed(&ws);
             ws.jobs.wake.notify_one();
@@ -1408,7 +1416,7 @@ pub async fn call(
         "job_run_cancel" => {
             let q: RunReference = serde_json::from_value(input)?;
             let run = ws
-                .stored(move |s| s.request_run_cancel(actor.as_deref(), &q.run_id))
+                .stored(move |s| s.request_run_cancel(actor.as_deref(), &s.resolve_id(ids::Kind::Run, &q.run_id)?))
                 .await?;
             changed(&ws);
             ws.jobs.wake.notify_one();
@@ -1791,7 +1799,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     stage["reuse"] = json!({"type":"string","description":"Job ID of an earlier succeeded attempt to use instead of running this stage. Accepted only if its command, env, code identity, artifact contract and upstream artifacts equal this stage's and its artifacts verify unchanged now; otherwise the submission is refused with the reason."});
     let stage_required = json!(["key","cwd","argv","resources"]);
     let make = |name: &str, description: &str, p: Value, required: Vec<&str>| json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":p,"required":required,"additionalProperties":false}});
-    let run_id = json!({"runId":string});
+    let run_id = json!({"runId":run_ref});
     vec![
         make("job_submit", "Submit an authorized long-running command on this Core's Linux/WSL host, tied to an existing task and your Agent. Returns a durable Job ID without waiting. Core queues within the shared machine budget; system mailbox reports completion. Ending your Turn does not cancel the job or complete the task. argv/env/resources are captured; optional Git/small-input checks reject changes before launch, not an immutable filesystem snapshot. No automatic rerun. Use a stable requestId for lost-reply retries. Runs as the Core OS user outside the native agent sandbox; submit only user-authorized local work. suggestion: what earlier measured runs of the same Job suggest (this task's of the same name or argv, else this Project's of the same argv): memory the larger of 1.3 × their peak and the peak + 1 GiB; its request says whether you asked far above it or below the peak. Kept on the Job, never applied; job_suggestion reads it before submitting. resources may give CPU as a range (cpuMillisMin–cpuMillisMax): Core decides the grant when it starts and may raise it while it runs; see resources.", properties, vec!["requestId","taskId","name","cwd","argv","resources"]),
         make("job_list", list::DESCRIPTION, list::schema(), vec![]),
@@ -1810,11 +1818,11 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         make("job_run_get", "Read a run: each stage's attempts (job IDs, status, reasons, verified artifacts with SHA-256, identity), its upstream, retries and recorded cost across all attempts. Each attempt has resourceSummary (actual peak memory and CPU time / worker monotonic wall time versus declared resources); missing/invalid/remote values are null. Includes worker wrapper and pauses in wall time, excludes collector. Retries stay separate, reused producers do not execute in this run, and memory peaks are not additive. Unknown cost is reported apart, never as zero. mail: the run's own mail by status and its delivery, as in job_get.", run_id.clone(), vec!["runId"]),
         make("job_provenance", "Export where a result came from, as Core recorded it: one Job (jobId) or every attempt of a run (runId). Returns manifest (versioned JSON, schema yuzuno.provenance) and report (short Markdown from the same manifest). Each attempt keeps its own outcome, exit, target machine and executor, Git and frozen-input digests, labels showing which attempts share a command and identity, declared/held/measured resources, artifacts with SHA-256 and where they stay, and whether early output was overwritten; each item is verified, declared, notRecorded or unknown. Restates records only: reads no working file again and asks no machine, so it is not a claim that the result can be reproduced. Leaves out argv and env values and Core's digests of them, absolute paths, logs, chat and file contents; show the user the report before sharing it.", json!({"jobId":job_ref,"runId":run_ref}), vec![]),
         make("job_run_list", "List runs with their status, stages and recorded cost, newest first, 20 per page; follow nextBefore as before while hasMore. Unlike job_list it does not default to your own Agent: without filters it lists every Agent's runs, so pass agentId, taskId or experiment to narrow it.", json!({"agentId":string,"taskId":task_reference,"experiment":string,"before":{"type":"integer","description":"nextBefore from the previous page; keep the same filters."},"awaitingAnalysis":{"type":"boolean","description":"Only runs with a pending analysis gate, including when independent stages are still running."}}), vec![]),
-        make("job_run_decide", "Record your analysis decision for one successful stage. Read job_run_get first and pass its exact gateId and attemptId. Continue releases only the frozen DAG, subject to update drain, budget, Git/input and artifact checks; it neither authorizes additional work nor accepts command changes. Cancel stops the run without changing successful Jobs. Only the owner Agent or user may decide. A stable requestId makes lost-reply retries idempotent; stale gates and cancelled runs cannot be reopened. For changed commands/inputs submit a new run with explicit reuse.", json!({"requestId":string,"runId":string,"stage":string,"gateId":string,"attemptId":string,"decision":{"type":"string","enum":["continue","cancel"]},"reason":{"type":"string","maxLength":4000},
+        make("job_run_decide", "Record your analysis decision for one successful stage. Read job_run_get first and pass its exact gateId and attemptId. Continue releases only the frozen DAG, subject to update drain, budget, Git/input and artifact checks; it neither authorizes additional work nor accepts command changes. Cancel stops the run without changing successful Jobs. Only the owner Agent or user may decide. A stable requestId makes lost-reply retries idempotent; stale gates and cancelled runs cannot be reopened. For changed commands/inputs submit a new run with explicit reuse.", json!({"requestId":string,"runId":run_ref,"stage":string,"gateId":string,"attemptId":string,"decision":{"type":"string","enum":["continue","cancel"]},"reason":{"type":"string","maxLength":4000},
             "record":{"type":"object","additionalProperties":false,"properties":{"activitySeq":{"type":"integer","minimum":1}},"required":["activitySeq"],
                 "description":"A research record of the run's task (task_comment research) that explains this decision; it may propose the next check or a stop. Kept as a citation summary fixed now (type, id, title, status or counts, version, author, time and its proposed next step), not a copy of its text, method or sources; it authorizes nothing more."}}), vec!["requestId","runId","stage","gateId","attemptId","decision"]),
         make("job_cost", task_cost::DESCRIPTION, json!({"taskId":task_reference}), vec!["taskId"]),
-        make("job_run_retry", "Start a new attempt of a stage whose latest attempt failed, was cancelled, rejected or interrupted: the same command and frozen inputs (a changed input rejects it), its own job, log and usage file; earlier attempts and their cost are kept. Stages waiting on it start after it succeeds. An unknown outcome must be cancelled first. Use a stable requestId.", json!({"requestId":string,"runId":string,"stage":string}), vec!["requestId","runId","stage"]),
+        make("job_run_retry", "Start a new attempt of a stage whose latest attempt failed, was cancelled, rejected or interrupted: the same command and frozen inputs (a changed input rejects it), its own job, log and usage file; earlier attempts and their cost are kept. Stages waiting on it start after it succeeds. An unknown outcome must be cancelled first. Use a stable requestId.", json!({"requestId":string,"runId":run_ref,"stage":string}), vec!["requestId","runId","stage"]),
         make("job_run_cancel", "Cancel your run: stages that have not started never will; running stages are cancelled as any job, their reservation released only when their process groups are gone. Succeeded attempts and their artifacts are kept for an explicit reuse in a new run. Does not cancel the business task.", run_id, vec!["runId"]),
         make("job_budget", "Read this host's shared job budget, reservations, collector overhead and real host availability, plus the free space of the filesystems jobs write to (Core's data folder and each live job's working directory) and the reserve below which no new job starts, and the local NVIDIA GPUs: their latest memory sample, what managed jobs reserve on them and whether each takes new jobs. budget is the user's setting (machine.suggestedBudget is only the default before one is saved); the host totals in machine are for reference, not a ceiling, and budgetBounds are the fixed input bounds. available remains budget minus reservations. requestCapacity.submission.maxRequest subtracts a new collector from total budget; requestCapacity.snapshot also accounts for active reservations and host RAM/headroom, with observedAt and meetsMinimum (false = no valid request; null = unknown). These bounds do not guarantee an immediate start: queue, slots, exclusive jobs, GPU and disk can still delay it. maxActive is how many of this host's own jobs run at once, 1–16, default 4 (the user's, in Settings → Jobs & resources; maxActiveSet says whether one is saved); activeCount is how many hold a slot now, and a job past it waits with \"Waiting for an execution/collector slot\". waitingCount: Jobs that exist but wait for an earlier stage of their run or for its analysis; in neither the queue nor the running count. CPU quota is not reserved physical cores. cpuMillisFree (budget less every running Job's current CPU grant and collector), queueLength, cpuWaiting (queued Jobs only CPU keeps from starting: only they hold ranges at their minimum) and running are hints read now for choosing a CPU range, not an entitlement: a Job's grant is decided when it starts (cpuHint). The disk reserve is a check before each start, not a quota; GPU figures are the whole card's. windows: whether machineId \"windows\" exists here (available), its attempts now (activeCount) and their ceiling (maxJobs, the user's or defaultMaxJobs), in this same budget.", json!({}), vec![]),
         make("job_lower_memory", "Lower your running local job's memory limit (MiB) so the budget it frees can start queued work at once. Only down, never below what the job uses now plus 256 MiB, and it is never raised again; swap stays as reserved. systemd applies it to the running job, its reservation is lowered with it, and the change is recorded on the job and its task. A job that then needs more than the new limit is killed for memory, and its reason names this change. If an earlier lowering's answer was lost, asking for the same value again confirms it without changing anything. Not on SSH machines or Windows.", json!({"jobId":job_ref,"memoryMiB":{"type":"integer","minimum":1}}), vec!["jobId","memoryMiB"]),
