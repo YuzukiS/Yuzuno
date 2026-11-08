@@ -18,6 +18,7 @@ const text = strings({
   search: (count: number) => `Search ${count} models, or type provider/model`,
   harnessDefault: "OpenCode default",
   defaultNote: "its own config decides",
+  defaultIs: (name: string) => `now ${name}`,
   credential: "Logged in",
   env: "From the environment",
   ready: "No login needed",
@@ -36,6 +37,7 @@ const text = strings({
   search: (count) => `搜索 ${count} 个模型，或输入 提供方/模型`,
   harnessDefault: "OpenCode 默认",
   defaultNote: "由它自己的配置决定",
+  defaultIs: (name) => `现在是 ${name}`,
   credential: "已登录",
   env: "来自环境变量",
   ready: "无需登录",
@@ -96,6 +98,7 @@ function marked(value: string, query: string): ReactNode {
 export function OpenCodeModelPicker({
   models,
   providers,
+  resolvedDefault,
   value,
   saved,
   savedVariant,
@@ -105,6 +108,8 @@ export function OpenCodeModelPicker({
 }: {
   models: Model[];
   providers?: OpenCodeProvider[];
+  /** The model OpenCode uses when none is chosen, as Core read it (YN-48's `default`); absent or null: unnamed. */
+  resolvedDefault?: Model | null;
   /** The model chosen in the dialog; "" for OpenCode's default. */
   value: string;
   /** The model and variant saved for the Agent. */
@@ -127,7 +132,8 @@ export function OpenCodeModelPicker({
   };
   const shown = groups.map((g) => ({ ...g, models: g.models.filter(matches) })).filter((g) => g.models.length > 0);
   const listed = (id: string) => models.some((m) => described(m).value === id);
-  const defaultShown = !asked || t.harnessDefault.toLowerCase().includes(lower);
+  const defaultName = resolvedDefault?.displayName || "";
+  const defaultShown = !asked || [t.harnessDefault, defaultName].some((s) => s && s.toLowerCase().includes(lower));
   // A typed `provider/model` OpenCode doesn't list: OpenCode would take it for a session and fail its run.
   const typed = /^[^\s/]+\/\S+$/.test(asked) && !loading && !listed(asked) ? asked : "";
   const typedProvider = typed.split("/")[0];
@@ -135,7 +141,8 @@ export function OpenCodeModelPicker({
   // The model chosen and not listed stays shown, first: while the catalog loads, or once it no longer lists it.
   const orphan = !!value && !listed(value);
   const savedRow = models.find((m) => described(m).value === saved);
-  const savedName = saved ? (savedRow ? `${described(savedRow).providerName} · ${described(savedRow).name}` : saved) : t.savedDefault;
+  const savedName = saved ? (savedRow ? `${described(savedRow).providerName} · ${described(savedRow).name}` : saved)
+    : defaultName ? `${t.savedDefault} (${defaultName})` : t.savedDefault;
   // With sources read and nothing logged in, the login below is how a provider's models arrive.
   const noLogin = !!providers?.length && !providers.some((p) => p.source === "credential" || p.source === "env");
   const row = (m: Model) => {
@@ -187,7 +194,7 @@ export function OpenCodeModelPicker({
             <span className="opencode-model-dot" aria-hidden="true" />
             <span className="opencode-model-main">
               <span className="opencode-model-name">{marked(t.harnessDefault, asked)}</span>
-              <span className="opencode-model-sub">{t.defaultNote}</span>
+              <span className="opencode-model-sub">{defaultName ? marked(t.defaultIs(defaultName), asked) : t.defaultNote}</span>
             </span>
             <span className="opencode-model-facts" />
           </label>

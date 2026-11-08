@@ -53,6 +53,8 @@ const catalog = () => ({
   models: [...(loggedIn ? deepseek : []), ...local, ...free],
   providers: [...(loggedIn ? [{ id: "deepseek", name: "DeepSeek", source: "credential" }] : []),
     { id: "lmstudio", name: "LMStudio", source: "ready" }, { id: "opencode", name: "OpenCode", source: "ready" }],
+  // What OpenCode would use with none chosen (YN-48's `default`): its newest enabled model, here a free one.
+  default: free[3],
   opencode: { version: "2.2.5", verified: "2.2.5" },
 });
 const login = () => ({ state: "ready", reason: null, version: "2.2.5", integrations: [

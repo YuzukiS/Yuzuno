@@ -824,8 +824,10 @@ test("an OpenCode Agent's settings read its models again after a login or logout
   const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
   let listed = [free];
   let refuse = true;
+  // The model OpenCode would use with none chosen (YN-48's `default`), which a login can change.
+  const resolved = () => (listed.includes(flash) ? flash : free);
   const page = mount((url, init) => {
-    if (url.endsWith("/agents/oc/models")) return { models: listed, opencode: { version: "2.2.5", verified: "2.2.5" } };
+    if (url.endsWith("/agents/oc/models")) return { models: listed, default: resolved(), opencode: { version: "2.2.5", verified: "2.2.5" } };
     if (url.endsWith("/agents/oc/opencode/login")) return view([]);
     if (url.endsWith("/opencode/login/key")) {
       if (refuse) return { __status: 400, error: "OpenCode 拒绝了登录（HTTP 400，integration_authorization）" };
@@ -848,6 +850,8 @@ test("an OpenCode Agent's settings read its models again after a login or logout
     page.document.querySelector(".agent-settings-button").click();
     await until(() => section()?.querySelector(".opencode-login-provider select"), "the login section");
     assert.deepEqual(offered(), ["", "opencode/beam-free"], "before the login: only what OpenCode lists without one");
+    const defaultRow = () => page.document.querySelector('.opencode-model-row[data-value=""]').textContent;
+    assert.equal(defaultRow(), "OpenCode defaultnow OpenCode · Beam Free", "OpenCode's default, named as Core resolved it");
     choice(page, "Model", "opencode/beam-free").click(); await tick();
 
     const select = section().querySelector(".opencode-login-provider select");
@@ -865,6 +869,7 @@ test("an OpenCode Agent's settings read its models again after a login or logout
     assert.equal(reads(), 2, "read once again after the login");
     assert.deepEqual(offered(), ["", "deepseek/deepseek-flash", "opencode/beam-free"]);
     assert.ok(choice(page, "Model", "opencode/beam-free").checked, "the model chosen before the login stays chosen");
+    assert.equal(defaultRow(), "OpenCode defaultnow DeepSeek · DeepSeek V4.1 Flash", "the default read again with the list");
     assert.ok(!page.calls.some((call) => call.url.endsWith("/agents/oc/settings")), "nothing saved by it");
 
     await press("Log out");
@@ -918,6 +923,7 @@ test("an OpenCode Agent's models are grouped by provider, logged-in first, and s
     assert.match(row("openrouter/anthropic/claude-x").textContent, /beta128K$/, "a status other than active, and the window");
     assert.ok(!/\d/.test(row("lmstudio/qwen3-coder").querySelector(".opencode-model-facts").textContent), "no window when none is listed");
     assert.ok(!picker().querySelector(".opencode-model-login-hint"), "a provider is logged in: no hint");
+    assert.equal(row("").textContent, "OpenCode defaultits own config decides", "no `default` in the answer: unnamed");
     assert.deepEqual([...group(page, "Variant").querySelectorAll("input")].map((i) => i.value), ["", "none", "low", "high", "max"]);
 
     // A search keeps the rows it matches, by name, provider or id, marked; their groups say how many.

@@ -166,8 +166,10 @@ export function AgentSettings({
   const opencode = agent.harness === "opencode";
   const [reload, setReload] = useState(0);
   const [models, setModels] = useState<Model[]>([]);
-  // OpenCode (YN-47): its providers and where each gets its access.
+  // OpenCode (YN-47): its providers and where each gets its access, and the model OpenCode uses when none is chosen
+  // (`default`, YN-48's; absent from a Core without it).
   const [providers, setProviders] = useState<OpenCodeProvider[]>();
+  const [resolvedDefault, setResolvedDefault] = useState<Model | null>();
   const [permissions, setPermissions] = useState<PermissionCatalog>();
   const [context, setContext] = useState<ContextSettings>();
   const [contextWindow, setContextWindow] = useState("");
@@ -203,6 +205,7 @@ export function AgentSettings({
     setEffortNote("");
     setModels([]);
     setProviders(undefined);
+    setResolvedDefault(undefined);
     setPermissions(undefined);
     setModel(agent.model);
     setSettings(agent.settings || defaults);
@@ -212,11 +215,12 @@ export function AgentSettings({
     setContextNote("");
     setOpenCodeNote(null);
     setPermissionMode(chosenMode(agent));
-    api<{ models: Model[]; providers?: OpenCodeProvider[]; permissions?: PermissionCatalog; context?: ContextSettings; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
-      .then(({ models, providers, permissions, context, opencode: native }) => {
+    api<{ models: Model[]; providers?: OpenCodeProvider[]; default?: Model | null; permissions?: PermissionCatalog; context?: ContextSettings; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
+      .then(({ models, providers, default: resolved, permissions, context, opencode: native }) => {
         if (!current()) return;
         setModels(models);
         setProviders(providers);
+        setResolvedDefault(resolved);
         // Which OpenCode the Agent runs, said only when Core notes it (T-32: newer than the one checked against).
         setOpenCodeNote(native?.note && native.version && native.verified ? { version: native.version, verified: native.verified } : null);
         setPermissions(permissions);
@@ -271,11 +275,13 @@ export function AgentSettings({
     const read = ++reads.current;
     setLoading(true);
     setError("");
-    api<{ models: Model[]; providers?: OpenCodeProvider[]; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
-      .then(({ models, providers, opencode: native }) => {
+    api<{ models: Model[]; providers?: OpenCodeProvider[]; default?: Model | null; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
+      .then(({ models, providers, default: resolved, opencode: native }) => {
         if (read !== reads.current) return;
         setModels(models);
         setProviders(providers);
+        // A login can change which model OpenCode would use by default.
+        setResolvedDefault(resolved);
         setOpenCodeNote(native?.note && native.version && native.verified ? { version: native.version, verified: native.verified } : null);
       })
       .catch((e) => read === reads.current && setError(errorText(e)))
@@ -484,6 +490,7 @@ export function AgentSettings({
               <OpenCodeModelPicker
                 models={models}
                 providers={providers}
+                resolvedDefault={resolvedDefault}
                 value={model}
                 saved={agent.model}
                 savedVariant={agent.settings?.reasoningEffort || null}
