@@ -222,6 +222,7 @@
 .routing-cond-remove { position: absolute; top: 4px; right: 4px; }
 .routing-cond-error { flex-basis: 100%; }
 .routing-inline-field { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.routing-inline-field > span { color: var(--text-secondary); font-size: calc(10px + var(--font-adjust, 3px)); }
 .executor-routing .routing-number { width: 6em; }
 .executor-routing .routing-time { width: 8em; }
 .routing-add-menu { display: flex; flex-wrap: wrap; gap: 6px; }

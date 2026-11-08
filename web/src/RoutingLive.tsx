@@ -13,6 +13,7 @@ const text = strings({
   nowOff: "Routing is off: new executors start with their templates' own settings.",
   readAgo: (ago: string) => `From readings ${ago}`,
   noReadings: "No reading was needed",
+  noReadingsYet: "No reading yet",
   draft: "with your unsaved changes",
   account: (n: number) => `Account #${n}`,
   home: (id: string) => `Codex account ${id}`,
@@ -44,6 +45,7 @@ const text = strings({
   nowOff: "路由关着：新开的执行者按各自模板的固定设置启动。",
   readAgo: (ago) => `按 ${ago}的读数`,
   noReadings: "不需要读数",
+  noReadingsYet: "还没有读数",
   draft: "包含未保存的改动",
   account: (n) => `账号 #${n}`,
   home: (id) => `Codex 账号 ${id}`,
@@ -163,7 +165,7 @@ export function NowCard({ record, policy, names, colourOf, changed, error, unava
               <span>{c.id === chosen?.c.id ? why : `${names(c)}: ${why}`}</span></li> : null;
           })}
         </ul>
-        <p className="settings-row-meta">{oldest != null ? t.readAgo(ago(oldest, t)) : t.noReadings}{changed && <> · <span className="routing-now-draft">{t.draft}</span></>}</p>
+        <p className="settings-row-meta">{oldest != null ? t.readAgo(ago(oldest, t)) : record.candidates.some((c) => c.state === "unknown") ? t.noReadingsYet : t.noReadings}{changed && <> · <span className="routing-now-draft">{t.draft}</span></>}</p>
       </div>
     </div>
   );

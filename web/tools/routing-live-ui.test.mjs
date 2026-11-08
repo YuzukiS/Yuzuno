@@ -231,3 +231,18 @@ test("a draft Core refuses to judge is a note with Core's words, not an error", 
   assert.ok(!q(page, ".routing-now-error") && !q(page, ".routing-now"), "no error, no card");
   assert.equal(page.document.querySelectorAll(".routing-state").length, 0);
 });
+
+test("with no reading at all, an unknown candidate's card says none came yet, not that none was needed", async () => {
+  const unread = core({ evaluate: () => [200, record({ chosen: "cx", account: undefined, candidates: [
+    { id: "ds", state: "skipped", reasons: [{ code: "peak", message: "Peak price", messageZh: "高峰价" }], readings: [] },
+    { id: "cl", state: "unknown", reasons: [{ code: "noReading", message: "No account of the pool is known to have quota now", messageZh: "还不知道池里哪个账号有额度" }], readings: [] },
+    { id: "cx", state: "chosen", reasons: [], readings: [] }] })] });
+  const page = mount(unread);
+  await until(() => q(page, ".routing-now"), "the now card");
+  assert.equal(q(page, ".routing-now .settings-row-meta").textContent, "No reading yet");
+  const known = mount(core({ evaluate: () => [200, record({ chosen: "cx", account: undefined, candidates: [
+    { id: "ds", state: "skipped", reasons: [{ code: "peak", message: "Peak price", messageZh: "高峰价" }], readings: [] },
+    { id: "cl", state: "off", reasons: [], readings: [] }, { id: "cx", state: "chosen", reasons: [], readings: [] }] })] }));
+  await until(() => q(known, ".routing-now"), "the now card");
+  assert.equal(q(known, ".routing-now .settings-row-meta").textContent, "No reading was needed");
+});
