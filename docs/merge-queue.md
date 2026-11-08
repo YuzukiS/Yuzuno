@@ -165,7 +165,11 @@ acknowledged one and whose leading bytes are a PNG, JPEG, GIF, WebP, ICO,
 ICNS, WOFF, WOFF2, TrueType or OpenType file. Executables, archives,
 WebAssembly, PDFs and anything unknown are refused, whatever their names. At
 most 64 files are listed. Each file's blob must be the one the round saw, so
-a merge after the round that changed one of them refuses too.
+a merge after the round that changed one of them refuses too; a head that
+adds only merges after the round (above) and leaves the files alone passes,
+judged on the reviewed head's round. An incremental round (`review_start`
+with `previousReviewId`), such as one after a test-only commit, is judged by
+the same rules on its own record, findings it carries included.
 
 The entry keeps the acknowledgement as `binaries`: who gave it and when, and
 each file with its SHA-256, note, blob, size and format. The release comment

@@ -3837,3 +3837,78 @@ async fn an_acknowledgement_holds_only_for_its_entrys_head_and_the_round_it_was_
     let refused = lab.release_acknowledging("lead", "r3", &next, files).await.unwrap_err().to_string();
     assert!(refused.starts_with("binaries_refused: icons/a.png has SHA-256"), "the old hash is not the new content: {refused}");
 }
+
+/// YN-52 with YN-33: after the round whose only gap is an image, the PR merged
+/// main. The release is the reviewed head plus a merge of a head on main; the
+/// acknowledged image is read at the released head, where it is still the
+/// blob the round saw, so the round is admitted and the release merges.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_head_that_only_merged_main_after_its_image_round_is_released_with_the_acknowledgement() {
+    let f = Fixture::new();
+    let base = f.first();
+    let below = f.commit("below", &base, "below.txt", "below\n");
+    let a = png(1);
+    let reviewed = f.assets("pr", &base, &[("icons/a.png", &a, false)]);
+    let merged = f.merge("pr", &reviewed, &below, None);
+    let mut state = green_at(&merged, &f, &[&merged, &reviewed]);
+    compared(&mut state, &below, &main_sha(), &below);
+    compared(&mut state, &reviewed, &below, &f.base(&reviewed, &below));
+    let lab = lab(state);
+    lab.objects(&f);
+    binary_round(&lab.ws.store, &lab.task, &reviewed, &[("icons/a.png", f.blob(&reviewed, "icons/a.png"))], |_| {});
+    let refused = lab.release_at("r0", &merged).await.unwrap_err().to_string();
+    assert!(refused.starts_with("review_not_passing") && refused.contains("acknowledgeBinaries"), "{refused}");
+    let e = lab.release_acknowledging("lead", "r1", &merged, json!([{"path":"icons/a.png","sha256":sha256_of(&a)}])).await.unwrap();
+    let m = &e["reviewMerges"]["merges"][0];
+    assert_eq!((e["reviewMerges"]["reviewedHead"].clone(), m["mergedIn"].clone(), m["why"]["kind"].clone()), (json!(reviewed), json!(below), json!("onBase")), "{e}");
+    assert_eq!(e["binaries"]["files"][0]["blobSha"], json!(f.blob(&merged, "icons/a.png")), "read at the released head");
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "{e}");
+    let r = &e["lastEvidence"]["review"];
+    assert_eq!(
+        (r["headSha"].clone(), r["releasedHead"].clone(), r["admittedBy"].clone(), r["passes"].clone()),
+        (json!(reviewed), json!(merged), json!("acknowledgedBinaries"), json!(false)),
+        "{r}"
+    );
+}
+
+/// YN-43 #804's shape: the full round read the PR at an earlier head, a
+/// test-only commit followed, and an incremental round at the released head
+/// read it. Neither could read the unchanged image; the incremental round,
+/// the last, carries the full round's proofs and P3 note and is admitted
+/// with the acknowledgement.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_incremental_round_after_a_test_only_commit_is_admitted_when_its_only_gap_is_the_unchanged_image() {
+    let f = Fixture::new();
+    let base = f.first();
+    let a = png(1);
+    let first = f.assets("pr", &base, &[("icons/a.png", &a, false)]);
+    let head = f.commit("pr", &first, "tests.txt", "a test\n");
+    let blob = f.blob(&head, "icons/a.png");
+    assert_eq!(blob, f.blob(&first, "icons/a.png"), "the image is unchanged");
+    let lab = lab(green_at(&head, &f, &[&head]));
+    lab.objects(&f);
+    let full = binary_round(&lab.ws.store, &lab.task, &first, &[("icons/a.png", blob.clone())], |r| r["findings"] = json!([{"priority":3,"title":"nit"}]));
+    let incremental = binary_round(&lab.ws.store, &lab.task, &head, &[("icons/a.png", blob.clone())], |r| {
+        r["kind"] = json!("incremental");
+        r["round"] = json!(2);
+        r["incremental"] = json!({"previousReviewId":full,"previousRound":1,"sameMergeBase":true,"carriedPaths":["src/a.rs"],"leftThePr":[],
+            "targets":[{"path":"tests.txt","status":"added","why":"new_in_pr","changedSinceEarlierHead":true},
+                       {"path":"icons/a.png","status":"added","why":"not_covered_before","changedSinceEarlierHead":false}]});
+        r["scope"]["paths"][0]["facts"][0]["byReview"] = json!(full);
+        r["scope"]["paths"].as_array_mut().unwrap().push(json!({"path":"tests.txt","status":"added","state":"covered",
+            "head":{"blobSha":sha('f'),"mode":"100644"},"facts":[{"kind":"covered","evidenceKind":"full_added_source"}]}));
+        r["findings"] = json!([{"priority":3,"title":"nit","origin":{"reviewId":full,"carried":true},"disposition":{"state":"still_valid","reason":"not answered"}}]);
+        r["settledFindings"] = json!([]);
+    });
+    let e = lab.release_acknowledging("lead", "r1", &head, json!([{"path":"icons/a.png","sha256":sha256_of(&a)}])).await.unwrap();
+    assert_eq!(e["release"]["reviewId"], json!(incremental), "{e}");
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "{e}");
+    let r = &e["lastEvidence"]["review"];
+    assert_eq!((r["id"].clone(), r["round"].clone(), r["admittedBy"].clone()), (json!(incremental), json!(2), json!("acknowledgedBinaries")), "{r}");
+}

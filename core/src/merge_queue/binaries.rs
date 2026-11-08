@@ -32,7 +32,7 @@ const REASONS: [&str; 2] = ["coverage_incomplete", "unsupported_source"];
 /// One file as the release acknowledges it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct Acknowledged {
+pub(crate) struct Acknowledged {
     pub path: String,
     pub sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,6 +273,34 @@ mod tests {
         r["scope"]["paths"][1]["status"] = json!("modified");
         r["scope"]["paths"][1]["facts"].as_array_mut().unwrap().push(json!({"kind":"unsupported","side":"mergeBase","reason":"binary"}));
         assert_eq!(gap_paths(&r).len(), 2);
+    }
+
+    /// YN-43 #804's shape: an incremental round (review_start with
+    /// previousReviewId) at a head that only added a test after the full
+    /// round. It carries the full round's proofs and P3 note; the images,
+    /// unchanged, are still its only gap. A P0–P2 finding it carries blocks.
+    #[test]
+    fn an_incremental_round_whose_only_gap_is_the_unchanged_binaries_has_them_as_its_gap() {
+        let mut r = round();
+        r["id"] = json!("r2");
+        r["kind"] = json!("incremental");
+        r["incremental"] = json!({"previousReviewId":"r1","previousRound":1,"sameMergeBase":true,"carriedPaths":["src/a.rs"],"leftThePr":[],
+            "targets":[{"path":"tests/a.rs","status":"added","why":"new_in_pr","changedSinceEarlierHead":true},
+                       {"path":"icons/a.png","status":"added","why":"not_covered_before","changedSinceEarlierHead":false},
+                       {"path":"icons/b.png","status":"added","why":"not_covered_before","changedSinceEarlierHead":false}]});
+        r["scope"]["paths"][0]["facts"][0]["byReview"] = json!("r1");
+        r["scope"]["paths"].as_array_mut().unwrap().push(json!({"path":"tests/a.rs","status":"added","state":"covered",
+            "head":{"blobSha":blob('d'),"mode":"100644"},"facts":[{"kind":"covered","evidenceKind":"full_added_source"}]}));
+        r["scope"]["paths"][2]["facts"] = json!([{"kind":"unsupported","side":null,"reason":"binary","found":"during_review"},{"kind":"not_read"}]);
+        r["findings"] = json!([{"priority":3,"title":"nit","origin":{"reviewId":"r1","carried":true},"disposition":{"state":"still_valid","reason":"not answered"}}]);
+        r["settledFindings"] = json!([]);
+        assert_eq!(
+            gap_paths(&r),
+            [Binary { path: "icons/a.png".into(), blob: blob('a') }, Binary { path: "icons/b.png".into(), blob: blob('b') }]
+        );
+        r["findings"].as_array_mut().unwrap().push(json!({"priority":2,"title":"bug","origin":{"reviewId":"r1","carried":true},
+            "disposition":{"state":"still_valid","reason":"not shown fixed"}}));
+        assert_eq!(gap(&r).unwrap_err(), "review round r2 found 1 P0–P2 issue(s)");
     }
 
     #[test]
