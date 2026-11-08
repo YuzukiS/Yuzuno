@@ -158,14 +158,17 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
   const when = whenLabel(time).format(pickedAt);
   const chosen = record?.chosen ? byId.get(record.chosen) : undefined;
   const toggle = (list: string[], item: string) => (list.includes(item) ? list.filter((x) => x !== item) : [...list, item]);
-  // What may be assumed: only what the order uses.
+  // What may be assumed: only what the order uses, and only where it can change
+  // the answer. Used up is a quota reading of 0: it moves a pool's pick, and
+  // otherwise counts only for a candidate with a quota condition.
   const pools = policy.candidates.some((c) => c.credential.kind === "pool");
+  const readsQuota = (c: Candidate) => c.conditions.some((x) => x.kind === "quota");
   // A Claude login runs on claude-swap's active account; Core takes that
   // account's fingerprint as used up too (YN-34 #801).
-  const claudeLogin = policy.candidates.some((c) => c.harness === "claude" && c.credential.kind === "login");
+  const claudeLogin = policy.candidates.some((c) => c.harness === "claude" && c.credential.kind === "login" && readsQuota(c));
   const cswapAccounts = (accounts?.cswap.accounts ?? []).filter((a) => pools || (claudeLogin && a.active));
-  const codexLogin = policy.candidates.some((c) => c.harness === "codex" && c.credential.kind === "login");
-  const homes = (accounts?.codexHomes ?? []).filter((h) => policy.candidates.some((c) => c.credential.kind === "codexHome" && c.credential.id === h.id));
+  const codexLogin = policy.candidates.some((c) => c.harness === "codex" && c.credential.kind === "login" && readsQuota(c));
+  const homes = (accounts?.codexHomes ?? []).filter((h) => policy.candidates.some((c) => c.credential.kind === "codexHome" && c.credential.id === h.id && readsQuota(c)));
   const apiKeys = policy.candidates.some((c) => c.credential.kind === "apiKey");
   const onePassword = policy.candidates.some((c) => c.credential.kind === "apiKey" && keys?.find((k) => k.id === (c.credential as { keyId: string }).keyId)?.source === "1password");
 

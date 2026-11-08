@@ -262,7 +262,8 @@ test("an order Core refuses to simulate is a note with Core's words, not an erro
 });
 
 test("a Claude login offers its active claude-swap account as used up, and no other", async () => {
-  const login = { ...policy, candidates: [{ id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "login" }, unknown: "skip", conditions: [] }] };
+  const login = { ...policy, candidates: [{ id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "login" }, unknown: "skip",
+    conditions: [{ kind: "quota", fiveHourLeftPct: 15 }] }] };
   const server = core({ policy: login });
   const page = mount(server);
   await until(() => q(page, ".routing-sim-assume"), "the assumptions");
@@ -308,4 +309,19 @@ test("a week with a clock change: each row runs from its own local midnight, and
   } finally {
     if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone;
   }
+});
+
+test("used up is offered only where it can change the answer: a login with a quota condition, not one without", async () => {
+  const quota = [{ kind: "quota", fiveHourLeftPct: 15 }];
+  const order = (claude, codex) => ({ ...policy, candidates: [
+    { id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "login" }, unknown: "skip", conditions: claude },
+    { id: "cx", enabled: true, harness: "codex", model: "gpt-6.1-sol", credential: { kind: "login" }, unknown: "skip", conditions: codex }] });
+  const pills = async (page) => {
+    await until(() => q(page, ".routing-strip"), "the week");
+    await tick();
+    return [...page.document.querySelectorAll(".routing-sim-assume .routing-pill")].map((b) => b.textContent);
+  };
+  assert.deepEqual(await pills(mount(core({ policy: order([], []) }))), [], "no condition reads a quota: nothing to assume");
+  assert.deepEqual(await pills(mount(core({ policy: order([], quota) }))), ["Codex subscription used up"]);
+  assert.deepEqual(await pills(mount(core({ policy: order(quota, []) }))), ["Account #1 used up"]);
 });
