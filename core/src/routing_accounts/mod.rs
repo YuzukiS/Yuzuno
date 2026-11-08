@@ -163,7 +163,7 @@ fn account(row: &Value) -> Option<Account> {
         fingerprint: fingerprint(email, organization),
         active: row["active"].as_bool() == Some(true),
         label: label.chars().take(120).collect(),
-        usage_status: row["usageStatus"].as_str().map(|s| s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(32).collect()),
+        usage_status: row["usageStatus"].as_str().map(|s| s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(32).collect()),
         five_hour: window(&row["usage"]["fiveHour"]),
         week: window(&row["usage"]["sevenDay"]),
     })
