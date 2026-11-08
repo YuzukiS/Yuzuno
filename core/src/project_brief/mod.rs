@@ -166,7 +166,8 @@ At most 12 topics with 4 sub-topics each. Only the owner changes a section; add 
 A section whose owner was closed or deleted can be claimed by an Agent of the same Project; change it in a later brief_update.\n\
 put: {op:'put', key, kind:'ask'|'report'|'status', title, body or markdown, ask?, status?, time?, attachments?}. body is {root, elements} with a BriefBody root; markdown is the section's text as one Markdown block.\n\
 edit: {op:'edit', key, elements:{id: block}, status?} replaces those blocks of your section by id and keeps everything else.\n\
-patch: {op:'patch', key, patch:[RFC 6902 operations on the body], status?} changes single values and keeps what edit keeps; the whole section is checked again.\n\
+patch: {op:'patch', key, patch:[RFC 6902 operations on the body], status?} changes single values and keeps what edit keeps; the whole section is checked again. \
+On an array, @<id> names the item whose id it is, e.g. /elements/runs/props/rows/@r8/cells/status.\n\
 ask: ask.question plus at least one of reply.options (2-8), reply.freeText, reply.form or reply.choice. \
 A user's reply marks it replied (out of Needs you, listed in brief_get you.repliedAsks); resolve it once handled: a preference when taken in, \
 an authorized action only after it is done, with its result on the Task or Brief. While it runs or after it fails, keep it replied and report progress.\n\
@@ -248,7 +249,7 @@ fn update_properties(project: Value) -> Value {
             "markdown":{"type":"string","description":"For put, instead of body: the section's text as one Markdown block (id text); registered attachments are shown after it (id files). See brief_guide sections."},
             "size":{"type":"string","enum":["small","wide","large"],"description":"With markdown: the card's size on Home, as BriefBody summary size."},
             "elements":{"type":"object","description":"For edit: block ids mapped to their new {type, props, children?}; the section's other blocks, title, attachments and ask state are kept. See brief_guide sections."},
-            "patch":{"type":"array","minItems":1,"maxItems":patch::MAX_OPS,"description":"For patch: RFC 6902 operations on the section's body, paths being JSON Pointers into it, e.g. [{op:\"replace\", path:\"/elements/refs/props/items/3/note\", value:\"Merged.\"}]. Kept as an edit keeps; the whole section is checked again. See brief_guide sections.",
+            "patch":{"type":"array","minItems":1,"maxItems":patch::MAX_OPS,"description":"For patch: RFC 6902 operations on the section's body, paths being JSON Pointers into it, e.g. [{op:\"replace\", path:\"/elements/refs/props/items/3/note\", value:\"Merged.\"}]; on an array @<id> names the item with that id, e.g. /elements/t/props/rows/@r8/cells/status. Kept as an edit keeps; the whole section is checked again. See brief_guide sections.",
                 "items":{"type":"object","required":["op","path"],"properties":{"op":{"type":"string","enum":patch::OPS},"path":{"type":"string"},"from":{"type":"string"},"value":{}}}},
             "ask":{"type":"object","description":"For kind ask: {question, reply:{options?, freeText?, form?, choice?}}."},
             "status":{"type":"object","description":"For kind status: {asOf: ISO time, validFor: seconds}."},
