@@ -90,7 +90,7 @@ const overviewOf = (id) => ({
   result: id === "w" ? null : { id: "res12345678", summary: "Red 1/1 before, green 24/24 after.", reportedAt: at(2), status: "submitted" },
 });
 
-async function mount({ storage = {}, overview = (id) => overviewOf(id), select = "k" } = {}) {
+async function mount({ storage = {}, overview = (id) => overviewOf(id), select = "k", more = [], home = null } = {}) {
   const errors = [];
   const calls = [];
   const vc = new VirtualConsole();
@@ -110,11 +110,15 @@ async function mount({ storage = {}, overview = (id) => overviewOf(id), select =
     const text = JSON.stringify(value);
     return { ok: status === 200, status, json: async () => JSON.parse(text), text: async () => text };
   };
-  const listed = agents();
+  const listed = [...agents(), ...more];
   w.fetch = async (url, init = {}) => {
-    calls.push({ url, method: init.method || "GET" });
+    calls.push({ url, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : null });
     if (url.endsWith("/api/workspace")) return respond({ workspace: { id: "ws-overview" }, projects: [project], agents: listed, runtime: { connected: true }, defaultCwd: "/w" });
-    if (url.endsWith("/api/home")) return respond({ generatedAt: at(0), order: ["p"], needsYou: [], projects: [] });
+    if (url.endsWith("/api/home")) return respond(home ?? { generatedAt: at(0), order: ["p"], needsYou: [], projects: [] });
+    if (url.endsWith("/api/projects/p/brief/reply")) {
+      const sent = JSON.parse(init.body);
+      return respond({ messageId: "m1", clientMessageId: sent.clientMessageId, agentId: sent.agentId, status: "accepted" });
+    }
     if (url.endsWith("/api/executors/live")) return respond({ executors: {} });
     if (url.endsWith("/task_list")) return respond({ tasks: [], counts: {}, hasMore: false });
     const executorRead = url.match(/\/api\/agents\/(\w)\/executor$/);
@@ -234,6 +238,82 @@ test("its request is answered in the Overview while it shows, in the Conversatio
     p.tab("Conversation").dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Home", bubbles: true }));
     await waitFor(() => p.loaded(), "Home key: its Overview again");
     assert.equal([...p.body().querySelectorAll("button")].some((b) => b.textContent === "Allow once"), false);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+// T-43 S4 (the user's option D): an executor at a gate asked on Home with
+// its own Ask, naming its task and step. Home's Needs you lists it with the
+// gate; Home's section is what the card shows.
+const gateAsk = {
+  key: "gates/design", kind: "ask", title: "Approve the design note", version: 2,
+  owner: { agentId: "g", name: "YN-g · Design first", state: "active" }, updatedAt: at(12), updatedTurnId: null,
+  body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["note"] },
+    note: { type: "Markdown", props: { text: "One JSON file with a version; the old format still imports." } } } },
+  attachments: [], refs: {}, seen: null, history: false,
+  ask: { question: "Export as one JSON file or three?", state: "open", gate: { taskId: "YN-g", step: 1 },
+    reply: { options: [{ id: "one", label: "One JSON file" }, { id: "three", label: "Three files" }] } },
+};
+const gateHome = {
+  generatedAt: at(0), order: ["p"],
+  needsYou: [{ kind: "ask", projectId: "p", agentId: "g", agentName: "YN-g · Design first", sectionKey: "gates/design",
+    title: "Approve the design note", since: at(12), gate: { taskId: "YN-g", step: 1 } }],
+  projects: [{ project: { id: "p", name: "App" }, agents: { working: 0, idle: 1, waiting: 0, error: 0, offline: 0, total: 1 },
+    errors: [], pending: [], jobs: [], brief: { version: 3, sections: [gateAsk], history: [] }, unseen: 0, missing: [] }],
+};
+const gateOverview = (id) => id !== "g" ? overviewOf(id) : {
+  ...overviewOf("w"), agentId: "g", lifecycle: lifecycle("g"), task: { id: "YN-g", title: "Work g", status: "doing" },
+  steps: [{ kind: "materials", state: "done", ref: { kind: "mail", readAt: at(60) } },
+    { kind: "gate", label: "Approve the design note", approver: "user", state: "blocked",
+      ref: { kind: "ask", projectId: "p", key: "gates/design", version: 2, state: "open", since: at(12), repliedAt: null } },
+    { kind: "work", label: "Slices", state: "todo" }],
+};
+
+test("a gate it asked about on Home is answered in its Overview with Home's own reply, and in its Conversation otherwise (T-43 S4)", async () => {
+  const p = await mount({ select: "g", more: [executor("g", { status: "idle" })], home: gateHome, overview: gateOverview });
+  try {
+    await waitFor(() => p.loaded() && !!p.overviewPanel().querySelector(".gate-ask .home-ask-options"), "g's gate ask in its Overview");
+    const card = p.overviewPanel().querySelector(".gate-ask");
+    assert.equal(card.querySelector("h3").textContent, "Waiting for your approval · Approve the design note");
+    assert.equal(card.querySelector(".gate-ask-question").textContent, "Export as one JSON file or three?");
+    assert.match(card.querySelector(".gate-ask-body").textContent, /One JSON file with a version; the old format still imports\./, "what it asks with, as on Home");
+    assert.equal(card.querySelector(".note").textContent, "Its executor asked this on Home. Answer here, in its other tab or on Home: one answer settles it everywhere.");
+    const gate = p.overviewPanel().querySelector('.executor-overview-steps .step[data-state="blocked"]');
+    assert.deepEqual([gate.querySelector(".label").textContent, gate.querySelector(".state").textContent, gate.querySelector(".ref").textContent],
+      ["Approve the design note", "waiting for you", "asked on Home"]);
+    assert.equal(p.body().querySelector(".gate-ask"), null, "not also in the hidden Conversation");
+    // Its row needs you, as a request would: the gate's ask waits on Home.
+    const row = p.doc.querySelector('.agent-list article[data-agent-id="g"]');
+    assert.equal(row.querySelector(".agent-island")?.getAttribute("data-state"), "waiting", "its ring needs you");
+    // Answered here: Home's reply to that version of the ask, to its executor.
+    [...card.querySelectorAll(".home-ask-options button")].find((b) => b.textContent === "One JSON file").click();
+    await waitFor(() => p.calls.some((c) => c.url.endsWith("/api/projects/p/brief/reply")), "the reply sent");
+    const sent = p.calls.find((c) => c.url.endsWith("/api/projects/p/brief/reply"));
+    assert.equal(sent.method, "POST");
+    assert.deepEqual([sent.body.key, sent.body.agentId, sent.body.choice, sent.body.askVersion, sent.body.workspaceId],
+      ["gates/design", "g", "one", 2, "ws-overview"]);
+    // The Conversation: the same card there instead.
+    p.tab("Conversation").click();
+    await waitFor(() => !!p.body().querySelector(".gate-ask"), "the card in its Conversation");
+    assert.equal(p.body().querySelector(".gate-ask .gate-ask-question").textContent, "Export as one JSON file or three?");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("in Chinese the gate's card reads in Chinese (T-43 S4)", async () => {
+  const p = await mount({ select: "g", more: [executor("g", { status: "idle" })], home: gateHome, overview: gateOverview,
+    storage: { "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } });
+  try {
+    await waitFor(() => p.loaded() && !!p.overviewPanel().querySelector(".gate-ask .home-ask-options"), "the card");
+    const card = p.overviewPanel().querySelector(".gate-ask");
+    assert.equal(card.querySelector("h3").textContent, "等你批准 · Approve the design note");
+    assert.equal(card.querySelector(".note").textContent, "执行者在 Home 发的提问。在这里、另一个页签或 Home 回答都行，答一处各处都解决。");
+    const gate = p.overviewPanel().querySelector('.executor-overview-steps .step[data-state="blocked"]');
+    assert.deepEqual([gate.querySelector(".state").textContent, gate.querySelector(".ref").textContent], ["等你", "已在 Home 提问"]);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

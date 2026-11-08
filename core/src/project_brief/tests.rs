@@ -1807,6 +1807,8 @@ mod release_handover_tests;
 mod patch_tests;
 #[path = "executor_needs_tests.rs"]
 mod executor_needs_tests;
+#[path = "executor_gate_tests.rs"]
+mod executor_gate_tests;
 #[path = "recently_left_tests.rs"]
 mod recently_left_tests;
 #[path = "cas_tests.rs"]

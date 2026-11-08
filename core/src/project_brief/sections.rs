@@ -319,6 +319,10 @@ pub(super) fn section_json(row: &Row, owner: &Owner, seen: Option<&(i64, String)
                 ask[field] = json!(value);
             }
         }
+        // An executor's gate (T-43 S4), only when it names one.
+        if data["ask"]["gate"].is_object() {
+            ask["gate"] = data["ask"]["gate"].clone();
+        }
         section["ask"] = ask;
     }
     if row.kind == "status" {

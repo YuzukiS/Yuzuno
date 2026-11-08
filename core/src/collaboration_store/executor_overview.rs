@@ -5,7 +5,7 @@
 //! entry of its PR, and its newest result. Nothing is decided here beyond
 //! reading each step's record: a template's steps are descriptive, and Core
 //! keeps no state of them.
-use super::{current, dispatch_materials, load_task, task_number};
+use super::{current, dispatch_materials, load_task, task_key, task_number};
 use crate::{executor_lifecycle, executor_templates};
 use anyhow::Result;
 use chrono::{DateTime, FixedOffset};
@@ -32,6 +32,10 @@ pub(super) struct Facts {
     pub waiting: bool,
     /// Its lifecycle's state (queued, starting, running, delivering, …).
     pub lifecycle: String,
+    /// Its own Home Asks for the gates of this task (T-43 S4), oldest
+    /// first: {step, projectId, key, version, state (open, replied or
+    /// resolved), since, repliedAt}.
+    pub asks: Vec<Value>,
 }
 
 const RUNNING_JOB: [&str; 5] = ["queued", "waiting", "running", "paused", "waiting_analysis"];
@@ -92,7 +96,17 @@ pub(super) fn step_states(steps: &[Value], facts: &Facts) -> Vec<Value> {
             asked += 1;
             asked - 1
         });
+        let index = out.len();
+        let asked_here: Vec<&Value> = facts.asks.iter().filter(|a| a["step"].as_u64() == Some(index as u64)).collect();
         let (state, reference): (&str, Value) = match kind {
+            // A gate the executor asked you about: waiting for you while one
+            // of its asks is open, done once each is answered or resolved.
+            "gate" if !asked_here.is_empty() => {
+                let waiting = asked_here.iter().copied().find(|a| a["state"] == "open");
+                let ask = waiting.unwrap_or(asked_here[asked_here.len() - 1]);
+                (if waiting.is_some() { "blocked" } else { "done" }, json!({"kind":"ask","projectId":ask["projectId"],"key":ask["key"],
+                    "version":ask["version"],"state":ask["state"],"since":ask["since"],"repliedAt":ask["repliedAt"]}))
+            }
             _ if !open => ("todo", Value::Null),
             "materials" => match &facts.read_at {
                 Some(at) => ("done", json!({"kind":"mail","readAt":at})),
@@ -194,8 +208,10 @@ pub(super) fn step_states(steps: &[Value], facts: &Facts) -> Vec<Value> {
             out[n]["state"] = json!("done");
         }
     }
-    // Where it is: the first step not begun.
-    if let Some(step) = out.iter_mut().find(|s| s["state"] == "todo") {
+    // Where it is: the first step not begun, unless a gate before it waits
+    // for your answer to its ask.
+    let asking = |s: &Value| s["state"] == "blocked" && s["ref"]["kind"] == "ask";
+    if let Some(step) = out.iter_mut().find(|s| s["state"] == "todo" || asking(s)).filter(|s| !asking(s)) {
         let state = match step["kind"].as_str() {
             Some("gate") if facts.waiting => "blocked",
             Some("materials" | "work" | "result") if facts.waiting => "blocked",
@@ -271,6 +287,78 @@ fn jobs(db: &Connection, task: &str, agent: &str) -> Result<Vec<Value>> {
         .collect()
 }
 
+/// Its own Home Asks for the gates of `task` (T-43 S4, the user's option
+/// D), oldest first, each as its newest row says: open, replied, or
+/// resolved. An ask names its task by any key it has.
+fn gate_asks(db: &Connection, agent: &str, task: &str) -> Result<Vec<Value>> {
+    let mut query = db.prepare(
+        "SELECT project_id,key,version,live,ask_state,history_reason,COALESCE(ask_since,updated_at),replied_at,
+                json_extract(data,'$.ask.gate.taskId'),json_extract(data,'$.ask.gate.step')
+         FROM project_brief_sections WHERE owner_id=?1 AND kind='ask' AND json_extract(data,'$.ask.gate.taskId') IS NOT NULL ORDER BY seq",
+    )?;
+    let rows = query.query_map([agent], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, bool>(3)?,
+            r.get::<_, Option<String>>(4)?,
+            r.get::<_, Option<String>>(5)?,
+            r.get::<_, Option<String>>(6)?,
+            r.get::<_, Option<String>>(7)?,
+            r.get::<_, Option<String>>(8)?,
+            r.get::<_, Option<i64>>(9)?,
+        ))
+    })?;
+    let mut asks: Vec<Value> = Vec::new();
+    for row in rows {
+        let (project, key, version, live, ask_state, history, since, replied, named, step) = row?;
+        let Some(step) = step else { continue };
+        if named.as_deref().and_then(|named| task_key(db, named).ok()).is_none_or(|(id, _)| id != task) {
+            continue;
+        }
+        let state = match (live, ask_state.as_deref(), history.as_deref()) {
+            (true, Some("replied"), _) => "replied",
+            (true, Some("resolved"), _) | (false, _, Some("resolved")) => "resolved",
+            (true, _, _) => "open",
+            // Taken down some other way: no answer of yours.
+            (false, _, _) => "removed",
+        };
+        let ask = json!({"step":step,"projectId":project,"key":key,"version":version,"state":state,"since":since,"repliedAt":replied});
+        // Its newest row stands for the key.
+        asks.retain(|a| !(a["projectId"] == ask["projectId"] && a["key"] == ask["key"]));
+        if state != "removed" {
+            asks.push(ask);
+        }
+    }
+    Ok(asks)
+}
+
+/// Whether `agent` may ask for the approval of step `step` of `task` (any
+/// key it has) with its own Home Ask (T-43 S4): it is the executor of that
+/// task's dispatch, and that step of its template is a gate. Err: the
+/// problem's code and why.
+pub(crate) fn may_ask_gate(db: &Connection, agent: &str, task: &str, step: u64) -> Result<std::result::Result<(), (&'static str, String)>> {
+    let id = task_key(db, task).ok().map(|(id, _)| id);
+    let role = executor_lifecycle::of(db, agent)?;
+    let (Some(id), Some((_, Some(own), dispatch))) = (id, role) else {
+        return Ok(Err(("gate_not_yours", format!("You are not the executor of {task}: only a task's executor asks for the approval of its gates."))));
+    };
+    if own != id {
+        return Ok(Err(("gate_not_yours", format!("You are not the executor of {task}: only a task's executor asks for the approval of its gates."))));
+    }
+    let materials = dispatch.as_deref().and_then(|dispatch| dispatch_materials::read(db, &own, dispatch).ok());
+    let steps = steps(db, agent, materials.as_ref())?;
+    if usize::try_from(step).ok().and_then(|n| steps.get(n)).is_some_and(|s| s["kind"] == "gate") {
+        return Ok(Ok(()));
+    }
+    let gates: Vec<String> = steps.iter().enumerate().filter(|(_, s)| s["kind"] == "gate").map(|(n, _)| n.to_string()).collect();
+    Ok(Err(("gate_step_unknown", match gates.as_slice() {
+        [] => format!("Step {step} is not a gate: your template has no gate step."),
+        gates => format!("Step {step} is not a gate: steps count from 0, and your template's gates are step {}.", gates.join(", ")),
+    })))
+}
+
 /// The newest merge entry of `pull`, its repository's and number's.
 fn merge(db: &Connection, task: &str, pull: &Value) -> Result<Option<Value>> {
     let (Some(repository), Some(number)) = (pull["repositoryId"].as_i64(), pull["number"].as_i64()) else { return Ok(None) };
@@ -335,6 +423,7 @@ pub(crate) fn overview(db: &Connection, agent: &str, waiting: bool) -> Result<Op
         merge: merge.clone(),
         waiting,
         lifecycle: lifecycle["state"].as_str().unwrap_or("").to_owned(),
+        asks: gate_asks(db, agent, &task)?,
     };
     let steps = step_states(&steps(db, agent, materials.as_ref())?, &facts);
     let template = materials.as_ref().map(|m| &m["template"]).filter(|t| t.is_object());

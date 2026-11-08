@@ -25,6 +25,10 @@ test("each lifecycle and runtime pair says exactly one state, the first rule tha
     [life("running"), agent({ pendingCount: 1, status: "waiting" }), {}, "needsYou", null],
     [life("delivering"), agent({ pendingCount: 1 }), {}, "needsYou", null],
     [life("running"), agent({ status: "waiting" }), {}, "needsYou", null],
+    // Its gate's ask waits on Home (T-43 S4): it needs you too, at work or not.
+    [life("running"), agent(), { asking: true }, "needsYou", null],
+    [life("running"), agent({ status: "working" }), { asking: true }, "needsYou", null],
+    [life("queued", { position: 1 }), agent(), { asking: true }, "queued", { kind: "position", position: 1 }],
     [life("running"), agent({ status: "error" }), {}, "failed", { kind: "turnFailed" }],
     [life("running"), agent(), { unseen: "failed" }, "failed", { kind: "turnFailed" }],
     [life("running"), agent({ status: "offline" }), {}, "stopped", { kind: "offline" }],

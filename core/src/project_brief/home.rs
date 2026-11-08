@@ -255,8 +255,13 @@ pub(super) fn build(store: &Store) -> Result<Value> {
                 continue;
             }
             let since = row.ask_since.clone().unwrap_or_else(|| row.updated_at.clone());
-            needs.push((priority, time(&since), json!({"kind":"ask","projectId":id,"agentId":row.owner_id,
-                "agentName":owner(row).name,"sectionKey":row.key,"title":row.data["title"],"since":since})));
+            let mut item = json!({"kind":"ask","projectId":id,"agentId":row.owner_id,
+                "agentName":owner(row).name,"sectionKey":row.key,"title":row.data["title"],"since":since});
+            // An executor's gate (T-43 S4): the rail shows its executor waiting for you.
+            if row.data["ask"]["gate"].is_object() {
+                item["gate"] = row.data["ask"]["gate"].clone();
+            }
+            needs.push((priority, time(&since), item));
         }
         // id is the section's identity on Home: the same through every put
         // and edit of it, and through a report the user marked seen that its

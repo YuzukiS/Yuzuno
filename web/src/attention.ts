@@ -45,6 +45,8 @@ export type AttentionContext = {
   /** When each Agent's oldest wait began (ms), from Home's Needs you: what
    * waits longest goes first. An Agent without one keeps its place. */
   since?: ReadonlyMap<string, number>;
+  /** Agents whose gate asks wait on Home (askingAgents, T-43 S4): they wait on the user too. */
+  asking?: ReadonlySet<string>;
 };
 
 /**
@@ -62,7 +64,7 @@ export function orderByAttention(
   options: { leads?: ReadonlySet<string> } = {},
 ): Agent[] {
   const keyed = agents.map((agent, index) => {
-    const rank = attentionRank(agent, context.seen);
+    const rank = context.asking?.has(agent.id) ? "needsYou" : attentionRank(agent, context.seen);
     const within =
       rank === "needsYou"
         ? (context.since?.get(agent.id) ?? Number.POSITIVE_INFINITY)
@@ -75,16 +77,23 @@ export function orderByAttention(
   return keyed.map((k) => k.agent);
 }
 
-/** When each Agent's oldest Needs you item has waited since (ms). */
+/** When each Agent's oldest Needs you item has waited since (ms). An ask
+ * counts only as an executor's gate (T-43 S4): its executor waits for it. */
 export function waitingSince(items: readonly NeedsYouItem[] | null): Map<string, number> {
   const since = new Map<string, number>();
   for (const item of items || []) {
-    if (item.kind === "ask") continue;
+    if (item.kind === "ask" && !item.gate) continue;
     const at = Date.parse(item.since);
     if (!Number.isFinite(at)) continue;
     since.set(item.agentId, Math.min(at, since.get(item.agentId) ?? at));
   }
   return since;
+}
+
+/** The Agents whose gate asks wait in Needs you (T-43 S4): an executor
+ * that asked you on Home to approve a step, and waits for the answer. */
+export function askingAgents(items: readonly NeedsYouItem[] | null): Set<string> {
+  return new Set((items || []).filter((item) => item.kind === "ask" && item.gate).map((item) => item.agentId));
 }
 
 /** Where "next needs you" goes. */
