@@ -61,13 +61,32 @@ const hhmm = timeFormatter({ hour: "2-digit", minute: "2-digit", hourCycle: "h23
 const whenLabel = timeFormatter({ weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const reasonWords = (message: string, messageZh: string, language: Language) => (language === "zh-Hans" ? messageZh : message);
 
-/** The local midnight `days` days after `at`'s day, as the calendar has it: a
- * day with a clock change is 23 or 25 hours long. */
-function midnight(at: number, days = 0): number {
-  const d = new Date(at);
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() + days);
-  return d.getTime();
+/** The wall clock in `zone` at `at`. */
+const wallClocks = new Map<string, Intl.DateTimeFormat>();
+function wallIn(at: number, zone: string) {
+  let format = wallClocks.get(zone);
+  if (!format) wallClocks.set(zone, (format = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23",
+    year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" })));
+  const p = Object.fromEntries(format.formatToParts(at).map((x) => [x.type, Number(x.value)]));
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second);
+}
+
+/** The midnight `days` days after `at`'s day, as the calendar has it in the
+ * time zone times are shown in (the device's when none is chosen): a day with
+ * a clock change is 23 or 25 hours long. */
+function midnight(at: number, days = 0, zone: string | null = null): number {
+  if (!zone) {
+    const d = new Date(at);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + days);
+    return d.getTime();
+  }
+  const day = new Date(wallIn(at, zone));
+  const wall = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + days);
+  // The instant whose wall clock reads that midnight: the zone's offset there,
+  // read twice so that a clock change between them is taken into account.
+  const first = wall - (wallIn(wall, zone) - wall);
+  return wall - (wallIn(first, zone) - first);
 }
 
 /** A row's stretches: the segments clipped to one day, as shares of it. */
@@ -97,8 +116,10 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
     return () => window.clearInterval(every);
   }, [active]);
   // The week's days, each from its local midnight to the next.
-  const start = midnight(now);
-  const days = useMemo(() => Array.from({ length: DAYS + 1 }, (_, d) => midnight(start, d)), [start]);
+  // Days as the calendar has them where times are shown (Settings → Typing & time).
+  const zone = time.timeZone;
+  const start = midnight(now, 0, zone);
+  const days = useMemo(() => Array.from({ length: DAYS + 1 }, (_, d) => midnight(start, d, zone)), [start, zone]);
   const end = days[DAYS];
   const toStep = (at: number) => start + Math.floor((at - start) / 60_000 / STEP) * STEP * 60_000;
   // The picked moment; none, or one the week has left behind, is now.
