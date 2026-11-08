@@ -1157,8 +1157,12 @@ impl Workspace {
                 refresh_status(d);
             }).map(drop))
         };
-        if let Err(error) = written {
-            eprintln!("Workspace OpenCode event not recorded: {error:#}");
+        match written {
+            Err(error) => eprintln!("Workspace OpenCode event not recorded: {error:#}"),
+            // A finished answer's cost, for an executor on a routing key (YN-34 S2a).
+            Ok(()) => for one in applied.iter().filter(|one| type_of(one) == "message.updated") {
+                crate::routing_readings::count(&self.store, id, crate::routing_readings::opencode_spend(&one["data"]["info"]), "opencode");
+            },
         }
         self.changed(id);
     }

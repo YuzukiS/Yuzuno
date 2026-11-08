@@ -325,3 +325,52 @@ async fn a_profiled_executor_is_not_forked_onto_another_account() {
     let fork = serde_json::from_value(json!({"requestId": uuid::Uuid::new_v4().to_string(), "turnId": "t", "name": "f"})).unwrap();
     refused(ws.opencode_fork("oc", fork).await.unwrap_err());
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_opencode_executor_on_a_routing_key_counts_what_its_answers_cost() {
+    // YN-34 S2a: the daily spend routing's cap reads, from 2.x's step cost.
+    opencode_program();
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let ws = Workspace::new(dir.path().join("data"), cwd.clone(), "unused".into()).unwrap();
+    for id in ["oc-cost", "oc-free"] {
+        ws.store.insert(&agent(id, "opencode", &cwd)).unwrap();
+    }
+    KeyStore::of(&ws.data_dir).put_local("deepseek", Provider::Deepseek, Secret::new(KEY.into())).unwrap();
+    ws.store.set_runtime_profile("oc-cost", Some(&RuntimeProfile::ApiKey { key_id: "deepseek".into() })).unwrap();
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    for id in ["oc-cost", "oc-free"] {
+        ws.reconnect(id).await.unwrap();
+        let mut session = None;
+        for _ in 0..400 {
+            let d = ws.store.detail(id).unwrap();
+            if d.agent.connection_state == "connected" {
+                session = d.agent.opencode_session_id.clone();
+                if session.is_some() { break; }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let session = session.expect("connected with its session");
+        let input: crate::model::MessageInput = serde_json::from_value(json!({"clientMessageId": format!("{id}-1"), "text": "hi"})).unwrap();
+        let turn = ws.send_message(id, input).await.unwrap().turn_id.unwrap();
+        let start: Value = serde_json::from_str(&fs::read_to_string(ws.data_dir.join("opencode").join(id).join("start.json")).unwrap()).unwrap();
+        let port = start["port"].as_u64().unwrap();
+        http.post(format!("http://127.0.0.1:{port}/__fixture/reply"))
+            .json(&json!({"sessionID": session, "text": "Done.", "info": {"cost": 0.0123, "tokens": {"total": 5}}}))
+            .timeout(Duration::from_secs(20)).send().await.unwrap();
+        let mut ended = false;
+        for _ in 0..400 {
+            let d = ws.store.detail(id).unwrap();
+            if d.turns.iter().any(|t| t["id"] == turn.as_str() && t["status"] != "inProgress") { ended = true; break; }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(ended, "{id}'s turn ends");
+    }
+    let spend = ws.store.spend_on(crate::routing_readings::today()).unwrap();
+    assert_eq!((spend.total_usd, spend.by_key.get("deepseek").copied()), (0.0123, Some(0.0123)),
+        "the executor on the key counts its answer, the other counts nothing: {spend:?}");
+    for id in ["oc-cost", "oc-free"] {
+        ws.close_agent(id).await.unwrap();
+    }
+}

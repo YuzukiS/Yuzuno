@@ -77,6 +77,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         // Only on Core's own port: routing keys are written, never read back (YN-34 S1a).
         .merge(crate::routing_keys::routes::router())
         .merge(crate::routing_accounts::routes::router())
+        .merge(crate::routing_readings::routes::router())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);

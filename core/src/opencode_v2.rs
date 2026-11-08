@@ -351,8 +351,12 @@ pub fn read_messages(messages: &Value) -> Read {
             }
             Some("assistant") => {
                 let failed = if message["error"].is_object() { error(&message["error"], None) } else { Value::Null };
-                let info = answer(id, user.as_deref(), &message["time"]["created"], &message["time"]["completed"], &message["finish"],
+                let mut info = answer(id, user.as_deref(), &message["time"]["created"], &message["time"]["completed"], &message["finish"],
                     &failed, &message["tokens"], &message["model"]);
+                // As its live end carries it (YN-34 S2a).
+                if message["cost"].is_number() {
+                    info["cost"] = message["cost"].clone();
+                }
                 let parts: Vec<Value> = message["content"].as_array().into_iter().flatten().enumerate()
                     .filter_map(|(ordinal, entry)| content_part(id, ordinal, entry)).collect();
                 if message["time"]["completed"].is_null() && message["error"].is_null() {
@@ -687,7 +691,12 @@ impl Open {
                 // An end of a step this connection never saw start answers nothing it knows of.
                 let step = self.steps.remove(id).unwrap_or_default();
                 let failure = if kind == "session.step.failed" { error(&d["error"], None) } else { Value::Null };
-                vec![message(answer(id, step.parent.as_deref(), &step.created, at, &d["finish"], &failure, &d["tokens"], &step.model))]
+                let mut info = answer(id, step.parent.as_deref(), &step.created, at, &d["finish"], &failure, &d["tokens"], &step.model);
+                // What the step cost, as 2.x reports it (YN-34 S2a's daily spend).
+                if d["cost"].is_number() {
+                    info["cost"] = d["cost"].clone();
+                }
+                vec![message(info)]
             }
             "session.text.started" | "session.text.ended" | "session.reasoning.started" | "session.reasoning.ended" => {
                 let (Some(message), Some(ordinal)) = (d["assistantMessageID"].as_str(), d["ordinal"].as_u64()) else { return vec![] };

@@ -9,8 +9,11 @@ version; a later slice adds to it.
 | --- | --- | --- |
 | S1a | Routing keys: the key file, its write-only routes, reading a key through 1Password | Done |
 | S1b | Accounts: claude-swap's accounts and how a binding to one resolves, its launcher, Codex homes | Done |
-| S1c | Handing a key or account to one executor's harness process: Claude Code, OpenCode and Codex | This version |
-| S2–S4 | Readings, routing itself, the Settings page | Later |
+| S1c | Handing a key or account to one executor's harness process: Claude Code, OpenCode and Codex | Done |
+| S2a | Readings: time windows and the daily API spend, read-only | This version |
+| S2b | Readings: subscription quotas (claude-swap, Codex) | Next |
+| S3 | Routing itself: the policy, the choice at dispatch and at start | Later |
+| S4 | The Settings page (YN-49) | Later |
 
 An executor starts with a routing key or account only when its runtime
 profile names one, and nothing at this version sets a profile: routing
@@ -207,3 +210,132 @@ Apart from the scrub above, none of this protects a key from a program
 deliberately reading another process's environment or files as you: the 0600
 file, `/proc/<pid>/environ` and login files are all yours to read.
 
+## Readings
+
+What routing decides with, as Core last observed it. Nothing here runs a
+model, calls a network service, or holds a key's value.
+
+### Time windows
+
+A schedule is a set of weekly slots. Each slot has:
+
+- `days`, from 1 (Monday) to 7 (Sunday);
+- `from` and `to`, both `HH:MM`. `from` is inclusive and `to` exclusive; `to` may be `24:00`, and a slot whose `to` is not after its `from` runs past midnight into the next day.
+
+A schedule's times are read in `UTC` or in the Core host's `local` time.
+
+Core has one built-in schedule, `deepseek-peak`: DeepSeek's peak hours, UTC
+Monday to Friday 01:00–04:00 and 06:00–10:00. Holidays count as working days.
+Off-peak is outside this schedule.
+
+### The daily API spend
+
+For an executor started with a routing key, Core counts what each turn
+cost, as its harness reports it:
+
+- **Claude Code:** the turn result's `total_cost_usd`.
+- **OpenCode:** each finished step's `cost`.
+- **Codex:** not counted yet. Routing (S3) treats a Codex API-key candidate's spend as unknown.
+
+Each entry is counted once, by key id, on the Core host's local date. An
+executor on a login or a claude-swap account spends no key and counts
+nothing. Entries are kept 40 days, also after their Agent is deleted. This
+is what the harnesses report: **an estimate, not a bill**.
+
+### `GET /api/routing/readings`
+
+This route is read-only and on the same boundary as the routing keys:
+- it is on Core's own port, for your own browser;
+- it is not on the phone entry;
+- it refuses any `Authorization` header.
+
+It answers from what Core last observed and starts no read itself.
+
+```jsonc
+{ "at": "2026-11-08T04:30:00+00:00",
+  "accounts": [],                                  // subscription quotas: S2b
+  "spend": { "day": "2026-11-08", "timeZone": "local", "totalUsd": 1.23,
+    "byKey": { "deepseek": 0.81 }, "note": "…", "noteZh": "…" },
+  "schedules": { "deepseek-peak": { "inside": false, "changesAt": "2026-11-09T01:00:00+00:00" } } }
+```
+
+## Shapes for routing and its Settings page
+
+These shapes are fixed ahead of their code, so the Settings page (YN-49)
+can be built against them. Readings is above. S2b fills `accounts`; S3 adds
+the policy and `route_json`.
+
+The rules for every shape:
+- Times are RFC 3339.
+- Ids are 1 to 48 of `a-z`, `0-9` and `-`.
+- No shape ever holds a key's value, an email or a token.
+
+### `accounts[]` in the readings (S2b)
+
+```jsonc
+{ "harness": "claude", "credential": { "kind": "pool", "manager": "cswap" },
+  "fingerprint": "3f2a…", "number": 2, "label": "Account-2", "hostLogin": false,
+  "fiveHour": { "leftPct": 71, "resetsAt": "…" }, "week": { "leftPct": 40, "resetsAt": "…" },
+  "observedAt": "…", "source": "cswap",             // "cswap" | "codex" | "agent" (reported by a running Agent)
+  "state": "fresh" }                                // "fresh" | "stale" (over 10 minutes) | "unknown", with "reason" and "reasonZh"
+```
+
+A Codex home appears as `{ "harness": "codex", "credential": { "kind": "codexHome", "id": "work" }, … }`. The Codex host login appears as `{ "harness": "codex", "credential": { "kind": "login" }, … }`.
+
+### The policy: `GET` and `PUT /api/routing/policy` (S3)
+
+These routes are on the same boundary as the routing keys. No Workspace tool
+writes the policy.
+
+```jsonc
+// GET → 200
+{ "version": 3,                                     // 0 before the first save
+  "policy": {
+    "enabled": true,                                // false: executors start as their template says
+    "whenNone": "wait",                             // the only value in this version
+    "dailyApiCapUsd": 5,                            // optional: the total across API-key candidates
+    "candidates": [                                 // at most 8, in order
+      { "id": "deepseek-offpeak", "label": "DeepSeek off-peak", "enabled": true,
+        "harness": "opencode",                      // "codex" | "claude" | "opencode"
+        "model": "deepseek/deepseek-flash",         // as that harness names it; empty is its default
+        "reasoningEffort": "high",                  // Codex only, optional
+        "credential": { "kind": "apiKey", "keyId": "deepseek" },
+        "conditions": [
+          { "kind": "window", "schedule": "deepseek-peak", "inside": false, "minLeftMinutes": 30 },
+          { "kind": "dailySpend", "capUsd": 2 } ],
+        "unknown": "skip" } ] } }                   // "skip" (default) | "pass"
+
+// PUT { "expectedVersion": 3, "policy": { … } } → 200 { "version": 4, "policy": { … } }
+// A stale version → 409 version_conflict. A refused field → 400, naming its path.
+```
+
+Fields a later Core adds are kept by a save.
+
+`credential` takes one of these forms:
+- `{ "kind": "login" }`: the host's own login for that harness.
+- `{ "kind": "pool", "manager": "cswap", "accounts": "all" | ["<fingerprint>", …], "pick": "mostRemaining" }`: Claude Code only.
+- `{ "kind": "apiKey", "keyId": "<routing key id>" }`. The key's provider must fit the harness:
+  - Claude Code takes `anthropic`;
+  - Codex takes `openai`;
+  - OpenCode takes `deepseek`, `anthropic` or `openai`.
+- `{ "kind": "codexHome", "id": "<Codex home id>" }`: Codex only.
+
+`conditions[]` entries take one of these forms:
+- `{ "kind": "window", "schedule": "<built-in id>" | { "timeZone": "UTC" | "local", "slots": […] }, "inside": true | false, "minLeftMinutes"?: n }`.
+- `{ "kind": "quota", "fiveHourLeftPct"?: n, "weekLeftPct"?: n }`: for `login`, `pool` and `codexHome` credentials only.
+- `{ "kind": "dailySpend", "capUsd": n }`: for `apiKey` credentials only. It applies on top of `dailyApiCapUsd`.
+
+### `route_json`: why a candidate was chosen (S3)
+
+It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under `executorSlot.route`.
+
+```jsonc
+{ "policyVersion": 4, "evaluatedAt": "…", "at": "dispatch",    // "dispatch" | "start"
+  "chosen": "deepseek-offpeak",                                 // null while waiting
+  "candidates": [
+    { "id": "claude-pool", "label": "Claude pool", "state": "skipped",   // chosen | skipped | unknown | failed | notTried
+      "reason": "…", "reasonZh": "…",
+      "readings": [ { "what": "fiveHourLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ] } ],
+  "changedAtStart": { "from": "claude-pool", "reason": "…" },  // only when the start-time check chose another
+  "waiting": { "earliestAt": "…", "reason": "…" } }            // only when none could be chosen
+```
