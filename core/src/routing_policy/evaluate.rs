@@ -121,6 +121,15 @@ fn time_window(condition: &Value, now: DateTime<Utc>) -> Check {
     Check::Holds
 }
 
+/// The Codex home a Codex candidate runs in: `login` for the host's own, else its Codex home's id.
+fn codex_home(candidate: &Value) -> Option<&str> {
+    match (candidate["harness"].as_str(), candidate["credential"]["kind"].as_str()) {
+        (Some("codex"), Some("login")) => Some("login"),
+        (Some("codex"), Some("codexHome")) => candidate["credential"]["id"].as_str(),
+        _ => None,
+    }
+}
+
 /// The reading of the account a non-pool candidate runs on, for a quota condition.
 fn account_reading<'a>(candidate: &Value, inputs: &'a Inputs) -> Option<&'a Value> {
     let kind = candidate["credential"]["kind"].as_str().unwrap_or_default();
@@ -144,6 +153,12 @@ fn check_condition(candidate: &Value, condition: &Value, inputs: &Inputs) -> Che
     match condition["kind"].as_str().unwrap_or_default() {
         "timeWindow" => time_window(condition, inputs.now),
         "quota" => {
+            // A Codex account is named by the candidate itself, so a preview can assume it used
+            // up before Core has a reading of it (YN-49, from a lab Core). A Claude login's account
+            // is claude-swap's active one, known only from a reading.
+            if codex_home(candidate).is_some_and(|home| inputs.assume.codex_used_up.iter().any(|u| u == home)) {
+                return Check::Fails(reason("quotaLow", "Assumed used up", "假设已用完"));
+            }
             let Some(reading) = account_reading(candidate, inputs) else {
                 return Check::Unknown(reason("quotaUnknown", "No quota reading for this account yet", "这个账号还没有额度读数"));
             };

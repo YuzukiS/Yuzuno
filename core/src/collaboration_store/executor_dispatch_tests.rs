@@ -891,12 +891,23 @@ mod routing {
         let mut on = store.routing_policy().unwrap();
         on.policy["enabled"] = json!(true);
         on.policy["candidates"][0]["enabled"] = json!(false);
-        let reason = |policy: &Value, harness: &str| crate::routing_policy::dispatch::release_reason(policy, harness).map(|r| r["code"].clone());
+        let release = |policy: &Value, harness: &str, excluded: &[&str], machine: &str| {
+            let excluded: Vec<String> = excluded.iter().map(|e| (*e).to_owned()).collect();
+            crate::routing_policy::dispatch::release_reason(policy, harness, &excluded, machine).map(|r| r["code"].clone())
+        };
+        let reason = |policy: &Value, harness: &str| release(policy, harness, &[], "local");
         assert_eq!((reason(&on.policy, "opencode"), reason(&on.policy, "codex")), (Some(json!("noCandidate")), Some(json!("noCandidate"))),
             "DeepSeek off, and Codex off since earlier");
         on.policy["candidates"][1]["enabled"] = json!(true);
         assert_eq!((reason(&on.policy, "opencode"), reason(&on.policy, "codex")), (Some(json!("noCandidate")), None),
             "an enabled Codex candidate may hold later, so a Codex executor keeps waiting");
+        // Only candidates it could be given count (#805 R2 P3): not one excluded for its rebuild, and not
+        // a host-only one while it waits on another machine.
+        assert_eq!(release(&on.policy, "codex", &["c-codex"], "local"), Some(json!("noCandidate")), "excluded for a rebuild");
+        on.policy["candidates"][0]["enabled"] = json!(true);
+        assert_eq!((release(&on.policy, "opencode", &[], "local"), release(&on.policy, "opencode", &[], "lab-mac")),
+            (None, Some(json!("noCandidate"))), "OpenCode on a key runs here only");
+        assert_eq!(release(&on.policy, "codex", &[], "lab-mac"), None, "Codex on the login runs anywhere");
 
         // The newest choices first.
         let choices = store.routing_choices(10).unwrap();
