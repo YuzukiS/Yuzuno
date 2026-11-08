@@ -190,3 +190,138 @@ async fn a_profile_is_kept_apart_from_the_agent_and_refused_on_another_machine()
     ws.store.set_runtime_profile("x", None).unwrap();
     assert_eq!(ws.store.runtime_profile("x").unwrap(), None);
 }
+
+/// A stub `codex app-server --stdio`: it records its arguments, three of its
+/// environment variables and every request it gets, in a file of its own,
+/// and answers each request (a thread for thread/start and thread/resume).
+fn stub_codex(dir: &Path, python: &Path) -> std::path::PathBuf {
+    let runs = dir.join("runs");
+    fs::create_dir_all(&runs).unwrap();
+    let source = r#"#!@PY@
+import json, os, sys
+D = "@D@"
+rec = {"argv": sys.argv[1:], "env": {k: os.environ.get(k) for k in ("CODEX_HOME", "CODEX_API_KEY", "OPENAI_API_KEY")}, "requests": []}
+path = os.path.join(D, "run.%d.json" % os.getpid())
+def save():
+    with open(path + ".tmp", "w") as f:
+        json.dump(rec, f)
+    os.replace(path + ".tmp", path)
+save()
+for line in sys.stdin:
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    m = msg.get("method")
+    if m:
+        rec["requests"].append({"method": m, "params": msg.get("params")})
+        save()
+    if m and "id" in msg:
+        thread = {"id": "t-1", "turns": [], "status": {"type": "idle"}, "preview": "", "cwd": "/tmp"}
+        if m == "account/login/start":
+            result = {"type": "apiKey"}
+        elif m in ("thread/start", "thread/resume"):
+            result = {"thread": thread}
+        else:
+            result = {}
+        print(json.dumps({"id": msg["id"], "result": result}), flush=True)
+"#;
+    let path = dir.join("codex");
+    script(&path, &source.replace("@PY@", &python.display().to_string()).replace("@D@", &runs.display().to_string()));
+    path
+}
+
+fn runs(dir: &Path) -> Vec<Value> {
+    fs::read_dir(dir.join("runs")).unwrap().map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .map(|p| serde_json::from_str(&fs::read_to_string(p).unwrap()).unwrap()).collect()
+}
+
+#[tokio::test]
+async fn only_the_routed_codex_app_server_gets_its_home_or_its_key_login() {
+    let Some(python) = python3() else {
+        eprintln!("skipped: no python3 on PATH");
+        return;
+    };
+    let before: Vec<_> = std::env::vars_os().collect();
+    let dir = tempfile::tempdir().unwrap();
+    let program = stub_codex(dir.path(), &python);
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), program.display().to_string()).unwrap();
+    for id in ["cx-home", "cx-key", "cx-none"] {
+        ws.store.insert(&agent(id, "codex", "/tmp")).unwrap();
+    }
+    let home = dir.path().join("work-home");
+    fs::create_dir(&home).unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+    let home_text = home.display().to_string();
+    ws.store.save_codex_homes(&[routing_accounts::CodexHome { id: "work".into(), label: "Work".into(), home: home_text.clone() }]).unwrap();
+    KeyStore::of(&ws.data_dir).put_local("openai", Provider::Openai, Secret::new(KEY.into())).unwrap();
+    ws.store.set_runtime_profile("cx-home", Some(&RuntimeProfile::CodexHome { id: "work".into() })).unwrap();
+    ws.store.set_runtime_profile("cx-key", Some(&RuntimeProfile::ApiKey { key_id: "openai".into() })).unwrap();
+    for id in ["cx-home", "cx-key", "cx-none"] {
+        ws.ensure(id).await.unwrap();
+    }
+    let runs = runs(dir.path());
+    let api_home = ws.data_dir.join("codex-api-home").display().to_string();
+    let logins = |run: &Value| run["requests"].as_array().unwrap().iter().filter(|r| r["method"] == "account/login/start").count();
+
+    let home_run = runs.iter().find(|r| r["env"]["CODEX_HOME"] == home_text.as_str());
+    assert!(home_run.is_some(), "the routed Codex home's app-server runs in that home: {runs:?}");
+    assert_eq!(logins(home_run.unwrap()), 0, "a home's own login is used");
+
+    let key_run = runs.iter().find(|r| r["env"]["CODEX_HOME"] == api_home.as_str());
+    assert!(key_run.is_some(), "the routed key's app-server runs in Core's own Codex home: {runs:?}");
+    let key_run = key_run.unwrap();
+    assert!(key_run["requests"].as_array().unwrap().iter().any(|r| r["method"] == "account/login/start"
+        && r["params"] == json!({"type": "apiKey", "apiKey": KEY})), "the key is logged in over the connection: {key_run}");
+    let argv: Vec<&str> = key_run["argv"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(argv.windows(2).any(|w| w == ["-c", "cli_auth_credentials_store=\"ephemeral\""]), "its credentials stay ephemeral: {argv:?}");
+    assert!(key_run["env"]["CODEX_API_KEY"].as_str() != Some(KEY) && key_run["env"]["OPENAI_API_KEY"].as_str() != Some(KEY), "and the key is in no environment");
+    assert_eq!(fs::metadata(&api_home).unwrap().permissions().mode() & 0o777, 0o700);
+
+    // Every other app-server (the plain Agent's, and any catalog read) sees neither.
+    for run in runs.iter().filter(|r| r["env"]["CODEX_HOME"] != home_text.as_str() && r["env"]["CODEX_HOME"] != api_home.as_str()) {
+        assert!(!run.to_string().contains(KEY) && logins(run) == 0, "a sibling's app-server has no key: {run}");
+        assert_eq!(run["env"]["CODEX_HOME"].as_str().map(str::to_owned), std::env::var("CODEX_HOME").ok(), "and Core's own CODEX_HOME, as before");
+    }
+    let after: Vec<_> = std::env::vars_os().collect();
+    assert_eq!(before, after, "Core's own environment is as it was");
+    // A home no longer listed refuses, never another home.
+    ws.store.save_codex_homes(&[]).unwrap();
+    let error = format!("{:#}", ws.codex_launch("cx-home").await.unwrap_err());
+    assert!(error.contains("no longer listed") && error.contains("never in another home"), "{error}");
+    for id in ["cx-home", "cx-key", "cx-none"] {
+        let _ = ws.close_agent(id).await;
+    }
+}
+
+#[test]
+fn an_opencode_model_is_named_provider_slash_model() {
+    for good in ["deepseek/deepseek-flash", "openrouter/anthropic/claude-x"] {
+        crate::opencode_agent::check_model_id(good).unwrap();
+    }
+    for bad in ["", "deepseek", "/flash", "deepseek/", "deep seek/flash"] {
+        assert!(crate::opencode_agent::check_model_id(bad).is_err(), "{bad:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_profiled_executor_is_not_forked_onto_another_account() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = Workspace::new(dir.path().join("data"), "/tmp".into(), "unused".into()).unwrap();
+    ws.store.insert(&agent("cx", "codex", "/tmp")).unwrap();
+    ws.store.insert(&agent("oc", "opencode", "/tmp")).unwrap();
+    for id in ["cx", "oc"] {
+        ws.store.set_runtime_profile(id, Some(&RuntimeProfile::ApiKey { key_id: "k".into() })).unwrap();
+    }
+    let refused = |e: anyhow::Error| {
+        let text = format!("{e:#}");
+        assert!(text.contains("a fork of it would start on another: it cannot be forked"), "{text}");
+    };
+    refused(ws.preview_codex_fork("cx").await.unwrap_err());
+    let fork = serde_json::from_value(json!({"requestId": uuid::Uuid::new_v4().to_string(), "throughTurnId": "t", "name": "f"})).unwrap();
+    refused(ws.fork_codex_session("cx", fork).await.map(|_| ()).unwrap_err());
+    refused(ws.opencode_fork_preview("oc", "t").await.unwrap_err());
+    let fork = serde_json::from_value(json!({"requestId": uuid::Uuid::new_v4().to_string(), "turnId": "t", "name": "f"})).unwrap();
+    refused(ws.opencode_fork("oc", fork).await.unwrap_err());
+}

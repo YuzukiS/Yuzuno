@@ -622,8 +622,11 @@ impl Workspace {
                 m.agent.connection_state = "connecting".into();
             }).await?;
             self.changed(id);
+            // A routing account or key goes to this Agent's app-server only (YN-34 S1c).
+            let mut api_key = None;
             let result = async {
                 if let Some(remote_agent) = agent.remote {
+                    self.refuse_remote_profile(id).await?;
                     self.ensure_collaboration_tunnel(&remote_agent.machine).await?;
                     // Committed before the machine is asked to launch anything
                     // (T-35 S3b): a failure before it launched nothing there.
@@ -643,7 +646,9 @@ impl Workspace {
                     }).await?;
                     remote::connect(&remote_agent.machine, &runtime, tx).await
                 } else {
-                    Rpc::spawn(&self.program, &[], tx).await
+                    let launch = self.codex_launch(id).await?;
+                    api_key = launch.api_key;
+                    Rpc::spawn_env(&self.program, &launch.args, &launch.env, tx).await
                 }
             }.await;
             if result.is_err() {
@@ -689,6 +694,12 @@ impl Workspace {
             // No thread operation has been sent yet, so this transport can close.
             self.remove_connection(id, generation).await;
             return Err(e);
+        }
+        if let Some(key) = api_key {
+            if let Err(e) = crate::routing_launch::codex_login(&connection.rpc, &key).await {
+                self.remove_connection(id, generation).await;
+                return Err(e);
+            }
         }
         Ok(connection)
     }

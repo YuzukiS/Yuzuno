@@ -391,7 +391,7 @@ test("each saved template says who changed it last, when and why (YN-24's lastMo
   assert.deepEqual(page.errors, []);
 });
 
-test("OpenCode is offered only where this Core creates OpenCode Agents, with no model or permissions of its own", async () => {
+test("OpenCode is offered only where this Core creates OpenCode Agents, with no permissions of its own", async () => {
   for (const enabled of [false, true]) {
     const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex" }], laterTemplates: 1 }, enabled)]);
     page.window.renderTemplates();
@@ -404,12 +404,36 @@ test("OpenCode is offered only where this Core creates OpenCode Agents, with no 
     if (enabled) {
       assert.equal(field(page, "Harness").querySelector('option[value="opencode"]').textContent, "OpenCode (Experimental)", "marked experimental (YN-27)");
       await type(page, "Harness", "opencode");
-      assert.equal(field(page, "Model"), null);
+      assert.equal(field(page, "Model").placeholder, "Its own configuration’s model", "a model is its own unless named (YN-34 S1c)");
       assert.equal(field(page, "Permissions"), null);
-      assert.match(page.document.querySelector(".executor-templates-settings").textContent, /OpenCode uses its own configuration’s model and permissions\./);
+      assert.match(page.document.querySelector(".executor-templates-settings").textContent, /OpenCode uses its own configuration’s permissions\./);
+      assert.match(page.document.querySelector(".executor-templates-settings").textContent, /As OpenCode names it, provider\/model, such as deepseek\/deepseek-flash/);
     }
     assert.deepEqual(page.errors, []);
   }
+});
+
+test("An OpenCode template keeps the model it names, and a harness change does not carry a model to or from OpenCode (YN-34 S1c)", async () => {
+  let workspace = { version: 1, templates: [{ id: "a", label: "A", harness: "opencode", model: "deepseek/deepseek-flash" }] };
+  const page = mount((url, method, body) => {
+    if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+    return [200, view(workspace, true)];
+  });
+  page.window.renderTemplates();
+  await openTemplate(page, "A");
+  assert.equal(field(page, "Model").value, "deepseek/deepseek-flash", "shown as saved");
+  assert.equal(button(page, "Save templates").disabled, true, "nothing to save as read");
+  await type(page, "Instructions", "Keep it short.");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1, "the save");
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "a", label: "A", harness: "opencode", model: "deepseek/deepseek-flash", instructions: "Keep it short." }],
+    "an edit keeps its model");
+  await type(page, "Harness", "codex");
+  assert.equal(field(page, "Model").value, "", "an OpenCode model is not a Codex one");
+  await type(page, "Model", "gpt-test");
+  await type(page, "Harness", "opencode");
+  assert.equal(field(page, "Model").value, "", "nor a Codex model an OpenCode one");
+  assert.deepEqual(page.errors, []);
 });
 
 test("OpenCode is marked experimental in a Chinese page's harness choice too (YN-27)", async () => {
