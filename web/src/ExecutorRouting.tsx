@@ -11,6 +11,7 @@ import {
 import { langTag, strings, useLanguage } from "./i18n";
 import { ROUTING_CREDENTIALS_CHANGED, readAccountsShared, readKeys, shortFingerprint, type AccountsView, type RoutingKey } from "./routing-keys";
 import { useSaveBarPart } from "./SettingsSaveBar";
+import { Tip, TipText } from "./Tip";
 import { timeFormatter, useTimeDisplay } from "./time-preferences";
 import "./executor-routing.css";
 
@@ -64,6 +65,7 @@ const text = strings({
   days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
   dayRange: (a: string, b: string) => `${a}–${b}`,
   moreSlots: (n: number) => ` +${n}`,
+  slotJoin: "; ",
   // The editor.
   label: "Name",
   labelPlaceholder: "Empty: tool and model",
@@ -199,6 +201,7 @@ const text = strings({
   days: ["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
   dayRange: (a, b) => `${a}至${b.replace("周", "")}`,
   moreSlots: (n) => ` 等 ${n + 1} 段`,
+  slotJoin: "；",
   label: "名称",
   labelPlaceholder: "不填就用工具和模型",
   modelPlaceholder: "工具的默认模型",
@@ -288,14 +291,19 @@ type Text = ReturnType<typeof text>;
 
 const savedAt = timeFormatter({ month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 /** A schedule in a few words: its zone, its first period's days and hours, and how many more. */
-function scheduleWords(schedule: Schedule, t: Text): string {
-  const slot = schedule.slots[0];
-  if (!slot) return t.timeWindow;
+/** One period in a few words: its days and hours. */
+function slotWords(slot: Slot, t: Text): string {
   const days = [...slot.days].sort((a, b) => a - b);
   const contiguous = days.length > 2 && days.every((d, i) => i === 0 || d === days[i - 1] + 1);
   const dayText = days.length === 7 ? "" : contiguous ? t.dayRange(t.days[days[0] - 1], t.days[days.at(-1)! - 1]) : days.map((d) => t.days[d - 1]).join(" ");
-  const zone = schedule.timeZone === "UTC" ? t.utc : t.local;
-  return `${zone} ${dayText ? `${dayText} ` : ""}${slot.from}–${slot.to}${schedule.slots.length > 1 ? t.moreSlots(schedule.slots.length - 1) : ""}`;
+  return `${dayText ? `${dayText} ` : ""}${slot.from}–${slot.to}`;
+}
+const zoneWords = (schedule: Schedule, t: Text) => (schedule.timeZone === "UTC" ? t.utc : t.local);
+/** A schedule in a few words, for its chip: its zone, its first period, and how many more. */
+function scheduleWords(schedule: Schedule, t: Text): string {
+  const slot = schedule.slots[0];
+  if (!slot) return t.timeWindow;
+  return `${zoneWords(schedule, t)} ${slotWords(slot, t)}${schedule.slots.length > 1 ? t.moreSlots(schedule.slots.length - 1) : ""}`;
 }
 
 function chipText(c: AnyCondition, t: Text): string {
@@ -647,7 +655,15 @@ function CandidateList({ policy, t, keys, accounts, open, problems, refusedId, r
             </div>
             <div className="routing-cand-body">
               <div className="routing-chips">
-                {c.conditions.map((cond, n) => { const Icon = chipIcon(cond); return <span key={n} className="routing-chip"><Icon size={13} aria-hidden="true" /><span>{chipText(cond, t)}</span></span>; })}
+                {c.conditions.map((cond, n) => {
+                  const Icon = chipIcon(cond);
+                  const chip = <span key={n} className="routing-chip"><Icon size={13} aria-hidden="true" /><span>{chipText(cond, t)}</span></span>;
+                  // A time window's chip names its first period; its tip has every one (YN-44's Tip).
+                  return isKnown(cond) && cond.kind === "timeWindow"
+                    ? <Tip key={n} content={<TipText title={`${t.timeWindow} · ${zoneWords(cond.schedule, t)}`} status={cond.inside ? t.insideOption : t.outsideOption}
+                        body={cond.schedule.slots.map((slot) => slotWords(slot, t)).join(t.slotJoin)} />}>{chip}</Tip>
+                    : chip;
+                })}
                 {c.credential.kind === "pool" && <span className="routing-chip"><Layers size={13} aria-hidden="true" /><span>{t.chipPick}</span></span>}
                 {readingBound && <span className="routing-chip"><CircleHelp size={13} aria-hidden="true" /><span>{c.unknown === "pass" ? t.chipPass : t.chipSkip}</span></span>}
               </div>

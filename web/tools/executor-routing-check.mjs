@@ -195,6 +195,16 @@ async function run({ width, height, theme, lang }) {
     const order = page.locator(".executor-routing");
     const titles = () => order.locator(".routing-cand .routing-cand-title > span:first-child").allInnerTexts();
     assert.deepEqual((await titles()).slice(0, 2), [w.first, w.second]);
+    if (!phone) {
+      // A time window's chip has every period in its tip (YN-44's Tip).
+      await order.locator(".routing-cand").first().locator(".routing-chip").first().hover();
+      const tip = page.locator(".tip");
+      await tip.waitFor({ timeout: 10_000 });
+      assert.match(await tip.innerText(), lang === "zh" ? /01:00–04:00；周一至五 06:00–10:00/ : /01:00–04:00; Mon–Fri 06:00–10:00/);
+      await shot("chip-tip");
+      await page.mouse.move(0, 0);
+      await tip.waitFor({ state: "detached", timeout: 10_000 });
+    }
     if (phone) {
       await press(order.getByRole("button", { name: w.down(w.firstName), exact: true }));
     } else {
