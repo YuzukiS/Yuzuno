@@ -3794,6 +3794,10 @@ async fn an_acknowledgement_that_is_not_exactly_the_rounds_images_as_read_at_the
     let e = lab.release_acknowledging("lead", "r-ok", &head, both.clone()).await.unwrap();
     assert_eq!(e["binaries"]["files"].as_array().unwrap().len(), 2, "{e}");
     lab.ws.collaboration_call(Some("lead"), "merge_cancel", json!({"requestId":"c-ok","entryId":e["id"]})).await.unwrap();
+    // Nothing to acknowledge for a round that passes by itself: the files are extra.
+    review(&lab.ws.store, &lab.task, &head, "no_findings");
+    let refused = lab.release_acknowledging("lead", "r-passing", &head, both.clone()).await.unwrap_err().to_string();
+    assert!(refused.starts_with("binaries_refused: the last completed review round") && refused.contains("passes by itself"), "{refused}");
     // A P0–P2 finding is never acknowledged away (checked before the files).
     binary_round(&lab.ws.store, &lab.task, &head, &[at("icons/a.png"), at("icons/b.png")], |r| r["findings"] = json!([{"priority":2,"title":"bug"}]));
     let refused = lab.release_acknowledging("lead", "r-p2", &head, both).await.unwrap_err().to_string();

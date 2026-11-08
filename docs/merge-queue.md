@@ -155,7 +155,7 @@ Core admits the round only when the files are its one gap:
   request that is not a refused read of one of those binary files.
 - A binary file removed at the head refuses: there is no content to bind.
 - The list names exactly those files, each once. A missing or extra file is
-  refused, naming it.
+  refused, naming it, and so is a list for a round that passes by itself.
 
 Before the entry is created, Core then reads each listed file at the released
 head from its own object store (as for a head that adds only merges) and

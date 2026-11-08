@@ -393,6 +393,14 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, pr
         Err(Hold::Wait(detail)) => bail!("review_running: {detail}"),
         Err(Hold::Stop(reason, detail)) => bail!("{reason}: {detail}"),
     }
+    // An acknowledgement only ever stands in for files a round could not
+    // read (YN-52): one for a round that passes by itself lists extra files.
+    if let Some(r) = latest.as_ref().filter(|r| binaries.is_some() && crate::pr_review::policy::passes(r)) {
+        bail!(
+            "binaries_refused: the last completed review round ({}) passes by itself, so it left no binary file to acknowledge; release without acknowledgeBinaries",
+            r["id"].as_str().unwrap_or("?")
+        );
+    }
     let busy: Option<(String, String)> = db
         .query_row(
             &format!("SELECT id,state FROM merge_entries WHERE repository_id=?1 AND number=?2 AND state IN {ACTIVE}"),

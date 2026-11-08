@@ -287,7 +287,7 @@ mod tests {
             p
         };
         let push = |r: &mut Value, p: Value| r["scope"]["paths"].as_array_mut().unwrap().push(p);
-        let cases: Vec<(Edit, &str)> = vec![
+        let cases: &[(Edit, &str)] = &[
             (|r| r["status"] = json!("unknown"), "review round r1 has not completed"),
             (|r| r["scope"] = Value::Null, "has no review scope"),
             (|r| r["policyVersion"] = json!(2), "has no review scope"),
@@ -318,7 +318,7 @@ mod tests {
                 r["coverage"]["failedRequests"] = json!([]);
             }, "review round r1 left no binary file unread"),
         ];
-        for (n, (edit, words)) in cases.into_iter().enumerate() {
+        for (n, &(edit, words)) in cases.iter().enumerate() {
             let mut r = round();
             edit(&mut r);
             let refused = gap(&r).unwrap_err();
