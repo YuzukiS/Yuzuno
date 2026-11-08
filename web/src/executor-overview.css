@@ -227,8 +227,8 @@
 }
 .executor-overview-steps .step {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  grid-template-areas: "mark label ref";
+  grid-template-columns: 16px 1.5em minmax(0, 1fr) auto;
+  grid-template-areas: "mark no label ref";
   column-gap: 8px;
   align-items: center;
 }
@@ -239,6 +239,14 @@
   border-radius: 50%;
   border: 1.5px solid var(--island-quiet);
   box-sizing: border-box;
+}
+/* Its place in the template (T-43 S5). */
+.executor-overview-steps .no {
+  grid-area: no;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
 }
 .executor-overview-steps .label {
   grid-area: label;
@@ -389,6 +397,16 @@
 }
 .executor-overview-evidence .v[data-tone="none"] {
   color: var(--muted);
+}
+/* A red Job and the green one after it, in one row (T-43 S5). */
+.executor-overview-evidence .pair .v {
+  color: var(--muted);
+}
+.executor-overview-evidence .pair .v [data-tone="bad"] {
+  color: var(--island-error);
+}
+.executor-overview-evidence .pair .v [data-tone="ok"] {
+  color: var(--island-ok);
 }
 
 .executor-overview-report {

@@ -806,8 +806,8 @@ keeps the tab you chose last. A standing Agent or a lead has no tabs.
     repository at its base, the worktree, what to return, the handover
     version, the context summary), read-only;
   - its template's steps (its delivery's default when it sets none, `pr`
-    for an executor made from no template), five shown and the rest on
-    request, each with a state read from its record: `result` is done once
+    for an executor made from no template), numbered from 1, five shown and
+    the rest on request, each with a state read from its record: `result` is done once
     that result is in (the n-th result step is the n-th result handed in on
     this dispatch); `job` is the newest of its Jobs; `pr` is done once its
     task links a PR; `review` is the newest round on the PR's head
@@ -835,7 +835,9 @@ keeps the tab you chose last. A standing Agent or a lead has no tabs.
     read with the PR), with a link to it;
   - its evidence, each with its own conclusion: its own Jobs on the task
     (newest twelve), the review of the PR's head, the PR's CI and its merge
-    entry;
+    entry. A red Job and the green one after it (the first job step whose
+    Job failed and the next job step whose Job succeeded, as a red-first
+    template records them) share one row, red → green (T-43 S5);
   - its result, when it has handed one in.
 
   The read uses Core's records only and never asks GitHub; the web reads it
