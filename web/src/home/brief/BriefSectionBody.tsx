@@ -42,6 +42,7 @@ import {
 } from "./brief-catalog";
 import "../../intelligent-ui/intelligent-ui.css";
 import "./brief.css";
+import { Tip, TipText } from "../../Tip";
 
 /**
  * One failing part shows a note in its place and the rest of the section
@@ -122,9 +123,11 @@ function ChangeMark({ change, rule, children }: { change: "new" | "updated"; rul
   const [label, title] = useStrings(briefText).change[change];
   return (
     <div className="brief-change" data-change={change} data-rule={rule || undefined}>
-      <span className="brief-change-mark" title={title}>
-        {label}
-      </span>
+      <Tip content={<TipText body={title} />}>
+        <span className="brief-change-mark">
+          {label}
+        </span>
+      </Tip>
       {children}
     </div>
   );

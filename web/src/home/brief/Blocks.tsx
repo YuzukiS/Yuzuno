@@ -19,6 +19,7 @@ import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import { useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
 import { useBriefDensity } from "../home-density";
+import { Tip, TipText } from "../../Tip";
 import {
   metricDelta,
   type ChecklistProps,
@@ -188,13 +189,18 @@ const severities: Record<Severity, { icon: LucideIcon }> = {
 /** Where a finding came from: a web link opens outside, anything else is shown as written. */
 function FindingSource({ source }: { source: string }) {
   const target = sourceTarget(source);
+  // Where it points, whole, when the finding's row cuts it.
   return target?.kind === "web" ? (
-    <a href={target.path} target="_blank" rel="noopener noreferrer" title={target.path}>
-      {source}
-      <ArrowUpRight size={11} aria-hidden="true" />
-    </a>
+    <Tip content={<TipText value={target.path} />} size="wide" cut>
+      <a href={target.path} target="_blank" rel="noopener noreferrer">
+        {source}
+        <ArrowUpRight size={11} aria-hidden="true" />
+      </a>
+    </Tip>
   ) : (
-    <code title={source}>{source}</code>
+    <Tip content={<TipText value={source} />} size="wide" cut>
+      <code>{source}</code>
+    </Tip>
   );
 }
 export function BriefFindings({ title, items }: FindingsProps) {
@@ -246,12 +252,14 @@ function Metric({ item, lead }: { item: MetricsProps["items"][number]; lead?: bo
         {item.unit && <span className="brief-unit">{item.unit}</span>}
       </dd>
       {delta && Arrow ? (
-        <small className="brief-delta" data-sign={delta.sign} title={t.previously(`${shown(item.previous!)}${unit}`)}>
-          <Arrow size={12} aria-hidden="true" />
-          {delta.text}
-          {unit}
-          <span className="sr-only">{t.sincePrevious}</span>
-        </small>
+        <Tip content={<TipText title={t.previously(`${shown(item.previous!)}${unit}`)} />}>
+          <small className="brief-delta" data-sign={delta.sign}>
+            <Arrow size={12} aria-hidden="true" />
+            {delta.text}
+            {unit}
+            <span className="sr-only">{t.sincePrevious}</span>
+          </small>
+        </Tip>
       ) : (
         item.previous !== undefined && <small className="brief-delta">{t.previously(`${shown(item.previous)}${unit}`)}</small>
       )}

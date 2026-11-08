@@ -22,6 +22,7 @@ import type { HomeData, Section, SectionAttachment } from "../types";
 import { figuresOf, linkTo, outlineOf, partsOf, reportPlace, type FigureEntry, type OutlineEntry, type ReportPlace } from "./report-model";
 import { reportText } from "./report-text";
 import "./report.css";
+import { Tip, TipText } from "../../Tip";
 
 /** Where a top-level block of the report is, for its outline. */
 export const reportBlockDomId = (id: string) => `report-block-${id}`;
@@ -208,18 +209,19 @@ export function ReportPage({
             </button>
           )}
           {replyable && shown && (
-            <button
-              type="button"
-              className="quiet-button home-reply-open"
-              ref={replyButton}
-              aria-expanded={replying}
-              aria-label={home.replyLabel(shown.title)}
-              title={home.replyTitle(shown.owner.name)}
-              onClick={() => setReplying((open) => !open)}
-            >
-              <MessageSquareReply size={13} />
-              {home.reply}
-            </button>
+            <Tip content={<TipText title={home.replyTitle(shown.owner.name)} />}>
+              <button
+                type="button"
+                className="quiet-button home-reply-open"
+                ref={replyButton}
+                aria-expanded={replying}
+                aria-label={home.replyLabel(shown.title)}
+                onClick={() => setReplying((open) => !open)}
+              >
+                <MessageSquareReply size={13} />
+                {home.reply}
+              </button>
+            </Tip>
           )}
         </span>
       </header>
@@ -283,10 +285,13 @@ export function ReportPage({
                     {summary && <div className="report-lead">{block(summary.lead)}</div>}
                     <p className="report-meta">
                       <span>{shown.owner.name}</span>
-                      <span title={absolute(shown.updatedAt, time)}>{relative(shown.updatedAt, language)}</span>
+                      <Tip content={<TipText title={absolute(shown.updatedAt, time)} />}>
+                        <span>{relative(shown.updatedAt, language)}</span>
+                      </Tip>
                       <span>{t.version(shown.version)}</span>
                       {shown.status && (
-                        <span className={shown.status.stale ? "home-stale" : ""} title={absolute(shown.status.asOf, time)}>
+                        // Its time is in its words in full: no tip repeats it.
+                        <span className={shown.status.stale ? "home-stale" : ""}>
                           {home.dataAsOf(absolute(shown.status.asOf, time))}
                           {shown.status.stale && home.pastValidity(duration(shown.status.validFor, language))}
                         </span>

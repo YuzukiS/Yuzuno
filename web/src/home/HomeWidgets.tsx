@@ -15,6 +15,7 @@ import { cardText } from "./card-text";
 import type { WidgetLayout } from "./widget-layout";
 import type { DeckItem } from "./deck-pack.ts";
 import { useDeckPacking } from "./deck-packing";
+import { Tip, TipText } from "../Tip";
 
 /** A pinned card's size on the widget column: the user's, else its Agent's (`own`). */
 export type WidgetSize = { shown: CardSize; own: CardSize; chosen: CardSize | null; onChange: (size: CardSize | null) => void };
@@ -90,15 +91,16 @@ export function HomeWidgets({
   };
   const unpin = (widget: HomeWidget) =>
     widget.onUnpin && (
-      <button
-        type="button"
-        className="icon-button"
-        aria-label={t.unpinWidget(widget.name)}
-        title={t.unpinShort}
-        onClick={widget.onUnpin}
-      >
-        <PinOff size={13} />
-      </button>
+      <Tip content={<TipText title={t.unpinShort} />} describe={false}>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label={t.unpinWidget(widget.name)}
+          onClick={widget.onUnpin}
+        >
+          <PinOff size={13} />
+        </button>
+      </Tip>
     );
   const canOrganize = !!onChange && !!layout;
   return (
@@ -174,35 +176,38 @@ export function HomeWidgets({
                     widget.full && <small className="home-size-source is-note">{widget.full === "builtin" ? c.builtIn : c.shownInFull}</small>
                   )}
                   <span className="home-organize-tools" role="group" aria-label={t.arrangeWidget(widget.name)}>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label={t.moveUp(widget.name)}
-                      title={t.moveUpTitle}
-                      disabled={index === 0}
-                      onClick={() => move(index, -1)}
-                    >
-                      <ArrowUp size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label={t.moveDown(widget.name)}
-                      title={t.moveDownTitle}
-                      disabled={index === shown.length - 1}
-                      onClick={() => move(index, 1)}
-                    >
-                      <ArrowDown size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label={t.hideWidget(widget.name)}
-                      title={t.hide}
-                      onClick={() => hide(widget)}
-                    >
-                      <EyeOff size={13} />
-                    </button>
+                    <Tip content={<TipText title={t.moveUpTitle} />} describe={false}>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label={t.moveUp(widget.name)}
+                        disabled={index === 0}
+                        onClick={() => move(index, -1)}
+                      >
+                        <ArrowUp size={13} />
+                      </button>
+                    </Tip>
+                    <Tip content={<TipText title={t.moveDownTitle} />} describe={false}>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label={t.moveDown(widget.name)}
+                        disabled={index === shown.length - 1}
+                        onClick={() => move(index, 1)}
+                      >
+                        <ArrowDown size={13} />
+                      </button>
+                    </Tip>
+                    <Tip content={<TipText title={t.hide} />} describe={false}>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label={t.hideWidget(widget.name)}
+                        onClick={() => hide(widget)}
+                      >
+                        <EyeOff size={13} />
+                      </button>
+                    </Tip>
                     {unpin(widget)}
                   </span>
                 </li>

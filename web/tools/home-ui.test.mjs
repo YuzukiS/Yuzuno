@@ -199,9 +199,10 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
     return respond({});
   };
   const doc = w.document;
-  // By its words, or by its title for an icon-only button (a summary card's Reply and Seen, T-18).
+  // By its words, or by its accessible name for an icon-only button (a
+  // summary card's Reply and Seen, T-18; their titles are tips, YN-44).
   const button = (text, root = doc) =>
-    [...root.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(text) || (!b.textContent.trim() && (b.title ?? "").startsWith(text)));
+    [...root.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(text) || (!b.textContent.trim() && (b.getAttribute("aria-label") ?? "").startsWith(text)));
   const panel = (id) => doc.querySelector(`[data-home-project="${id}"]`);
   // Anything the page has before the app starts (the tab title, an app badge).
   before?.(w);
@@ -349,7 +350,7 @@ test("Seen sends exactly the versions on screen; one arriving meanwhile stays un
     assert.equal(card(p, "p-app", "notes").classList.contains("is-changed"), false, "a seen version is not highlighted");
     // Core has a newer version, not yet read by this window.
     p.state.home.projects[0].brief.sections[0].version = 4;
-    p.button("Seen", release).click();
+    release.querySelector("button.home-seen").click();
     await waitFor(() => p.posts(/\/brief\/seen$/).length === 1, "seen was sent");
     const [mark] = p.posts(/\/brief\/seen$/);
     assert.match(mark.url, /\/api\/projects\/p-app\/brief\/seen$/);
@@ -464,7 +465,7 @@ test("a newer version marks only the blocks it added or changed, against what th
     stored = Object.fromEntries(Array.from({ length: storage.length }, (_, i) => [storage.key(i), storage.getItem(storage.key(i))]));
     // Marking it seen clears the marks and keeps version 3 as the one to compare with.
     shown.seen = { version: 3, at: at(0) };
-    p.button("Seen", card(p, "p-app", "notes")).click();
+    card(p, "p-app", "notes").querySelector("button.home-seen").click();
     await waitFor(() => p.posts(/\/brief\/seen$/).length === 1, "seen was sent");
     await waitFor(() => !card(p, "p-app", "notes").classList.contains("is-changed"), "Home read again after Seen");
     assert.deepEqual(await marks(), []);
@@ -1006,7 +1007,7 @@ test("an unknown machine metric reads unknown, never 0, and sampling stops while
     assert.deepEqual(facts("GPU"), ["unknown"]);
     assert.deepEqual(facts("Jobs"), ["10%", "2.0 GiB"]);
     // The Jobs here are one line; each Job's project and Agent are in its tip, its own CPU and memory in Jobs (T-18).
-    assert.match(machines.querySelector(".home-machine-job-line").getAttribute("title"), /cargo test · App · Mori/, "a job names its project and Agent");
+    assert.match((await hoverTip(p.w, machines.querySelector(".home-machine-job-line"))).join("\n"), /cargo test · App · Mori/, "a job names its project and Agent");
     assert.doesNotMatch(facts("Agents").join(" "), /\b0\b/);
     const reads = () => p.calls.filter((c) => c.url.endsWith("/api/machine-load")).length;
     await waitFor(() => reads() >= 2, "sampled again after two seconds", 5);
@@ -1041,7 +1042,7 @@ test("each GPU reads as two bars, use and memory; the Jobs here are one line tha
     const row = p.doc.querySelector(".home-machine-jobs button.home-machine-job-line");
     assert.equal(row.querySelector(".home-machine-job-count").textContent, "2 running");
     assert.equal(row.querySelector(".home-machine-job-first").textContent, "cargo test");
-    assert.equal(row.getAttribute("title"), "cargo test · App · Mori\nvite build · App · Mori");
+    assert.deepEqual(await hoverTip(p.w, row), ["2 running", "cargo test · App · Mori", "vite build · App · Mori"]);
     assert.equal(row.getAttribute("aria-label"), "2 Jobs running on this machine, first cargo test: open in Jobs");
     assert.equal(p.doc.querySelectorAll(".home-machine-jobs li").length, 0, "no list of Jobs on Home");
     row.click();
@@ -1292,7 +1293,7 @@ test("a project's repository: its line, its open PRs grouped by what they need, 
     assert.match(row.textContent, /#73\s*Cache fix\s*fix\/cache/);
     assert.equal(row.querySelector(".repo-pull-branch").textContent, "fix/cache");
     assert.ok(row.querySelector(".repo-pull-time").textContent.length > 0, "when it was last updated");
-    assert.match(row.getAttribute("title"), /^#73 Cache fix · kumo · fix\/cache · Checks failed · /, "its author, branch and time in its tip");
+    assert.match((await hoverTip(p.w, row))[0], /^#73 Cache fix · kumo · fix\/cache · Checks failed · /, "its author, branch and time in its tip");
     assert.equal(row.querySelector(".repo-pull-ci").getAttribute("aria-label"), "Checks failed");
     const older = groups[2].querySelector(".repo-row");
     assert.equal(older.querySelector(".repo-pull-branch").textContent + older.querySelector(".repo-pull-time").textContent, "", "an older Core's PR: no branch or time, its row still aligned");
@@ -1427,7 +1428,7 @@ test("a summary card says what it is, when its data is from and that nobody keep
     assert.doesNotMatch(overview.querySelector(".home-summary-foot").textContent, /Data as of/);
     // An author who has closed: marked, with why.
     assert.equal(layout.querySelector(".home-unmaintained").textContent, "Not maintained");
-    assert.match(layout.querySelector(".home-unmaintained").title, /Kumo has closed/);
+    assert.match((await hoverTip(p.w, layout.querySelector(".home-unmaintained"))).join(" "), /Kumo has closed/);
     assert.ok(!overview.querySelector(".home-unmaintained"), "an active author's card is not marked");
     // The title and Open report go to the page; nothing is written by looking.
     assert.equal(layout.querySelector(".home-report-open").textContent, "Open status");
@@ -1451,7 +1452,7 @@ test("a section Core repaired is marked on its card, and its page says what Core
     const mark = card(p, "p-docs", "evidence").querySelector(".home-repaired");
     assert.ok(mark, "the repaired card is marked");
     assert.equal(mark.textContent, "Repaired");
-    assert.match(mark.title, /Core repaired small slips in what Hana sent/);
+    assert.match((await hoverTip(p.w, mark)).join(" "), /Core repaired small slips in what Hana sent/);
     assert.ok(!card(p, "p-docs", "overview").querySelector(".home-repaired"), "a card kept as sent is not marked");
     const page = await openReport(p, "p-docs", "evidence");
     assert.equal(page.querySelector(".report-head .home-repaired").textContent, "Repaired");
@@ -1474,7 +1475,7 @@ test("a sub-topic without its topic's section stands as its own card; several ge
     assert.ok(alone.contains(card(p, "p-docs", "release-core12/notes")));
     const ops = p.panel("p-docs").querySelector('[data-topic="ops"]');
     assert.equal(ops.querySelector(".home-topic-name").textContent, "Ops");
-    assert.equal(ops.querySelector(".home-topic-name").title, "ops", "the key stays reachable");
+    assert.deepEqual(await hoverTip(p.w, ops.querySelector(".home-topic-name")), ["ops"], "the key stays reachable");
     assert.equal(ops.querySelectorAll(".home-subs .home-section").length, 2);
   } finally {
     p.close();
@@ -1596,7 +1597,7 @@ test("a report or status pins to the widget column: the same section, its source
     // Its project gone: said so, and it can be unpinned.
     home.projects = home.projects.filter((panel) => panel.project.id !== "p-app");
     await refresh(() => pinned()?.dataset.pinState === "project-gone", "the pin sees the project is gone");
-    p.button("Unpin", pinned()).click();
+    p.button("Unpin", pinned()).click(); // its aria-label, "Unpin <widget>"
     await waitFor(() => !pinned(), "the pin is gone");
     assert.deepEqual(layout().pins, []);
     assert.equal(writes(), before, "nothing of this told Core anything");
@@ -1911,7 +1912,7 @@ test("a reply begun on a card the user then marks seen stays sendable, at that v
     const shown = app.sections.find((s) => s.key === "notes/review");
     app.sections = app.sections.filter((s) => s !== shown);
     app.history.unshift({ ...shown, history: true, historyReason: "seen", currentSource: true, seen: { version: 1, at: at(0) } });
-    p.button("Seen", review).click();
+    review.querySelector("button.home-seen").click();
     await waitFor(() => !card(p, "p-app", "notes/review"), "the card left for History");
     const kept = p.panel("p-app").querySelector(".home-kept-reply");
     assert.ok(!!kept, "the reply is kept in the project");
@@ -2410,8 +2411,8 @@ test("T-9 card density: low by default, high on a click, kept on this device for
     assert.equal(group.getAttribute("aria-label"), "Card density");
     const option = (label) => [...group.querySelectorAll("button")].find((b) => b.textContent === label);
     assert.equal(option("Low density").getAttribute("aria-pressed"), "true", "low is Home's default");
-    assert.equal(option("Low density").title, "Spacious: each card’s main point");
-    assert.equal(option("High density").title, "Compact: every field and row");
+    assert.equal((await hoverTip(p.w, option("Low density")))[0], "Spacious: each card’s main point");
+    assert.equal((await hoverTip(p.w, option("High density")))[0], "Compact: every field and row");
     assert.equal(p.doc.querySelector(".home-view").dataset.density, "low");
     const before = p.calls.length;
     option("High density").click();
@@ -3182,7 +3183,7 @@ test("an executor you dispatched says in Needs you why it waits: why its start f
     const row = (key) => p.doc.querySelector(`[data-needs-you="${key}"]`);
     await waitFor(() => row("executor:b:blocked"), "Hana's blocked task");
     assert.equal(row("executor:b:blocked").querySelector(".home-needs-reason")?.textContent, "Waiting for the signing key");
-    assert.match(row("executor:b:blocked").title, /^Hana · Release notes · Waiting for the signing key · waiting since /);
+    assert.match((await hoverTip(p.w, row("executor:b:blocked")))[0], /^Hana · Release notes · Waiting for the signing key · waiting since /);
     assert.equal(row("executor:c:delivering").querySelector(".home-needs-reason"), null, "no reason, no line");
     assert.deepEqual(p.errors, []);
   } finally {

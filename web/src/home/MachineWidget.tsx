@@ -11,6 +11,7 @@ import { previewMachineLoad } from "./preview-home";
 import type { MachineLoad } from "./types";
 import { FoldButton, useCardFold } from "./card-fold";
 import { homeText } from "./home-text";
+import { Tip, TipLines, TipText } from "../Tip";
 
 const POLL_MS = 2_000;
 
@@ -148,9 +149,11 @@ export function MachineWidget({
         )}
         {/* One line either way: an error replaces the time instead of adding a row. */}
         {errorLine ? (
-          <span className="home-machines-at is-error" role="alert" title={errorLine}>
-            {errorLine}
-          </span>
+          <Tip content={<TipText body={errorLine} />} cut>
+            <span className="home-machines-at is-error" role="alert">
+              {errorLine}
+            </span>
+          </Tip>
         ) : (
           <span className="home-machines-at">{atText}</span>
         )}
@@ -163,9 +166,11 @@ export function MachineWidget({
             {cpu && <span className="home-load-of">{t.ofCores(cpu.cores)}</span>}
           </span>
           {/* A narrow widget's value line: the total kept, never split from its unit (Dev 7, T-18). */}
-          <span className="home-load-short" title={cpu ? `CPU ${shown(percent(cpu.totalPct))}${t.ofCores(cpu.cores)}` : undefined}>
-            {cpu ? t.cpuShort(shown(percent(cpu.totalPct)), cpu.cores) : READING}
-          </span>
+          <Tip content={cpu ? <TipText title={`CPU ${shown(percent(cpu.totalPct))}${t.ofCores(cpu.cores)}`} /> : null}>
+            <span className="home-load-short">
+              {cpu ? t.cpuShort(shown(percent(cpu.totalPct)), cpu.cores) : READING}
+            </span>
+          </Tip>
           <Meter
             label={cpu ? `CPU ${shown(percent(cpu.totalPct))}${t.ofCores(cpu.cores)}` : t.cpuReading}
             segments={
@@ -189,9 +194,11 @@ export function MachineWidget({
             <MemoryStick size={13} /> {t.memory} <strong>{memory ? shown(mebibytes(memory.usedMiB)) : READING}</strong>
             {memory && <span className="home-load-of">{t.ofTotal(shown(mebibytes(memory.totalMiB)))}</span>}
           </span>
-          <span className="home-load-short" title={memory ? t.memoryUsedOf(shown(mebibytes(memory.usedMiB)), shown(mebibytes(memory.totalMiB))) : undefined}>
-            {memory ? overTotal(shown(mebibytes(memory.usedMiB)), shown(mebibytes(memory.totalMiB))) : READING}
-          </span>
+          <Tip content={memory ? <TipText title={t.memoryUsedOf(shown(mebibytes(memory.usedMiB)), shown(mebibytes(memory.totalMiB)))} /> : null}>
+            <span className="home-load-short">
+              {memory ? overTotal(shown(mebibytes(memory.usedMiB)), shown(mebibytes(memory.totalMiB))) : READING}
+            </span>
+          </Tip>
           <Meter
             label={memory ? t.memoryUsedOf(shown(mebibytes(memory.usedMiB)), shown(mebibytes(memory.totalMiB))) : t.memoryReading}
             segments={
@@ -231,21 +238,23 @@ export function MachineWidget({
           ) : (
             <ul>
               {load.gpus.map((gpu, index) => (
-                <li key={index} title={t.wholeCard}>
-                  <span className="home-gpu-name">{gpu.name}</span>
-                  <GpuBar
-                    name="Use"
-                    label={t.fact.Use}
-                    value={percent(gpu.utilPct)}
-                    share={width(gpu.utilPct, 100)}
-                  />
-                  <GpuBar
-                    name="Memory"
-                    label={t.gpuMemory}
-                    value={`${shown(mebibytes(gpu.memUsedMiB))} / ${shown(mebibytes(gpu.memTotalMiB))}`}
-                    share={width(gpu.memUsedMiB, gpu.memTotalMiB)}
-                  />
-                </li>
+                <Tip key={index} content={<TipText body={t.wholeCard} />}>
+                  <li>
+                    <span className="home-gpu-name">{gpu.name}</span>
+                    <GpuBar
+                      name="Use"
+                      label={t.fact.Use}
+                      value={percent(gpu.utilPct)}
+                      share={width(gpu.utilPct, 100)}
+                    />
+                    <GpuBar
+                      name="Memory"
+                      label={t.gpuMemory}
+                      value={`${shown(mebibytes(gpu.memUsedMiB))} / ${shown(mebibytes(gpu.memTotalMiB))}`}
+                      share={width(gpu.memUsedMiB, gpu.memTotalMiB)}
+                    />
+                  </li>
+                </Tip>
               ))}
             </ul>
           )}
@@ -260,23 +269,27 @@ export function MachineWidget({
           ) : jobs.length === 0 ? (
             <span className="home-note">{t.noJobs}</span>
           ) : readOnly ? (
-            <span className="home-machine-job-line" title={jobs.map((job) => job.name).join("\n")}>
-              <span className="home-machine-job-dot" aria-hidden />
-              <span className="home-machine-job-count">{t.jobsRunning(jobs.length)}</span>
-              <span className="home-machine-job-first">{jobs[0].name}</span>
-            </span>
+            // How many, then each by name.
+            <Tip content={<TipLines text={[t.jobsRunning(jobs.length), ...jobs.map((job) => job.name)].join("\n")} />} size="wide">
+              <span className="home-machine-job-line">
+                <span className="home-machine-job-dot" aria-hidden />
+                <span className="home-machine-job-count">{t.jobsRunning(jobs.length)}</span>
+                <span className="home-machine-job-first">{jobs[0].name}</span>
+              </span>
+            </Tip>
           ) : (
-            <button
-              type="button"
-              className="home-machine-job-line"
-              title={jobs.map((job) => `${job.name} · ${projectName(job.projectId)} · ${job.agentName || t.noAgent}`).join("\n")}
-              aria-label={t.jobsLineLabel(jobs.length, jobs[0].name)}
-              onClick={() => openJobs({ source: "local", jobId: jobs[0].id })}
-            >
-              <span className="home-machine-job-dot" aria-hidden />
-              <span className="home-machine-job-count">{t.jobsRunning(jobs.length)}</span>
-              <span className="home-machine-job-first">{jobs[0].name}</span>
-            </button>
+            <Tip content={<TipLines text={[t.jobsRunning(jobs.length), ...jobs.map((job) => `${job.name} · ${projectName(job.projectId)} · ${job.agentName || t.noAgent}`)].join("\n")} />} size="wide">
+              <button
+                type="button"
+                className="home-machine-job-line"
+                aria-label={t.jobsLineLabel(jobs.length, jobs[0].name)}
+                onClick={() => openJobs({ source: "local", jobId: jobs[0].id })}
+              >
+                <span className="home-machine-job-dot" aria-hidden />
+                <span className="home-machine-job-count">{t.jobsRunning(jobs.length)}</span>
+                <span className="home-machine-job-first">{jobs[0].name}</span>
+              </button>
+            </Tip>
           )}
         </div>
       </div>

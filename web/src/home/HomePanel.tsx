@@ -37,6 +37,7 @@ import { SectionCard } from "./SectionCard";
 import { SummaryCard } from "./SummaryCard";
 import type { BriefOutcome, NeedsYouItem, ProjectPanel, Section } from "./types";
 import "./home-editors.css";
+import { Tip, TipText } from "../Tip";
 
 
 /** The top ranks show their whole Brief; lower ranks show about 600 px of it. */
@@ -171,19 +172,20 @@ function HistoryReply({ section, projectId, workspaceId, agents }: { section: Se
       }}
     />
   ) : (
-    <button
-      type="button"
-      className="quiet-button"
-      ref={button}
-      aria-label={t.replyLabel(section.title)}
-      title={t.replyTitle(section.owner.name)}
-      onClick={() => {
-        setOpened(true);
-        setOpen(true);
-      }}
-    >
-      <MessageSquareReply size={13} /> {t.reply}
-    </button>
+    <Tip content={<TipText title={t.replyTitle(section.owner.name)} />}>
+      <button
+        type="button"
+        className="quiet-button"
+        ref={button}
+        aria-label={t.replyLabel(section.title)}
+        onClick={() => {
+          setOpened(true);
+          setOpen(true);
+        }}
+      >
+        <MessageSquareReply size={13} /> {t.reply}
+      </button>
+    </Tip>
   );
 }
 
@@ -227,7 +229,7 @@ function History30({
                   <span className={`home-kind kind-${section.kind}`}>{t.historyKind[section.kind]}</span>
                   {section.title}
                   <small>
-                    {section.owner.name} · <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
+                    {section.owner.name} · <Tip content={<TipText title={absolute(section.updatedAt, time)} />}><span>{relative(section.updatedAt, language)}</span></Tip>
                   </small>
                 </summary>
                 {/* Read only when opened: history never costs the live view. */}
@@ -417,9 +419,12 @@ export function HomePanel({
         {group.parent ? (
           card(group.parent)
         ) : (
-          <h3 className="home-topic-name" title={group.topic}>
-            {topicName(group.topic)}
-          </h3>
+          // The topic's key as Agents write it, beside the name it is shown by.
+          <Tip content={<TipText value={group.topic} />} align="start">
+            <h3 className="home-topic-name">
+              {topicName(group.topic)}
+            </h3>
+          </Tip>
         )}
         {group.subs.length > 0 && (
           <div className="home-subs">{group.subs.map((sub) => card(sub, topicName(group.topic)))}</div>
@@ -584,7 +589,7 @@ export function HomePanel({
                       {item.agentName}
                     </button>
                     <span className="home-error-message">{item.message}</span>
-                    <small title={absolute(item.at, time)}>{relative(item.at, language)}</small>
+                    <Tip content={<TipText title={absolute(item.at, time)} />}><small>{relative(item.at, language)}</small></Tip>
                   </div>
                 ))}
               </div>
@@ -623,7 +628,7 @@ export function HomePanel({
                       {item.agentName}
                     </button>{" "}
                     {missingText(t.missing, item.outcome)}
-                    <small title={absolute(item.at, time)}> · {relative(item.at, language)}</small>
+                    <Tip content={<TipText title={absolute(item.at, time)} />}><small> · {relative(item.at, language)}</small></Tip>
                   </li>
                 ))}
               </ul>

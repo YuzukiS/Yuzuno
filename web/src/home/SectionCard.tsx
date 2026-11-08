@@ -24,6 +24,7 @@ import { pinnable, PinsContext } from "./widget-layout";
 import { useReportOpen } from "./report/report-open";
 import { reportText } from "./report/report-text";
 import { collapseFrom } from "../surface";
+import { Tip, TipText } from "../Tip";
 
 /** When a status's data is from, and whether it is past its validity. */
 export function DataAsOf({ status, stale }: { status: NonNullable<Section["status"]>; stale: boolean }) {
@@ -31,7 +32,8 @@ export function DataAsOf({ status, stale }: { status: NonNullable<Section["statu
   const language = useLanguage();
   const t = homeText(language);
   return (
-    <span className={stale ? "home-stale" : ""} title={absolute(status.asOf, time)}>
+    // Its time is in its words in full: no tip repeats it.
+    <span className={stale ? "home-stale" : ""}>
       <Clock3 size={12} />
       {t.dataAsOf(absolute(status.asOf, time))}
       {stale && t.pastValidity(duration(status.validFor, language))}
@@ -45,9 +47,11 @@ export function SectionTime({ label, iso }: { label: string; iso?: string }) {
   const language = useLanguage();
   if (!iso) return null;
   return (
-    <span title={absolute(iso, time)}>
-      {label} {relative(iso, language)}
-    </span>
+    <Tip content={<TipText title={absolute(iso, time)} />}>
+      <span>
+        {label} {relative(iso, language)}
+      </span>
+    </Tip>
   );
 }
 
@@ -128,16 +132,17 @@ export function PinButton({ section, projectId, anchor }: { section: Section; pr
   // Content Home keeps out of the default view (or history) is never pinned.
   if (!pinned && !pins.canPin(projectId, section)) return null;
   return (
-    <button
-      type="button"
-      className="icon-button home-pin"
-      aria-pressed={pinned}
-      aria-label={pinned ? t.unpinLabel(section.title) : t.pinLabel(section.title)}
-      title={pinned ? t.unpin : t.pin}
-      onClick={(event) => pins.toggle(projectId, section, anchor?.current ?? event.currentTarget)}
-    >
-      {pinned ? <PinOff size={13} /> : <Pin size={13} />}
-    </button>
+    <Tip content={<TipText title={pinned ? t.unpin : t.pin} />} describe={false}>
+      <button
+        type="button"
+        className="icon-button home-pin"
+        aria-pressed={pinned}
+        aria-label={pinned ? t.unpinLabel(section.title) : t.pinLabel(section.title)}
+        onClick={(event) => pins.toggle(projectId, section, anchor?.current ?? event.currentTarget)}
+      >
+        {pinned ? <PinOff size={13} /> : <Pin size={13} />}
+      </button>
+    </Tip>
   );
 }
 
@@ -286,19 +291,25 @@ export const SectionCard = memo(function SectionCard({
       <h3 id={`${sectionDomId(projectId, section.key)}-title`}>{section.title}</h3>
       {/* Answered, it is never new to the user: only its owner's change since (YN-3). */}
       {changed && (
-        <span className="home-changed" title={t.changedTitle}>
-          {section.seen || replied ? t.updated : t.new}
-        </span>
+        <Tip content={<TipText body={t.changedTitle} />}>
+          <span className="home-changed">
+            {section.seen || replied ? t.updated : t.new}
+          </span>
+        </Tip>
       )}
       {orphaned && (
-        <span className="home-unmaintained" title={t.notMaintainedTitle(section.owner.name, gone, t.kindInSentence[section.kind])}>
-          {t.notMaintained}
-        </span>
+        <Tip content={<TipText body={t.notMaintainedTitle(section.owner.name, gone, t.kindInSentence[section.kind])} />}>
+          <span className="home-unmaintained">
+            {t.notMaintained}
+          </span>
+        </Tip>
       )}
       {!!section.repairs?.length && (
-        <span className="home-repaired" title={t.repairedTitle(section.owner.name)}>
-          {t.repaired}
-        </span>
+        <Tip content={<TipText body={t.repairedTitle(section.owner.name)} />}>
+          <span className="home-repaired">
+            {t.repaired}
+          </span>
+        </Tip>
       )}
     </>
   );
@@ -338,9 +349,13 @@ export const SectionCard = memo(function SectionCard({
           <span className="home-section-meta">
             {/* The reply's time: the owner's, if changed since, is with what it says. */}
             {section.ask?.repliedAt ? (
-              <span title={absolute(section.ask.repliedAt, time)}>{relative(section.ask.repliedAt, language)}</span>
+              <Tip content={<TipText title={absolute(section.ask.repliedAt, time)} />}>
+                <span>{relative(section.ask.repliedAt, language)}</span>
+              </Tip>
             ) : (
-              <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
+              <Tip content={<TipText title={absolute(section.updatedAt, time)} />}>
+                <span>{relative(section.updatedAt, language)}</span>
+              </Tip>
             )}
           </span>
           {!readOnly && <PinButton section={section} projectId={projectId} />}
@@ -349,10 +364,13 @@ export const SectionCard = memo(function SectionCard({
         <div className="home-answer">
           <div className="home-answer-title">{heading}</div>
           {replyText && (
-            <blockquote className="home-answer-reply" title={replyText}>
-              <span className="home-answer-who">{t.you}</span>
-              {replyText}
-            </blockquote>
+            // The whole reply, when its lines are cut.
+            <Tip content={<TipText body={replyText} />} size="wide" cut>
+              <blockquote className="home-answer-reply">
+                <span className="home-answer-who">{t.you}</span>
+                {replyText}
+              </blockquote>
+            </Tip>
           )}
           {updatedSinceReply ? (
             <div className="home-answer-update">
@@ -458,7 +476,9 @@ export const SectionCard = memo(function SectionCard({
             {section.owner.name}
             {section.owner.state !== "active" && t.ownerState(section.owner.state)}
           </span>
-          <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
+          <Tip content={<TipText title={absolute(section.updatedAt, time)} />}>
+            <span>{relative(section.updatedAt, language)}</span>
+          </Tip>
         </span>
         {openReport && section.kind !== "ask" && (
           <button
@@ -472,21 +492,22 @@ export const SectionCard = memo(function SectionCard({
           </button>
         )}
         {replyable && (
-          <button
-            type="button"
-            className="quiet-button home-reply-open"
-            ref={replyButton}
-            aria-expanded={replying}
-            aria-label={t.replyLabel(section.title)}
-            title={t.replyTitle(section.owner.name)}
-            onClick={() => {
-              setReplyOpened(true);
-              setReplying((open) => !open);
-            }}
-          >
-            <MessageSquareReply size={13} />
-            {t.reply}
-          </button>
+          <Tip content={<TipText title={t.replyTitle(section.owner.name)} />}>
+            <button
+              type="button"
+              className="quiet-button home-reply-open"
+              ref={replyButton}
+              aria-expanded={replying}
+              aria-label={t.replyLabel(section.title)}
+              onClick={() => {
+                setReplyOpened(true);
+                setReplying((open) => !open);
+              }}
+            >
+              <MessageSquareReply size={13} />
+              {t.reply}
+            </button>
+          </Tip>
         )}
         {/* Written from the stored body when clicked, so the clipboard write
             stays in the click (Safari) and a folded card copies in full. */}
@@ -565,16 +586,16 @@ export const SectionCard = memo(function SectionCard({
               {deferOpen && (
                 <span role="group" aria-label={t.deferUntil}>
                   {deferChoices(language).map((choice) => (
-                    <button
-                      key={choice.id}
-                      type="button"
-                      className="secondary-button"
-                      disabled={busy}
-                      title={absolute(choice.until, time)}
-                      onClick={() => void defer(choice.until)}
-                    >
-                      {choice.label}
-                    </button>
+                    <Tip key={choice.id} content={<TipText title={absolute(choice.until, time)} />}>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={busy}
+                        onClick={() => void defer(choice.until)}
+                      >
+                        {choice.label}
+                      </button>
+                    </Tip>
                   ))}
                 </span>
               )}

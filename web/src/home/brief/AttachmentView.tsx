@@ -25,6 +25,7 @@ import { keptSnapshot, useKeptImage } from "./kept-image";
 import { useKeptImagePreview } from "./image-preview";
 import { CardFoldWorkspace } from "../card-fold";
 import { pageReplyTo } from "../PageSend";
+import { Tip, TipText } from "../../Tip";
 
 /** Rows of a data file shown inline; the file itself opens in full. */
 export const PREVIEW_ROWS = 20;
@@ -304,11 +305,14 @@ function TextTail({ url, attachment }: { url: string; attachment: SectionAttachm
  */
 function Path({ path }: { path: string }) {
   const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1;
+  // The whole path, when its directory is cut.
   return (
-    <code className="brief-path" title={path}>
-      {cut > 0 && <span className="brief-path-dir">{path.slice(0, cut)}</span>}
-      <span className="brief-path-name">{path.slice(cut)}</span>
-    </code>
+    <Tip content={<TipText value={path} />} size="wide" cut>
+      <code className="brief-path">
+        {cut > 0 && <span className="brief-path-dir">{path.slice(0, cut)}</span>}
+        <span className="brief-path-name">{path.slice(cut)}</span>
+      </code>
+    </Tip>
   );
 }
 
@@ -426,19 +430,25 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
         {label ? (
           <p className="brief-attachment-caption">{label}</p>
         ) : (
-          <p className="brief-attachment-caption brief-image-name" title={attachment.name}>{attachment.name}</p>
+          <Tip content={<TipText title={attachment.name} />} cut>
+            <p className="brief-attachment-caption brief-image-name">{attachment.name}</p>
+          </Tip>
         )}
         {attachment.mayChange && (
-          <span className="brief-chip" data-state="changed" title={t.mayChangeTitle}>
-            {t.mayChange}
-          </span>
+          <Tip content={<TipText body={t.mayChangeTitle} />}>
+            <span className="brief-chip" data-state="changed">
+              {t.mayChange}
+            </span>
+          </Tip>
         )}
         <details className="brief-image-info">
           <summary>{t.imageInfo}</summary>
           <dl>
             <div>
               <dt>{t.imageFile}</dt>
-              <dd title={attachment.name}>{attachment.name}</dd>
+              <Tip content={<TipText title={attachment.name} />} cut>
+                <dd>{attachment.name}</dd>
+              </Tip>
             </div>
             <div>
               <dt>{t.imageSize}</dt>
@@ -463,11 +473,15 @@ function Attachment({ name, caption }: { name: string; caption?: string }) {
     <div className="brief-attachment" data-kind={attachment.kind}>
       <header>
         <Icon size={14} aria-hidden="true" />
-        <strong title={attachment.name}>{attachment.name}</strong>
+        <Tip content={<TipText title={attachment.name} />} cut>
+          <strong>{attachment.name}</strong>
+        </Tip>
         {attachment.mayChange && (
-          <span className="brief-chip" data-state="changed" title={t.mayChangeTitle}>
-            {t.mayChange}
-          </span>
+          <Tip content={<TipText body={t.mayChangeTitle} />}>
+            <span className="brief-chip" data-state="changed">
+              {t.mayChange}
+            </span>
+          </Tip>
         )}
         {!attachment.snapshot && attachment.path && (
           <Path path={attachment.path} />

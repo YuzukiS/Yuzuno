@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { hoverTip } from "./tip-dom.mjs";
 
 // A live task list (T-9) through the real BriefSectionBody: the Agent's
 // order and notes, Core's facts in each row at both densities (who is
@@ -235,8 +236,9 @@ test("T-56 a task named by an old key or T-n shows the key it has now, in a row 
     "a row shows the key its task has now");
   const chip = page.window.document.querySelector("button.brief-ref");
   assert.equal(chip?.querySelector("small")?.textContent, "CODE-1", "a chip shows the key its task has now");
-  assert.match(chip.title, /CODE-1/);
-  assert.doesNotMatch(chip.title, /COD-1\b/);
+  const [said] = await hoverTip(page.window, chip);
+  assert.match(said, /CODE-1/);
+  assert.doesNotMatch(said, /COD-1\b/);
   // A new prefix is a change in what Core says of the task.
   page.window.renderSection(keyedSection("CORE"), "high", { ...live, at: "2026-11-06T00:01:00Z" });
   await tick();

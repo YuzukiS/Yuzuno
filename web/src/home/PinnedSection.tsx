@@ -9,6 +9,7 @@ import { SectionBody } from "./SectionBody";
 import { pinWidgetId, type Pin, type PinSource } from "./widget-layout";
 import { FoldButton, useCardFold } from "./card-fold";
 import { homeText } from "./home-text";
+import { Tip, TipText } from "../Tip";
 
 /**
  * A Brief section the user pinned to the widget column: the same section
@@ -78,7 +79,9 @@ export function PinnedSection({
               {" · "}
               {source.section.owner.name}
               {" · "}
-              <span title={absolute(source.section.updatedAt, time)}>{t.updatedWhen(relative(source.section.updatedAt, language))}</span>
+              <Tip content={<TipText title={absolute(source.section.updatedAt, time)} />}>
+                <span>{t.updatedWhen(relative(source.section.updatedAt, language))}</span>
+              </Tip>
             </>
           )}
         </span>
@@ -97,7 +100,8 @@ export function PinnedSection({
             </p>
           )}
           {source.section.status && (
-            <p className={`home-pinned-time${source.section.status.stale ? " home-stale" : ""}`} title={absolute(source.section.status.asOf, time)}>
+            // Its time is in its words in full: no tip repeats it.
+            <p className={`home-pinned-time${source.section.status.stale ? " home-stale" : ""}`}>
               <Clock3 size={12} aria-hidden="true" />
               {t.dataAsOf(absolute(source.section.status.asOf, time))}
               {source.section.status.stale && t.pastValidity(duration(source.section.status.validFor, language))}
@@ -111,20 +115,21 @@ export function PinnedSection({
               <ArrowUpRight size={13} /> {t.openIn(projectName)}
             </button>
             {reply && (
-              <button
-                type="button"
-                className="quiet-button"
-                ref={replyButton}
-                aria-expanded={replying}
-                aria-label={t.replyLabel(source.section.title)}
-                title={t.replyTitle(source.section.owner.name)}
-                onClick={() => {
-                  setReplyOpened(true);
-                  setReplying((open) => !open);
-                }}
-              >
-                <MessageSquareReply size={13} /> {t.reply}
-              </button>
+              <Tip content={<TipText title={t.replyTitle(source.section.owner.name)} />}>
+                <button
+                  type="button"
+                  className="quiet-button"
+                  ref={replyButton}
+                  aria-expanded={replying}
+                  aria-label={t.replyLabel(source.section.title)}
+                  onClick={() => {
+                    setReplyOpened(true);
+                    setReplying((open) => !open);
+                  }}
+                >
+                  <MessageSquareReply size={13} /> {t.reply}
+                </button>
+              </Tip>
             )}
           </footer>
           </div>

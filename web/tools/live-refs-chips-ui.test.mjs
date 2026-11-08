@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { hoverTip } from "./tip-dom.mjs";
 
 // Live reference chips (T-9) through the real BriefSectionBody: a task Core
 // does not know is "not found"; one Core could not read says so instead,
@@ -113,7 +114,7 @@ test("a run's chip says its state and stages done, and opens Jobs on its newest 
     assert.deepEqual(chips.map((chip) => [chip.querySelector("span")?.textContent, chip.querySelector(".brief-ref-state")?.textContent, chip.dataset.tone]),
       [["lr sweep", "running · 1/2 stages", "active"], ["run-9", "not found", "missing"]]);
     assert.equal(chips[0].tagName, "BUTTON");
-    assert.match(chips[0].title, /^Open Job run run-1/);
+    assert.match((await hoverTip(window, chips[0]))[0], /^Job run run-1/, "what it is, no \"Open\" (YN-44)");
     chips[0].click();
     assert.deepEqual(opened.map((detail) => detail.jobId), ["job-train"], "Jobs opens on the run's newest Job");
     assert.notEqual(chips[1].tagName, "BUTTON", "a run Core does not know opens nothing");

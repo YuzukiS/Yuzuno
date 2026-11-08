@@ -35,6 +35,7 @@ import { ReportPage } from "./report/ReportPage";
 import { linkTo } from "./report/report-model";
 import { ReportOpen, type ReportOpener } from "./report/report-open";
 import { settleWhenLanded } from "../settle";
+import { Tip, TipText } from "../Tip";
 
 export type { HomeTarget } from "./home-navigation";
 
@@ -762,18 +763,19 @@ export function Home({
           {t.home}
         </h1>
         <span className="home-header-tools">
-          <span className="home-density" role="group" aria-label={t.density} title={t.densityHelp}>
+          {/* One tip on each choice, what it shows and how it is kept: none on the group around them. */}
+          <span className="home-density" role="group" aria-label={t.density}>
             {densities.map((option) => (
-              <button
-                key={option}
-                type="button"
-                className="home-density-option"
-                aria-pressed={density === option}
-                title={option === "low" ? t.densityLowHelp : t.densityHighHelp}
-                onClick={() => chooseHomeDensity(densityWorkspace, option)}
-              >
-                {option === "low" ? t.densityLow : t.densityHigh}
-              </button>
+              <Tip key={option} content={<TipText title={option === "low" ? t.densityLowHelp : t.densityHighHelp} body={t.densityHelp} />} side="bottom">
+                <button
+                  type="button"
+                  className="home-density-option"
+                  aria-pressed={density === option}
+                  onClick={() => chooseHomeDensity(densityWorkspace, option)}
+                >
+                  {option === "low" ? t.densityLow : t.densityHigh}
+                </button>
+              </Tip>
             ))}
           </span>
           {data && panels.length > 1 && !readOnly && (
@@ -788,19 +790,20 @@ export function Home({
             </button>
           )}
           {!readOnly && (
-            <button
-              type="button"
-              className="icon-button home-refresh"
-              aria-label={t.refresh}
-              title={t.refresh}
-              aria-busy={refreshing || undefined}
-              onClick={() => {
-                setRefreshing(true);
-                reload();
-              }}
-            >
-              <RefreshCw size={14} className={refreshing ? "spin" : undefined} />
-            </button>
+            <Tip content={<TipText title={t.refresh} />} describe={false} side="bottom">
+              <button
+                type="button"
+                className="icon-button home-refresh"
+                aria-label={t.refresh}
+                aria-busy={refreshing || undefined}
+                onClick={() => {
+                  setRefreshing(true);
+                  reload();
+                }}
+              >
+                <RefreshCw size={14} className={refreshing ? "spin" : undefined} />
+              </button>
+            </Tip>
           )}
         </span>
       </header>

@@ -63,9 +63,12 @@ function own(event: SyntheticEvent): boolean {
   return !opened || opened === trigger || !trigger.contains(opened);
 }
 
-/** Whether an element's text runs past its box: cut by an ellipsis or a clamp. */
-const overflows = (element: HTMLElement | null) =>
-  !!element && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
+/** Whether an element's text runs past its box, cut by an ellipsis or a
+ * clamp: the trigger's own, or a child's that does the cutting (a chip's
+ * name inside it). */
+const runsOver = (element: Element) =>
+  element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1;
+const overflows = (element: HTMLElement | null) => !!element && (runsOver(element) || [...element.children].some(runsOver));
 
 /** Whether the keyboard moved focus last, for a card of its own that opens
  * on focus as a tip does (ContextUsage, the turn dock's preview). */
@@ -85,8 +88,9 @@ export type TipTone = "ok" | "bad" | "attention" | "working" | "info" | "quiet";
  *    technology while it shows (aria-describedby). Off where the trigger's
  *    own name or description already says it.
  *  - `open`, `onOpenChange`: to decide when it may show, or show it by hand.
- *  - `cut`: only while the trigger's own text is cut (an ellipsis or a
- *    clamp), measured when it would open: a name shown whole needs no tip.
+ *  - `cut`: only while the trigger's text is cut (an ellipsis or a clamp, on
+ *    it or a child of it), measured when it would open: a name shown whole
+ *    needs no tip.
  * A disabled button still shows its tip to a pointer resting on it (Chromium
  * sends it pointer events, and React passes them on), so a tip may say why
  * it is disabled; the keyboard cannot reach it there.

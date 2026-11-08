@@ -23,6 +23,7 @@ import { formatTime, shownRefId, type LiveRef, type LiveRefKind, type LiveRefsPr
 import { useTimeDisplay } from "../../time-preferences";
 import { useLanguage, useStrings } from "../../i18n";
 import { briefText, refStateWord } from "./brief-text";
+import { Tip, TipText } from "../../Tip";
 
 const kinds: Record<LiveRefKind, { icon: LucideIcon }> = {
   task: { icon: ClipboardList },
@@ -106,7 +107,7 @@ function Chip({ item }: { item: LiveRef }) {
   const state = (brief.section.refs as Section["refs"] | undefined)?.[`${item.kind}:${item.id}`];
   const target = opening(item, brief, state);
   const id = shownRefId(item, state);
-  // The Agent's short label leads; the current title is in the tooltip and
+  // The Agent's short label leads; the current title is in the tip and
   // read out after it (T-173). Without a label, the current title shows.
   const name = item.label || state?.title || id;
   const full = item.label && state?.title && state.title !== item.label ? state.title : null;
@@ -137,23 +138,24 @@ function Chip({ item }: { item: LiveRef }) {
     "data-kind": item.kind,
     "data-tone": state ? (state.found ? state.tone || "neutral" : "missing") : undefined,
   };
-  if (target && "href" in target)
-    return (
-      <a {...attributes} href={target.href} target="_blank" rel="noopener noreferrer" title={title}>
-        {content}
-        <ArrowUpRight size={11} aria-hidden="true" />
-      </a>
-    );
-  if (target)
-    return (
-      <button type="button" {...attributes} title={t.open(title)} onClick={target.open}>
-        {content}
-      </button>
-    );
+  // What it is, whole, whichever way it opens (YN-44: no "Open …").
   return (
-    <span {...attributes} title={title}>
-      {content}
-    </span>
+    <Tip content={<TipText title={title} />} size="wide">
+      {target && "href" in target ? (
+        <a {...attributes} href={target.href} target="_blank" rel="noopener noreferrer">
+          {content}
+          <ArrowUpRight size={11} aria-hidden="true" />
+        </a>
+      ) : target ? (
+        <button type="button" {...attributes} onClick={target.open}>
+          {content}
+        </button>
+      ) : (
+        <span {...attributes}>
+          {content}
+        </span>
+      )}
+    </Tip>
   );
 }
 
@@ -209,19 +211,24 @@ function Row({ item, stale, readAt }: { item: LiveRef; stale: boolean; readAt: s
     </>
   );
   const title = `${t.refKind[item.kind]} ${id}${state?.found && state.title ? `: ${state.title}` : ""}`;
-  const opener: ReactNode = target && "href" in target ? (
-    <a className="brief-ref-row-open" href={target.href} target="_blank" rel="noopener noreferrer" title={title}>
-      {lead}
-      <ArrowUpRight size={11} aria-hidden="true" />
-    </a>
-  ) : target ? (
-    <button type="button" className="brief-ref-row-open" title={t.open(title)} onClick={target.open}>
-      {lead}
-    </button>
-  ) : (
-    <span className="brief-ref-row-open" title={title}>
-      {lead}
-    </span>
+  // Its whole name, when the row cuts it.
+  const opener: ReactNode = (
+    <Tip content={<TipText title={title} />} size="wide" align="start" cut>
+      {target && "href" in target ? (
+        <a className="brief-ref-row-open" href={target.href} target="_blank" rel="noopener noreferrer">
+          {lead}
+          <ArrowUpRight size={11} aria-hidden="true" />
+        </a>
+      ) : target ? (
+        <button type="button" className="brief-ref-row-open" onClick={target.open}>
+          {lead}
+        </button>
+      ) : (
+        <span className="brief-ref-row-open">
+          {lead}
+        </span>
+      )}
+    </Tip>
   );
   // Who is responsible: the task record's assignee, at either density.
   const responsible = state?.found && item.kind === "task" ? (

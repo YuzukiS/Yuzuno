@@ -154,7 +154,19 @@ async function elsewhere(language, heading) {
   await page.waitForTimeout(300);
 }
 // What Home shows, by part: its own words, and what came from Agents or the user.
-const shown = () => page.evaluate(() => {
+const shown = () => page.evaluate(async () => {
+  // What an element's tip says (YN-44), read in the page the way a resting
+  // pointer opens it: its lines, one per line of text, or null.
+  const tipOf = async (el) => {
+    if (!el) return null;
+    el.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" }));
+    await new Promise((r) => setTimeout(r, 600));
+    const tip = document.querySelector('.tip[role="tooltip"]');
+    const said = tip ? [...tip.children].map((c) => c.textContent.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n") : null;
+    el.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, pointerType: "mouse", relatedTarget: document.body }));
+    await new Promise((r) => setTimeout(r, 450));
+    return said;
+  };
   const text = (el) => el?.textContent.replace(/\s+/g, " ").trim() ?? null;
   const one = (selector) => text(document.querySelector(selector));
   const all = (selector, root = document) => [...root.querySelectorAll(selector)].map(text);
@@ -178,7 +190,7 @@ const shown = () => page.evaluate(() => {
   const labels = (selector, root = document) => [...root.querySelectorAll(selector)].map((el) => el.getAttribute("aria-label"));
   return {
     lang: document.querySelector(".home-view").getAttribute("lang"),
-    needs: { heading: one(".home-needs-you h2"), item: all(".home-needs-item > span > span, .home-needs-item > span > strong, .home-needs-since"), title: document.querySelector(".home-needs-item").getAttribute("title") },
+    needs: { heading: one(".home-needs-you h2"), item: all(".home-needs-item > span > span, .home-needs-item > span > strong, .home-needs-since"), title: await tipOf(document.querySelector(".home-needs-item")) },
     project: { name: text(panel.querySelector(".home-panel-head h2")), chips: all(".home-panel-chips > span", panel) },
     cards: { ship: card("ship"), progress: card("progress"), load: card("load") },
     outOfDate: text(panel.querySelector("details.home-out-of-date > summary")),
@@ -226,7 +238,19 @@ async function pages() {
     if (key === "load") await unfoldOutOfDate();
     await page.locator(`.home-view [data-section-key="${key}"] .home-report-open`).click();
     await page.locator(".home-report .report-head h1").waitFor({ timeout: 10_000 });
-    read[key] = await page.evaluate(() => {
+    read[key] = await page.evaluate(async () => {
+      // What an element's tip says (YN-44), read in the page the way a resting
+      // pointer opens it: its lines, one per line of text, or null.
+      const tipOf = async (el) => {
+        if (!el) return null;
+        el.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" }));
+        await new Promise((r) => setTimeout(r, 600));
+        const tip = document.querySelector('.tip[role="tooltip"]');
+        const said = tip ? [...tip.children].map((c) => c.textContent.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n") : null;
+        el.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, pointerType: "mouse", relatedTarget: document.body }));
+        await new Promise((r) => setTimeout(r, 450));
+        return said;
+      };
       const text = (el) => el?.textContent.replace(/\s+/g, " ").trim() ?? null;
       const all = (selector, root = document) => [...root.querySelectorAll(selector)].map(text);
       const labels = (selector, root = document) => [...root.querySelectorAll(selector)].map((el) => el.getAttribute("aria-label"));
@@ -241,8 +265,8 @@ async function pages() {
           // A checklist item's text; a plan step's name (its state chip after it, at the page's density); a finding.
           items: all(".brief-list li > span:last-child:not(.brief-chip), .brief-plan-text > strong, .brief-findings p", card2),
           chips: all(".brief-chip", card2),
-          metric: [text(card2.querySelector(".brief-metrics dt")), text(card2.querySelector(".brief-delta")), card2.querySelector(".brief-delta").getAttribute("title")],
-          ref: [card2.querySelector(".brief-ref").getAttribute("title"), text(card2.querySelector(".brief-ref > span")), text(card2.querySelector(".brief-ref-state"))],
+          metric: [text(card2.querySelector(".brief-metrics dt")), text(card2.querySelector(".brief-delta")), await tipOf(card2.querySelector(".brief-delta"))],
+          ref: [await tipOf(card2.querySelector(".brief-ref")), text(card2.querySelector(".brief-ref > span")), text(card2.querySelector(".brief-ref-state"))],
           file: [text(card2.querySelector(".brief-attachment-caption")), text(card2.querySelector(".brief-attachment-meta")), text(card2.querySelector(".brief-attachment-link"))],
           lists: labels(".brief-list, .brief-refs, .brief-attachments", card2),
         },
@@ -320,7 +344,7 @@ try {
   assert.deepEqual(enPages.blocks.blocks.items, ["Docs updated", "Smoke test", "Build installer", "Sign build", "Installer path is long"]);
   assert.deepEqual(enPages.blocks.blocks.chips, ["Done", "Blocked", "High"]);
   assert.deepEqual(enPages.blocks.blocks.metric, ["Open bugs", "−2 since the previous version", "Previously 5"]);
-  assert.match(enPages.blocks.blocks.ref[0], /^(Open )?Task T-7: Ship release · as of /);
+  assert.match(enPages.blocks.blocks.ref[0], /^Task T-7: Ship release · as of /, "what it is, no \"Open\" (YN-44)");
   assert.deepEqual(enPages.blocks.blocks.ref.slice(1), ["Ship", "doing"]);
   assert.equal(enPages.blocks.blocks.file[0], "Release notes link");
   assert.match(enPages.blocks.blocks.file[1], /^Referenced /);
@@ -395,7 +419,7 @@ try {
   assert.deepEqual(zhPages.blocks.blocks.items, enPages.blocks.blocks.items);
   assert.deepEqual(zhPages.blocks.blocks.chips, ["已完成", "受阻", "高"]);
   assert.deepEqual(zhPages.blocks.blocks.metric, ["Open bugs", "−2（相对上一版本）", "之前为 5"]);
-  assert.match(zhPages.blocks.blocks.ref[0], /^(打开 )?任务 T-7: Ship release · 截至 /);
+  assert.match(zhPages.blocks.blocks.ref[0], /^任务 T-7: Ship release · 截至 /);
   assert.deepEqual(zhPages.blocks.blocks.ref.slice(1), ["Ship", "doing"]);
   assert.equal(zhPages.blocks.blocks.file[0], "Release notes link");
   assert.match(zhPages.blocks.blocks.file[1], /^引用 /);
