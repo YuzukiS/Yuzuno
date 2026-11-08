@@ -870,6 +870,8 @@ test("a downloaded release reuses its download: one click prepares and applies",
     assert.ok(await until(() => posts(f.calls, "apply").length === 1));
     assert.equal(posts(f.calls, "download").length, 0);
     assert.equal(posts(f.calls, "prepare").length, 1);
+    // Drawn once the apply is answered, not when it is sent: wait for it.
+    await until(() => f.steps()[2] === "Prepare:done");
     assert.deepEqual(f.steps().slice(0, 3), ["Download:reused", "Verify:reused", "Prepare:done"]);
     assert.deepEqual(f.errors, []);
   } finally { f.w.close(); }
