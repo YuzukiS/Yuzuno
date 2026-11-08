@@ -1555,9 +1555,10 @@ impl Workspace {
                 .into_keys().collect(),
             None => BTreeSet::new(),
         };
-        ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
-        // The model it goes to, shown while its Turn waits (YN-48).
+        // The model it goes to, shown while its Turn waits (YN-48): read before the check below, which is the last
+        // await before the Turn is recorded and the message sent.
         let calling = calling(&c.server, model.as_ref()).await;
+        ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
         let message = MessageId::new();
         let turn = message.as_str().to_owned();
         // Recorded before it is sent: its ID is the only way to learn what
