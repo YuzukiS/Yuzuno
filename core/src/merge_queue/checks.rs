@@ -57,42 +57,88 @@ pub(super) fn pull(entry: &Value, pr: &Value) -> Check<()> {
 /// Releasing is the lead's statement that the review pair is complete; Core
 /// checks that the last completed round of this PR reviewed exactly this head
 /// and passes under the project's review policy, and that no completed round
-/// at this head found a P0–P2 issue (YN-12 item 1, YN-18 S2d): such a finding
+/// at that head found a P0–P2 issue (YN-12 item 1, YN-18 S2d): such a finding
 /// is fixed only by a new head, never by another round of the same head.
-/// `at_head` is every completed round of the PR at the released head.
-pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_head: &[Value]) -> Check<Value> {
+/// `at_heads` is every completed round of the PR at the head the last round
+/// reviewed, at the released head, and at each merge commit of the proof.
+///
+/// The last round may have reviewed an earlier head when the entry holds the
+/// proof (`reviewMerges`, YN-33) that the released head is that head plus
+/// merges that need no review of their own; `merged` is then every completed
+/// round, on any PR of the repository, at each merged-in head the proof calls
+/// reviewed, which must still pass with no P0–P2 finding.
+pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_heads: &[Value], merged: &[(String, Vec<Value>)]) -> Check<Value> {
     if running {
         return wait("A review round of this PR is still running; the last completed round decides");
     }
     let Some(r) = latest else {
         return stop("review_not_passing", "This PR has no completed review round");
     };
-    if r["headSha"] != entry["headSha"] {
+    let proof = &entry["reviewMerges"];
+    let via_merges = r["headSha"] != entry["headSha"];
+    if via_merges && !(proof["head"] == entry["headSha"] && proof["reviewedHead"] == r["headSha"]) {
         return stop(
             "review_not_passing",
             format!("The last completed review round ({}) reviewed {}, not the released head {}",
                 r["id"].as_str().unwrap_or("?"), short(&r["headSha"]), short(&entry["headSha"])),
         );
     }
+    let which = if via_merges { format!("the reviewed head {}", short(&r["headSha"])) } else { "this head".to_owned() };
     if !crate::pr_review::policy::passes(r) {
         return stop(
             "review_not_passing",
-            format!("The last completed review round ({}) at this head concluded {}, which does not pass under the review policy",
+            format!("The last completed review round ({}) at {which} concluded {}, which does not pass under the review policy",
                 r["id"].as_str().unwrap_or("?"), r["conclusion"].as_str().unwrap_or("unknown")),
         );
     }
     let blocking = |round: &Value| {
         round["findings"].as_array().into_iter().flatten().filter(|f| f["priority"].as_u64().is_some_and(|p| p <= 2)).count()
     };
-    if let Some(earlier) = at_head.iter().filter(|o| o["headSha"] == entry["headSha"]).find(|o| blocking(o) > 0) {
+    if let Some(earlier) = at_heads.iter().filter(|o| o["headSha"] == r["headSha"]).find(|o| blocking(o) > 0) {
         return stop(
             "review_not_passing",
-            format!("Review round {} ({}) at this head found {} P0–P2 issue(s); a later round of the same head does not clear them, so a new head needs a passing round of its own",
+            format!("Review round {} ({}) at {which} found {} P0–P2 issue(s); a later round of the same head does not clear them, so a new head needs a passing round of its own",
                 earlier["round"], earlier["id"].as_str().unwrap_or("?"), blocking(earlier)),
         );
     }
-    Ok(json!({"id":r["id"],"round":r["round"],"conclusion":r["conclusion"],"headSha":r["headSha"],
-        "coverage":format!("{}/{}", r["coverage"]["coveredFileCount"], r["coverage"]["fileCount"]),"passes":true}))
+    if via_merges {
+        // A P0–P2 finding at the released head, or at a merge commit on the way
+        // to it, is not cleared by a round of the earlier head (S2 R1, P2).
+        let merges: Vec<&Value> = proof["merges"].as_array().into_iter().flatten().map(|m| &m["commit"]).collect();
+        let judged = |o: &&Value| o["headSha"] == entry["headSha"] || merges.contains(&&o["headSha"]);
+        if let Some(bad) = at_heads.iter().filter(judged).find(|o| blocking(o) > 0) {
+            let at = if bad["headSha"] == entry["headSha"] { "the released head".to_owned() } else { format!("merge commit {}", short(&bad["headSha"])) };
+            return stop(
+                "review_not_passing",
+                format!("Review round {} ({}) at {at} found {} P0–P2 issue(s); a round of the earlier head {} does not clear them, so a new head needs a passing round of its own",
+                    bad["round"], bad["id"].as_str().unwrap_or("?"), blocking(bad), short(&r["headSha"])),
+            );
+        }
+    }
+    let mut passed = json!({"id":r["id"],"round":r["round"],"conclusion":r["conclusion"],"headSha":r["headSha"],
+        "coverage":format!("{}/{}", r["coverage"]["coveredFileCount"], r["coverage"]["fileCount"]),"passes":true});
+    if via_merges {
+        for m in proof["merges"].as_array().into_iter().flatten().filter(|m| m["why"]["kind"] == "reviewed") {
+            let other = m["mergedIn"].as_str().unwrap_or("");
+            let rounds = merged.iter().find(|(sha, _)| sha == other).map(|(_, r)| r.as_slice()).unwrap_or_default();
+            if let Some(bad) = rounds.iter().find(|o| blocking(o) > 0) {
+                return stop(
+                    "review_not_passing",
+                    format!("Merge {} brings in {}, where review round {} found {} P0–P2 issue(s)",
+                        short(&m["commit"]), short(&m["mergedIn"]), bad["id"].as_str().unwrap_or("?"), blocking(bad)),
+                );
+            }
+            if !rounds.iter().any(crate::pr_review::policy::passes) {
+                return stop(
+                    "review_not_passing",
+                    format!("Merge {} brings in {}, which no longer has a passing review round", short(&m["commit"]), short(&m["mergedIn"])),
+                );
+            }
+        }
+        passed["releasedHead"] = entry["headSha"].clone();
+        passed["merges"] = proof["merges"].clone();
+    }
+    Ok(passed)
 }
 
 /// The repository's landing policy (YN-18 S2d), set by the user: `strict`,

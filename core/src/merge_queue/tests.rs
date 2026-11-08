@@ -97,6 +97,7 @@ fn green() -> Value {
     let mut commits = serde_json::Map::new();
     let commit = |sha: String, tree: String, parents: Vec<String>| json!({"sha":sha,"tree":tree,"parents":parents});
     commits.insert(main_sha(), commit(main_sha(), sha('6'), vec![old_main()]));
+    commits.insert(head(), commit(head(), sha('d'), vec![old_main()]));
     commits.insert(merge_sha(), commit(merge_sha(), tree(), vec![main_sha(), head()]));
     commits.insert(sha('7'), commit(sha('7'), sha('8'), vec![old_main(), head()]));
     commits.insert(sha('9'), commit(sha('9'), sha('8'), vec![main_sha(), head()]));
@@ -527,15 +528,19 @@ async fn only_the_dispatching_lead_or_the_user_may_release_a_reviewed_head() {
     review(&lab.ws.store, &lab.task, &head(), "changes_requested");
     let m = refused(lab.release(Some("lead"), "x").await, "a release over a changes_requested round");
     assert!(m.contains("concluded changes_requested, which does not pass"), "{m}");
+    assert!(calls(lab.dir.path()).is_empty(), "a refused release reads nothing from GitHub");
     review(&lab.ws.store, &lab.task, &sha('a'), "no_findings");
     let m = refused(lab.release(Some("lead"), "x").await, "a release over a round of another head");
-    assert!(m.contains("not the released head"), "{m}");
+    assert!(m.contains("not the released head") && m.contains("is not a merge of two parents"), "{m}");
+    // Whether the head is that head plus merges is read from GitHub (YN-33).
+    assert!(calls(lab.dir.path()).iter().all(|c| c["method"] == "GET"), "only reads");
+    let reads = calls(lab.dir.path()).len();
     review(&lab.ws.store, &lab.task, &head(), "no_findings");
     let other = lab.ws.collaboration_call(Some("lead"), "merge_enqueue", json!({"requestId":"x","taskId":lab.task,
         "pullUrl":"https://github.com/owner/repo/pull/12","headSha":head()})).await;
     let m = refused(other, "an unlinked PR's release");
     assert!(m.contains("not linked to the task"), "the unlinked PR was refused for another reason: {m}");
-    assert!(calls(lab.dir.path()).is_empty(), "a refused release reads nothing from GitHub");
+    assert_eq!(calls(lab.dir.path()).len(), reads, "a refused release reads nothing from GitHub");
 
     let first = lab.release(Some("lead"), "r1").await.unwrap();
     assert_eq!(lab.release(Some("lead"), "r1").await.unwrap()["id"], first["id"], "a retry of the same request is the same entry");
@@ -3174,4 +3179,314 @@ async fn release_grouping_is_the_users_on_the_route_and_label_descriptions_fit_g
     assert_eq!(remote::label_description("Merge PR"), "Merge PR");
     let exact: String = "x".repeat(100);
     assert_eq!(remote::label_description(&exact), exact, "100 characters fit as they are");
+}
+
+/// A local Git repository whose commits stand for GitHub's in YN-33's tests:
+/// the fake GitHub answers its commits, and Core redoes merges in it.
+struct Fixture {
+    dir: tempfile::TempDir,
+}
+impl Fixture {
+    fn new() -> Self {
+        let f = Fixture { dir: tempfile::tempdir().unwrap() };
+        f.git(&["init", "-q", "-b", "main"]);
+        f
+    }
+    fn git(&self, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(self.dir.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+            .output()
+            .unwrap();
+        assert!(out.status.success() || args[0] == "merge", "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+    /// A commit on `branch` (made from `from`) writing `file`.
+    fn commit(&self, branch: &str, from: &str, file: &str, text: &str) -> String {
+        self.git(&["checkout", "-q", "-B", branch, from]);
+        std::fs::write(self.dir.path().join(file), text).unwrap();
+        self.git(&["add", file]);
+        self.git(&["commit", "-q", "-m", file]);
+        self.git(&["rev-parse", "HEAD"])
+    }
+    /// `other` merged into `at` on `branch`, as `git merge` makes it; `edit`
+    /// writes a file before the merge commit (an evil merge), and a conflict
+    /// is resolved by writing `resolve` into the conflicted file.
+    fn merge(&self, branch: &str, at: &str, other: &str, edit: Option<(&str, &str)>) -> String {
+        self.git(&["checkout", "-q", "-B", branch, at]);
+        self.git(&["merge", "-q", "--no-ff", "--no-commit", other]);
+        if let Some((file, text)) = edit {
+            std::fs::write(self.dir.path().join(file), text).unwrap();
+            self.git(&["add", file]);
+        }
+        self.git(&["commit", "-q", "--no-edit", "-m", "merge"]);
+        self.git(&["rev-parse", "HEAD"])
+    }
+    fn first(&self) -> String {
+        std::fs::write(self.dir.path().join("a.txt"), "a\n").unwrap();
+        self.git(&["add", "a.txt"]);
+        self.git(&["commit", "-q", "-m", "base"]);
+        self.git(&["rev-parse", "HEAD"])
+    }
+    /// The commit as GitHub's git/commits answers it, for the fake.
+    fn answer(&self, sha: &str) -> Value {
+        let tree = self.git(&["rev-parse", &format!("{sha}^{{tree}}")]);
+        let parents: Vec<String> = self.git(&["rev-list", "--parents", "-n", "1", sha]).split(' ').skip(1).map(str::to_owned).collect();
+        json!({"sha":sha,"tree":tree,"parents":parents})
+    }
+    fn tree(&self, sha: &str) -> String {
+        self.git(&["rev-parse", &format!("{sha}^{{tree}}")])
+    }
+    fn base(&self, a: &str, b: &str) -> String {
+        self.git(&["merge-base", a, b])
+    }
+}
+
+/// GitHub with everything green for the released head `head` instead of the
+/// fixed head(), and the fixture's commits known.
+fn green_at(head: &str, fixture: &Fixture, commits: &[&str]) -> Value {
+    let mut s: Value = serde_json::from_str(&green().to_string().replace(&self::head(), head)).unwrap();
+    for c in commits {
+        s["commits"][*c] = fixture.answer(c);
+    }
+    s
+}
+/// GitHub's compare of `a...b`: their merge base.
+fn compared(s: &mut Value, a: &str, b: &str, base: &str) {
+    s["compare"][format!("{a}...{b}")] = json!({"base":a,"mergeBase":base,"commits":1});
+}
+/// A completed round on `link` at `head`, with its base and findings.
+fn round_on(s: &Store, task: &str, link: &str, head: &str, base: &str, priorities: &[u64]) -> String {
+    let task = internal(s, task);
+    let id = uuid::Uuid::new_v4().to_string();
+    let findings: Vec<Value> = priorities.iter().map(|p| json!({"priority":p,"title":"finding"})).collect();
+    let conclusion = if priorities.is_empty() { "no_findings" } else { "changes_requested" };
+    let data = json!({"id":id,"status":"completed","conclusion":conclusion,"headSha":head,"baseSha":base,"round":1,
+        "findings":findings,"coverage":{"coveredFileCount":3,"fileCount":3}});
+    s.db.write()
+        .unwrap()
+        .execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,?3,'completed',?4)", rusqlite::params![id, task, link, data.to_string()])
+        .unwrap();
+    id
+}
+impl Lab {
+    async fn release_at(&self, key: &str, head: &str) -> Result<Value> {
+        self.ws
+            .collaboration_call(Some("lead"), "merge_enqueue", json!({"requestId":key,"taskId":self.task,
+                "pullUrl":"https://github.com/owner/repo/pull/11","headSha":head}))
+            .await
+    }
+    fn objects(&self, fixture: &Fixture) {
+        *self.ws.merge_queue.objects.lock().unwrap() = Some(fixture.dir.path().join(".git"));
+    }
+}
+
+/// YN-33 finding 3, the #756 shape: after its last review round the PR merged
+/// a head already on main (the PR below it, landed). Core redoes the merge in
+/// its own object store, finds exactly the merge commit's tree, admits the
+/// release with the proof, and merges as usual; the proof writes nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_head_that_only_merged_a_head_on_main_after_its_review_is_released_and_merges() {
+    let f = Fixture::new();
+    let base = f.first();
+    let below = f.commit("below", &base, "below.txt", "below\n");
+    let reviewed = f.commit("pr", &base, "pr.txt", "pr\n");
+    let merged = f.merge("pr", &reviewed, &below, None);
+    let mut state = green_at(&merged, &f, &[&merged, &reviewed]);
+    compared(&mut state, &below, &main_sha(), &below);
+    compared(&mut state, &reviewed, &below, &f.base(&reviewed, &below));
+    let lab = lab(state);
+    lab.objects(&f);
+    review(&lab.ws.store, &lab.task, &reviewed, "no_findings");
+    let e = lab.release_at("r1", &merged).await.unwrap();
+    let proof = &e["reviewMerges"];
+    assert_eq!((proof["head"].clone(), proof["reviewedHead"].clone()), (json!(merged), json!(reviewed)), "{e}");
+    let m = &proof["merges"][0];
+    assert_eq!((m["commit"].clone(), m["mergedIn"].clone(), m["why"]["kind"].clone()), (json!(merged), json!(below), json!("onBase")), "{m}");
+    assert_eq!((m["redone"].clone(), m["tree"].clone()), (json!(f.tree(&merged)), json!(f.tree(&merged))), "the redone merge is the merge commit's tree");
+    assert!(writes(lab.dir.path()).is_empty(), "the proof writes nothing to GitHub");
+    assert!(lab.comments().iter().any(|c| c.contains(&format!("Its last review round read {}; this head adds only 1 merge(s)", &reviewed[..12]))), "{:?}", lab.comments());
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "{e}");
+    assert_eq!(writes(lab.dir.path()), ["PUT repos/owner/repo/pulls/11/merge"]);
+    let r = &e["lastEvidence"]["review"];
+    assert_eq!((r["headSha"].clone(), r["releasedHead"].clone(), r["merges"].clone()), (json!(reviewed), json!(merged), proof["merges"].clone()), "{r}");
+}
+
+/// The merged-in head may be another PR's reviewed head not yet on main: it
+/// needs a passing round of this repository at that head with its base on
+/// main. A P0–P2 round there later holds the entry back at its next check.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_of_another_prs_reviewed_head_is_admitted_until_a_round_there_finds_a_p0_to_p2() {
+    let f = Fixture::new();
+    let base = f.first();
+    let other = f.commit("other", &base, "other.txt", "other\n");
+    let reviewed = f.commit("pr", &base, "pr.txt", "pr\n");
+    let merged = f.merge("pr", &reviewed, &other, None);
+    let mut state = green_at(&merged, &f, &[&merged, &reviewed]);
+    compared(&mut state, &other, &main_sha(), &base);
+    compared(&mut state, &base, &main_sha(), &base);
+    compared(&mut state, &reviewed, &other, &base);
+    let lab = lab(state);
+    lab.objects(&f);
+    review(&lab.ws.store, &lab.task, &reviewed, "no_findings");
+    let refused = lab.release_at("r0", &merged).await.unwrap_err().to_string();
+    assert!(refused.starts_with("review_not_passing") && refused.contains("neither on main nor the head of a passing review round"), "{refused}");
+    let round = round_on(&lab.ws.store, &lab.task, "7:pull:12", &other, &base, &[]);
+    let e = lab.release_at("r1", &merged).await.unwrap();
+    let why = &e["reviewMerges"]["merges"][0]["why"];
+    assert_eq!((why["kind"].clone(), why["round"].clone(), why["link"].clone()), (json!("reviewed"), json!(round), json!("7:pull:12")), "{e}");
+    round_on(&lab.ws.store, &lab.task, "7:pull:12", &other, &base, &[1]);
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["reason"], "review_not_passing", "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("found 1 P0–P2 issue(s)"), "{}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty());
+}
+
+/// Everything else after the reviewed head is refused at release, saying what
+/// Core found: an extra edit in the merge, a hand-resolved conflict, a plain
+/// commit, a merged-in head reviewed on a base not on main, the reviewed head
+/// as the second parent, more than four merges, and a P0–P2 finding at the
+/// reviewed head. A running round waits as before.
+#[cfg(unix)]
+#[tokio::test]
+async fn anything_but_clean_merges_of_reviewed_heads_after_the_review_is_refused_with_its_reason() {
+    let f = Fixture::new();
+    let base = f.first();
+    let below = f.commit("below", &base, "below.txt", "below\n");
+    let reviewed = f.commit("pr", &base, "pr.txt", "pr\n");
+    let evil = f.merge("evil", &reviewed, &below, Some(("pr.txt", "pr, and more\n")));
+    let theirs = f.commit("theirs", &base, "a.txt", "theirs\n");
+    let ours = f.commit("ours", &base, "a.txt", "ours\n");
+    let resolved = f.merge("resolved", &ours, &theirs, Some(("a.txt", "both\n")));
+    let plain = f.commit("plain", &reviewed, "more.txt", "more\n");
+    let reversed = f.merge("reversed", &below, &reviewed, None);
+    let feature = f.commit("feature", &base, "feature.txt", "feature\n");
+    let stacked = f.commit("stacked", &feature, "stacked.txt", "stacked\n");
+    let on_stacked = f.merge("on-stacked", &reviewed, &stacked, None);
+    let mut chain = vec![reviewed.clone()];
+    let mut extra = Vec::new();
+    for n in 0..5 {
+        let o = f.commit(&format!("o{n}"), &base, &format!("o{n}.txt"), "o\n");
+        let m = f.merge("long", chain.last().unwrap(), &o, None);
+        extra.push(o);
+        chain.push(m);
+    }
+    let long = chain.last().unwrap().clone();
+    let mut known: Vec<&str> = vec![&evil, &reviewed, &resolved, &ours, &plain, &reversed, &on_stacked];
+    known.extend(chain.iter().map(String::as_str));
+    let mut state = green_at(&sha('a'), &f, &known);
+    compared(&mut state, &below, &main_sha(), &below);
+    compared(&mut state, &reviewed, &below, &base);
+    compared(&mut state, &theirs, &main_sha(), &theirs);
+    compared(&mut state, &ours, &theirs, &base);
+    compared(&mut state, &stacked, &main_sha(), &base);
+    compared(&mut state, &feature, &main_sha(), &base);
+    for (n, o) in extra.iter().enumerate() {
+        compared(&mut state, o, &main_sha(), o);
+        compared(&mut state, &chain[n], o, &base);
+    }
+    let lab = lab(state);
+    lab.objects(&f);
+    round_on(&lab.ws.store, &lab.task, "7:pull:12", &stacked, &feature, &[]);
+    let cases: Vec<(&str, &str, String)> = vec![
+        (&evil, &reviewed, format!("Merge {} has tree", &evil[..12])),
+        (&resolved, &ours, format!("Merging {} into {} has conflicts", &theirs[..12], &ours[..12])),
+        (&plain, &reviewed, format!("{} follows the last reviewed head {} but is not a merge of two parents (it has 1)", &plain[..12], &reviewed[..12])),
+        (&reversed, &reviewed, format!("Merge {} has the reviewed head {} as its second parent", &reversed[..12], &reviewed[..12])),
+        (&on_stacked, &reviewed, format!("that round's base {} is not on main", &feature[..12])),
+        (&long, &reviewed, format!("More than {} commits follow the last reviewed head", merges::MERGES)),
+    ];
+    for (n, (head, at, words)) in cases.into_iter().enumerate() {
+        change(lab.dir.path(), |s| s["pull"]["head"]["sha"] = json!(head));
+        review(&lab.ws.store, &lab.task, at, "no_findings");
+        let refused = lab.release_at(&format!("r{n}"), head).await.unwrap_err().to_string();
+        assert!(refused.starts_with("review_not_passing") && refused.contains(&words), "case {n}: {refused}");
+    }
+    assert_eq!(writes(lab.dir.path()).len(), 0, "a refusal writes nothing");
+    // A P0–P2 finding at the reviewed head refuses before GitHub is read.
+    change(lab.dir.path(), |s| s["pull"]["head"]["sha"] = json!(chain[1]));
+    round_on(&lab.ws.store, &lab.task, "7:pull:11", &reviewed, &base, &[2]);
+    review(&lab.ws.store, &lab.task, &reviewed, "no_findings");
+    let reads = calls(lab.dir.path()).len();
+    let refused = lab.release_at("r-p2", &chain[1]).await.unwrap_err().to_string();
+    assert!(refused.contains(&format!("at the reviewed head {} found 1 P0–P2 issue(s)", &reviewed[..12])), "{refused}");
+    assert_eq!(calls(lab.dir.path()).len(), reads, "refused before any read");
+    lab.ws.store.db.write().unwrap()
+        .execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES('running',?1,'7:pull:11','running','{}')", [internal(&lab.ws.store, &lab.task)])
+        .unwrap();
+    assert!(lab.release_at("r-running", &chain[1]).await.unwrap_err().to_string().starts_with("review_running"));
+}
+
+/// A head released under the proof keeps it: a later round at another head
+/// stops it as before, and so does a round at the released head itself that
+/// does not pass.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_released_proof_holds_only_while_the_last_round_is_the_one_it_was_read_for() {
+    let f = Fixture::new();
+    let base = f.first();
+    let below = f.commit("below", &base, "below.txt", "below\n");
+    let reviewed = f.commit("pr", &base, "pr.txt", "pr\n");
+    let merged = f.merge("pr", &reviewed, &below, None);
+    let mut state = green_at(&merged, &f, &[&merged, &reviewed]);
+    compared(&mut state, &below, &main_sha(), &below);
+    compared(&mut state, &reviewed, &below, &base);
+    let lab = lab(state);
+    lab.objects(&f);
+    review(&lab.ws.store, &lab.task, &reviewed, "no_findings");
+    lab.release_at("r1", &merged).await.unwrap();
+    review(&lab.ws.store, &lab.task, &merged, "changes_requested");
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["reason"], "review_not_passing", "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("at this head concluded changes_requested"), "{}", e["detail"]);
+}
+
+/// S2 review 68bae873 (P2): a P0–P2 finding of a round at the released head,
+/// or at a merge commit on the way to it, holds the release back even when
+/// the last round, at the earlier reviewed head, passed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_p0_to_p2_finding_at_the_released_head_or_a_merge_on_the_way_is_not_cleared_by_the_earlier_heads_round() {
+    let f = Fixture::new();
+    let base = f.first();
+    let below = f.commit("below", &base, "below.txt", "below\n");
+    let next = f.commit("next", &base, "next.txt", "next\n");
+    let reviewed = f.commit("pr", &base, "pr.txt", "pr\n");
+    let first = f.merge("pr", &reviewed, &below, None);
+    let released = f.merge("pr", &first, &next, None);
+    let mut state = green_at(&released, &f, &[&released, &first, &reviewed]);
+    compared(&mut state, &below, &main_sha(), &below);
+    compared(&mut state, &next, &main_sha(), &next);
+    compared(&mut state, &reviewed, &below, &base);
+    compared(&mut state, &first, &next, &base);
+    let lab = lab(state);
+    lab.objects(&f);
+    // A finding at the merge commit on the way, then a passing round of the reviewed head.
+    round_on(&lab.ws.store, &lab.task, "7:pull:11", &first, &base, &[2]);
+    review(&lab.ws.store, &lab.task, &reviewed, "no_findings");
+    let refused = lab.release_at("r1", &released).await.unwrap_err().to_string();
+    assert!(
+        refused.starts_with("review_not_passing") && refused.contains(&format!("at merge commit {} found 1 P0–P2 issue(s); a round of the earlier head {}", &first[..12], &reviewed[..12])),
+        "{refused}"
+    );
+    // A finding at the released head itself: refused before GitHub is read.
+    round_on(&lab.ws.store, &lab.task, "7:pull:11", &released, &base, &[1]);
+    review(&lab.ws.store, &lab.task, &reviewed, "no_findings");
+    let reads = calls(lab.dir.path()).len();
+    let refused = lab.release_at("r2", &released).await.unwrap_err().to_string();
+    assert!(refused.contains("at the released head found 1 P0–P2 issue(s)"), "{refused}");
+    assert_eq!(calls(lab.dir.path()).len(), reads, "refused before any read");
+    assert!(writes(lab.dir.path()).is_empty());
 }

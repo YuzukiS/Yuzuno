@@ -70,10 +70,62 @@ entry is created:
   the PR reviewed exactly the released head and passes the review policy
   (`no_findings`, or `approved_with_notes` with P3 notes only). The entry
   records that round's ID. A head committed after the last round has no passing
-  review of its own, so it is refused. A P0–P2 finding of any completed round at
-  the released head refuses it too, even when a later round of the same head
-  passed: only a new head, with a passing round of its own, clears it.
+  review of its own, so it is refused, unless all it adds are merges that need
+  no review of their own (below). A P0–P2 finding of any completed round at
+  the reviewed head refuses it too, even when a later round of the same head
+  passed: only a new head, with a passing round of its own, clears it. So does
+  one at the released head, or at a merge commit between the two: a round of
+  the earlier head does not clear it.
 - **No other entry holds the PR.**
+
+### A head that adds only merges
+
+A stacked PR merges the PR below it once that one was reviewed or landed, and
+a PR may merge its base branch in. Such a head is released without a round of
+its own when Core can show that it is the reviewed head plus those merges, and
+nothing else. When the last completed round reviewed an earlier head, the
+release reads, before the entry is created:
+
+1. The walk. From the released head back to the reviewed head, every commit is
+   a merge of exactly two parents whose first parent is the commit before it
+   (the branch merged into), at most four of them.
+2. What each merge brings in, its other parent: a commit already on the base
+   branch (GitHub's compare of the two names it as their merge base), or the
+   head of a passing completed round of a PR of this repository, with no P0–P2
+   finding in any round at that head, whose base is on the base branch.
+3. The merge itself. Core redoes each merge, with the merge base GitHub's
+   compare names, in a private object store (`git merge-tree`: a shallow
+   copy of those commits without file contents, filled in only for files both
+   sides changed; no checkout; at most 256 MiB; removed afterwards). Every
+   redone merge must be clean and its tree exactly the merge commit's.
+
+The entry keeps what was read as its proof (`reviewMerges`), and the release's
+comment says so. Each check after that asks again that the last round is still
+the one the proof was read for and passes, that no round of the PR at the
+released head or at a merge commit of the proof found a P0–P2 issue, and that
+every merged-in head that counted as reviewed still has a passing round and no
+P0–P2 finding. CI, the
+gate and the post-check do not change: CI must still be green at the released
+head, and the merge lands the tested tree. Core writes nothing to GitHub for
+the proof.
+
+Anything else refuses the release with `review_not_passing`, naming the commit:
+
+- a commit after the reviewed head that is not a merge of two parents;
+- a merge whose first parent is not the commit before it, such as one with the
+  reviewed head as its second parent;
+- more than four merges;
+- a merge that resolved a conflict, or changes anything besides the merge:
+  its tree is not what redoing the merge gives;
+- a merged-in head that is neither on the base branch nor a passing round's
+  head with its base on the base branch;
+- a merge with several merge bases (a criss-cross merge), which Core may redo
+  differently; this can only refuse a head, never admit one.
+
+Known limit: Core does not check that the reviewed head's own round had its
+base on the base branch. A PR retargeted onto the default branch after its
+round was reviewed against another base is checked as before, by the round
+alone.
 
 Core does not ask the user for exceptions. A head that does not meet these
 conditions is merged by a person, or reviewed again first.
@@ -92,8 +144,9 @@ entry is checked again from the new anchor.
    `conflict` at once: GitHub runs no CI for a PR with conflicts, so waiting
    for its runs would only end at the six-hour limit. While GitHub is still
    computing whether the PR can merge, nothing is decided here.
-2. The last completed review round still passes at that head. If a round is
-   running, Core waits for it.
+2. The last completed review round still passes at that head, or at the
+   reviewed head the entry's proof names (see A head that adds only merges).
+   If a round is running, Core waits for it.
 3. Two reads of the base branch name the same commit.
 4. The repository's queue is not paused (see below).
 5. Main is healthy. No push run of CI on the base branch since the entry's
@@ -442,7 +495,9 @@ changes.
 The record holds:
 
 - the release (who, when, which request);
-- the review round;
+- the review round, and for a head that adds only merges, the proof: each
+  merge, what it brought in and why that needs no review, its merge base, and
+  the tree Core redid it to;
 - main at release and at the check, with the CI runs examined;
 - the gate: the merge ref or the batch (its branch, commit, PR and tree), and
   each CI job's checkout and log sha256; when the merge ref was not the slot,
@@ -463,4 +518,7 @@ entries.
 
 What the queue records after core.26 is in its JSON records, with no table
 change, and core.26 ignores it. With core.26, a merged PR still waiting to be
-tagged for its release is never tagged: tag it by hand.
+tagged for its release is never tagged: tag it by hand. An entry released as
+a head that adds only merges, still waiting, stops at its next check with
+`review_not_passing` (core.26 sees a last round that is not at the head), so
+nothing merges; a person merges it, or reviews it again.
