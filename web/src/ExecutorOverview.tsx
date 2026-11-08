@@ -81,6 +81,7 @@ const text = strings({
   evidenceNote: "Each with its own conclusion",
   noEvidence: "No Jobs, reviews or CI yet.",
   job: "Job",
+  redGreen: "Red → green",
   review: "Review",
   ci: "CI",
   merge: "Merge",
@@ -133,6 +134,7 @@ const text = strings({
   evidenceNote: "每项自己的结论",
   noEvidence: "还没有 Job、审查或 CI。",
   job: "Job",
+  redGreen: "红 → 绿",
   review: "审查",
   ci: "CI",
   merge: "合并",
@@ -174,6 +176,25 @@ function stepRef(step: Step, t: ReturnType<typeof text>): string {
     case "ask": return t.ask[s("state")] ?? "";
     default: return "";
   }
+}
+
+type Job = ExecutorOverviewData["jobs"][number];
+
+/** Its red Job and the green one after it (T-43 S5, a red-first template's
+ * evidence side by side): the first job step whose Job failed and the next
+ * job step after it whose Job succeeded, as its steps read their records;
+ * each as its Job list has it. None without both. */
+export function redGreen(steps: Step[], jobs: Job[]): { red: Job; green: Job } | null {
+  const ran = (step: Step | undefined): Job | null => {
+    const ref = step?.kind === "job" && step.ref?.kind === "job" ? step.ref : null;
+    if (!ref || typeof ref.id !== "string") return null;
+    return jobs.find((j) => j.id === ref.id) ?? { id: ref.id, name: typeof ref.name === "string" ? ref.name : null, status: String(ref.status ?? "") };
+  };
+  const at = steps.findIndex((step) => ran(step)?.status === "failed");
+  if (at < 0) return null;
+  const red = ran(steps[at])!;
+  const green = steps.slice(at + 1).map(ran).find((job) => job?.status === "succeeded");
+  return green ? { red, green } : null;
 }
 
 /**
@@ -228,6 +249,9 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
   const steps = allSteps ? data.steps : data.steps.slice(0, SHOWN_STEPS);
   const pr = data.pullRequest;
   const review = pr?.latestReview && pr.latestReview.forCurrentHead ? pr.latestReview : null;
+  // A red Job and the green one after it, side by side in one row (S5).
+  const pair = redGreen(data.steps, data.jobs);
+  const others = pair ? data.jobs.filter((job) => job.id !== pair.red.id && job.id !== pair.green.id) : data.jobs;
   const m = data.materials;
   return (
     <section className="executor-overview" id="executor-overview" role="tabpanel" aria-labelledby="executor-tab-overview">
@@ -275,6 +299,8 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
           {steps.map((step, i) => (
             <li key={i} className="step" data-state={step.state}>
               <span className="mark" aria-hidden="true" />
+              {/* Its place, so "step 2" in an ask points somewhere (S5); the list says it to a screen reader. */}
+              <span className="no" aria-hidden="true">{i + 1}</span>
               <span className="label">{step.label || t.stepKind[step.kind] || step.kind}</span>
               <span className="state">{t.stepState[step.state]}</span>
               <span className="ref">{stepRef(step, t)}</span>
@@ -298,7 +324,12 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
         <h3>{t.evidence} <span className="note">{t.evidenceNote}</span></h3>
         {!data.jobs.length && !pr && !data.merge ? <p className="empty">{t.noEvidence}</p> : (
           <ul className="executor-overview-evidence">
-            {data.jobs.map((job) => (
+            {pair && (
+              <li className="pair"><span className="k">{t.redGreen}</span>
+                <span className="n">{pair.red.name || pair.red.id} → {pair.green.name || pair.green.id}</span>
+                <span className="v"><span data-tone="bad">{pair.red.status}</span> → <span data-tone="ok">{pair.green.status}</span></span></li>
+            )}
+            {others.map((job) => (
               <li key={job.id}><span className="k">{t.job}</span><span className="n">{job.name || job.id}</span>
                 <span className="v" data-tone={tone(job.status)}>{job.status}</span></li>
             ))}

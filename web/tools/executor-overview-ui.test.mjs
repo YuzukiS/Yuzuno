@@ -320,6 +320,63 @@ test("in Chinese the gate's card reads in Chinese (T-43 S4)", async () => {
   }
 });
 
+// T-43 S5: a red-first template's red Job and the green one after it, side
+// by side in one row of the evidence dock; and the steps say their place.
+const redGreenOverview = (id) => id !== "k" ? overviewOf(id) : {
+  ...overviewOf("k"),
+  steps: [
+    { kind: "materials", state: "done", ref: { kind: "mail", readAt: at(60) } },
+    { kind: "job", label: "Record the failing test red", state: "failed", ref: { kind: "job", id: "j1", name: "red 1/1", status: "failed" } },
+    { kind: "work", label: "Fix, the test unchanged", state: "done" },
+    { kind: "job", label: "Green", state: "done", ref: { kind: "job", id: "j2", name: "green 24/24", status: "succeeded" } },
+    { kind: "pr", state: "todo" },
+  ],
+  jobs: [
+    { id: "j3", name: "lint", status: "succeeded", finishedAt: at(10) },
+    { id: "j2", name: "green 24/24", status: "succeeded", finishedAt: at(20) },
+    { id: "j1", name: "red 1/1", status: "failed", reason: "exit-code", finishedAt: at(30) },
+  ],
+};
+
+test("a red Job and the green one after it sit side by side, and the steps say their place (T-43 S5)", async () => {
+  const p = await mount({ overview: redGreenOverview });
+  try {
+    await waitFor(p.loaded, "k's Overview");
+    assert.deepEqual(p.all(".executor-overview-steps .no"), ["1", "2", "3", "4", "5"], "each step its place");
+    const rows = [...p.overviewPanel().querySelectorAll(".executor-overview-evidence li")];
+    const pair = rows[0];
+    assert.equal(pair.className, "pair");
+    assert.deepEqual([pair.querySelector(".k").textContent, pair.querySelector(".n").textContent, pair.querySelector(".v").textContent],
+      ["Red → green", "red 1/1 → green 24/24", "failed → succeeded"]);
+    assert.deepEqual([...pair.querySelectorAll(".v [data-tone]")].map((v) => v.dataset.tone), ["bad", "ok"]);
+    // The two are that row's alone; another Job keeps its own row.
+    const jobs = rows.filter((li) => li.querySelector(".k").textContent === "Job").map((li) => li.querySelector(".n").textContent);
+    assert.deepEqual(jobs, ["lint"]);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+  // In Chinese; and without a green after the red, no pair.
+  const zh = await mount({ overview: redGreenOverview, storage: { "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } });
+  try {
+    await waitFor(zh.loaded, "the Chinese Overview");
+    assert.equal(zh.overviewPanel().querySelector(".executor-overview-evidence .pair .k").textContent, "红 → 绿");
+  } finally {
+    zh.close();
+  }
+  const red = await mount({ overview: (id) => {
+    const o = redGreenOverview(id);
+    return id === "k" ? { ...o, steps: o.steps.map((s) => s.ref?.id === "j2" ? { kind: "job", label: "Green", state: "todo" } : s) } : o;
+  } });
+  try {
+    await waitFor(red.loaded, "k's Overview, red only");
+    assert.equal(red.overviewPanel().querySelector(".executor-overview-evidence .pair"), null, "a red Job alone is no pair");
+    assert.equal(red.all(".executor-overview-evidence li .k").filter((k) => k === "Job").length, 3, "each Job its own row");
+  } finally {
+    red.close();
+  }
+});
+
 test("each executor keeps the tab chosen; a standing Agent has no tabs and no Overview read", async () => {
   const p = await mount();
   try {
