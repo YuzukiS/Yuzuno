@@ -3560,3 +3560,53 @@ async fn a_p0_to_p2_finding_at_the_released_head_or_a_merge_on_the_way_is_not_cl
     assert_eq!(calls(lab.dir.path()).len(), reads, "refused before any read");
     assert!(writes(lab.dir.path()).is_empty());
 }
+
+/// YN-33 S3 review c4b308a8 (P3): a conflict whose list of files in conflict is
+/// longer than what one `git merge-tree` may print is still refused as a
+/// conflict, not as an error.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_conflict_listing_more_files_than_the_output_cap_is_still_refused_as_a_conflict() {
+    let f = Fixture::new();
+    let names: Vec<String> = (0..300).map(|n| format!("{}-{n:03}.txt", "conflicting-file-name-".repeat(6))).collect();
+    let write_all = |text: &str| {
+        for name in &names {
+            std::fs::write(f.dir.path().join(name), text).unwrap();
+        }
+        f.git(&["add", "-A"]);
+    };
+    write_all("base\n");
+    f.git(&["commit", "-q", "-m", "base"]);
+    let base = f.git(&["rev-parse", "HEAD"]);
+    let side = |branch: &str, text: &str| {
+        f.git(&["checkout", "-q", "-B", branch, &base]);
+        write_all(text);
+        f.git(&["commit", "-q", "-m", branch]);
+        f.git(&["rev-parse", "HEAD"])
+    };
+    let theirs = side("theirs", "theirs\n");
+    let ours = side("ours", "ours\n");
+    f.git(&["checkout", "-q", "-B", "resolved", &ours]);
+    f.git(&["merge", "-q", "--no-ff", "--no-commit", &theirs]);
+    write_all("both\n");
+    f.git(&["commit", "-q", "--no-edit", "-m", "merge"]);
+    let resolved = f.git(&["rev-parse", "HEAD"]);
+    let listed = std::process::Command::new("git")
+        .args(["merge-tree", "--write-tree", "--no-messages", &format!("--merge-base={base}"), &ours, &theirs])
+        .current_dir(f.dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(listed.status.code(), Some(1), "the merge conflicts");
+    assert!(listed.stdout.len() > 64 * 1024, "its list of files in conflict is longer than the cap: {} bytes", listed.stdout.len());
+    let mut state = green_at(&resolved, &f, &[&resolved, &ours]);
+    compared(&mut state, &theirs, &main_sha(), &theirs);
+    compared(&mut state, &ours, &theirs, &base);
+    let lab = lab(state);
+    lab.objects(&f);
+    review(&lab.ws.store, &lab.task, &ours, "no_findings");
+    let refused = lab.release_at("r1", &resolved).await.unwrap_err().to_string();
+    assert!(
+        refused.starts_with("review_not_passing") && refused.contains(&format!("Merging {} into {} has conflicts", &theirs[..12], &ours[..12])),
+        "{refused}"
+    );
+}

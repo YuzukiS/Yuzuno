@@ -22,8 +22,9 @@ use std::sync::Arc;
 
 /// At most this many merge commits may follow the reviewed head.
 pub(super) const MERGES: usize = 4;
-/// What one `git merge-tree` may print: the tree, and for a conflict the
-/// files in conflict.
+/// What one `git merge-tree` of a clean merge may print: its tree. A conflict
+/// is told by the exit code alone (`--quiet`), so no list of files in conflict,
+/// however long, can turn the conflict refusal into an error.
 const OUTPUT: usize = 64 * 1024;
 
 fn short(sha: &str) -> &str {
@@ -118,10 +119,19 @@ pub(super) async fn prove(ws: &Arc<Workspace>, t: &Target<'_>, head: &str, revie
     for m in &mut merges {
         let (first, other, base) = (m["parents"][0].as_str().unwrap_or(""), m["parents"][1].as_str().unwrap_or(""), m["mergeBase"].as_str().unwrap_or(""));
         let base = format!("--merge-base={base}");
-        let (code, out) = git
-            .run_accepting(&["merge-tree", "--write-tree", "--no-messages", &base, first, other], OUTPUT, &[0, 1])
+        // First the verdict alone: exit 1 is a conflict, with nothing printed.
+        let (code, _) = git
+            .run_accepting(&["merge-tree", "--write-tree", "--quiet", &base, first, other], OUTPUT, &[0, 1])
             .await
             .context("Core could not redo the merge in its own object store")?;
+        // A clean merge again for its tree: one line.
+        let (code, out) = if code == 0 {
+            git.run_accepting(&["merge-tree", "--write-tree", "--no-messages", &base, first, other], OUTPUT, &[0, 1])
+                .await
+                .context("Core could not redo the merge in its own object store")?
+        } else {
+            (code, Vec::new())
+        };
         let redone = String::from_utf8_lossy(&out).lines().next().unwrap_or("").trim().to_owned();
         let (commit, tree) = (m["commit"].as_str().unwrap_or(""), m["tree"].as_str().unwrap_or(""));
         if code == 1 {
