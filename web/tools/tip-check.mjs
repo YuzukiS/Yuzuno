@@ -96,7 +96,7 @@ const ci = {
 };
 const detail = (id) => ({ agent: agents.find((x) => x.id === id), pending: [], messageReceipts: [], artifacts: [],
   turns: [{ id: "t1", status: "inProgress", startedAt: Math.floor(now / 1000) - 120,
-    items: [{ id: "u1", type: "userMessage", content: [{ type: "text", text: "Measure the layout" }] }] }] });
+    items: [{ id: "u1", type: "userMessage", content: [{ type: "text", text: "Measure the layout" }], _yuzunoTime: { at: now - 120_000, source: "codex" } }] }] });
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png",
   ".svg": "image/svg+xml", ".woff2": "font/woff2", ".webmanifest": "application/manifest+json" };
 
@@ -271,6 +271,34 @@ for (const screen of desktop) {
   } else {
     check(false, `${screen.name}: the Interrupt button to rest on (${await page.evaluate(() => document.querySelector(".composer-send-actions")?.outerHTML.slice(0, 200) ?? "no composer actions")})`);
     if (shots) await page.screenshot({ path: join(shots, `${screen.name}-page.png`) });
+  }
+  // S2b: the composer's, the conversation's and the context panel's titles,
+  // now tips. Send is disabled here (Claude at work takes no message): a
+  // resting pointer still shows its tip, which says why.
+  const s2b = [
+    { what: "Send, disabled", at: page.locator(".send-button"),
+      expect: (t) => t.lines.length === 2 && /Wait for this turn to finish|请等待这个 Turn 结束/.test(t.lines[1]) },
+    { what: "+", at: page.locator(".composer-plus"),
+      expect: (t) => /^(Add to your draft|添加到草稿)$/.test(t.lines[0]) && t.lines.length === 2 },
+    { what: "a message's time", at: page.locator(".message-time").first(),
+      expect: (t) => t.lines.length === 1 && /2\d{3}/.test(t.lines[0]) },
+    { what: "Working", at: page.locator(".turn-activity"),
+      expect: (t) => /Still working on this turn|仍在处理这个 Turn/.test(t.lines.join(" ")) },
+    { what: "the context panel's working folder", at: page.locator(".inspector .purpose-section dd").first(),
+      expect: (t) => t.lines.at(-1) === "/synthetic/widgets" && t.side === "left" },
+    { what: "the context panel's work source", at: page.locator(".inspector-work-source"),
+      expect: (t) => /^(Agent report|Agent 报告)$/.test(t.lines.join(" ")) },
+  ];
+  check(await page.locator(".send-button").isDisabled(), `${screen.name}: Send is disabled while Claude is at work`);
+  for (const { what, at: anchor, expect } of s2b) {
+    if (!(await anchor.count())) { check(false, `${screen.name}: ${what} to rest on`); continue; }
+    const tip = await rest(page, anchor, `${screen.name} ${what}`);
+    check(!!tip && expect(tip) && tip.inViewport, `${screen.name} ${what}: its tip says it (${tip?.lines?.join(" | ")}; side ${tip?.side})`);
+    check(sameLook(tip), `${screen.name} ${what}: the reference card's look (${lookDiff(tip) || "same"})`);
+    check(!!tip && !tip.lines.some((l) => /\b(click|open)\b|打开|点击/i.test(l)), `${screen.name} ${what}: no line about what a click does`);
+    check(await anchor.getAttribute("title") === null, `${screen.name} ${what}: no native title`);
+    await shot(page, `${screen.name}-s2b-${what.replace(/[^a-z]+/gi, "-").replace(/^-|-$/g, "")}.png`, anchor, tip);
+    summary.push({ screen: screen.name, what, lines: tip?.lines });
   }
   await context.close();
 }

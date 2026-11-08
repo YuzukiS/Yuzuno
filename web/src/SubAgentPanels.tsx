@@ -16,6 +16,7 @@ import { useConversationReveal, useConversationWindowed } from "./ConversationWi
 import { StatusMark, WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity, type WorkEntry } from "./WorkDock";
 import { subAgentWork, type WorkKind } from "./work-activity.ts";
 import { useLanguage, useStrings, type Language } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import { cardWords } from "./subagent-text";
 import { useSurfaceIn } from "./surface";
 import "./subagents.css";
@@ -450,7 +451,9 @@ function Detail({ detail, language }: { detail: SubAgentDetail; language: Langua
         )}
         <dt>{t.threadId}</dt>
         <dd>
-          <code title={t.parent(detail.parentThreadId)}>{detail.threadId}</code>
+          <Tip content={<TipText label={t.parent} value={detail.parentThreadId} />} size="wide">
+            <code>{detail.threadId}</code>
+          </Tip>
         </dd>
       </dl>
       {turn?.error && (

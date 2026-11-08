@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Clock, LoaderCircle, Play, X } from "lucide-react";
+import { Tip, TipText } from "./Tip";
 import { api, errorText, post } from "./api";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
@@ -257,22 +258,21 @@ export function QuotaResumeNotice({
       <div className="quota-resume-actions">
         {intent?.state === "waiting" && (
           <>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={disabled || !!busy}
-              title={
-                beforeReset ? t.mayRefuse(at(intent.resetsAt)) : undefined
-              }
-              onClick={() => void act("now")}
-            >
-              {busy === "now" ? (
-                <LoaderCircle size={14} className="spin" />
-              ) : (
-                <Play size={14} />
-              )}
-              {t.now}
-            </button>
+            <Tip content={beforeReset ? <TipText body={t.mayRefuse(at(intent.resetsAt))} /> : null}>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={disabled || !!busy}
+                onClick={() => void act("now")}
+              >
+                {busy === "now" ? (
+                  <LoaderCircle size={14} className="spin" />
+                ) : (
+                  <Play size={14} />
+                )}
+                {t.now}
+              </button>
+            </Tip>
             <button
               type="button"
               className="secondary-button"
@@ -399,17 +399,18 @@ export function AutoContinueSetting({
     <div className="auto-continue-setting" id="agent-auto-continue" tabIndex={-1}>
       <dt>{t.usageLimit}</dt>
       <dd>
-        <select
-          aria-label={t.selectLabel}
-          value={value}
-          disabled={disabled || busy}
-          onChange={(e) => void choose(e.target.value)}
-          title={t.selectTitle}
-        >
-          <option value="default">{t.default(view.workspace)}</option>
-          <option value="on">{t.resume}</option>
-          <option value="off">{t.wait}</option>
-        </select>
+        <Tip content={<TipText body={t.selectTitle} />} side="left" size="wide">
+          <select
+            aria-label={t.selectLabel}
+            value={value}
+            disabled={disabled || busy}
+            onChange={(e) => void choose(e.target.value)}
+          >
+            <option value="default">{t.default(view.workspace)}</option>
+            <option value="on">{t.resume}</option>
+            <option value="off">{t.wait}</option>
+          </select>
+        </Tip>
         <button
           type="button"
           className="inline-link"
@@ -560,9 +561,11 @@ export function AutoContinueDefault({ active }: { active: boolean }) {
           )}
         </div>
         {view && (
-          <span className="settings-current" title={t.inUse}>
-            {view.enabled ? t.resume : t.wait}
-          </span>
+          <Tip content={<TipText title={t.inUse} />}>
+            <span className="settings-current">
+              {view.enabled ? t.resume : t.wait}
+            </span>
+          </Tip>
         )}
       </header>
       {view && (

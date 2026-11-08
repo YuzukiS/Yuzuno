@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, us
 import { LoaderCircle, RotateCcw } from "lucide-react";
 import { api, post, errorText } from "./api";
 import { Modal } from "./components";
+import { Tip, TipText } from "./Tip";
 import { RestoreDialog } from "./ClaudeCheckpoint";
 import type { Agent, NativeTurn } from "./types";
 import "./rewind.css";
@@ -18,10 +19,11 @@ export function RewindButton({ agent, turn, onDraft }: { agent: Agent; turn: Nat
   // OpenCode's revert is held by the Agent's own host, not by this turn, which it removes.
   if (opencode && !openRevert) return null;
   return <>
-    <button type="button" className="quiet-button rewind-open" disabled={blocked || !onDraft}
-      title={blocked ? "Finish the active turn and pending answers before rewinding"
-        : opencode ? "Preview reverting to before this turn, with its files" : "Preview going back to before this turn"}
-      onClick={() => opencode ? openRevert?.(agent.id, turn.id) : setOpen(true)}><RotateCcw size={12} />Rewind</button>
+    <Tip content={blocked ? <TipText body="Finish the active turn and pending answers before rewinding" />
+      : <TipText title={opencode ? "Preview reverting to before this turn, with its files" : "Preview going back to before this turn"} />}>
+      <button type="button" className="quiet-button rewind-open" disabled={blocked || !onDraft}
+        onClick={() => opencode ? openRevert?.(agent.id, turn.id) : setOpen(true)}><RotateCcw size={12} />Rewind</button>
+    </Tip>
     {open && <RewindDialog agent={agent} turn={turn} onDraft={onDraft} onClose={() => setOpen(false)} />}
   </>;
 }

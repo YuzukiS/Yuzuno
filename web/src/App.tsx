@@ -4669,17 +4669,18 @@ export function App() {
                     onSubmit={() => void send()}
                   />
                   {offerExpand && (
-                    <button
-                      type="button"
-                      className="composer-tool composer-expand"
-                      aria-label={expanded ? shell.collapseDraft : shell.expandDraft}
-                      title={expanded ? shell.collapseDraft : shell.expandDraft}
-                      // A click leaves the caret where it was in the text.
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => setExpandedFor(expanded ? null : selected)}
-                    >
-                      {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-                    </button>
+                    <Tip content={<TipText title={expanded ? shell.collapseDraft : shell.expandDraft} />} describe={false}>
+                      <button
+                        type="button"
+                        className="composer-tool composer-expand"
+                        aria-label={expanded ? shell.collapseDraft : shell.expandDraft}
+                        // A click leaves the caret where it was in the text.
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => setExpandedFor(expanded ? null : selected)}
+                      >
+                        {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                      </button>
+                    </Tip>
                   )}
                   <ImageAttachments images={draft.images || []} description={imageNote ?? undefined} onRemove={previewMode || draftBlocked ? undefined : id => setDraft(selected, current => ({ ...current, images: current.images?.filter(image => image.id !== id) }))}
                     annotateThumbnails onAnnotate={previewMode || draftBlocked ? undefined : image => markUpDraftImage(image)} />
@@ -4702,7 +4703,7 @@ export function App() {
                           so it can say why. */}
                       <ComposerAddMenu
                         label={shell.addMenu}
-                        title={shell.addMenuTitle}
+                        tip={<TipText title={shell.addMenuLabel} meta={[shell.addImages, shell.markUp, shell.askResult]} />}
                         menuLabel={shell.addMenuLabel}
                         disabled={previewMode}
                         busy={imageUploads.busy}
@@ -4711,7 +4712,8 @@ export function App() {
                             key: "images",
                             label: imageUploads.busy ? shell.savingImages : shell.addImages,
                             icon: <ImagePlus size={16} />,
-                            title: imageSupported ? shell.addImagesTitle(imageNote) : shell.imagesOnly,
+                            // Unavailable, its note under it already says why.
+                            tip: imageSupported ? <TipText body={shell.imageRules} meta={imageNote} /> : undefined,
                             note: imageSupported ? undefined : shell.imagesOnly,
                             unavailable: !imageSupported,
                             disabled: draftBlocked || imageUploads.busy,
@@ -4721,14 +4723,14 @@ export function App() {
                             key: "markUp",
                             label: shell.markUp,
                             icon: <SquareDashedMousePointer size={16} />,
-                            title: shell.markUpTitle,
+                            tip: <TipText title="Point & Fix" body={shell.markUpBody} />,
                             onSelect: () => pointFixPicker.current?.click(),
                           },
                           {
                             key: "result",
                             label: shell.askResult,
                             icon: <Shapes size={16} />,
-                            title: shell.askResultTitle,
+                            tip: <TipText body={shell.askResultBody} />,
                             onSelect: (plus) => {
                               resultRequestFrom.current = plus;
                               setResultRequestFor(selected);
@@ -4789,43 +4791,51 @@ export function App() {
                           </button>
                         </Tip>
                       )}
-                      <button
-                        type="submit"
-                        className="send-button"
-                        disabled={
-                          !hasDraft ||
-                          imageUploads.busy ||
-                          draftBlocked ||
-                          !currentDetail ||
-                          sending ||
-                          cannotSendWhileWorking ||
-                          holdForRecovery ||
-                          previewMode ||
-                          !!workspaceError
-                        }
-                        aria-label={sendTurnId ? shell.sendWhileWorking : shell.sendMessage}
-                        title={
-                          cannotSendWhileWorking || closed
-                            ? shell.waitOrInterrupt
-                            : holdForRecovery
-                              ? recovery === "collaboration"
-                                ? shell.reconnectWorkspace
-                                : recovery === "missing"
-                                  ? shell.endOrCheck
-                                  : recovery === "disconnected"
-                                    ? shell.reconnectDisconnected
-                                    : shell.reconnectLast
-                              : sendTurnId && !isClaude
-                              ? shell.addInput
-                              : shell.sendMessage
+                      {/* What Send does now, its key, and why it can't yet. */}
+                      <Tip
+                        content={
+                          <TipText
+                            title={sendTurnId && !isClaude ? shell.addInput : shell.sendMessage}
+                            kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`}
+                            body={
+                              cannotSendWhileWorking || closed
+                                ? shell.waitOrInterrupt
+                                : holdForRecovery
+                                  ? recovery === "collaboration"
+                                    ? shell.reconnectWorkspace
+                                    : recovery === "missing"
+                                      ? shell.endOrCheck
+                                      : recovery === "disconnected"
+                                        ? shell.reconnectDisconnected
+                                        : shell.reconnectLast
+                                  : undefined
+                            }
+                          />
                         }
                       >
-                        {sending ? (
-                          <LoaderCircle size={17} className="spin" />
-                        ) : (
-                          <ArrowUp size={18} />
-                        )}
-                      </button>
+                        <button
+                          type="submit"
+                          className="send-button"
+                          disabled={
+                            !hasDraft ||
+                            imageUploads.busy ||
+                            draftBlocked ||
+                            !currentDetail ||
+                            sending ||
+                            cannotSendWhileWorking ||
+                            holdForRecovery ||
+                            previewMode ||
+                            !!workspaceError
+                          }
+                          aria-label={sendTurnId ? shell.sendWhileWorking : shell.sendMessage}
+                        >
+                          {sending ? (
+                            <LoaderCircle size={17} className="spin" />
+                          ) : (
+                            <ArrowUp size={18} />
+                          )}
+                        </button>
+                      </Tip>
                     </div>
                   </div>
                 </form>
@@ -4944,14 +4954,15 @@ export function App() {
                 <p lang="">
                   {agent.workSummary.source === "user" && agent.workSummary.requestParts?.length ? (
                     <RequestSummary agentId={agent.id} summary={agent.workSummary} />
-                  ) : <button
-                    className="inspector-work-source"
-                    onClick={() => openRailSource(agent, agent.workSummary!)}
-                    title={summaryOrigin(agent.workSummary, language)}
-                  >
-                    {agent.workSummary.source === "agent" ? shell.agentReport : ""}
-                    {agent.workSummary.text}
-                  </button>}
+                  ) : <Tip content={<TipText title={summaryOrigin(agent.workSummary, language)} />} side="left">
+                    <button
+                      className="inspector-work-source"
+                      onClick={() => openRailSource(agent, agent.workSummary!)}
+                    >
+                      {agent.workSummary.source === "agent" ? shell.agentReport : ""}
+                      {agent.workSummary.text}
+                    </button>
+                  </Tip>}
                 </p>
               ) : (
                 <p className="field-hint">{shell.noTask}</p>
@@ -4960,7 +4971,9 @@ export function App() {
               <dl>
                 <div>
                   <dt>{shell.workingFolder}</dt>
-                  <dd title={agent.cwd}>{workingFolder(agent.cwd)}</dd>
+                  <Tip content={<TipText label={shell.workingFolder} value={agent.cwd} />} side="left" size="wide">
+                    <dd>{workingFolder(agent.cwd)}</dd>
+                  </Tip>
                 </div>
                 <div>
                   <dt>{shell.harness}</dt>
@@ -4978,9 +4991,9 @@ export function App() {
                 </div>
                 <div>
                   <dt>{shell.session}</dt>
-                  <dd title={nativeSession(agent)}>
-                    {nativeSession(agent)?.slice(0, 8) || shell.notStarted}
-                  </dd>
+                  <Tip content={nativeSession(agent) ? <TipText label={shell.session} value={nativeSession(agent)} /> : null} side="left" size="wide">
+                    <dd>{nativeSession(agent)?.slice(0, 8) || shell.notStarted}</dd>
+                  </Tip>
                 </div>
                 {isClaude && (
                   <ClaudeRuntimeFacts runtime={currentDetail?.claudeRuntime} />

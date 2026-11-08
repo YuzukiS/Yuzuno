@@ -5,6 +5,7 @@ import { AnswerAgain, DraftNotSaved, useUnconfirmedAnswer } from "./unconfirmed-
 import { choiceAnswers, choiceEmpty, useRequestDraft } from "./request-draft";
 import { claudeCodeFacts } from "./claude-runtime";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
+import { Tip, TipLines, TipText } from "./Tip";
 import { cardWords } from "./subagent-text";
 import { callFacts } from "./tool-call";
 import { CallDetails, CallName, ToolCallSummary, callIcon } from "./ToolCall";
@@ -105,19 +106,34 @@ export function ClaudeRuntimeFacts({ runtime }: { runtime?: ClaudeRuntime | null
   const reported = runtime?.rateLimitsAt ? t.reportedAt(new Date(runtime.rateLimitsAt).toLocaleString()) : "";
   const cli = claudeCodeFacts(runtime);
   return <>
+    {/* In the panel's narrow column: each tip opens toward the conversation. */}
     {runtime?.permissionMode && <div><dt>{t.mode}</dt>
-      <dd title={t.modeTitle}>{modeName(runtime.permissionMode)}{t.reported}</dd>
+      <Tip content={<TipText body={t.modeTitle} />} side="left" size="wide">
+        <dd>{modeName(runtime.permissionMode)}{t.reported}</dd>
+      </Tip>
     </div>}
     {runtime?.effort?.level && <div><dt>{t.effort}</dt>
-      <dd title={t.effortTitle}>{runtime.effort.level}{t.reported}</dd>
+      <Tip content={<TipText body={t.effortTitle} />} side="left" size="wide">
+        <dd>{runtime.effort.level}{t.reported}</dd>
+      </Tip>
     </div>}
-    {who && <div><dt>{t.account}</dt><dd title={[who, runtime?.version && `Claude Code ${runtime.version}`].filter(Boolean).join("\n")}>{who}</dd></div>}
+    {who && <div><dt>{t.account}</dt>
+      <Tip content={<TipLines text={[who, runtime?.version && `Claude Code ${runtime.version}`].filter(Boolean).join("\n")} />} side="left" size="wide">
+        <dd>{who}</dd>
+      </Tip>
+    </div>}
     {limits.length > 0 && <div><dt>{t.planUsage}</dt>
-      <dd title={[...limits.map(l => l.expired ? t.windowWaiting(l.name, l.resets) : t.windowUsed(l.name, l.percent, l.resets)), reported].filter(Boolean).join("\n")}>
-        {limits.map(l => l.expired ? t.windowReset(l.name) : `${l.name} ${l.percent}%`).join(" · ")}{status}
-      </dd>
+      <Tip content={<TipLines text={[t.planUsage, ...limits.map(l => l.expired ? t.windowWaiting(l.name, l.resets) : t.windowUsed(l.name, l.percent, l.resets)), reported].filter(Boolean).join("\n")} />} side="left" size="wide">
+        <dd>
+          {limits.map(l => l.expired ? t.windowReset(l.name) : `${l.name} ${l.percent}%`).join(" · ")}{status}
+        </dd>
+      </Tip>
     </div>}
-    {cli && <div><dt>Claude Code</dt><dd title={cli.title}>{cli.text}</dd></div>}
+    {cli && <div><dt>Claude Code</dt>
+      <Tip content={<TipLines text={`Claude Code ${cli.text}\n${cli.title}`} />} side="left" size="wide">
+        <dd>{cli.text}</dd>
+      </Tip>
+    </div>}
   </>;
 }
 

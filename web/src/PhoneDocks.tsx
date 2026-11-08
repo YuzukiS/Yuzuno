@@ -9,6 +9,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { BriefcaseBusiness, History } from "lucide-react";
 import { strings, useStrings } from "./i18n";
 import { animates } from "./motion";
+import { Tip, TipText } from "./Tip";
 import "./phone-docks.css";
 
 // The two buttons' own names (T-189).
@@ -148,30 +149,32 @@ export function PhoneDockButtons({
           onClick={close}
         />
       ) : leaving && <div className="phone-dock-scrim" aria-hidden="true" inert />}
-      <button
-        ref={workButton}
-        type="button"
-        className="phone-dock-button phone-dock-work"
-        aria-expanded={open === "work"}
-        aria-label={t.work}
-        title={t.work}
-        onClick={() => (open === "work" ? close() : onOpen("work"))}
-      >
-        <BriefcaseBusiness size={16} aria-hidden="true" />
-        <span className="phone-dock-signal" aria-hidden="true" />
-      </button>
-      <button
-        ref={turnsButton}
-        type="button"
-        className="phone-dock-button phone-dock-turns"
-        aria-expanded={open === "turns"}
-        aria-label={inputs ? t.readingInput(turn, turns) : t.reading(turn, turns)}
-        title={inputs ? t.inputs : t.turns}
-        onClick={() => (open === "turns" ? close() : onOpen("turns"))}
-      >
-        <History size={14} aria-hidden="true" />
-        <span>{turn}</span>
-      </button>
+      <Tip content={<TipText title={t.work} />} describe={false}>
+        <button
+          ref={workButton}
+          type="button"
+          className="phone-dock-button phone-dock-work"
+          aria-expanded={open === "work"}
+          aria-label={t.work}
+          onClick={() => (open === "work" ? close() : onOpen("work"))}
+        >
+          <BriefcaseBusiness size={16} aria-hidden="true" />
+          <span className="phone-dock-signal" aria-hidden="true" />
+        </button>
+      </Tip>
+      <Tip content={<TipText title={inputs ? t.inputs : t.turns} />} describe={false}>
+        <button
+          ref={turnsButton}
+          type="button"
+          className="phone-dock-button phone-dock-turns"
+          aria-expanded={open === "turns"}
+          aria-label={inputs ? t.readingInput(turn, turns) : t.reading(turn, turns)}
+          onClick={() => (open === "turns" ? close() : onOpen("turns"))}
+        >
+          <History size={14} aria-hidden="true" />
+          <span>{turn}</span>
+        </button>
+      </Tip>
     </>
   );
 }

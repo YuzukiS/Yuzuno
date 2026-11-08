@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SquareDashedMousePointer, X } from "lucide-react";
 import { Modal } from "./components";
-import { Tip } from "./Tip";
+import { Tip, TipText } from "./Tip";
 import { API_BASE } from "./api";
 import { ImageViewer } from "./ImageViewer";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
@@ -16,7 +16,7 @@ const text = strings({
   image: (n: number) => `Image ${n}`,
   attached: "Attached image",
   markUp: (n: number) => `Mark up image ${n}`,
-  markUpTitle: "Point & Fix · mark areas on this image",
+  markUpBody: "Mark areas on this image",
   remove: (n: number) => `Remove image ${n}`,
   original: "Original image attached to this message",
   unavailable: "This saved image is unavailable. The original file may have been removed from this Core.",
@@ -28,7 +28,7 @@ const text = strings({
   image: (n) => `图片 ${n}`,
   attached: "附加的图片",
   markUp: (n) => `标注图片 ${n}`,
-  markUpTitle: "Point & Fix · 在这张图片上标出区域",
+  markUpBody: "在这张图片上标出区域",
   remove: (n) => `移除图片 ${n}`,
   original: "此消息附带的原图",
   unavailable: "这张已保存的图片不可用，原文件可能已从此 Core 中移除。",
@@ -85,15 +85,16 @@ export function ImageAttachments({
             </button>
           </Tip>
           {onAnnotate && annotateThumbnails && (
-            <button
-              type="button"
-              className="input-image-markup"
-              aria-label={t.markUp(index + 1)}
-              title={t.markUpTitle}
-              onClick={() => onAnnotate(image)}
-            >
-              <SquareDashedMousePointer size={11} />
-            </button>
+            <Tip content={<TipText title="Point & Fix" body={t.markUpBody} />} describe={false}>
+              <button
+                type="button"
+                className="input-image-markup"
+                aria-label={t.markUp(index + 1)}
+                onClick={() => onAnnotate(image)}
+              >
+                <SquareDashedMousePointer size={11} />
+              </button>
+            </Tip>
           )}
           {onRemove && (
             <button

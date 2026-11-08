@@ -132,6 +132,20 @@ const browser = await chromium.launch({
   executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium",
 });
 let page;
+/** What `locator`'s tip says (YN-44: the status bar's titles are tips), its
+ * lines joined as its title's were, read the way a pointer resting on it
+ * shows it. */
+const tipText = async (locator) => {
+  await page.mouse.move(2, 2);
+  await page.waitForTimeout(500);
+  await locator.hover();
+  const tip = page.locator('.tip[role="tooltip"]');
+  await tip.waitFor({ timeout: 3000 });
+  const text = await tip.evaluate((t) => [...t.children].map((c) => c.textContent.trim()).filter(Boolean).join("\n"));
+  await page.mouse.move(2, 2);
+  await tip.waitFor({ state: "detached", timeout: 3000 });
+  return text;
+};
 try {
   page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await page.addInitScript(() => {
@@ -246,11 +260,11 @@ try {
   const claude = bar.locator(".statusbar-item", { hasText: "Claude" });
   assert.equal((await claude.innerText()).trim(), "Claude 5h 42% · 7d 18%");
   // Whose plan it is stays with the report.
-  assert.match(await claude.getAttribute("title"), /for me@example\.com · max[\s\S]*Reported /);
+  assert.match(await tipText(claude), /for me@example\.com · max[\s\S]*Reported /);
   await page.getByRole("button", { name: "Open Mori", exact: true }).click();
   await page.getByRole("textbox", { name: "Message Mori" }).waitFor();
   assert.equal((await claude.innerText()).trim(), "Claude 5h 42% · 7d 18%");
-  assert.match(await claude.getAttribute("title"), /for me@example\.com · max/);
+  assert.match(await tipText(claude), /for me@example\.com · max/);
   check("Claude plan usage as last reported, with its account, kept while a Codex Agent is open");
 
   // Codex plan usage: Mori's own report, from Mori's native connection.
@@ -259,7 +273,7 @@ try {
   const codexEvent = (detail) => page.evaluate((d) => window.dispatchEvent(new CustomEvent("yuzuno:codex-usage", { detail: d })), detail);
   const codexShows = (text) => page.waitForFunction((t) => document.querySelector(".statusbar-codex")?.textContent.trim() === t, text);
   await codexShows("Codex 5h 23% · 7d 41%");
-  assert.match(await codex.getAttribute("title"), /^Codex plan usage for me@work\.example · pro, from Core host\n/);
+  assert.match(await tipText(codex), /^Codex plan usage for me@work\.example · pro, from Core host\n/);
   assert.equal((await claude.innerText()).trim(), "Claude 5h 42% · 7d 18%", "Claude's report stays its own");
   // A newer report shows; another Agent's, or an older one, does not.
   await codexEvent({ agentId: "a", usage: codexUsage(6, { usedPercent: 100 }, { usedPercent: 44 }) });
@@ -304,7 +318,7 @@ try {
   // disconnected there.
   const machines = bar.getByRole("button", { name: /machine/ });
   assert.equal((await machines.innerText()).trim(), "1 machine · 1 unreachable");
-  assert.match(await machines.getAttribute("title"), /devbox: reachable at its last check.*1 Agent disconnected/s);
+  assert.match(await tipText(machines), /devbox: reachable at its last check.*1 Agent disconnected/s);
   await machines.click();
   // Settings › Machines (YN-8): a page of Settings, its list first.
   const machinesPage = page.locator(".modal.settings-modal");

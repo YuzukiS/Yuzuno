@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { FileClock, LoaderCircle, RotateCcw } from "lucide-react";
 import { errorText, post } from "./api";
 import { Modal } from "./components";
+import { Tip, TipText } from "./Tip";
 import type { Agent } from "./types";
 import "./claude-checkpoint.css";
 
@@ -62,16 +63,18 @@ export function ClaudeCheckpointButton({
   const closed = !!agent.closedAt;
   return (
     <>
-      <button
-        type="button"
-        className="quiet-button checkpoint-open"
-        disabled={busy || closed}
-        title={closed ? "This Agent is closed" : busy ? "Files can be restored between turns" : "Preview restoring the files Claude changed after this message"}
-        onClick={() => setOpen(true)}
-      >
-        <RotateCcw size={11} />
-        Restore files…
-      </button>
+      <Tip content={closed ? <TipText body="This Agent is closed" /> : busy ? <TipText body="Files can be restored between turns" />
+        : <TipText title="Preview restoring the files Claude changed after this message" />}>
+        <button
+          type="button"
+          className="quiet-button checkpoint-open"
+          disabled={busy || closed}
+          onClick={() => setOpen(true)}
+        >
+          <RotateCcw size={11} />
+          Restore files…
+        </button>
+      </Tip>
       {open && <RestoreDialog agentId={agent.id} nativeUuid={nativeUuid} onClose={() => setOpen(false)} />}
     </>
   );
@@ -217,10 +220,12 @@ function PreviewView({ preview }: { preview: Preview }) {
         </div>
         <ul className="checkpoint-files">
           {preview.files.map((file) => (
-            <li key={file.path} title={file.path}>
-              <code>{file.shown}</code>
-              {!file.exists && <small>missing now · would be put back</small>}
-            </li>
+            <Tip key={file.path} content={file.shown !== file.path ? <TipText value={file.path} /> : null} size="wide">
+              <li>
+                <code>{file.shown}</code>
+                {!file.exists && <small>missing now · would be put back</small>}
+              </li>
+            </Tip>
           ))}
         </ul>
       </section>

@@ -14,6 +14,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { Modal } from "./components";
+import { Tip, TipText } from "./Tip";
 import { useArrivalsIn } from "./surface";
 import { AsyncQuestion } from "./AsyncQuestion";
 import { errorText } from "./api";
@@ -275,15 +276,16 @@ export const PendingQuestions = memo(
                       <small>Answer needs attention · draft kept</small>
                     )}
                 </button>
-                <button
-                  type="button"
-                  className="quiet-button question-dismiss"
-                  aria-label="Dismiss question"
-                  title="Hide from questions to answer. Your question and draft stay in the conversation."
-                  onClick={() => setDismissal(current, true)}
-                >
-                  Dismiss
-                </button>
+                <Tip content={<TipText body="Hide from questions to answer. Your question and draft stay in the conversation." />}>
+                  <button
+                    type="button"
+                    className="quiet-button question-dismiss"
+                    aria-label="Dismiss question"
+                    onClick={() => setDismissal(current, true)}
+                  >
+                    Dismiss
+                  </button>
+                </Tip>
                 {pending.length > 1 && (
                   <div
                     className="question-switcher"
