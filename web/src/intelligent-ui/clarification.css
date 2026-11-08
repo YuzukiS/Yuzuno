@@ -244,3 +244,17 @@
 .clarification-options label:hover {
   border-color: var(--focus);
 }
+
+/* What changed under an answer when its form became a newer version
+   (YN-38): said on the field, in the reading colour, with a rule beside it
+   so it reads as a note and not an error. */
+.clarification-carried {
+  margin: 0 0 0.45rem;
+  padding: 0.1rem 0 0.1rem 0.6rem;
+  border-left: 2px solid var(--yellow, #c9a227);
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+.clarification-carried p {
+  margin: 0;
+}

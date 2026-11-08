@@ -171,6 +171,86 @@ export function clarificationAnswerLabel(
     .join(", ");
 }
 
+/**
+ * What happened to one answer when its form changed (YN-38): `dropped`, picks
+ * the form no longer offers (their labels as the user saw them); `changed`, a
+ * field that now asks another kind of question, whose answer is not kept;
+ * `reworded`, a kept answer whose question or option now reads differently;
+ * `new`, a required field the answers never saw; `gone`, an answered field
+ * the form no longer asks (`field` null, `label` its question).
+ */
+export type CarryNote =
+  | { field: string; kind: "dropped"; labels: string[] }
+  | { field: string; kind: "changed" | "reworded" | "new" }
+  | { field: null; kind: "gone"; label: string };
+
+const answered = (value: unknown) =>
+  Array.isArray(value) ? value.length > 0 : typeof value === "string" && value.trim() !== "";
+
+/**
+ * Answers given on `basis` (or saved without it), carried to `form`, a newer
+ * version of the same form (YN-38): an answer stays only where its field ID
+ * is still a field of the same type and each option ID picked is still one
+ * of its options. Nothing is ever moved to another field or option: a pick
+ * no longer offered leaves its field empty, never at its default. Fields the
+ * answers never saw start at their defaults. `notes` say what changed, on
+ * the fields concerned; with no basis, only what the values themselves show.
+ */
+export function carryClarification(
+  basis: ClarificationProps | null,
+  form: ClarificationProps,
+  saved: unknown,
+): { values: ClarificationValues; notes: CarryNote[] } {
+  const given =
+    saved && typeof saved === "object" && !Array.isArray(saved)
+      ? (saved as Record<string, unknown>)
+      : {};
+  const before = new Map((basis?.fields ?? []).map((field) => [field.id, field]));
+  const values = initialClarificationValues(form);
+  const notes: CarryNote[] = [];
+  for (const field of form.fields) {
+    const old = before.get(field.id);
+    const had = Object.hasOwn(given, field.id) ? given[field.id] : undefined;
+    if (had === undefined) {
+      // Not among the answers: new to them when the form they were given on is known.
+      if (basis && !old && field.required) notes.push({ field: field.id, kind: "new" });
+      continue;
+    }
+    const shape = field.type === "multi" ? Array.isArray(had) : typeof had === "string";
+    if ((old && old.type !== field.type) || !shape) {
+      values[field.id] = field.type === "multi" ? [] : "";
+      if (answered(had)) notes.push({ field: field.id, kind: "changed" });
+      continue;
+    }
+    if (field.type === "text") {
+      values[field.id] = (had as string).slice(0, 2000);
+      if (old && old.label !== field.label && answered(had)) notes.push({ field: field.id, kind: "reworded" });
+      continue;
+    }
+    const offered = new Map(field.options.map((option) => [option.id, option.label]));
+    const picked = (Array.isArray(had) ? had : had ? [had] : []).filter(
+      (id): id is string => typeof id === "string",
+    );
+    const kept = [...new Set(picked.filter((id) => offered.has(id)))];
+    const lost = picked.filter((id) => !offered.has(id));
+    values[field.id] = field.type === "single" ? (kept[0] ?? "") : kept;
+    const oldLabel = (id: string) =>
+      old && old.type !== "text" ? old.options.find((option) => option.id === id)?.label : undefined;
+    if (lost.length)
+      notes.push({ field: field.id, kind: "dropped", labels: lost.map((id) => oldLabel(id) ?? id) });
+    else if (
+      old &&
+      kept.length &&
+      (old.label !== field.label || kept.some((id) => (oldLabel(id) ?? offered.get(id)) !== offered.get(id)))
+    )
+      notes.push({ field: field.id, kind: "reworded" });
+  }
+  for (const [id, had] of Object.entries(given))
+    if (!form.fields.some((field) => field.id === id) && answered(had))
+      notes.push({ field: null, kind: "gone", label: before.get(id)?.label ?? id });
+  return { values, notes };
+}
+
 export const clarificationDraftKey = (
   identity: string,
   form: ClarificationProps,

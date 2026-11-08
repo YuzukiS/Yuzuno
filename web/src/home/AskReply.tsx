@@ -16,7 +16,7 @@ import {
   type ClarificationValues,
 } from "../intelligent-ui/clarification";
 import { relative } from "./format";
-import { dropPendingReply, outboxKey, pendingReply, resendReply, sendReply, type HomeReplyInput } from "./home-api";
+import { dropPendingReply, latestSection, outboxKey, pendingReply, resendReply, sendReply, type HomeReplyInput } from "./home-api";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import { repliedThenUpdated } from "./brief-layout";
@@ -47,6 +47,14 @@ function askRefusal(error: unknown): "changed" | "resolved" | "removed" | "reloa
   return null;
 }
 
+/** One reply to an ask (T-9): what it says, and the version of the ask it
+ * answers. `shown` is what this window shows as sent, kept with it here only. */
+type AskSend = { text: string; choice?: string; shown: string; askVersion: number; form?: HomeReplyInput["form"] };
+
+/** The same reply to the ask as Core has it now, when it still answers the
+ * same thing there (YN-38), or null: then nothing more is sent. */
+type Follow = (now: Section) => AskSend | null;
+
 /** One reply slot (a section, or the project), with its retry record. */
 function useReply({ projectId, workspaceId, onSent }: ReplyContext, key?: string) {
   const t = useStrings(homeText);
@@ -55,27 +63,60 @@ function useReply({ projectId, workspaceId, onSent }: ReplyContext, key?: string
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState<MessageReceipt | null>(null);
-  /** `askVersion`: the version of the ask this answers, for a reply to one;
-   * `shown`: what this window shows as sent, kept with it here only. */
-  const send = (agentId: string, text: string, choice?: string, askVersion?: number, shown?: string, form?: HomeReplyInput["form"]) =>
-    run(askVersion, () => sendReply(slot, projectId, {
-      key, agentId, text, choice, shown,
-      ...(askVersion !== undefined ? { askVersion, workspaceId } : {}),
-      ...(form ? { form } : {}),
-    }));
-  /** The unconfirmed reply again, exactly as it was sent. */
-  const resend = () => run(pendingReply(slot)?.askVersion, () => resendReply(slot, projectId, key));
-  async function run(askVersion: number | undefined, go: () => Promise<MessageReceipt>) {
+  /** A reply to the project as a whole. */
+  const send = (agentId: string, text: string) =>
+    run(false, async () => {
+      const value = await sendReply(slot, projectId, { key, agentId, text });
+      setReceipt(value);
+      onSent();
+      return value;
+    });
+  /**
+   * A reply to an ask, to the version in `reply` (YN-38: always the one on
+   * screen). Refused because that is no longer the ask's latest version, it
+   * reads the ask as Core has it now and sends `follow`'s reply to it, as a
+   * new message: Core never had the refused one. Resolves to the version it
+   * went to.
+   */
+  const answer = (agentId: string, reply: AskSend, follow?: Follow) =>
+    run(true, () => onward(agentId, () => sendReply(slot, projectId, { key, agentId, ...reply, workspaceId }), reply.askVersion, follow));
+  /** The unconfirmed reply again, exactly as it was sent; refused because
+   * the ask moved on, `follow`'s reply to the latest. */
+  const resend = (follow?: Follow) => {
+    const was = pendingReply(slot);
+    return run(true, () => onward(was?.agentId ?? "", () => resendReply(slot, projectId, key), was?.askVersion ?? null, follow));
+  };
+  async function onward(agentId: string, first: () => Promise<MessageReceipt>, version: number | null, follow?: Follow) {
+    let attempt = first;
+    let at = version;
+    // The latest can move on again while this is sent: a few times, then the refusal is shown.
+    for (let tries = 0; ; tries += 1) {
+      try {
+        const value = await attempt();
+        setReceipt(value);
+        onSent();
+        return { receipt: value, version: at };
+      } catch (e) {
+        if (!follow || !key || at === null || tries >= 2 || askRefusal(e) !== "changed") throw e;
+        const now = await latestSection(projectId, key).catch(() => null);
+        const next =
+          now && !now.history && now.kind === "ask" && now.ask && now.ask.state !== "resolved" && now.version !== at
+            ? follow(now)
+            : null;
+        if (!next) throw e;
+        at = next.askVersion;
+        attempt = () => sendReply(slot, projectId, { key, agentId, ...next, workspaceId });
+      }
+    }
+  }
+  async function run<T>(asks: boolean, go: () => Promise<T>) {
     if (busy) throw new Error("A reply is already being sent.");
     setBusy(true);
     setError("");
     try {
-      const value = await go();
-      setReceipt(value);
-      onSent();
-      return value;
+      return await go();
     } catch (e) {
-      const refused = askVersion !== undefined ? askRefusal(e) : null;
+      const refused = asks ? askRefusal(e) : null;
       // An older Core refused the field before reading the reply: never submitted.
       if (refused === "reload" && e instanceof HttpError && e.code !== "message_not_submitted") dropPendingReply(slot);
       setError(refused === "changed" ? t.askChanged : refused === "resolved" ? t.askResolved
@@ -87,7 +128,7 @@ function useReply({ projectId, workspaceId, onSent }: ReplyContext, key?: string
       setBusy(false);
     }
   }
-  return { send, resend, busy, error, receipt, kept };
+  return { send, answer, resend, busy, error, receipt, kept };
 }
 
 export function TargetPicker({
@@ -207,26 +248,29 @@ function formReply(form: ClarificationProps, values: ClarificationValues) {
 
 /**
  * An Ask's free-text reply not sent yet (T-182), kept apart from card replies:
- * its text, recipient and the version of the ask it was begun on. That version
- * goes with it (T-9): Core sends it only while it is still the ask's version,
- * so a reply begun on one version of the question never goes to another, and
- * this window asks first.
+ * its text and recipient. It goes to the ask's latest version (YN-38), the one
+ * on screen when it is sent; `version`, the one it was begun on, is kept by
+ * drafts from before and is not used.
  */
-type AskDraft = { key: string; text: string; version: number; agentId: string; at: string };
+type AskDraft = { key: string; text: string; version?: number; agentId: string; at: string };
 const askDrafts = draftStore<AskDraft>("yuzuno.home-ask-drafts.v1");
 
 /**
- * The version of the ask a form's answers were begun on (T-9), under the key
- * the form keeps the answers themselves. Like free text, answers begun on
- * one version go to another only once the user says so.
+ * The form a form's answers were given on (YN-38): its version and, from
+ * YN-38, the form itself, under the key the form keeps the answers. Answers
+ * given on another version are carried to the one on screen, by field and
+ * option ID, and the form says on each field what changed.
  */
-type FormBegun = { version: number; at: string };
+type FormBegun = { version: number; at: string; form?: ClarificationProps };
 const formVersions = draftStore<FormBegun>("yuzuno.home-ask-form-versions.v1");
 
 /**
  * The reply controls an ask section declares. Every one of them sends one
  * user message through Core, to the section's owner unless the user picks
- * another Agent. Nothing here acts on the Agent's behalf.
+ * another Agent. Nothing here acts on the Agent's behalf. A reply always
+ * answers the ask's latest version, the one on screen (YN-38): there is no
+ * step to move a reply to a newer version, and an answer is never applied to
+ * an option or field the user did not pick (T-9).
  */
 /** `inRow`: in a replied Ask's answer card (YN-3), which already says it is
  * replied and whom it waits for: the reply is labelled as the user's.
@@ -248,7 +292,7 @@ export function AskReply({
   const t = homeText(language);
   const ask = section.ask!;
   const reply = ask.reply;
-  const { send, resend, busy, error, receipt, kept } = useReply(context, section.key);
+  const { answer, resend, busy, error, receipt, kept } = useReply(context, section.key);
   const ownerOpen =
     section.owner.state === "active" && context.agents.some((a) => a.id === section.owner.agentId);
   // Kept once the Workspace is known: another one may hold the same project
@@ -284,15 +328,11 @@ export function AskReply({
   }
   // Always to the recipient on screen: one chosen while the text was empty
   // goes with what is written next.
-  const write = (patch: Partial<AskDraft>) =>
-    keep({
-      ...(latest.current ?? { key: section.key, text: "", version: section.version }),
-      agentId: target,
-      ...patch,
-      at: new Date().toISOString(),
-    });
-  // Emptied, it begins again at the version on screen.
-  const writeText = (text: string) => write(text.trim() ? { text } : { text, version: section.version });
+  const write = (patch: Partial<AskDraft>) => {
+    const { version: _begun, ...was } = latest.current ?? { key: section.key, text: "" };
+    keep({ ...was, agentId: target, ...patch, at: new Date().toISOString() } as AskDraft);
+  };
+  const writeText = (text: string) => write({ text });
   const pickTarget = (agentId: string) => {
     setTarget(agentId);
     if (latest.current?.text.trim()) write({ agentId });
@@ -308,8 +348,6 @@ export function AskReply({
   const unconfirmed = pending ?? resending;
   const [wholePreview, setWholePreview] = useState(false);
   const [discarded, setDiscarded] = useState(false);
-  // Begun on another version of the ask: sent only once the user says which.
-  const otherVersion = !!draft?.text.trim() && draft.version !== section.version;
   const [again, setAgain] = useState(false);
   // The version this window replied to: a later version from the owner
   // (for example a reopened question) asks again.
@@ -321,26 +359,27 @@ export function AskReply({
     return parsed.success ? parsed.data : undefined;
   }, [reply.form]);
   // The form saves its answers under this identity and key, the form's own;
-  // the version they were begun on is kept under the same key. A discard
-  // starts the form afresh.
+  // the form they were given on is kept under the same key.
   const formIdentity = `home:${context.workspaceId}:${context.projectId}:${section.key}`;
   const formKey = form && context.workspaceId ? clarificationDraftKey(formIdentity, form) : null;
   const [formEpoch, setFormEpoch] = useState(0);
-  // Read again whenever the form changes: the answers it saved and their version.
+  // Read again whenever the form changes: the answers it saved and their form.
   const [, setFormEdits] = useState(0);
   // What this window set, for the form it set it on (its key, or its ID
   // before the Workspace is known, T-195): this browser keeps it if it can,
   // and this window keeps it whether or not it could.
   const formRef = formKey ?? (form ? `id:${form.id}` : "");
-  const begunHere = useRef<{ form: string; version: number | null } | null>(null);
+  const begunHere = useRef<{ form: string; begun: FormBegun | null } | null>(null);
   const formBegun = !form ? null
-    : begunHere.current?.form === formRef ? begunHere.current.version
-    : formKey ? formVersions.load()[formKey]?.version ?? null
+    : begunHere.current?.form === formRef ? begunHere.current.begun
+    : formKey ? formVersions.load()[formKey] ?? null
     : null;
-  function setFormBegun(version: number | null) {
+  /** The answers on screen are given on the form on screen now. */
+  function setFormBegun(on: ClarificationProps | null) {
     if (!form) return;
-    begunHere.current = { form: formRef, version };
-    if (formKey) formVersions.save(formKey, version === null ? null : { version, at: new Date().toISOString() });
+    const begun = on ? { version: section.version, at: new Date().toISOString(), form: on } : null;
+    begunHere.current = { form: formRef, begun };
+    if (formKey) formVersions.save(formKey, begun);
     setFormEdits((n) => n + 1);
   }
   // Learning the Workspace keeps what was begun before it, as the form keeps
@@ -348,52 +387,40 @@ export function AskReply({
   useEffect(() => {
     const here = begunHere.current;
     if (!formKey || !form || here?.form !== `id:${form.id}`) return;
-    begunHere.current = { form: formKey, version: here.version };
-    formVersions.save(formKey, here.version === null ? null : { version: here.version, at: new Date().toISOString() });
+    begunHere.current = { form: formKey, begun: here.begun };
+    formVersions.save(formKey, here.begun);
     setFormEdits((n) => n + 1);
   }, [formKey, form]);
   // Written in or sent from this form as it is mounted, even if this browser
   // could not keep that.
   const formTouched = useRef(false);
-  // Begun on the version on screen when first changed.
   function formChanged(target: EventTarget) {
     if (!form || !(target as HTMLElement).closest?.(".clarification")) return;
     formTouched.current = true;
-    // Answers of an unknown version stay so when changed: only Refer or
-    // Discard settles them.
-    if (formBegun === null && !formUnknown) setFormBegun(section.version);
-    else setFormEdits((n) => n + 1);
-  }
-  function discardForm() {
-    try {
-      if (formKey) localStorage.removeItem(formKey);
-    } catch {
-      /* The form below starts afresh all the same. */
-    }
-    formTouched.current = false;
-    setFormBegun(null);
-    setFormEpoch((n) => n + 1);
+    setFormBegun(form);
   }
   // A form nobody wrote in or sent from shows the question as it is now: a
   // newer one under the same ID brings its own fields and defaults, and the
-  // form starts afresh with them. Answers begun or sent here keep theirs.
+  // form starts afresh with them. Answers begun or sent here are carried to
+  // it (the form's `carry`).
   const formShape = form ? JSON.stringify(form) : "";
   const [shownShape, setShownShape] = useState(formShape);
   if (shownShape !== formShape) {
     setShownShape(formShape);
     if (formBegun === null && !formTouched.current) setFormEpoch((n) => n + 1);
   }
-  // Answers this browser kept without the version they were begun on (that
-  // record went, or they are older than it) are never taken for this
-  // version's. A form at its defaults has none kept.
+  // Answers this browser kept from another version of the ask, or without
+  // the version they were given on: said once above the form, until they are
+  // sent; the form says what changed on each field.
   let formSaved = false;
   try {
     formSaved = !!formKey && localStorage.getItem(formKey) !== null;
   } catch {
     formSaved = false;
   }
-  const formUnknown = !!form && formBegun === null && formSaved;
-  const formOtherVersion = !!form && formBegun !== null && formBegun !== section.version;
+  const [carried, setCarried] = useState(
+    () => !!form && formSaved && (formBegun === null || formBegun.version !== section.version),
+  );
   // A reply that went again as an unconfirmed one, and Core found it
   // delivered before: that earlier version of the ask, not this one.
   const [sentBefore, setSentBefore] = useState<number | null>(null);
@@ -403,9 +430,10 @@ export function AskReply({
   const repliedBlock = useRef<HTMLDivElement>(null);
   const replyUi = useRef<HTMLDivElement>(null);
   // Shown as replied from Core's record, or from this window's delivery until
-  // Core's next read. Only the owner resolves it.
-  const replied =
-    !again && (ask.state === "replied" || (!!receipt && sentVersion === section.version));
+  // Core's next read: a reply that went to a version newer than this place
+  // has read yet is that version's. Only the owner resolves it.
+  const answeredHere = !!receipt && sentVersion !== null && sentVersion >= section.version;
+  const replied = !again && (ask.state === "replied" || answeredHere);
   // Only one of the project's open Agents takes it: a kept reply's recipient
   // may have left since.
   const targetOpen = context.agents.some((a) => a.id === target);
@@ -413,19 +441,20 @@ export function AskReply({
   const targetName = context.agents.find((a) => a.id === target)?.name || section.owner.name;
   const freeText = reply.freeText;
   const prompt = typeof freeText === "object" && freeText.prompt ? freeText.prompt : t.writeReply;
-  // `shown` is what this window shows as sent until Core's next read;
-  // `version` is the version of the ask it answers, as the user saw it.
-  const deliver = async (text: string, choice: string | undefined, shown: string, version: number, form?: HomeReplyInput["form"]) => {
+  // `reply` answers the version on screen; `follow` says what it is on the
+  // ask as Core has it, should Core have a newer one (YN-38).
+  const deliver = async (sent: AskSend, follow: Follow) => {
     setSentBefore(null);
     setDiscarded(false);
     // The reply's time Core showed as this was sent, before Core could have this one.
     const before = ask.repliedAt ?? null;
-    const value = await send(target, text, choice, version, shown, form);
+    const { receipt: value, version } = await answer(target, sent, follow);
     setSentVersion(version);
-    setSentText(shown);
+    setSentText(sent.shown);
     setAgain(false);
+    setCarried(false);
     setDelivered((n) => n + 1);
-    onReplied?.(version, before);
+    if (version !== null) onReplied?.(version, before);
     return value;
   };
   // What an unconfirmed reply said, as it went: what this window showed as
@@ -439,21 +468,27 @@ export function AskReply({
     const before = ask.repliedAt ?? null;
     setSentBefore(null);
     setResending(was);
+    // Refused because the ask moved on, never delivered: words go to its
+    // latest version; a pick or a form's answers are the user's to give again there.
+    const follow: Follow | undefined = !was.choice && !was.form
+      ? (now) => ({ text: was.text, shown: was.shown ?? was.text, askVersion: now.version })
+      : undefined;
+    let went: { version: number | null };
     try {
-      await resend();
+      went = await resend(follow);
     } catch {
       return;
     } finally {
       setResending(undefined);
     }
-    const version = was.askVersion ?? null;
+    const version = went.version;
     setSentVersion(version);
     setSentText(previewOf(was));
     setAgain(false);
     setDelivered((n) => n + 1);
     if (version !== null) onReplied?.(version, before);
     // Delivered to an earlier version of the ask: this one is still open.
-    if (version !== null && version !== section.version) setSentBefore(version);
+    if (version !== null && version < section.version) setSentBefore(version);
     // The draft that reply was sent from goes with it; one written since is
     // newer, whatever its words, and stays.
     const written = latest.current;
@@ -498,8 +533,17 @@ export function AskReply({
     setReopened((n) => n + 1);
     setAgain(true);
   }, [againRequest]);
-  // A pick sends only its id: Core quotes the label, and text would repeat it.
-  const pick = (id: string, label: string) => void deliver("", id, label, section.version).catch(() => {});
+  // A pick sends only its id: Core quotes the label, and text would repeat
+  // it. On a newer version it goes only to the same question offering the
+  // same option, worded the same (T-9).
+  const pick = (id: string, shown: string, offered: (now: NonNullable<Section["ask"]>) => unknown) => {
+    const was = JSON.stringify(offered(ask));
+    void deliver({ text: "", choice: id, shown, askVersion: section.version }, (now) =>
+      now.ask!.question === ask.question && JSON.stringify(offered(now.ask!)) === was
+        ? { text: "", choice: id, shown, askVersion: now.version }
+        : null,
+    ).catch(() => {});
+  };
   // On the answer card, the reply is on its face: only a draft kept since is said here.
   if (replied && face && delivered === 0)
     return draft?.text.trim() ? <p className="home-note">{t.askDraftAfterReply}</p> : null;
@@ -582,7 +626,7 @@ export function AskReply({
         );
       })()}
       {discarded && !pending && <p className="home-note" role="status">{t.askUnconfirmedDiscarded}</p>}
-      {sentBefore !== null && sentBefore !== section.version && (
+      {sentBefore !== null && sentBefore < section.version && (
         <p className="home-note" role="status">{t.askSentBefore(sentBefore, section.version)}</p>
       )}
       {reply.options && reply.options.length > 0 && (
@@ -593,7 +637,7 @@ export function AskReply({
               type="button"
               className="secondary-button"
               disabled={disabled || busy || !!pending}
-              onClick={() => pick(option.id, option.label)}
+              onClick={() => pick(option.id, option.label, (now) => now.reply.options?.find((o) => o.id === option.id) ?? null)}
             >
               {option.label}
             </button>
@@ -612,7 +656,7 @@ export function AskReply({
                   type="button"
                   className="secondary-button"
                   disabled={disabled || busy || !!pending}
-                  onClick={() => pick(option.id, `I choose: ${option.label}`)}
+                  onClick={() => pick(option.id, `I choose: ${option.label}`, (now) => now.reply.choice?.[side] ?? null)}
                 >
                   {t.choose(side.toUpperCase())}
                 </button>
@@ -621,66 +665,53 @@ export function AskReply({
           })}
         </div>
       )}
-      {form && formUnknown && !pending && (
-        <div className="home-kept-reply home-ask-unknown" role="status">
-          <p className="home-note">{t.askAnswersVersionUnknown}</p>
-          <div className="home-ask-options" role="group" aria-label={t.askAnswersVersionUnknown}>
-            <button type="button" className="secondary-button" disabled={busy} onClick={() => setFormBegun(section.version)}>
-              {t.askUseForCurrent}
-            </button>
-            <button type="button" className="quiet-button" disabled={busy} onClick={discardForm}>
-              <Trash2 size={13} /> {t.askClearOldAnswers}
-            </button>
-          </div>
-        </div>
+      {form && carried && !pending && (
+        <p className="home-note home-ask-carried" role="status">{t.askAnswersCarried(section.version)}</p>
       )}
       {form ? (
-        <>
-          <Clarification
-            identity={formEpoch ? `${formIdentity}#${formEpoch}` : formIdentity}
-            // Home's reply drafts already name their Workspace; this keeps the
-            // key they are saved under exactly as it was (T-195).
-            draftIdentity={context.workspaceId ? formIdentity : null}
-            form={form}
-            agentName={targetName}
-            blockedReason={
-              !targetOpen
-                ? "Choose who should get the reply."
-                : pending
-                  ? t.askUnconfirmedFirst
-                  : formOtherVersion && formBegun !== null
-                    ? t.askDraftOtherVersion(formBegun, section.version)
-                    : formUnknown
-                      ? t.askUseOrClearFirst
-                      : undefined
+        <Clarification
+          identity={formEpoch ? `${formIdentity}#${formEpoch}` : formIdentity}
+          // Home's reply drafts already name their Workspace; this keeps the
+          // key they are saved under exactly as it was (T-195).
+          draftIdentity={context.workspaceId ? formIdentity : null}
+          form={form}
+          agentName={targetName}
+          carry
+          basis={formBegun?.form ?? null}
+          onCarry={() => {
+            // Carried to the form on screen: given on it from now on.
+            setFormBegun(form);
+            setCarried(true);
+          }}
+          blockedReason={
+            !targetOpen
+              ? "Choose who should get the reply."
+              : pending
+                ? t.askUnconfirmedFirst
+                : undefined
+          }
+          // Its delivery is that of the version it answered.
+          delivery={answeredHere && receipt ? { status: receipt.status, error: receipt.error } : undefined}
+          onSubmit={context.readOnly ? undefined : async (values) => {
+            const { text, form: answers } = formReply(form, values);
+            // Sent, the answers are this version's, defaults included: kept
+            // as written ones are, for a retry and against a newer question.
+            formTouched.current = true;
+            try {
+              if (formKey) saveClarificationDraft(localStorage, formKey, values);
+            } catch {
+              /* Kept on screen in this window all the same. */
             }
-            // Its delivery is that of the version it answered.
-            delivery={receipt && sentVersion === section.version ? { status: receipt.status, error: receipt.error } : undefined}
-            onSubmit={context.readOnly ? undefined : async (values) => {
-              const { text, form: answers } = formReply(form, values);
-              // Sent, the answers are this version's, defaults included: kept
-              // as written ones are, for a retry and against a newer question.
-              formTouched.current = true;
-              try {
-                if (formKey) saveClarificationDraft(localStorage, formKey, values);
-              } catch {
-                /* Kept on screen in this window all the same. */
-              }
-              if (formBegun === null) setFormBegun(section.version);
-              await deliver(text, undefined, text, section.version, answers);
-            }}
-          />
-          {formOtherVersion && !pending && (
-            <p className="home-note home-ask-draft-note">
-              <button type="button" className="inline-link" disabled={busy} onClick={() => setFormBegun(section.version)}>
-                {t.referTo(section.version)}
-              </button>{" "}
-              <button type="button" className="inline-link" disabled={busy} onClick={discardForm}>
-                {t.discard}
-              </button>
-            </p>
-          )}
-        </>
+            setFormBegun(form);
+            const was = JSON.stringify(reply.form);
+            // On a newer version, only to the same question and the same form.
+            await deliver({ text, shown: text, askVersion: section.version, form: answers }, (now) =>
+              now.ask!.question === ask.question && JSON.stringify(now.ask!.reply.form) === was
+                ? { text, shown: text, askVersion: now.version, form: answers }
+                : null,
+            );
+          }}
+        />
       ) : form === undefined ? (
         <p className="home-note">{t.formUnavailable}</p>
       ) : null}
@@ -688,30 +719,18 @@ export function AskReply({
           words is yours, not something an Agent turns on with `freeText`,
           which only names the field. Core takes text for any ask, with or
           without a choice (project_brief/home.rs). */}
-      {otherVersion && draft && !pending ? (
-        <p className="home-note home-ask-draft-note" role="status">
-          {t.askDraftOtherVersion(draft.version, section.version)}{" "}
-          <button type="button" className="inline-link" disabled={busy} onClick={() => write({ version: section.version })}>
-            {t.referTo(section.version)}
-          </button>{" "}
-          <button type="button" className="inline-link" disabled={busy} onClick={() => keep(null)}>
-            {t.discard}
-          </button>
-        </p>
-      ) : (
-        restored && !!draft?.text.trim() && <p className="home-note">{t.askDraftKept(draft.version)}</p>
-      )}
+      {restored && !!draft?.text.trim() && <p className="home-note">{t.askDraftKept}</p>}
       <TextReply
         label={t.replyField(section.title)}
         placeholder={prompt}
         text={draft?.text ?? ""}
         onText={writeText}
         disabled={disabled}
-        held={otherVersion || !!pending}
+        held={!!pending}
         busy={busy}
         onSend={async (text) => {
-          // The version it was begun on, which is the one on screen.
-          await deliver(text, undefined, text, latest.current?.version ?? section.version);
+          // To the version on screen; words go to a newer one as they are.
+          await deliver({ text, shown: text, askVersion: section.version }, (now) => ({ text, shown: text, askVersion: now.version }));
           // Only what was sent leaves: anything written while it was being sent stays.
           if (!latest.current || latest.current.text.trim() === text) keep(null);
           setRestored(false);
