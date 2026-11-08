@@ -108,7 +108,8 @@ export function HomeReturnOverview({
         <span className="home-return-asof">
           {t.observed(absolute(reading.at, time))}
         </span>
-        <Tip content={<TipText body={t.updateHelp} />}>
+        {/* Held: disabled while nothing is new, it still says what it updates. */}
+        <Tip content={<TipText body={t.updateHelp} />} hold>
           <button
             type="button"
             className={`quiet-button home-return-refresh${changed ? " has-update" : ""}`}
