@@ -819,7 +819,7 @@ claim, or a new status or blocker. A progress-only update doesn't.
 
 An executor on this Core host may be started with a routing account or key
 (its runtime profile; see [Executor routing](executor-routing.md)), which
-the routing slices set. Nothing at this version sets one; without one an
+routing sets at its dispatch while the routing policy is on. Without one an
 executor starts on the host's own login, as before.
 
 - **Where it lives.** In its own table, never in the Agent's record, so an

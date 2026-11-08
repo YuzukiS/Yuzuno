@@ -410,7 +410,15 @@ pub(crate) fn views(db: &Connection, tasks: &[&str]) -> Result<HashMap<String, V
     }
     let positions = positions(db)?;
     for task in tasks {
-        if let Some(view) = view_row(db, task, &positions)? {
+        if let Some(mut view) = view_row(db, task, &positions)? {
+            // Why routing chose its candidate, or that it waits for one (YN-34 S3b2).
+            if let Some(agent) = view["agentId"].as_str() {
+                let route: Option<Option<String>> = db.query_row("SELECT route_json FROM executor_dispatches WHERE agent_id=?1", [agent],
+                    |r| r.get(0)).optional()?;
+                if let Some(route) = route.flatten().and_then(|r| serde_json::from_str::<Value>(&r).ok()) {
+                    view["route"] = route;
+                }
+            }
             out.insert((*task).to_owned(), view);
         }
     }
@@ -493,6 +501,10 @@ impl Store {
         let mut limits: HashMap<String, i64> = HashMap::new();
         let mut chosen = None;
         for (waiting, key) in queue_order(&tx)? {
+            // One waiting for a routing candidate stays queued; the pass reads routing for it (YN-34 S3b2).
+            if crate::routing_policy::dispatch::waiting(&tx, &waiting.agent)? {
+                continue;
+            }
             let limit = match limits.get(&waiting.machine) {
                 Some(limit) => *limit,
                 None => {
@@ -787,6 +799,7 @@ impl Workspace {
         let mut started = Vec::new();
         self.settle_ended_starts(&mut started).await;
         self.finish_rebuilds(&mut started).await;
+        self.route_waiting().await;
         loop {
             let Ok(permit) = self.admission.enter_work() else { break };
             let in_flight = self.executor_slots.in_flight.clone();

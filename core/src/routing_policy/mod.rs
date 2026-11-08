@@ -20,6 +20,7 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 
+pub mod dispatch;
 pub mod evaluate;
 pub mod routes;
 
@@ -276,6 +277,11 @@ fn check_condition(value: &Value, path: &str, credential: &str) -> Result<(), In
         _ => return refuse(field("kind"), "kind is timeWindow, quota or dailyApiCap"),
     }
     Ok(())
+}
+
+/// The stored policy, read on `db` (a dispatch's own transaction).
+pub(crate) fn stored_in(db: &rusqlite::Connection) -> Result<Stored> {
+    read(db.query_row("SELECT value FROM workspace_meta WHERE key=?1", [KEY], |r| r.get(0)).optional()?)
 }
 
 /// The stored value's form: `{version, updatedAt, policy}`.
