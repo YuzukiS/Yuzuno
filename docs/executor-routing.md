@@ -11,8 +11,8 @@ version; a later slice adds to it.
 | S1b | Accounts: claude-swap's accounts and how a binding to one resolves, its launcher, Codex homes | Done |
 | S1c | Handing a key or account to one executor's harness process: Claude Code, OpenCode and Codex | Done |
 | S2a | Readings: time windows and the daily API spend, read-only | Done |
-| S3a | The policy: kept, checked and served; a template fixed against routing | This version |
-| S2b | Readings: subscription quotas (claude-swap, Codex) | Next |
+| S3a | The policy: kept, checked and served; a template fixed against routing | Done |
+| S2b | Readings: subscription quotas (claude-swap, Codex) | This version |
 | S3b | Routing itself: the choice at dispatch and at start, `route_json` | Later |
 | S4 | The Settings page (YN-49) | Later |
 
@@ -142,10 +142,10 @@ profile, refreshes its tokens and guards the default login.
   setting: a name on `PATH` (`cswap`, the default) or an absolute path, set
   with `PUT /api/routing/cswap {"command": …}`. `GET /api/routing/accounts`
   answers each account's slot number, whether it is the host's current
-  default login, its label (its alias, else its email) and its usage status;
+  default login, its label (its alias, else `Account-<number>`, never its email) and its usage status;
   or why the list cannot be read (`cswapMissing`, `cswapError` with only the
   error's type, `cswapSchema`, `cswapTimeout` after 60 s, `cswapFailed`).
-  The email is shown to your browser only and never kept.
+  No email is shown or kept.
 - **Binding.** An executor will be bound to an account by its fingerprint: a
   hash of the account's email and organization. No email is kept, and slot
   numbers, which claude-swap lets move, are not relied on.
@@ -180,7 +180,7 @@ Each Codex account is a `CODEX_HOME` folder you name, signed in with
 `codex login` there. `PUT /api/routing/codex-homes {"homes": [{id, label, home}]}`
 replaces the list (at most 16). Each home must be an absolute folder that
 exists, belongs to Core's user and no other user can write into, and is listed
-once. The host's own login (`~/.codex`, or Core's `CODEX_HOME`) needs no entry.
+once. The host's own login (`~/.codex`, or Core's `CODEX_HOME`) needs no entry, and `login`, the name routing gives it, is no home's id.
 An executor bound to a home runs its app-server there, and Core reads its
 history and its sub-agents there too.
 
@@ -270,8 +270,19 @@ It answers from what Core last observed and starts no read itself.
     "inside": false, "changesAt": "2026-11-09T01:00:00+00:00" } } }
 ```
 
-S2b adds subscription quotas, in this form. No label or email is ever
-shown: an account is its number and fingerprint.
+### Subscription quotas
+
+These are what is left of each account's 5-hour and weekly windows.
+
+- **When they are read:** in the background every 5 minutes, while the policy is on and a candidate needs them:
+  - a Claude Code candidate on a claude-swap pool, or on the host login with a `quota` condition;
+  - a Codex candidate on the host login or a Codex home, with a `quota` condition.
+
+  Otherwise nothing is read. `cswap` is `null` and `codex` is empty until the first read.
+- **claude-swap accounts** come from `cswap list --json`. claude-swap reads each account's usage from Anthropic itself; its `pct` is the share used, and the readings show what is left. An account claude-swap has no usage for (an expired login, say) carries `unknown` with the claude-swap status as its code. When `cswap` cannot be run, `cswap.unavailable` says why.
+- **Codex** quotas are read for the host's own login and for each listed Codex home. Each read starts a `codex app-server` in that home, asks `account/read`, then `account/rateLimits/read`, and ends it. It runs no model. A login that is not a ChatGPT subscription (an API key, say) has no quota and carries `unknown`. A home taken off the list leaves the readings at the next refresh.
+- **A reading over 10 minutes old is `stale`**, and routing reads it as unknown.
+- **No label or email is ever shown:** an account is its number and fingerprint.
 
 ```jsonc
   "cswap": { "observedAt": "…", "unavailable": { "code": "…", "message": "…", "messageZh": "…" },   // unavailable only when it could not be read

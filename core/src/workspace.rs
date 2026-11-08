@@ -85,6 +85,7 @@ pub struct Workspace {
     pub(crate) jobs: crate::jobs::State,
     /// How many executors run at once, and the queue (T-35); see `executor_slots`.
     pub(crate) executor_slots: crate::executor_slots::State,
+    pub(crate) routing_quotas: crate::routing_readings::quota::State,
     /// Releases that wait for an executor's work to end (T-36); see `executor_archiving`.
     pub(crate) executor_archiving: crate::executor_archiving::State,
     pub(crate) ci: crate::ci_monitor::State,
@@ -169,6 +170,7 @@ impl Workspace {
             pr_operations: Default::default(),
             jobs: Default::default(),
             executor_slots: Default::default(),
+            routing_quotas: Default::default(),
             executor_archiving: Default::default(),
             ci: Default::default(),
             codex_usage: Default::default(),
