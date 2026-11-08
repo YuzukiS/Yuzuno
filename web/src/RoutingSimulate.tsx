@@ -148,6 +148,10 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
   const toggle = (list: string[], item: string) => (list.includes(item) ? list.filter((x) => x !== item) : [...list, item]);
   // What may be assumed: only what the order uses.
   const pools = policy.candidates.some((c) => c.credential.kind === "pool");
+  // A Claude login runs on claude-swap's active account; Core takes that
+  // account's fingerprint as used up too (YN-34 #801).
+  const claudeLogin = policy.candidates.some((c) => c.harness === "claude" && c.credential.kind === "login");
+  const cswapAccounts = (accounts?.cswap.accounts ?? []).filter((a) => pools || (claudeLogin && a.active));
   const codexLogin = policy.candidates.some((c) => c.harness === "codex" && c.credential.kind === "login");
   const homes = (accounts?.codexHomes ?? []).filter((h) => policy.candidates.some((c) => c.credential.kind === "codexHome" && c.credential.id === h.id));
   const apiKeys = policy.candidates.some((c) => c.credential.kind === "apiKey");
@@ -174,10 +178,10 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
           </label>
           <button type="button" className="quiet-button" disabled={offset === null} onClick={() => setOffset(null)}><RotateCcw size={14} /> {t.now}</button>
         </div>
-        {(pools || codexLogin || homes.length > 0 || apiKeys || onePassword) && (
+        {(cswapAccounts.length > 0 || codexLogin || homes.length > 0 || apiKeys || onePassword) && (
           <div className="routing-sim-assume" role="group" aria-label={t.assume}>
             <span className="settings-row-meta">{t.assume}</span>
-            {pools && (accounts?.cswap.accounts ?? []).map((a) => (
+            {cswapAccounts.map((a) => (
               <button type="button" key={a.fingerprint} className="routing-pill" aria-pressed={assume.accountsUsedUp.includes(a.fingerprint)}
                 onClick={() => setAssume((x) => ({ ...x, accountsUsedUp: toggle(x.accountsUsedUp, a.fingerprint) }))}>{t.usedUp(a.number)}</button>
             ))}

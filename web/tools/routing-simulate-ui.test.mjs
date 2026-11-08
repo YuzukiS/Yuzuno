@@ -67,12 +67,12 @@ const templates = [
   { id: "review", label: "Review", harness: "claude", routing: "fixed" },
 ];
 
-function core({ simulate = (body) => [200, { segments: week(body) }], templatesPut } = {}) {
+function core({ simulate = (body) => [200, { segments: week(body) }], templatesPut, policy: served = policy } = {}) {
   const asked = { simulate: [], evaluate: [], puts: [] };
   let list = { version: 7, templates: JSON.parse(JSON.stringify(templates)), laterTemplates: 0 };
   return { asked, route(url, method, body) {
     const p = new URL(url, "http://isolated.test").pathname;
-    if (p === "/api/routing/policy") return [200, { version: 3, limits: { candidates: 8 }, policy }];
+    if (p === "/api/routing/policy") return [200, { version: 3, limits: { candidates: 8 }, policy: served }];
     if (p === "/api/routing/simulate") { asked.simulate.push(body); return simulate(body); }
     if (p === "/api/routing/evaluate") {
       asked.evaluate.push(body);
@@ -257,4 +257,14 @@ test("an order Core refuses to simulate is a note with Core's words, not an erro
   await until(() => q(page, ".routing-sim-held"), "the note");
   assert.equal(q(page, ".routing-sim-held").textContent, "Core can't simulate this draft yet: candidates[0].model: a model has no spaces");
   assert.ok(!q(page, ".routing-simulate .inline-error") && !q(page, ".routing-strip"), "no error, no week");
+});
+
+test("a Claude login offers its active claude-swap account as used up, and no other", async () => {
+  const login = { ...policy, candidates: [{ id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "login" }, unknown: "skip", conditions: [] }] };
+  const server = core({ policy: login });
+  const page = mount(server);
+  await until(() => q(page, ".routing-sim-assume"), "the assumptions");
+  assert.deepEqual([...page.document.querySelectorAll(".routing-sim-assume .routing-pill")].map((b) => b.textContent), ["Account #1 used up"], "the active account only");
+  button(page, "Account #1 used up").click();
+  await until(() => server.asked.simulate.some((b) => b.assume?.accountsUsedUp?.[0] === "a1b2c3d4e5f60718"), "the week asked again, assuming it");
 });
