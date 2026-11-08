@@ -18,6 +18,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { idleJobsBudget, noCiRuns, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { tipText } from "./tip-browser.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -246,7 +247,7 @@ for (const [width, height, theme, name] of [[1440, 960, "light", "desktop-light"
     const next = page.locator(".task-research-next").first();
     await next.waitFor();
     assert.equal(await next.getAttribute("data-action"), "check");
-    assert.equal(await next.getAttribute("title"), "A proposal: nothing runs or stops because of it.");
+    assert.equal(await tipText(page, next), "A proposal: nothing runs or stops because of it.");
     const text = await next.innerText();
     assert.ok(text.includes("Proposes a next check") && text.includes("Time fresh processes under both link orders"), text);
     assert.ok(!report.reads.includes("task_research_get"), "nothing is read for a proposal");

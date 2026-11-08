@@ -11,6 +11,7 @@ import "./delivery-flow.css";
 import { openTaskReview } from "./ReviewJobs";
 import { strings, useStrings } from "./i18n";
 import { randomId } from "./random-id";
+import { Tip, TipText } from "./Tip";
 
 export type DeliveryCandidate = {
   flowId: string;
@@ -314,9 +315,9 @@ export function DeliveryFlow({
             <a href={flow.url} target="_blank" rel="noreferrer">
               {t.linkedPr}
             </a>
-            <code title={round?.baseSha}>{short(round?.baseSha, t.unknown)}</code>
+            <Tip content={round?.baseSha ? <TipText value={round.baseSha} /> : null} size="wide"><code>{short(round?.baseSha, t.unknown)}</code></Tip>
             <ArrowRight size={12} />
-            <code title={round?.headSha}>{short(round?.headSha, t.unknown)}</code>
+            <Tip content={round?.headSha ? <TipText value={round.headSha} /> : null} size="wide"><code>{short(round?.headSha, t.unknown)}</code></Tip>
             <span>{t.reviewOf(round?.number, flow.maxRounds)}</span>
           </div>
           <div className="delivery-evidence">

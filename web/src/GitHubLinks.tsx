@@ -16,6 +16,7 @@ import { PrReviews } from "./PrReviews";
 import { PrOperations } from "./PrOperations";
 import { openJobs } from "./Jobs";
 import { randomId } from "./random-id";
+import { Tip, TipText } from "./Tip";
 
 export type GitHubLink = {
   id: string;
@@ -206,26 +207,25 @@ export function GitHubSummary({
   return (
     <div className="github-summary" aria-label={t.summary}>
       {shown.slice(0, 2).map((link) => (
-        <span
-          key={link.id}
-          title={`${link.repository}#${link.number} · ${time(link.syncedAt, t.never)}`}
-        >
-          {link.kind === "pull" ? (
-            <GitPullRequest size={12} />
-          ) : (
-            <CircleDot size={12} />
-          )}
-          {openOnly ? link.repository.split("/").pop() : link.repository}#{link.number}
-          <span>{t.states[link.snapshot.state] || link.snapshot.state}</span>
-          {link.kind === "pull" && (
-            <span
-              className={`github-ci ${link.stale ? "stale" : ciState(link)}`}
-            >
-              {link.stale ? t.lastKnownChecks : ""}
-              {t.states[ciState(link)]}
-            </span>
-          )}
-        </span>
+        <Tip key={link.id} content={<TipText title={`${link.repository}#${link.number}`} when={time(link.syncedAt, t.never)} />}>
+          <span>
+            {link.kind === "pull" ? (
+              <GitPullRequest size={12} />
+            ) : (
+              <CircleDot size={12} />
+            )}
+            {openOnly ? link.repository.split("/").pop() : link.repository}#{link.number}
+            <span>{t.states[link.snapshot.state] || link.snapshot.state}</span>
+            {link.kind === "pull" && (
+              <span
+                className={`github-ci ${link.stale ? "stale" : ciState(link)}`}
+              >
+                {link.stale ? t.lastKnownChecks : ""}
+                {t.states[ciState(link)]}
+              </span>
+            )}
+          </span>
+        </Tip>
       ))}
       {shown.length > 2 && <span>{t.more(shown.length - 2)}</span>}
       {(merged > 0 || closed > 0) && (
@@ -740,17 +740,18 @@ export function GitHubLinks({
           <Github size={16} />
           {repoMode ? t.title : t.taskTitle}
         </h4>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label={t.refresh}
-          aria-busy={page?.refreshing || undefined}
-          title={page?.refreshing ? `${t.refreshTip}${t.refreshing}` : t.refreshTip}
-          disabled={busy || !!page?.refreshing}
-          onClick={() => void request("github_refresh")}
-        >
-          <RefreshCw size={14} className={page?.refreshing ? "spin" : ""} />
-        </button>
+        <Tip content={<TipText title={page?.refreshing ? `${t.refreshTip}${t.refreshing}` : t.refreshTip} />} describe={false} hold>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={t.refresh}
+            aria-busy={page?.refreshing || undefined}
+            disabled={busy || !!page?.refreshing}
+            onClick={() => void request("github_refresh")}
+          >
+            <RefreshCw size={14} className={page?.refreshing ? "spin" : ""} />
+          </button>
+        </Tip>
       </header>
       )}
       {repoMode && (
@@ -778,18 +779,19 @@ export function GitHubLinks({
                     {repo.fullName}
                     <ArrowUpRight size={12} />
                   </a>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    disabled={busy}
-                    aria-label={t.unlink(repo.fullName)}
-                    title={t.unlinkTip}
-                    onClick={() =>
-                      void mutate({ action: "unlink", repositoryId: repo.id })
-                    }
-                  >
-                    <Unlink size={13} />
-                  </button>
+                  <Tip content={<TipText title={t.unlinkTip} />} describe={false}>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      disabled={busy}
+                      aria-label={t.unlink(repo.fullName)}
+                      onClick={() =>
+                        void mutate({ action: "unlink", repositoryId: repo.id })
+                      }
+                    >
+                      <Unlink size={13} />
+                    </button>
+                  </Tip>
                 </div>
                 <small>{t.synced(time(repo.syncedAt, t.never))}</small>
                 {repo.error && (
@@ -819,18 +821,19 @@ export function GitHubLinks({
                     <ArrowUpRight size={12} />
                   </a>
                   {managing && (
-                    <button
-                      type="button"
-                      className="icon-button"
-                      disabled={busy}
-                      aria-label={t.unlink(`${link.repository}#${link.number}`)}
-                      title={t.removeAssociation}
-                      onClick={() =>
-                        void mutate({ action: "unlink", linkId: link.id })
-                      }
-                    >
-                      <Unlink size={13} />
-                    </button>
+                    <Tip content={<TipText title={t.removeAssociation} />} describe={false}>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        disabled={busy}
+                        aria-label={t.unlink(`${link.repository}#${link.number}`)}
+                        onClick={() =>
+                          void mutate({ action: "unlink", linkId: link.id })
+                        }
+                      >
+                        <Unlink size={13} />
+                      </button>
+                    </Tip>
                   )}
                 </div>
                 <div className="github-title">{link.snapshot.title}</div>
@@ -851,12 +854,14 @@ export function GitHubLinks({
                   )}
                 </div>
                 {link.snapshot.headSha && (
-                  <div className="github-commit" title={link.snapshot.headSha}>
-                    <span>
-                      {link.snapshot.headBranch} → {link.snapshot.baseBranch}
-                    </span>
-                    <code>{link.snapshot.headSha.slice(0, 8)}</code>
-                  </div>
+                  <Tip content={<TipText value={link.snapshot.headSha} />} size="wide">
+                    <div className="github-commit">
+                      <span>
+                        {link.snapshot.headBranch} → {link.snapshot.baseBranch}
+                      </span>
+                      <code>{link.snapshot.headSha.slice(0, 8)}</code>
+                    </div>
+                  </Tip>
                 )}
                 {taskId && link.kind === "pull" && link.snapshot.headSha && <button className="quiet-button" disabled={disabled} onClick={() => openJobs({ taskId, source: "github_actions", url: link.url, expectedSha: link.snapshot.headSha })}>{t.watchActions(link.snapshot.headSha.slice(0, 8))}</button>}
                 {link.snapshot.ci?.checks?.length ? (

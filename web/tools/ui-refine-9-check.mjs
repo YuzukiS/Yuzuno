@@ -669,12 +669,13 @@ try {
       const agentsHere = page.locator(".machine-agents").first();
       await agentsHere.locator(".machine-agent").first().waitFor();
       const tiles = await agentsHere.locator(".machine-agent").evaluateAll((els) =>
-        els.map((el) => { const r = el.getBoundingClientRect(); return { top: Math.round(r.top), height: Math.round(r.height), title: el.title }; }));
+        els.map((el) => { const r = el.getBoundingClientRect(); return { top: Math.round(r.top), height: Math.round(r.height) }; }));
       assert.equal(tiles.length, 8);
       const rows = new Set(tiles.map((t) => t.top)).size;
       assert.ok(rows <= 3, `8 agents in ${rows} rows`);
       assert.ok(tiles.every((t) => t.height <= 48), `small tiles: ${tiles.map((t) => t.height)}`);
-      assert.equal(tiles[0].title, "Open Dev 1\n/home/me/yuzuno-next");
+      // Who and where, in its tip (YN-44): no "Open".
+      assert.equal(await tipText(page, agentsHere.locator(".machine-agent").first()), "Dev 1\n/home/me/yuzuno-next");
       const text = await agentsHere.evaluate((el) => el.innerText);
       assert.ok(!text.includes("/home/me"), "folders are in the tips");
       await shot(page.getByRole("dialog"), `machines-page-${theme}.png`);

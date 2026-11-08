@@ -159,7 +159,7 @@ function probe() {
     return { cards: list ? list.querySelectorAll(".collab-task-card").length : null, done: !!document.querySelector('.collab-task-card[data-task-id="T-14"]'),
       opacity: list ? Number(getComputedStyle(list).opacity) : null, busy: list?.getAttribute("aria-busy") ?? null, plays: window.__plays(list),
       gathering: !!document.querySelector(".collab-loading"),
-      refresh: refresh ? { busy: refresh.getAttribute("aria-busy"), title: refresh.getAttribute("title") } : null };
+      refresh: refresh ? { busy: refresh.getAttribute("aria-busy") } : null };
   };
   window.__sample = (ms) => {
     window.__frames = [];
@@ -243,8 +243,9 @@ for (const run of runs) {
     report.frames[`${tag}: CB-03`] = frames;
     ok(`${tag}: another Show filter keeps the cards shown, dimmed to 0.5 and busy, while Core's answer is on its way; nothing says Gathering (CB-03)`,
       held.length > 5 && held.every((f) => f.cards === 13 && !f.gathering) && held.slice(3).every((f) => f.opacity === 0.5 && f.busy === "true"), held.slice(0, 6));
-    ok(`${tag}: Refresh tasks, while that read is on its way, says it is busy (aria-busy, "Refreshing tasks…") (GL-07)`,
-      held.slice(3).every((f) => f.refresh?.busy === "true" && f.refresh.title === "Refreshing tasks…") && after.at(-1)?.refresh?.busy === null && after.at(-1)?.refresh.title === "Refresh tasks",
+    // Its words ("Refreshing tasks…") are its tip now (YN-44), read in collaboration-ui.
+    ok(`${tag}: Refresh tasks, while that read is on its way, says it is busy (aria-busy) (GL-07)`,
+      held.slice(3).every((f) => f.refresh?.busy === "true") && after.at(-1)?.refresh?.busy === null,
       { held: held.slice(3, 5).map((f) => f.refresh), after: after.at(-1)?.refresh });
     ok(`${tag}: Core's answer takes over, its list ${motion("fading in once over small from 0.4 (collab-list-flip 180 ms)", "at once, nothing playing")}, then fully shown and not busy (CB-03)`,
       after.length > 0 && after[0].cards === 14 && (reduced ? after.every((f) => !f.plays.length && f.opacity === 1)

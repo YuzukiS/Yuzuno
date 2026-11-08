@@ -36,6 +36,7 @@ import {
 /** The dialog's choice of the harness's own default model, sent as `model: null` (T-190). */
 const OWN_MODEL = "(the harness’s own default)";
 import "./remote.css";
+import { Tip, TipText } from "./Tip";
 
 export interface WorkspaceMachine {
   id: string;
@@ -619,18 +620,20 @@ export function RemoteCreateAgent({
                 disabled: isOpenCode && m.kind === "ssh",
               }))}
               after={
-                <button
-                  ref={addMachineButton}
-                  type="button"
-                  className="choice-chip-action"
-                  aria-expanded={adding}
-                  aria-controls="new-ssh-machine"
-                  disabled={disabled || adding || loadingMachines || isOpenCode}
-                  title={isOpenCode ? t.openCodeLocal : undefined}
-                  onClick={() => setAdding(true)}
-                >
-                  <Plus size={13} /> {t.addMachine}
-                </button>
+                <Tip content={isOpenCode ? <TipText body={t.openCodeLocal} /> : null} hold>
+                  <button
+                    ref={addMachineButton}
+                    type="button"
+                    className="choice-chip-action"
+                    aria-expanded={adding}
+                    aria-controls="new-ssh-machine"
+                    disabled={disabled || adding || loadingMachines || isOpenCode}
+                    aria-description={isOpenCode ? t.openCodeLocal : undefined}
+                    onClick={() => setAdding(true)}
+                  >
+                    <Plus size={13} /> {t.addMachine}
+                  </button>
+                </Tip>
               }
             />
             {loadingMachines && (
@@ -873,9 +876,12 @@ export function RemoteCreateAgent({
               pushing the buttons down under the pointer. Below them it could fall out of this
               dialog's scrolled view (T-19 SX-25). */}
           {error ? (
-            <p key="error" role="alert" className="inline-error kept-error" title={error}>
-              <span>{error}</span>
-            </p>
+            // The whole error, when its one line cuts it.
+            <Tip key="error" content={<TipText body={error} />} size="wide" cut>
+              <p role="alert" className="inline-error kept-error">
+                <span>{error}</span>
+              </p>
+            </Tip>
           ) : (
             <p key="line" className="inline-error kept-error is-empty" aria-hidden="true">
               <span>&nbsp;</span>

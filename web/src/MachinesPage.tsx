@@ -34,6 +34,7 @@ import { machineIdOf, projectName } from "./projects";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import type { Agent, Project } from "./types";
 import "./machines.css";
+import { Tip, TipText } from "./Tip";
 
 /** Re-render relative times while visible; the check itself is not repeated. */
 function useNow(active: boolean) {
@@ -128,28 +129,29 @@ export function LastCheck({
         <strong>
           {check.reachable ? t.reached(check.host?.hostname) : t.unreachable}
         </strong>
-        <time dateTime={check.checkedAt} title={t.checkedAt(at)}>
-          {t.lastCheck(age.label)}
-        </time>
+        <Tip content={<TipText title={t.checkedAt(at)} />}>
+          <time dateTime={check.checkedAt}>
+            {t.lastCheck(age.label)}
+          </time>
+        </Tip>
         {age.stale && (
-          <span
-            className="last-check-stale"
-            title={t.staleTip}
-          >
-            <Clock3 size={11} /> {t.stale}
-          </span>
+          <Tip content={<TipText body={t.staleTip} />}>
+            <span
+              className="last-check-stale"
+            >
+              <Clock3 size={11} /> {t.stale}
+            </span>
+          </Tip>
         )}
       </span>
       {check.harnesses.length > 0 && (
         <span className="last-check-harnesses">
           {check.harnesses.map((h) => (
-            <span
-              key={h.harness}
-              className={`harness-chip ${h.supported ? (h.found ? "found" : "missing") : "unsupported"}`}
-              title={h.error || (h.found ? harnessTip(h, language) : undefined)}
-            >
-              {harnessLabel(h, language)}
-            </span>
+            <Tip key={h.harness} content={h.error || h.found ? <TipText body={h.error || harnessTip(h, language)} /> : null}>
+              <span className={`harness-chip ${h.supported ? (h.found ? "found" : "missing") : "unsupported"}`}>
+                {harnessLabel(h, language)}
+              </span>
+            </Tip>
           ))}
         </span>
       )}
@@ -213,7 +215,6 @@ const text = strings({
   atLastCheck: "At last check",
   agentsOn: (name: string) => `Agents on ${name}`,
   agentsHere: "Agents here now",
-  openAgent: (name: string, cwd: string) => `Open ${name}\n${cwd}`,
   noProject: "No project",
   connected: "Connected",
   connecting: "Connecting",
@@ -254,7 +255,6 @@ const text = strings({
   atLastCheck: "上次检查时",
   agentsOn: (name) => `${name} 上的 Agent`,
   agentsHere: "当前在此的 Agent",
-  openAgent: (name, cwd) => `打开 ${name}\n${cwd}`,
   noProject: "无项目",
   connected: "已连接",
   connecting: "正在连接",
@@ -428,23 +428,24 @@ export function MachinesPage({
                   {/* The Core host is where Core runs: checked, not edited. */}
                   {machine.kind === "ssh" && (
                     <>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        aria-label={t.removeName(machine.name)}
-                        title={t.remove}
-                        disabled={busy}
-                        aria-pressed={confirming}
-                        onClick={() =>
-                          startChange(
-                            confirming
-                              ? null
-                              : { kind: "remove", id: machine.id },
-                          )
-                        }
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      <Tip content={<TipText title={t.remove} />} describe={false}>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={t.removeName(machine.name)}
+                          disabled={busy}
+                          aria-pressed={confirming}
+                          onClick={() =>
+                            startChange(
+                              confirming
+                                ? null
+                                : { kind: "remove", id: machine.id },
+                            )
+                          }
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </Tip>
                     </>
                   )}
                 </div>
@@ -508,9 +509,11 @@ export function MachinesPage({
               <dl className="machine-facts">
                 <div>
                   <dt>{t.defaultFolder}</dt>
-                  <dd title={machine.defaultCwd}>
-                    {machine.defaultCwd || "—"}
-                  </dd>
+                  <Tip content={machine.defaultCwd ? <TipText value={machine.defaultCwd} /> : null} size="wide" cut>
+                    <dd>
+                      {machine.defaultCwd || "—"}
+                    </dd>
+                  </Tip>
                 </div>
                 {machine.kind === "ssh" && (
                   <div>
@@ -542,28 +545,29 @@ export function MachinesPage({
                     {here.map((agent) => (
                       <li key={agent.id}>
                         {/* A small tile, several to a row; the folder is in its tip. */}
-                        <button
-                          type="button"
-                          className="machine-agent"
-                          onClick={() => onOpenAgent(agent.id)}
-                          title={t.openAgent(agent.name, agent.cwd)}
-                        >
-                          <Avatar agent={agent} small />
-                          <span className="machine-agent-name">
-                            <strong>{agent.name}</strong>
-                            <small>
-                              {agent.projectId
-                                ? projectName(agent.projectId, projects)
-                                : t.noProject}
-                            </small>
-                          </span>
-                          <span className="machine-agent-state">
-                            {agent.closedAt ? shell.closed : shell.status[agent.status]}
-                            {agent.remote && !agent.closedAt
-                              ? ` · ${agent.connectionState === "connected" ? t.connected : agent.connectionState === "connecting" ? t.connecting : t.notConnected}`
-                              : ""}
-                          </span>
-                        </button>
+                        <Tip content={<TipText title={agent.name} value={agent.cwd} />} size="wide">
+                          <button
+                            type="button"
+                            className="machine-agent"
+                            onClick={() => onOpenAgent(agent.id)}
+                          >
+                            <Avatar agent={agent} small />
+                            <span className="machine-agent-name">
+                              <strong>{agent.name}</strong>
+                              <small>
+                                {agent.projectId
+                                  ? projectName(agent.projectId, projects)
+                                  : t.noProject}
+                              </small>
+                            </span>
+                            <span className="machine-agent-state">
+                              {agent.closedAt ? shell.closed : shell.status[agent.status]}
+                              {agent.remote && !agent.closedAt
+                                ? ` · ${agent.connectionState === "connected" ? t.connected : agent.connectionState === "connecting" ? t.connecting : t.notConnected}`
+                                : ""}
+                            </span>
+                          </button>
+                        </Tip>
                       </li>
                     ))}
                   </ul>

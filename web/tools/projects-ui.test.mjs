@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { AUTO_READ_DWELL_MS } from "../src/useAutoRead.ts";
-import { readTip } from "./tip-dom.mjs";
+import { readTip, tipOf } from "./tip-dom.mjs";
 
 // Exercises the built app against an in-memory Core; it never contacts a real one.
 const distUrl = process.env.YUZUNO_UI_DIST
@@ -728,7 +728,8 @@ test("a project with linked tasks cannot be deleted from the dialog", async () =
     await openProject(page, "Docs");
     const remove = button(page, "Delete", dialog);
     assert.equal(remove.disabled, true);
-    assert.match(remove.title, /0 agents and 1 task; archive it instead/);
+    // Disabled, it still says why (Tip `hold`, YN-44).
+    assert.match((await tipOf(remove)).join(" "), /0 agents and 1 task; archive it instead/);
   } finally {
     page.close();
   }
@@ -1173,7 +1174,7 @@ test("the Projects window reads in Chinese; names, folders and Core's words stay
     assert.equal(add.options[0].textContent, "添加 Agent…");
     assert.ok([...add.options].some((option) => option.textContent === "Sora · 来自 Research"));
     assert.ok(button(page, "归档项目", dialog));
-    assert.match(button(page, "删除", dialog).title, /仍关联 2 个 Agent 和 1 个任务；请改为归档/);
+    assert.match((await tipOf(button(page, "删除", dialog))).join(" "), /仍关联 2 个 Agent 和 1 个任务；请改为归档/);
     assert.doesNotMatch(text, /Default folders|Rename|No services yet|Archive project|Repositories/);
 
     await backToProjects(page);

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { tipOf } from "./tip-dom.mjs";
 
 // An in-memory component bundle: no Core, browser, SSH or web/dist writes.
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -139,7 +140,7 @@ test("machines list their stored checks honestly and their agents' live state se
     assert.match(remote.querySelector(".machine-agents").textContent, /Kaze.*Ready · Not connected/);
     // A small tile each: name, project and state; the folder is in its tip, not on the page.
     const kaze = [...remote.querySelectorAll(".machine-agent")].find((b) => b.textContent.includes("Kaze"));
-    assert.equal(kaze.title, "Open Kaze\n/Users/me/projects/x");
+    assert.deepEqual(await tipOf(kaze), ["Kaze", "/Users/me/projects/x"], "who and where: no \"Open\" (YN-44)");
     assert.doesNotMatch(remote.querySelector(".machine-agents").textContent, /\/Users\/me/);
     assert.deepEqual(page.errors, []);
   } finally {
@@ -217,7 +218,7 @@ test("testing a machine stores and shows the new result, and opening an agent le
     assert.match(shown, /Codex found · codex-cli 0.162.1/);
     assert.match(shown, /Claude Code unavailable/);
     assert.match(shown, /Claude Code: Claude Code was not found on Core's PATH/);
-    assert.equal(host.querySelector(".harness-chip.found").title, "The CLI answered --version. Sign-in is not checked.");
+    assert.deepEqual(await tipOf(host.querySelector(".harness-chip.found")), ["The CLI answered --version. Sign-in is not checked."]);
     button(host.querySelector(".machine-agents"), "Mori").click();
     assert.deepEqual(opened, ["a"]);
     // Back in the list, the other machine keeps its own result.
@@ -242,12 +243,14 @@ test("the Core host's Claude Code sign-in check: signed in, unknown, and signed 
     await loaded(page);
     await show(page, "local");
     assert.equal(chip().textContent, "Claude Code found · 2.1.295 (Claude Code)");
-    assert.equal(chip().title, "The CLI answered --version and reports it is signed in (claude.ai).");
+    assert.deepEqual(await tipOf(chip()), ["The CLI answered --version and reports it is signed in (claude.ai)."]);
     // A check that could not tell stays usable and says why, never "not signed in".
     answer = { ...claude, found: true, signIn: { state: "unknown", detail: "`claude auth status` did not answer within 15s" } };
     render(page, { revision: 1 });
-    await until(() => /could not be checked/.test(chip().title), "the unknown answer");
-    assert.equal(chip().title, "The CLI answered --version. Whether it is signed in could not be checked: `claude auth status` did not answer within 15s");
+    // The new answer, in its tip once it is drawn.
+    let said = "";
+    for (let i = 0; i < 10 && !/could not be checked/.test(said); i++) said = (await tipOf(chip())).join(" ");
+    assert.equal(said, "The CLI answered --version. Whether it is signed in could not be checked: `claude auth status` did not answer within 15s");
     assert.ok(chip().classList.contains("found"));
     assert.doesNotMatch(card(page, "local").querySelector(".last-check").textContent, /not signed in/);
     // Signed out: unavailable, and the reason names where and how to sign in.
@@ -526,7 +529,7 @@ test("the Machines page reads in Chinese; names, destinations, paths and Core's 
     assert.match(facts, /Codex 可执行文件\/opt\/homebrew\/bin\/codex/);
     assert.match(remote.querySelector(".machine-agents").textContent, /Kaze.*就绪 · 未连接/);
     const kaze = [...remote.querySelectorAll(".machine-agent")].find((b) => b.textContent.includes("Kaze"));
-    assert.equal(kaze.title, "打开 Kaze\n/Users/me/projects/x");
+    assert.deepEqual(await tipOf(kaze), ["Kaze", "/Users/me/projects/x"]);
     assert.match(body, /Agent 的状态来自它们自己的会话/);
     assert.doesNotMatch(page.document.body.textContent, /Test connection|Not checked yet|Agents here now|Couldn’t reach/);
     assert.deepEqual(page.errors, []);

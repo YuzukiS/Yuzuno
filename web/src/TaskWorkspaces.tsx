@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { FolderGit2, RefreshCw } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { strings, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 
 type Users = {
   agents?: { id: string; name: string; status: string; relation: "inside" | "above"; working: boolean }[];
@@ -386,15 +387,16 @@ export function TaskWorkspaces({ taskId, materialsWorktree, focused = false }: {
           )}
           <div className="task-workspace-actions">
             <Cleanup taskId={taskId} view={view} />
-            <button
-              type="button"
-              className="quiet-button"
-              disabled={busy}
-              title={t.forgetTip}
-              onClick={() => void act(() => api(`${root}/${view.id}`, { method: "DELETE" }))}
-            >
-              {t.forget}
-            </button>
+            <Tip content={<TipText body={t.forgetTip} />}>
+              <button
+                type="button"
+                className="quiet-button"
+                disabled={busy}
+                onClick={() => void act(() => api(`${root}/${view.id}`, { method: "DELETE" }))}
+              >
+                {t.forget}
+              </button>
+            </Tip>
           </div>
         </div>
       ))}

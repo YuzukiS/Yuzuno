@@ -38,6 +38,7 @@ import {
 } from "./task-outcome";
 import "./task-outcome.css";
 import { randomId } from "./random-id";
+import { Tip, TipText } from "./Tip";
 
 type Text = ReturnType<typeof outcomeText>;
 type Tab = "summary" | "evidence" | "versions";
@@ -719,17 +720,18 @@ export function TaskOutcome({
                       ? t.noResult
                       : t.loading}
             </span>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label={t.refresh}
-              aria-busy={loading || undefined}
-              title={loading ? t.refreshing : t.refresh}
-              disabled={loading}
-              onClick={() => void read(selected?.id)}
-            >
-              <RefreshCw size={16} className={loading ? "spin" : ""} />
-            </button>
+            <Tip content={<TipText title={loading ? t.refreshing : t.refresh} />} describe={false} hold>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={t.refresh}
+                aria-busy={loading || undefined}
+                disabled={loading}
+                onClick={() => void read(selected?.id)}
+              >
+                <RefreshCw size={16} className={loading ? "spin" : ""} />
+              </button>
+            </Tip>
           </div>
           <div className="outcome-tabs" role="tablist" aria-label={t.title}>
             {tabs.map((value) => (

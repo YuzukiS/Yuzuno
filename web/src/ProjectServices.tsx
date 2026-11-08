@@ -18,6 +18,7 @@ import type { ServiceLifecycleInfo } from "./portal/service-lifecycle";
 import type { ServiceBrowserReach } from "./portal/service-observation";
 import { ServiceLifecycle } from "./portal/ServiceLifecycle";
 import { serviceText } from "./portal/service-text";
+import { Tip, TipText } from "./Tip";
 
 /** What Core has open for a service now (core/src/services.rs, Access). */
 export type ServiceConnection = {
@@ -377,16 +378,17 @@ export function ProjectServices({
                       {t.close}
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={t.deleteName(service.name)}
-                    title={t.deleteTip}
-                    disabled={!!busy}
-                    onClick={() => void act(service.id, () => remove(`/services/${encodeURIComponent(service.id)}`))}
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  <Tip content={<TipText body={t.deleteTip} />} describe={false}>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label={t.deleteName(service.name)}
+                      disabled={!!busy}
+                      onClick={() => void act(service.id, () => remove(`/services/${encodeURIComponent(service.id)}`))}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </Tip>
                 </span>
               </div>
               <p className="services-state">

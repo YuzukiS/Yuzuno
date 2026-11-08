@@ -4,6 +4,7 @@ import { formatTime } from "./home/brief/brief-catalog";
 import { strings, useStrings } from "./i18n";
 import { useTimeDisplay } from "./time-preferences";
 import "./task-research.css";
+import { Tip, TipText } from "./Tip";
 
 /**
  * A research record in a task's activity (T-17): a method, a claim or an
@@ -381,31 +382,32 @@ function Entries({ entries, comparability, now }: { entries: ResearchEntry[]; co
             </span>
             {entry.reason && <span className="task-research-note">{entry.reason}</span>}
             {entry.value ? (
-              <span
-                className="task-research-value"
-                title={[entry.value.value, entry.value.low, entry.value.high].some((n) => n !== undefined && inexact(n)) ? t.inexact : undefined}
-              >
-                {figure(entry.value.value)}
-                {(entry.value.low !== undefined || entry.value.high !== undefined) &&
-                  ` [${entry.value.low !== undefined ? figure(entry.value.low) : t.lowMissing}, ${
-                    entry.value.high !== undefined ? figure(entry.value.high) : t.highMissing
-                  }]`}
-                {entry.unit && ` ${entry.unit}`}
-              </span>
+              <Tip content={[entry.value.value, entry.value.low, entry.value.high].some((n) => n !== undefined && inexact(n)) ? <TipText body={t.inexact} /> : null}>
+                <span className="task-research-value">
+                  {figure(entry.value.value)}
+                  {(entry.value.low !== undefined || entry.value.high !== undefined) &&
+                    ` [${entry.value.low !== undefined ? figure(entry.value.low) : t.lowMissing}, ${
+                      entry.value.high !== undefined ? figure(entry.value.high) : t.highMissing
+                    }]`}
+                  {entry.unit && ` ${entry.unit}`}
+                </span>
+              </Tip>
             ) : (
               entry.unit && <span className="task-research-value">{t.noValue} · {t.unit(entry.unit)}</span>
             )}
             {(entry.level || entry.n !== undefined || entry.definition || entry.method) && (
-              <span className="task-research-identity" title={entry.n !== undefined && inexact(entry.n) ? t.inexact : undefined}>
-                {[
-                  entry.level ?? (entry.n !== undefined && t.levelMissing),
-                  entry.n !== undefined && t.n(figure(entry.n)),
-                  entry.definition,
-                  entry.method && t.methodActivity(entry.method.activitySeq),
-                ]
-                  .filter((part) => part !== false && part !== undefined && part !== "")
-                  .join(" · ")}
-              </span>
+              <Tip content={entry.n !== undefined && inexact(entry.n) ? <TipText body={t.inexact} /> : null}>
+                <span className="task-research-identity">
+                  {[
+                    entry.level ?? (entry.n !== undefined && t.levelMissing),
+                    entry.n !== undefined && t.n(figure(entry.n)),
+                    entry.definition,
+                    entry.method && t.methodActivity(entry.method.activitySeq),
+                  ]
+                    .filter((part) => part !== false && part !== undefined && part !== "")
+                    .join(" · ")}
+                </span>
+              </Tip>
             )}
             {entry.source && (
               <ul className="task-research-entry-source">
@@ -431,8 +433,8 @@ function SourceRow({ source, now }: { source: ResearchSource; now?: string }) {
             <span className="task-research-tag">{t.job}</span>
           </span>
           <span className="task-research-identity">
-            <code>{source.jobId}</code> · <code title={source.attempt}>{source.attempt.slice(0, 8)}</code> · <code>{source.path}</code> · SHA-256{" "}
-            <code title={source.sha256}>{short(source.sha256)}</code>
+            <code>{source.jobId}</code> · <Tip content={<TipText value={source.attempt} />} size="wide"><code>{source.attempt.slice(0, 8)}</code></Tip> · <code>{source.path}</code> · SHA-256{" "}
+            <Tip content={<TipText label="SHA-256" value={source.sha256} />} size="wide"><code>{short(source.sha256)}</code></Tip>
           </span>
           <span className="task-research-note">{t.jobRecorded}</span>
         </>
@@ -466,7 +468,7 @@ function SourceRow({ source, now }: { source: ResearchSource; now?: string }) {
           {(source.version || source.observedAt || source.sha256) && (
             <span className="task-research-identity">
               {[source.version && t.version(source.version), source.observedAt && t.observed(source.observedAt)].filter(Boolean).join(" · ")}
-              {source.sha256 && <> · SHA-256 <code title={source.sha256}>{short(source.sha256)}</code></>}
+              {source.sha256 && <> · SHA-256 <Tip content={<TipText label="SHA-256" value={source.sha256} />} size="wide"><code>{short(source.sha256)}</code></Tip></>}
             </span>
           )}
           {source.coverage && (
@@ -579,9 +581,11 @@ export function TaskResearch({ workspaceId, taskId, seq, record }: { workspaceId
         </div>
       )}
       {record.next && (
-        <p className="task-research-next" data-action={record.next.action} title={t.nextNote}>
-          <strong>{t.next[record.next.action] ?? record.next.action}</strong> {record.next.text}
-        </p>
+        <Tip content={<TipText body={t.nextNote} />}>
+          <p className="task-research-next" data-action={record.next.action}>
+            <strong>{t.next[record.next.action] ?? record.next.action}</strong> {record.next.text}
+          </p>
+        </Tip>
       )}
       {!!record.entries?.length && <Entries entries={record.entries} comparability={record.comparability} now={view?.data?.research.entries} />}
       {!!record.sources?.length && (
