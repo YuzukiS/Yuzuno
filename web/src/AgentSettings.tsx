@@ -183,9 +183,13 @@ export function AgentSettings({
   const [error, setError] = useState<Said>("");
   const [effortNote, setEffortNote] = useState<Said>("");
   const [openCodeNote, setOpenCodeNote] = useState<{ version: string; verified: string } | null>(null);
+  // Each read of the catalog gets the next number; only the latest one's answer is shown (YN-47).
+  const reads = useRef(0);
   useEffect(() => {
     if (!open) return;
+    const read = ++reads.current;
     let valid = true;
+    const current = () => valid && read === reads.current;
     setLoading(true);
     setError("");
     setEffortNote("");
@@ -201,7 +205,7 @@ export function AgentSettings({
     setPermissionMode(chosenMode(agent));
     api<{ models: Model[]; permissions?: PermissionCatalog; context?: ContextSettings; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
       .then(({ models, permissions, context, opencode: native }) => {
-        if (!valid) return;
+        if (!current()) return;
         setModels(models);
         // Which OpenCode the Agent runs, said only when Core notes it (T-32: newer than the one checked against).
         setOpenCodeNote(native?.note && native.version && native.verified ? { version: native.version, verified: native.verified } : null);
@@ -228,12 +232,28 @@ export function AgentSettings({
             s.reasoningEffort || selected?.defaultReasoningEffort || null,
         }));
       })
-      .catch((e) => valid && setError(errorText(e)))
-      .finally(() => valid && setLoading(false));
+      .catch((e) => current() && setError(errorText(e)))
+      .finally(() => current() && setLoading(false));
     return () => {
       valid = false;
     };
   }, [open, agent.id, agent.harness, reload]);
+  // After a login or logout (YN-47): OpenCode lists its providers' models
+  // anew, so the catalog is read again. Only the catalog: what is chosen here
+  // and not saved stays chosen, shown as current if no longer listed.
+  function rereadModels() {
+    const read = ++reads.current;
+    setLoading(true);
+    setError("");
+    api<{ models: Model[]; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
+      .then(({ models, opencode: native }) => {
+        if (read !== reads.current) return;
+        setModels(models);
+        setOpenCodeNote(native?.note && native.version && native.verified ? { version: native.version, verified: native.verified } : null);
+      })
+      .catch((e) => read === reads.current && setError(errorText(e)))
+      .finally(() => read === reads.current && setLoading(false));
+  }
   useEffect(() => {
     if (!open || observedContextUsage === undefined) return;
     setContext((current) => current && ({ ...current,
@@ -569,7 +589,7 @@ export function AgentSettings({
           {opencode && openCodeNote && (
             <small className="model-catalog-note opencode-version-note">{t.openCodeNewer(openCodeNote.version, openCodeNote.verified)}</small>
           )}
-          {opencode && <OpenCodeLogin agentId={agent.id} disabled={loading || saving} />}
+          {opencode && <OpenCodeLogin agentId={agent.id} disabled={loading || saving} onChanged={rereadModels} />}
           {!claude && !opencode && (
             <>
               <div className="agent-setting">

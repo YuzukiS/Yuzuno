@@ -146,7 +146,8 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         (with(json!({"reasoningEffort":"high"})), "Choose the Codex model the reasoning effort is for"),
         (with(json!({"harness":"claude","permissionPreset":"auto"})), "A Codex permission mode does not apply to a Claude Code template"),
         (with(json!({"harness":"claude","reasoningEffort":"high","model":"m"})), "A Claude Code template takes no reasoning effort"),
-        (with(json!({"harness":"opencode","model":"m"})), "An OpenCode template takes no model"),
+        (with(json!({"harness":"opencode","model":"m"})), "An OpenCode model is named <provider>/<model>"),
+        (with(json!({"harness":"opencode","model":"deepseek/deepseek-flash","reasoningEffort":"high"})), "An OpenCode template takes no reasoning effort"),
         // T-35 S3a: a machine is named by its id.
         (with(json!({"machineId":""})), "A machine is named by its id, at most 128 characters"),
         (with(json!({"harness":"opencode","machineId":"lab-mac"})), "OpenCode executors run on this Core host only, not on lab-mac"),

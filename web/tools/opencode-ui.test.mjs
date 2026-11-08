@@ -809,6 +809,70 @@ test("an OpenCode Agent is logged in to a provider from its settings, and the pa
   } finally { page.close(); }
 });
 
+// YN-47: OpenCode lists a provider's models once it is logged in (and no longer once logged out), so the dialog reads
+// its catalog again after each; what is chosen there and not saved stays chosen.
+test("an OpenCode Agent's settings read its models again after a login or logout, keeping the model chosen (YN-47)", async () => {
+  const free = { id: "opencode/beam-free", model: "opencode/beam-free", displayName: "OpenCode · Beam Free", description: null, variants: [] };
+  const flash = { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", displayName: "DeepSeek · DeepSeek V4.1 Flash", description: null,
+    variants: ["none", "low", "high", "max"] };
+  const view = (connections) => ({ state: "ready", reason: null, version: "2.2.5", integrations: [
+    { id: "deepseek", name: "DeepSeek", connections, methods: [{ kind: "key", id: null, label: "Manually enter API Key", fields: [], names: [] }] },
+  ] });
+  const login = { kind: "credential", id: "crd_9", label: "DeepSeek", method: "key", needsAuth: null };
+  const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
+  let listed = [free];
+  let refuse = true;
+  const page = mount((url, init) => {
+    if (url.endsWith("/agents/oc/models")) return { models: listed, opencode: { version: "2.2.5", verified: "2.2.5" } };
+    if (url.endsWith("/agents/oc/opencode/login")) return view([]);
+    if (url.endsWith("/opencode/login/key")) {
+      if (refuse) return { __status: 400, error: "OpenCode 拒绝了登录（HTTP 400，integration_authorization）" };
+      listed = [flash, free];
+      return view([login]);
+    }
+    if (url.endsWith("/opencode/login/credential/crd_9") && init.method === "DELETE") { listed = [free]; return view([]); }
+    return undefined;
+  });
+  const section = () => page.document.querySelector(".opencode-login");
+  const reads = () => page.calls.filter((call) => call.url.endsWith("/agents/oc/models")).length;
+  const offered = () => [...(group(page, "Model")?.querySelectorAll("input") || [])].map((input) => input.value);
+  const press = async (text) => {
+    const found = [...section().querySelectorAll("button")].find((node) => node.textContent.trim() === text);
+    assert.ok(found !== undefined, `the section has ${text}`);
+    found.click(); await tick(); await tick();
+  };
+  try {
+    page.window.renderSettings({ agent, onSaved() {} }); await tick();
+    page.document.querySelector(".agent-settings-button").click();
+    await until(() => section()?.querySelector(".opencode-login-provider select"), "the login section");
+    assert.deepEqual(offered(), ["", "opencode/beam-free"], "before the login: only what OpenCode lists without one");
+    choice(page, "Model", "opencode/beam-free").click(); await tick();
+
+    const select = section().querySelector(".opencode-login-provider select");
+    Object.getOwnPropertyDescriptor(page.window.HTMLSelectElement.prototype, "value").set.call(select, "deepseek");
+    select.dispatchEvent(new page.window.Event("change", { bubbles: true })); await tick();
+    await press("Log in with an API key");
+    await value(page, section().querySelector('input[type="password"]'), "fixture-key-yn47");
+    await press("Log in");
+    assert.equal(reads(), 1, "a refused login reads nothing again");
+
+    refuse = false;
+    await value(page, section().querySelector('input[type="password"]'), "fixture-key-yn47");
+    await press("Log in");
+    await until(() => offered().includes("deepseek/deepseek-flash"), "the logged-in provider's model to be offered");
+    assert.equal(reads(), 2, "read once again after the login");
+    assert.deepEqual(offered(), ["", "deepseek/deepseek-flash", "opencode/beam-free"]);
+    assert.ok(choice(page, "Model", "opencode/beam-free").checked, "the model chosen before the login stays chosen");
+    assert.ok(!page.calls.some((call) => call.url.endsWith("/agents/oc/settings")), "nothing saved by it");
+
+    await press("Log out");
+    await until(() => !offered().includes("deepseek/deepseek-flash"), "the logged-out provider's model to be gone");
+    assert.equal(reads(), 3, "read once again after the logout");
+    assert.ok(choice(page, "Model", "opencode/beam-free").checked, "still chosen");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("an OpenCode Agent older than 2.0.20 is told to update to log in, naming both versions (T-32 slice 4b)", async () => {
   const note = "update OpenCode to log in here: this Agent runs 2.0.16; logging in needs 2.0.20 or newer";
   const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };

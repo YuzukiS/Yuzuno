@@ -133,7 +133,7 @@ not a template's or a Project's.
 | --- | --- |
 | **Label** and **Id** | How the template is shown, and how a dispatch names it: lowercase letters, digits and hyphens. A new template's id follows its label, or is `template-1`, `template-2` and so on for a label without Latin letters or digits. |
 | **Harness** | Codex, Claude Code, or OpenCode where this Core creates OpenCode Agents. If OpenCode is turned off later, its templates are kept and can still be edited, but no new one can be added, and a dispatch from one is refused. |
-| **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. OpenCode uses its own configuration's model and permissions. |
+| **Model**, **Reasoning effort**, **Permissions** | As for a new Agent. Left unset, the template inherits the defaults for new Agents, the Project's and then the Workspace's. A model it names is checked against this Core host's catalog when you save. Codex takes a reasoning effort; Claude Code keeps each Agent's own. An OpenCode model is named as OpenCode names it, `<provider>/<model>` (such as `deepseek/deepseek-flash`): its form is checked when you save, and whether that OpenCode offers it when the executor first sends, which is refused with the reason if not. Left unset, OpenCode uses its own configuration's model. Its permissions are always its own configuration's. The template form's Model field takes it, as does `executor_templates_change`. |
 | **Runs on** | Where its executors run: this Core host, a machine from the Machines list, or **Choose automatically** (`auto`). OpenCode offers this Core host only; Codex, no machine that keeps its Agents contained. A machine the list no longer has is shown as not in it, and kept until you change it. |
 | **Name** | The executor's name. `{task}` is the task's ID and `{label}` the template's label; empty is `{task} · {label}`. |
 | **Instructions** | Up to 8 KiB, given to the executor with its task: in its dispatch's materials (`task_get` with the dispatchId, under `template`), and in its mail when they are at most 2,000 bytes; longer, the mail says where to read them. |
@@ -840,6 +840,9 @@ executor starts on the host's own login, as before.
   account's profile, so another account could not resume it anyway.
 - **On another machine** an executor with a profile does not start: keys and
   accounts stay on this Core host.
+- **It is not forked.** A fork is a new Agent, without the profile, so it
+  would run on another account; a fork of an executor with a profile is
+  refused with that reason.
 - **With an older Core**, the profile is not read: such an executor is
   reconnected on the host's own login. A Claude session started in a
   claude-swap profile is then not found. Close such executors before going

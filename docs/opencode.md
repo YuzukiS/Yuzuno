@@ -134,7 +134,11 @@ a new one.
   the list moves on with an OpenCode update.
 - **Model, login and permissions:** OpenCode's own configuration, unless a
   model, and one of its variants, is chosen in the Agent's settings from what
-  its OpenCode's configured providers list (`/api/model`, names only). The
+  its OpenCode's configured providers list (`/api/model`, names only). A model
+  it doesn't list is not saved: 2.2.5 takes any model for a session but fails
+  its run with "Model unavailable". To use one its catalog lacks, add it to
+  that provider's models in your OpenCode config (`provider.<id>.models`); an
+  OpenCode started with that config lists it. The
   choice is made the session's before a new message when the session's is
   another, and one OpenCode no longer lists refuses the message before
   anything is sent. Yuzuno reads no OpenCode credentials, keeps nothing else

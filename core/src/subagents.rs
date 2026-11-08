@@ -248,7 +248,9 @@ impl Workspace {
                 .session_reads
                 .try_acquire()
                 .context("Another native history read is in progress; try again shortly")?;
-            let session = ReadSession::open(&self.program).await?;
+            // In the Agent's own CODEX_HOME, where its sub-agents' history is (YN-34 S1c).
+            let home = self.codex_home_env(id).await?;
+            let session = ReadSession::open_with(&self.program, &home).await?;
             let snapshot = read(&session.0, child, &parent).await;
             let _ = session.close().await;
             snapshot.map(|snapshot| (snapshot, "history"))

@@ -397,11 +397,40 @@ pub fn catalog() -> Value {
 
 /// A model as the Agent settings offer it: named `<provider>/<model>`, shown
 /// with the provider's and the model's names and, unless active, its status,
-/// with the names of its variants.
+/// with the names of its variants. For a list by provider (YN-47), also its
+/// provider's ID and name, its own name and status, its context window
+/// (null when OpenCode lists none) and whether it reads images.
 fn offered(model: &ModelChoice) -> Value {
     let id = model.id();
     json!({"id":id,"model":id,"displayName":format!("{} · {}", model.provider_name, model.name),
-        "description":(model.status != "active").then(|| model.status.clone()),"variants":model.variants})
+        "description":(model.status != "active").then(|| model.status.clone()),"variants":model.variants,
+        "providerId":model.provider,"providerName":model.provider_name,"name":model.name,"status":model.status,
+        "context":(model.context > 0).then_some(model.context),"image":model.image})
+}
+
+/// The providers of `models`, in their order, each with where it gets its
+/// access (`Server::provider_sources`): null when that was not read.
+fn offered_providers(models: &[ModelChoice], sources: Option<&HashMap<String, &'static str>>) -> Vec<Value> {
+    let mut providers: Vec<Value> = Vec::new();
+    for model in models {
+        if !providers.iter().any(|p| p["id"] == model.provider.as_str()) {
+            let source = sources.and_then(|s| s.get(&model.provider)).copied();
+            providers.push(json!({"id":model.provider,"name":model.provider_name,"source":source}));
+        }
+    }
+    providers
+}
+
+/// Why a model OpenCode does not list is not saved (YN-47): 2.2.5 takes any
+/// model for a session but fails its run with "Model unavailable"
+/// (`provider.no-route`, Job 15e70745), and lists one the user's OpenCode
+/// config adds to a provider's models.
+fn unlisted(model: &str) -> String {
+    match model.split_once('/') {
+        Some((provider, name)) if !provider.is_empty() && !name.is_empty() =>
+            format!("OpenCode 没有列出 {model}，用它运行会失败；可以在你的 OpenCode 配置的 provider.{provider}.models 里加上 {name}，再重新打开设置。设置未保存"),
+        _ => format!("{model} 不是“提供方/模型”的写法，OpenCode 也没有列出它；设置未保存"),
+    }
 }
 
 /// The model chosen for an Agent, as its OpenCode lists it now; None for
@@ -536,7 +565,11 @@ impl Workspace {
         if opencode::newer_than_verified(version) {
             native["note"] = json!(opencode::newer_note());
         }
-        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"opencode":native}))
+        // Where each provider gets its access (YN-47), from 2.x's integrations, which a
+        // release older than logins lacks: unknown then, or when they could not be read.
+        let sources = if opencode::login_supported(version) { c.server.provider_sources().await.ok() } else { None };
+        Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"providers":offered_providers(&models, sources.as_ref()),
+            "opencode":native}))
     }
 
     /// Chooses the model for an Agent's next messages, keeping its variant.
@@ -566,7 +599,7 @@ impl Workspace {
             let c = self.opencodes.lock().unwrap().get(id).cloned().context("OpenCode Agent 尚未连接；连接后才能选择它的模型")?;
             let listed = c.server.models().await?;
             c.windows(&listed);
-            let found = listed.iter().find(|m| m.id() == model).with_context(|| format!("OpenCode 当前配置的模型里没有 {model}；设置未保存"))?;
+            let found = listed.iter().find(|m| m.id() == model).with_context(|| unlisted(&model))?;
             if let Some(variant) = &variant {
                 ensure!(found.variants.iter().any(|v| v == variant), "OpenCode 没有为 {model} 列出变体 {variant}；设置未保存");
             }
@@ -603,7 +636,10 @@ impl Workspace {
             bail!("请填写名称（最多 100 字节）");
         }
         ensure!(machine_id.as_deref().is_none_or(|id| id == "local"), "OpenCode Agent 目前只支持 Core 所在的本机");
-        ensure!(model.is_empty(), "OpenCode Agent 使用 OpenCode 自己配置的默认模型，这里不能选择");
+        // A template's model (YN-34 S1c), checked against OpenCode's providers when it first sends.
+        if !model.is_empty() {
+            check_model_id(&model)?;
+        }
         if let Some(project) = project_id.clone() {
             self.stored(move |store| store.ensure_project_assignable(&project)).await?;
         }
@@ -2998,6 +3034,16 @@ pub(crate) use fork::{migrate as fork_migrate, router as fork_router};
 #[path = "opencode_import.rs"]
 mod import;
 pub(crate) use import::{migrate as import_migrate, router as import_router};
+
+/// An OpenCode model as Yuzuno names it, `<provider>/<model>` (ModelChoice::id):
+/// a provider, a slash, and a model of one or more parts, no spaces.
+pub(crate) fn check_model_id(model: &str) -> Result<()> {
+    let ok = model.len() <= 200
+        && !model.chars().any(|c| c.is_whitespace() || c.is_control())
+        && model.split_once('/').is_some_and(|(provider, rest)| !provider.is_empty() && !rest.is_empty());
+    ensure!(ok, "An OpenCode model is named <provider>/<model>, such as deepseek/deepseek-flash");
+    Ok(())
+}
 
 #[cfg(test)]
 #[path = "opencode_agent_tests.rs"]
