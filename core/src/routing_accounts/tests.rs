@@ -155,3 +155,51 @@ def main():
     let none = run(None);
     assert!(!none.status.success() && none.stdout.is_empty());
 }
+
+/// The routes: on Core's own port, refusing an Agent's credential; none on
+/// the phone entry; the command and the homes are checked as they are saved.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_routes_are_the_users_own_browsers_only() {
+    use axum::{body::{to_bytes, Body}, http::{Request, StatusCode}};
+    use tower::ServiceExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = crate::workspace::Workspace::new(tmp.path().join("data"), "/tmp".into(), "unused-codex".into()).unwrap();
+    let local = crate::server::router(ws.clone(), tmp.path().join("assets"));
+    let remote = crate::server::remote_router(ws.clone(), tmp.path().join("assets"), None,
+        crate::server::RemoteEntry::new("https://core.example-tailnet.ts.net:8444", "person@example.com").unwrap());
+    let call = |app: axum::Router, method: &str, uri: &str, body: Option<serde_json::Value>, extra: Vec<(&'static str, String)>| {
+        let mut builder = Request::builder().method(method).uri(uri).header("x-yuzuno-client", "desktop").header("content-type", "application/json");
+        builder = if extra.iter().any(|(n, _)| *n == "tailscale-user-login") { builder } else { builder.header("host", "127.0.0.1:4317") };
+        for (name, value) in extra {
+            builder = builder.header(name, value);
+        }
+        let request = builder.body(body.map_or_else(Body::empty, |b| Body::from(b.to_string()))).unwrap();
+        async move {
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            (status, String::from_utf8_lossy(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).into_owned())
+        }
+    };
+    let stub = cswap(tmp.path(), LIST, 0);
+    let (status, saved) = call(local.clone(), "PUT", "/api/routing/cswap", Some(serde_json::json!({"command": stub})), vec![]).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let (status, listed) = call(local.clone(), "GET", "/api/routing/accounts", None, vec![]).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert_eq!((listed["cswap"]["pinned"].clone(), listed["cswap"]["accounts"][1]["number"].clone()), (serde_json::json!("1.0.0"), serde_json::json!(2)));
+    let (status, _) = call(local.clone(), "PUT", "/api/routing/cswap", Some(serde_json::json!({"command": "cswap list"})), vec![]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call(local.clone(), "PUT", "/api/routing/codex-homes",
+        Some(serde_json::json!({"homes":[{"id":"work","label":"Work","home":"relative"}]})), vec![]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    for (method, uri) in [("GET", "/api/routing/accounts"), ("PUT", "/api/routing/cswap"), ("PUT", "/api/routing/codex-homes")] {
+        let (status, answer) = call(local.clone(), method, uri, Some(serde_json::json!({"command":"/tmp/evil"})),
+            vec![("authorization", "Bearer an-agents-token".into())]).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {answer}");
+        let (status, answer) = call(remote.clone(), method, uri, Some(serde_json::json!({"command":"/tmp/evil"})), vec![
+            ("host", "core.example-tailnet.ts.net:8444".into()), ("tailscale-user-login", "person@example.com".into()),
+            ("origin", "https://core.example-tailnet.ts.net:8444".into())]).await;
+        assert!(matches!(status, StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED) || !answer.contains("pinned"), "phone: {method} {uri} {status}");
+    }
+    assert_eq!(ws.stored(|store| store.cswap_settings()).await.unwrap().command, stub, "no refused write changed it");
+}
