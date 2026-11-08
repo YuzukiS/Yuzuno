@@ -222,7 +222,7 @@ test("a page shows its editors directly, and each group names whose settings it 
   assert.deepEqual(groups.map((list) => p.doc.getElementById(list.getAttribute("aria-labelledby")).textContent), ["This device", "Workspace", "Data", "About"]);
   assert.deepEqual(groups.map((list) => [...list.querySelectorAll('[role="tab"]')].map((item) => item.id.replace("settings-tab-", ""))), [
     ["appearance", "typing", "language", "shortcuts", "notifications", "transfer"],
-    ["projects", "machines", "agents", "executors", "home", "phone"],
+    ["projects", "machines", "agents", "executors", "routing", "home", "phone"],
     ["storage", "backup", "diagnostics"],
     ["updates", "runtime", "about"],
   ]);
