@@ -107,7 +107,7 @@ async fn an_agents_credential_is_refused() {
             assert!(answer.contains("take no Agent credential"), "{answer}");
         }
     }
-    assert!(!ws.data_dir.join(super::DIR).exists(), "nothing was written");
+    assert!(!ws.data_dir.join(crate::routing_keys::DIR).exists(), "nothing was written");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -133,7 +133,7 @@ async fn the_phone_entry_has_none_of_them_and_the_browser_boundary_holds() {
     let request = Request::builder().method("PUT").uri("/api/routing/keys/a").header("host", "127.0.0.1:4317")
         .header("content-type", "application/json").body(Body::from(json!({"source":"local","provider":"openai","value":KEY}).to_string())).unwrap();
     assert_eq!(local.clone().oneshot(request).await.unwrap().status(), StatusCode::FORBIDDEN, "no client header");
-    assert!(!ws.data_dir.join(super::DIR).exists(), "nothing was written");
+    assert!(!ws.data_dir.join(crate::routing_keys::DIR).exists(), "nothing was written");
 }
 
 #[tokio::test(flavor = "multi_thread")]
