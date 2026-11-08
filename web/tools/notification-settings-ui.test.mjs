@@ -307,7 +307,7 @@ test("a daily backup's failure is off until ticked, with an Agent's failure on; 
   assert.equal(page.box("A daily backup failed").checked, false, "not turned on with the others");
   const row = [...page.doc.querySelectorAll("label.settings-row")].find((r) => r.textContent.includes("A daily backup failed")).textContent;
   assert.match(row, /never while the page is closed, and possibly late after the computer sleeps/);
-  assert.match(row, /names no folder or error; Settings → Backup shows the last run and why/);
+  assert.match(row, /names no folder or error; Settings → Backup & restore shows the last run and why/);
   page.box("A daily backup failed").click();
   await until(() => page.saved().categories.backupFailed === true, "chosen");
   assert.deepEqual(page.saved().categories, { needsYou: true, failed: true, finished: true, backupFailed: true });

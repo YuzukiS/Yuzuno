@@ -216,6 +216,46 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* A long material (its acceptance, its return requirements) stops at about
+   12 lines and scrolls inside (YN-46, CappedText): enough for its goal and
+   first requirements, while the card stays near a quarter of a 900-px window
+   so the steps still start on the first screen in one column. A short one
+   keeps its own height. em first for a browser without lh (12 lines at the
+   normal line height of about 1.2). */
+.executor-overview-capped {
+  max-height: 14.5em;
+  max-height: 12lh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+/* More below or above: a fade at that edge, drawn over the text it covers
+   and kept there while it scrolls. Each has its height only while it is
+   needed, so it never makes a short material scroll. */
+.executor-overview-capped::before,
+.executor-overview-capped::after {
+  content: "";
+  position: sticky;
+  display: block;
+  height: 0;
+  pointer-events: none;
+}
+.executor-overview-capped[data-above]::before {
+  top: 0;
+  height: 2.5em;
+  margin-bottom: -2.5em;
+  background: linear-gradient(var(--paper), transparent);
+}
+.executor-overview-capped[data-below]::after {
+  bottom: 0;
+  height: 2.5em;
+  margin-top: -2.5em;
+  background: linear-gradient(transparent, var(--paper));
+}
+.executor-overview-capped:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 
 .executor-overview-steps {
   list-style: none;
@@ -319,6 +359,14 @@
   border-radius: 6px;
 }
 
+/* Its steps and what it is doing now (YN-46): together, in today's place in
+   one column, and a column of their own on a wide pane (below). */
+.executor-overview-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .executor-overview-now {
   margin-block: 0;
   padding: 0 2px;
@@ -414,4 +462,48 @@
   padding-left: 10px;
   white-space: pre-line;
   overflow-wrap: anywhere;
+}
+
+/* Two columns once the pane fits them (YN-46). The materials, changes,
+   evidence and final report stay in a column as wide as the single one
+   (760 px, so no line is longer than before); its steps and what it is doing
+   now take a column of their own on the right, 300 to 380 px, like a PR's
+   side column. 1000 px is where a 600-px main column, that column, the gap
+   and the padding fit; a narrower pane and a phone keep the single column in
+   its order. The grid only places them: a keyboard and a screen reader meet
+   them in that same order. */
+@container conversation (min-width: 1000px) {
+  .executor-overview {
+    display: grid;
+    grid-template-columns: minmax(0, 760px) clamp(300px, 100cqi - 824px, 380px);
+    /* The header, then up to eight in the main column, each in its own row
+       (an empty row is no height). The last row takes whatever the steps
+       column needs beyond them, so the main column's cards keep their gaps. */
+    grid-template-rows: repeat(9, auto) 1fr;
+    justify-content: center;
+    column-gap: 24px;
+    row-gap: 0;
+  }
+  .executor-overview > * {
+    grid-column: 1;
+    max-width: none;
+    margin: 0 0 10px;
+  }
+  .executor-overview > .executor-overview-head {
+    grid-column: 1 / -1;
+  }
+  .executor-overview > .executor-overview-progress {
+    grid-column: 2;
+    grid-row: 2 / -1;
+    align-self: start;
+    margin: 0;
+  }
+  /* Kept in view while the other column scrolls, where the window is tall
+     enough to show all of it: at the Overview's own top padding. */
+  @media (min-height: 560px) {
+    .executor-overview > .executor-overview-progress {
+      position: sticky;
+      top: 0;
+    }
+  }
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   ArrowRight, Archive, Bell, Bot, ChevronLeft, ClipboardList, Cpu, Database, Folder, Globe, HardDrive, House, Info,
-  Monitor, Palette, RefreshCw, Search, Send, Server, Type, Users, type LucideIcon,
+  Monitor, Palette, RefreshCw, Route, Search, Send, Server, Type, Users, type LucideIcon,
 } from "lucide-react";
 import type { Agent, Project } from "./types";
 import { langTag, strings, TranslatedPart, useLanguage, useStrings } from "./i18n";
@@ -27,7 +27,7 @@ export type SettingsOpenAt = { page?: SettingsPage; sub?: string; block?: string
 export type SettingsRequest = { sub?: string; block?: string; n: number };
 const pageIcons: Record<SettingsPage, LucideIcon> = {
   appearance: Palette, typing: Send, language: Globe, shortcuts: Type, notifications: Bell, transfer: HardDrive,
-  projects: Folder, machines: Server, agents: Bot, executors: Users, home: House, phone: Monitor,
+  projects: Folder, machines: Server, agents: Bot, executors: Users, routing: Route, home: House, phone: Monitor,
   storage: Database, backup: Archive, diagnostics: ClipboardList,
   updates: RefreshCw, runtime: Cpu, about: Info,
 };

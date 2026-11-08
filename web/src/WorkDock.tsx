@@ -8,7 +8,6 @@ import {
   createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type ReactNode, type RefObject,
 } from "react";
-import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   BriefcaseBusiness,
@@ -23,6 +22,7 @@ import {
 } from "lucide-react";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
 import { animates } from "./motion";
+import { Tip, TipText } from "./Tip";
 import { byAttention, workActivity, workKinds, type WorkItem, type WorkKind } from "./work-activity.ts";
 import "./work-dock.css";
 
@@ -523,101 +523,57 @@ export function WorkDockItem({
   onOpen: (from: HTMLElement) => void;
 }) {
   const Mark = marks[status] || CircleHelp;
-  const language = useLanguage();
   const node = useRef<HTMLSpanElement>(null);
   const self = useRef<HTMLButtonElement>(null);
   useSettleOnEnd(node, status);
-  // Where the tip goes, in the page's own coordinates. It is drawn into the
-  // body because the dock's scrolling box would clip it, and because the
-  // dock's `translate` makes it a containing block, so `position: fixed`
-  // inside the dock would not escape either.
-  const [tip, setTip] = useState<{
-    top: number;
-    left?: number;
-    right?: number;
-    maxWidth: number;
-    /** Whether the conversation is wide enough to say the time beside the
-     * node already, so the tip need not repeat it. A flag, because the tip
-     * is drawn into the page: `@container conversation` cannot reach it
-     * there, and the rule that used to hide it simply stopped matching
-     * (#459 R6, P3). */
-    wide: boolean;
-  } | null>(null);
-  const place = useCallback(() => {
+  const [open, setOpen] = useState(false);
+  // Whether the conversation is wide enough to say the time beside the node
+  // already, so the tip need not repeat it. Measured as it opens, because
+  // the tip is drawn into the page: `@container conversation` cannot reach
+  // it there (#459 R6, P3). The conversation's width is read where the
+  // container query reads it (`.main-panel` carries `container-name:
+  // conversation`); 760px is that query's own threshold.
+  const [wide, setWide] = useState(false);
+  const toggle = (next: boolean) => {
     const button = self.current;
-    if (!button) return;
-    // The phone shows this dock as a drawer with the names already on it, and
-    // hid the tip with a descendant rule the page-level tip escapes.
-    if (button.closest('.app.phone .conversation-body[data-phone-dock="work"]')) return setTip(null);
-    const r = button.getBoundingClientRect();
-    const room = window.innerWidth - r.right - 20;
-    const top = Math.round(r.top + r.height / 2);
-    // The conversation's own width, read where the container query reads it
-    // (`.main-panel` carries `container-name: conversation`). 760px is that
-    // query's own threshold, kept in one place by being measured here rather
-    // than asked of a stylesheet the tip cannot see.
-    const wide = (button.closest(".main-panel")?.getBoundingClientRect().width ?? 0) >= 760;
-    // Beside the dock where there is room for it; on its other side where
-    // there is not, so the tip is always wholly on screen.
-    setTip(room >= 140
-      ? { top, wide, left: Math.round(r.right + 8), maxWidth: Math.min(280, Math.floor(room)) }
-      : { top, wide, right: Math.round(window.innerWidth - r.left + 8), maxWidth: Math.min(280, Math.max(120, Math.floor(r.left - 20))) });
-  }, []);
-  // While it shows, the dock may scroll under it and the window may change.
-  useEffect(() => {
-    if (!tip) return;
-    const again = () => place();
-    window.addEventListener("scroll", again, true);
-    window.addEventListener("resize", again);
-    return () => {
-      window.removeEventListener("scroll", again, true);
-      window.removeEventListener("resize", again);
-    };
-  }, [tip, place]);
+    if (next && button) {
+      // The phone shows this dock as a drawer with the names already on it.
+      if (button.closest('.app.phone .conversation-body[data-phone-dock="work"]')) return;
+      setWide((button.closest(".main-panel")?.getBoundingClientRect().width ?? 0) >= 760);
+    }
+    setOpen(next);
+  };
   return (
-    <button
-      ref={self}
-      type="button"
-      className={`work-dock-item state-${status} ${className}`.trim()}
-      aria-label={[name, state, detail, when].filter(Boolean).join(" · ")}
-      onPointerEnter={place}
-      onPointerLeave={() => setTip(null)}
-      onFocus={place}
-      onBlur={() => setTip(null)}
-      onClick={(event) => onOpen(event.currentTarget)}
+    // Beside the dock where there is room for it, else on its other side.
+    <Tip
+      side="right"
+      open={open}
+      onOpenChange={toggle}
+      describe={false}
+      card={{ "data-wide": wide ? "" : undefined }}
+      className="work-dock-tip"
+      content={<TipText title={name} status={state} meta={detail} when={wide ? null : when} />}
     >
-      <span className="work-dock-node" aria-hidden="true" ref={node}>
-        <Mark
-          size={14}
-          className={Mark === LoaderCircle ? "spin" : undefined}
-        />
-      </span>
-      <span className="work-dock-label" aria-hidden="true">
-        <strong>{name}</strong>
-        <small>{sub ?? state}</small>
-        {when && <small className="work-dock-when">{when}</small>}
-      </span>
-      {tip &&
-        createPortal(
-          <span
-            className="work-dock-tip"
-            aria-hidden="true"
-            // Both of these are the nav's, and the body is not inside it:
-            // the language so CJK breaks and renders as the reader's own,
-            // and the width so the rule below knows what the container
-            // query can no longer tell it (#459 R6, P3).
-            lang={langTag(language)}
-            data-wide={tip.wide ? "" : undefined}
-            style={{ top: tip.top, left: tip.left, right: tip.right, maxWidth: tip.maxWidth }}
-          >
-            <strong>{name}</strong>
-            <span>{state}</span>
-            {detail && <small>{detail}</small>}
-            {when && <small className="work-dock-when">{when}</small>}
-          </span>,
-          document.body,
-        )}
-    </button>
+      <button
+        ref={self}
+        type="button"
+        className={`work-dock-item state-${status} ${className}`.trim()}
+        aria-label={[name, state, detail, when].filter(Boolean).join(" · ")}
+        onClick={(event) => onOpen(event.currentTarget)}
+      >
+        <span className="work-dock-node" aria-hidden="true" ref={node}>
+          <Mark
+            size={14}
+            className={Mark === LoaderCircle ? "spin" : undefined}
+          />
+        </span>
+        <span className="work-dock-label" aria-hidden="true">
+          <strong>{name}</strong>
+          <small>{sub ?? state}</small>
+          {when && <small className="work-dock-when">{when}</small>}
+        </span>
+      </button>
+    </Tip>
   );
 }
 

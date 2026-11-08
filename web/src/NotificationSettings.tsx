@@ -36,7 +36,7 @@ const text = strings({
     finished: { title: "A Turn finished", help: "An Agent finished what it was doing." },
     backupFailed: {
       title: "A daily backup failed",
-      help: "It failed, was cut off when Core stopped, or couldn’t start. Also while you’re looking at Yuzuno, but only while it’s open in this browser: never while the page is closed, and possibly late after the computer sleeps. It names no folder or error; Settings → Backup shows the last run and why.",
+      help: "It failed, was cut off when Core stopped, or couldn’t start. Also while you’re looking at Yuzuno, but only while it’s open in this browser: never while the page is closed, and possibly late after the computer sleeps. It names no folder or error; Settings → Backup & restore shows the last run and why.",
     },
   } as Record<NotificationCategory, Kind>,
   access: {
@@ -133,7 +133,7 @@ const text = strings({
     finished: { title: "Turn 完成", help: "某个 Agent 完成了它正在做的事。" },
     backupFailed: {
       title: "每日备份失败",
-      help: "备份失败、在 Core 停止时被中断，或没能开始。你正在看 Yuzuno 时也会通知，但仅限它在此浏览器中打开时：页面关闭时从不通知，电脑睡眠后可能延迟。通知中不写文件夹或错误；设置中的“Workspace 备份与恢复”会显示上次运行及原因。",
+      help: "备份失败、在 Core 停止时被中断，或没能开始。你正在看 Yuzuno 时也会通知，但仅限它在此浏览器中打开时：页面关闭时从不通知，电脑睡眠后可能延迟。通知中不写文件夹或错误；“设置 → 备份与恢复”会显示上次运行及原因。",
     },
   },
   access: {

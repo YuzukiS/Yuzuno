@@ -4,7 +4,7 @@ import { clockMs, islandTime, islandView } from "../src/agent-island.ts";
 import { executorView } from "../src/executor-display.ts";
 
 // T-43 rail v11 (the user's answers to design/ask-rail-readability): the ring
-// at an Agent row's top right says one of five states (working, needs you,
+// at an Agent row's right says one of five states (working, needs you,
 // done, failed, idle); every other state is a pill that stays while it
 // holds; an executor's line one is its task's short name, else its title,
 // and line two what it is doing; only a lead shows updates unread, as a dot;

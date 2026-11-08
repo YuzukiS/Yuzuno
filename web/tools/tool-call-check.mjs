@@ -157,7 +157,8 @@ const sideways = (page) => page.evaluate(() => {
   const pane = document.querySelector(".conversation-scroll");
   return { page: document.documentElement.scrollWidth - document.documentElement.clientWidth, pane: pane ? pane.scrollWidth - pane.clientWidth : null };
 });
-const tip = (page) => page.locator('body > [role="tooltip"].tool-call-tip');
+// The app's one tip (Tip.tsx, YN-44), in Radix's wrapper in the body.
+const tip = (page) => page.locator('.tip.tool-call-tip[role="tooltip"]');
 const tipBox = (page) => tip(page).evaluate((el) => {
   const r = el.getBoundingClientRect();
   return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: innerWidth, height: innerHeight, text: el.innerText };

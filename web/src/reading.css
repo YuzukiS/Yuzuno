@@ -99,13 +99,17 @@
   gap: 1px;
 }
 /* A row (T-43 灵动环 v10.2, the user's design): line one, a standing
-   Agent's name or an executor's activity; line two, what a standing Agent
-   last said or an executor's task key and clock. Three lines at most. The
-   ring at the top right, then the "…" where the reader is. The row's height
-   follows what it says. */
+   Agent's name or an executor's task; line two, what a standing Agent last
+   said or what an executor is doing and its clock. Three lines at most. The
+   ring at the right, centred on the row's lines however many there are
+   (YN-41). The row's height follows what it says. Its words, line one and
+   line two together, sit between two equal spacers: whatever height the
+   ring or a finger's 44 px adds goes to them, so the words are in the
+   middle too. */
 .agent-list .agent-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-rows: 1fr auto auto 1fr;
   column-gap: 0;
   row-gap: 0;
   align-items: start;
@@ -115,7 +119,7 @@
 }
 .agent-list .agent-row > .agent-select.agent-row-top {
   grid-column: 1;
-  grid-row: 1;
+  grid-row: 2;
   align-items: flex-start;
   gap: 0;
 }
@@ -126,13 +130,21 @@
 }
 .agent-list .agent-row > :is(.agent-row-state, .agent-row-meta) {
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 3;
   margin-top: 1px;
 }
+/* An executor with nothing to say on line two (no clock, nothing said) has
+   no line two: it takes no height, and line one is the middle (YN-41). */
+.agent-list .agent-row > .agent-row-meta:empty {
+  display: none;
+}
+/* The ring, or its pill and the ring, beside both lines and their spacers,
+   centred on them (YN-41). What is under them, a "needs you" or a drop's
+   hint, spans the row below. */
 .agent-list .agent-row > .agent-island {
   grid-column: 2;
-  grid-row: 1;
-  align-self: start;
+  grid-row: 1 / span 4;
+  align-self: center;
   justify-self: end;
   margin: 0 0 0 8px;
 }
