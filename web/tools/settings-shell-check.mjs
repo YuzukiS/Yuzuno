@@ -192,7 +192,7 @@ try {
         const dialog = settings(page);
         assert.equal(await dialog.locator(".settings-center").getAttribute("lang"), language === "en" ? "en" : "zh-Hans");
         assert.deepEqual(await dialog.locator(".settings-nav-heading").allInnerTexts(), words[language].groups.map((g) => language === "en" ? g.toUpperCase() : g), `${label}: four groups`);
-        assert.equal(await dialog.getByRole("tab").count(), 18);
+        assert.equal(await dialog.getByRole("tab").count(), 19);
         // Opens at Updates, as before.
         assert.equal(await dialog.locator("#settings-tab-updates").getAttribute("aria-selected"), "true");
         await noOverflow(page, `${label} updates`);
@@ -213,7 +213,7 @@ try {
         await noOverflow(page, `${label} machines`);
         await page.screenshot({ path: resolve(output, `machines-${width}x${height}-${language}-${theme}.png`) });
         await context.close();
-        check(`${label}: four groups, 18 pages, Appearance and Machines shown with no sideways overflow; sidebar fixed`);
+        check(`${label}: four groups, 19 pages, Appearance and Machines shown with no sideways overflow; sidebar fixed`);
       }
     }
   }

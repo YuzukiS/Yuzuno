@@ -60,6 +60,11 @@ for your own browser. They are not on the phone entry, no Workspace tool an
 Agent can call reaches them, and a request carrying any `Authorization`
 header (an Agent's credential) is refused with 403.
 
+Settings → Executor routing → Accounts and keys writes them through these
+routes: a key's value or the token is typed into a password field, sent once
+and never shown again, and claude-swap's accounts are shown by number and
+fingerprint only.
+
 | Route | What it does |
 | --- | --- |
 | `GET /api/routing/keys` | Each key's id, provider, source, `set` and `setAt`, and a 1Password key's reference; whether the token is set. Never a value. |

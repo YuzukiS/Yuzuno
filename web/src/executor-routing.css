@@ -1,0 +1,123 @@
+/* Settings → Executor routing (YN-49, YN-34 S0 design §8 S4): accounts and keys. */
+.routing-keys .settings-input {
+  width: min(18rem, 100%);
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--input);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}
+.routing-keys .settings-input[aria-invalid="true"] { border-color: var(--danger, #c4453c); }
+.routing-icon { flex: none; vertical-align: -2px; color: var(--warning-ink, var(--text-secondary)); }
+
+/* A key's source: two buttons, one pressed. */
+.routing-seg {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  font-weight: 400;
+}
+.routing-seg button {
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  cursor: pointer;
+}
+.routing-seg button + button { border-left: 1px solid var(--line); }
+.routing-seg button[aria-pressed="true"] {
+  background: var(--accent-wash, color-mix(in srgb, var(--accent-ink) 14%, transparent));
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.routing-seg button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.routing-seg button:disabled { cursor: default; opacity: .6; }
+
+/* A value, reference or command entered in place. */
+.routing-secret-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.routing-secret-form .settings-input { flex: 1 1 14rem; width: auto; }
+.routing-reference,
+.routing-reference-input,
+.routing-path {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  overflow-wrap: anywhere;
+}
+.routing-reference { color: var(--text-secondary); }
+.routing-form-help { flex-basis: 100%; }
+.routing-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.routing-spacer { flex: 1; }
+.routing-read-error { display: grid; gap: 4px; }
+
+/* Accounts: a number and fingerprint (claude-swap), or a label and folder (Codex). */
+.routing-accounts {
+  display: grid;
+  gap: 4px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: calc(10px + var(--font-adjust, 3px));
+}
+.routing-accounts li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+  color: var(--ink);
+}
+.routing-fingerprint { color: var(--text-quiet); font-size: calc(9px + var(--font-adjust, 3px)); }
+.routing-accounts code { font-size: inherit; overflow-wrap: anywhere; }
+
+/* Codex homes being edited: id, label and folder per account. */
+.routing-homes { display: grid; gap: 8px; margin-top: 4px; }
+.routing-home {
+  display: grid;
+  grid-template-columns: minmax(5rem, 8rem) minmax(6rem, 10rem) minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.routing-home .settings-input { width: 100%; }
+
+/* A new key: provider and id, its source, then its value or reference. */
+.routing-new-key { display: grid; gap: 8px; justify-items: start; min-width: 0; }
+.routing-new-key > .settings-input { width: min(28rem, 100%); }
+.routing-new-key-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; min-width: 0; }
+.routing-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.routing-field .settings-select { width: min(17rem, 100%); }
+.routing-field .settings-input { width: min(12rem, 100%); }
+
+.routing-danger { color: var(--danger, #c4453c); }
+
+/* A phone: rows stack, targets are 40 px (no pointer query: see browser checks). */
+.settings-center.is-phone .routing-keys :is(button, select, .settings-input) { min-height: 40px; }
+@media (max-width: 640px) {
+  .routing-home { grid-template-columns: minmax(0, 1fr) auto; }
+  .routing-home .settings-input:nth-of-type(n + 2) { grid-column: 1; }
+  .routing-home .icon-button { grid-column: 2; grid-row: 1; }
+  .routing-seg { flex-wrap: wrap; }
+}

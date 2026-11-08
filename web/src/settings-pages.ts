@@ -8,7 +8,7 @@ import type { SettingEntry, SettingsDestination, SettingsEditor } from "./settin
 export type SettingsGroup = "device" | "workspace" | "data" | "about";
 export type SettingsPage =
   | "appearance" | "typing" | "language" | "shortcuts" | "notifications" | "transfer"
-  | "projects" | "machines" | "agents" | "executors" | "home" | "phone"
+  | "projects" | "machines" | "agents" | "executors" | "routing" | "home" | "phone"
   | "storage" | "backup" | "diagnostics"
   | "updates" | "runtime" | "about";
 /** An editor of a page; `projects` and `machines` are the Project and
@@ -34,6 +34,8 @@ export const settingsPages: readonly { id: SettingsPage; group: SettingsGroup; l
   { id: "machines", group: "workspace", label: { en: "Machines", zh: "机器" }, editors: ["machines"] },
   { id: "agents", group: "workspace", label: { en: "Agent defaults", zh: "Agent 默认" }, editors: ["agent-defaults", "auto-continue", "review"] },
   { id: "executors", group: "workspace", label: { en: "Executors", zh: "执行者" }, editors: ["executor-templates"] },
+  // Executor routing (YN-49): the accounts and keys an executor may be started with.
+  { id: "routing", group: "workspace", label: { en: "Executor routing", zh: "执行者路由" }, editors: ["routing-keys"] },
   { id: "home", group: "workspace", label: { en: "Home", zh: "主页" }, editors: ["home"] },
   { id: "phone", group: "workspace", label: { en: "Phone access", zh: "手机访问" }, editors: ["remote"] },
   { id: "storage", group: "data", label: { en: "Storage", zh: "存储" }, editors: ["storage", "drafts", "history"] },
