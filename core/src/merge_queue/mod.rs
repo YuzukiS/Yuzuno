@@ -126,6 +126,9 @@ pub(super) async fn tick(ws: &Arc<Workspace>) -> Result<()> {
         let attempt = entry["attempt"].as_i64().unwrap_or(0);
         let mut merging = None;
         let mut merged = None;
+        // An entry due only for its tag (YN-33) keeps its own pace for its
+        // follow-up and cleanup.
+        let own = entry["nextCheck"].as_i64().unwrap_or(0) <= chrono::Utc::now().timestamp();
         match entry["state"].as_str() {
             Some("queued" | "waiting" | "ready") => {
                 // Read again: a check earlier in this pass that ended a pause,
@@ -145,8 +148,9 @@ pub(super) async fn tick(ws: &Arc<Workspace>) -> Result<()> {
                 merging = recorded.merge;
             }
             Some("merging") => merging = Some(entry.clone()),
-            Some("merged") => merged = Some(entry.clone()),
-            _ if entry["batch"]["cleanup"] == "pending" => {
+            Some("merged") if own => merged = Some(entry.clone()),
+            Some("merged") => {}
+            _ if own && entry["batch"]["cleanup"] == "pending" => {
                 let outcome = remote::cleanup(ws, &entry).await.map_err(|e| format!("{e:#}"));
                 let key = id.clone();
                 ws.stored(move |s| s.merge_cleaned(&key, outcome)).await?;

@@ -248,7 +248,9 @@ Once every check holds, the entry merges, one merge at a time per repository:
    result stops it.
 
 While a run is still going, an entry waits and checks again later, at most
-every 10 minutes. After six hours of waiting it stops. Time while the
+every 10 minutes, and at least every 2 minutes while a CI run on its head or
+its batch is still going. Main's push CI on the merge commit, once it runs,
+is read every minute until it ends. After six hours of waiting it stops. Time while the
 repository's queue is paused does not count: a paused entry waits for the
 unpause however long it takes. While GitHub reads are
 cooling down, the entry waits until the cooldown ends. Each GitHub read holds
