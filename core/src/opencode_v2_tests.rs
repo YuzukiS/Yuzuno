@@ -115,9 +115,10 @@ fn live_events_read_as_the_snapshot_reads_the_same_turn() {
     assert_eq!(states.iter().map(|p| p["state"]["status"].as_str().unwrap()).collect::<Vec<_>>(), ["pending", "running", "running", "completed"]);
     assert!(states.iter().all(|p| p["id"] == "call_1" && p["tool"] == "bash" && p["messageID"] == "msg_a1"));
     assert_eq!(states[3]["state"], json!({"status": "completed", "input": {"command": "ls"}, "output": "a.txt"}));
-    let ended = c.read(&ev("session.step.ended", 420, d(json!({"assistantMessageID": "msg_a1", "finish": "tool-calls",
+    let ended = c.read(&ev("session.step.ended", 420, d(json!({"assistantMessageID": "msg_a1", "finish": "tool-calls", "cost": 0.0123,
         "tokens": {"input": 10, "output": 2, "reasoning": 0, "cache": {"read": 0, "write": 0}}}))));
     let info = &ended[0]["data"]["info"];
+    assert_eq!(info["cost"], 0.0123, "the step's cost stays on its answer (YN-34 S2a)");
     assert_eq!((&info["parentID"], &info["time"]["created"], &info["time"]["completed"], &info["modelID"]), (&json!("msg_u1"), &json!(4), &json!(420), &json!("m")));
     assert_eq!(info["tokens"]["input"], 10);
     // A steered input: the next step answers it.

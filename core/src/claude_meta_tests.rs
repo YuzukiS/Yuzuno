@@ -272,3 +272,23 @@ async fn the_effort_a_turn_ran_at_is_written_as_metadata() {
     }
     assert_eq!(results[0], results[1], "held and not held differ");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turns_cost_counts_once_toward_its_routing_keys_day_and_a_login_counts_nothing() {
+    // YN-34 S2a: the daily spend routing's cap reads.
+    for (id, on_key) in [("cost-key", true), ("cost-login", false)] {
+        let d = record(id, "working", &[("t", "inProgress")], vec![]);
+        let (_dir, ws) = workspace(&d, false);
+        if on_key {
+            ws.store.set_runtime_profile(id, Some(&crate::routing_launch::RuntimeProfile::ApiKey { key_id: "anthropic".into() })).unwrap();
+        }
+        let _fake = connect(&ws, id);
+        let result = json!({"type":"event","turnId":"t","event":{"type":"result","subtype":"success","is_error":false,
+            "uuid":"r-1","result":"Done.","total_cost_usd":0.42}});
+        ws.claude_event(id, 7, result.clone());
+        ws.claude_event(id, 7, result);
+        let spend = ws.store.spend_on(crate::routing_readings::today()).unwrap();
+        assert_eq!((spend.total_usd, spend.by_key.get("anthropic").copied()),
+            if on_key { (0.42, Some(0.42)) } else { (0.0, None) }, "{id}");
+    }
+}
