@@ -181,7 +181,7 @@ fn revert_hint(db: &Connection, e: &Value) -> Result<String> {
     } else if r["revert"] == true {
         format!(" One step reverts it: merge_revert with entry {} (a lead of the repository's Projects), or Revert in Jobs → Merge queue (the user).", e["id"].as_str().unwrap_or("?"))
     } else {
-        " Reverts are off for this repository; the user can turn them on in Projects → repositories for a one-step revert.".to_owned()
+        " Reverts are off for this repository; the user can turn them on in Settings → Projects → its Project → Repositories for a one-step revert.".to_owned()
     })
 }
 fn save_repository(db: &Connection, id: i64, data: &Value) -> Result<()> {
@@ -370,7 +370,7 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, pr
     ensure!(linked, "This PR is not linked to the task; link it with github_links first");
     ensure!(
         enabled(db, repository_id)?,
-        "merge_queue_disabled: the merge queue is off for {repository}; only the user can turn it on, in Projects → repositories"
+        "merge_queue_disabled: the merge queue is off for {repository}; only the user can turn it on, in Settings → Projects → its Project → Repositories"
     );
     let (latest, running) = review(db, &link)?;
     let reviewed = latest.as_ref().and_then(|r| r["headSha"].as_str()).unwrap_or(&input.head_sha).to_owned();
@@ -1824,7 +1824,7 @@ fn revert_allowed(db: &Connection, actor: Option<&str>, id: &str) -> Result<Valu
     );
     ensure!(
         repository(db, repository_id)?["revert"] == true,
-        "merge_revert_not_allowed: reverts are off for {}; the user turns them on in Projects → repositories",
+        "merge_revert_not_allowed: reverts are off for {}; the user turns them on in Settings → Projects → its Project → Repositories",
         e["repository"].as_str().unwrap_or("?")
     );
     let busy: Option<String> = db

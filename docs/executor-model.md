@@ -102,10 +102,10 @@ is Ask-only there.
   `{version, editorAgentIds, rule: "leads"}`, the leads and their version.
   The list an older Core kept (`project_brief_editors`) stays as it is and is
   no longer read or written.
-- **Opening the Workspace with core.24 afterwards.** core.24 reads its own
+- **Opening the Workspace with core.25 afterwards.** core.25 reads its own
   Home editor list again: where none was saved, every member but an executor
   edits. The leads this Core made stay leads there, so they can still
-  dispatch from templates. An Agent made on core.24 is not a lead when this
+  dispatch from templates. An Agent made on core.25 is not a lead when this
   Core opens the Workspace again, unless its Project's leads were never saved.
 - **Known limit: the user's routes.** Leads, templates, the handover and these
   settings are changed through browser routes that Core guards by their

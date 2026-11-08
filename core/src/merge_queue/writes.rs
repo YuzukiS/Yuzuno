@@ -86,10 +86,10 @@ pub(super) async fn write(ws: &Arc<Workspace>, repository: i64, repo: &str, w: W
         _ => false,
     };
     if reverting {
-        ensure!(settings["revert"] == true, "merge_revert_not_allowed: reverts are off for {repo}; the user turns them on in Projects → repositories");
+        ensure!(settings["revert"] == true, "merge_revert_not_allowed: reverts are off for {repo}; the user turns them on in Settings → Projects → its Project → Repositories");
     }
     if matches!(w, Write::CreateLabel { .. } | Write::AddLabel { .. } | Write::SetMilestone { .. }) {
-        ensure!(settings["grouping"] == true, "merge_grouping_off: release grouping is off for {repo}; the user turns it on in Projects → repositories");
+        ensure!(settings["grouping"] == true, "merge_grouping_off: release grouping is off for {repo}; the user turns it on in Settings → Projects → its Project → Repositories");
     }
     let client = &ws.github.client;
     let deadline = if matches!(w, Write::Merge { .. }) { client.merge_deadline } else { client.deadline };

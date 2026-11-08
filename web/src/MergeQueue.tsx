@@ -51,7 +51,7 @@ const queueEn = {
   region: "Merge queue",
   title: "Merge queue",
   intro:
-    "Core merges a released PR once CI has tested exactly what the merge lands on main. Each repository’s switch is the user’s, in its Project’s repositories.",
+    "Core merges a released PR once CI has tested exactly what the merge lands on main. Each repository’s switches are the user’s, in Settings → Projects → its Project → Repositories.",
   taskOnly: (task: string) => ` Entries of ${task} only.`,
   workspaceWide: " The queue is the whole Workspace’s.",
   refresh: "Refresh",
@@ -62,7 +62,7 @@ const queueEn = {
   repositoryFailed: (error: string) => `This repository’s queue state could not be read: ${error}`,
   switchOn: "On: Core merges released PRs here",
   switchOff: "Off: Core writes nothing to GitHub here",
-  switchTitle: "Only the user turns it on or off, in the Project’s repositories.",
+  switchTitle: "Only the user turns it on or off, in Settings → Projects → its Project → Repositories.",
   landingTitle: "How a released PR lands on main",
   landings: { "core-merge": "Core merges", "github-auto-merge": "GitHub auto-merge", "github-merge-queue": "GitHub merge queue" } as Record<string, string>,
   paused: (reason: string) => `Paused: ${reason}`,
@@ -88,7 +88,7 @@ const queueEn = {
   revertHelp:
     "Core writes a revert commit (the main before this merge, on top of it) on its own branch queue/revert-…, opens a PR, and merges it once CI on it is green, or at once if main is still this merge and the main before it had green CI. It needs no review round and is the only entry that passes this pause; green main CI after it ends the pause.",
   reverting: (id: string) => `Revert queued as entry ${id}: Core builds it on its own branch and PR, then merges it.`,
-  revertOff: "Reverts are off for this repository. Turn them on in Projects → repositories to revert this merge in one step.",
+  revertOff: "Reverts are off for this repository. Turn them on in Settings → Projects → its Project → Repositories to revert this merge in one step.",
   revertOf: (pr: number) => `Revert of #${pr}`,
   leadsOf: (project: string, leads: string) => `a lead of ${project} (${leads})`,
   noLead: "none set",
@@ -194,7 +194,7 @@ type QueueText = typeof queueEn;
 const queueText = strings<QueueText>(queueEn, {
   region: "合并队列",
   title: "合并队列",
-  intro: "CI 测试过合并将落到主分支上的确切内容后，Core 才会合并已放行合并的 PR。每个仓库的开关由用户在其项目的仓库设置中控制。",
+  intro: "CI 测试过合并将落到主分支上的确切内容后，Core 才会合并已放行合并的 PR。每个仓库的开关由用户在“设置 → 项目 → 该项目 → 仓库”中控制。",
   taskOnly: (task) => ` 仅显示 ${task} 的条目。`,
   workspaceWide: " 队列属于整个工作区。",
   refresh: "刷新",
@@ -205,7 +205,7 @@ const queueText = strings<QueueText>(queueEn, {
   repositoryFailed: (error) => `无法读取此仓库的队列状态：${error}`,
   switchOn: "已开启：Core 合并此仓库中已放行合并的 PR",
   switchOff: "已关闭：Core 不向 GitHub 写入任何内容",
-  switchTitle: "只有用户能在项目的仓库设置中开启或关闭它。",
+  switchTitle: "只有用户能在“设置 → 项目 → 该项目 → 仓库”中开启或关闭它。",
   landingTitle: "已放行合并的 PR 如何落到主分支",
   landings: { "core-merge": "由 Core 合并", "github-auto-merge": "GitHub 自动合并", "github-merge-queue": "GitHub 合并队列" },
   paused: (reason) => `已暂停：${reason}`,
@@ -230,7 +230,7 @@ const queueText = strings<QueueText>(queueEn, {
   revertHelp:
     "Core 在自己的分支 queue/revert-… 上写一个回退提交（在这个合并之上恢复合并前的主分支），开一个 PR；PR 上的 CI 通过后合并它。如果主分支仍是这个合并、且合并前的主分支 CI 是绿的，则立即合并。它不需要审查轮，是唯一能越过这次暂停的条目；它合并后主分支 CI 变绿即结束暂停。",
   reverting: (id) => `回退已排入条目 ${id}：Core 在自己的分支和 PR 上构建它，然后合并。`,
-  revertOff: "这个仓库的回退已关闭。在「项目 → 仓库」中打开回退，即可一步回退这个合并。",
+  revertOff: "这个仓库的回退已关闭。在“设置 → 项目 → 该项目 → 仓库”中打开回退，即可一步回退这个合并。",
   revertOf: (pr) => `#${pr} 的回退`,
   leadsOf: (project, leads) => `${project} 的负责人（${leads}）`,
   noLead: "尚未设置",

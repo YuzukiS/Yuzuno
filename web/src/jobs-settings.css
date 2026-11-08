@@ -1,7 +1,7 @@
-/* Settings → Jobs & resources (T-55): the Core host's budget, disk reserve,
-   Windows' ceiling and GPUs, and a remote machine's editor. Groups and rows
-   are Settings' own (updates.css); the fields, their controls and actions
-   are this editor's. */
+/* Settings → Machines → Core host → Jobs (T-55, YN-8 S3): the Core host's
+   budget, disk reserve, Windows' ceiling and GPUs, and a remote machine's
+   editor. Groups and rows are Settings' own (updates.css); the fields, their
+   controls and actions are this editor's. */
 .jobs-settings .settings-input {
   width: min(9rem, 100%);
   min-width: 0;

@@ -19,7 +19,7 @@ import "./executor-templates.css";
 const text = strings({
   title: "Executor templates",
   section: "Executor templates for this Workspace",
-  intro: "Named kinds of executor for every project: what an Agent that Core creates for one task is made of. A dispatch can name one; without one, Core makes a general executor from the defaults for new Agents. Only you change them.",
+  intro: "Named kinds of executor for every project: what an Agent that Core creates for one task is made of. A dispatch can name one; without one, Core makes a general executor from the defaults for new Agents. You change them here, and a lead of any project can too, giving a reason. The history keeps who changed each template, when and why; a template’s page shows its last change.",
   reading: "Reading templates…",
   none: "No template yet: a dispatch makes a general executor.",
   addPresets: "Add presets",
@@ -113,7 +113,7 @@ const text = strings({
 }, {
   title: "执行者模板",
   section: "此 Workspace 的执行者模板",
-  intro: "所有项目共用的、有名字的执行者种类：Core 为单个任务创建的 Agent 由什么组成。派发时可以指定一个；不指定时，Core 按新 Agent 的默认设置创建通用执行者。只有你能更改。",
+  intro: "所有项目共用的、有名字的执行者种类：Core 为单个任务创建的 Agent 由什么组成。派发时可以指定一个；不指定时，Core 按新 Agent 的默认设置创建通用执行者。你在这里更改；任一项目的负责人也能更改，并须说明原因。历史会记下每个模板由谁、何时、为何更改；模板页上显示它最近一次的更改。",
   reading: "正在读取模板…",
   none: "还没有模板：派发时会创建通用执行者。",
   addPresets: "添加预设",
@@ -474,7 +474,8 @@ function StepsField({ d, t, edit }: { d: Draft; t: Text; edit: (change: Partial<
 /** The Workspace's executor templates (T-34; the only list since YN-2 S2):
  * a list, and a page for each template (YN-8 S5b). The whole list is still
  * saved at once, against the version read, by the page's save bar.
- * The user's setting only: no Agent tool changes templates. */
+ * The user changes them here; a Project's lead changes them with
+ * executor_templates_change (YN-24), which the history records. */
 export function ExecutorTemplates({ active, disabled = false }: { active: boolean; disabled?: boolean }) {
   const language = useLanguage();
   const t = text(language);
