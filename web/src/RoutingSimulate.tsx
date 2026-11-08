@@ -8,7 +8,6 @@ import { evaluate, simulate, type Assume, type RouteRecord, type Segment } from 
 import { Tip, TipText } from "./Tip";
 import { timeFormatter, useTimeDisplay } from "./time-preferences";
 
-const DAY = 24 * 60;
 const STEP = 30;
 const DAYS = 7;
 
@@ -62,16 +61,17 @@ const hhmm = timeFormatter({ hour: "2-digit", minute: "2-digit", hourCycle: "h23
 const whenLabel = timeFormatter({ weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const reasonWords = (message: string, messageZh: string, language: Language) => (language === "zh-Hans" ? messageZh : message);
 
-/** Today's local midnight, as the strip's first row starts. */
-function startOfToday(now: number): number {
-  const d = new Date(now);
+/** The local midnight `days` days after `at`'s day, as the calendar has it: a
+ * day with a clock change is 23 or 25 hours long. */
+function midnight(at: number, days = 0): number {
+  const d = new Date(at);
   d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + days);
   return d.getTime();
 }
 
 /** A row's stretches: the segments clipped to one day, as shares of it. */
-function stretches(segments: Segment[], rowStart: number) {
-  const rowEnd = rowStart + DAY * 60_000;
+function stretches(segments: Segment[], rowStart: number, rowEnd: number) {
   return segments.flatMap((s) => {
     const from = Math.max(Date.parse(s.from), rowStart);
     const to = Math.min(Date.parse(s.to), rowEnd);
@@ -88,12 +88,24 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
   const language = useLanguage();
   const t = text(language);
   const time = useTimeDisplay();
-  const [now] = useState(() => Date.now());
-  const start = useMemo(() => startOfToday(now), [now]);
-  const nowOffset = Math.floor((now - start) / 60_000 / STEP) * STEP;
-  const [offset, setOffset] = useState<number | null>(null);
-  const picked = offset ?? nowOffset;
-  const pickedAt = start + picked * 60_000;
+  // Now, read again while the page is shown: Settings keeps a page mounted.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const every = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(every);
+  }, [active]);
+  // The week's days, each from its local midnight to the next.
+  const start = midnight(now);
+  const days = useMemo(() => Array.from({ length: DAYS + 1 }, (_, d) => midnight(start, d)), [start]);
+  const end = days[DAYS];
+  const toStep = (at: number) => start + Math.floor((at - start) / 60_000 / STEP) * STEP * 60_000;
+  // The picked moment; none, or one the week has left behind, is now.
+  const [chosenAt, setChosenAt] = useState<number | null>(null);
+  const pickedOwn = chosenAt !== null && chosenAt >= start && chosenAt < end ? chosenAt : null;
+  const pickedAt = pickedOwn ?? toStep(now);
+  const picked = (pickedAt - start) / 60_000;
   const [assume, setAssume] = useState<Required<Assume>>({ accountsUsedUp: [], codexUsedUp: [], spendCapReached: false, onePasswordDown: false });
   const [segments, setSegments] = useState<Segment[] | null | undefined>(undefined);
   const [record, setRecord] = useState<RouteRecord | null>(null);
@@ -115,7 +127,7 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
     if (!active || held) return;
     const controller = new AbortController();
     const wait = window.setTimeout(() => {
-      simulate(policy, new Date(start).toISOString(), new Date(start + DAYS * DAY * 60_000).toISOString(), STEP, assumed, controller.signal)
+      simulate(policy, new Date(start).toISOString(), new Date(end).toISOString(), STEP, assumed, controller.signal)
         .then((next) => { if (!controller.signal.aborted) { setSegments(next); setError(""); setRefused(""); } })
         .catch((e) => {
           if (controller.signal.aborted) return;
@@ -127,7 +139,7 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
     }, 350);
     return () => { window.clearTimeout(wait); controller.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, key, start, held]);
+  }, [active, key, start, end, held]);
   // The picked time, with its reasons.
   useEffect(() => {
     if (!active || held || segments === null) return;
@@ -173,10 +185,10 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
         <div className="routing-sim-at">
           <label className="routing-sim-slider">
             <span>{t.at} · <b>{when}</b></span>
-            <input type="range" min={0} max={DAYS * DAY - STEP} step={STEP} value={picked} aria-valuetext={when}
-              onChange={(e) => setOffset(Number(e.target.value))} />
+            <input type="range" min={0} max={(end - start) / 60_000 - STEP} step={STEP} value={picked} aria-valuetext={when}
+              onChange={(e) => setChosenAt(start + Number(e.target.value) * 60_000)} />
           </label>
-          <button type="button" className="quiet-button" disabled={offset === null} onClick={() => setOffset(null)}><RotateCcw size={14} /> {t.now}</button>
+          <button type="button" className="quiet-button" disabled={pickedOwn === null} onClick={() => setChosenAt(null)}><RotateCcw size={14} /> {t.now}</button>
         </div>
         {(cswapAccounts.length > 0 || codexLogin || homes.length > 0 || apiKeys || onePassword) && (
           <div className="routing-sim-assume" role="group" aria-label={t.assume}>
@@ -212,17 +224,17 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
         {error && <p className="inline-error" role="alert">{t.failed} {error}</p>}
         {segments && (
           <div className="routing-strip" aria-hidden="true">
-            {Array.from({ length: DAYS }, (_, d) => {
-              const rowStart = start + d * DAY * 60_000;
+            {days.slice(0, DAYS).map((rowStart, d) => {
+              const rowEnd = days[d + 1];
               return (
                 <div className="routing-strip-row" key={d}>
                   <span className="routing-strip-day">{dayLabel(time).format(rowStart)}</span>
                   <div className="routing-strip-cells" onClick={(e) => {
                     const box = e.currentTarget.getBoundingClientRect();
-                    const at = Math.floor(((e.clientX - box.left) / box.width) * DAY / STEP) * STEP;
-                    setOffset(Math.max(0, Math.min(DAYS * DAY - STEP, d * DAY + at)));
+                    const at = toStep(rowStart + ((e.clientX - box.left) / box.width) * (rowEnd - rowStart));
+                    setChosenAt(Math.max(start, Math.min(end - STEP * 60_000, at)));
                   }}>
-                    {stretches(segments, rowStart).map((s) => {
+                    {stretches(segments, rowStart, rowEnd).map((s) => {
                       const c = s.chosen ? byId.get(s.chosen) : undefined;
                       return (
                         <Tip key={s.from} content={<TipText title={c ? names(c.c) : t.noneShort} meta={[`${dayLabel(time).format(s.from)} ${t.stretch(hhmm(time).format(s.from), hhmm(time).format(s.to))}`]} />}>
@@ -232,7 +244,7 @@ export function RoutingSimulate({ policy, active, held = false, names, colourOf,
                         </Tip>
                       );
                     })}
-                    {d === Math.floor(picked / DAY) && <i className="routing-strip-pick" style={{ left: `${((picked % DAY) / DAY) * 100}%` }} />}
+                    {pickedAt >= rowStart && pickedAt < rowEnd && <i className="routing-strip-pick" style={{ left: `${((pickedAt - rowStart) / (rowEnd - rowStart)) * 100}%` }} />}
                   </div>
                 </div>
               );

@@ -28,7 +28,7 @@ import {createRoot} from 'react-dom/client';
 import {ExecutorRouting} from ${src("ExecutorRouting.tsx")};
 import {SaveBarScope} from ${src("SettingsSaveBar.tsx")};
 const root=createRoot(document.getElementById('root'));
-window.renderRouting=()=>root.render(<SaveBarScope><ExecutorRouting active/></SaveBarScope>);`);
+window.renderRouting=(active=true)=>root.render(<SaveBarScope><ExecutorRouting active={active}/></SaveBarScope>);`);
   const result = await build({
     root, configFile: false, logLevel: "silent", plugins: [react()],
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
@@ -100,7 +100,7 @@ function core({ simulate = (body) => [200, { segments: week(body) }], templatesP
 
 const windows = [];
 after(() => { for (const window of windows) window.close(); });
-function mount(server, language) {
+function mount(server, language, { now } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
@@ -110,6 +110,8 @@ function mount(server, language) {
   const { window } = dom;
   windows.push(window);
   if (language) window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
+  // What the page takes for now, when a test says (the page reads Date.now()).
+  if (now) window.Date.now = () => now.value;
   window.fetch = async (url, init = {}) => {
     const method = init.method || "GET";
     const body = init.body && JSON.parse(init.body);
@@ -267,4 +269,43 @@ test("a Claude login offers its active claude-swap account as used up, and no ot
   assert.deepEqual([...page.document.querySelectorAll(".routing-sim-assume .routing-pill")].map((b) => b.textContent), ["Account #1 used up"], "the active account only");
   button(page, "Account #1 used up").click();
   await until(() => server.asked.simulate.some((b) => b.assume?.accountsUsedUp?.[0] === "a1b2c3d4e5f60718"), "the week asked again, assuming it");
+});
+
+test("shown again a day later, the week starts at that day's midnight and the picked time is now again", async () => {
+  const now = { value: Date.now() };
+  const server = core();
+  const page = mount(server, undefined, { now });
+  await until(() => q(page, ".routing-strip") && server.asked.evaluate.some((b) => b.at), "the week and the picked time");
+  assert.equal(Date.parse(server.asked.simulate.at(-1).from), midnight());
+  page.window.renderRouting(false);
+  await tick();
+  now.value += 24 * H;
+  page.window.renderRouting(true);
+  await until(() => server.asked.simulate.some((b) => Date.parse(b.from) === midnight() + 24 * H), "the week asked from tomorrow's midnight");
+  const step = Math.floor((now.value - (midnight() + 24 * H)) / (30 * 60_000)) * 30 * 60_000;
+  await until(() => server.asked.evaluate.some((b) => b.at && Date.parse(b.at) === midnight() + 24 * H + step), "now evaluated again");
+});
+
+test("a week with a clock change: each row runs from its own local midnight, and the week asked ends at a midnight", async () => {
+  const zone = process.env.TZ;
+  process.env.TZ = "America/New_York";
+  try {
+    // Friday 30 October 2026, noon in New York; summer time ends on Sunday 1 November.
+    const now = { value: Date.parse("2026-10-30T16:00:00Z") };
+    const local = (iso) => Date.parse(iso);
+    // Each local day: DeepSeek from midnight to 10:00.
+    const daysOf = [0, 1, 2, 3, 4, 5, 6].map((d) => { const x = new Date(now.value); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() + d); return x.getTime(); });
+    const ten = (d) => { const x = new Date(d); x.setHours(10); return x.getTime(); };
+    const server = core({ simulate: () => [200, { segments: daysOf.map((d) => ({ from: new Date(d).toISOString(), to: new Date(ten(d)).toISOString(), chosen: "ds" })) }] });
+    const page = mount(server, undefined, { now });
+    await until(() => q(page, ".routing-strip"), "the week");
+    const asked = server.asked.simulate.at(-1);
+    assert.deepEqual([asked.from, asked.to], [new Date(local("2026-10-30T04:00:00Z")).toISOString(), new Date(local("2026-11-06T05:00:00Z")).toISOString()],
+      "from Friday's midnight (EDT) to the next Friday's (EST): 169 hours");
+    const rows = [...page.document.querySelectorAll(".routing-strip-row")];
+    assert.deepEqual(rows.map((r) => r.querySelector(".routing-strip-day").textContent), ["Fri", "Sat", "Sun", "Mon", "Tue", "Wed", "Thu"]);
+    assert.deepEqual(rows.map((r) => r.querySelector(".routing-strip-run")?.style.left), Array(7).fill("0%"), "each day's run starts at its row's start");
+  } finally {
+    if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone;
+  }
 });
