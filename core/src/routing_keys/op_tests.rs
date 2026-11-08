@@ -31,7 +31,7 @@ case "$(cat "$D/mode")" in
   rejected) echo '[ERROR] 2026/11/08 10:00:00 (401) Unauthorized: You aren'"'"'t authorized: invalid token' >&2; exit 1 ;;
   limited) echo "[ERROR] (429) Too Many Requests: You've reached the maximum number of this type of requests" >&2; exit 1 ;;
   leaky) echo 'unexpected: sk-test-yn34-leak-in-stderr' >&2; exit 3 ;;
-  slow) sleep 30 ;;
+  slow) exec sleep 30 ;;
 esac
 "#);
     let path = dir.join("op");

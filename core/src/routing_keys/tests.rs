@@ -69,6 +69,19 @@ fn a_link_in_the_files_place_is_refused() {
 }
 
 #[test]
+fn a_link_in_the_folders_place_is_refused_for_reads_too() {
+    let (tmp, store) = store();
+    let elsewhere = tmp.path().join("elsewhere");
+    fs::DirBuilder::new().mode(0o700).create(&elsewhere).unwrap();
+    symlink(&elsewhere, tmp.path().join(DIR)).unwrap();
+    for error in [store.keys().unwrap_err(), store.put_token(Secret::new(TOKEN.into())).unwrap_err()] {
+        let error = format!("{error:#}");
+        assert!(error.contains("not a folder (or is a link)"), "{error}");
+    }
+    assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing written through it");
+}
+
+#[test]
 fn a_folder_others_may_write_into_is_refused() {
     let (tmp, store) = store();
     fs::DirBuilder::new().mode(0o777).create(tmp.path().join(DIR)).unwrap();

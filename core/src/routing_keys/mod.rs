@@ -242,6 +242,9 @@ impl Store {
     /// owns or that the group or others may access, a link, or a later
     /// version's.
     fn read(&self) -> Result<Contents> {
+        if !checked_dir(&self.dir)? {
+            return Ok(Contents::default());
+        }
         let path = self.path();
         let mut file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path) {
             Ok(file) => file,
@@ -291,19 +294,26 @@ impl Store {
 /// The folder, made 0700 when missing; refused like the file when another
 /// user owns it or the group or others may write into it.
 fn private_dir(dir: &Path) -> Result<()> {
+    if !checked_dir(dir)? {
+        fs::DirBuilder::new().mode(0o700).create(dir).with_context(|| format!("Cannot create {}", dir.display()))?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).with_context(|| format!("Cannot set {} to 0700", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// Whether the folder is there; refused when it is a link or not a folder,
+/// another user owns it, or the group or others may write into it.
+fn checked_dir(dir: &Path) -> Result<bool> {
     match fs::symlink_metadata(dir) {
         Ok(meta) => {
-            ensure!(meta.is_dir(), "{} is not a folder: Core will not keep routing keys there", dir.display());
+            ensure!(meta.is_dir(), "{} is not a folder (or is a link): Core will not keep routing keys there", dir.display());
             ensure!(meta.uid() == rustix::process::geteuid().as_raw(),
                 "{} belongs to another user: Core will not keep routing keys there", dir.display());
             ensure!(meta.mode() & 0o022 == 0,
                 "{} can be written by other users (mode {:o}): Core will not keep routing keys there; make it 0700", dir.display(), meta.mode() & 0o777);
-            Ok(())
+            Ok(true)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::DirBuilder::new().mode(0o700).create(dir).with_context(|| format!("Cannot create {}", dir.display()))?;
-            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).with_context(|| format!("Cannot set {} to 0700", dir.display()))
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error).with_context(|| format!("Cannot read {}", dir.display())),
     }
 }

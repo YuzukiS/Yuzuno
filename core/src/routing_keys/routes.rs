@@ -9,6 +9,7 @@ use super::{op, Provider, Secret, Store};
 use crate::workspace::Workspace;
 use anyhow::Context;
 use axum::{
+    body::Bytes,
     extract::{DefaultBodyLimit, Path, Request, State},
     http::{header::AUTHORIZATION, StatusCode},
     middleware::{self, Next},
@@ -62,7 +63,20 @@ async fn list(State(ws): State<Arc<Workspace>>) -> Result<Json<Value>, Refused> 
     Ok(Json(json!({"keys": keys, "onePasswordToken": token})))
 }
 
-async fn put_key(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, Json(write): Json<KeyWrite>) -> Result<Json<Value>, Refused> {
+/// The body as `T`. A refusal says where it broke, never serde's words: they
+/// could quote a key pasted into the wrong field.
+fn parsed<T: serde::de::DeserializeOwned>(body: &Bytes, what: &str) -> Result<T, Refused> {
+    serde_json::from_slice(body).map_err(|error| {
+        anyhow::anyhow!("The body is not {what} ({} at line {}, column {})", match error.classify() {
+            serde_json::error::Category::Io | serde_json::error::Category::Eof => "it ends early",
+            serde_json::error::Category::Syntax => "not JSON",
+            serde_json::error::Category::Data => "a field is missing, unknown or of the wrong kind",
+        }, error.line(), error.column()).into()
+    })
+}
+
+async fn put_key(State(ws): State<Arc<Workspace>>, Path(id): Path<String>, body: Bytes) -> Result<Json<Value>, Refused> {
+    let write: KeyWrite = parsed(&body, "a routing key: {source, provider, value} or {source, provider, reference}")?;
     let store = Store::of(&ws.data_dir);
     let view = blocking(move || match write {
         KeyWrite::Local { provider, value } => store.put_local(&id, provider, Secret::new(value)),
@@ -106,7 +120,8 @@ async fn token(State(ws): State<Arc<Workspace>>) -> Result<Json<Value>, Refused>
     Ok(Json(json!({"token": token, "op": op::installed().await})))
 }
 
-async fn put_token(State(ws): State<Arc<Workspace>>, Json(write): Json<TokenWrite>) -> Result<Json<Value>, Refused> {
+async fn put_token(State(ws): State<Arc<Workspace>>, body: Bytes) -> Result<Json<Value>, Refused> {
+    let write: TokenWrite = parsed(&body, "a token: {value}")?;
     let store = Store::of(&ws.data_dir);
     let view = blocking(move || store.put_token(Secret::new(write.value))).await?;
     Ok(Json(json!(view)))

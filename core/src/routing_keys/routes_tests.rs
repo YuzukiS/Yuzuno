@@ -73,9 +73,20 @@ async fn a_key_is_written_and_no_answer_ever_holds_it() {
     let local = listed["keys"].as_array().unwrap().iter().find(|k| k["id"] == "anthropic").unwrap();
     let fields: std::collections::BTreeSet<&str> = local.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(fields, ["id", "provider", "set", "setAt", "source"].into(), "a local key shows only these");
-    // Unknown fields are refused, so nothing rides along unchecked.
-    let (status, _) = call(&app, "PUT", "/api/routing/keys/x", Some(json!({"source":"local","provider":"anthropic","value":KEY,"show":true})), false, &[]).await;
-    assert!(status.is_client_error(), "{status}");
+    // Unknown fields are refused, so nothing rides along unchecked; and a
+    // refusal never quotes the body, not even a key pasted into the wrong field.
+    for body in [
+        json!({"source":"local","provider":"anthropic","value":KEY,"show":true}),
+        json!({"source":"local","provider":KEY,"value":"x"}),
+        json!({"source":KEY,"provider":"openai","value":"x"}),
+        json!({"source":"local","provider":"openai","value":[KEY]}),
+    ] {
+        let (status, answer) = call(&app, "PUT", "/api/routing/keys/x", Some(body.clone()), false, &[]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(answer.contains("The body is not a routing key") && !answer.contains(KEY), "{answer}");
+    }
+    let (status, answer) = call(&app, "PUT", "/api/routing/1password/token", Some(json!({"token":TOKEN})), false, &[]).await;
+    assert!(status == StatusCode::BAD_REQUEST && !answer.contains(TOKEN), "{answer}");
     let (status, removed) = call(&app, "DELETE", "/api/routing/keys/anthropic", None, false, &[]).await;
     assert_eq!((status, removed.as_str()), (StatusCode::OK, r#"{"removed":true}"#));
     let (status, removed) = call(&app, "DELETE", "/api/routing/1password/token", None, false, &[]).await;
