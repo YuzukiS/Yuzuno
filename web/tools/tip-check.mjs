@@ -276,7 +276,9 @@ for (const screen of desktop) {
   // now tips. Send is disabled here (no draft yet): a resting pointer still
   // shows its tip, its name and key (jsdom tests read the reasons it gives).
   const s2b = [
-    { what: "Send, disabled", at: page.locator(".send-button"),
+    // Rested on where the pointer lands: its span (Playwright will not hover
+    // a control another element takes the pointer from).
+    { what: "Send, disabled", at: page.locator(".tip-hold:has(> .send-button)"),
       expect: (t) => t.lines.length === 1 && /^(Send message|发送消息) (↵|Ctrl ↵|⌘ ↵)$/.test(t.lines[0]) },
     { what: "+", at: page.locator(".composer-plus"),
       expect: (t) => /^(Add to your draft|添加到草稿)$/.test(t.lines[0]) && t.lines.length === 2 },
