@@ -56,7 +56,12 @@ const entry = (id, state, extra = {}) => ({
   release: { by: { kind: 'agent', id: 'dev-1', name: 'Dev Kai' }, at, reviewId: 'review-1' },
   state, reason: null, detail: null, batch: null, merge: null, evidence: null, queueVersion: 2, createdAt: at, updatedAt: at, ...extra,
 });
-const stopped = entry('e-stopped', 'stopped', { reason: 'ci_red', detail: 'Synthetic CI run 501 ended failure' });
+// YN-52: the release acknowledged two images by their content.
+const binaries = { by: { kind: 'agent', id: 'lead-1', name: 'Lead Sora' }, at, files: [
+  { path: 'icons/a.png', sha256: '1'.repeat(64), note: 'Synthetic note', blobSha: sha('9'), bytes: 62, format: 'png' },
+  { path: 'icons/b.png', sha256: '2'.repeat(64), note: null, blobSha: sha('8'), bytes: 70, format: 'png' },
+] };
+const stopped = entry('e-stopped', 'stopped', { reason: 'ci_red', detail: 'Synthetic CI run 501 ended failure', binaries });
 const queued = entry('e-queued', 'queued', { number: 13, url: 'https://github.com/owner/repo/pull/13', release: { by: { kind: 'user', id: 'user', name: 'You' }, at } });
 const waiting = entry('e-waiting', 'waiting', { number: 14, detail: 'Synthetic run still in progress' });
 const dry = entry('e-dry', 'stopped', { number: 15, reason: 'dry_run_ended', detail: 'Synthetic dry run ended' });
@@ -383,6 +388,7 @@ test('the chosen entry shows its anchor, batch, merge commit, post-check, main C
     assert.equal(detailText(p, 'Frozen head').querySelector('a').href, `https://github.com/owner/repo/commit/${sha('a')}`);
     assert.match(detailText(p, 'Anchor main').textContent, /^bbbbbbb · since /);
     assert.equal(detailText(p, 'Released by').textContent.startsWith('Dev Kai'), true);
+    assert.equal(detailText(p, 'Binary files'), undefined, 'an entry without acknowledged files has no row');
     assert.equal(detailText(p, 'Branch').textContent, 'queue/merge-e-done');
     assert.equal(detailText(p, 'Batch PR').querySelector('a').href, 'https://github.com/owner/repo/pull/90');
     assert.equal(detailText(p, 'CI on the batch').textContent, 'CI · run 700 · Passed');
@@ -404,6 +410,19 @@ test('the chosen entry shows its anchor, batch, merge commit, post-check, main C
     // The event comes from the page: compare its fields, not its prototype.
     assert.deepEqual(tasks.map(d => Object.keys(d)), [['taskId']], 'the entry opens its task');
     assert.equal(tasks[0].taskId, 'task-e-done');
+  } finally { p.close(); }
+});
+
+test('a release that acknowledged binary files lists each with its format, size and SHA-256, and who acknowledged them', async () => {
+  const p = mount();
+  try {
+    await opened(p);
+    await choose(p, 12);
+    const acknowledged = detailText(p, 'Binary files');
+    assert.equal(acknowledged.firstChild.textContent, '2 acknowledged by Lead Sora by their content; the review round could not read them and stays unknown');
+    assert.deepEqual([...acknowledged.querySelectorAll('li')].map(li => li.textContent),
+      [`icons/a.png · png · 62 bytes · ${'1'.repeat(12)} · Synthetic note`, `icons/b.png · png · 70 bytes · ${'2'.repeat(12)}`]);
+    assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
 
@@ -451,6 +470,11 @@ test('in Chinese the pause, actions and refusals are Chinese, and Core text stay
     assert.equal(refusal.querySelector('small').textContent, 'merge_not_paused: the merge queue of this repository is not paused');
     assert.equal(refusal.querySelector('small').getAttribute('lang'), 'en');
     await choose(p, 12);
+    const acknowledged = detailText(p, '二进制文件');
+    assert.match(acknowledged.firstChild.textContent, /^Lead Sora 已按内容确认 2 个；审查轮读不了它们，结论仍是未知$/);
+    assert.deepEqual([...acknowledged.querySelectorAll('li')].map(li => li.textContent),
+      [`icons/a.png · png · 62 字节 · ${'1'.repeat(12)} · Synthetic note`, `icons/b.png · png · 70 字节 · ${'2'.repeat(12)}`]);
+    assert.equal(acknowledged.querySelector('li code[title]').getAttribute('title'), '1'.repeat(64), 'the whole SHA-256 is on hover');
     // The panel's own words have no English: what is left once the data
     // (names, repositories, SHAs, task references, Core's text) is taken out.
     const box = panel(p).cloneNode(true);
