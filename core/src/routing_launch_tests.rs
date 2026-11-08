@@ -370,6 +370,22 @@ async fn an_opencode_executor_on_a_routing_key_counts_what_its_answers_cost() {
     let spend = ws.store.spend_on(crate::routing_readings::today()).unwrap();
     assert_eq!((spend.total_usd, spend.by_key.get("deepseek").copied()), (0.0123, Some(0.0123)),
         "the executor on the key counts its answer, the other counts nothing: {spend:?}");
+    // A sub-agent of the executor on the key spends that key too (R1 ea94344d).
+    let session = ws.store.detail("oc-cost").unwrap().agent.opencode_session_id.unwrap();
+    let start: Value = serde_json::from_str(&fs::read_to_string(ws.data_dir.join("opencode").join("oc-cost").join("start.json")).unwrap()).unwrap();
+    let port = start["port"].as_u64().unwrap();
+    let child: Value = http.post(format!("http://127.0.0.1:{port}/__fixture/child")).json(&json!({"parentID": session, "title": "a sub-agent"}))
+        .timeout(Duration::from_secs(20)).send().await.unwrap().json().await.unwrap();
+    http.post(format!("http://127.0.0.1:{port}/__fixture/reply"))
+        .json(&json!({"sessionID": child["id"], "text": "Found.", "info": {"cost": 0.002, "tokens": {"total": 3}}}))
+        .timeout(Duration::from_secs(20)).send().await.unwrap();
+    let mut total = 0.0;
+    for _ in 0..400 {
+        total = ws.store.spend_on(crate::routing_readings::today()).unwrap().total_usd;
+        if (total - 0.0143).abs() < 1e-9 { break; }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!((total - 0.0143).abs() < 1e-9, "the sub-agent's answer counts toward the same key: {total}");
     for id in ["oc-cost", "oc-free"] {
         ws.close_agent(id).await.unwrap();
     }
