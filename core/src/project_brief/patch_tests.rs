@@ -171,3 +171,44 @@ async fn a_markdown_put_is_stored_as_its_built_body_and_patched_like_any_other()
     let rejected = send(&ws, "a", input("m3", 2, vec![both])).await.unwrap_err();
     assert_eq!((codes(&rejected), rejected["problems"][0]["path"].clone()), (vec!["invalid_field".to_owned()], json!("changes[0].markdown")));
 }
+
+/// YN-31: a table's rows by id, as elasticLM keeps them (r1…r14): a row
+/// added above r8 leaves @r8 naming r8, and an id that names no row, or two,
+/// refuses the patch by its operation and writes nothing.
+#[tokio::test]
+async fn a_patch_names_a_table_row_by_its_id() {
+    let (_dir, ws, project) = lab();
+    let rows: Vec<Value> = (1..=14).map(|n| json!({"id":format!("r{n}"),"cells":{"run":format!("run {n}"),"status":"queued"}})).collect();
+    let runs = json!({"op":"put","key":"runs","kind":"status","title":"Runs",
+        "status":{"asOf":"2026-11-07T08:00:00Z","validFor":86400},
+        "body":{"root":"body","elements":{
+            "body":{"type":"BriefBody","props":{},"children":["summary","table"]},
+            "summary":{"type":"Markdown","props":{"text":"Fourteen runs queued."}},
+            "table":{"type":"Table","props":{"id":"runs","title":"Runs",
+                "columns":[{"key":"run","label":"Run"},{"key":"status","label":"Status"}],"rows":rows}}}}});
+    send(&ws, "a", input("r1", 0, vec![runs])).await.unwrap();
+    let before = section(&brief(&ws, "a"), "runs").clone();
+
+    let changed = patch("runs", json!([
+        {"op":"add","path":"/elements/table/props/rows/0","value":{"id":"r0","cells":{"run":"run 0","status":"done"}}},
+        {"op":"replace","path":"/elements/table/props/rows/@r8/cells/status","value":"done"}]));
+    send(&ws, "a", input("r2", 1, vec![changed])).await.unwrap();
+    let after = section(&brief(&ws, "a"), "runs").clone();
+    let mut expected = before["body"].clone();
+    let table = expected["elements"]["table"]["props"]["rows"].as_array_mut().unwrap();
+    table[7]["cells"]["status"] = json!("done");
+    table.insert(0, json!({"id":"r0","cells":{"run":"run 0","status":"done"}}));
+    assert_eq!(after["body"], expected, "r8, now the ninth row, is done; nothing else changed");
+
+    let refused = |rejected: Value| (codes(&rejected), rejected["problems"][0]["path"].clone(), rejected["problems"][0]["reason"].clone());
+    let unknown = patch("runs", json!([{"op":"replace","path":"/elements/table/props/rows/@r15/cells/status","value":"done"}]));
+    let (code, path, reason) = refused(send(&ws, "a", input("r3", 2, vec![unknown])).await.unwrap_err());
+    assert_eq!((code, path), (vec!["patch_path".to_owned()], json!("changes[0].patch[0].path")));
+    assert_eq!(reason, "/elements/table/props/rows has no item whose id is \"r15\"; its ids are r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, ….");
+    let twice = patch("runs", json!([{"op":"copy","from":"/elements/table/props/rows/@r8","path":"/elements/table/props/rows/-"},
+        {"op":"replace","path":"/elements/table/props/rows/@r8/cells/status","value":"failed"}]));
+    let (code, path, reason) = refused(send(&ws, "a", input("r4", 2, vec![twice])).await.unwrap_err());
+    assert_eq!((code, path), (vec!["patch_path".to_owned()], json!("changes[0].patch[1].path")));
+    assert_eq!(reason, "/elements/table/props/rows has 2 items whose id is \"r8\" (at 8, 15): name one by its index.");
+    assert_eq!((section(&brief(&ws, "a"), "runs"), version(&ws, &project)), (&after, 2));
+}

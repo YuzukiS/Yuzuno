@@ -1369,21 +1369,27 @@ async fn the_workspace_mcp_bearer_is_never_shown_or_kept_from_what_opencode_answ
     }
 }
 
+/// OpenCode Agents are on by default (YN-27, tests/opencode_entry.rs); a Core
+/// started with `YUZUNO_EXPERIMENTAL_OPENCODE=0` creates and imports none.
+/// The switch is this test process's own from here on: no other test here
+/// creates or imports an Agent, and the Agent it has keeps working.
 #[tokio::test]
-async fn http_create_and_models_refuse_opencode_unless_core_turned_it_on() {
+async fn a_core_started_with_the_switch_at_0_creates_and_imports_no_opencode_agent() {
+    std::env::set_var("YUZUNO_EXPERIMENTAL_OPENCODE", "0");
     let lab = lab(&[], false).await;
     let router = server::router_on_port(lab.ws.clone(), lab.dir.path().join("assets"), 4317);
     let request = |method: &str, uri: &str, body: Value| Request::builder().method(method).uri(uri)
         .header("host", "localhost:4317").header("x-yuzuno-client", "desktop")
         .header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
-    for (method, uri, body) in [
-        ("POST", "/api/agents", json!({"name":"O","harness":"opencode","cwd":lab.dir.path()})),
-        ("GET", "/api/models?harness=opencode", Value::Null),
+    for (method, uri, body, refusal) in [
+        ("POST", "/api/agents", json!({"name":"O","harness":"opencode","cwd":lab.dir.path()}), "未知 Harness"),
+        ("GET", "/api/models?harness=opencode", Value::Null, "未知 Harness"),
+        ("POST", "/api/opencode/sessions/import/file", json!({"info":{"id":"ses_x"}}), "关闭了 OpenCode Agent"),
     ] {
         let response = router.clone().oneshot(request(method, uri, body)).await.unwrap();
         let status = response.status();
         let text = String::from_utf8(to_bytes(response.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
-        assert!(!status.is_success() && text.contains("未知 Harness"), "{uri}: {status} {text}");
+        assert!(!status.is_success() && text.contains(refusal), "{uri}: {status} {text}");
     }
     let response = router.clone().oneshot(request("GET", "/api/workspace", Value::Null)).await.unwrap();
     let workspace: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();

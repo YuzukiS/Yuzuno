@@ -9,7 +9,9 @@ use crate::{model::AgentDetail, store::Store};
 
 mod analysis_tests;
 mod analysis_integration;
+mod queued_tests;
 mod research_tests;
+mod stage_checkpoint_tests;
 
 fn setup() -> (tempfile::TempDir, Arc<Store>) {
     let dir = tempfile::tempdir().unwrap();
@@ -138,7 +140,8 @@ fn a_failed_stage_leaves_what_needs_it_waiting_and_never_started() {
         "fail",
         json!([stage("run", &[]), stage("analysis", &["run"])]),
     );
-    assert_eq!(run["status"], "running");
+    // Nothing of it runs yet: queued, not running (YN-30).
+    assert_eq!(run["status"], "queued");
     assert_eq!(attempts(&run, "run")[0]["status"], "queued");
     assert_eq!(attempts(&run, "analysis")[0]["status"], "waiting");
     let first = start(&s);
@@ -215,7 +218,7 @@ fn job_budget_leaves_out_stages_that_cannot_start_until_a_retry_or_a_cancel() {
     assert_eq!(first["run"]["stage"], "first");
     assert!(finish(&s, &first, "failed", exit("1"), json!({})));
     let view = s.run(run["id"].as_str().unwrap()).unwrap();
-    assert_eq!(view["status"], "running", "other is still queued, so the run as a whole runs");
+    assert_eq!(view["status"], "queued", "other is still queued, so the run as a whole waits in the queue (YN-30)");
     assert_eq!(waiting(&s), 1, "only after, behind other, can still start; second and third are stuck behind first");
     s.retry_stage(Some("a"), "again", run["id"].as_str().unwrap(), "first").unwrap();
     assert_eq!(waiting(&s), 3, "with first retried, second and third wait for it again");

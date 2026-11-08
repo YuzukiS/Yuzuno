@@ -2,12 +2,14 @@
 //!
 //! Core gives each Job and run a UUID; mail and notes name them by their
 //! first eight characters. job_get, job_logs, job_cancel and job_provenance
-//! (jobId and runId) take either: the whole ID, as before, or at least
+//! (jobId and runId), and job_run_get, job_run_decide, job_run_retry and
+//! job_run_cancel (YN-30), take either: the whole ID, as before, or at least
 //! MIN_PREFIX hexadecimal characters from its start (with its hyphens where
 //! it has them), which must name exactly one. A prefix that names none or
-//! several says so and never lists the IDs it matched. The other Jobs tools
-//! that name a Job or run, such as job_pause or job_run_get, still take the
-//! whole ID. IDs are made and stored as before.
+//! several says so and never lists the IDs it matched. A decision or retry
+//! is kept with the whole run ID, so its repeat is the same request however
+//! either names the run. The other Jobs tools that name a Job, such as
+//! job_pause, still take the whole ID. IDs are made and stored as before.
 use crate::store::Store;
 use anyhow::{bail, ensure, Result};
 use rusqlite::{Connection, OptionalExtension};

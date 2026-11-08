@@ -539,6 +539,11 @@ test("hard rules, tool descriptions and the guide are generated within their cap
   // patch, as Core applies it (YN-14 A2): RFC 6902 on the body, the whole section checked again.
   assert.match(briefGuide("sections"), /^patch \{op:"patch", key, patch:\[\.\.\.\], status\?\} changes single values .* RFC 6902 operations .* Core checks the whole section again/m);
   assert.match(briefGuide("errors"), /patch_path and patch_test/);
+  // YN-31: an array item by its id, as Core's patch finds it.
+  assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /@<id> names an array item by its id, e\.g\. \/elements\/t\/props\/rows\/@r8\/cells\/x/);
+  assert.match(briefGuide("sections"), /On an array, @<id> names its one item whose id is <id> wherever an index can go.*as the last token of add it is the place before that item\. Indices, - and object keys mean what they always do/);
+  assert.match(briefGuide("sections"), /a path or from that is not in the body \(an @<id> that names no item, or two\)/);
+  assert.match(briefGuide("errors"), /patch_path and patch_test \(a patch operation whose path or from is not in the body, an @<id> naming no item or two among them/);
   // edit, as Core applies it: blocks by id, the rest kept, the root left to put.
   assert.match(BRIEF_TOOL_DESCRIPTIONS.brief_update, /edit \{op:"edit", key, elements:\{<id>: block\}\} replaces only those blocks;/);
   assert.match(briefGuide("sections"), /^edit \{op:"edit", key, elements:\{<id>: \{type, props, children\?\}\}, status\?\} replaces blocks .* the root is not edited \(rearrange with put\)\./m);
@@ -723,6 +728,8 @@ test("a ResearchDesk: two different desks render from one contract, and every re
   // A desk's files count as used; a file nothing reads is still flagged.
   const unused = desk((p, copy) => { copy.attachments.push({ name: "spare.json", path: "/home/me/study/spare.json" }); });
   assert.equal(first(unused).code, "unused_attachment");
+  // YN-31: and the attachments guide says so.
+  assert.match(briefGuide("attachments"), /A ResearchDesk uses the attachments it names too: each sources\[\]\.snapshot and each number's from\./);
   // The guide has a part of its own, and content points to it.
   assert.ok(BRIEF_GUIDE_PARTS.includes("research"));
   assert.match(briefGuide("research"), /A Job that succeeded is not a result that holds/);

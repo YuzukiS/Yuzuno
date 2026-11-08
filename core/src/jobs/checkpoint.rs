@@ -1,6 +1,6 @@
 //! Stop a running Job at a checkpoint, and resume it from there (T-109).
 //!
-//! A standalone Job on this Core's host may declare `checkpoint`: the signal
+//! A Job on this Core's host, standalone or a run's stage (YN-30), may declare `checkpoint`: the signal
 //! its command saves on, how long it may take, and the exit code that says it
 //! stopped (mod.rs `Checkpoint`). Unlike a pause, the attempt ends and frees
 //! its memory; unlike a cancel, it may leave a checkpoint to resume from.
@@ -23,7 +23,9 @@
 //!
 //! Resuming is the user's too: a new Job with the same submission whose
 //! `checkpointFrom` names the verified files, and whose wrapper checks them
-//! again before the command starts. Core never stops or resumes by itself.
+//! again before the command starts. For a run's stage that Job is the stage's
+//! next attempt, in its run (runs.rs `resume_stage`). Core never stops or
+//! resumes by itself.
 use super::{
     changed, host,
     store::{get, notify_message, save},
@@ -80,6 +82,14 @@ pub(super) async fn resume(ws: &Arc<Workspace>, actor: Option<String>, id: Strin
         return ws.stored(move |s| s.job(&next)).await;
     }
     let from = resumable(&job)?;
+    // A run's stage resumes as its next attempt, in its run (YN-30).
+    if job["run"].is_object() {
+        host::local_host(&ws.data_dir)?;
+        let next = ws.stored(move |s| s.resume_stage(&id, from)).await?;
+        changed(ws);
+        ws.jobs.wake.notify_one();
+        return Ok(next);
+    }
     let mut input = submission(&job)?;
     input.checkpoint_from = Some(from);
     input.validate()?;
@@ -105,7 +115,7 @@ pub(super) async fn resume(ws: &Arc<Workspace>, actor: Option<String>, id: Strin
 /// it when the stopped attempt ended.
 pub(super) fn resumable(job: &Value) -> Result<Value> {
     ensure!(job["checkpoint"].is_object(), "This job declared no checkpoint");
-    ensure!(job["executor"].is_null() && job["run"].is_null(), "Only a standalone job on this Core's host resumes from a checkpoint");
+    ensure!(job["executor"].is_null(), "Only a job on this Core's host resumes from a checkpoint");
     ensure!(
         job["reserved"] == false && job["finishedAt"].is_string(),
         "The job has not ended yet; it can be resumed once it has stopped at its checkpoint"

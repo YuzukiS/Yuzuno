@@ -1,11 +1,15 @@
 # OpenCode Agents (experimental)
 
 Core can run an Agent on [OpenCode](https://github.com/anomalyco/opencode),
-talking to OpenCode's own server (`opencode serve`) on loopback. This is off by
-default. A Core started with `YUZUNO_EXPERIMENTAL_OPENCODE=1` offers
-**OpenCode** when creating an Agent; without it, Core refuses the harness and
-the UI does not offer it. The switch decides only creation: an existing
-OpenCode Agent keeps working either way.
+talking to OpenCode's own server (`opencode serve`) on loopback. Every Core
+offers **OpenCode** when creating an Agent and an **OpenCode export** tab to
+import one, with nothing to set. It is still experimental: the create dialog,
+the import tab, a template's harness and an OpenCode Agent's own details say
+so. A Core started with `YUZUNO_EXPERIMENTAL_OPENCODE=0` turns it off: Core
+refuses to create or import one, and the UI offers neither. That decides only
+new Agents: an existing OpenCode Agent keeps working either way, and can still
+be forked. Any other value, `1` included, leaves it on. A Core the Windows
+desktop starts again (`updates/start`) gets the value it last started with.
 
 **Moving to OpenCode 2.x (T-32).** Core is moving from OpenCode 1.19.3 to 2.x,
 one part of the protocol at a time. It starts, checks and stops OpenCode as 2.x
@@ -81,8 +85,6 @@ upload you don't confirm is removed after a day.
 **Rewind** is 2.x's own revert, staged then committed: see
 [Rewind](rewind.md#opencode). Turns a fork copied in can't be rewound in the
 new Agent: their snapshots are in the source Agent's store.
-
-Creating an OpenCode Agent stays behind the experimental switch for now.
 
 Two things a reader of a 2.x session sees differently. Text still streaming
 when Yuzuno reads the session whole (after its stream broke, say) is what has

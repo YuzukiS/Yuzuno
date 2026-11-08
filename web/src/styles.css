@@ -1710,6 +1710,16 @@ p {
   align-items: center;
   gap: 5px;
 }
+/* An OpenCode Agent's harness is experimental (YN-27). */
+.purpose-section dd .harness-experimental {
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-quiet);
+  font-size: calc(8px + var(--font-adjust, 3px));
+  line-height: 1.5;
+  white-space: nowrap;
+}
 .inspector-section {
   padding: 23px 19px 23px 23px;
   border-top: 1px solid #e8ecdf;

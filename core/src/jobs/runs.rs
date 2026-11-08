@@ -21,7 +21,10 @@ use std::{
 };
 
 mod analysis;
+mod queued;
 pub(super) use analysis::Decision as AnalysisDecision;
+#[cfg(test)]
+pub(super) use queued::waiting_for;
 
 const MAX_STAGES: usize = 16;
 /// Every attempt of one stage, automatic and explicit retries together.
@@ -34,6 +37,14 @@ const TERMINAL: [&str; 5] = [
     "interrupted",
 ];
 const RETRYABLE: [&str; 4] = ["failed", "cancelled", "rejected", "interrupted"];
+
+/// A stage attempt the user stopped at a verified checkpoint, not resumed
+/// yet: only the user resumes it (YN-30).
+pub(super) fn checkpointed(job: &Value) -> bool {
+    job["status"] == "cancelled"
+        && job["checkpointStop"]["state"] == "checkpointed"
+        && job["checkpointStop"]["resumedAs"].is_null()
+}
 
 pub(super) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch(
@@ -112,6 +123,10 @@ pub(super) struct Stage {
     reuse: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gpu: Option<super::gpu::GpuRequest>,
+    /// How its command saves and exits when the user stops it at a
+    /// checkpoint, as a Job's (YN-30). Not part of its identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<super::Checkpoint>,
     /// Not available for stages; accepted only to be refused with the reason.
     #[serde(default, skip_serializing)]
     machine_id: Option<String>,
@@ -235,8 +250,10 @@ impl RunSubmit {
                 );
             }
             // The stage named with the reason: tool errors show one message.
-            self.submit(stage)
+            let submit = self.submit(stage);
+            submit
                 .validate_command()
+                .and_then(|()| submit.validate_checkpoint())
                 .map_err(|error| anyhow::anyhow!("Stage {key}: {error:#}"))?;
         }
         Ok(())
@@ -265,7 +282,7 @@ impl RunSubmit {
             gpu: stage.gpu.clone(),
             machine_id: None,
             requested_machine: None,
-            checkpoint: None,
+            checkpoint: stage.checkpoint.clone(),
             checkpoint_from: None,
             service: None,
             service_link: None,
@@ -597,6 +614,8 @@ fn upstream(run: &Value, stage: &Value, latest: &HashMap<String, Value>) -> Upst
         match status {
             "succeeded" => ready.push(json!({"stage":need,"jobId":job["id"],"attempt":job["attempt"],
                 "cwd":job["cwd"],"artifacts":job["result"]["artifacts"].as_array().cloned().unwrap_or_default()})),
+            _ if checkpointed(job) => return Upstream::Blocked(format!(
+                "Upstream stage {need} attempt {n} was stopped at a checkpoint by the user. This stage starts once the user resumes {need} from it and {need} succeeds, or cancel the run")),
             "unknown" => return Upstream::Blocked(format!(
                 "Upstream stage {need} attempt {n} has an unknown outcome. This stage starts only after {need} succeeds: cancel that job to confirm its processes stopped, then retry {need} with job_run_retry, or cancel the run")),
             s if RETRYABLE.contains(&s) => return Upstream::Blocked(format!(
@@ -811,7 +830,7 @@ pub(super) fn advance(store: &Store, db: &Connection, id: &str) -> Result<bool> 
     if run["settledAt"].is_null() {
         let idle = matches!(
             run_status(&run, &attempts(db, id)?),
-            "failed" | "unknown" | "blocked" | "waiting_analysis"
+            "failed" | "unknown" | "checkpointed" | "blocked" | "waiting_analysis"
         );
         if run["idleAt"].is_string() != idle {
             run["idleAt"] = if idle { json!(now()) } else { Value::Null };
@@ -965,6 +984,9 @@ fn new_attempt(db: &Connection, previous: &Value, number: i64) -> Result<Value> 
         map.remove("retriedBy");
         // A new reservation: marked only if it passes a head itself (T-38).
         map.remove("admission");
+        // The user's stop belongs to the attempt it stopped (YN-30); a
+        // checkpoint it resumes from, if any, is kept.
+        map.remove("checkpointStop");
     }
     job["id"] = json!(id);
     job["attempt"] = json!(uuid::Uuid::new_v4().to_string());
@@ -1013,6 +1035,11 @@ pub(super) fn auto_retry(db: &Connection, job: &mut Value) -> Result<()> {
     let Ok(retry) = serde_json::from_value::<Retry>(job["run"]["retry"].clone()) else {
         return Ok(());
     };
+    // An attempt the user asked to stop at a checkpoint is never retried
+    // automatically, whatever its exit (YN-30).
+    if job["checkpointStop"].is_object() {
+        return Ok(());
+    }
     let run = get_run(db, job["run"]["id"].as_str().unwrap_or(""))?;
     let number = job["run"]["attempt"].as_i64().unwrap_or(1);
     let systemd = &job["result"]["evidence"]["systemd"];
@@ -1097,6 +1124,13 @@ pub(super) fn mail_context(db: &Connection, job: &Value) -> Result<String> {
         run["name"].as_str().unwrap_or(""),
         job["run"]["attempt"]
     );
+    if checkpointed(job) {
+        text.push_str(&format!(
+            " The user stopped it at a verified checkpoint; only the user resumes it (job_checkpoint_resume makes the stage's next attempt), and job_run_retry is refused for it.{} Nothing that needs {key} starts until it is resumed and succeeds; job_run_cancel stops the run.",
+            if waiting.is_empty() { String::new() } else { format!(" Not started and waiting: {}.", waiting.join(", ")) }
+        ));
+        return Ok(text);
+    }
     if !waiting.is_empty() {
         text.push_str(&format!(
             " Not started and waiting: {}. Nothing that needs {key} starts until it succeeds: retry it with job_run_retry(runId={id}, stage={key}) or stop the run with job_run_cancel.",
@@ -1117,8 +1151,8 @@ pub(super) fn job_changed(store: &Store, db: &Connection, job: &Value) -> Result
 
 fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
     let latest = latest(all);
-    let (mut active, mut unknown, mut failed, mut blocked, mut done) =
-        (false, false, false, false, true);
+    let (mut active, mut queued, mut unknown, mut failed, mut stopped, mut blocked, mut done) =
+        (false, false, false, false, false, false, true);
     let waiting_analysis = run["stages"].as_array().into_iter().flatten().any(analysis::waiting);
     for stage in run["stages"].as_array().into_iter().flatten() {
         done &= !analysis::pending(stage);
@@ -1130,8 +1164,12 @@ fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
         };
         match job["status"].as_str().unwrap_or("") {
             "succeeded" => continue,
-            "queued" | "starting" | "running" | "cancelling" => active = true,
+            "starting" | "running" | "cancelling" => active = true,
+            // Waiting in the shared queue: nothing of it runs yet (YN-30).
+            "queued" => queued = true,
             "unknown" => unknown = true,
+            // Stopped by the user at a verified checkpoint (YN-30).
+            _ if checkpointed(job) => stopped = true,
             "waiting" => {
                 blocked |= job["reason"]
                     .as_str()
@@ -1142,7 +1180,7 @@ fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
         done = false;
     }
     if run["cancelRequestedAt"].is_string() {
-        return if active || unknown {
+        return if active || queued || unknown {
             "cancelling"
         } else {
             "cancelled"
@@ -1152,10 +1190,14 @@ fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
         "succeeded"
     } else if active {
         "running"
+    } else if queued {
+        "queued"
     } else if unknown {
         "unknown"
     } else if failed {
         "failed"
+    } else if stopped {
+        "checkpointed"
     } else if blocked {
         "blocked"
     } else if waiting_analysis {
@@ -1187,8 +1229,16 @@ pub(super) fn live_ref(db: &Connection, id: &str) -> Result<Option<Value>> {
         })
         .count();
     let newest = all.values().flatten().max_by_key(|job| job["cursor"].as_i64().unwrap_or(0)).map(|job| job["id"].clone());
-    Ok(Some(json!({"name":run["name"],"status":run_status(&run, &all),"stagesDone":done,"stages":stages.len(),
-        "taskRef":run["taskRef"],"jobId":newest})))
+    let status = run_status(&run, &all);
+    let mut shown = json!({"name":run["name"],"status":status,"stagesDone":done,"stages":stages.len(),
+        "taskRef":run["taskRef"],"jobId":newest});
+    // What a queued run waits for (YN-30), only when it is queued.
+    if status == "queued" {
+        if let Some(first) = queued::first(&run, &latest, &QueueState::read(db)?) {
+            shown["waitingFor"] = first["waitingFor"].clone();
+        }
+    }
+    Ok(Some(shown))
 }
 
 pub(super) fn run_view(db: &Connection, id: &str) -> Result<Value> {
@@ -1223,6 +1273,8 @@ pub(super) fn run_view(db: &Connection, id: &str) -> Result<Value> {
                 json!("waiting_analysis")
             } else if stage["reusedFrom"].is_object() {
                 json!("reused")
+            } else if all.get(&key).and_then(|jobs| jobs.last()).is_some_and(checkpointed) {
+                json!("checkpointed")
             } else {
                 list.last()
                     .map(|j| j["status"].clone())
@@ -1245,6 +1297,13 @@ pub(super) fn run_view(db: &Connection, id: &str) -> Result<Value> {
         }
     }
     run["awaitingAnalysis"] = json!(run["stages"].as_array().into_iter().flatten().any(analysis::waiting));
+    // A queued run says which stage is first in the queue and what it waits
+    // for (YN-30); other runs have no queue field.
+    if status == "queued" {
+        if let Some(first) = queued::first(&run, &latest(&all), &queue) {
+            run["queue"] = first;
+        }
+    }
     run["status"] = json!(status);
     run["cost"] = cost(&all);
     Ok(run)
@@ -1459,9 +1518,13 @@ impl Store {
                     .flatten()
                     .map(|s| json!({"key":s["key"],"status":s["status"],"attempts":s["attempts"].as_array().map_or(0, Vec::len)}))
                     .collect();
-                Ok(json!({"id":run["id"],"name":run["name"],"experiment":run["experiment"],"status":run["status"],
+                let mut row = json!({"id":run["id"],"name":run["name"],"experiment":run["experiment"],"status":run["status"],
                     "taskRef":run["taskRef"],"agentId":run["agentId"],"agent":run["agent"],"createdAt":run["createdAt"],
-                    "cursor":run["cursor"],"stages":stages,"cost":run["cost"],"awaitingAnalysis":run["awaitingAnalysis"]}))
+                    "cursor":run["cursor"],"stages":stages,"cost":run["cost"],"awaitingAnalysis":run["awaitingAnalysis"]});
+                if run["queue"].is_object() {
+                    row["queue"] = run["queue"].clone();
+                }
+                Ok(row)
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(
@@ -1524,6 +1587,10 @@ impl Store {
             .context("Stage has no attempt")?;
         let status = last["status"].as_str().unwrap_or("unknown");
         ensure!(
+            actor.is_none() || !checkpointed(last),
+            "Stage {stage}'s latest attempt was stopped at a checkpoint by the user; only the user resumes it (job_checkpoint_resume), or cancel the run with job_run_cancel"
+        );
+        ensure!(
             RETRYABLE.contains(&status),
             "Stage {stage}'s latest attempt is {status}; only a failed, cancelled, rejected or interrupted attempt can be retried{}",
             if status == "unknown" { " (cancel it first, so its process groups are confirmed stopped)" } else { "" }
@@ -1545,6 +1612,60 @@ impl Store {
         let view = run_view(&tx, run_id)?;
         tx.commit()?;
         Ok(view)
+    }
+    /// The user's resume of a stage attempt stopped at a verified checkpoint
+    /// (YN-30): the stage's next attempt, made as a retry makes one, with the
+    /// same frozen inputs, continuing from `from`. Stages that need it start
+    /// after it succeeds. A repeat returns the same attempt.
+    pub(super) fn resume_stage(&self, id: &str, from: Value) -> Result<Value> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut stopped = get(&tx, id)?;
+        if let Some(next) = stopped["checkpointStop"]["resumedAs"].as_str().map(str::to_owned) {
+            drop(tx);
+            drop(db);
+            return self.job(&next);
+        }
+        let run_id = stopped["run"]["id"].as_str().context("Missing run identity")?.to_owned();
+        let key = stopped["run"]["stage"].as_str().context("Missing run stage")?.to_owned();
+        let run = get_run(&tx, &run_id)?;
+        ensure!(
+            run["cancelRequestedAt"].is_null(),
+            "This run was cancelled; its stage {key} can no longer be resumed. Submit a new run, reusing its succeeded stages explicitly"
+        );
+        ensure!(checkpointed(&stopped), "Only an attempt stopped at a verified checkpoint resumes from it");
+        let all = attempts(&tx, &run_id)?;
+        ensure!(
+            all.get(&key).and_then(|jobs| jobs.last()).is_some_and(|job| job["id"] == stopped["id"]),
+            "Stage {key} has a newer attempt; only its latest attempt resumes"
+        );
+        let number = stopped["run"]["attempt"].as_i64().unwrap_or(1);
+        ensure!(number < MAX_ATTEMPTS, "Stage {key} already has {MAX_ATTEMPTS} attempts");
+        if let Some(limit) = limit_reached(&run, &all) {
+            anyhow::bail!("{}", limit.replacen("Not started", "Not resumed", 1));
+        }
+        let mut next = new_attempt(&tx, &stopped, number + 1)?;
+        // It continues the stopped attempt; it is not a retry of it.
+        next["checkpointFrom"] = from;
+        next["retryOf"] = Value::Null;
+        save(&tx, &next)?;
+        let next_id = next["id"].as_str().context("Missing job identity")?.to_owned();
+        stopped["checkpointStop"]["resumedAs"] = json!(next_id);
+        stopped["checkpointStop"]["resumedAt"] = json!(now());
+        save(&tx, &stopped)?;
+        let task = stopped["taskId"].as_str().context("Missing task")?.to_owned();
+        let public = collaboration::task_number(&tx, &collaboration::task_key(&tx, &task)?.0)?;
+        let body = format!(
+            "The user resumed stage {key} of run {} ({run_id}) from its checkpoint: attempt {} (job {next_id}) is the stage's next attempt, with the same frozen inputs, queued like any other; its command gets YUZUNO_RESUME_FROM. Stages that need {key} start after it succeeds. Task {public}. job_run_get(runId={run_id}) follows it.",
+            run["name"].as_str().unwrap_or(""),
+            number + 1,
+        );
+        let name = stopped["name"].as_str().unwrap_or("").to_owned();
+        notify_message(&tx, &stopped["agent"], &task, &stopped, "checkpointResumed", &name, &run_id, body)?;
+        advance(self, &tx, &run_id)?;
+        tx.commit()?;
+        drop(db);
+        self.job(&next_id)
     }
     /// Stop a run: stages that have not started never will; running ones are
     /// cancelled as any Job is, released only when their groups are gone.

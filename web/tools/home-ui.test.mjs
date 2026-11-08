@@ -867,6 +867,48 @@ test("YN-21 an Ask answered here is its answer card as soon as Core has the repl
   }
 });
 
+test("YN-28 an answer card its owner then resolves keeps the answer card's height until the reader touches it, so the cards below are not pulled up (T-132)", async () => {
+  const home = homeFixture();
+  const app = home.projects.find((entry) => entry.project.id === "p-app");
+  const live = () => app.brief.sections.find((s) => s.key === "release");
+  // As Core: a reply marks that version of the ask replied before its receipt comes back (home.rs mark_replied).
+  const replyAnswer = (reply) => {
+    const s = live();
+    if (s.version === reply.askVersion) {
+      s.ask = { ...s.ask, state: "replied", repliedAt: new Date().toISOString(), replyText: reply.text };
+      home.needsYou = home.needsYou.filter((item) => item.sectionKey !== "release");
+    }
+    return null;
+  };
+  const p = await mount({ home, replyAnswer });
+  // jsdom lays nothing out: the card measures as Chromium drew home-check's (6a), its answer card the taller.
+  const measured = p.w.Element.prototype.getBoundingClientRect;
+  p.w.Element.prototype.getBoundingClientRect = function () {
+    if (this.dataset?.sectionKey !== "release") return measured.call(this);
+    const height = this.classList.contains("is-answer") ? 155 : 143;
+    return { x: 0, y: 0, top: 0, left: 0, right: 560, bottom: height, width: 560, height, toJSON() {} };
+  };
+  try {
+    const release = () => card(p, "p-app", "release");
+    await type(p, release().querySelector("textarea"), "Ship it after the docs fix");
+    p.button("Send", release()).click();
+    await waitFor(() => release().classList.contains("is-answer"), "the answer card");
+    assert.equal(release().style.minHeight, "", "the user's own reply: no height held for the card it was (YN-21)");
+    // Its owner resolves it: Core's next version, read while the user reads Home.
+    Object.assign(live(), { version: 4, updatedAt: new Date().toISOString(), body: body("Shipped."), ask: { ...live().ask, state: "resolved" } });
+    p.doc.querySelector('[aria-label="Refresh Home"]').click();
+    await waitFor(() => release().dataset.sectionVersion === "4", "the resolved version read");
+    assert.ok(!release().classList.contains("is-answer"), "resolved, no longer an answer card");
+    assert.equal(release().style.minHeight, "155px", "as tall as the answer card it was: nothing below is pulled up");
+    // The reader touches it: it takes its own height.
+    release().dispatchEvent(new p.w.Event("pointerdown", { bubbles: true }));
+    assert.equal(release().style.minHeight, "");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 // T-132 with T-127: a replied ask's changed blocks are marked wherever its body shows.
 test("a replied ask marks its changed blocks where its body shows: on its answer card, in the folded question and details; the owner's update after the reply on the card's face too (YN-3)", async () => {
   const notes = (summary) => ({

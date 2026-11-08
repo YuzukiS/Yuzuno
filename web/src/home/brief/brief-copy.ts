@@ -4,7 +4,7 @@ import { strings, type Language } from "../../i18n";
 import { sourceTarget } from "../../intelligent-ui/contract.ts";
 import type { TimeDisplay } from "../../time-preferences";
 import type { Section, SectionAttachment } from "../types";
-import { briefText } from "./brief-text";
+import { briefText, refStateWord } from "./brief-text";
 import { briefMarkdownHtml } from "./markdown-html";
 import { calcResults } from "../../intelligent-ui/brief-formula.ts";
 import { startingValues } from "../../intelligent-ui/brief-inputs.ts";
@@ -297,7 +297,7 @@ export function sectionMarkdown(section: Section, language: Language, time: Time
           const name = `${b.refKind[item.kind]} ${shownRefId(item, state)}`;
           const named = link(name, state?.url) ?? inline(name);
           // Unread is not missing: Core couldn't read it this time.
-          const about = [item.label ?? state?.title, state?.found === false ? (state.unavailable ? b.refUnavailable : b.notFound) : state?.state]
+          const about = [item.label ?? state?.title, state?.found === false ? (state.unavailable ? b.refUnavailable : b.notFound) : state && refStateWord(b, item.kind, state)]
             .filter(Boolean).map(inline);
           return `- ${named}${about.length ? `: ${about.join(" · ")}` : ""}${item.note ? ` — ${inline(item.note)}` : ""}`;
         }).join("\n")];

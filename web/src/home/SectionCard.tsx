@@ -57,7 +57,8 @@ export function SectionTime({ label, iso }: { label: string; iso?: string }) {
  * the version unchanged), until the reader touches it, so shorter content
  * never pulls up the blocks below while they are being read. A reply sent
  * from the card itself is the user's own act: it becomes its answer card,
- * which holds no room (YN-21, `collapsed`).
+ * which holds no room (YN-21, `collapsed`). What Core sends next, as when
+ * its owner resolves it, is held at that answer card's height (YN-28).
  */
 function useReservedHeight(content: string, collapsed: boolean) {
   const ref = useRef<HTMLElement>(null);
@@ -65,10 +66,11 @@ function useReservedHeight(content: string, collapsed: boolean) {
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
-    // A collapsed card holds no room; expanded again, it starts afresh.
+    // A collapsed card holds no room, but its height is what a new version
+    // must not shrink. Expanded again, at the same content, it holds none.
     if (collapsed) {
       element.style.minHeight = "";
-      last.current = null;
+      last.current = { content, height: element.getBoundingClientRect().height };
       return;
     }
     const previous = last.current;

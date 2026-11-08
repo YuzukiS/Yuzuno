@@ -248,6 +248,8 @@ type QueueRepository = {
   /** YN-18 S2d-2: one-step reverts allowed, and Core reverting on its own. */
   revert?: boolean;
   autoRevert?: boolean;
+  /** YN-33: merged PRs tagged with their release's milestone and task label. */
+  grouping?: boolean;
 };
 type QueuePolicy = "strict" | "relaxed";
 // T-37: the repository's merge queue switch, the user's only (Agents have no
@@ -287,6 +289,16 @@ const queueText = strings({
   allowReverts: "Allow reverts",
   autoRevertTitle: "Revert automatically",
   autoRevertHint: "Core reverts on its own when main CI goes red after a merge, instead of waiting for a lead or you.",
+  groupingTitle: "Release grouping",
+  groupingOn: "On: each PR Core merges gets its release's milestone and its task's label, for the release notes.",
+  groupingOff: "Off: merged PRs are tagged for their release by hand.",
+  confirmGrouping: (name: string) => `Tag the PRs Core merges in ${name} for their release? After each merge whose check of what landed held, Core then also writes:`,
+  groupingWrites: [
+    "The merged PR's milestone: the newest open milestone, only when the PR has none.",
+    "Its task's label task:<key> added to the PR, which keeps its other labels.",
+    "That label made first, when the repository has none: the task's title as its description.",
+  ],
+  allowGrouping: "Turn on grouping",
   turnOn: "Turn on",
   cancel: "Cancel",
   paused: (reason: string) => `Paused: ${reason}`,
@@ -330,6 +342,16 @@ const queueText = strings({
   allowReverts: "允许回退",
   autoRevertTitle: "自动回退",
   autoRevertHint: "合并后主分支 CI 变红时，Core 自己回退，不等负责人或你。",
+  groupingTitle: "按发布归组",
+  groupingOn: "已开启：Core 合并的每个 PR 都会加上所属发布的里程碑和任务标签，供发布说明使用。",
+  groupingOff: "已关闭：合并后的 PR 需手动加发布分组。",
+  confirmGrouping: (name) => `为 ${name} 中 Core 合并的 PR 加发布分组？每次合并、且核对落地内容通过之后，Core 还会写入：`,
+  groupingWrites: [
+    "合并的 PR 的里程碑：最新的未关闭里程碑，仅在 PR 还没有里程碑时设置。",
+    "把任务标签 task:<任务号> 加到这个 PR 上，PR 原有的其他标签保留。",
+    "仓库里还没有这个标签时，先建这个标签：描述为任务标题。",
+  ],
+  allowGrouping: "开启归组",
   turnOn: "开启",
   cancel: "取消",
   paused: (reason) => `已暂停：${reason}`,
@@ -352,6 +374,7 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
   const [confirming, setConfirming] = useState(false);
   const [confirmingPolicy, setConfirmingPolicy] = useState(false);
   const [confirmingReverts, setConfirmingReverts] = useState(false);
+  const [confirmingGrouping, setConfirmingGrouping] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const mounted = useRef(true);
@@ -379,6 +402,7 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
         setConfirming(false);
         setConfirmingPolicy(false);
         setConfirmingReverts(false);
+        setConfirmingGrouping(false);
       }
       return true;
     } catch (e) {
@@ -397,6 +421,9 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
   // Allowing reverts names their writes first; turning them off saves at once.
   const saveReverts = (body: { revert?: boolean; autoRevert?: boolean }) =>
     send(() => api<QueueRepository>(path, { method: "PUT", body: JSON.stringify(body) }));
+  // Turning grouping on names its writes first; turning it off saves at once.
+  const saveGrouping = (grouping: boolean) =>
+    send(() => api<QueueRepository>(path, { method: "PUT", body: JSON.stringify({ grouping }) }));
   const choosePolicy = (next: QueuePolicy) => {
     if (next === policy) return;
     if (next === "relaxed") setConfirmingPolicy(true);
@@ -485,6 +512,41 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
               </span>
             </label>
           )}
+        </div>
+      )}
+      {state && (
+        <div className="merge-queue-grouping">
+          <label className="merge-queue-policy-option">
+            <input
+              type="checkbox"
+              checked={state.grouping === true}
+              disabled={disabled || busy}
+              onChange={() => {
+                if (state.grouping) void saveGrouping(false);
+                else setConfirmingGrouping(true);
+              }}
+            />
+            <span>
+              <strong>{t.groupingTitle}</strong>
+              <small>{state.grouping ? t.groupingOn : t.groupingOff}</small>
+            </span>
+          </label>
+        </div>
+      )}
+      {confirmingGrouping && state && !state.grouping && (
+        <div className="merge-queue-confirm merge-queue-grouping-confirm">
+          <p>{t.confirmGrouping(name)}</p>
+          <ul>
+            {t.groupingWrites.map((write) => <li key={write}>{write}</li>)}
+          </ul>
+          <div className="merge-queue-actions">
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void saveGrouping(true)}>
+              {t.allowGrouping}
+            </button>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setConfirmingGrouping(false)}>
+              {t.cancel}
+            </button>
+          </div>
         </div>
       )}
       {confirmingReverts && state && !state.revert && (

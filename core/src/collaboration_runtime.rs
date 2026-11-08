@@ -72,7 +72,7 @@ impl Workspace {
             return tokio::spawn(crate::github::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("GitHub operation ended unexpectedly")?;
         }
-        if operation == "service_register" || operation == "services_list" {
+        if crate::services::OPERATIONS.contains(&operation) {
             return tokio::spawn(crate::services::call(self.clone(), actor.map(str::to_owned), operation.to_owned(), input))
                 .await.context("Service operation ended unexpectedly")?;
         }

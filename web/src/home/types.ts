@@ -72,6 +72,9 @@ export type LiveRefState = {
   stages?: { done: number; total: number };
   /** For a run: the Job of its newest attempt, where Jobs shows the run with every stage. */
   jobId?: string;
+  /** For a queued run (YN-30): what its first stage in the queue waits for,
+   * e.g. gpu, memory, cpu, slot, disk, exclusive, budget or capacity. */
+  waitingFor?: string;
 };
 
 export type Section = {

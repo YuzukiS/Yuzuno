@@ -4964,6 +4964,7 @@ export function App() {
                   <dt>{shell.harness}</dt>
                   <dd>
                     {agentHarnessName(agent)}
+                    {isOpenCode && <>{" "}<small className="harness-experimental">{shell.experimental}</small></>}
                   </dd>
                 </div>
                 <div>

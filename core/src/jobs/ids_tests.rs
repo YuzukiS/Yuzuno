@@ -1,5 +1,6 @@
-//! T-30: job_get, job_logs, job_cancel and job_provenance name a Job or run
-//! by its whole ID or by a unique prefix of at least eight hexadecimal
+//! T-30: job_get, job_logs, job_cancel and job_provenance name a Job or run,
+//! and (YN-30) job_run_get, job_run_retry, job_run_decide and job_run_cancel
+//! a run, by its whole ID or by a unique prefix of at least eight hexadecimal
 //! characters, and a prefix that names none or several says which without
 //! listing them. Synthetic records only.
 use super::ids::Kind;
@@ -168,4 +169,104 @@ async fn job_get_logs_cancel_and_provenance_take_a_prefix() {
     }
     let provenance = definitions.iter().find(|t| t["name"] == "job_provenance").unwrap();
     assert!(provenance["inputSchema"]["properties"]["runId"]["description"].as_str().unwrap().contains("unique prefix"));
+}
+
+/// YN-30: job_run_get, job_run_retry, job_run_decide and job_run_cancel name
+/// a run as the Job tools do. A retry or decision made by a prefix is kept
+/// with the whole ID, so its repeat by either is the same request.
+#[tokio::test]
+async fn the_run_tools_take_a_prefix_and_keep_the_whole_id() {
+    let (_dir, ws) = setup();
+    // No scheduler: these calls move the run themselves.
+    ws.jobs.started.set(()).unwrap();
+    let s = &ws.store;
+    // Two independent stages: train waits for analysis after it succeeds,
+    // prep fails and can be retried.
+    let input: runs::RunSubmit = serde_json::from_value(json!({"requestId":"run","taskId":"T-1","name":"Fixture run",
+        "stages":[{"key":"train","cwd":"/workspace","argv":["/usr/bin/true"],"resources":{"cpuMillis":200,"memoryMiB":64,"swapMiB":0},"waitForAnalysis":true},
+            {"key":"prep","cwd":"/workspace","argv":["/usr/bin/true"],"resources":{"cpuMillis":200,"memoryMiB":64,"swapMiB":0}}]})).unwrap();
+    let prepared = input.stages.iter().map(|stage| {
+        let submit = input.submit(stage);
+        let snapshot = json!({"cwd":"/workspace","git":null,"files":[]});
+        let identity = runs::spec_identity(&submit, &snapshot, stage.needs());
+        runs::Prepared { submit, snapshot, identity, reuse: None, guard_exclude: vec![] }
+    }).collect();
+    let machine = json!({"id":"local-test","name":"test","suggestedBudget":{"cpuMillis":600,"memoryMiB":192,"swapMiB":0}});
+    let run = s.create_run(Some("a"), input, prepared, machine, json!({"bootId":"boot"})).unwrap();
+    for _ in 0..2 {
+        let job = s.reserve_next_job(None, None, None).unwrap().unwrap();
+        let (status, result, code) = if job["run"]["stage"] == "train" { ("succeeded", "success", "0") } else { ("failed", "exit-code", "1") };
+        assert!(s.update_job_evidence(job["id"].as_str().unwrap(), json!({"jobId":job["id"],"attempt":job["attempt"],"status":status,
+            "reason":result,"evidence":{"systemd":{"Result":result,"ExecMainCode":"1","ExecMainStatus":code}}})).unwrap());
+    }
+    let run_id = run["id"].as_str().unwrap().to_owned();
+    let short = run_id[..8].to_owned();
+    let tool = |name: &str, input: Value| call(ws.clone(), Some("a".into()), name.into(), input);
+    let stage = |run: &Value, key: &str| run["stages"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap().clone();
+
+    // Found: a unique prefix names the run, in any case and with its hyphen.
+    let read = tool("job_run_get", json!({"runId":short})).await.unwrap();
+    assert_eq!(read["id"], run_id.as_str());
+    assert_eq!(tool("job_run_get", json!({"runId":run_id[..13].to_uppercase()})).await.unwrap()["id"], run_id.as_str());
+    let gate = stage(&read, "train")["analysis"].clone();
+    assert_eq!(gate["state"], "waiting", "{read}");
+
+    let retried = tool("job_run_retry", json!({"requestId":"retry","runId":short,"stage":"prep"})).await.unwrap();
+    assert_eq!((retried["id"].as_str(), stage(&retried, "prep")["attempts"].as_array().map(Vec::len)), (Some(run_id.as_str()), Some(2)));
+    // Its repeat, by the whole ID or by the prefix, is the same retry: no third attempt.
+    for given in [run_id.as_str(), short.as_str()] {
+        let again = tool("job_run_retry", json!({"requestId":"retry","runId":given,"stage":"prep"})).await.unwrap();
+        assert_eq!(stage(&again, "prep")["attempts"].as_array().map(Vec::len), Some(2), "{given}");
+    }
+
+    let decide = |run: &str| json!({"requestId":"go-on","runId":run,"stage":"train","gateId":gate["id"],"attemptId":gate["attemptId"],
+        "decision":"continue","reason":"Read the retained evidence"});
+    let decided = tool("job_run_decide", decide(&short)).await.unwrap();
+    assert_eq!(stage(&decided, "train")["analysis"]["state"], "continued", "{decided}");
+    // The same decision by the whole ID is its repeat, not a conflict.
+    let again = tool("job_run_decide", decide(&run_id)).await.unwrap();
+    assert_eq!(stage(&again, "train")["analysis"]["requestId"], "go-on");
+
+    // Ambiguous: another run that starts as this one does. No tool picks one,
+    // names either, or writes anything; the whole ID and a longer prefix still name it.
+    let other = if &run_id[9..13] == "0000" { "ffff" } else { "0000" };
+    let sibling = format!("{short}-{other}-4000-8000-000000000000");
+    rows(s, &[], &[&sibling]);
+    let before = tool("job_run_get", json!({"runId":run_id})).await.unwrap();
+    for (name, input) in [("job_run_get", json!({"runId":short})),
+        ("job_run_retry", json!({"requestId":"retry-2","runId":short,"stage":"prep"})),
+        ("job_run_decide", decide(&short)),
+        ("job_run_cancel", json!({"runId":short}))] {
+        let error = tool(name, input).await.unwrap_err().to_string();
+        assert_eq!(error, format!("Run ID prefix {short:?} is ambiguous (2 matches): give more of it, or the whole ID"), "{name}");
+        assert!(!error.contains(&run_id) && !error.contains(&sibling), "{name}: {error}");
+    }
+    assert_eq!(tool("job_run_get", json!({"runId":run_id})).await.unwrap(), before, "nothing changed");
+
+    // Not found, and too short: told apart, and nothing written.
+    for (given, expected) in [("deadbeef", r#"Run not found: no Run ID starts with "deadbeef""#.to_owned()),
+        (&run_id[..7], format!("Run ID prefix {:?} is too short: give at least 8 of its hexadecimal characters, or the whole ID", &run_id[..7])),
+        ("fixture-run", r#"Run not found: "fixture-run" is neither a Run ID nor the start of one"#.to_owned())] {
+        for (name, input) in [("job_run_get", json!({"runId":given})),
+            ("job_run_retry", json!({"requestId":"retry-3","runId":given,"stage":"prep"})),
+            ("job_run_decide", decide(given)),
+            ("job_run_cancel", json!({"runId":given}))] {
+            assert_eq!(tool(name, input).await.unwrap_err().to_string(), expected, "{name} {given:?}");
+        }
+    }
+    assert_eq!(tool("job_run_get", json!({"runId":run_id})).await.unwrap(), before, "nothing changed");
+    // A Job's ID is not a run's.
+    let job_id = stage(&before, "prep")["attempts"][0]["id"].as_str().unwrap().to_owned();
+    assert!(tool("job_run_cancel", json!({"runId":&job_id[..8]})).await.unwrap_err().to_string().starts_with("Run not found"));
+
+    let cancelled = tool("job_run_cancel", json!({"runId":run_id[..13]})).await.unwrap();
+    assert_eq!(cancelled["id"], run_id.as_str());
+    assert!(cancelled["cancelRequestedAt"].is_string(), "{cancelled}");
+
+    let definitions = tool_definitions();
+    for name in ["job_run_get", "job_run_retry", "job_run_decide", "job_run_cancel"] {
+        let tool = definitions.iter().find(|t| t["name"] == name).unwrap();
+        let text = tool["inputSchema"]["properties"]["runId"]["description"].as_str().unwrap();
+        assert!(text.starts_with("The run's ID, or a unique prefix of it: at least 8"), "{name}: {text}");
+    }
 }

@@ -81,7 +81,8 @@ const home = {
     missing: [{ agentId: "a", agentName: "Mori", turnId: "t0", at: ago(70), outcome: "missing" }],
     brief: { version: 3, history: [], sections: [
       section("ship", "ask", "Ship today?", BODY.ship, { ask: { question: "Ship the release today?", state: "open", reply: { options: [{ id: "yes", label: "Ship" }, { id: "no", label: "Wait" }], freeText: true } } }),
-      section("progress", "report", "Progress", BODY.progress),
+      // Two paragraphs: a report its card holds whole has no page to open (YN-3, 78e08fb4).
+      section("progress", "report", "Progress", `${BODY.progress}\n\nThe deck keeps each card's place.`),
       section("load", "status", "Build load", BODY.load, { status: { asOf: ago(240), validFor: 3600, stale: true }, time: { nextUpdate: ago(-120) } }),
       section("blocks", "report", "Release checklist", "", { body: blocks, refs: blockRefs, attachments: blockFiles }),
     ] },
@@ -180,6 +181,7 @@ const shown = () => page.evaluate(() => {
     needs: { heading: one(".home-needs-you h2"), item: all(".home-needs-item > span > span, .home-needs-item > span > strong, .home-needs-since"), title: document.querySelector(".home-needs-item").getAttribute("title") },
     project: { name: text(panel.querySelector(".home-panel-head h2")), chips: all(".home-panel-chips > span", panel) },
     cards: { ship: card("ship"), progress: card("progress"), load: card("load") },
+    outOfDate: text(panel.querySelector("details.home-out-of-date > summary")),
     ask: {
       question: text(ship.querySelector(".home-question")),
       options: all(".home-ask-options button", ship),
@@ -211,11 +213,17 @@ const shown = () => page.evaluate(() => {
       footer: all(".repo-footer-links > *"), commits: all(".repo-commits .repo-row-title"), manage: one(".home-repos-manage"), name: one(".repo-line .repo-name") },
   };
 });
+/** Opens the deck's "Out of date" group, closed at each visit, where the status is. */
+async function unfoldOutOfDate() {
+  const fold = page.locator('[data-home-project="p1"] details.home-out-of-date');
+  if (!(await fold.evaluate((el) => el.open))) await fold.locator(":scope > summary").click();
+}
 /** What each report page shows (T-18): its body and meta for the report and
  *  the status, the blocks' own words for the checklist report. */
 async function pages() {
   const read = {};
   for (const key of ["progress", "load", "blocks"]) {
+    if (key === "load") await unfoldOutOfDate();
     await page.locator(`.home-view [data-section-key="${key}"] .home-report-open`).click();
     await page.locator(".home-report .report-head h1").waitFor({ timeout: 10_000 });
     read[key] = await page.evaluate(() => {
@@ -250,6 +258,8 @@ try {
   await other.goto(`https://${HOST}/other.html`);
   await page.goto(`https://${HOST}/`);
   await page.locator(".toolbar-nav .catchup-nav").first().click();
+  // The status past its validity waits in the deck's closed "Out of date" group (YN-3, 928d85f2).
+  await unfoldOutOfDate();
   await page.locator('[data-section-key="load"]').waitFor({ timeout: 10_000 });
   // The report pages first, while nothing is open on Home that a click elsewhere would close.
   const enPages = await pages();
@@ -289,6 +299,7 @@ try {
   assert.deepEqual(en.cards.progress.buttons, ["Reply to “Progress”", "Mark “Progress” seen", "More actions for “Progress”"]);
   // The status card says when its data is from; its page also says what is next (T-18).
   assert.match(en.cards.load.meta[1], /^Data as of .+ · older than its 1 h validity$/);
+  assert.match(en.outOfDate, /^Out of date · 1 status · newest data as of .+$/);
   assert.ok(enPages.load.meta.some((m) => /^Data as of .+ · older than its 1 h validity$/.test(m)), JSON.stringify(enPages.load.meta));
   assert.ok(enPages.load.meta.includes("Next update in 2 h"), JSON.stringify(enPages.load.meta));
   assert.deepEqual(en.ask.options, ["Ship", "Wait"]);
@@ -334,6 +345,7 @@ try {
   assert.deepEqual(zh.cards.progress.meta, ["Mori", "5 分钟前"]);
   assert.deepEqual(zh.cards.progress.buttons, ["回复“Progress”", "将“Progress”标为已看", "“Progress”的更多操作"]);
   assert.match(zh.cards.load.meta[1], /^数据截至 .+ · 已超过 1 小时的有效期$/);
+  assert.match(zh.outOfDate, /^已过期 · 1 个状态 · 最新数据 .+$/);
   assert.deepEqual(zh.ask.target, ["发送给", "Mori"]);
   assert.deepEqual([zh.ask.placeholder, zh.ask.send], ["写一条回复…", "发送"]);
   assert.deepEqual(zh.ask.defer, ["推迟", "1 小时", "明天", "下周"]);

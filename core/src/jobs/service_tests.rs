@@ -136,6 +136,45 @@ async fn a_restart_is_a_new_job_only_once_the_earlier_one_has_ended() {
     assert_eq!(links, 2);
 }
 
+/// YN-32: an Agent's removal is refused while a Job may still serve the
+/// service, as a restart is; once that Job has ended its registrant removes
+/// it, and the Job's record stays as it was. A refusal keeps nothing, so the
+/// same requestId later removes it.
+#[tokio::test]
+async fn an_agent_removes_a_service_only_once_no_job_may_serve_it() {
+    let lab = lab();
+    let s = &lab.ws.store;
+    let new = NewService { name: "Vite".into(), machine_id: "local".into(), port: free_port(), path: "/".into() };
+    let id = lab.ws.register_service(&lab.project, new, json!({"kind":"agent","id":"a","name":"a"}), Some("r".into())).await
+        .unwrap()["id"].as_str().unwrap().to_owned();
+    let job = create(s, served("j", "T-1", &id, None)).unwrap();
+    let job_id = job["id"].as_str().unwrap();
+    let unregister = || crate::services::call(lab.ws.clone(), Some("a".into()), "service_unregister".into(),
+        json!({"requestId":"u","serviceId":id}));
+    let refused = |error: anyhow::Error, status: &str| {
+        let error = error.to_string();
+        assert!(error.starts_with("service_served: Vite is still served by Job") && error.contains(job_id)
+            && error.contains(&format!("({status})")) && error.contains("cancel that Job first"), "{status}: {error}");
+    };
+    refused(unregister().await.unwrap_err(), "queued");
+    run(s, &job);
+    refused(unregister().await.unwrap_err(), "running");
+    s.request_job_cancel(None, job_id).unwrap();
+    refused(unregister().await.unwrap_err(), "cancelling");
+    assert_eq!(listed(&lab, &id).await["job"]["jobId"], job["id"], "still listed with its Job");
+
+    end(s, &job, "cancelled");
+    let removed = unregister().await.unwrap();
+    assert_eq!((removed["service"]["id"].clone(), removed["removedAs"].clone()), (json!(id), json!("registrant")));
+    assert!(lab.ws.project_services(&lab.project).await.unwrap()["services"].as_array().unwrap().is_empty());
+    let links: i64 = s.db.read().unwrap()
+        .query_row("SELECT COUNT(*) FROM project_service_jobs WHERE service_id=?1", [&id], |r| r.get(0)).unwrap();
+    assert_eq!(links, 0, "its links go with it");
+    let kept = s.job(job_id).unwrap();
+    assert_eq!((kept["status"].clone(), kept["service"].clone()), (json!("cancelled"), json!({"serviceId": id})),
+        "the Job's own record is untouched");
+}
+
 #[tokio::test]
 async fn a_service_job_starting_or_of_unknown_outcome_can_be_stopped() {
     let lab = lab();

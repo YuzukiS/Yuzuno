@@ -1280,6 +1280,7 @@ function queueCore(page, queue, { unpauseFails = 0 } = {}) {
         if ("policy" in body) queue.policy = body.policy;
         if ("revert" in body) { queue.revert = body.revert; if (!body.revert) queue.autoRevert = false; }
         if ("autoRevert" in body) queue.autoRevert = body.autoRevert;
+        if ("grouping" in body) queue.grouping = body.grouping;
       }
       return respond(queue);
     }
@@ -1366,6 +1367,37 @@ test("the landing policy is strict until chosen; relaxed names its write first a
     assert.deepEqual(queueWrites(page).map((call) => call.body), [{ policy: "relaxed" }, { policy: "strict" }], "strict saves at once");
     assert.ok(!row.querySelector(".merge-queue-policy-confirm"), "with no confirmation");
     assert.equal(queue.enabled, true, "the switch stays on throughout");
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
+test("release grouping is off until the user turns it on: on names its three writes first, off saves at once (YN-33)", async () => {
+  const page = await mount({ storage: { "yuzuno.selected.ws-1": "a" } });
+  try {
+    const queue = { repositoryId: 7, enabled: true, paused: null, landing: "core-merge" };
+    queueCore(page, queue);
+    const row = await openQueue(page, "Manage projects");
+    const box = () => row.querySelector(".merge-queue-grouping");
+    const check = () => box().querySelector("input[type='checkbox']");
+    assert.ok(box().textContent.includes("Off: merged PRs are tagged for their release by hand."), "grouping is off by default");
+    assert.equal(check().checked, false);
+    check().click(); await pause();
+    const confirm = row.querySelector(".merge-queue-grouping-confirm");
+    assert.ok(confirm, "turning grouping on asks first");
+    for (const words of ["Tag the PRs Core merges in owner/repo for their release?", "newest open milestone, only when the PR has none",
+      "task:<key>", "keeps its other labels", "That label made first"])
+      assert.ok(confirm.textContent.includes(words), words);
+    assert.equal(confirm.querySelectorAll("li").length, 3, "the three writes");
+    assert.equal(queueWrites(page).length, 0, "nothing is saved before the confirmation");
+    within(row, "Turn on grouping").click();
+    await waitFor(() => check().checked, "grouping on");
+    assert.ok(box().textContent.includes("its release's milestone and its task's label"), box().textContent);
+    check().click();
+    await waitFor(() => !check().checked, "grouping off");
+    assert.equal(row.querySelector(".merge-queue-grouping-confirm"), null, "off asks nothing");
+    assert.deepEqual(queueWrites(page).map((call) => call.body), [{ grouping: true }, { grouping: false }], "on after the confirmation, off at once");
     assert.equal(page.errors.length, 0, page.errors.join("\n"));
   } finally {
     page.close();
