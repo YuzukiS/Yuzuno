@@ -188,9 +188,14 @@ export function AgentSettings({
   const [openCodeNote, setOpenCodeNote] = useState<{ version: string; verified: string } | null>(null);
   // Each read of the catalog gets the next number; only the latest one's answer is shown (YN-47).
   const reads = useRef(0);
+  // The dialog's own read while it is out, and a re-read asked meanwhile: that waits for it, so the dialog's read
+  // (its permissions, context and a requested model) is never dropped for it (R1 81aad988 of #788).
+  const ownRead = useRef(0);
+  const rereadWanted = useRef(false);
   useEffect(() => {
     if (!open) return;
     const read = ++reads.current;
+    ownRead.current = read;
     let valid = true;
     const current = () => valid && read === reads.current;
     setLoading(true);
@@ -238,15 +243,31 @@ export function AgentSettings({
         }));
       })
       .catch((e) => current() && setError(errorText(e)))
-      .finally(() => current() && setLoading(false));
+      .finally(() => {
+        const mine = ownRead.current === read;
+        if (mine) ownRead.current = 0;
+        if (current()) setLoading(false);
+        // A login or logout that finished while this read was out: read again, after it.
+        if (mine && valid && rereadWanted.current) {
+          rereadWanted.current = false;
+          rereadModels();
+        }
+      });
     return () => {
       valid = false;
+      // The next read, if any, is newer than any login: nothing waits.
+      if (ownRead.current === read) ownRead.current = 0;
+      rereadWanted.current = false;
     };
   }, [open, agent.id, agent.harness, reload]);
   // After a login or logout (YN-47): OpenCode lists its providers' models
   // anew, so the catalog is read again. Only the catalog: what is chosen here
   // and not saved stays chosen, shown as current if no longer listed.
   function rereadModels() {
+    if (ownRead.current) {
+      rereadWanted.current = true;
+      return;
+    }
     const read = ++reads.current;
     setLoading(true);
     setError("");

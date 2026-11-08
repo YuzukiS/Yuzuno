@@ -975,6 +975,63 @@ test("an OpenCode Agent's models are grouped by provider, logged-in first, and s
   } finally { gone.close(); }
 });
 
+// R1 81aad988 of #788 (P3): a sign-in that finishes while the dialog's own read is out (here the read a composer
+// `/model` asks for) waits for that read, so the requested model is still chosen; the catalog is read again after it.
+test("a sign-in finishing while the dialog's own read is out reads again after it, and the requested model is still chosen (YN-47)", async () => {
+  const flash = { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", displayName: "DeepSeek · DeepSeek Flash", description: null, variants: [] };
+  const free = { id: "opencode/beam-free", model: "opencode/beam-free", displayName: "OpenCode · Beam Free", description: null, variants: [] };
+  const copilot = { kind: "oauth", id: "github-copilot/device", label: "Login with GitHub Copilot", fields: [], names: [] };
+  const view = { state: "ready", reason: null, version: "2.2.5", integrations: [{ id: "github-copilot", name: "GitHub Copilot", methods: [copilot], connections: [] }] };
+  const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
+  let reads = 0, complete = false, release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const page = mount(async (url) => {
+    if (url.endsWith("/agents/oc/models")) {
+      reads += 1;
+      // The second read (the composer's request) is held until released.
+      if (reads === 2) await held;
+      return { models: [flash, free], opencode: { version: "2.2.5", verified: "2.2.5" } };
+    }
+    if (url.endsWith("/agents/oc/opencode/login")) return view;
+    if (url.endsWith("/opencode/login/oauth")) return { attemptId: "con_1", url: "https://github.com/login/device", instructions: "", mode: "auto", time: {} };
+    if (url.endsWith("/opencode/login/oauth/github-copilot/con_1")) return { status: complete ? "complete" : "pending" };
+    return undefined;
+  });
+  const section = () => page.document.querySelector(".opencode-login");
+  const press = async (text) => {
+    const found = [...section().querySelectorAll("button")].find((node) => node.textContent.trim() === text);
+    assert.ok(found !== undefined, `the section has ${text}`);
+    found.click(); await tick(); await tick();
+  };
+  const wait = async (ready, what, ms = 6000) => {
+    for (const start = Date.now(); Date.now() - start < ms;) { if (ready()) return; await new Promise((r) => setTimeout(r, 20)); }
+    assert.fail(`timed out waiting for ${what}`);
+  };
+  try {
+    page.window.renderSettings({ agent, onSaved() {} }); await tick();
+    page.document.querySelector(".agent-settings-button").click();
+    await until(() => section()?.querySelector(".opencode-login-provider select") && choice(page, "Model", "opencode/beam-free"), "the dialog");
+    const select = section().querySelector(".opencode-login-provider select");
+    Object.getOwnPropertyDescriptor(page.window.HTMLSelectElement.prototype, "value").set.call(select, "github-copilot");
+    select.dispatchEvent(new page.window.Event("change", { bubbles: true })); await tick();
+    await press("Login with GitHub Copilot");
+    await press("Log in");
+    await until(() => section().querySelector('a[href="https://github.com/login/device"]'), "the sign-in under way");
+
+    // The composer's `/model deepseek/deepseek-flash`: the open dialog reads again, held.
+    page.window.renderSettings({ agent, onSaved() {}, request: { model: "deepseek/deepseek-flash", nonce: 1, agentId: "oc" } });
+    await until(() => reads === 2, "the requested read out");
+    complete = true;
+    await wait(() => !section().querySelector('a[href="https://github.com/login/device"]'), "the sign-in to finish");
+    await tick(); await tick();
+    assert.equal(reads, 2, "no read while the dialog's own is out");
+    release();
+    await wait(() => reads === 3, "the read after it");
+    await until(() => choice(page, "Model", "deepseek/deepseek-flash")?.checked, "the requested model chosen");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
 test("an OpenCode Agent older than 2.0.20 is told to update to log in, naming both versions (T-32 slice 4b)", async () => {
   const note = "update OpenCode to log in here: this Agent runs 2.0.16; logging in needs 2.0.20 or newer";
   const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
