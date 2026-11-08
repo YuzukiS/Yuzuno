@@ -97,8 +97,27 @@ ever looked up or ended by process ID or port.
 
 ## For Agents
 
-`service_register` (Agents only, with `requestId`) and `services_list`. Agents
-cannot open, close or delete a service.
+- `service_register` (Agents only, with `requestId`) and `services_list`.
+- `service_unregister` (Agents only, with `requestId` and `serviceId`) removes a
+  registration. Only these Agents may remove one:
+  - the Agent that registered it;
+  - a lead of the service's Project, for any of its services, the user's too.
+
+  Every other Agent is refused: another member, an executor that did not
+  register it, or a lead of another Project.
+- A removal is refused while a Job may still serve the service (queued,
+  running, cancelling, or of unknown outcome, as for a restart). Cancel that
+  Job first.
+- Removing deletes only the registration and closes what Core has open for it
+  (its listener, connections and SSH). The service keeps running.
+- Core keeps every removal: the registration as it was, who removed it, as
+  what (`registrant`, `lead` or `user`) and when. The user's delete in the
+  Projects dialog is kept the same way. `services_list` shows a Project's
+  latest 10 under `removed`; the Projects dialog does not show them yet.
+- A retry with the same `requestId` answers the same removal, even though the
+  registration is gone.
+
+Agents cannot open or close a service.
 
 ## What was tested
 
