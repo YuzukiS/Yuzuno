@@ -1549,6 +1549,19 @@ export function App() {
   // One the user disconnected is started only by their Reconnect (T-184).
   const holdForRecovery =
     (recovery === "running" && !isClaude) || recovery === "collaboration" || recovery === "missing" || recovery === "disconnected" || recovery === "archived";
+  // Why Send waits, in its tip and to assistive technology.
+  const sendWaits =
+    cannotSendWhileWorking || closed
+      ? shell.waitOrInterrupt
+      : holdForRecovery
+        ? recovery === "collaboration"
+          ? shell.reconnectWorkspace
+          : recovery === "missing"
+            ? shell.endOrCheck
+            : recovery === "disconnected"
+              ? shell.reconnectDisconnected
+              : shell.reconnectLast
+        : undefined;
   // The one line under the draft that asks something of you; otherwise the
   // line stays quiet and shows the keys only while you type.
   const composerNotice = busy
@@ -4791,27 +4804,17 @@ export function App() {
                           </button>
                         </Tip>
                       )}
-                      {/* What Send does now, its key, and why it can't yet. */}
+                      {/* What Send does now, its key, and why it can't yet; held, so a
+                          disabled Send still shows it in every engine. */}
                       <Tip
                         content={
                           <TipText
                             title={sendTurnId && !isClaude ? shell.addInput : shell.sendMessage}
                             kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`}
-                            body={
-                              cannotSendWhileWorking || closed
-                                ? shell.waitOrInterrupt
-                                : holdForRecovery
-                                  ? recovery === "collaboration"
-                                    ? shell.reconnectWorkspace
-                                    : recovery === "missing"
-                                      ? shell.endOrCheck
-                                      : recovery === "disconnected"
-                                        ? shell.reconnectDisconnected
-                                        : shell.reconnectLast
-                                  : undefined
-                            }
+                            body={sendWaits}
                           />
                         }
+                        hold
                       >
                         <button
                           type="submit"
@@ -4828,6 +4831,7 @@ export function App() {
                             !!workspaceError
                           }
                           aria-label={sendTurnId ? shell.sendWhileWorking : shell.sendMessage}
+                          aria-description={sendWaits}
                         >
                           {sending ? (
                             <LoaderCircle size={17} className="spin" />

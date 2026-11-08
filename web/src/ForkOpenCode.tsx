@@ -146,8 +146,8 @@ export function OpenCodeForkButton({ agent, turn }: { agent: Agent; turn: Native
   if (!open || agent.harness !== "opencode" || turn.status !== "completed") return null;
   const blocked = ["working", "waiting"].includes(agent.status);
   // Busy, it says why it waits (a disabled button still shows a tip).
-  return <Tip content={blocked ? <TipText body={t.busyTitle} /> : <TipText title={t.forkTitle} />}>
-    <button type="button" className="quiet-button fork-open" disabled={blocked}
+  return <Tip content={blocked ? <TipText body={t.busyTitle} /> : <TipText title={t.forkTitle} />} hold>
+    <button type="button" className="quiet-button fork-open" disabled={blocked} aria-description={blocked ? t.busyTitle : undefined}
       onClick={() => open(turn.id)}><GitFork size={12} />{t.fork}</button>
   </Tip>;
 }

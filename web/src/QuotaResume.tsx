@@ -258,11 +258,12 @@ export function QuotaResumeNotice({
       <div className="quota-resume-actions">
         {intent?.state === "waiting" && (
           <>
-            <Tip content={beforeReset ? <TipText body={t.mayRefuse(at(intent.resetsAt))} /> : null}>
+            <Tip content={beforeReset ? <TipText body={t.mayRefuse(at(intent.resetsAt))} /> : null} hold>
               <button
                 type="button"
                 className="secondary-button"
                 disabled={disabled || !!busy}
+                aria-description={beforeReset ? t.mayRefuse(at(intent.resetsAt)) : undefined}
                 onClick={() => void act("now")}
               >
                 {busy === "now" ? (

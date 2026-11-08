@@ -1,8 +1,10 @@
 // The app's one tip (web/src/Tip.tsx, YN-44) where S2b moved the composer's
 // and the conversation's titles onto it:
 //  - `cut`: a name's tip shows only while the name is cut;
-//  - a disabled button still shows its tip to a resting pointer (Chromium
-//    sends it pointer events, and React passes them on), so it may say why;
+//  - a held trigger (`hold`): a disabled control's tip opens from the span
+//    around it, which is what an engine that sends a disabled control no
+//    pointer events (WebKit) leaves to the pointer; enabled and disabled,
+//    the control stays the same element;
 //  - the composer's "+" says what it holds, not while its menu is open, and
 //    each entry of the menu says what it adds.
 // No Core, no browser, no web/dist writes, and nothing is fetched.
@@ -32,10 +34,10 @@ import {createRoot} from 'react-dom/client';
 import {Tip, TipText} from ${JSON.stringify(path.join(root, "src/Tip.tsx"))};
 import {ComposerAddMenu} from ${JSON.stringify(path.join(root, "src/ComposerAddMenu.tsx"))};
 const root=createRoot(document.getElementById('root'));
-window.renderTips=({chosen})=>flushSync(()=>root.render(<>
+window.renderTips=({chosen,sendDisabled=true})=>flushSync(()=>root.render(<>
   <Tip content={<TipText title="A name long enough to be cut" />} cut><span className="name">A name long enough to be cut</span></Tip>
-  <Tip content={<TipText title="Send message" body="Wait for this turn to finish, or interrupt" />}>
-    <button type="button" className="send" disabled aria-label="Send message">↑</button>
+  <Tip content={<TipText title="Send message" body="Wait for this turn to finish, or interrupt" />} hold>
+    <button type="button" className="send" disabled={sendDisabled} aria-label="Send message">↑</button>
   </Tip>
   <ComposerAddMenu label="Add" menuLabel="Add to your draft"
     tip={<TipText title="Add to your draft" meta={["Add images", "Mark up an image", "Ask for an interactive result"]} />}
@@ -74,7 +76,7 @@ function mount() {
   window.eval(bundle);
   const chosen = [];
   window.renderTips({ chosen });
-  return { window, document: window.document, errors, chosen, close: () => window.close() };
+  return { window, document: window.document, errors, chosen, render: (props) => window.renderTips({ chosen, ...props }), close: () => window.close() };
 }
 
 /** Rests a pointer on `target` past the delay; whether a tip showed. */
@@ -106,13 +108,22 @@ test("a cut name's tip shows only while the name is cut", async () => {
   } finally { page.close(); }
 });
 
-test("a disabled button shows its tip to a resting pointer: what it is and why it waits", async () => {
+test("a held disabled control shows its tip from the span around it, and stays the same element enabled", async () => {
   const page = mount();
   try {
     const send = page.document.querySelector(".send");
+    const hold = send.parentElement;
     assert.equal(send.disabled, true);
+    assert.ok(hold.matches("span.tip-hold"), "held in a span of its own");
+    // Where WebKit sends the pointer: past the disabled button, to the span.
+    assert.deepEqual(await hoverTip(page.window, hold), ["Send message", "Wait for this turn to finish, or interrupt"]);
+    // Where Chromium sends it: the button, its events passing up to the span.
     assert.deepEqual(await hoverTip(page.window, send), ["Send message", "Wait for this turn to finish, or interrupt"]);
     assert.equal(send.hasAttribute("title"), false);
+    page.render({ sendDisabled: false });
+    assert.equal(page.document.querySelector(".send"), send, "enabled, the same button: nothing was remounted");
+    assert.equal(send.parentElement, hold);
+    assert.equal(send.disabled, false);
     assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });

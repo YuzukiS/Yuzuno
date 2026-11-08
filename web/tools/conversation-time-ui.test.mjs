@@ -212,7 +212,7 @@ test("interrupted and failed turns are never done, and missing evidence shows no
   ], "no done for interruption or failure, no elapsed time from the page clock, no footer while running");
   assert.ok(!page.document.body.textContent.includes("still running"), "only the latest finished agent turn shows shells");
   assert.ok(page.document.querySelector('[data-item-id="br"] > .reply-actions > .copy-button'), "Copy reply stays in the action row without timing evidence");
-  assert.ok(page.document.querySelector('[data-item-id="br"] > .reply-actions > .rewind-open'), "Rewind stays beside Copy reply without timing evidence");
+  assert.ok(page.document.querySelector('[data-item-id="br"] > .reply-actions > .tip-hold > .rewind-open'), "Rewind stays beside Copy reply without timing evidence");
   assert.equal(page.document.querySelector('[data-item-id="br"] .turn-footer'), null, "missing timing evidence still shows no invented time");
   assert.deepEqual(page.errors, []);
 });

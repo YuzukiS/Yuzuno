@@ -426,11 +426,12 @@ export function CodexPlanUsage({
               </details>
             )}
           </div>
-          <Tip content={<TipText title={t.refresh} body={cooldown > 0 ? t.cooldown : t.read} />} side="left">
+          <Tip content={<TipText title={t.refresh} body={cooldown > 0 ? t.cooldown : t.read} />} side="left" hold>
             <button
               type="button"
               className="codex-plan-refresh"
               aria-label={t.refresh}
+              aria-description={cooldown > 0 ? t.cooldown : undefined}
               aria-busy={busy}
               disabled={busy || !live || cooldown > 0}
               onClick={() => refresh(true)}

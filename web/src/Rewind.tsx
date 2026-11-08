@@ -20,8 +20,9 @@ export function RewindButton({ agent, turn, onDraft }: { agent: Agent; turn: Nat
   if (opencode && !openRevert) return null;
   return <>
     <Tip content={blocked ? <TipText body="Finish the active turn and pending answers before rewinding" />
-      : <TipText title={opencode ? "Preview reverting to before this turn, with its files" : "Preview going back to before this turn"} />}>
+      : <TipText title={opencode ? "Preview reverting to before this turn, with its files" : "Preview going back to before this turn"} />} hold>
       <button type="button" className="quiet-button rewind-open" disabled={blocked || !onDraft}
+        aria-description={blocked ? "Finish the active turn and pending answers before rewinding" : undefined}
         onClick={() => opencode ? openRevert?.(agent.id, turn.id) : setOpen(true)}><RotateCcw size={12} />Rewind</button>
     </Tip>
     {open && <RewindDialog agent={agent} turn={turn} onDraft={onDraft} onClose={() => setOpen(false)} />}

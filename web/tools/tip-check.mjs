@@ -290,6 +290,16 @@ for (const screen of desktop) {
       expect: (t) => /^(Agent report|Agent 报告)$/.test(t.lines.join(" ")) },
   ];
   check(await page.locator(".send-button").isDisabled(), `${screen.name}: Send is disabled with no draft`);
+  // Held (Tip `hold`): over a disabled Send the pointer lands on its tip's
+  // span, so the tip never depends on an engine sending a disabled button
+  // pointer events (WebKit does not).
+  const hit = await page.evaluate(() => {
+    const send = document.querySelector(".send-button");
+    const r = send.getBoundingClientRect();
+    const at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { span: at?.matches(".tip-hold") && at.contains(send), at: at?.className };
+  });
+  check(hit.span, `${screen.name}: over the disabled Send the pointer lands on its tip's span (${hit.at})`);
   for (const { what, at: anchor, expect } of s2b) {
     if (!(await anchor.count())) { check(false, `${screen.name}: ${what} to rest on`); continue; }
     const tip = await rest(page, anchor, `${screen.name} ${what}`);
