@@ -12,6 +12,10 @@
   --tip-font: calc(9px + var(--font-adjust, 3px));
 }
 
+/* Radix places the card in a wrapper of its own; neither takes the pointer. */
+[data-radix-popper-content-wrapper]:has(> .tip) {
+  pointer-events: none;
+}
 .tip {
   z-index: 60;
   box-sizing: border-box;

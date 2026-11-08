@@ -271,7 +271,9 @@ test("in Chinese the row reads in Chinese", async () => {
     assert.match(v[1], /^等负责人 已用 /);
     assert.ok(v.includes("已交付，接下来由负责人审查"), v.join(" | "));
     assert.ok(v.some((line) => /^PR #688 · .+ · 由你派发$/.test(line)), v.join(" | "));
-    assert.deepEqual((await readTip(p.w, p.row("q").querySelector(".agent-select"))).slice(1, 3), ["排队 · 第 2 位", "在等执行者槽位，按顺序启动"]);
+    const q = await readTip(p.w, p.row("q").querySelector(".agent-select"));
+    assert.match(q[1], /^排队 · 第 2 位 已用 \S+$/, "the pill and since when");
+    assert.equal(q[2], "在等执行者槽位，按顺序启动");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
