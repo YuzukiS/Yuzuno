@@ -1741,8 +1741,8 @@ impl Workspace {
                                 let _ = self.store.record_recovered_completion(id, &turn);
                             }
                             crate::claude_quota::observe_result(self, id, stop);
-                            // The turn's cost, for an executor on a routing key (YN-34 S2a).
-                            crate::routing_readings::count(&self.store, id, crate::routing_readings::claude_spend(event, turn_id), "claude");
+                            // What the turn added to its session's running cost, for an executor on a routing key (YN-34 S2a).
+                            crate::routing_readings::count_running(&self.store, id, crate::routing_readings::claude_spend(event, turn_id), "claude");
                         }
                     }
                     crate::store::Route::Synchronous => {

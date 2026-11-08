@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useAppRoom } from "./app-room";
+import { strings, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import "./resizable-panels.css";
 
 type Side = "rail" | "inspector";
@@ -119,6 +121,17 @@ export function usePanelWidths(railOpen: boolean, inspectorOpen: boolean) {
   };
 }
 
+// The handles' words: what each one sizes, and its width.
+const text = strings({
+  rail: "Agent sidebar width",
+  context: "Context panel width",
+  px: (width: number) => `${width} px`,
+}, {
+  rail: "Agent 侧栏宽度",
+  context: "上下文面板宽度",
+  px: (width) => `${width} px`,
+});
+
 export function PanelResizeHandle({
   side,
   size,
@@ -129,6 +142,7 @@ export function PanelResizeHandle({
   const drag = useRef<{ x: number; width: number; pointerId: number } | null>(
     null,
   );
+  const t = useStrings(text);
   const [dragging, setDragging] = useState(false);
   const direction = side === "rail" ? 1 : -1;
   function finish() {
@@ -150,78 +164,78 @@ export function PanelResizeHandle({
   }, [dragging]);
   if (!size.visible) return null;
   return (
-    <div
-      className={`panel-resize-handle ${side}-resize-handle${dragging ? " is-resizing" : ""}`}
-      role="separator"
-      tabIndex={0}
-      aria-label={
-        side === "rail" ? "Agent sidebar width" : "Context panel width"
-      }
-      aria-controls={side === "rail" ? "agent-sidebar" : "context-panel"}
-      aria-orientation="vertical"
-      aria-valuemin={size.min}
-      aria-valuemax={size.max}
-      aria-valuenow={size.width}
-      aria-valuetext={`${size.width} pixels`}
-      title="Drag to resize · Arrow keys to adjust · Double-click or Enter to reset"
-      onPointerDown={(event) => {
-        if (event.button !== 0 || !event.isPrimary) return;
-        event.preventDefault();
-        event.currentTarget.focus({ preventScroll: true });
-        event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = {
-          x: event.clientX,
-          width: size.width,
-          pointerId: event.pointerId,
-        };
-        setDragging(true);
-      }}
-      onPointerMove={(event) => {
-        if (drag.current?.pointerId !== event.pointerId) return;
-        size.change(
-          drag.current.width + direction * (event.clientX - drag.current.x),
-        );
-      }}
-      onPointerUp={(event) => {
-        if (drag.current?.pointerId !== event.pointerId) return;
-        finish();
-        event.currentTarget.releasePointerCapture(event.pointerId);
-      }}
-      onLostPointerCapture={finish}
-      onPointerCancel={finish}
-      onDoubleClick={size.reset}
-      onKeyDown={(event) => {
-        const step = event.shiftKey ? 32 : 8;
-        switch (event.key) {
-          case "ArrowLeft":
-            size.change(size.width - direction * step);
-            break;
-          case "ArrowRight":
-            size.change(size.width + direction * step);
-            break;
-          case "Home":
-            size.change(size.min);
-            break;
-          case "End":
-            size.change(size.max);
-            break;
-          case "Enter":
-            size.reset();
-            break;
-          case "Escape":
-            if (drag.current) {
-              size.change(drag.current.width);
-              event.currentTarget.releasePointerCapture(drag.current.pointerId);
-              finish();
-            }
-            break;
-          default:
-            return;
-        }
-        // Escape on a layout control must never interrupt the running Agent.
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    />
+    // What it is and its width (YN-44); how to drag it goes without saying.
+    <Tip side={side === "rail" ? "right" : "left"} describe={false} content={<TipText title={side === "rail" ? t.rail : t.context} status={t.px(size.width)} />}>
+      <div
+        className={`panel-resize-handle ${side}-resize-handle${dragging ? " is-resizing" : ""}`}
+        role="separator"
+        tabIndex={0}
+        aria-label={side === "rail" ? t.rail : t.context}
+        aria-controls={side === "rail" ? "agent-sidebar" : "context-panel"}
+        aria-orientation="vertical"
+        aria-valuemin={size.min}
+        aria-valuemax={size.max}
+        aria-valuenow={size.width}
+        aria-valuetext={`${size.width} pixels`}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !event.isPrimary) return;
+          event.preventDefault();
+          event.currentTarget.focus({ preventScroll: true });
+          event.currentTarget.setPointerCapture(event.pointerId);
+          drag.current = {
+            x: event.clientX,
+            width: size.width,
+            pointerId: event.pointerId,
+          };
+          setDragging(true);
+        }}
+        onPointerMove={(event) => {
+          if (drag.current?.pointerId !== event.pointerId) return;
+          size.change(
+            drag.current.width + direction * (event.clientX - drag.current.x),
+          );
+        }}
+        onPointerUp={(event) => {
+          if (drag.current?.pointerId !== event.pointerId) return;
+          finish();
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onLostPointerCapture={finish}
+        onPointerCancel={finish}
+        onDoubleClick={size.reset}
+        onKeyDown={(event) => {
+          const step = event.shiftKey ? 32 : 8;
+          switch (event.key) {
+            case "ArrowLeft":
+              size.change(size.width - direction * step);
+              break;
+            case "ArrowRight":
+              size.change(size.width + direction * step);
+              break;
+            case "Home":
+              size.change(size.min);
+              break;
+            case "End":
+              size.change(size.max);
+              break;
+            case "Enter":
+              size.reset();
+              break;
+            case "Escape":
+              if (drag.current) {
+                size.change(drag.current.width);
+                event.currentTarget.releasePointerCapture(drag.current.pointerId);
+                finish();
+              }
+              break;
+            default:
+              return;
+          }
+          // Escape on a layout control must never interrupt the running Agent.
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+      />
+    </Tip>
   );
 }

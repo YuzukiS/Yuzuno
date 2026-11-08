@@ -97,8 +97,11 @@ async fn evaluate(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
     let now = match time(&body, "at") { Ok(t) => t.unwrap_or_else(chrono::Utc::now), Err(r) => return r };
     let gathered = match ws.routing_gathered().await { Ok(g) => g, Err(e) => return failed(e) };
     let assume = super::evaluate::Assume::from_json(&body["assume"]);
-    let route = super::evaluate::evaluate(version, &policy, "preview", &gathered.inputs(now, None, &[], None, &assume));
-    answer(StatusCode::OK, route.record)
+    // On the blocking pool, as every evaluation is, never on the async runtime (#801 R1).
+    match tokio::task::spawn_blocking(move || super::evaluate::evaluate(version, &policy, "preview", &gathered.inputs(now, None, &[], None, &assume))).await {
+        Ok(route) => answer(StatusCode::OK, route.record),
+        Err(error) => failed(error.into()),
+    }
 }
 
 /// `POST /api/routing/simulate {policy?, from, to, stepMinutes, assume?}`: what would be chosen across a time
@@ -121,18 +124,25 @@ async fn simulate(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
     }
     let gathered = match ws.routing_gathered().await { Ok(g) => g, Err(e) => return failed(e) };
     let assume = super::evaluate::Assume::from_json(&body["assume"]);
-    let mut segments: Vec<Value> = Vec::new();
-    let mut at = from;
-    while at < to {
-        let chosen = super::evaluate::evaluate(version, &policy, "preview", &gathered.inputs(at, None, &[], None, &assume)).record["chosen"].clone();
-        let end = (at + step).min(to);
-        match segments.last_mut() {
-            Some(last) if last["chosen"] == chosen => last["to"] = end.to_rfc3339().into(),
-            _ => segments.push(json!({"from": at.to_rfc3339(), "to": end.to_rfc3339(), "chosen": chosen})),
+    // Up to 2016 evaluations: on the blocking pool, never on the async runtime (#801 R1).
+    let segments = tokio::task::spawn_blocking(move || {
+        let mut segments: Vec<Value> = Vec::new();
+        let mut at = from;
+        while at < to {
+            let chosen = super::evaluate::evaluate(version, &policy, "preview", &gathered.inputs(at, None, &[], None, &assume)).record["chosen"].clone();
+            let end = (at + step).min(to);
+            match segments.last_mut() {
+                Some(last) if last["chosen"] == chosen => last["to"] = end.to_rfc3339().into(),
+                _ => segments.push(json!({"from": at.to_rfc3339(), "to": end.to_rfc3339(), "chosen": chosen})),
+            }
+            at = end;
         }
-        at = end;
+        segments
+    }).await;
+    match segments {
+        Ok(segments) => answer(StatusCode::OK, json!({"segments": segments})),
+        Err(error) => failed(error.into()),
     }
-    answer(StatusCode::OK, json!({"segments": segments}))
 }
 
 /// `GET /api/routing/choices?limit=20`: the newest dispatches routing chose for, with why (YN-34 S3b2).

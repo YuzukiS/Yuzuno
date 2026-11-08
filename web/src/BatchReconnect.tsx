@@ -14,6 +14,7 @@ import {
   type BatchOutcome,
 } from "./batch-reconnect";
 import { Modal } from "./components";
+import { Tip, TipText } from "./Tip";
 import { langTag, strings, useLanguage } from "./i18n";
 import { ALL_PROJECTS, inScope, type ProjectScope } from "./projects";
 import type { Agent } from "./types";
@@ -57,6 +58,8 @@ const text = strings({
     going: (count: number) => `${count} on the way`,
   },
   buttonLabel: (count: number) => (count ? `Reconnect agents: ${count} not connected` : "Reconnect agents: reconnecting"),
+  /** Its tip's state line. */
+  state: (count: number) => (count ? `${count} not connected` : "Reconnecting"),
   title: "Reconnect agents",
   description: "Agents whose session isn’t connected, for example after Core restarted. Reconnecting opens the same session; nothing is sent and drafts stay.",
   include: (count: number) => `Include other projects (${count})`,
@@ -106,6 +109,7 @@ const text = strings({
     going: (count) => `${count} 个进行中`,
   },
   buttonLabel: (count) => (count ? `重新连接 Agent：${count} 个未连接` : "重新连接 Agent：正在重新连接"),
+  state: (count) => (count ? `${count} 个未连接` : "正在重新连接"),
   title: "重新连接 Agent",
   description: "会话未连接的 Agent，例如在 Core 重启之后。重新连接会打开同一会话；不会发送任何内容，草稿会保留。",
   include: (count) => `包括其他项目（${count}）`,
@@ -224,25 +228,26 @@ export function BatchReconnect({
 
   return (
     <>
-      <button
-        type="button"
-        className="icon-button rail-reconnect"
-        aria-label={t.buttonLabel(count)}
-        title={t.title}
-        onClick={() => {
-          forgetStale(workspaceId, new Set(candidates.filter(choosable).map((agent) => agent.id)));
-          setOpen(true);
-        }}
-      >
-        {count ? (
-          <>
-            <RotateCw size={13} />
-            <span>{count}</span>
-          </>
-        ) : (
-          <LoaderCircle size={13} className="spin" />
-        )}
-      </button>
+      <Tip side="bottom" describe={false} content={<TipText title={t.title} status={t.state(count)} tone={count ? "attention" : null} />}>
+        <button
+          type="button"
+          className="icon-button rail-reconnect"
+          aria-label={t.buttonLabel(count)}
+          onClick={() => {
+            forgetStale(workspaceId, new Set(candidates.filter(choosable).map((agent) => agent.id)));
+            setOpen(true);
+          }}
+        >
+          {count ? (
+            <>
+              <RotateCw size={13} />
+              <span>{count}</span>
+            </>
+          ) : (
+            <LoaderCircle size={13} className="spin" />
+          )}
+        </button>
+      </Tip>
       <Modal
         open={open}
         onOpenChange={(next) => {

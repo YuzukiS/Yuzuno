@@ -4,7 +4,7 @@ import { errorText } from "./api";
 import { langTag, strings, useLanguage, type Language } from "./i18n";
 import {
   KEY_ID, KEY_PROVIDERS, checkKey, freeKeyId, putCodexHomes, putCswapCommand, putLocalKey, putReferenceKey, putToken,
-  readAccounts, readKeys, readOnePassword, removeKey, removeToken, shortFingerprint,
+  announceCredentialsChanged, readAccountsShared, readKeys, readOnePassword, removeKey, removeToken, shortFingerprint,
   type AccountsView, type CodexHome, type KeyProvider, type KeySource, type KeysView, type OnePasswordView, type RoutingKey, type Unavailable,
 } from "./routing-keys";
 import { timeFormatter, useTimeDisplay } from "./time-preferences";
@@ -214,10 +214,10 @@ export function RoutingKeys({ active }: { active: boolean }) {
   const [error, setError] = useState<{ at: string; text: string } | null>(null);
   const [checks, setChecks] = useState<Record<string, { ok: boolean; reason?: Unavailable }>>({});
 
-  const loadAccounts = (signal?: AbortSignal) => {
+  const loadAccounts = (signal?: AbortSignal, fresh = true) => {
     setReadingAccounts(true);
     setAccountsError("");
-    readAccounts(signal).then((next) => { if (!signal?.aborted) setAccounts(next); })
+    readAccountsShared(fresh).then((next) => { if (!signal?.aborted) setAccounts(next); })
       .catch((e) => { if (!signal?.aborted) setAccountsError(errorText(e)); })
       .finally(() => { if (!signal?.aborted) setReadingAccounts(false); });
   };
@@ -228,7 +228,7 @@ export function RoutingKeys({ active }: { active: boolean }) {
     setReadError("");
     readKeys(signal).then((next) => { if (!signal.aborted) setKeys(next); }).catch((e) => { if (!signal.aborted) setReadError(errorText(e)); });
     readOnePassword(signal).then((next) => { if (!signal.aborted) setOp(next); }).catch(() => { /* the keys' read says why */ });
-    loadAccounts(signal);
+    loadAccounts(signal, false);
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
@@ -240,6 +240,7 @@ export function RoutingKeys({ active }: { active: boolean }) {
     try {
       await change();
       setEditing(null);
+      announceCredentialsChanged();
       return true;
     } catch (e) {
       setError({ at, text: errorText(e) });

@@ -1,6 +1,22 @@
 import { useEffect, useState } from "react";
 import { Copy, Minus, Square, X } from "lucide-react";
+import { strings, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import "./window-controls.css";
+
+const text = strings({
+  window: "Window",
+  minimize: "Minimize",
+  maximize: "Maximize",
+  restore: "Restore",
+  close: "Close window",
+}, {
+  window: "窗口",
+  minimize: "最小化",
+  maximize: "最大化",
+  restore: "还原",
+  close: "关闭窗口",
+});
 
 /** The few window calls the toolbar makes; the desktop shell grants exactly
  * these to the selected Core's page. */
@@ -57,6 +73,7 @@ export function moveWindow(frame: NativeWindow | null, event: React.MouseEvent) 
 }
 
 export function WindowControls({ frame }: { frame: NativeWindow }) {
+  const t = useStrings(text);
   const [maximized, setMaximized] = useState(false);
   useEffect(() => {
     let live = true;
@@ -73,34 +90,22 @@ export function WindowControls({ frame }: { frame: NativeWindow }) {
     };
   }, [frame]);
   return (
-    <div className="window-controls" role="group" aria-label="Window">
-      <button
-        type="button"
-        className="icon-button window-control"
-        aria-label="Minimize"
-        title="Minimize"
-        onClick={() => void frame.minimize()}
-      >
-        <Minus size={15} />
-      </button>
-      <button
-        type="button"
-        className="icon-button window-control"
-        aria-label={maximized ? "Restore" : "Maximize"}
-        title={maximized ? "Restore" : "Maximize"}
-        onClick={() => void frame.toggleMaximize()}
-      >
-        {maximized ? <Copy size={13} /> : <Square size={12} />}
-      </button>
-      <button
-        type="button"
-        className="icon-button window-control close"
-        aria-label="Close window"
-        title="Close window"
-        onClick={() => void frame.close()}
-      >
-        <X size={15} />
-      </button>
+    <div className="window-controls" role="group" aria-label={t.window}>
+      <Tip side="bottom" describe={false} content={<TipText title={t.minimize} />}>
+        <button type="button" className="icon-button window-control" aria-label={t.minimize} onClick={() => void frame.minimize()}>
+          <Minus size={15} />
+        </button>
+      </Tip>
+      <Tip side="bottom" describe={false} content={<TipText title={maximized ? t.restore : t.maximize} />}>
+        <button type="button" className="icon-button window-control" aria-label={maximized ? t.restore : t.maximize} onClick={() => void frame.toggleMaximize()}>
+          {maximized ? <Copy size={13} /> : <Square size={12} />}
+        </button>
+      </Tip>
+      <Tip side="bottom" describe={false} content={<TipText title={t.close} />}>
+        <button type="button" className="icon-button window-control close" aria-label={t.close} onClick={() => void frame.close()}>
+          <X size={15} />
+        </button>
+      </Tip>
     </div>
   );
 }

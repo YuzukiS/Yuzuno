@@ -133,6 +133,21 @@ impl Store {
         Ok(())
     }
 
+    /// Drops the Codex readings of homes no longer listed: `codex:<id>` for an id not in `ids`.
+    fn keep_codex_quotas(&self, ids: &[String]) -> Result<()> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let sources: Vec<String> = tx.prepare("SELECT source FROM routing_quotas WHERE source LIKE 'codex:%'")?
+            .query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for source in sources {
+            if !source.strip_prefix("codex:").is_some_and(|id| ids.iter().any(|kept| kept == id)) {
+                tx.execute("DELETE FROM routing_quotas WHERE source=?1", [&source])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Every kept reading: (source, reading, observedAt).
     pub(crate) fn quotas(&self) -> Result<Vec<(String, Value, String)>> {
         let db = self.db.read()?;
@@ -196,9 +211,12 @@ impl Workspace {
         if needs.codex {
             let homes = self.stored(|store| store.codex_homes()).await?;
             let mut targets: Vec<(String, Vec<(String, crate::routing_keys::Secret)>)> = vec![("login".into(), Vec::new())];
-            for home in homes {
+            // `login` is the host's own login, never a listed home's id (check_homes refuses it).
+            for home in homes.into_iter().filter(|h| h.id != "login") {
                 targets.push((home.id, vec![("CODEX_HOME".into(), crate::routing_keys::Secret::new(home.home))]));
             }
+            let ids: Vec<String> = targets.iter().map(|(id, _)| id.clone()).collect();
+            self.stored(move |store| store.keep_codex_quotas(&ids)).await?;
             for (id, env) in targets {
                 let at = Utc::now();
                 let reading = codex_quota(&self.program, &env).await;

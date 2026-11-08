@@ -34,8 +34,8 @@ export const settingsPages: readonly { id: SettingsPage; group: SettingsGroup; l
   { id: "machines", group: "workspace", label: { en: "Machines", zh: "机器" }, editors: ["machines"] },
   { id: "agents", group: "workspace", label: { en: "Agent defaults", zh: "Agent 默认" }, editors: ["agent-defaults", "auto-continue", "review"] },
   { id: "executors", group: "workspace", label: { en: "Executors", zh: "执行者" }, editors: ["executor-templates"] },
-  // Executor routing (YN-49): the accounts and keys an executor may be started with.
-  { id: "routing", group: "workspace", label: { en: "Executor routing", zh: "执行者路由" }, editors: ["routing-keys"] },
+  // Executor routing (YN-49): the candidate order, then the accounts and keys it may start an executor with.
+  { id: "routing", group: "workspace", label: { en: "Executor routing", zh: "执行者路由" }, editors: ["executor-routing", "routing-keys"] },
   { id: "home", group: "workspace", label: { en: "Home", zh: "主页" }, editors: ["home"] },
   { id: "phone", group: "workspace", label: { en: "Phone access", zh: "手机访问" }, editors: ["remote"] },
   { id: "storage", group: "data", label: { en: "Storage", zh: "存储" }, editors: ["storage", "drafts", "history"] },

@@ -151,4 +151,12 @@ fn a_preview_can_assume_accounts_used_up_and_the_spend_cap_reached() {
     let route = f.run(&policy(), utc(9, 12, 0), None, &[], &assume);
     assert_eq!(states(&route), [("c-pool".into(), "skipped".into()), ("c-deepseek".into(), "skipped".into()), ("c-codex".into(), "chosen".into())]);
     assert_eq!(codes(&route, "c-deepseek"), ["dailyCapReached", "workspaceCapReached"]);
+    // A Claude login runs on claude-swap's active account, so its fingerprint counts too (#801 R1 P3).
+    let login = json!({"enabled": true, "whenNone": "wait", "candidates": [
+        {"id": "c-login", "enabled": true, "harness": "claude", "model": "opus", "credential": {"kind": "login"},
+         "conditions": [{"kind": "quota", "fiveHourLeftPct": 10}]}]});
+    assert_eq!(states(&f.run(&login, utc(9, 12, 0), None, &[], &Assume::default())), [("c-login".into(), "chosen".into())]);
+    let active_used_up = Assume::from_json(&json!({"accountsUsedUp": ["aaaaaaaaaaaaaaaa"]}));
+    let route = f.run(&login, utc(9, 12, 0), None, &[], &active_used_up);
+    assert_eq!((states(&route), codes(&route, "c-login")), (vec![("c-login".to_owned(), "skipped".to_owned())], vec!["quotaLow".to_owned()]));
 }

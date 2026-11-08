@@ -3,9 +3,9 @@
 //! - **Time windows:** a weekly schedule, in UTC or the Core host's local time,
 //!   and the built-in DeepSeek peak.
 //! - **Daily API spend:** the spend of executors started with a routing key.
-//!   It is what their harness reports each turn: Claude Code's
-//!   `total_cost_usd` and OpenCode's step `cost`. That is an estimate, not a
-//!   bill.
+//!   It is what their harness reports: OpenCode's `cost` of each answer, and
+//!   the increase in Claude Code's `total_cost_usd`, a running total of its
+//!   session. That is an estimate, not a bill.
 //!
 //! Account quotas follow in S2b. Nothing here runs a model or calls a network
 //! service, and no record holds a key's value: spend is counted by key id.
@@ -121,11 +121,75 @@ impl Schedule {
     pub fn changes_at(&self, at: DateTime<Utc>) -> Option<DateTime<Utc>> {
         let now = self.inside(at);
         let start = at.with_second(0)?.with_nanosecond(0)? + Duration::minutes(1);
-        (0..8 * 24 * 60).map(|n| start + Duration::minutes(n)).find(|t| self.inside(*t) != now)
+        let end = start + Duration::minutes(8 * 24 * 60);
+        // Whether it is inside changes only where the zone's clock reaches a slot's
+        // start or end, or jumps (a clock change): those instants, in order, are
+        // all that need checking (#801 R1: not each minute of eight days).
+        let mut instants = self.edges(start, end);
+        instants.sort();
+        instants.dedup();
+        instants.into_iter().find(|t| self.inside(*t) != now)
+    }
+
+    /// Every instant in `[start, end)` where `inside` may change: each slot's start
+    /// and end minute on each day, both times where a clock change repeats it, and,
+    /// in local time, each clock change itself (a skipped edge changes there).
+    fn edges(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<DateTime<Utc>> {
+        let marks: Vec<u32> = self.slots.iter()
+            .flat_map(|slot| [minutes(&slot.from, false).ok(), minutes(&slot.to, true).ok()]).flatten().collect();
+        let mut out = Vec::new();
+        let (first, last) = match self.time_zone {
+            Zone::Utc => (start.date_naive(), end.date_naive()),
+            Zone::Local => (start.with_timezone(&Local).date_naive(), end.with_timezone(&Local).date_naive()),
+        };
+        let mut day = first - Duration::days(1);
+        while day <= last + Duration::days(1) {
+            for mark in &marks {
+                let Some(midnight) = day.and_hms_opt(0, 0, 0) else { continue };
+                let clock = midnight + Duration::minutes(i64::from(*mark));
+                match self.time_zone {
+                    Zone::Utc => out.push(clock.and_utc()),
+                    Zone::Local => match clock.and_local_timezone(Local) {
+                        chrono::LocalResult::Single(t) => out.push(t.with_timezone(&Utc)),
+                        chrono::LocalResult::Ambiguous(a, b) => out.extend([a.with_timezone(&Utc), b.with_timezone(&Utc)]),
+                        chrono::LocalResult::None => {}
+                    },
+                }
+            }
+            day += Duration::days(1);
+        }
+        if self.time_zone == Zone::Local {
+            out.extend(clock_changes(start, end));
+        }
+        out.retain(|t| *t >= start && *t < end);
+        out
     }
 }
 
 /// A preset as the readings offer it: its schedule, and where it stands now.
+/// The first minute of each change of the Core host's UTC offset in `[start, end)`.
+fn clock_changes(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<DateTime<Utc>> {
+    use chrono::Offset;
+    let offset = |t: DateTime<Utc>| t.with_timezone(&Local).offset().fix().local_minus_utc();
+    let mut out = Vec::new();
+    // From the minute before, so a change at `start` itself is found too.
+    let mut at = start - Duration::minutes(1);
+    while at < end {
+        let next = (at + Duration::hours(1)).min(end);
+        if offset(at) != offset(next) {
+            // The change is in (at, next]: the first minute with next's offset.
+            let (mut low, mut high) = (at, next);
+            while high - low > Duration::minutes(1) {
+                let middle = low + Duration::minutes((high - low).num_minutes() / 2);
+                if offset(middle) == offset(at) { low = middle } else { high = middle }
+            }
+            out.push(high);
+        }
+        at = next;
+    }
+    out
+}
+
 pub fn schedule_now(schedule: &Schedule, at: DateTime<Utc>) -> Value {
     serde_json::json!({"schedule": schedule, "inside": schedule.inside(at), "changesAt": schedule.changes_at(at).map(|t| t.to_rfc3339())})
 }
@@ -148,7 +212,12 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             source TEXT NOT NULL,
             at TEXT NOT NULL,
             PRIMARY KEY(agent_id, entry));
-        CREATE INDEX IF NOT EXISTS routing_spend_day ON routing_spend(day);",
+        CREATE INDEX IF NOT EXISTS routing_spend_day ON routing_spend(day);
+        CREATE TABLE IF NOT EXISTS routing_spend_totals(
+            agent_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            total REAL NOT NULL,
+            at TEXT NOT NULL);",
     )?;
     quota::migrate(db)
 }
@@ -182,6 +251,45 @@ impl Store {
         Ok(added == 1)
     }
 
+    /// Counts what Agent `agent` spent since its harness last reported a running
+    /// total, once per `entry`, if it runs on a routing API key. Claude Code's
+    /// `total_cost_usd` is such a total, across the turns of its session:
+    /// - the increase since the last total counts. The last total is kept across
+    ///   restarts, so a resumed session, whose first total already holds its
+    ///   earlier turns, counts only what is new;
+    /// - a total below the last (a `/clear`, or a new session) counts from zero;
+    /// - an entry already counted changes nothing.
+    ///
+    /// Answers what it counted now. A zero total (a crashed turn's) never
+    /// reaches here: `usd` drops it, and the last total stays.
+    pub(crate) fn record_running_spend(&self, agent: &str, entry: &str, total: f64, source: &str, day: NaiveDate) -> Result<Option<f64>> {
+        use rusqlite::OptionalExtension;
+        let Some(RuntimeProfile::ApiKey { key_id }) = self.runtime_profile(agent)? else { return Ok(None) };
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        if tx.query_row("SELECT 1 FROM routing_spend WHERE agent_id=?1 AND entry=?2", [agent, entry], |_| Ok(())).optional()?.is_some() {
+            return Ok(None);
+        }
+        let last: Option<f64> = tx.query_row("SELECT total FROM routing_spend_totals WHERE agent_id=?1", [agent], |r| r.get(0)).optional()?;
+        let spent = match last {
+            Some(last) if total >= last => total - last,
+            _ => total,
+        };
+        let at = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO routing_spend_totals(agent_id, source, total, at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(agent_id) DO UPDATE SET source=excluded.source, total=excluded.total, at=excluded.at",
+            params![agent, source, total, at],
+        )?;
+        tx.execute(
+            "INSERT INTO routing_spend(agent_id, entry, day, key_id, usd, source, at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![agent, entry, day.to_string(), key_id, spent, source, at],
+        )?;
+        tx.execute("DELETE FROM routing_spend WHERE day < ?1", [(day - Duration::days(40)).to_string()])?;
+        tx.commit()?;
+        Ok(Some(spent))
+    }
+
     pub(crate) fn spend_on(&self, day: NaiveDate) -> Result<DaySpend> {
         let db = self.db.read()?;
         let mut statement = db.prepare("SELECT key_id, SUM(usd) FROM routing_spend WHERE day=?1 GROUP BY key_id ORDER BY key_id")?;
@@ -212,7 +320,8 @@ pub fn opencode_spend(info: &Value) -> Option<(String, f64)> {
     Some((format!("opencode:{}", info["id"].as_str()?), usd(&info["cost"])?))
 }
 
-/// What a Claude Code turn cost: its result's `total_cost_usd`, keyed by the result's uuid, else its turn.
+/// A Claude Code result's running total, `total_cost_usd`, keyed by the result's uuid, else its turn.
+/// It is the session's total so far, not the turn's: `count_running` counts its increase.
 pub fn claude_spend(event: &Value, turn: Option<&str>) -> Option<(String, f64)> {
     let key = event["uuid"].as_str().or(turn)?;
     Some((format!("claude:{key}"), usd(&event["total_cost_usd"])?))
@@ -222,6 +331,14 @@ pub fn claude_spend(event: &Value, turn: Option<&str>) -> Option<(String, f64)> 
 pub(crate) fn count(store: &Store, agent: &str, spend: Option<(String, f64)>, source: &str) {
     let Some((entry, usd)) = spend else { return };
     if let Err(error) = store.record_spend(agent, &entry, usd, source, today()) {
+        eprintln!("Workspace could not count {agent}'s routing spend: {error:#}");
+    }
+}
+
+/// Counts the increase in a running total of Agent `agent` (`record_running_spend`), never failing the event it came with.
+pub(crate) fn count_running(store: &Store, agent: &str, total: Option<(String, f64)>, source: &str) {
+    let Some((entry, total)) = total else { return };
+    if let Err(error) = store.record_running_spend(agent, &entry, total, source, today()) {
         eprintln!("Workspace could not count {agent}'s routing spend: {error:#}");
     }
 }
