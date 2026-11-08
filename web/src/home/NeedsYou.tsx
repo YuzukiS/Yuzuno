@@ -54,7 +54,7 @@ export function NeedsYou({
                 type="button"
                 className={`home-needs-item kind-${item.kind}`}
                 data-needs-you={needsYouKey(item)}
-                title={t.waitingSince(item.kind === "executor" ? `${item.agentName} · ${item.title}` : item.title, absolute(item.since, time))}
+                title={t.waitingSince(item.kind === "executor" ? [item.agentName, item.title, item.reason].filter(Boolean).join(" · ") : item.title, absolute(item.since, time))}
                 onClick={() => onJump(item)}
               >
                 {item.kind === "approval" ? (
@@ -73,6 +73,8 @@ export function NeedsYou({
                     {projectName(item.projectId)} · {item.kind === "executor" && item.state ? t.executorNeeds[item.state] : item.agentName}
                   </span>
                   <strong>{item.kind === "executor" && item.taskId ? `${item.taskId} · ${item.title}` : item.title}</strong>
+                  {/* Why (T-43 S4a): why its start failed, what blocks its task. */}
+                  {item.kind === "executor" && item.reason && <span className="home-needs-reason">{item.reason}</span>}
                 </span>
                 <span className="home-needs-since">{relative(item.since, language)}</span>
               </button>

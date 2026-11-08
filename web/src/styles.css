@@ -3892,16 +3892,4 @@ p {
     min-width: 40px;
     min-height: 40px;
   }
-  /* The "…" keeps the 26px it is drawn at — a wider one would cost the names
-     beside it the width they were given back — and takes its presses from a
-     40px area around itself instead. */
-  .app:not(.phone) .agent-row:is(.selected, :hover, :focus-within) .agent-row-menu::after {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 40px;
-    height: 40px;
-    transform: translate(-50%, -50%);
-    content: "";
-  }
 }

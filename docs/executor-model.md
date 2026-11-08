@@ -684,7 +684,10 @@ has the blocker (`blocked`); its state stays what it is.
   16 characters ("导出设备偏好", "Export settings"), not a key, a number or a
   PR: the sidebar names an executor by it. A lead or the user gives it with
   `task_create` or `task_update` (`shortName`; kept trimmed, one line; null
-  or empty clears it), typically when dispatching. Without one the task's
+  or empty clears it), typically when dispatching. In the app it is the
+  Short name (短名) field of the task board's new-task and edit forms, and
+  of the Dispatch form when a new executor does the task, which saves a
+  changed one before it sends the task. Without one the task's
   title stands in, and the lifecycle's `task` has no `shortName`. `task_get`'s current view and `task_list`'s compact rows
   carry it. A Core from before it (core.26 and earlier) reads such a task
   as before and leaves the short name out of its next save of that task.
@@ -770,7 +773,14 @@ has the blocker (`blocked`); its state stays what it is.
 - **Home's Needs you** lists, for an executor you dispatched, a result
   waiting for your release, a failed start, and a task blocked while it
   runs. A lead's executors are that lead's to follow and never show there.
-  Its row opens the executor, where its result and Release are.
+  Its row opens the executor, where its result and Release are, and says
+  why under its task: why its start failed, or what blocks its task (T-43
+  S4a). Each counts in the tab's title, the app badge and the Home tab's
+  count, and a new one notifies once, as a new Ask does: in the browser
+  and by web push, opening Home. A failed start is a failure notice; the
+  others need you. A notification uses words of its own ("Its result is
+  in, waiting for your release."); with previews on, the browser's says the
+  reason instead. Web push never carries it.
 - **Release** says, while the executor is archiving, what it waits for.
   Asking again tries at once.
 

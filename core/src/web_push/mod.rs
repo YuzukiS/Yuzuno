@@ -349,6 +349,12 @@ fn read_now(store: &Store) -> Result<Read> {
         key: ask.key,
         since: ask.since,
     }).collect();
+    // An executor the user dispatched, as Home's Needs you lists it (T-43 S4a).
+    let executors = agents.iter().filter_map(|a| {
+        let need = crate::project_brief::executor_need(a)?;
+        Some(notices::ExecutorNeed { agent: a.id.clone(), name: a.name.clone(), state: need["state"].as_str()?.to_owned(),
+            since: need["since"].as_str().unwrap_or_default().to_owned() })
+    }).collect();
     let agents = agents.iter().map(|a| notices::AgentState {
         id: a.id.clone(),
         name: a.name.clone(),
@@ -359,7 +365,7 @@ fn read_now(store: &Store) -> Result<Read> {
         turn: a.work_summary.as_ref().and_then(|s| s.turn_id.clone()),
         request: a.work_summary.as_ref().and_then(|s| s.request_id.clone()),
     }).collect();
-    Ok(Read { agents, asks })
+    Ok(Read { agents, asks, executors })
 }
 
 /// A message after which the Agent list or Home's Asks may read otherwise.
