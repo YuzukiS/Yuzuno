@@ -1176,6 +1176,14 @@ impl Server {
         listed.as_array().cloned().context("OpenCode's integrations is not a list")
     }
 
+    /// Where each provider OpenCode offers now gets its access (YN-47), by
+    /// provider ID, as `sources` tells it from `GET /api/provider` and
+    /// `GET /api/integration`. Neither answer's settings or metadata are read.
+    pub async fn provider_sources(&self) -> Result<HashMap<String, &'static str>> {
+        let providers = self.data(Method::GET, "/api/provider", &[], None).await?;
+        Ok(sources(&providers, &self.integrations().await?))
+    }
+
     /// Logs `integration` in with `key` (`POST
     /// /api/integration/:id/connect/key`, 204), which 2.x keeps in its own
     /// database as the active credential. The key goes in this request's
@@ -1427,6 +1435,26 @@ impl Events {
 /// form's as `data.form.sessionID` (schema/src/session-event.ts, form.ts).
 pub fn session_of(event: &Value) -> Option<&str> {
     event["data"]["sessionID"].as_str().or_else(|| event["data"]["form"]["sessionID"].as_str())
+}
+
+/// Where each provider in `providers` (2.x's `GET /api/provider`) gets its
+/// access, by its integration's connections in `integrations` (`GET
+/// /api/integration`; a provider's integration is its `integrationID`, else
+/// its own ID, as 2.2.5's core/src/provider.ts finds it): `credential` for a
+/// login, `env` for an environment variable OpenCode reads, else `ready`. A
+/// ready one needs neither: OpenCode's config sets it up, it found a local
+/// server, or its own free models (2.x makes all of them `activation:
+/// enabled`, so Yuzuno does not tell them apart).
+fn sources(providers: &Value, integrations: &[Value]) -> HashMap<String, &'static str> {
+    providers.as_array().into_iter().flatten().filter_map(|provider| {
+        let id = provider["id"].as_str()?;
+        let integration = provider["integrationID"].as_str().unwrap_or(id);
+        let held: Vec<&str> = integrations.iter().filter(|i| i["id"] == integration)
+            .flat_map(|i| i["connections"].as_array().into_iter().flatten())
+            .filter_map(|c| c["type"].as_str()).collect();
+        let source = if held.contains(&"credential") { "credential" } else if held.contains(&"env") { "env" } else { "ready" };
+        Some((id.to_owned(), source))
+    }).collect()
 }
 
 /// `{type: busy}` for a session 2.x's `/api/session/active` lists, else
@@ -1741,6 +1769,35 @@ async fn status(response: Response) -> HttpStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A provider's access comes from its integration's connections, found
+    /// by its `integrationID` or else its own ID (YN-47): a login before an
+    /// environment variable, and neither is `ready`. Nothing else of either
+    /// answer is read.
+    #[test]
+    fn a_providers_source_is_its_integrations_connection() {
+        let providers = json!([
+            {"id": "deepseek", "name": "DeepSeek", "activation": "auto", "settings": {"apiKey": "fixture-secret"}},
+            {"id": "openrouter", "name": "OpenRouter", "activation": "auto"},
+            {"id": "copilot-chat", "integrationID": "github-copilot", "name": "Copilot", "activation": "auto"},
+            {"id": "lmstudio", "name": "LMStudio", "activation": "enabled"},
+            {"id": "opencode", "name": "OpenCode", "activation": "enabled"},
+            {"name": "no id"},
+        ]);
+        let integrations = [
+            json!({"id": "deepseek", "connections": [{"type": "env", "name": "DEEPSEEK_API_KEY"}, {"type": "credential", "id": "crd_1"}]}),
+            json!({"id": "openrouter", "connections": [{"type": "env", "name": "OPENROUTER_API_KEY"}], "metadata": {"token": "fixture-secret"}}),
+            json!({"id": "github-copilot", "connections": [{"type": "credential", "id": "crd_2"}]}),
+            json!({"id": "copilot-chat", "connections": []}),
+            json!({"id": "lmstudio"}),
+        ];
+        let found = sources(&providers, &integrations);
+        assert_eq!(found, HashMap::from([
+            ("deepseek".to_owned(), "credential"), ("openrouter".to_owned(), "env"), ("copilot-chat".to_owned(), "credential"),
+            ("lmstudio".to_owned(), "ready"), ("opencode".to_owned(), "ready"),
+        ]));
+        assert!(sources(&json!({"not": "a list"}), &integrations).is_empty());
+    }
 
     /// Only 2.x's own refusals before a stage changes any file count as
     /// refused (T-61 slice 6, R2-2): busy for this session, a session,
