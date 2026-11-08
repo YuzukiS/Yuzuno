@@ -217,7 +217,7 @@ test("removing a candidate while its evaluation is shown keeps the page (a recor
   // Today 12:00, in Claude's hours: DeepSeek is shown skipped, with its reason.
   await set(page, q(page, ".routing-sim-slider input"), String(12 * 60));
   await until(() => /: would choose Claude Code · opus$/.test(q(page, ".routing-sim-result p")?.textContent ?? ""), "the picked time's result");
-  assert.equal(q(page, ".routing-sim-why").textContent, "1OpenCode · deepseek-flash · API: DeepSeek's peak price");
+  assert.match(q(page, ".routing-sim-result").textContent, /DeepSeek's peak price/, "DeepSeek shown skipped, with its reason");
   button(page, "Edit OpenCode · deepseek-flash · API").click();
   await until(() => q(page, '.routing-cand[data-cand="ds"] .routing-edit'), "its editor");
   button(page, "Remove this candidate", q(page, '.routing-cand[data-cand="ds"]')).click();
@@ -225,4 +225,12 @@ test("removing a candidate while its evaluation is shown keeps the page (a recor
   assert.equal(page.document.querySelectorAll(".routing-cand").length, 1, "the order is still drawn, without it");
   assert.ok(q(page, ".routing-simulate"), "and the simulation with it");
   assert.deepEqual(page.errors, [], "nothing thrown");
+});
+
+test("the picked time's reasons carry their candidates' numbers and names", async () => {
+  const page = mount(core());
+  await until(() => q(page, ".routing-sim-slider input"), "the slider");
+  await set(page, q(page, ".routing-sim-slider input"), String(12 * 60));
+  await until(() => q(page, ".routing-sim-why li"), "the reasons");
+  assert.deepEqual([...page.document.querySelectorAll(".routing-sim-why li")].map((li) => li.textContent), ["1OpenCode · deepseek-flash · API: DeepSeek's peak price"]);
 });
