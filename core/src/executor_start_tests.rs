@@ -69,11 +69,14 @@ impl Lab {
         rows.iter().map(|raw| serde_json::from_str(raw).unwrap()).collect()
     }
 
-    /// The only slot taken by an executor that never runs, so one dispatched
-    /// next waits until a test moves it on.
+    /// This Core host's only slot taken by an executor that never runs, so
+    /// one dispatched next waits until a test moves it on. The limit is the
+    /// machine's (YN-2 S5): the Workspace's number this wrote before YN-29
+    /// limits nothing, and left two slots free for a pass to start it.
     fn occupy_the_slot(&self) {
         let db = self.ws.store.db.write().unwrap();
-        db.execute("INSERT INTO workspace_meta(key,value) VALUES('executors.slots',?1)", [json!({"version":1,"slots":1}).to_string()]).unwrap();
+        db.execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)",
+            params![crate::executor_slots::machine_key("local"), json!({"version":1,"slots":1}).to_string()]).unwrap();
         db.execute("INSERT INTO executor_slots(agent_id,seq,task_id,machine_id,template_id,state,since,queued_at)
             VALUES('holder',0,'task-holder','local','reviewer','running','now','now')", []).unwrap();
         // An open Agent, so no pass releases it.
