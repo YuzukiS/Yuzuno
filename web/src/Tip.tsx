@@ -78,6 +78,9 @@ export type TipTone = "ok" | "bad" | "attention" | "working" | "info" | "quiet";
  *    technology while it shows (aria-describedby). Off where the trigger's
  *    own name or description already says it.
  *  - `open`, `onOpenChange`: to decide when it may show, or show it by hand.
+ * Content may come and go (empty: no tip), and the trigger stays the same
+ * element either way: switching between a bare child and a wrapped one
+ * would remount it, and a dialog opened from it would lose its place.
  */
 export function Tip({
   content,
@@ -105,7 +108,8 @@ export function Tip({
 }) {
   const present = useContext(Present);
   const language = useLanguage();
-  if (content == null || content === false || content === "" || !isValidElement(children)) return children;
+  if (!isValidElement(children)) return children;
+  const empty = content == null || content === false || content === "";
   const props = children.props as Record<string, unknown>;
   // Radix marks its trigger with `data-state` and, while open,
   // `aria-describedby`. A trigger's own values of either win, and a trigger
@@ -116,7 +120,7 @@ export function Tip({
     ...(!describe || props["aria-describedby"] !== undefined ? { "aria-describedby": props["aria-describedby"] } : {}),
   } as Record<string, unknown>);
   const tip = (
-    <Tooltip.Root open={open} onOpenChange={onOpenChange}>
+    <Tooltip.Root open={empty ? false : open} onOpenChange={empty ? undefined : onOpenChange}>
       <Tooltip.Trigger
         asChild
         onFocus={(event) => { if (!byKeyboard || !own(event)) event.preventDefault(); }}
@@ -124,7 +128,7 @@ export function Tip({
       >
         {trigger}
       </Tooltip.Trigger>
-      <Tooltip.Portal>
+      {!empty && <Tooltip.Portal>
         <Tooltip.Content
           className={className ? `tip ${className}` : "tip"}
           side={side}
@@ -137,7 +141,7 @@ export function Tip({
         >
           {content}
         </Tooltip.Content>
-      </Tooltip.Portal>
+      </Tooltip.Portal>}
     </Tooltip.Root>
   );
   // A tip drawn where no provider is (a page of its own) brings one.
