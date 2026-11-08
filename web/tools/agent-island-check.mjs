@@ -12,6 +12,11 @@
 // - a pill that comes and goes, the row growing from two lines to three and
 //   back, leaves the ring centred and in its outline at every frame drawn;
 //   so does a rail made narrower while pills show (YN-41);
+// - a pill's outline wraps its words and ring, 9 px left of the words and
+//   3 px right of the ring, at every row and at every frame drawn while its
+//   words change width without a new render (the CJK font held, then
+//   loaded; wider letters; a larger text size) and while its words change
+//   (排队 ↔ 等负责人) (YN-41, the user's report of 2026-11-08);
 // - every other state is a pill left of the ring that stays while it holds
 //   (等负责人, 审查中, 等合并, 排队 · 第 2 位, 离线), in its outline, line one's
 //   words clear of it; needs you and failed are row islands;
@@ -35,7 +40,14 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "T-43 rail v11, YN-41", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], rows: {}, live: {} };
+const report = { task: "T-43 rail v11, YN-41", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], rows: {}, live: {}, follow: {} };
+// The CJK web font held back until a step lets it load (YN-41).
+let fontGate = null;
+const gate = () => {
+  let release;
+  const promise = new Promise((done) => (release = done));
+  return { promise, release, held: 0 };
+};
 const check = (name) => {
   report.checks.push({ name });
   console.log(`PASS ${name}`);
@@ -138,6 +150,10 @@ async function route(route) {
   if (json) return route.fulfill({ json });
   if (path.startsWith("/api/")) return route.fulfill({ json: {} });
   const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
+  if (extname(file) === ".woff2" && fontGate) {
+    fontGate.held++;
+    await fontGate.promise;
+  }
   assert.ok(file.startsWith(dist + "/"));
   try {
     await route.fulfill({ body: await readFile(file), contentType: types[extname(file)] });
@@ -183,6 +199,9 @@ const rows = (page) => page.locator(".agent-list article[data-agent-id]").evalua
     // The ring's middle less the row's, and a pill's outline's less the ring's (YN-41).
     offset: ring ? +(mid(ring) - mid(row)).toFixed(2) : null,
     shellOffset: pill && ring && shell && outline.hasAttribute("style") ? +(mid(shell) - mid(ring)).toFixed(2) : null,
+    // The outline's room left of the words and right of the ring (the island's right end).
+    pads: pill && shell && outline.hasAttribute("style")
+      ? [+(pill.getBoundingClientRect().left - shell.left).toFixed(2), +(shell.right - island.getBoundingClientRect().right).toFixed(2)] : null,
     footer: !!r.querySelector(":scope > .agent-row-bottom, :scope > .handoff-hint"),
     archived: !!r.closest(".rail-archived-rows"), linesOne: lines(one),
     marks: island?.querySelectorAll("svg path.r-mark").length ?? -1,
@@ -203,6 +222,7 @@ function assertCentred(tag, list) {
     if (r.form === "pill") {
       assert.notEqual(r.shellOffset, null, `${tag}: ${r.id}'s pill outline drawn`);
       assert.ok(Math.abs(r.shellOffset) <= 0.5, `${tag}: ${r.id}'s pill outline centred on its ring (${r.shellOffset} px off)`);
+      assert.ok(Math.abs(r.pads[0] - 9) <= 0.5 && Math.abs(r.pads[1] - 3) <= 0.5, `${tag}: ${r.id}'s pill outline wraps its words and ring (${r.pads} px, not 9,3)`);
     }
   }
 }
@@ -224,6 +244,7 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
   const phone = width < 600;
   const tag = `${width}-${phone ? "phone" : rail}-${density}-${groups}-${theme}-${lang}`;
   agents = groups === "cards" ? [...fixture(), ...labRows()] : fixture();
+  fontGate = live ? gate() : null;
   projects = groups === "cards" ? [yuzuno, lab] : [yuzuno];
   const context = await browser.newContext({ viewport: { width, height }, locale: lang === "zh" ? "zh-CN" : "en-US", timezoneId: "Asia/Shanghai",
     reducedMotion: "reduce", colorScheme: theme, deviceScaleFactor: 2, ...(phone ? { hasTouch: true, isMobile: true } : {}) });
@@ -241,9 +262,10 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
   const list = page.locator(".agent-list");
   const rowOf = (id) => list.locator(`article[data-agent-id="${id}"]`);
   try {
-    await page.goto(`https://${HOST}/`);
+    await page.goto(`https://${HOST}/`, { waitUntil: live ? "domcontentloaded" : "load" });
     await list.locator('article[data-agent-id="yn29"]').waitFor({ timeout: 15_000 });
     await page.waitForFunction(() => document.querySelector('.agent-list article[data-agent-id="yn27"] .island-pill'), null, { timeout: 10_000 });
+    if (live) await fontStep(page, tag);
     // The archived fold open, its row measured with the rest (YN-41).
     await list.locator(".rail-archived-toggle").click();
     await rowOf("yn20").waitFor({ timeout: 5_000 });
@@ -299,6 +321,7 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
     check(`${tag}: five ring states, pills that stay for the rest, the task's short name on line one, a lead's dot only, no "…", nothing cut, three lines at most${phone ? ", 44 px rows" : ""}; every ring centred on its row (${[...kinds].sort().join(", ")}), archived included, its hit area ${phone ? "a finger's" : "a mouse's"}`);
 
     if (live) await liveStep(page, tag, rowOf);
+    if (live) await followStep(page, tag);
 
     if (!phone && density === "detailed" && groups === "headers") {
       // The selected row looks as a hovered row does: its background only.
@@ -330,6 +353,133 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
   } finally {
     await context.close();
   }
+}
+
+// Every pill row, at every mutation in the list and at every frame drawn
+// (sampled after the frame's paint, so what a ResizeObserver set before the
+// paint counts): the outline's room left of the words and right of the
+// ring, its middle on the ring's, the ring on the row's (YN-41).
+const startSampler = (page) => page.evaluate(() => {
+  const out = (window.__yn41f = []);
+  const take = (why) => {
+    for (const r of document.querySelectorAll('.agent-list article[data-agent-id][data-form="pill"]')) {
+      const island = r.querySelector(":scope > .agent-island");
+      const pill = island?.querySelector(".island-pill");
+      const outline = r.querySelector(":scope > .island-shell");
+      if (!pill || !outline?.hasAttribute("style")) {
+        out.push({ why, id: r.dataset.agentId, missing: true });
+        continue;
+      }
+      const p = pill.getBoundingClientRect(), i = island.getBoundingClientRect(), o = outline.getBoundingClientRect(), row = r.getBoundingClientRect();
+      const mid = (b) => b.top + b.height / 2;
+      out.push({ why, id: r.dataset.agentId, words: pill.textContent, width: +p.width.toFixed(1), height: +row.height.toFixed(1),
+        pads: [+(p.left - o.left).toFixed(2), +(o.right - i.right).toFixed(2)], shell: +(mid(o) - mid(i)).toFixed(2), offset: +(mid(i) - mid(row)).toFixed(2) });
+    }
+  };
+  take("start");
+  const seen = new MutationObserver(() => take("mutation"));
+  seen.observe(document.querySelector(".agent-list"), { subtree: true, childList: true, attributes: true, characterData: true });
+  const channel = new MessageChannel();
+  channel.port1.onmessage = () => {
+    if (window.__yn41f !== out) return seen.disconnect();
+    take("frame");
+    requestAnimationFrame(() => channel.port2.postMessage(0));
+  };
+  requestAnimationFrame(() => channel.port2.postMessage(0));
+});
+const stopSampler = (page) => page.evaluate(() => {
+  const out = window.__yn41f;
+  window.__yn41f = null;
+  return out;
+});
+// A change made at a frame's start, so nothing reads the page between it and that frame's paint.
+const atFrame = (page, op, arg = null) => page.evaluate(([op, arg]) => new Promise((done) => requestAnimationFrame(() => {
+  if (op === "widen") {
+    const style = document.createElement("style");
+    style.id = "yn41-wide";
+    style.textContent = ".island-pill { letter-spacing: 2px }";
+    document.head.append(style);
+  } else if (op === "narrow") document.getElementById("yn41-wide")?.remove();
+  else if (op === "adjust") document.documentElement.style.setProperty("--font-adjust", arg);
+  done();
+})), [op, arg]);
+const waitFrames = (page, n) => page.evaluate((n) => new Promise((done) => {
+  const step = (k) => (k ? requestAnimationFrame(() => step(k - 1)) : setTimeout(done, 0));
+  step(n);
+}), n);
+function assertWrapped(tag, what, samples) {
+  assert.ok(samples.some((f) => f.why === "frame"), `${tag}: ${what}: frames sampled`);
+  for (const f of samples) {
+    assert.ok(!f.missing, `${tag}: ${what}: ${f.id}'s pill outline drawn at every ${f.why}`);
+    assert.ok(Math.abs(f.pads[0] - 9) <= 0.5 && Math.abs(f.pads[1] - 3) <= 0.5,
+      `${tag}: ${what}: ${f.id}'s outline wraps "${f.words}" (${f.width} px) at every ${f.why} (${f.pads} px, not 9,3)`);
+    assert.ok(Math.abs(f.shell) <= 0.5 && Math.abs(f.offset) <= 1, `${tag}: ${what}: ${f.id}'s outline and ring centred at every ${f.why} (${f.shell}, ${f.offset})`);
+  }
+}
+const widths = (samples) => Object.fromEntries(samples.map((f) => [f.id, f.width]));
+
+// The CJK font, held since the page loaded, loads now (YN-41): the rows were
+// measured in a fallback face, and nothing renders again when it arrives.
+async function fontStep(page, tag) {
+  assert.ok(fontGate.held > 0, `${tag}: the CJK font was asked for and held`);
+  assert.equal(await page.evaluate(() => [...document.fonts].some((f) => f.family.includes("Yuzuno Han") && f.status === "loading")), true, `${tag}: the CJK font is loading`);
+  await startSampler(page);
+  await waitFrames(page, 2);
+  fontGate.release();
+  await page.evaluate(() => document.fonts.ready);
+  await waitFrames(page, 4);
+  const samples = await stopSampler(page);
+  assertWrapped(tag, "the CJK font held, then loaded", samples);
+  const before = widths(samples.filter((f) => f.why === "start")), after = widths(samples.slice(-12));
+  report.follow[`${tag} font`] = { held: fontGate.held, samples: samples.length, before, after };
+  check(`${tag}: the CJK font held, then loaded (${fontGate.held} request${fontGate.held > 1 ? "s" : ""}): every pill outline wraps its words and ring in ${samples.length} samples`);
+}
+
+// Words that change width without a new render, and words that change
+// (YN-41, the user's report): every pill outline follows at once.
+async function followStep(page, tag) {
+  // Wider letters, as a font that loads late or a fallback face makes them.
+  await startSampler(page);
+  const narrow = widths((await page.evaluate(() => [...document.querySelectorAll('.agent-list article[data-form="pill"] .island-pill')].map((p) => ({ id: p.closest("article").dataset.agentId, width: +p.getBoundingClientRect().width.toFixed(1) })))));
+  await atFrame(page, "widen");
+  await waitFrames(page, 4);
+  await atFrame(page, "narrow");
+  await waitFrames(page, 4);
+  let samples = await stopSampler(page);
+  const wide = Math.max(...samples.map((f) => f.width - (narrow[f.id] ?? f.width)));
+  assert.ok(wide > 4, `${tag}: the pills' words grew (${wide} px)`);
+  assertWrapped(tag, "wider letters and back", samples);
+  report.follow[`${tag} letters`] = { samples: samples.length, grew: wide };
+  check(`${tag}: words ${wide.toFixed(1)} px wider with no new render, and back: every pill outline wraps them in ${samples.length} samples`);
+
+  // A larger text size (Settings → Appearance sets --font-adjust on the root).
+  await startSampler(page);
+  const adjust = await page.evaluate(() => document.documentElement.style.getPropertyValue("--font-adjust"));
+  await atFrame(page, "adjust", "6px");
+  await waitFrames(page, 4);
+  await atFrame(page, "adjust", adjust || "3px");
+  await waitFrames(page, 4);
+  samples = await stopSampler(page);
+  assertWrapped(tag, "a larger text size and back", samples);
+  check(`${tag}: a larger text size and back: every pill outline wraps its words in ${samples.length} samples`);
+
+  // Other words in the same pill: yn30 from 排队 to 等负责人 (handed in, no PR) and back.
+  await startSampler(page);
+  const words = () => page.locator('.agent-list article[data-agent-id="yn30"] .island-pill').textContent();
+  const queued = await words();
+  agents = agents.map((a) => (a.id === "yn30" ? executor("yn30", { title: "Import old settings", shortName: "导入旧设置" }, "delivering") : a));
+  await page.waitForFunction((was) => { const p = document.querySelector('.agent-list article[data-agent-id="yn30"] .island-pill'); return p && p.textContent !== was; }, queued, { timeout: 20_000 });
+  const handed = await words();
+  await waitFrames(page, 4);
+  agents = agents.map((a) => (a.id === "yn30" ? fixture().find((f) => f.id === "yn30") : a));
+  await page.waitForFunction((was) => document.querySelector('.agent-list article[data-agent-id="yn30"] .island-pill')?.textContent === was, queued, { timeout: 20_000 });
+  await waitFrames(page, 4);
+  samples = await stopSampler(page);
+  assert.deepEqual([queued, handed], tag.endsWith("-zh") ? ["排队 · 第 2 位", "等负责人"] : ["Queued · 2 in line", "Lead's turn"], `${tag}: yn30's words changed`);
+  assertWrapped(tag, `${queued} → ${handed} → ${queued}`, samples);
+  const rows30 = [...new Set(samples.filter((f) => f.id === "yn30").map((f) => f.height))];
+  report.follow[`${tag} words`] = { samples: samples.length, words: [queued, handed], heights: rows30 };
+  check(`${tag}: yn30's pill ${queued} → ${handed} → ${queued} (row ${rows30.join("/")} px): its outline wraps the words at every one of ${samples.length} samples`);
 }
 
 // A pill that comes and goes (YN-41): yn32 is queued, its line one wraps

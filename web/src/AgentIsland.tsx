@@ -216,22 +216,30 @@ type Box = { left: number; top: number; width: number; height: number; radius: n
 const frame = (b: Box, opacity = 1) => ({ left: `${b.left}px`, top: `${b.top}px`, width: `${b.width}px`, height: `${b.height}px`, borderRadius: `${b.radius}px`, opacity });
 
 /** The outline's box for a form, in the row's padding box: the ring's
- * circle, the pill round its words and the ring, or the whole row. */
+ * circle, the pill round its words and the ring (9 px left of the words,
+ * 3 px right of the ring, 28 px tall on the ring's middle), or the whole
+ * row. Read from the island's own layout box, not the ring's: the ring
+ * grows a little under the pointer by a transform, the island doesn't. In
+ * the row's own pixels: a transform on the row (a held row presses in)
+ * scales what the screen shows, not what the outline's style means. */
 function shellBox(row: HTMLElement, form: IslandForm): Box | null {
-  const ringbox = row.querySelector<HTMLElement>(":scope > .agent-island .island-ringbox");
+  const island = row.querySelector<HTMLElement>(":scope > .agent-island");
+  const ringbox = island?.querySelector<HTMLElement>(".island-ringbox");
   const rb = row.getBoundingClientRect();
-  if (!ringbox || !rb.width) return null;
-  const ox = rb.left + row.clientLeft, oy = rb.top + row.clientTop;
-  const g = ringbox.getBoundingClientRect();
-  const ring = { left: g.left - ox, top: g.top - oy, width: g.width, height: g.height, radius: g.width / 2 };
+  if (!island || !ringbox || !rb.width || !row.offsetWidth || !row.offsetHeight) return null;
+  const sx = rb.width / row.offsetWidth, sy = rb.height / row.offsetHeight;
+  const b = island.getBoundingClientRect();
+  const g = { left: (b.left - rb.left) / sx - row.clientLeft, top: (b.top - rb.top) / sy - row.clientTop, width: b.width / sx, height: b.height / sy };
+  // The ring at the island's right end, on its middle.
+  const rw = ringbox.offsetWidth, rh = ringbox.offsetHeight;
+  const ring = { left: g.left + g.width - rw, top: g.top + (g.height - rh) / 2, width: rw, height: rh, radius: rw / 2 };
   if (form === "ring") return ring;
   if (form === "pill") {
-    const p = row.querySelector<HTMLElement>(":scope > .agent-island .island-pill")?.getBoundingClientRect();
-    if (!p) return ring;
+    if (!island.querySelector(".island-pill")) return ring;
     const h = 28;
-    return { left: p.left - ox - 9, top: ring.top + ring.height / 2 - h / 2, width: g.right - p.left + 12, height: h, radius: h / 2 };
+    return { left: g.left - 9, top: ring.top + rh / 2 - h / 2, width: g.width + 12, height: h, radius: h / 2 };
   }
-  return { left: -row.clientLeft, top: -row.clientTop, width: rb.width, height: rb.height, radius: parseFloat(getComputedStyle(row).borderTopLeftRadius) || 9 };
+  return { left: -row.clientLeft, top: -row.clientTop, width: row.offsetWidth, height: row.offsetHeight, radius: parseFloat(getComputedStyle(row).borderTopLeftRadius) || 9 };
 }
 
 /**
@@ -240,8 +248,10 @@ function shellBox(row: HTMLElement, form: IslandForm): Box | null {
  * (the row's box); a pill's box is set here. Each change of form animates
  * from the ring's circle, or from where it was, and back into the ring;
  * nothing moves under reduced motion. While a pill shows, its box follows
- * the ring whenever the row's size changes (YN-41: the ring is centred on
- * the row's lines, so a line that wraps or unwraps moves it), at once.
+ * its words and ring, at once, whatever moves them without a new render
+ * (YN-41): the row's size (a narrower rail, a scroll bar, lines that wrap
+ * anew round the centred ring) and the island's (its words in a font that
+ * just loaded, a larger text size, a zoom).
  */
 export function useIslandShell(row: RefObject<HTMLElement | null>, shell: RefObject<HTMLElement | null>, form: IslandForm, words: string | null = null) {
   const last = useRef<{ form: IslandForm; box: Box | null } | null>(null);
@@ -275,8 +285,21 @@ export function useIslandShell(row: RefObject<HTMLElement | null>, shell: RefObj
       place(outline, box);
       if (last.current?.form === "pill") last.current.box = box;
     });
-    follow.observe(el);
-    return () => follow.disconnect();
+    // The row and its island; an island put in its place (a ring that
+    // became a button) is watched instead.
+    const watch = () => {
+      follow.disconnect();
+      follow.observe(el);
+      const island = el.querySelector(":scope > .agent-island");
+      if (island) follow.observe(island);
+    };
+    watch();
+    const swapped = typeof MutationObserver === "function" ? new MutationObserver(watch) : null;
+    swapped?.observe(el, { childList: true });
+    return () => {
+      follow.disconnect();
+      swapped?.disconnect();
+    };
   }, [form]);
 }
 
