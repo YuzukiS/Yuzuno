@@ -621,6 +621,39 @@ async fn closing_waits_for_the_teardown_even_while_a_request_still_holds_the_ser
     assert!(read.await.unwrap().is_err(), "the read was cut by OpenCode's teardown");
 }
 
+/// YN-48: while a Turn waits, it says what it waits on. It names the model
+/// its message went to: the Agent's chosen one, else the one OpenCode runs a
+/// session on with none chosen (`GET /api/model/default`), as the Agent's
+/// catalog also says. A retry OpenCode schedules keeps its attempt, when it
+/// tries next and why the last one failed, until the answer goes on.
+#[tokio::test]
+async fn a_waiting_turn_names_its_model_and_what_opencode_retries() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    assert_eq!(catalog["default"]["id"], "openrouter/anthropic/claude-x", "what Harness default is now: {}", catalog["default"]);
+    let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    assert_eq!(turn(&lab.detail(), &first)["_opencodeModel"],
+        json!({"id": "openrouter/anthropic/claude-x", "name": "OpenRouter · Claude X", "default": true}), "OpenCode's own default, named");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    lab.control("event", json!({"type": "session.retry.scheduled", "created": now, "properties": {"sessionID": session,
+        "assistantMessageID": "msg_zzzzyn48retry", "attempt": 2, "at": now + 2000,
+        "error": {"type": "provider.transport", "message": "ECONNREFUSED: Unable to connect."}}})).await;
+    let d = lab.until("the retry", |d| turn(d, &first)["_opencodeRetry"].is_object()).await;
+    assert_eq!(turn(&d, &first)["_opencodeRetry"], json!({"attempt": 2, "next": now + 2000, "message": "ECONNREFUSED: Unable to connect."}));
+    assert_eq!(turn(&d, &first)["status"], "inProgress");
+    lab.control("reply", json!({"sessionID": session, "text": "Done."})).await;
+    let d = lab.until("the answer", |d| turn(d, &first)["status"] == "completed").await;
+    assert!(turn(&d, &first).get("_opencodeRetry").is_none(), "over once the answer went on");
+    // A chosen model is the one named.
+    lab.ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap();
+    let second = lab.send("c2", "again").await.unwrap().turn_id.unwrap();
+    assert_eq!(turn(&lab.detail(), &second)["_opencodeModel"], json!({"id": "deepseek/deepseek-flash", "name": "DeepSeek · DeepSeek Flash"}));
+    lab.control("reply", json!({"sessionID": session, "text": "Again."})).await;
+    lab.until("the second answer", |d| turn(d, &second)["status"] == "completed").await;
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 /// An Agent's database is made by its first 2.x server (T-32): the version
 /// that server reported is kept with its session, and stays when a later 2.x
 /// runs it. Its models say which OpenCode it runs, and note one newer than

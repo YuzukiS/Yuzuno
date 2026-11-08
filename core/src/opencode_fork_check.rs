@@ -209,8 +209,8 @@ pub(crate) fn copy(turns: &[Value], session: &str, from: &Value, images: &mut im
                     Value::Object(inputs)
                 }
                 "_opencodeCompact" => copy_compact(value, session, &id)?,
-                // The source's own run and sends.
-                "interruptRequested" | "deliveryUnconfirmed" => continue,
+                // The source's own run and sends, and what it waited on while it ran (YN-48).
+                "interruptRequested" | "deliveryUnconfirmed" | "_opencodeModel" | "_opencodeRetry" => continue,
                 other => bail!("Turn {id} 里有 fork 还不能带过去的记录 {other}；没有 fork"),
             };
             out.insert(name.clone(), value);
