@@ -8,9 +8,9 @@
 //! - `settled`: ordering only; that run must settle, succeeded or cancelled.
 //!
 //! The run's own record holds, in each root stage (one with no needs), a
-//! need `run:<id>` per named run; a stage key cannot hold `:`. A Core before
-//! core.28 reads such a need as a stage with no attempt, Blocked, so it never
-//! starts the run early. While a named run has failed, is unknown, is held
+//! need `run:<id>` per named run; a stage key cannot hold `:`. A Core without
+//! afterRuns (core.26 and older) reads such a need as a stage with no attempt,
+//! Blocked, so it never starts the run early. While a named run has failed, is unknown, is held
 //! (cost limit, a checkpoint, a run it waits for) or, for `succeeded`, was
 //! cancelled, this run is `blocked_by_run` and its owner is told once; once
 //! that run is retried the notice clears, and it starts by itself when the
@@ -260,7 +260,7 @@ pub(super) fn view(run: &mut Value, states: &HashMap<String, State>) {
 mod tests {
     use super::*;
 
-    /// How a Core before core.28 reads a root stage's need of a run: as a
+    /// How a Core without afterRuns (core.26 and older) reads a root stage's need of a run: as a
     /// stage with no attempt, Blocked, so the stage never starts there. The
     /// same need with the run's state is an ordinary wait.
     #[test]

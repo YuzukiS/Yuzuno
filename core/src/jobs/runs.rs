@@ -607,7 +607,8 @@ fn upstream(
         .filter_map(Value::as_str)
     {
         // Another run this one waits for (YN-30). Without its state, as a
-        // Core before core.28 reads it, it is a stage with no attempt below.
+        // Core without afterRuns (core.26 and older) reads it, it is a stage
+        // with no attempt below.
         if let Some(state) = after::run_of(need).and_then(|id| Some((id, after.get(id)?))) {
             match after::gate(state.0, state.1) {
                 Upstream::Ready(list) => ready.extend(list),
