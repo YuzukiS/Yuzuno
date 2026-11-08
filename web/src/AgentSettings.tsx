@@ -3,11 +3,12 @@ import { ChevronDown, LoaderCircle, Settings2 } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { Modal } from "./components";
 import { ChoiceChips } from "./ChoiceChips";
-import type { Agent, AgentSettings as Settings, ContextUsage, Model, PermissionCatalog } from "./types";
+import type { Agent, AgentSettings as Settings, ContextUsage, Model, OpenCodeProvider, PermissionCatalog } from "./types";
 import { CodexContextSettings, TOKEN_INVALID, tokenSetting } from "./CodexContextSettings";
 import type { CodexContextSettings as ContextSettings } from "./types";
 import { CodexPermissions } from "./CodexPermissions";
 import { OpenCodeLogin } from "./OpenCodeLogin";
+import { OpenCodeModelPicker } from "./OpenCodeModelPicker";
 import { langTag, strings, useLanguage } from "./i18n";
 import "./agent-settings.css";
 
@@ -165,6 +166,8 @@ export function AgentSettings({
   const opencode = agent.harness === "opencode";
   const [reload, setReload] = useState(0);
   const [models, setModels] = useState<Model[]>([]);
+  // OpenCode (YN-47): its providers and where each gets its access.
+  const [providers, setProviders] = useState<OpenCodeProvider[]>();
   const [permissions, setPermissions] = useState<PermissionCatalog>();
   const [context, setContext] = useState<ContextSettings>();
   const [contextWindow, setContextWindow] = useState("");
@@ -194,6 +197,7 @@ export function AgentSettings({
     setError("");
     setEffortNote("");
     setModels([]);
+    setProviders(undefined);
     setPermissions(undefined);
     setModel(agent.model);
     setSettings(agent.settings || defaults);
@@ -203,10 +207,11 @@ export function AgentSettings({
     setContextNote("");
     setOpenCodeNote(null);
     setPermissionMode(chosenMode(agent));
-    api<{ models: Model[]; permissions?: PermissionCatalog; context?: ContextSettings; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
-      .then(({ models, permissions, context, opencode: native }) => {
+    api<{ models: Model[]; providers?: OpenCodeProvider[]; permissions?: PermissionCatalog; context?: ContextSettings; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
+      .then(({ models, providers, permissions, context, opencode: native }) => {
         if (!current()) return;
         setModels(models);
+        setProviders(providers);
         // Which OpenCode the Agent runs, said only when Core notes it (T-32: newer than the one checked against).
         setOpenCodeNote(native?.note && native.version && native.verified ? { version: native.version, verified: native.verified } : null);
         setPermissions(permissions);
@@ -245,10 +250,11 @@ export function AgentSettings({
     const read = ++reads.current;
     setLoading(true);
     setError("");
-    api<{ models: Model[]; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
-      .then(({ models, opencode: native }) => {
+    api<{ models: Model[]; providers?: OpenCodeProvider[]; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
+      .then(({ models, providers, opencode: native }) => {
         if (read !== reads.current) return;
         setModels(models);
+        setProviders(providers);
         setOpenCodeNote(native?.note && native.version && native.verified ? { version: native.version, verified: native.verified } : null);
       })
       .catch((e) => read === reads.current && setError(errorText(e)))
@@ -452,6 +458,20 @@ export function AgentSettings({
           }}
         >
           <p className="agent-settings-location">{t.machine(agent.remote?.machine.name || null)}</p>
+          {opencode ? (
+            <div className="agent-setting">
+              <OpenCodeModelPicker
+                models={models}
+                providers={providers}
+                value={model}
+                saved={agent.model}
+                savedVariant={agent.settings?.reasoningEffort || null}
+                loading={loading}
+                disabled={loading || saving}
+                onChange={(value) => selectModel(value, models, opencodeVariant)}
+              />
+            </div>
+          ) : (
           <div className="agent-setting">
             <ChoiceChips
               label={t.model}
@@ -489,6 +509,7 @@ export function AgentSettings({
               <small className="model-catalog-note">{selected.description}</small>
             )}
           </div>
+          )}
           {claude && (
             <div className="agent-setting">
               <ChoiceChips
