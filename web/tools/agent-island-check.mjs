@@ -369,8 +369,11 @@ async function liveStep(page, tag, rowOf) {
   });
   const forms = frames.map((f) => (f.form === "pill" ? (f.event ? "event" : "pill") : f.form)).filter((f, n, a) => f !== a[n - 1]);
   const heights = [...new Set(frames.map((f) => f.height))];
-  report.live[tag] = { frames: frames.length, forms, heights, worst: Math.max(...frames.map((f) => Math.abs(f.offset))), worstShell: Math.max(0, ...frames.filter((f) => f.shell !== null).map((f) => Math.abs(f.shell))) };
-  assert.deepEqual(forms, ["ring", "pill", "event", "ring"], `${tag}: yn32's ring, its queued pill, its started pill, its ring`);
+  // Each form as each kind of sample saw it: a form only a mutation saw was never drawn.
+  const seenBy = Object.fromEntries(["mutation", "frame"].map((why) => [why, frames.filter((f) => f.why === why).map((f) => (f.form === "pill" ? (f.event ? "event" : "pill") : f.form)).filter((f, n, a) => f !== a[n - 1])]));
+  report.live[tag] = { frames: frames.length, forms, seenBy, heights, worst: Math.max(...frames.map((f) => Math.abs(f.offset))), worstShell: Math.max(0, ...frames.filter((f) => f.shell !== null).map((f) => Math.abs(f.shell))) };
+  // No frame at the ring between the queued pill and the started one: the row would jump a line and back.
+  assert.deepEqual(forms, ["ring", "pill", "event", "ring"], `${tag}: yn32's ring, its queued pill, its started pill, its ring (${JSON.stringify(seenBy)})`);
   assert.ok(heights.length >= 2, `${tag}: yn32's row grew and shrank (${heights})`);
   for (const f of frames) {
     assert.ok(Math.abs(f.offset) <= 1, `${tag}: yn32's ring centred at every ${f.why} (${f.form}, ${f.height} px tall, ${f.offset} px off)`);

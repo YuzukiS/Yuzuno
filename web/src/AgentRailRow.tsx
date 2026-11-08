@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { RequestSummary } from "./MessageContent";
 import { Bell } from "lucide-react";
 import type { AgentActionHandlers } from "./agent-actions";
@@ -363,7 +363,10 @@ function usePassingEvent({ state, pr, language, quiet }: { state: string; pr: Ex
   const [pill, setPill] = useState<Passing | null>(null);
   const seen = useRef<{ state: string; pr: ExecutorPR | null } | null>(null);
   const timer = useRef<number | undefined>(undefined);
-  useEffect(() => {
+  // Before the row is drawn (YN-41): a pill that stays and the event that
+  // replaces it are never a frame apart, the row at its ring in between,
+  // its lines and its centred ring jumping for that frame.
+  useLayoutEffect(() => {
     const was = seen.current;
     seen.current = { state, pr };
     if (!was || quiet) return;
