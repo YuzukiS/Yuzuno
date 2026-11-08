@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { api, errorText, patch, post, remove } from "./api";
 import { strings, useLanguage, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import {
   ALL_PROJECTS,
@@ -171,19 +172,13 @@ export function ProjectSwitcher({
       {icon}
       <span className="scope-option-name">{label}</span>
       {pending(value) > 0 && (
-        <span
-          className="nav-count attention"
-          title={t.waiting(pending(value))}
-        >
-          {pending(value)}
-        </span>
+        <Tip side="right" content={<TipText title={t.waiting(pending(value))} />}>
+          <span className="nav-count attention">{pending(value)}</span>
+        </Tip>
       )}
-      <span
-        className="scope-option-count"
-        title={t.open(count(value))}
-      >
-        {count(value)}
-      </span>
+      <Tip side="right" content={<TipText title={t.open(count(value))} />}>
+        <span className="scope-option-count">{count(value)}</span>
+      </Tip>
       {scope === value && <Check size={13} className="scope-check" />}
     </button>
   );
@@ -282,12 +277,9 @@ export function ProjectSwitcher({
           <strong>{shown}</strong>
           <span>{workspaceName}</span>
         </span>
-        <span
-          className={`status-dot ${reachable ? "idle" : "offline"}`}
-          title={reachability}
-          role="img"
-          aria-label={reachability}
-        />
+        <Tip side="top" describe={false} content={<TipText title={reachability} />}>
+          <span className={`status-dot ${reachable ? "idle" : "offline"}`} role="img" aria-label={reachability} />
+        </Tip>
         <ChevronsUpDown size={14} className="scope-chevron" />
       </button>
     </div>

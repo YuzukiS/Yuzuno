@@ -1,20 +1,23 @@
 import { Cpu, Folder, Layers } from "lucide-react";
 import type { Agent } from "./types";
 import { strings, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 
 // The strip's own words (T-189); project, folder, model and effort as they are.
 const text = strings({
   label: "Conversation environment",
-  project: (name: string) => `Project: ${name}`,
-  folder: (cwd: string) => `Working directory: ${cwd}`,
+  project: "Project",
+  folder: "Working directory",
   defaultModel: "Default model",
-  model: (model: string, effort: string | null | undefined) => `Model: ${model}${effort ? ` · Reasoning effort: ${effort}` : ""}`,
+  model: "Model",
+  effort: (effort: string) => `Reasoning effort: ${effort}`,
 }, {
   label: "会话环境",
-  project: (name) => `项目：${name}`,
-  folder: (cwd) => `工作目录：${cwd}`,
+  project: "项目",
+  folder: "工作目录",
   defaultModel: "默认模型",
-  model: (model, effort) => `模型：${model}${effort ? ` · 推理强度：${effort}` : ""}`,
+  model: "模型",
+  effort: (effort) => `推理强度：${effort}`,
 });
 import "./conversation-metadata.css";
 
@@ -38,25 +41,30 @@ export function ConversationMetadata({
       className="conversation-metadata"
       aria-label={t.label}
     >
+      {/* What each one is, and its whole value (YN-44). */}
       {projectName && (
-        <span title={t.project(projectName)} className="project-chip">
-          <Layers size={12} aria-hidden="true" />
-          <span>{projectName}</span>
-        </span>
+        <Tip side="bottom" content={<TipText label={t.project} title={projectName} />}>
+          <span className="project-chip">
+            <Layers size={12} aria-hidden="true" />
+            <span>{projectName}</span>
+          </span>
+        </Tip>
       )}
-      <span title={t.folder(agent.cwd)}>
-        <Folder size={12} aria-hidden="true" />
-        <span>{folder}</span>
-      </span>
-      <span
-        title={t.model(model, effort)}
-      >
-        <Cpu size={12} aria-hidden="true" />
+      <Tip side="bottom" content={<TipText label={t.folder} value={agent.cwd} />}>
         <span>
-          {model}
-          {effort && <span className="model-effort"> · {effort}</span>}
+          <Folder size={12} aria-hidden="true" />
+          <span>{folder}</span>
         </span>
-      </span>
+      </Tip>
+      <Tip side="bottom" content={<TipText label={t.model} title={model} status={effort ? t.effort(effort) : null} />}>
+        <span>
+          <Cpu size={12} aria-hidden="true" />
+          <span>
+            {model}
+            {effort && <span className="model-effort"> · {effort}</span>}
+          </span>
+        </span>
+      </Tip>
     </div>
   );
 }

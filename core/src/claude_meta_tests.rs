@@ -272,3 +272,31 @@ async fn the_effort_a_turn_ran_at_is_written_as_metadata() {
     }
     assert_eq!(results[0], results[1], "held and not held differ");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turns_cost_counts_once_toward_its_routing_keys_day_and_a_login_counts_nothing() {
+    // YN-34 S2a: the daily spend routing's cap reads. Claude Code's total_cost_usd is its
+    // session's running total: each turn counts what it added (#798 R1 P2).
+    for (id, on_key) in [("cost-key", true), ("cost-login", false)] {
+        let d = record(id, "working", &[("t", "inProgress")], vec![]);
+        let (_dir, ws) = workspace(&d, false);
+        if on_key {
+            ws.store.set_runtime_profile(id, Some(&crate::routing_launch::RuntimeProfile::ApiKey { key_id: "anthropic".into() })).unwrap();
+        }
+        let _fake = connect(&ws, id);
+        let result = |uuid: &str, total: f64| json!({"type":"event","turnId":"t","event":{"type":"result","subtype":"success","is_error":false,
+            "uuid":uuid,"result":"Done.","total_cost_usd":total}});
+        let spent = || {
+            let spend = ws.store.spend_on(crate::routing_readings::today()).unwrap();
+            (spend.total_usd, spend.by_key.get("anthropic").copied())
+        };
+        ws.claude_event(id, 7, result("r-1", 0.25));
+        ws.claude_event(id, 7, result("r-1", 0.25));
+        assert_eq!(spent(), if on_key { (0.25, Some(0.25)) } else { (0.0, None) }, "{id}: the first turn, once");
+        ws.claude_event(id, 7, result("r-2", 0.75));
+        assert_eq!(spent(), if on_key { (0.75, Some(0.75)) } else { (0.0, None) }, "{id}: the second turn adds 0.5, not 0.75");
+        ws.claude_event(id, 7, result("r-3", 0.0));
+        ws.claude_event(id, 7, result("r-4", 1.0));
+        assert_eq!(spent(), if on_key { (1.0, Some(1.0)) } else { (0.0, None) }, "{id}: a crashed turn's zero total is passed over");
+    }
+}

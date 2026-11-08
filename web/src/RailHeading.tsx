@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import { strings, useStrings } from "./i18n";
 import { useShortcutKeys } from "./shortcut-keys";
+import { Tip, TipText } from "./Tip";
 
 const text = strings({
   heading: "YOUR AGENTS",
@@ -98,22 +99,16 @@ export function RailHeading({
       </div>
       <div className="rail-actions">
         {extra}
-        <button
-          className="icon-button"
-          aria-label={t.search}
-          title={`${t.search} · ${shortcut} ${keys.find}`}
-          onClick={onSearch}
-        >
-          <Search size={14} />
-        </button>
-        <button
-          className="icon-button"
-          aria-label={t.create}
-          title={`${t.create} · ${shortcut} ${keys.newAgent}`}
-          onClick={onCreate}
-        >
-          <Plus size={16} />
-        </button>
+        <Tip side="bottom" describe={false} content={<TipText title={t.search} kbd={`${shortcut} ${keys.find}`} />}>
+          <button className="icon-button" aria-label={t.search} onClick={onSearch}>
+            <Search size={14} />
+          </button>
+        </Tip>
+        <Tip side="bottom" describe={false} content={<TipText title={t.create} kbd={`${shortcut} ${keys.newAgent}`} />}>
+          <button className="icon-button" aria-label={t.create} onClick={onCreate}>
+            <Plus size={16} />
+          </button>
+        </Tip>
       </div>
     </div>
   );

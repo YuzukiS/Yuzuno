@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { CircleStop, Link2, MoreHorizontal, RotateCw, Settings2, SlidersHorizontal, Square, Unplug } from "lucide-react";
 import { agentMenuItems, agentMenuLabel, type AgentActionHandlers, type AgentMenuAction, type AgentMenuItem } from "./agent-actions";
 import { langTag, strings, useLanguage } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import { animates } from "./motion";
 import type { Agent } from "./types";
 import "./agent-actions.css";
@@ -262,12 +263,11 @@ export function AgentActionsMenu({
 
   return (
     <>
-      {withTrigger && <button
+      {withTrigger && <Tip side="bottom" describe={false} content={<TipText title={label ?? t.actions} />}><button
         ref={trigger}
         type="button"
         className={`agent-actions-button ${className}`.trim()}
         aria-label={label ?? t.actionsFor(agent.name)}
-        title={label ?? t.actions}
         aria-haspopup="menu"
         aria-expanded={!!menu}
         aria-controls={menu ? menuId : undefined}
@@ -284,7 +284,7 @@ export function AgentActionsMenu({
         }}
       >
         <MoreHorizontal size={16} />
-      </button>}
+      </button></Tip>}
       {leaving &&
         !menu &&
         createPortal(

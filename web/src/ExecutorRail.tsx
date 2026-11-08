@@ -3,6 +3,7 @@ import { ChevronDown } from "lucide-react";
 import type { TurnSeen } from "./attention";
 import { lifecycleText, railParts } from "./executor-lifecycle";
 import { useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import type { Agent } from "./types";
 import "./executor-rail.css";
 
@@ -79,7 +80,10 @@ export function ExecutorRail({
           <h3 className="rail-subgroup-head">
             <span>{t.executors}</span>
             {queued > 0 && (
-              <span className="rail-subgroup-slots" title={`${t.slotUse(running, queued)}\n${t.slotUseTitle}`}>{t.slotUse(running, queued)}</span>
+              // What the counts mean (YN-44): in its tip and for assistive technology.
+              <Tip side="bottom" describe={false} content={<TipText body={t.slotUseTitle} />}>
+                <span className="rail-subgroup-slots" aria-description={t.slotUseTitle}>{t.slotUse(running, queued)}</span>
+              </Tip>
             )}
             <span className="rail-subgroup-count">{parts.executors.length}</span>
           </h3>
@@ -93,7 +97,6 @@ export function ExecutorRail({
             className="rail-subgroup-head rail-archived-toggle"
             aria-expanded={archivedShown}
             aria-controls={body}
-            title={t.archivedToggle(!archivedShown, parts.archived.length)}
             onClick={() => toggle(listKey)}
           >
             <ChevronDown size={11} className="rail-archived-chevron" aria-hidden="true" />
