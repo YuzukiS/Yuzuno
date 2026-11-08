@@ -166,7 +166,6 @@ impl Schedule {
     }
 }
 
-/// A preset as the readings offer it: its schedule, and where it stands now.
 /// The first minute of each change of the Core host's UTC offset in `[start, end)`.
 fn clock_changes(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<DateTime<Utc>> {
     use chrono::Offset;
@@ -190,6 +189,7 @@ fn clock_changes(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<DateTime<Utc>>
     out
 }
 
+/// A preset as the readings offer it: its schedule, and where it stands now.
 pub fn schedule_now(schedule: &Schedule, at: DateTime<Utc>) -> Value {
     serde_json::json!({"schedule": schedule, "inside": schedule.inside(at), "changesAt": schedule.changes_at(at).map(|t| t.to_rfc3339())})
 }
