@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { API_BASE } from "./api";
 import { strings, useStrings } from "./i18n";
+import { chartTip } from "./Tip";
 import "./history-composition.css";
 
 /** The parts of a stored record, as GET /api/diagnostics/memory/history
@@ -209,7 +210,7 @@ export function HistoryComposition() {
                         <XAxis type="number" tickFormatter={(value) => `${value} ${scale.name}`} tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={false} tickLine={false} />
                         <YAxis type="category" dataKey="label" width={110} tick={{ fill: "var(--ink)", fontSize: 12 }} axisLine={false} tickLine={false} />
                         <Tooltip
-                          contentStyle={{ background: "var(--paper)", borderColor: "var(--line)", color: "var(--ink)", borderRadius: 8 }}
+                          {...chartTip}
                           cursor={{ fill: "var(--cream)" }}
                           formatter={(value, name) => [size(Number(value) * scale.bytes), PARTS.includes(name as Key) ? t.parts[name as Key] : String(name)]}
                         />

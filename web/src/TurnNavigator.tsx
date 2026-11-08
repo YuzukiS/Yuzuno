@@ -17,6 +17,7 @@ import type { NativeTurn } from "./types";
 import type { InputDock, ReadBy } from "./input-dock";
 import { useAppearance } from "./appearance";
 import { strings, useLanguage } from "./i18n";
+import { TIP_DELAY_MS } from "./Tip";
 import { turnWords } from "./turn-text";
 import "./turn-dock.css";
 import "./input-dock.css";
@@ -60,7 +61,6 @@ const text = strings({
   latestLabel: "Back to the latest turn",
   collaboration: "Workspace collaboration",
   noMessage: "No user message",
-  click: "Click to read this turn",
   // Reading by your inputs (T-6).
   input: "Input",
   inputsNav: "Your inputs",
@@ -72,7 +72,6 @@ const text = strings({
   earlierInputs: "Load earlier inputs",
   inTurn: (turn: number) => `Turn ${turn}`,
   readingNow: "reading",
-  clickInput: "Click to read from this input",
 }, {
   compacting: "正在压缩",
   working: "工作中",
@@ -85,7 +84,6 @@ const text = strings({
   latestLabel: "回到最新的 Turn",
   collaboration: "工作区协作",
   noMessage: "没有用户消息",
-  click: "点击阅读这个 Turn",
   input: "输入",
   inputsNav: "你的输入",
   readingInput: (at, of) => `正在阅读第 ${at} 条输入，共 ${of} 条`,
@@ -96,7 +94,6 @@ const text = strings({
   earlierInputs: "载入更早的输入",
   inTurn: (turn) => `Turn ${turn}`,
   readingNow: "正在阅读",
-  clickInput: "点击从这条输入读起",
 });
 type DockWords = ReturnType<typeof text>;
 
@@ -177,6 +174,10 @@ export function TurnNavigator({
   const [browse, setBrowse] = useState<number | null>(null);
   const [dialogTurn, setDialogTurn] = useState<number | null>(null);
   const [hover, setHover] = useState<number | null>(null);
+  // The first preview waits for the pointer to rest, as any tip does
+  // (Tip.tsx); while one shows, the next Turn's follows at once.
+  const rest = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(rest.current), []);
   const [focused, setFocused] = useState<number | null>(null);
   const [previewTop, setPreviewTop] = useState(8);
   const [engaged, setEngaged] = useState(false);
@@ -454,6 +455,7 @@ export function TurnNavigator({
       }}
       onPointerLeave={() => {
         pointerInside.current = false;
+        window.clearTimeout(rest.current);
         setHover(null);
         lens(null);
         engage();
@@ -552,9 +554,16 @@ export function TurnNavigator({
                   turnIndex === highlighted ? tooltipId : undefined
                 }
                 tabIndex={turnIndex === (focused ?? center) ? 0 : -1}
-                onPointerEnter={() => {
-                  setHover(turnIndex);
-                  positionPreview(turnIndex);
+                onPointerEnter={(event) => {
+                  window.clearTimeout(rest.current);
+                  // A finger's tap reads the Turn; it previews nothing.
+                  if (event.pointerType === "touch") return;
+                  const show = () => {
+                    setHover(turnIndex);
+                    positionPreview(turnIndex);
+                  };
+                  if (hover !== null || focused !== null) show();
+                  else rest.current = window.setTimeout(show, TIP_DELAY_MS);
                 }}
                 onFocus={() => {
                   focusInside.current = true;
@@ -638,7 +647,6 @@ export function TurnNavigator({
                   ? nativeTurnLabel(previewTurn, turnWords(language))
                   : t.noMessage)}
           </p>
-          <small>{inputs ? t.clickInput : t.click}</small>
         </div>
       )}
     </nav>

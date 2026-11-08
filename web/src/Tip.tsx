@@ -1,5 +1,5 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { cloneElement, createContext, isValidElement, useContext, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
+import { cloneElement, createContext, isValidElement, useContext, type CSSProperties, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
 import { langTag, useLanguage } from "./i18n";
 import "./tip.css";
 
@@ -59,6 +59,10 @@ function own(event: SyntheticEvent): boolean {
   const opened = target.closest?.('[role="menu"], [role="dialog"], [role="listbox"]');
   return !opened || opened === trigger || !trigger.contains(opened);
 }
+
+/** Whether the keyboard moved focus last, for a card of its own that opens
+ * on focus as a tip does (ContextUsage, the turn dock's preview). */
+export const focusByKeyboard = () => byKeyboard;
 
 export type TipSide = "top" | "right" | "bottom" | "left";
 export type TipTone = "ok" | "bad" | "attention" | "working" | "info" | "quiet";
@@ -180,3 +184,25 @@ export function TipText({ title, kbd, status, tone, body, meta, when, value, lab
     </>
   );
 }
+
+/**
+ * Recharts' own tooltip drawn as the app's one tip: its box, its label and
+ * its rows, from tip.css's tokens. It keeps Recharts' timing: a chart's
+ * readout follows the pointer across the data at once, which a delay would
+ * only lag.
+ */
+export const chartTip: { contentStyle: CSSProperties; labelStyle: CSSProperties; itemStyle: CSSProperties; wrapperStyle: CSSProperties } = {
+  contentStyle: {
+    background: "var(--tip-bg)",
+    border: "1px solid var(--tip-line)",
+    borderRadius: "var(--tip-radius)",
+    padding: "var(--tip-pad)",
+    boxShadow: "var(--tip-shadow)",
+    color: "var(--ink)",
+    fontSize: "var(--tip-font)",
+    lineHeight: 1.45,
+  },
+  labelStyle: { margin: 0, color: "var(--ink)", fontWeight: 700 },
+  itemStyle: { padding: 0, color: "var(--text-secondary)" },
+  wrapperStyle: { zIndex: 60, outline: "none" },
+};

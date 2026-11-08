@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { Modal } from "./components";
+import { Tip } from "./Tip";
 import { api } from "./api";
 import {
   contentParts,
@@ -30,31 +30,13 @@ function TextBlockButton({
   onDialogChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [hover, setHover] = useState(false);
-  const [position, setPosition] = useState({ left: 8, top: 8 });
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState("");
   const trigger = useRef<HTMLButtonElement>(null);
   const request = useRef(0);
   const title = kind === "long" ? "Long text" : "Pasted text";
-  function previewAtTrigger() {
-    const box = trigger.current?.getBoundingClientRect();
-    if (box)
-      setPosition({
-        left: Math.max(
-          8,
-          Math.min(
-            box.left,
-            window.innerWidth - Math.min(420, window.innerWidth * 0.85) - 8,
-          ),
-        ),
-        top: Math.max(8, Math.min(box.bottom + 5, window.innerHeight - 175)),
-      });
-    setHover(true);
-  }
   async function show() {
     const attempt = ++request.current;
-    setHover(false);
     setText(null);
     setError("");
     setOpen(true);
@@ -68,46 +50,37 @@ function TextBlockButton({
     }
   }
   return (
-    <span
-      className="message-text-block"
-      onPointerEnter={previewAtTrigger}
-      onPointerLeave={() => setHover(false)}
-    >
-      <button
-        ref={trigger}
-        type="button"
-        className="pasted-text-chip"
-        data-paste-id={id}
-        aria-label={`${title}: ${label}. View full text`}
-        aria-haspopup="dialog"
-        onFocus={previewAtTrigger}
-        onBlur={() => setHover(false)}
-        onClick={(event) => {
-          event.stopPropagation();
-          event.preventDefault();
-          void show();
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ")
-            event.stopPropagation();
-        }}
+    <span className="message-text-block">
+      {/* Its start in the app's one tip (Tip.tsx), the Preview kind: what
+          it is, then the text itself. */}
+      <Tip
+        side="bottom"
+        align="start"
+        size="preview"
+        className="message-text-preview"
+        content={open ? null : <><strong className="tip-title">{title}</strong><span className="tip-preview">{preview || "Empty text"}</span></>}
       >
-        {label || "Empty text"}
-        <small>{kind === "long" ? "Long text" : "Pasted text"}</small>
-      </button>
-      {hover &&
-        !open &&
-        createPortal(
-          <span
-            className="message-text-preview"
-            role="tooltip"
-            style={position}
-          >
-            <span>{preview || "Empty text"}</span>
-            <small>Open full text</small>
-          </span>,
-          document.body,
-        )}
+        <button
+          ref={trigger}
+          type="button"
+          className="pasted-text-chip"
+          data-paste-id={id}
+          aria-label={`${title}: ${label}. View full text`}
+          aria-haspopup="dialog"
+          onClick={(event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            void show();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ")
+              event.stopPropagation();
+          }}
+        >
+          {label || "Empty text"}
+          <small>{kind === "long" ? "Long text" : "Pasted text"}</small>
+        </button>
+      </Tip>
       <Modal
         open={open}
         onOpenChange={(value) => {

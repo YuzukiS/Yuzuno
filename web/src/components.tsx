@@ -591,11 +591,11 @@ function ToolItem({
       open={opened} onToggle={event => {
         if (event.target === event.currentTarget && event.currentTarget.open !== opened) setOpened(event.currentTarget.open);
       }}>
-      <ToolCallSummary open={opened} facts={facts}
+      <ToolCallSummary facts={facts}
         icon={callIcon(item, isCommand ? <SquareTerminal size={14} /> : <FileCode2 size={14} />)}
         name={named ? <CallName name={label} /> : label}
         result={item.exitCode != null ? t.exit(item.exitCode) : unconfirmed ? t.unconfirmed : undefined}
-        resultTitle={unconfirmed ? t.unconfirmedTitle : undefined} />
+        resultNote={unconfirmed ? t.unconfirmedTitle : undefined} />
       <div className="tool-content">
         {notice}
         <CallDetails facts={facts} />
