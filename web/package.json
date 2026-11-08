@@ -30,6 +30,7 @@
     "@json-render/core": "0.21.0",
     "@json-render/react": "0.21.0",
     "@radix-ui/react-dialog": "1.1.23",
+    "@radix-ui/react-tooltip": "1.2.16",
     "@tanstack/react-table": "8.21.3",
     "dompurify": "3.4.13",
     "katex": "0.16.47",

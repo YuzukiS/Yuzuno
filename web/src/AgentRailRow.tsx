@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { RequestSummary } from "./MessageContent";
 import { Bell } from "lucide-react";
 import type { AgentActionHandlers } from "./agent-actions";
@@ -8,11 +8,12 @@ import { useAgentJobs } from "./live-jobs";
 import { useAgentCI, waitingSummary } from "./live-ci";
 import { useHandoffDrop } from "./SendToAgent";
 import { strings, useLanguage, type Language } from "./i18n";
-import { lifecycleText, stateDetail } from "./executor-lifecycle";
 import { executorView, type ExecutorPR } from "./executor-display";
-import { executorRowText, rowFactsLabel, stateText } from "./ExecutorRowState";
+import { stateText } from "./ExecutorRowState";
 import { AgentIsland, clockShort, islandText, lineText, stayText, stayTone, useIslandShell, type IslandPill } from "./AgentIsland";
 import { islandView, type IslandAction, type IslandForm } from "./agent-island";
+import { AgentRowCard } from "./AgentRowCard";
+import { Tip, type TipSide } from "./Tip";
 import { useExecutorPR, useMinute } from "./live-executors";
 import "./reading.css";
 
@@ -39,30 +40,23 @@ const text = strings({
   open: (name: string) => `Open ${name}`,
   description: (label: string, detail: string | null, machine: string, unread: number) =>
     `${label}${detail ? ` (${detail})` : ""}, on ${machine}${unread > 0 ? `, ${unread} unread updates` : ""}`,
-  title: (name: string, label: string, detail: string | null, unread: number) =>
-    `${name} · ${label}${detail ? ` · ${detail}` : ""}${unread > 0 ? ` · ${unread} unread updates` : ""}`,
   reported: "Reported · ",
   update: "Update · ",
   drop: (name: string) => `Drop to add it to ${name}’s draft`,
   needsYou: (count: number) => `${count} needs you`,
   lead: "Lead",
-  leadTitle: "A lead of this Project, as set in its settings",
   executor: "Executor",
-  executorTitle: "Made by Core for one task, from an executor template",
 }, {
   host: "Core 主机",
   open: (name) => `打开 ${name}`,
   description: (label, detail, machine, unread) =>
     `${label}${detail ? `（${detail}）` : ""}，位于 ${machine}${unread > 0 ? `，${unread} 条未读更新` : ""}`,
-  title: (name, label, detail, unread) => `${name} · ${label}${detail ? ` · ${detail}` : ""}${unread > 0 ? ` · ${unread} 条未读更新` : ""}`,
   reported: "已报告 · ",
   update: "更新 · ",
   drop: (name) => `放下即可添加到 ${name} 的草稿`,
   needsYou: (count) => `${count} 项需要你`,
   lead: "负责人",
-  leadTitle: "此 Project 的负责人（在 Project 设置中指定）",
   executor: "执行者",
-  executorTitle: "由 Core 按执行者模板为一个任务创建",
 });
 
 /** How long a touch is held before it opens the actions, and how far it may
@@ -73,16 +67,19 @@ const LONG_PRESS_SLOP = 10;
  * presses in before the actions open. */
 const HOLD_CUE_MS = 150;
 
-/** A touch held still opens `onPress` at that point; a move, a cancel or an
- * early lift does nothing. After a long-press (`fired`), the click that
+/** Where a touch began: its point, and the element under it. */
+type Press = MenuPoint & { on: Element };
+
+/** A touch held still opens `onPress` where it began; a move, a cancel or
+ * an early lift does nothing. After a long-press (`fired`), the click that
  * follows is swallowed, so the row does not also open; any next press clears
  * it. `claim` takes a pending touch for the browser's own context menu, so
- * the menu opens once. `holding` is true from HOLD_CUE_MS into a hold until
- * it opens or ends. */
-function useLongPress(onPress: (point: MenuPoint) => void) {
+ * it opens once, and says where the touch began (null: none was pending).
+ * `holding` is true from HOLD_CUE_MS into a hold until it opens or ends. */
+function useLongPress(onPress: (press: Press) => void) {
   const timer = useRef<number | undefined>(undefined);
   const cue = useRef<number | undefined>(undefined);
-  const start = useRef<{ x: number; y: number; id: number } | null>(null);
+  const start = useRef<(Press & { id: number }) | null>(null);
   const fired = useRef(false);
   const [holding, setHolding] = useState(false);
   const cancel = () => {
@@ -98,11 +95,12 @@ function useLongPress(onPress: (point: MenuPoint) => void) {
   return {
     fired,
     holding,
-    claim: () => {
-      if (!start.current) return false;
+    claim: (): Press | null => {
+      const at = start.current;
+      if (!at) return null;
       cancel();
       fired.current = true;
-      return true;
+      return at;
     },
     handlers: {
       onPointerDown: (event: React.PointerEvent) => {
@@ -111,7 +109,7 @@ function useLongPress(onPress: (point: MenuPoint) => void) {
         // The open menu's own entries (its events reach the row through React).
         if ((event.target as Element).closest?.('[role="menu"]')) return;
         if (event.pointerType !== "touch" || !event.isPrimary) return;
-        start.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+        start.current = { x: event.clientX, y: event.clientY, id: event.pointerId, on: event.target as Element };
         cue.current = window.setTimeout(() => setHolding(true), HOLD_CUE_MS);
         timer.current = window.setTimeout(() => {
           const at = start.current;
@@ -119,7 +117,7 @@ function useLongPress(onPress: (point: MenuPoint) => void) {
           start.current = null;
           fired.current = true;
           setHolding(false);
-          onPress({ x: at.x, y: at.y });
+          onPress(at);
         }, LONG_PRESS_MS);
       },
       onPointerMove: (event: React.PointerEvent) => {
@@ -183,11 +181,25 @@ export function AgentRailRow({
   const drop = useHandoffDrop(agent);
   const menu = useRef<AgentActionsMenuHandle>(null);
   const select = useRef<HTMLButtonElement>(null);
-  const press = useLongPress((point) => menu.current?.openAt(point, select.current));
+  // Its card (YN-44): one for the whole row, the ring included. A touch held
+  // on the ring shows it (a phone has no pointer to rest); held anywhere
+  // else on the row, the actions open as before.
+  const row = useRef<HTMLElement>(null);
+  const card = useRowCard(row);
+  // On the ring: on its button, or within its touch area where it is no
+  // button and lets a touch through to the row (an idle ring).
+  const onRing = (press: Press | null) => {
+    if (!press) return false;
+    if (press.on.closest?.(".agent-island")) return true;
+    const box = row.current?.querySelector(":scope > .agent-island .island-ringbox")?.getBoundingClientRect();
+    if (!box?.width) return false;
+    const pad = Math.max(0, (RING_TOUCH - box.width) / 2);
+    return press.x >= box.left - pad && press.x <= box.right + pad && press.y >= box.top - pad && press.y <= box.bottom + pad;
+  };
+  const press = useLongPress((at) => (onRing(at) ? card.hold() : menu.current?.openAt({ x: at.x, y: at.y }, select.current)));
   // A Project's lead says so (T-33), and an executor (T-34) with its state
   // (T-36 S3); the button's label is its name only.
   const lifecycle = agent.kind === "executor" && agent.executor ? agent.executor : null;
-  const states = lifecycleText(language);
   // An executor's one state (T-43 S2): its row's second line says it, in
   // place of a runtime status and a lifecycle badge, and says it once.
   const pr = useExecutorPR(agent.id);
@@ -197,14 +209,7 @@ export function AgentRailRow({
   // made from no template (an empty id) says Executor there.
   const made = lifecycle?.template ? (lifecycle.template.id === "" ? t.executor : lifecycle.template.label || null) : null;
   const template = made && !agent.name.includes(made) ? made : null;
-  const kind = agent.kind === "lead" ? { name: t.lead, title: t.leadTitle }
-    : agent.kind === "executor"
-      ? {
-          name: t.executor,
-          title: [t.executorTitle, ...(lifecycle?.task ? [`${lifecycle.task.id} · ${lifecycle.task.title}`] : []),
-            ...(lifecycle ? stateDetail(lifecycle, states) : [])].join("\n"),
-        }
-      : null;
+  const kind = agent.kind === "lead" ? t.lead : agent.kind === "executor" ? t.executor : null;
   // Updates unread are a lead's only (the user, rail v11).
   const unread = agent.kind === "lead" ? agent.unreadCount : 0;
   const description = t.description(shown, executor ? null : waiting?.detail ?? null, machine, unread);
@@ -225,11 +230,8 @@ export function AgentRailRow({
   const event = usePassingEvent({ state: queued ? "queued" : island.state, pr: pr ?? null, language, quiet: island.auto });
   const pill = event ?? stay;
   const form: IslandForm = island.auto ? "row" : pill ? "pill" : rest;
-  const row = useRef<HTMLElement>(null);
   const shell = useRef<HTMLSpanElement>(null);
   useIslandShell(row, shell, form, pill?.text ?? null);
-  // An executor's template, PR and task, for its ring's title.
-  const factsLabel = executor ? rowFactsLabel(executor, template, executorRowText(language)) : null;
   const go = (action: IslandAction) => {
     if (action === "answer") onOpenHome?.(agent.id);
     else if (action === "turn" || action === "reply") onSelect();
@@ -243,11 +245,7 @@ export function AgentRailRow({
   const alert = !executor && (island.state === "waiting" || island.state === "failed");
   const progress = executor ? lineText(island.line, language) : "";
   const summaryLine = summary && (
-    <div
-      className={`agent-work-summary kind-${summary.kind}`}
-      data-source-kind={summary.kind}
-      title={summary.requestParts ? undefined : summary.text}
-    >
+    <div className={`agent-work-summary kind-${summary.kind}`} data-source-kind={summary.kind}>
       {summary.source === "agent" && (
         <span className="agent-report-prefix">
           {summary.kind === "result" ? t.reported : t.update}
@@ -256,7 +254,12 @@ export function AgentRailRow({
       <RequestSummary agentId={agent.id} summary={summary} />
     </div>
   );
-  return (
+  // Line two in full, for the card: an executor's progress; a standing
+  // Agent's last words, as its row says them.
+  const activity = executor ? progress
+    : summary ? `${summary.source === "agent" ? (summary.kind === "result" ? t.reported : t.update) : ""}${summary.text}`
+      : lineText(island.line, language);
+  const body = (
     <article
       ref={row}
       className={`agent-row${selected ? " selected" : ""}${drop.state ? ` handoff-${drop.state}` : ""}${press.holding ? " is-holding" : ""}`}
@@ -271,7 +274,7 @@ export function AgentRailRow({
           // After a long-press that opened it, a touch's own context menu
           // opens nothing more; before one, it takes the press.
           if (press.fired.current) return;
-          press.claim();
+          if (onRing(press.claim())) return card.hold();
           menu.current?.openAt({ x: event.clientX, y: event.clientY }, select.current);
         },
         onClickCapture: (event: React.MouseEvent) => {
@@ -291,9 +294,8 @@ export function AgentRailRow({
         className="agent-select agent-row-top"
         onClick={onSelect}
         aria-label={t.open(agent.name)}
-        aria-description={kind ? `${kind.name} · ${description}` : description}
+        aria-description={kind ? `${kind} · ${description}` : description}
         aria-current={selected ? "true" : undefined}
-        title={`${t.title(agent.name, shown, executor ? null : waiting?.detail ?? null, unread)}${kind ? ` · ${kind.name}` : ""}${lifecycle?.task ? `\n${lifecycle.task.id} · ${lifecycle.task.title}` : ""}`}
         onKeyDown={actions ? (event) => {
           // The keyboard's way to the actions (rail v11, no "…" button): the context-menu key or Shift+F10.
           if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
@@ -307,7 +309,7 @@ export function AgentRailRow({
         ) : (
           <span className="agent-line-one agent-identity">
             <span className="agent-name">{agent.name}</span>
-            {kind && <span className="agent-kind-badge" data-kind={agent.kind} title={kind.title}>{kind.name}</span>}
+            {kind && <span className="agent-kind-badge" data-kind={agent.kind}>{kind}</span>}
           </span>
         )}
       </button>
@@ -327,7 +329,6 @@ export function AgentRailRow({
         <div className="agent-row-state">{summaryLine}</div>
       )}
       <AgentIsland view={island} form={form} pill={pill} name={agent.name} onGo={go}
-        detail={executor ? [kind?.title, factsLabel].filter(Boolean).join("\n") : undefined}
         data-status={label}
         data-jobs={waiting ? jobs?.active : undefined}
         data-ci={waiting && ci ? ci.running + ci.discovering + (ci.waitingForRun ?? 0) + ci.check : undefined}
@@ -349,6 +350,104 @@ export function AgentRailRow({
       )}
     </article>
   );
+  return (
+    <Tip
+      side={card.side}
+      align={card.side === "right" ? "start" : "end"}
+      size="wide"
+      describe={false}
+      open={card.open}
+      onOpenChange={card.onOpenChange}
+      className="agent-card"
+      content={<AgentRowCard agent={agent} island={island} executor={executor} lifecycle={lifecycle} template={template}
+        machine={machine} badge={agent.kind === "lead" ? t.lead : null} activity={activity} waits={executor ? null : waiting?.detail ?? null} />}
+    >
+      {body}
+    </Tip>
+  );
+}
+
+/** The ring's area for a finger, as its button's on touch (agent-island.css). */
+const RING_TOUCH = 40;
+
+/** Beside the row, the card needs this much of the window to its right;
+ * with less (a phone's rail, a narrow window) it goes under the row. */
+const CARD_ROOM = 240;
+
+/**
+ * The row's card (YN-44): shown after the pointer rests on the row, or at
+ * once on keyboard focus (Tip), or by a touch held on the ring (`hold`). A
+ * held card stays after the lift; the next tap anywhere only closes it (that
+ * tap does nothing else), and a scroll or Escape closes it too.
+ */
+function useRowCard(row: RefObject<HTMLElement | null>) {
+  const [open, setOpen] = useState(false);
+  const [side, setSide] = useState<TipSide>("right");
+  const [held, setHeld] = useState(false);
+  const holding = useRef(false);
+  const place = () => {
+    const box = row.current?.getBoundingClientRect();
+    setSide(box && window.innerWidth - box.right >= CARD_ROOM ? "right" : "bottom");
+  };
+  useEffect(() => {
+    if (!held) return;
+    let pressed = false;
+    let late: number | undefined;
+    const end = () => {
+      window.clearTimeout(late);
+      holding.current = false;
+      setHeld(false);
+      setOpen(false);
+    };
+    const down = () => {
+      pressed = true;
+      setOpen(false);
+    };
+    // A press that ends in no click (a drag) still ends the hold.
+    const up = () => {
+      if (pressed) late = window.setTimeout(end, 400);
+    };
+    const click = (event: MouseEvent) => {
+      // The hold's own lift is the row's to swallow.
+      if (!pressed) return;
+      event.preventDefault();
+      event.stopPropagation();
+      end();
+    };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") end();
+    };
+    document.addEventListener("pointerdown", down, true);
+    document.addEventListener("pointerup", up, true);
+    document.addEventListener("click", click, true);
+    document.addEventListener("keydown", key, true);
+    window.addEventListener("scroll", end, true);
+    return () => {
+      window.clearTimeout(late);
+      document.removeEventListener("pointerdown", down, true);
+      document.removeEventListener("pointerup", up, true);
+      document.removeEventListener("click", click, true);
+      document.removeEventListener("keydown", key, true);
+      window.removeEventListener("scroll", end, true);
+    };
+  }, [held]);
+  return {
+    open,
+    side,
+    onOpenChange: (next: boolean) => {
+      // A held card closes at the next tap, not at the lift (or the pointer
+      // leaving) that ends the hold.
+      if (!next && holding.current) return;
+      if (next) place();
+      setOpen(next);
+    },
+    hold: () => {
+      holding.current = true;
+      place();
+      setOpen(true);
+      setHeld(true);
+    },
+  };
 }
 
 /** A passing event for the pill (T-43 rail v11): what changed since the

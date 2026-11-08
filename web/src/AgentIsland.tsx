@@ -2,7 +2,6 @@ import { forwardRef, useLayoutEffect, useRef, type RefObject } from "react";
 import { clockMs, islandTime, type IslandAction, type IslandClock, type IslandForm, type IslandLine, type IslandState, type IslandStay, type IslandView } from "./agent-island";
 import { detailText, executorRowText } from "./ExecutorRowState";
 import { strings, useLanguage, type Language } from "./i18n";
-import { useMinute } from "./live-executors";
 import "./agent-island.css";
 
 // The island's words (T-43, rail v11). What Agents and Core wrote is shown as it came.
@@ -15,10 +14,6 @@ export const islandText = strings({
   },
   colon: ": ",
   gap: " · ",
-  clock: {
-    working: (x: string) => `for ${x}`, waiting: (x: string) => `waiting ${x}`, live: (x: string) => `for ${x}`,
-    since: (x: string) => `${x} ago`, total: (x: string) => `${x} in total`,
-  },
   /** The clock on line two: "1h12m", "1m ago", "1h12m in all". */
   time: { live: (x: string) => x, since: (x: string) => `${x} ago`, total: (x: string) => `${x} in all` },
   unread: "updates unread",
@@ -37,10 +32,6 @@ export const islandText = strings({
   },
   colon: "：",
   gap: " · ",
-  clock: {
-    working: (x) => `已用 ${x}`, waiting: (x) => `已等 ${x}`, live: (x) => `已用 ${x}`,
-    since: (x) => `${x}前`, total: (x) => `共用 ${x}`,
-  },
   time: { live: (x) => x, since: (x) => `${x}前`, total: (x) => `共 ${x}` },
   unread: "有未读更新",
   go: {
@@ -81,28 +72,9 @@ export function stayTone(stay: IslandStay): IslandPill["tone"] {
   }
 }
 
-/** The clock as a caption: "已用 1时12分", "14分前", "共用 1时12分". */
-export function clockCaption(state: IslandState, clock: IslandClock, now: number, language: Language): string {
-  const t = islandText(language);
-  const x = islandTime(clockMs(clock, now), language);
-  if (clock.kind === "total") return t.clock.total(x);
-  if (clock.kind === "since") return t.clock.since(x);
-  return state === "waiting" ? t.clock.waiting(x) : state === "working" ? t.clock.working(x) : t.clock.live(x);
-}
-
 /** The clock as line two writes it: "1h12m", "1m ago", "1h12m in all". */
 export function clockShort(clock: IslandClock, now: number, language: Language): string {
   return islandText(language).time[clock.kind](islandTime(clockMs(clock, now), language));
-}
-
-/** The whole island in words, for the ring's title: the state, what stays,
- * its clock, what it is at and whether a lead has updates unread. */
-export function islandLabel(view: IslandView, now: number, language: Language): string {
-  const t = islandText(language);
-  const line = lineText(view.line, language);
-  return [t.word[view.state], view.stay ? stayText(view.stay, language) : null, view.clock ? clockCaption(view.state, view.clock, now, language) : null,
-    line || null, view.dot ? t.unread : null]
-    .filter(Boolean).join(" · ");
 }
 
 /** Where the ring goes, in words: its label. */
@@ -148,8 +120,6 @@ type IslandProps = {
   pill?: IslandPill | null;
   /** Where the ring goes; it is a button only when it goes somewhere. */
   onGo: (go: IslandAction) => void;
-  /** More for its title: an executor's task and template, who dispatched it. */
-  detail?: string;
   /** The runtime's own hooks, as its status carried them: the app's status
    * words for it, and its live Jobs and CI. */
   "data-status"?: string;
@@ -167,10 +137,8 @@ type IslandProps = {
  * its own, it is part of the row, whose click opens the conversation.
  */
 export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
-  function AgentIsland({ view, form, name, pill, onGo, detail, ...hooks }, ref) {
+  function AgentIsland({ view, form, name, pill, onGo, ...hooks }, ref) {
     const language = useLanguage();
-    const now = useMinute();
-    const label = islandLabel(view, now, language);
     const ring: RingState = form === "pill" && pill?.ring ? pill.ring : view.state;
     const go = view.go;
     const body = (
@@ -194,8 +162,9 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
       "data-clock": view.clock?.kind,
       "data-dot": view.dot || undefined,
     };
-    // Nowhere of its own: part of the row, whose link says the state.
-    if (!go) return <span {...shared} title={label} aria-hidden="true">{body}</span>;
+    // Nowhere of its own: part of the row, whose link says the state. What
+    // the ring says in full is the row's card (AgentRowCard.tsx).
+    if (!go) return <span {...shared} aria-hidden="true">{body}</span>;
     const where = goText(go, view, language);
     return (
       <button
@@ -203,7 +172,6 @@ export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
         type="button"
         {...shared}
         aria-label={`${name} · ${where}`}
-        title={`${label}\n${where}${detail ? `\n${detail}` : ""}`}
         onClick={(event) => { event.stopPropagation(); onGo(go); }}
       >
         {body}

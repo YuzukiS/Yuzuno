@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { AUTO_READ_DWELL_MS } from "../src/useAutoRead.ts";
+import { readTip } from "./tip-dom.mjs";
 
 // Exercises the built app against an in-memory Core; it never contacts a real one.
 const distUrl = process.env.YUZUNO_UI_DIST
@@ -910,7 +911,10 @@ test("a Project's leads are the user's to set, from its open members that are no
     assert.deepEqual(badges(), [["Mori", "Lead"], ["Hana", "Executor"]], "a lead and an executor are marked, each as its kind, in the rail scope");
     const mori = page.document.querySelector('.agent-row[data-agent-id="a"] .agent-select');
     assert.match(mori.getAttribute("aria-description"), /^Lead · /);
-    assert.match(mori.getAttribute("title"), / · Lead$/);
+    // Its card (YN-44) says it is a lead, and of which Project, where its row's title once did.
+    const card = await readTip(page.window, mori);
+    assert.equal(card[0], "Mori Lead", card.join(" | "));
+    assert.ok(card.includes("Lead of this Project · Core host"), card.join(" | "));
     const hana = page.document.querySelector('.agent-row[data-agent-id="b"] .agent-select');
     assert.match(hana.getAttribute("aria-description"), /^Executor · /);
     assert.doesNotMatch(hana.getAttribute("aria-description"), /Lead/);

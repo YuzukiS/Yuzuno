@@ -1,0 +1,114 @@
+/* The app's one tooltip (Tip.tsx, YN-44), drawn as the Work dock's CI run
+   card was: the raised surface, a hairline, a soft shadow, and lines from
+   the strongest to the quietest. Its padding and radius follow the text
+   size with everything else (`--font-adjust`); at the default size they
+   are the Work dock card's own 8 × 11 px and 9 px. */
+:root {
+  --tip-bg: var(--surface-raised);
+  --tip-line: var(--line);
+  --tip-radius: calc(6px + var(--font-adjust, 3px));
+  --tip-pad: calc(5px + var(--font-adjust, 3px)) calc(8px + var(--font-adjust, 3px));
+  --tip-shadow: 0 8px 26px var(--palette-shadow, #00000020);
+  --tip-font: calc(9px + var(--font-adjust, 3px));
+}
+
+/* Radix places the card in a wrapper of its own; neither takes the pointer. */
+[data-radix-popper-content-wrapper]:has(> .tip) {
+  pointer-events: none;
+}
+.tip {
+  z-index: 60;
+  box-sizing: border-box;
+  display: grid;
+  gap: 2px;
+  width: max-content;
+  /* Never wider than the room on its side (Radix measures it). */
+  max-width: min(280px, var(--radix-tooltip-content-available-width, 100vw), calc(100vw - 16px));
+  padding: var(--tip-pad);
+  border: 1px solid var(--tip-line);
+  border-radius: var(--tip-radius);
+  background: var(--tip-bg);
+  box-shadow: var(--tip-shadow);
+  color: var(--ink);
+  font-size: var(--tip-font);
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  /* Nothing in a tip is for the pointer: it never stands in the way. */
+  pointer-events: none;
+  user-select: none;
+  animation: tip-in var(--motion-micro, 120ms) var(--ease-standard, ease-out);
+}
+.tip[data-size="wide"] {
+  max-width: min(320px, var(--radix-tooltip-content-available-width, 100vw), calc(100vw - 16px));
+}
+.tip[data-size="preview"] {
+  max-width: min(420px, var(--radix-tooltip-content-available-width, 100vw), calc(100vw - 16px));
+}
+/* In, a few pixels away from what it describes; out at once. */
+.tip[data-side="right"] { --tip-from: -4px 0; }
+.tip[data-side="left"] { --tip-from: 4px 0; }
+.tip[data-side="top"] { --tip-from: 0 4px; }
+.tip[data-side="bottom"] { --tip-from: 0 -4px; }
+@keyframes tip-in {
+  from {
+    opacity: 0;
+    translate: var(--tip-from, 0 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tip { --tip-from: 0 0; }
+}
+
+.tip-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.tip-title {
+  min-width: 0;
+  color: var(--ink);
+  font-weight: 700;
+}
+.tip-kbd {
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--tip-line);
+  border-radius: 4px;
+  color: var(--text-quiet);
+  font-family: inherit;
+  font-size: 0.88em;
+  white-space: nowrap;
+}
+.tip-status,
+.tip-body {
+  color: var(--text-secondary);
+}
+/* A state word takes its state's colour; nothing else in a tip does (a
+   card's own marks, such as the Agent row card's pill, keep theirs). */
+.tip-status[data-tone="ok"] { color: var(--success-ink, var(--green)); }
+.tip-status[data-tone="bad"] { color: var(--error-ink, var(--coral)); }
+.tip-status[data-tone="attention"] { color: var(--attention-ink, var(--accent-ink)); }
+.tip-status[data-tone="working"] { color: var(--state-working, var(--accent-ink)); }
+.tip-status[data-tone="info"] { color: var(--accent-ink); }
+.tip-meta {
+  color: var(--text-quiet);
+  font-size: 0.92em;
+}
+.tip-when {
+  color: var(--text-quiet);
+  font-size: calc(7.5px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.tip-value {
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  word-break: break-all;
+}

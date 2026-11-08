@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { openTip, tipLines } from "./tip-dom.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
@@ -438,4 +439,112 @@ test("a touch held shows it is held from 150 ms until the actions open; a move p
   assert.equal(holding(), false, "a mouse held down shows nothing");
   page.pointer(name(), "pointerup", { pointerType: "mouse" });
   page.close();
+});
+
+// The row's card (YN-44): the app's one tip, for the whole row and its ring.
+const shownCard = (page) => page.document.querySelector('.tip[role="tooltip"]');
+
+test("the row's card opens after the pointer rests 300 ms, at once from the keyboard; a press, a touch or a leave opens nothing; Escape closes it without interrupting", async () => {
+  const page = mount();
+  try {
+    page.window.renderRows([agent("a", { workSummary: { kind: "progress", source: "agent", text: "Writing the import test" } }), agent("b")]);
+    await tick();
+    const row = page.row("a");
+    const select = row.querySelector(".agent-select");
+    page.pointer(row, "pointermove", { pointerType: "mouse" });
+    await tick(150);
+    assert.equal(shownCard(page), null, "not before its delay");
+    await tick(300);
+    assert.ok(shownCard(page), "open once the pointer rested");
+    assert.deepEqual(tipLines(shownCard(page)), ["A", "Idle", "Update · Writing the import test", "Core host"],
+      "its name, its state, what it last said in full, where it runs; nothing about where a click goes");
+    // Leaving the row closes it at once.
+    page.pointer(row, "pointerout", { pointerType: "mouse", relatedTarget: page.document.body });
+    await tick();
+    assert.equal(shownCard(page), null, "closed on leaving");
+    // The keyboard: at once, and Escape closes it, taken before App's interrupt.
+    const started = Date.now();
+    await openTip(page.window, select);
+    assert.ok(Date.now() - started < 250, "no delay for the keyboard");
+    page.key(page.document.activeElement, "Escape");
+    await tick();
+    assert.equal(shownCard(page), null, "Escape closed it");
+    assert.equal(page.window.interrupts, 0, "the Escape that closed it interrupted nothing");
+    select.blur();
+    // A press focuses the link on its way to a click: that focus opens nothing.
+    page.pointer(select, "pointerdown", { pointerType: "mouse" });
+    select.focus();
+    page.pointer(select, "pointerup", { pointerType: "mouse" });
+    await tick(450);
+    assert.equal(shownCard(page), null, "a press's focus opens nothing");
+    select.blur();
+    // A finger moving over the row opens nothing.
+    page.pointer(row, "pointermove", { pointerType: "touch" });
+    await tick(450);
+    assert.equal(shownCard(page), null, "nothing on touch");
+    // Its actions from the keyboard: the menu's focus reaches the row through
+    // React (a portal), and opens no card over the menu.
+    await openTip(page.window, select);
+    page.key(select, "ContextMenu");
+    await tick();
+    assert.ok(page.menu(), "the actions");
+    assert.equal(shownCard(page), null, "no card over the menu");
+    page.key(page.document.activeElement, "Escape");
+    await tick();
+    assert.equal(page.menu(), null, "one Escape closes the menu");
+  } finally {
+    page.close();
+  }
+});
+
+test("a touch held on the ring shows the row's card, not the actions; it stays after the lift, the next tap only closes it; held elsewhere or right-clicked, the actions open", async () => {
+  const page = mount();
+  try {
+    page.window.renderRows([agent("a"), agent("b")]);
+    await tick();
+    const ring = () => page.row("a").querySelector(".agent-island");
+    const hold = page.window.LONG_PRESS_MS + 100;
+    page.pointer(ring(), "pointerdown", { pointerType: "touch", clientX: 200, clientY: 20 });
+    await tick(hold);
+    assert.ok(shownCard(page), "the card");
+    assert.equal(page.menu(), null, "not the actions");
+    // The lift: the finger leaves the row, and its click opens nothing; the card stays.
+    page.pointer(ring(), "pointerup", { pointerType: "touch" });
+    page.pointer(page.row("a"), "pointerout", { pointerType: "touch", relatedTarget: page.document.body });
+    page.row("a").querySelector(".agent-select").click();
+    await tick();
+    assert.ok(shownCard(page), "still shown after the lift");
+    assert.deepEqual([...page.window.opened], [], "the lift opened nothing");
+    // The next tap, on another row: it closes the card and does nothing else.
+    const other = page.row("b").querySelector(".agent-select");
+    page.pointer(other, "pointerdown", { pointerType: "touch", clientX: 30, clientY: 60 });
+    await tick();
+    assert.equal(shownCard(page), null, "closed by the next tap");
+    page.pointer(other, "pointerup", { pointerType: "touch" });
+    other.click();
+    await tick();
+    assert.deepEqual([...page.window.opened], [], "that tap opened nothing");
+    // The tap after it opens the Agent, as ever.
+    page.pointer(other, "pointerdown", { pointerType: "touch", clientX: 30, clientY: 60 });
+    page.pointer(other, "pointerup", { pointerType: "touch" });
+    other.click();
+    await tick();
+    assert.deepEqual([...page.window.opened], ["b"]);
+    // Held anywhere else on the row: its actions.
+    page.pointer(page.row("a").querySelector(".agent-name"), "pointerdown", { pointerType: "touch", clientX: 30, clientY: 20 });
+    await tick(hold);
+    assert.ok(page.menu(), "the actions");
+    assert.equal(shownCard(page), null);
+    page.pointer(page.row("a").querySelector(".agent-name"), "pointerup", { pointerType: "touch" });
+    page.key(page.document.activeElement, "Escape");
+    await tick();
+    // A right-click on the ring (a mouse press, then its menu): its actions too.
+    page.pointer(ring(), "pointerdown", { pointerType: "mouse", button: 2, clientX: 200, clientY: 20 });
+    ring().dispatchEvent(new page.window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 200, clientY: 20 }));
+    await tick();
+    assert.ok(page.menu(), "a right-click on the ring opens the actions");
+    assert.equal(shownCard(page), null);
+  } finally {
+    page.close();
+  }
 });
