@@ -13,6 +13,12 @@ use serde_json::{Value, json};
 const ACTIVE: &str = "('queued','waiting','ready','merging')";
 /// A check that has waited this long stops instead (seconds).
 const WAIT_LIMIT: i64 = 6 * 3600;
+/// While a CI run is still going, on the head or the batch, or main's push CI
+/// on the merge commit, the entry is read again at least this often, so its
+/// end is seen soon (YN-33, trial YN-26 finding 2): reads keep their ETags, and
+/// an unchanged answer is a 304.
+const RUNNING_CI: i64 = 120;
+const RUNNING_MAIN_CI: i64 = 60;
 /// Consecutive failed reads before an entry stops.
 const READ_FAILURES: i64 = 8;
 /// Consecutive merge requests that could not be sent before an entry stops.
@@ -96,7 +102,8 @@ fn entry(db: &Connection, id: &str) -> Result<Value> {
 }
 /// When the entry is next due: its own next check, or earlier when a tag for
 /// its release (YN-33) is due first. A tag has its own time (`grouping.nextAt`),
-/// so an ended entry is due only for it, and its follow-up keeps its own pace.
+/// so an ended entry is due only for it; a pass that is due only for the tag
+/// leaves the follow-up and the cleanup to their own time (`tick`).
 fn due_at(e: &Value) -> i64 {
     let own = e["nextCheck"].as_i64().unwrap_or(0);
     if e["grouping"]["state"] != "pending" {
@@ -1004,6 +1011,12 @@ impl Store {
                         if let Some(at) = evidence["mergeRef"]["checkAgainAt"].as_i64().filter(|_| e["state"] == "waiting") {
                             e["nextCheck"] = json!(e["nextCheck"].as_i64().unwrap_or(at).min(at.max(now_epoch)));
                         }
+                        // A run still going is read again within two minutes.
+                        let running = evidence["ciRunning"] == true || evidence["gate"]["ciRunning"] == true;
+                        if running && e["state"] == "waiting" {
+                            let at = now_epoch + RUNNING_CI;
+                            e["nextCheck"] = json!(e["nextCheck"].as_i64().unwrap_or(at).min(at));
+                        }
                     }
                     Err(Hold::Stop(reason, detail)) => {
                         if reason == "main_red" {
@@ -1221,6 +1234,7 @@ impl Store {
                     None => {}
                 }
                 if e["state"] == "merged" && announce_as.is_none() {
+                    let running = f.main_ci.as_ref().is_some_and(|run| run["status"] != "completed");
                     match f.main_ci.filter(|run| run["status"] == "completed") {
                         Some(run) => {
                             let conclusion = run["conclusion"].as_str().unwrap_or("").to_owned();
@@ -1251,7 +1265,10 @@ impl Store {
                             let since = e["waitingSince"].as_i64().unwrap_or(now_epoch);
                             e["waits"] = json!(waits + 1);
                             e["waitingSince"] = json!(since);
-                            e["nextCheck"] = json!(now_epoch + (60i64 << waits.min(3)).min(600));
+                            // Once main's push CI on the merge commit runs, it is
+                            // read every minute until it ends; before, with the backoff.
+                            let pace = if running { RUNNING_MAIN_CI } else { (60i64 << waits.min(3)).min(600) };
+                            e["nextCheck"] = json!(now_epoch + pace);
                             if now_epoch - since > WAIT_LIMIT {
                                 e["merge"]["mainCi"] = json!({"conclusion":"unobserved","detail":"No finished push run of CI on the merge commit within six hours"});
                                 e["state"] = json!("done");

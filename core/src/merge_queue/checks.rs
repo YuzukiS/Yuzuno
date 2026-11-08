@@ -248,6 +248,14 @@ pub(super) fn main_runs_since(runs: &[Value], since: &str, anchored_at: &str, ac
     (seen, None)
 }
 
+/// Whether the newest run of a workflow among `runs` is still going (YN-33):
+/// the entry is then read again soon.
+pub(super) fn running(runs: &[Value]) -> bool {
+    runs.iter().any(|run| {
+        run["status"] != "completed" && !runs.iter().any(|newer| newer["name"] == run["name"] && newer["id"].as_u64() > run["id"].as_u64())
+    })
+}
+
 /// The newest run of each workflow on the head. Every one has finished green
 /// (success, skipped or neutral), and CI plus each required workflow ran.
 pub(super) fn head_runs(runs: &[Value], required: &[String]) -> Check<Vec<Value>> {

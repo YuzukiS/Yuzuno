@@ -362,7 +362,7 @@ impl Lab {
     /// The next step is due now, whatever wait the last one set.
     fn due(&self) {
         let db = self.ws.store.db.write().unwrap();
-        db.execute("UPDATE merge_entries SET next_check=0", []).unwrap();
+        db.execute("UPDATE merge_entries SET next_check=0,data=json_set(data,'$.nextCheck',0)", []).unwrap();
         // A pending tag for the release (YN-33) has its own time.
         db.execute("UPDATE merge_entries SET data=json_set(data,'$.grouping.nextAt',0) WHERE json_extract(data,'$.grouping.state')='pending'", [])
             .unwrap();
@@ -3451,6 +3451,76 @@ async fn a_released_proof_holds_only_while_the_last_round_is_the_one_it_was_read
     let e = lab.entry().await;
     assert_eq!(e["reason"], "review_not_passing", "{e}");
     assert!(e["detail"].as_str().unwrap().contains("at this head concluded changes_requested"), "{}", e["detail"]);
+}
+
+/// YN-33, trial YN-26 finding 2: a CI run still going on the head is read
+/// again within two minutes however long the entry has waited, and main's
+/// push CI on the merge commit, once it runs, every minute; before it runs,
+/// the follow-up keeps its backoff.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_running_ci_run_is_read_again_soon_and_main_ci_on_the_merge_every_minute() {
+    let lab = lab(green());
+    change(lab.dir.path(), |s| {
+        s["runs"][1]["status"] = json!("in_progress");
+        s["runs"][1]["conclusion"] = Value::Null;
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    let mut e = Value::Null;
+    for _ in 0..5 {
+        e = lab.step().await;
+    }
+    let ahead = |e: &Value| e["nextCheck"].as_i64().unwrap() - chrono::Utc::now().timestamp();
+    assert_eq!((e["state"].clone(), e["waits"].clone()), (json!("waiting"), json!(5)), "{e}");
+    assert!(ahead(&e) <= 120, "a running head run is read again within two minutes, not after the backoff: {}", ahead(&e));
+    // No CI run yet: the backoff as before.
+    change(lab.dir.path(), |s| s["runs"] = json!([]));
+    let e = lab.step().await;
+    assert!(ahead(&e) > 120, "a wait for a run that has not started keeps the backoff: {}", ahead(&e));
+    change(lab.dir.path(), |s| s["runs"] = green()["runs"].clone());
+    let e = lab.step().await;
+    assert_eq!(e["state"], "merged", "{e}");
+    let e = lab.step().await;
+    let e = if e["waits"].as_i64() < Some(2) { lab.step().await } else { e };
+    assert!(ahead(&e) > 60, "before main CI runs, the follow-up backs off: {}", ahead(&e));
+    change(lab.dir.path(), |s| {
+        main_ci(s, "success");
+        s["mainRuns"][0]["status"] = json!("in_progress");
+        s["mainRuns"][0]["conclusion"] = Value::Null;
+    });
+    for _ in 0..4 {
+        let e = lab.step().await;
+        assert_eq!(e["state"], "merged");
+        assert!(ahead(&e) <= 60, "main CI on the merge is read every minute while it runs: {}", ahead(&e));
+    }
+    change(lab.dir.path(), |s| {
+        s["mainRuns"][0]["status"] = json!("completed");
+        s["mainRuns"][0]["conclusion"] = json!("success");
+    });
+    assert_eq!(lab.step().await["state"], "done");
+}
+
+/// The P3 of YN-33 S1's review: a pass due only for a pending tag leaves the
+/// follow-up of main CI to its own time.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pass_due_only_for_a_tag_does_not_read_main_ci_early() {
+    let lab = lab_with(|s| s["milestoneAnswers"] = json!(["502", "502"]));
+    lab.ws.store.merge_set_grouping(7, true).unwrap();
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["grouping"]["failures"].clone()), (json!("merged"), json!(1)), "{e}");
+    // The tag is due now; the follow-up is due in ten minutes.
+    lab.ws.store.db.write().unwrap()
+        .execute("UPDATE merge_entries SET next_check=0,data=json_set(data,'$.nextCheck',strftime('%s','now')+600,'$.grouping.nextAt',0)", [])
+        .unwrap();
+    let main_reads = |root: &std::path::Path| calls(root).iter().filter(|c| c["endpoint"].as_str().unwrap().contains("event=push&head_sha=")).count();
+    let before = main_reads(lab.dir.path());
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["grouping"]["failures"], 2, "the tag was tried: {e}");
+    assert_eq!(main_reads(lab.dir.path()), before, "main CI was not read before its time");
 }
 
 /// S2 review 68bae873 (P2): a P0–P2 finding of a round at the released head,

@@ -143,6 +143,7 @@ pub(super) async fn check(ws: &Arc<Workspace>, entry: &Value) -> Result<(Value, 
     let (runs, total, more) =
         pages(ws, format!("repos/{repo}/actions/runs?head_sha={head}&event=pull_request&per_page=100&page=1"), "workflow_runs").await?;
     hold!(checks::complete("workflow runs on the head", runs.len(), total, more));
+    evidence["ciRunning"] = json!(checks::running(&runs));
     let newest = hold!(checks::head_runs(&runs, &required));
     // GitHub's merge verdict from before the runs finished may be stale: read the PR again.
     let pr = read(ws, format!("repos/{repo}/pulls/{number}")).await?;
@@ -400,6 +401,7 @@ async fn batch_gate(ws: &Arc<Workspace>, t: &Target, main: &str, b: &Value, requ
     if let Err(hold) = checks::complete("workflow runs on the batch", runs.len(), total, more) {
         return Ok((gate, Err(hold)));
     }
+    gate["ciRunning"] = json!(checks::running(&runs));
     let newest = match checks::head_runs(&runs, required) {
         Ok(newest) => newest,
         // Red CI on a batch drops its entry from the chain (YN-18 S2e, decision 7).
