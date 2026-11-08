@@ -35,7 +35,7 @@ export function SourceLinks({
             </a>
           </Tip>
         ) : (
-          <Tip key={id} content={<TipText title={source.label} value={source.href} />} size="wide">
+          <Tip key={id} content={<TipText title={source.label} value={source.href} />} size="wide" hold>
             <button
               type="button"
               disabled={!onFile}

@@ -64,11 +64,12 @@ export function ClaudeCheckpointButton({
   return (
     <>
       <Tip content={closed ? <TipText body="This Agent is closed" /> : busy ? <TipText body="Files can be restored between turns" />
-        : <TipText title="Preview restoring the files Claude changed after this message" />}>
+        : <TipText title="Preview restoring the files Claude changed after this message" />} hold>
         <button
           type="button"
           className="quiet-button checkpoint-open"
           disabled={busy || closed}
+          aria-description={closed ? "This Agent is closed" : busy ? "Files can be restored between turns" : undefined}
           onClick={() => setOpen(true)}
         >
           <RotateCcw size={11} />

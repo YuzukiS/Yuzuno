@@ -91,9 +91,14 @@ export type TipTone = "ok" | "bad" | "attention" | "working" | "info" | "quiet";
  *  - `cut`: only while the trigger's text is cut (an ellipsis or a clamp, on
  *    it or a child of it), measured when it would open: a name shown whole
  *    needs no tip.
- * A disabled button still shows its tip to a pointer resting on it (Chromium
- * sends it pointer events, and React passes them on), so a tip may say why
- * it is disabled; the keyboard cannot reach it there.
+ *  - `hold`: for a control that may be disabled while its tip still says
+ *    something (why it waits). The trigger is then a span around it, which
+ *    takes the pointer while the control is disabled: WebKit (the Mac app)
+ *    and older Firefox send a disabled control no pointer events, Chromium
+ *    does. The span is always there, so the control is never remounted as
+ *    it is enabled and disabled. Say the reason to assistive technology on
+ *    the control too (`aria-description`): the keyboard cannot reach a
+ *    disabled control, so its tip never opens from there.
  * Content may come and go (empty: no tip), and the trigger stays the same
  * element either way: switching between a bare child and a wrapped one
  * would remount it, and a dialog opened from it would lose its place.
@@ -110,6 +115,7 @@ export function Tip({
   className,
   card,
   cut = false,
+  hold = false,
 }: {
   content: ReactNode;
   children: ReactElement;
@@ -123,6 +129,7 @@ export function Tip({
   /** Data attributes on the card, for its own styles and checks. */
   card?: Record<`data-${string}`, string | undefined>;
   cut?: boolean;
+  hold?: boolean;
 }) {
   const present = useContext(Present);
   const language = useLanguage();
@@ -151,7 +158,7 @@ export function Tip({
         onFocus={(event) => { if (!byKeyboard || !own(event)) event.preventDefault(); }}
         onPointerMove={(event) => { if (!own(event)) event.preventDefault(); }}
       >
-        {trigger}
+        {hold ? <span className="tip-hold">{trigger}</span> : trigger}
       </Tooltip.Trigger>
       {!empty && <Tooltip.Portal>
         <Tooltip.Content
