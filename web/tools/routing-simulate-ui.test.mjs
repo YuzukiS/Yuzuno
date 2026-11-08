@@ -42,7 +42,9 @@ window.renderRouting=(active=true)=>root.render(<SaveBarScope><ExecutorRouting a
 const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
 async function until(check, what, ms = 4000) {
   const deadline = Date.now() + ms;
-  while (!check()) {
+  // A check that reads what is not drawn yet waits for it, rather than throwing.
+  const holds = () => { try { return check(); } catch { return false; } };
+  while (!holds()) {
     assert.ok(Date.now() < deadline, `timed out waiting for ${what}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
