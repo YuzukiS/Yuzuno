@@ -209,3 +209,20 @@ test("a template follows routing or is fixed: saved as read but for routing, aga
   button(other, "重新读取").click();
   await until(() => !q(other, ".routing-templates .routing-conflict"), "read again");
 });
+
+test("removing a candidate while its evaluation is shown keeps the page (a record of the order before the change)", async () => {
+  const server = core();
+  const page = mount(server);
+  await until(() => q(page, ".routing-sim-slider input"), "the slider");
+  // Today 12:00, in Claude's hours: DeepSeek is shown skipped, with its reason.
+  await set(page, q(page, ".routing-sim-slider input"), String(12 * 60));
+  await until(() => /: would choose Claude Code · opus$/.test(q(page, ".routing-sim-result p")?.textContent ?? ""), "the picked time's result");
+  assert.match(q(page, ".routing-sim-result .settings-row-meta").textContent, /^1 DeepSeek's peak price$/);
+  button(page, "Edit OpenCode · deepseek-flash · API").click();
+  await until(() => q(page, '.routing-cand[data-cand="ds"] .routing-edit'), "its editor");
+  button(page, "Remove this candidate", q(page, '.routing-cand[data-cand="ds"]')).click();
+  await tick();
+  assert.equal(page.document.querySelectorAll(".routing-cand").length, 1, "the order is still drawn, without it");
+  assert.ok(q(page, ".routing-simulate"), "and the simulation with it");
+  assert.deepEqual(page.errors, [], "nothing thrown");
+});
