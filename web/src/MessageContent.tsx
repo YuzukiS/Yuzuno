@@ -58,7 +58,7 @@ function TextBlockButton({
         align="start"
         size="preview"
         className="message-text-preview"
-        content={open ? null : <><strong className="tip-title">{title}</strong><span className="tip-preview">{preview || "Empty text"}</span></>}
+        content={<><strong className="tip-title">{title}</strong><span className="tip-preview">{preview || "Empty text"}</span></>}
       >
         <button
           ref={trigger}
