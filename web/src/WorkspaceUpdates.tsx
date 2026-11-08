@@ -66,6 +66,7 @@ import {
 } from "./updates";
 import { updatesText } from "./updates-text";
 import "./updates.css";
+import { randomId } from "./random-id";
 
 export function useWorkspaceUpdates(enabled: boolean, open: boolean) {
   // Each status keeps when its request began, so a step Core accepted is
@@ -184,7 +185,7 @@ function thisTab() {
   try {
     const saved = sessionStorage.getItem("yuzuno.tab");
     if (saved) return saved;
-    const id = crypto.randomUUID();
+    const id = randomId();
     sessionStorage.setItem("yuzuno.tab", id);
     return id;
   } catch {
@@ -338,7 +339,7 @@ function useUpdateChain(
       keep(ws, {
         releaseId: release.releaseId,
         version: release.version,
-        requestId: crypto.randomUUID(),
+        requestId: randomId(),
         from: step,
         owner: tab,
       });

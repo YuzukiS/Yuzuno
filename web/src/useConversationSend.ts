@@ -8,6 +8,7 @@ import type {
   QuestionSource,
   SkillRef,
 } from "./types";
+import { randomId } from "./random-id";
 
 const storageKey = "yuzuno.outbox";
 export type OutgoingMessage = { agentId: string; receipt: MessageReceipt };
@@ -256,7 +257,7 @@ export function useConversationSend(
         && JSON.stringify(previous.skills ?? []) === JSON.stringify(skills)
         ? previous
         : {
-            clientMessageId: crypto.randomUUID(),
+            clientMessageId: randomId(),
             text,
             ...(textBlocks ? { textBlocks } : {}),
             ...(images.length ? { images: [...images] } : {}),

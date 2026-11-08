@@ -37,6 +37,7 @@ import {
   type ReportedCriterion,
 } from "./task-outcome";
 import "./task-outcome.css";
+import { randomId } from "./random-id";
 
 type Text = ReturnType<typeof outcomeText>;
 type Tab = "summary" | "evidence" | "versions";
@@ -198,7 +199,7 @@ export function TaskOutcomeEditor({
             criteria: [
               ...value.criteria,
               {
-                id: crypto.randomUUID(),
+                id: randomId(),
                 label: "",
                 report: "",
                 reportedStatus: "unknown",

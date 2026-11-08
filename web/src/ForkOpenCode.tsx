@@ -6,6 +6,7 @@ import { strings, useLanguage } from "./i18n";
 import type { Agent, NativeTurn } from "./types";
 import "./session-import.css";
 import "./codex-fork.css";
+import { randomId } from "./random-id";
 
 /** What a fork through a Turn would keep (`/opencode/fork/preview`, T-10 Fork). */
 export interface OpenCodeForkPreview {
@@ -215,7 +216,7 @@ function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {
     const going = outcome?.state === "pending" || outcome?.state === "uncertain";
     if (running.current || (!going && (!name.trim() || nameBytes(name) > NAME_BYTES))) return;
     running.current = true; setBusy(true); setError("");
-    const requestId = requests()[key] || outcome?.requestId || crypto.randomUUID();
+    const requestId = requests()[key] || outcome?.requestId || randomId();
     keep(key, requestId);
     try {
       // One going on keeps the name it was asked with; Core reads it from the attempt.

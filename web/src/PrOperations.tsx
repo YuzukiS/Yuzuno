@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText } from "./api";
 import { strings, useStrings } from "./i18n";
 import "./pr-operations.css";
+import { randomId } from "./random-id";
 
 type Remote = {
   number: number;
@@ -321,7 +322,7 @@ export function PrOperations({
     if (busy) return;
     const stamp = generation.current;
     const key = JSON.stringify({ path, ...payload });
-    const requestId = pending.current.get(key) || crypto.randomUUID();
+    const requestId = pending.current.get(key) || randomId();
     pending.current.set(key, requestId);
     setBusy(true);
     setError("");

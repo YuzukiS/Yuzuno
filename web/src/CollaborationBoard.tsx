@@ -47,6 +47,7 @@ import { readExecutorTemplates, type ExecutorTemplatesView } from "./executor-te
 import { harnessNames } from "./storage-overview";
 import { executorChoiceText, type ExecutorChoice } from "./executor-choice";
 import { lifecycleText, stateDetail, stateLabel, type ExecutorLifecycle } from "./executor-lifecycle";
+import { randomId } from "./random-id";
 
 type BoardText = ReturnType<typeof boardText>;
 
@@ -390,7 +391,7 @@ function useMutation() {
     const fingerprint = JSON.stringify(body);
     let request = requests.current.get(operation);
     if (!request || request.fingerprint !== fingerprint) {
-      request = { fingerprint, id: crypto.randomUUID() };
+      request = { fingerprint, id: randomId() };
       requests.current.set(operation, request);
     }
     busy.current = true;

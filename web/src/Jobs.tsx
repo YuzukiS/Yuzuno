@@ -62,6 +62,7 @@ import {
   StateGroups,
   type Placement,
 } from "./JobParts";
+import { randomId } from "./random-id";
 
 type Resources = { cpuMillis: number; memoryMiB: number; swapMiB: number };
 type Job = {
@@ -843,7 +844,7 @@ export function Jobs({
       const key = JSON.stringify(body);
       if (pending.current && pending.current.key !== key)
         throw new Error(en.unconfirmed);
-      pending.current ||= { key, requestId: crypto.randomUUID() };
+      pending.current ||= { key, requestId: randomId() };
       localStorage.setItem(
         pendingKey,
         JSON.stringify({ ...pending.current, draft }),

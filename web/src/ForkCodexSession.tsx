@@ -14,6 +14,7 @@ import { langTag, strings, useLanguage } from "./i18n";
 import type { Agent, AgentDetail, ForkOutcome, ForkPreview } from "./types";
 import "./session-import.css";
 import "./codex-fork.css";
+import { randomId } from "./random-id";
 
 // One request ID per source and boundary, kept across reloads, so a retry
 // after a lost response settles the same attempt instead of forking again.
@@ -267,7 +268,7 @@ export function ForkCodexDialog({
     // choice: a new attempt that gives the old one up. Nothing else is new.
     const abandonUnconfirmed = uncertain;
     const requestId =
-      (!abandonUnconfirmed && saved[key]) || crypto.randomUUID();
+      (!abandonUnconfirmed && saved[key]) || randomId();
     saveRequests({ ...saved, [key]: requestId });
     try {
       const result = await post<ForkOutcome>(

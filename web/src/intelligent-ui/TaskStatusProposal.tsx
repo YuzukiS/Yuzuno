@@ -17,6 +17,7 @@ import {
   type ProposalView,
   type TaskStatusProps,
 } from "./task-status";
+import { randomId } from "../random-id";
 // Its styles are in intelligent-ui.css, which the main bundle loads.
 
 // The card's own words in the interface language (T-189); see task-status.ts.
@@ -340,7 +341,7 @@ export function PublishedTaskStatus({ proposal }: { proposal: TaskStatusProps })
       mine={mine}
       acted={acted && acted.resultId === resultId ? acted.requestId : null}
       busy={busy}
-      onDecide={(decision) => void send({ ...decision, requestId: crypto.randomUUID() }, decision.action)}
+      onDecide={(decision) => void send({ ...decision, requestId: randomId() }, decision.action)}
       onCheck={() => unanswered && void send(unanswered, "check")}
     />
   );

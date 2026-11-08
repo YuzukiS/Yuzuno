@@ -4,6 +4,7 @@ import { BackupRetention } from "./BackupRetention";
 import { strings, useLanguage } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import "./workspace-backup.css";
+import { randomId } from "./random-id";
 
 /** T-192: Settings → Backup. Core backs up its own Workspace, checks a
  * backup and restores one into a new or empty folder, each as an operation
@@ -379,7 +380,7 @@ function bytes(n: number) {
 }
 
 function requestId() {
-  return crypto.randomUUID();
+  return randomId();
 }
 
 export function WorkspaceBackup({ active }: { active: boolean }) {

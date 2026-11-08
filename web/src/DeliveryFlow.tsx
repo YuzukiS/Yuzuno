@@ -10,6 +10,7 @@ import type { GitHubLink } from "./GitHubLinks";
 import "./delivery-flow.css";
 import { openTaskReview } from "./ReviewJobs";
 import { strings, useStrings } from "./i18n";
+import { randomId } from "./random-id";
 
 export type DeliveryCandidate = {
   flowId: string;
@@ -248,7 +249,7 @@ export function DeliveryFlow({
     if (busy) return;
     const fingerprint = JSON.stringify([op, body]);
     if (request.current?.fingerprint !== fingerprint)
-      request.current = { fingerprint, id: crypto.randomUUID() };
+      request.current = { fingerprint, id: randomId() };
     setBusy(true);
     setError("");
     try {

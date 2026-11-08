@@ -12,6 +12,7 @@ import { currentBrowserReach, endedServiceStatuses, serviceDeadline, validServic
 import { clockTime, currentRetry, minutesUntil, outcomeUnknown, recoveryActive, recoveryLineage, recoveryOf, recoveryOffer, recoveryOutcome, recoveryWindow, type RecoveryFailure } from "./service-recovery";
 import { serviceText } from "./service-text";
 import "./service-lifecycle.css";
+import { randomId } from "../random-id";
 
 type Attempt = { draft: ServiceControlDraft; request: ServiceControlRequest; state: "sending" | "unknown" | "refused" | "recorded"; stale?: boolean };
 
@@ -196,7 +197,7 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
     setAttempt(null); setActionError(""); setNotice("");
   };
   const send = async (draft: ServiceControlDraft, previous: Attempt | null) => {
-    const request = previous?.request || controlRequest(draft, crypto.randomUUID(), seconds, draft.action === "start" && !!offer && retryChosen);
+    const request = previous?.request || controlRequest(draft, randomId(), seconds, draft.action === "start" && !!offer && retryChosen);
     busy.current = true;
     setAttempt({ draft, request, state: "sending" }); setActionError(""); setNotice("");
     let recorded = false;

@@ -6,6 +6,7 @@ import { useImageUploads } from "./useImageUploads";
 import { PointFix, imageRefusal } from "./PointFix";
 import { PointFixOpen, type PointFixSource } from "./point-fix";
 import { appendImage, clipboardImages, MAX_IMAGES, MAX_IMAGE_TOTAL, type DraftImage } from "./image-input";
+import { copyText } from "./clipboard";
 import {
   memo,
   useCallback,
@@ -2416,7 +2417,7 @@ export function App() {
   const copyAgentLink = (id: string) => {
     const href = agentLinkHref(linkBase, { workspaceId, agentId: id });
     Promise.resolve()
-      .then(() => navigator.clipboard.writeText(href))
+      .then(() => copyText(href))
       .then(
         () => setNotice(shell.linkCopied(agentName(id))),
         () => setMenuError(shell.linkRefused(agentName(id), href)),
