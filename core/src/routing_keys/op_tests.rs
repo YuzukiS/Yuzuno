@@ -44,7 +44,9 @@ fn mode(dir: &Path, mode: &str) {
     fs::write(dir.join("mode"), mode).unwrap();
 }
 
+/// A Workspace folder in `dir` whose key file has the token.
 fn store_with_token(dir: &Path) -> Store {
+    fs::create_dir_all(dir.join("data")).unwrap();
     let store = Store::of(&dir.join("data"));
     store.put_token(Secret::new(TOKEN.into())).unwrap();
     store
@@ -149,7 +151,7 @@ fn references_are_checked() {
     for good in ["op://Vault/Item/field", "op://My Vault/OpenAI API/section one/credential"] {
         assert_eq!(check_reference(&format!("  {good} ")).unwrap(), good);
     }
-    for bad in ["", "Vault/Item/field", "op://Vault/Item", "op://Vault//field", "op://V/I/f?attribute=value", "op://V/I/f\n", "op://a/b/c/d/e"] {
+    for bad in ["", "Vault/Item/field", "op://Vault/Item", "op://Vault//field", "op://V/I/f?attribute=value", "op://V/I\n/f", "op://a/b/c/d/e"] {
         assert!(check_reference(bad).is_err(), "{bad:?}");
     }
     assert_eq!(version_in("2.30.0\n"), Some((2, 30, 0)));

@@ -84,6 +84,7 @@ fn another_users_file_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("f");
     fs::write(&path, "{}").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     let meta = fs::metadata(&path).unwrap();
     assert!(trusted(&path, &meta).is_ok(), "Core's own 0600 file");
     let me = rustix::process::geteuid().as_raw();

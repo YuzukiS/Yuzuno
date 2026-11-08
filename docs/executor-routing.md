@@ -1,0 +1,119 @@
+# Executor routing
+
+Executor routing will start each new executor with the first of an ordered
+list of candidates whose conditions hold: a harness, a model, and an account
+or API key. It is built in slices. This page describes what exists at this
+version; a later slice adds to it.
+
+| Slice | What it adds | State |
+| --- | --- | --- |
+| S1a | Routing keys: the key file, its write-only routes, reading a key through 1Password | This version |
+| S1b | Accounts: claude-swap accounts, Codex homes, an executor's account binding | Later |
+| S1c | Handing a key or account to one executor's harness process | Later |
+| S2–S4 | Readings, routing itself, the Settings page | Later |
+
+Nothing at this version starts an executor with a routing key: S1a only keeps
+keys and reads them on request.
+
+## Routing keys
+
+A routing key is an API key an executor may later be started with: for
+Anthropic (Claude Code), OpenAI (Codex) or DeepSeek (OpenCode). Each key has an
+id (1 to 48 of `a-z`, `0-9` and `-`) and chooses its source:
+
+- **local**: you enter the value, and Core keeps it in the key file.
+- **1password**: you enter an `op://vault/item/field` reference (or
+  `op://vault/item/section/field`). Core keeps only the reference and reads the
+  value through the 1Password CLI when it is needed, with a 1Password service
+  account's token. The token is itself kept in the key file.
+
+### The key file
+
+The file is `secrets/routing-keys.json` in the Workspace folder.
+
+- It is created with mode 0600 in a folder with mode 0700, and no moment
+  passes with wider permissions, whatever the umask. Each change writes a new
+  file beside it and renames it into place, so a reader sees the old file or
+  the new one, whole.
+- Core refuses to use it, and says why, when another user owns it, when its
+  mode gives the group or others any access, when it is a link, or when the
+  folder can be written by other users. `chmod 600` the file (or `chmod 700`
+  the folder) and Core uses it again.
+- **What it protects against:** the computer's other users. **It does not
+  protect against programs that run as you**, and that includes the Agents'
+  own shell tools: anything running as your user can read the file, exactly
+  as it can read the Claude and Codex login files. A later slice says, for
+  each harness, whether its tool processes also see a key in their
+  environment.
+- It is never copied: a Workspace backup leaves the `secrets` folder out with
+  its reason, a restore cannot write into it, the update helper copies only
+  the database, and the storage overview shows the folder by name only. A
+  restored or moved Workspace starts without keys: enter them again.
+- No journal row, task, Brief, log or error text holds a value. Errors name a
+  key's id or the file, never a value.
+
+### Writing keys
+
+Keys and the token are written only through these routes, on Core's own port,
+for your own browser. They are not on the phone entry, no Workspace tool an
+Agent can call reaches them, and a request carrying any `Authorization`
+header (an Agent's credential) is refused with 403.
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/routing/keys` | Each key's id, provider, source, `set` and `setAt`, and a 1Password key's reference; whether the token is set. Never a value. |
+| `PUT /api/routing/keys/{id}` | `{"source":"local","provider":…,"value":…}` or `{"source":"1password","provider":…,"reference":…}`. Answers as a read does. |
+| `DELETE /api/routing/keys/{id}` | Forgets the key. |
+| `POST /api/routing/keys/{id}/check` | For a 1Password key: whether its reference names a field the token can read, without reading the value. |
+| `GET /api/routing/1password` | Whether the token is set, and whether `op` is installed here, its version, and whether it has service accounts. |
+| `PUT` / `DELETE /api/routing/1password/token` | Keeps or forgets the service account's token. |
+
+Like the OpenCode login, these routes rely on Core's browser boundary: it
+stops other computers, web pages and the phone entry. A program running as
+you on this computer can reach Core's port as your browser does, and so
+could write a key. It still cannot read one back through Core.
+
+### Keys in 1Password
+
+Core runs the 1Password CLI (`op`, or the program `YUZUNO_OP_BIN` names) with
+an environment of its own: `PATH` and `HOME` from Core's, and the token as
+`OP_SERVICE_ACCOUNT_TOKEN`. Nothing else of Core's environment reaches `op`
+(in particular no `OP_CONNECT_*`, which would take precedence over the token),
+and the token reaches nothing but `op`.
+
+- **Version.** Service accounts need op 2.18.0 or later. Core reads
+  `op --version` before each use. See
+  [Use service accounts with 1Password CLI](https://www.1password.dev/service-accounts/use-with-1password-cli).
+- **Reading a key**: `op read --no-newline <reference>`, once. The value is
+  kept in memory for the one process it is handed to, and never written to
+  disk. See [op read](https://www.1password.dev/cli/reference/commands/read).
+- **Checking a reference**: `op read --no-newline "<reference>?attribute=type"`.
+  It answers the field's type, never its value. See
+  [secret reference syntax](https://www.1password.dev/cli/secret-reference-syntax).
+- **Request limits.** A service account may make a limited number of reads an
+  hour, and each `op read` costs three
+  ([rate limits](https://www.1password.dev/service-accounts/rate-limits)).
+- Give the service account access to only the vault that holds these keys.
+
+When a key cannot be read, Core says why, in English and Chinese, and never
+passes on what `op` printed. A routing candidate that uses the key then counts
+as unavailable, and the next one is tried.
+
+| Code | Reason |
+| --- | --- |
+| `tokenMissing` | The 1Password service account's token is not set / 1Password 服务账号的令牌没设置 |
+| `referenceNotFound` | 1Password has no `op://…` / 1Password 里找不到 `op://…` |
+| `unreachable` | 1Password is unreachable; the key cannot be fetched / 1Password 连不上，取不到 key (also a run longer than 30 s) |
+| `tokenRejected` | 1Password refused the service account's token / 1Password 不接受服务账号的令牌 |
+| `rateLimited` | The service account's request limit is reached; try again later / 服务账号的 1Password 请求次数到上限了，稍后再试 |
+| `opMissing`, `opTooOld` | `op` is not installed here, or older than 2.18.0 |
+| `failed` | Any other failure, with `op`'s exit code |
+
+op documents no exit codes for these cases, so Core tells them apart by the
+words of `op`'s message.
+
+### With an older Core
+
+An older Core has none of these routes and never reads the key file: it
+leaves the `secrets` folder as it is, and a newer Core uses it again. A file
+written by a later Core (a higher `version`) is not changed by this one.
