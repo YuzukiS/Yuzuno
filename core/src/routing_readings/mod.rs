@@ -172,7 +172,8 @@ fn clock_changes(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<DateTime<Utc>>
     use chrono::Offset;
     let offset = |t: DateTime<Utc>| t.with_timezone(&Local).offset().fix().local_minus_utc();
     let mut out = Vec::new();
-    let mut at = start;
+    // From the minute before, so a change at `start` itself is found too.
+    let mut at = start - Duration::minutes(1);
     while at < end {
         let next = (at + Duration::hours(1)).min(end);
         if offset(at) != offset(next) {
