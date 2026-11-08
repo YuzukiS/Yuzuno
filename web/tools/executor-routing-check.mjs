@@ -228,6 +228,8 @@ async function run({ width, height, theme, lang }) {
     await order.locator(".routing-now").waitFor({ timeout: 10_000 });
     assert.match(await order.locator(".routing-now-title").innerText(), lang === "zh" ? /现在会选 Claude Code · opus — 账号 #2/ : /Now it would choose Claude Code · opus — Account #2/);
     assert.equal(await order.locator(".routing-cand.is-chosen").count(), 1, `${tag}: one card would be chosen`);
+    await page.mouse.move(0, 0);
+    await shot("now");
     if (!phone) {
       // A time window's chip has every period in its tip (YN-44's Tip).
       await order.locator(".routing-cand").first().locator(".routing-chip").first().hover();

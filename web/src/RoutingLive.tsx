@@ -245,8 +245,9 @@ export function RecentChoices({ active, names }: { active: boolean; names: (id: 
                   onClick={() => setOpen(expanded ? null : c.dispatchId)}>
                   <time dateTime={r.evaluatedAt}>{when}</time>
                   <span className="routing-recent-what">
-                    <b>{c.taskId}{c.executorName ? ` · ${c.executorName}` : ""} → {r.chosen ? names(r.chosen, chosen) : t.noneChosen}{account ? ` · ${account}` : ""}</b>
-                    <small>{t.at[r.at] ?? r.at}{r.changedAtStart ? ` · ${t.changedFrom(names(r.changedAtStart.from))}` : ""}</small>
+                    {/* An executor's name starts with its task's id by default: the id once. */}
+                    <b>{c.executorName?.includes(c.taskId) ? c.executorName : `${c.taskId}${c.executorName ? ` · ${c.executorName}` : ""}`} → {r.chosen ? names(r.chosen, chosen) : t.noneChosen}{account ? ` · ${account}` : ""}</b>
+                    <small>{r.changedAtStart ? t.changedFrom(names(r.changedAtStart.from)) : t.at[r.at] ?? r.at}</small>
                   </span>
                   {expanded ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
                 </button>
