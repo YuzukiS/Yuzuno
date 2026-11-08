@@ -115,7 +115,6 @@
 
 /* A phone: rows stack, targets are 40 px (no pointer query: see browser checks). */
 .settings-center.is-phone .routing-keys :is(button, select, .settings-input) { min-height: 40px; }
-.settings-center.is-phone .routing-seg button { min-height: 38px; }
 @media (max-width: 640px) {
   .routing-home { grid-template-columns: minmax(0, 1fr) auto; }
   .routing-home .settings-input:nth-of-type(n + 2) { grid-column: 1; }

@@ -1,0 +1,207 @@
+// YN-49: Settings → Executor routing in Chromium, every API answered here
+// (no Core, no CLI, no real key). At 1440 and 390 (a phone), light and dark,
+// English and Chinese: the page fits its width, a phone's targets are 40 px,
+// accounts are named by number and fingerprint only, and a key or token typed
+// and kept never appears in the page or in a request other than its own write.
+//   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-routing-check.mjs
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { extname, join, resolve } from "node:path";
+import { chromium } from "playwright-core";
+import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+
+assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
+const dist = resolve(process.env.YUZUNO_UI_DIST);
+assert.notEqual(dist, resolve("dist"));
+assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
+const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
+await mkdir(output, { recursive: true });
+const report = { task: "YN-49", checks: [], screenshots: [], writes: [], unexpected: [], errors: [] };
+const check = (name, extra = {}) => { report.checks.push({ name, ...extra }); console.log(`PASS ${name}`); };
+const HOST = "yuzuno-executor-routing.test";
+// Synthetic only. Long and unusual, so a page holding one is found by a text search.
+const SECRET = "sk-fixture-yn49-BROWSER-WRITE-ONLY-51c7";
+const TOKEN = "ops_fixture-yn49-BROWSER-TOKEN-a90d";
+const EMAILS = ["first@example.test", "second@example.test"];
+
+const agent = { id: "a", name: "Mori", status: "idle", harness: "codex", cwd: "/fixture", model: "gpt-6", projectId: "p1", color: "sage",
+  createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, goal: "", connectionState: "connected" };
+const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture" }, createdAt: "", updatedAt: "" }];
+const home = { generatedAt: new Date().toISOString(), order: ["p1"], needsYou: [], projects: [] };
+const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".png": "image/png", ".webmanifest": "application/manifest+json" };
+
+/** Core's routing state, as S1's routes answer it; each run starts from it. */
+const fresh = () => ({
+  keys: [
+    { id: "anthropic", provider: "anthropic", source: "1password", set: true, setAt: "2026-11-08T00:12:00Z", reference: "op://Yuzuno/Anthropic API/credential" },
+    { id: "openai", provider: "openai", source: "1password", set: true, setAt: "2026-11-08T00:14:00Z", reference: "op://Yuzuno/OpenAI/api key" },
+  ],
+  token: { set: true, setAt: "2026-11-08T00:20:00Z" },
+  op: { found: true, version: "2.30.0", supported: true },
+  cswap: { command: "cswap", pinned: "1.0.0", accounts: [
+    { number: 1, fingerprint: "a1b2c3d4e5f60718", active: true, label: EMAILS[0], usageStatus: "ok" },
+    { number: 2, fingerprint: "0f1e2d3c4b5a6978", active: false, label: EMAILS[1], usageStatus: "ok" },
+    { number: 3, fingerprint: "9a8b7c6d5e4f3021", active: false, label: "team alias" },
+  ] },
+  homes: [{ id: "work", label: "Work", home: "/home/fixture/.codex-work" }],
+});
+let state = fresh();
+const notFound = { ok: false, reason: { code: "referenceNotFound", message: "1Password has no op://Yuzuno/OpenAI/api key", messageZh: "1Password 里找不到 op://Yuzuno/OpenAI/api key" } };
+
+async function route(r) {
+  const request = r.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
+  if (url.hostname !== HOST) { report.unexpected.push(request.url()); return r.abort(); }
+  const body = request.postData() ? JSON.parse(request.postData()) : undefined;
+  if (method !== "GET") report.writes.push({ method, path, body });
+  // A secret may be in its own write only.
+  const own = (method === "PUT" && /^\/api\/routing\/keys\/[^/]+$/.test(path)) || (method === "PUT" && path === "/api/routing/1password/token");
+  if (!own && (request.postData() ?? "").match(new RegExp(`${SECRET}|${TOKEN}`))) report.errors.push(`a secret was sent to ${method} ${path}`);
+  if (request.url().includes(SECRET) || request.url().includes(TOKEN)) report.errors.push(`a secret in a URL: ${method} ${path}`);
+  const json = (value, status = 200) => r.fulfill({ status, json: value });
+  if (path === "/api/routing/keys" && method === "GET") return json({ keys: state.keys, onePasswordToken: state.token });
+  if (path === "/api/routing/1password" && method === "GET") return json({ token: state.token, op: state.op });
+  if (path === "/api/routing/accounts" && method === "GET") return json({ cswap: state.cswap, codexHomes: state.homes });
+  const key = path.match(/^\/api\/routing\/keys\/([^/]+)(\/check)?$/);
+  if (key?.[2] && method === "POST") return json(decodeURIComponent(key[1]) === "openai" ? notFound : { ok: true });
+  if (key && method === "PUT") {
+    const id = decodeURIComponent(key[1]);
+    const kept = { id, provider: body.provider, source: body.source, set: true, setAt: "2026-11-08T04:50:00Z", ...(body.reference ? { reference: body.reference } : {}) };
+    state.keys = [...state.keys.filter((k) => k.id !== id), kept].sort((a, b) => a.id.localeCompare(b.id));
+    return json(kept);
+  }
+  if (path === "/api/routing/1password/token" && method === "PUT") { state.token = { set: true, setAt: "2026-11-08T04:51:00Z" }; return json(state.token); }
+  if (method !== "GET") return json({ error: "not answered by this fixture" }, 500);
+  const fixed = {
+    "/api/workspace": { workspace: { id: "ws-executor-routing" }, agents: [agent], projects, runtime: { connected: true }, defaultCwd: "/fixture" },
+    "/api/agents/a": { agent, pending: [], messageReceipts: [], artifacts: [], turns: [] },
+    "/api/home": home, "/api/machines": { machines: [] }, "/api/updates": unmanagedUpdates, "/api/jobs/budget": idleJobsBudget,
+    "/api/jobs": noJobs, "/api/jobs/live": noLiveJobs, "/api/ci": noCiRuns, "/api/ci/live": noCiRuns, "/api/reviews": noReviews,
+  }[path];
+  if (fixed) return json(fixed);
+  if (path.startsWith("/api/")) return json({});
+  const file = resolve(dist, `.${path === "/" ? "/index.html" : path}`);
+  assert.ok(file.startsWith(dist + "/"));
+  try { await r.fulfill({ body: await readFile(file), contentType: types[extname(file)] }); } catch { await r.fulfill({ status: 404, body: "" }); }
+}
+
+const browser = await chromium.launch({ headless: true, executablePath: process.env.YUZUNO_BROWSER_BIN || "/usr/sbin/chromium" });
+const words = {
+  en: { settings: "Settings and updates", tab: "Executor routing", title: "Accounts and keys", account1: "Account #1", addKey: "Add a key", save: "Save",
+    value: "DeepSeek API key (for OpenCode): value", check: "Check", notFound: "1Password has no op://Yuzuno/OpenAI/api key", set: "Set · ",
+    replaceToken: "Replace token", token: "Service account token" },
+  zh: { settings: "Settings and updates", tab: "执行者路由", title: "账号和密钥", account1: "账号 #1", addKey: "添加 key", save: "保存",
+    value: "DeepSeek API key（OpenCode 用）：值", check: "检查", notFound: "1Password 里找不到 op://Yuzuno/OpenAI/api key", set: "已设置 · ",
+    replaceToken: "替换令牌", token: "服务账号令牌" },
+};
+
+async function run({ width, height, theme, lang }) {
+  const phone = width < 600;
+  const tag = `${width}-${theme}-${lang}`;
+  const w = words[lang];
+  state = fresh();
+  const context = await browser.newContext({ viewport: { width, height }, locale: lang === "zh" ? "zh-CN" : "en-US", timezoneId: "Asia/Shanghai",
+    reducedMotion: "reduce", colorScheme: theme, ...(phone ? { hasTouch: true, isMobile: true, deviceScaleFactor: 2 } : {}) });
+  await context.addInitScript(({ theme, lang }) => {
+    window.EventSource = class { close() {} };
+    localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, agentOrder: "list" }));
+    localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang === "zh" ? "zh-Hans" : "en" }));
+  }, { theme, lang });
+  await context.route("**/*", route);
+  const page = await context.newPage();
+  page.on("pageerror", (error) => report.errors.push(`${tag}: ${error.message}`));
+  page.on("console", (message) => message.type() === "error" && !/Failed to load resource/.test(message.text()) && report.errors.push(`${tag} console: ${message.text()}`));
+  const press = (locator) => (phone ? locator.tap() : locator.click());
+  const shot = async (name) => {
+    const file = join(output, `${tag}-${name}.png`);
+    await page.screenshot({ path: file });
+    report.screenshots.push({ name: `${tag}-${name}`, sha256: createHash("sha256").update(await readFile(file)).digest("hex") });
+  };
+  const dialog = page.locator(".modal.settings-modal");
+  const pane = dialog.locator(".settings-pane");
+  const section = page.locator(".routing-keys");
+  /** Nothing in Settings wider than its box. */
+  const fits = () => dialog.evaluate((el) => [el, el.querySelector(".settings-pane"), el.querySelector(".routing-keys")].filter(Boolean)
+    .map((part) => ({ name: part.className.split(" ")[0], scroll: part.scrollWidth, client: part.clientWidth })).filter((p) => p.scroll > p.client + 1));
+  /** The page's text and markup hold no secret, email or label. */
+  const clean = async (when) => {
+    const htmlNow = await page.content();
+    for (const secret of [SECRET, TOKEN, ...EMAILS, "team alias"]) assert.ok(!htmlNow.includes(secret), `${tag} ${when}: the page holds ${secret}`);
+  };
+  try {
+    await page.goto(`https://${HOST}/`);
+    await page.locator(".workspace-settings").waitFor({ timeout: 15_000 });
+    await press(page.locator(".workspace-settings"));
+    await dialog.locator(".settings-center").waitFor({ timeout: 10_000 });
+    await press(dialog.locator("#settings-tab-routing"));
+    await section.getByText(w.account1).first().waitFor({ timeout: 10_000 });
+    assert.equal((await dialog.locator("#settings-tab-routing .settings-nav-label").innerText()).trim(), w.tab);
+    assert.equal((await section.locator("#routing-keys-title").innerText()).trim(), w.title);
+    await page.mouse.move(0, 0);
+    assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box`);
+    await clean("on opening");
+    await shot("top");
+    if (phone) {
+      // Every control a finger presses is 40 px tall at least.
+      const short = await section.evaluate((el) => [...el.querySelectorAll("button, select, input")].filter((c) => c.offsetParent)
+        .map((c) => ({ name: c.getAttribute("aria-label") || c.textContent.trim(), h: Math.round(c.getBoundingClientRect().height) })).filter((c) => c.h < 40));
+      assert.deepEqual(short, [], `${tag}: targets under 40 px`);
+    }
+    // The keys, scrolled to: a 1Password key whose reference isn't there.
+    const openai = section.locator('.routing-key[data-key="openai"]');
+    await openai.scrollIntoViewIfNeeded();
+    await press(openai.getByRole("button", { name: w.check }));
+    await openai.getByText(w.notFound).waitFor({ timeout: 10_000 });
+    await shot("keys");
+    // A new local key, typed (masked) and kept: never in the page.
+    await press(section.getByRole("button", { name: w.addKey }));
+    const value = section.getByLabel(w.value, { exact: true });
+    await value.waitFor({ timeout: 10_000 });
+    await value.fill(SECRET);
+    await clean("while a key is typed");
+    await value.scrollIntoViewIfNeeded();
+    await shot("new-key");
+    await press(section.locator(".routing-new-key").getByRole("button", { name: w.save, exact: true }));
+    const kept = section.locator('.routing-key[data-key="deepseek"]');
+    await kept.getByText(w.set).waitFor({ timeout: 10_000 });
+    await clean("once the key is kept");
+    assert.equal(await page.evaluate((secret) => [...document.querySelectorAll("input")].some((i) => i.value === secret), SECRET), false, `${tag}: no field holds the key`);
+    // The service account's token, replaced the same way.
+    await press(section.getByRole("button", { name: w.replaceToken }));
+    await section.getByLabel(w.token, { exact: true }).fill(TOKEN);
+    await clean("while the token is typed");
+    await press(section.locator(".routing-op").getByRole("button", { name: w.save, exact: true }));
+    await section.getByRole("button", { name: w.replaceToken }).waitFor({ timeout: 10_000 });
+    await clean("once the token is kept");
+    await kept.scrollIntoViewIfNeeded();
+    assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box after the edits`);
+    await shot("kept");
+    const puts = report.writes.filter((x) => x.tag === undefined && (x.tag = tag));
+    assert.deepEqual(puts.map((x) => `${x.method} ${x.path}`), ["POST /api/routing/keys/openai/check", "PUT /api/routing/keys/deepseek", "PUT /api/routing/1password/token"], `${tag}: these writes only`);
+    assert.deepEqual(puts[1].body, { source: "local", provider: "deepseek", value: SECRET });
+    assert.deepEqual(puts[2].body, { value: TOKEN });
+    check(`${tag}: page fits${phone ? ", 40 px targets" : ""}; accounts by number and fingerprint; a key and the token typed and kept, never in the page`);
+  } finally {
+    await context.close();
+  }
+}
+
+try {
+  for (const options of [
+    { width: 1440, height: 900, theme: "light", lang: "en" },
+    { width: 1440, height: 900, theme: "dark", lang: "zh" },
+    { width: 390, height: 844, theme: "light", lang: "zh" },
+    { width: 390, height: 844, theme: "dark", lang: "en" },
+  ]) await run(options);
+  assert.deepEqual(report.errors, []);
+  assert.deepEqual(report.unexpected, []);
+  report.status = "passed";
+} catch (error) {
+  report.status = "failed";
+  report.failure = String(error?.stack || error);
+  console.log(`FAIL ${report.failure}`);
+} finally {
+  await writeFile(join(output, "report.json"), JSON.stringify(report, null, 2));
+  await browser.close();
+}
+process.exitCode = report.status === "passed" ? 0 : 1;
