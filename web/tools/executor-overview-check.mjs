@@ -301,6 +301,27 @@ async function run({ width, height, theme, lang = "en" }) {
     await press(page.getByRole("tab", { name: lang === "zh" ? "会话" : "Conversation" }));
     await page.locator(".conversation-body .gate-ask .home-ask-options").waitFor({ timeout: 10_000 });
     await page.locator(".conversation-body .gate-ask").scrollIntoViewIfNeeded();
+    // Its question and Send to read against the card in each theme: their
+    // colours, and which rules set them, are kept in the report.
+    const legible = await page.evaluate(() => {
+      const card = document.querySelector(".conversation-body .gate-ask");
+      const rgb = (text) => (text.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+      const lum = ([r, g, b]) => [r, g, b].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
+        .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+      const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+      // The card's background is a tint over the page: the page's colour stands in for it.
+      const ground = rgb(getComputedStyle(document.querySelector(".conversation-scroll") || document.body).backgroundColor);
+      const rules = (el) => [...document.styleSheets].flatMap((sheet) => { try { return [...sheet.cssRules]; } catch { return []; } })
+        .flatMap((rule) => rule.cssRules ? [...rule.cssRules] : [rule])
+        .filter((rule) => rule.selectorText && rule.style?.color && el.matches(rule.selectorText)).map((rule) => `${rule.selectorText} { color: ${rule.style.color} }`);
+      return ["gate-ask-question", "home-reply-target label"].map((name) => {
+        const el = card.querySelector(name === "gate-ask-question" ? ".gate-ask-question" : ".home-reply-target label");
+        const color = getComputedStyle(el).color;
+        return { name, color, ground, ratio: Math.round(ratio(rgb(color), ground) * 100) / 100, rules: rules(el) };
+      });
+    });
+    report.measures[`${tag}-yn30-conversation-legible`] = legible;
+    for (const { name, ratio } of legible) assert.ok(ratio >= 4.5, `${tag}: the gate card's ${name} reads at ${ratio}:1, under 4.5:1`);
     await shot("yn30-conversation");
     await press(page.getByRole("tab", { name: lang === "zh" ? "概览" : "Overview" }));
     await page.locator("#executor-overview .executor-overview-head").waitFor({ timeout: 5_000 });
