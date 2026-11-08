@@ -1,13 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { ChevronDown, ChevronUp, CircleAlert, CircleHelp, Clock, Gauge, GripVertical, Layers, Pencil, Plus, Wallet } from "lucide-react";
 import { errorText } from "./api";
-import { PRESETS, PolicyRefused, isKnown, moved, newCandidateId, pathPlace, presetCandidates, readPolicy, savePolicy, type AnyCondition, type Candidate, type Policy, type PolicyView, type PresetId } from "./executor-routing";
+import { PRESETS, PolicyRefused, isKnown, modelShort, moved, newCandidateId, pathPlace, presetCandidates, readPolicy, savePolicy, type AnyCondition, type Candidate, type Harness, type Policy, type PolicyView, type PresetId } from "./executor-routing";
 import { langTag, useLanguage } from "./i18n";
 import { ROUTING_CREDENTIALS_CHANGED, readAccountsShared, readKeys, type AccountsView, type RoutingKey } from "./routing-keys";
+import { CandidateLive, NowCard, RecentChoices, SpendLine, StatePill, useLiveRouting } from "./RoutingLive";
+import type { RouteCandidate, RouteRecord } from "./routing-live";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import { Tip, TipText } from "./Tip";
 import { timeFormatter, useTimeDisplay } from "./time-preferences";
-import { chipText, nameOf, problemsOf, slotWords, titleOf, usdFits, zoneWords, credentialWords, text, type Text } from "./executor-routing-text";
+import { chipText, harnessName, nameOf, problemsOf, slotWords, titleOf, usdFits, zoneWords, credentialWords, text, type Text } from "./executor-routing-text";
 import { CandidateEditor } from "./RoutingCandidateEditor";
 import "./executor-routing.css";
 
@@ -81,6 +83,8 @@ export function ExecutorRouting({ active }: { active: boolean }) {
   const policy = draft;
   const changed = !!view && !!policy && JSON.stringify(policy) !== JSON.stringify(view.policy);
   editing.current = { changed, version: view?.version };
+  // What Core would choose now, by this page's policy, unsaved changes included (S4b).
+  const evaluation = useLiveRouting(policy, active && !!view);
   const problems = new Map((policy?.candidates ?? []).map((c) => [c.id, problemsOf(c, t, keys, accounts)]));
   const capBad = policy?.dailyApiCapUsd != null && !usdFits(policy.dailyApiCapUsd);
   const invalid = [...problems.values()].some((p) => p.length > 0) || capBad;
@@ -168,11 +172,12 @@ export function ExecutorRouting({ active }: { active: boolean }) {
       {saveError && <p className="inline-error" role="alert">{saveError}</p>}
       {policy && view && <>
         {!policy.enabled && <p className="settings-block-help routing-off-note">{t.offNote}</p>}
+        <NowCard record={evaluation.record} policy={policy} names={nameOf} colourOf={colourOf} changed={changed} error={evaluation.error} unavailable={evaluation.unavailable} />
         <div className="routing-order-head">
           <h4 className="settings-group-title">{t.orderTitle} <span className="settings-current">{t.version(view.version)}</span></h4>
           <p className="settings-block-help">{t.orderHelp}</p>
         </div>
-        <CandidateList policy={policy} t={t} keys={keys} accounts={accounts} open={open} problems={problems} refusedId={refusedId}
+        <CandidateList policy={policy} t={t} keys={keys} accounts={accounts} live={policy.enabled ? evaluation.record : null} open={open} problems={problems} refusedId={refusedId}
           refusedCondition={refusedPlace.condition} colourOf={colourOf} onOpen={setOpen} onMove={move}
           onEdit={editCandidate} onRemove={(id) => { edit((p) => ({ ...p, candidates: p.candidates.filter((c) => c.id !== id) })); setOpen(null); }} />
         <p className="sr-only" role="status" aria-live="polite">{live}</p>
@@ -217,17 +222,22 @@ export function ExecutorRouting({ active }: { active: boolean }) {
                   })} />
               </label>
               {capBad && <span className="inline-error">{t.capBad}</span>}
+              <SpendLine active={active} cap={policy.dailyApiCapUsd} />
             </div>
           </div>
         </div>
+        <RecentChoices active={active} names={(id, fallback) => {
+          const c = policy.candidates.find((x) => x.id === id);
+          return c ? nameOf(c) : fallback?.label || [fallback?.harness && (harnessName[fallback.harness as Harness] ?? fallback.harness), modelShort(fallback?.model ?? "")].filter(Boolean).join(" · ") || id;
+        }} />
       </>}
     </section>
   );
 }
 
 /** The candidates as cards, reordered by a handle's drag, its arrow keys, or the arrows beside each card. */
-function CandidateList({ policy, t, keys, accounts, open, problems, refusedId, refusedCondition, colourOf, onOpen, onMove, onEdit, onRemove }: {
-  policy: Policy; t: Text; keys: RoutingKey[] | null; accounts: AccountsView | null; open: string | null;
+function CandidateList({ policy, t, keys, accounts, live, open, problems, refusedId, refusedCondition, colourOf, onOpen, onMove, onEdit, onRemove }: {
+  policy: Policy; t: Text; keys: RoutingKey[] | null; accounts: AccountsView | null; live: RouteRecord | null; open: string | null;
   problems: Map<string, { at: string; text: string }[]>; refusedId?: string; refusedCondition?: number;
   colourOf: (id: string) => number; onOpen: (id: string | null) => void; onMove: (from: number, to: number, focus?: boolean) => void;
   onEdit: (id: string, change: (c: Candidate) => Candidate) => void; onRemove: (id: string) => void;
@@ -275,8 +285,9 @@ function CandidateList({ policy, t, keys, accounts, open, problems, refusedId, r
         const expanded = open === c.id;
         const dragging = drag?.from === i;
         const readingBound = c.conditions.some((x) => x.kind === "quota") || c.credential.kind === "pool";
+        const now: RouteCandidate | undefined = live?.candidates.find((x) => x.id === c.id);
         return (
-          <li key={c.id} className={`routing-cand${c.enabled ? "" : " is-disabled"}${dragging ? " is-dragging" : ""}${refusedId === c.id ? " is-refused" : ""}`}
+          <li key={c.id} className={`routing-cand${c.enabled ? "" : " is-disabled"}${dragging ? " is-dragging" : ""}${refusedId === c.id ? " is-refused" : ""}${now?.state === "chosen" ? " is-chosen" : ""}`}
             data-cand={c.id} style={{ ["--cc" as string]: `var(--route-c${colourOf(c.id)})`, ...(dragging ? { transform: `translateY(${drag.dy}px)` } : {}) }}>
             <div className="routing-cand-head">
               <button type="button" className="routing-grip" aria-label={t.grip(name)} aria-roledescription="sortable"
@@ -294,6 +305,7 @@ function CandidateList({ policy, t, keys, accounts, open, problems, refusedId, r
                 <div className={`routing-cand-sub${cred.missing ? " is-missing" : ""}`}>{cred.missing && <CircleAlert size={12} className="routing-icon" aria-hidden="true" />} {cred.text}</div>
               </div>
               <div className="routing-cand-end">
+                <StatePill state={now?.state} />
                 <span className="routing-move">
                   <button type="button" className="icon-button" aria-label={t.moveUp(name)} disabled={i === 0} onClick={() => onMove(i, i - 1)}><ChevronUp size={16} /></button>
                   <button type="button" className="icon-button" aria-label={t.moveDown(name)} disabled={i === policy.candidates.length - 1} onClick={() => onMove(i, i + 1)}><ChevronDown size={16} /></button>
@@ -320,6 +332,7 @@ function CandidateList({ policy, t, keys, accounts, open, problems, refusedId, r
                 {c.credential.kind === "pool" && <span className="routing-chip"><Layers size={13} aria-hidden="true" /><span>{t.chipPick}</span></span>}
                 {readingBound && <span className="routing-chip"><CircleHelp size={13} aria-hidden="true" /><span>{c.unknown === "pass" ? t.chipPass : t.chipSkip}</span></span>}
               </div>
+              <CandidateLive live={now} />
               {expanded && (
                 <CandidateEditor c={c} t={t} keys={keys ?? []} accounts={accounts} issues={issues} refusedCondition={refusedId === c.id ? refusedCondition : undefined}
                   onEdit={(change) => onEdit(c.id, change)} onRemove={() => onRemove(c.id)} onClose={() => onOpen(null)} />

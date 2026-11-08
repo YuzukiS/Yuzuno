@@ -254,3 +254,64 @@
 .settings-center.is-phone .routing-cand-body { padding: 0 10px 10px 12px; }
 .settings-center.is-phone .routing-grip { width: 40px; height: 40px; }
 .settings-center.is-phone .routing-edit { padding: 10px; }
+
+/* ---- What Core would choose now (S4b): the card above the order, each candidate's state. */
+.routing-now {
+  display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--cc, var(--line)) 55%, var(--line)); border-radius: 12px;
+  background: color-mix(in srgb, var(--cc, var(--surface-soft)) 7%, var(--surface-raised));
+}
+.routing-now.is-wait, .routing-now.is-off { border-style: dashed; background: transparent; }
+.routing-now-main { display: grid; gap: 4px; min-width: 0; }
+.routing-now-title { margin: 0; color: var(--ink); font-size: calc(11.5px + var(--font-adjust, 3px)); font-weight: 600; overflow-wrap: anywhere; }
+.routing-now-why { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px)); }
+.routing-now-why li { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.routing-now-why li > span:last-child { overflow-wrap: anywhere; }
+.routing-now-draft { color: var(--accent-ink); }
+.routing-now-unavailable, .routing-now-error { margin: 0; }
+.routing-num.is-sm { width: 17px; height: 17px; border-radius: 5px; font-size: 10.5px; }
+.routing-num.is-wait { background: repeating-linear-gradient(135deg, var(--text-quiet) 0 3px, transparent 3px 6px); color: var(--ink); box-shadow: inset 0 0 0 1px var(--text-quiet); }
+.routing-cand.is-chosen { border-color: color-mix(in srgb, var(--cc) 60%, var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--cc) 40%, transparent); }
+.routing-state {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px 2px 7px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--text-secondary); font-size: calc(9px + var(--font-adjust, 3px)); font-weight: 550; white-space: nowrap;
+}
+.routing-state.is-chosen { border-color: transparent; background: var(--cc); color: #fff; }
+.routing-cand:has(.routing-num.is-light) .routing-state.is-chosen { color: #0b0b0b; }
+.routing-state.is-skipped, .routing-state.is-unknown, .routing-state.is-failed { border-style: dashed; }
+.routing-live { display: grid; gap: 6px; min-width: 0; }
+.routing-why { margin: 0; color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px)); overflow-wrap: anywhere; }
+.routing-live-accounts { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.routing-live-accounts li {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; padding: 6px 8px; border-radius: 8px;
+  background: color-mix(in srgb, var(--text-quiet) 6%, transparent); font-size: calc(9.5px + var(--font-adjust, 3px));
+}
+.routing-live-accounts li.is-pick { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc) 60%, transparent); }
+.routing-live-account { color: var(--ink); font-weight: 600; }
+.routing-readings { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px)); }
+.routing-reading { display: inline-flex; align-items: center; gap: 5px; }
+.routing-reading b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.routing-reading-at { color: var(--text-quiet); }
+.routing-meter { display: inline-block; position: relative; width: 56px; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--text-quiet) 22%, transparent); overflow: hidden; }
+.routing-meter.is-wide { display: block; width: min(22rem, 100%); }
+.routing-meter i { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--accent-ink); }
+.routing-meter i.is-low { background: var(--danger, #c4453c); }
+.routing-spend { display: grid; gap: 4px; margin-top: 6px; }
+/* The recent choices, each opening to its record. */
+.routing-recent { display: grid; gap: 6px; }
+.routing-recent .settings-group-title, .routing-recent .settings-block-help { margin: 0; }
+.routing-recent-list { margin: 0; padding: 0; list-style: none; }
+.routing-recent-list > li + li { border-top: 1px solid var(--line); }
+.routing-recent-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; padding: 10px 14px;
+  border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.routing-recent-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.routing-recent-row time { flex: none; min-width: 6.5em; color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px)); font-variant-numeric: tabular-nums; }
+.routing-recent-what { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.routing-recent-what b { color: var(--ink); font-size: calc(10px + var(--font-adjust, 3px)); font-weight: 550; overflow-wrap: anywhere; }
+.routing-recent-what small { color: var(--text-secondary); font-size: calc(9px + var(--font-adjust, 3px)); }
+.routing-record { display: grid; gap: 4px; margin: 0; padding: 0 14px 12px 2.6em; color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px)); }
+.routing-record li { overflow-wrap: anywhere; }
+.routing-record b { color: var(--ink); font-weight: 550; margin-right: 6px; }
+.settings-center.is-phone .routing-recent-row { min-height: 44px; flex-wrap: wrap; }

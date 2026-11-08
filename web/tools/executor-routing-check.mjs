@@ -61,6 +61,26 @@ const fresh = () => ({
   // A run that checks a conflict has another save land first.
   conflictNext: false,
 });
+const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+const peakReason = { code: "peak", message: "DeepSeek's peak price now; off-peak from 12:00", messageZh: "现在是 DeepSeek 高峰价，12:00 起是闲时", condition: 0 };
+/** As Core would evaluate a policy now (a fixture's rule): DeepSeek at its peak, the pool's account #2 has most left. */
+function evaluation(policy) {
+  let chosen = null;
+  const candidates = policy.candidates.map((c) => {
+    if (!c.enabled) return { id: c.id, state: "off", reasons: [], readings: [] };
+    if (c.harness === "opencode") return { id: c.id, state: "skipped", reasons: [peakReason], readings: [] };
+    if (chosen) return { id: c.id, state: "notTried", reasons: [], readings: [] };
+    chosen = c.id;
+    return c.credential.kind === "pool" ? { id: c.id, state: "chosen",
+      reasons: [{ code: "poolPick", message: "Account #2: 71% of 5 hours and 58% of the week left", messageZh: "账号 #2：5 小时剩 71%，本周剩 58%" }],
+      readings: [{ what: "fiveHourLeft", account: "1", value: 8, observedAt: ago(2), source: "cswap" }, { what: "weekLeft", account: "1", value: 64, observedAt: ago(2), source: "cswap" },
+        { what: "fiveHourLeft", account: "2", value: 71, observedAt: ago(2), source: "cswap" }, { what: "weekLeft", account: "2", value: 58, observedAt: ago(2), source: "cswap" }],
+      accounts: [{ number: 1, fingerprint: "a1b2c3d4e5f60718", state: "low" }, { number: 2, fingerprint: "0f1e2d3c4b5a6978", state: "pick" }] }
+      : { id: c.id, state: "chosen", reasons: [], readings: [] };
+  });
+  const pick = candidates.find((c) => c.id === chosen);
+  return { policyVersion: 3, evaluatedAt: ago(0), at: "preview", chosen, ...(pick?.accounts ? { account: { number: 2, fingerprint: "0f1e2d3c4b5a6978" } } : {}), candidates };
+}
 const PEAK = { timeZone: "UTC", slots: [{ days: [1, 2, 3, 4, 5], from: "01:00", to: "04:00" }, { days: [1, 2, 3, 4, 5], from: "06:00", to: "10:00" }] };
 let state = fresh();
 const notFound = { ok: false, reason: { code: "referenceNotFound", message: "1Password has no op://Yuzuno/OpenAI/api key", messageZh: "1Password 里找不到 op://Yuzuno/OpenAI/api key" } };
@@ -69,13 +89,23 @@ async function route(r) {
   const request = r.request(), url = new URL(request.url()), method = request.method(), path = url.pathname;
   if (url.hostname !== HOST) { report.unexpected.push(request.url()); return r.abort(); }
   const body = request.postData() ? JSON.parse(request.postData()) : undefined;
-  if (method !== "GET") report.writes.push({ method, path, body });
+  // Evaluating is a read, by POST: not a write.
+  if (method !== "GET" && path !== "/api/routing/evaluate") report.writes.push({ method, path, body });
   // A secret may be in its own write only.
   const own = (method === "PUT" && /^\/api\/routing\/keys\/[^/]+$/.test(path)) || (method === "PUT" && path === "/api/routing/1password/token");
   if (!own && (request.postData() ?? "").match(new RegExp(`${SECRET}|${TOKEN}`))) report.errors.push(`a secret was sent to ${method} ${path}`);
   if (request.url().includes(SECRET) || request.url().includes(TOKEN)) report.errors.push(`a secret in a URL: ${method} ${path}`);
   const json = (value, status = 200) => r.fulfill({ status, json: value });
   if (path === "/api/routing/policy" && method === "GET") return json(state.policy);
+  // S4b: Core's evaluation of the draft it is sent, the recent choices and today's spend.
+  if (path === "/api/routing/evaluate" && method === "POST") return json(evaluation(body.policy ?? state.policy.policy));
+  if (path === "/api/routing/choices") return json({ choices: [
+    { dispatchId: "d-905", taskId: "T-905", executorName: "T-905 · Dev", route: { ...evaluation(state.policy.policy), at: "dispatch", evaluatedAt: ago(6) } },
+    { dispatchId: "d-904", taskId: "T-904", route: { at: "start", evaluatedAt: ago(200), chosen: "cx", changedAtStart: { from: "cl", reason: "Account #2 ran low while waiting" },
+      candidates: [{ id: "ds", state: "skipped", reasons: [peakReason], readings: [] }, { id: "cl", state: "skipped", reasons: [{ code: "poolNone", message: "No account has enough left", messageZh: "没有够用的账号" }], readings: [] },
+        { id: "cx", state: "chosen", reasons: [], readings: [] }] } }] });
+  if (path === "/api/routing/readings") return json({ at: ago(0), staleAfterSeconds: 600,
+    spend: { day: "2026-11-08", zone: "local", utcOffset: "+08:00", resetsAt: ago(-600), totalUsd: 3.4, byKey: { "deepseek-main": 0.62, anthropic: 2.78 } } });
   if (path === "/api/routing/policy" && method === "PUT") {
     if (state.conflictNext) {
       state.conflictNext = false;
@@ -195,6 +225,9 @@ async function run({ width, height, theme, lang }) {
     const order = page.locator(".executor-routing");
     const titles = () => order.locator(".routing-cand .routing-cand-title > span:first-child").allInnerTexts();
     assert.deepEqual((await titles()).slice(0, 2), [w.first, w.second]);
+    await order.locator(".routing-now").waitFor({ timeout: 10_000 });
+    assert.match(await order.locator(".routing-now-title").innerText(), lang === "zh" ? /现在会选 Claude Code · opus — 账号 #2/ : /Now it would choose Claude Code · opus — Account #2/);
+    assert.equal(await order.locator(".routing-cand.is-chosen").count(), 1, `${tag}: one card would be chosen`);
     if (!phone) {
       // A time window's chip has every period in its tip (YN-44's Tip).
       await order.locator(".routing-cand").first().locator(".routing-chip").first().hover();
@@ -247,6 +280,16 @@ async function run({ width, height, theme, lang }) {
       assert.equal(put.body.expectedVersion, 3);
       assert.deepEqual(put.body.policy.candidates.map((c) => c.id), ["cl", "ds", "cx", "cla"]);
       await shot("order-saved");
+      // The recent choices, one opened to its record; today's spend by the cap.
+      const recent = order.locator(".routing-recent-row");
+      await recent.nth(1).waitFor({ timeout: 10_000 });
+      await press(recent.nth(1));
+      await order.locator("#routing-recent-d-904").waitFor({ timeout: 10_000 });
+      await order.locator(".routing-recent").scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+      assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, a record open`);
+      await shot("recent");
+      assert.match(await order.locator(".routing-spend").innerText(), /\$3\.40 (of|\/) \$20/);
     }
     // The keys, scrolled to: a 1Password key whose reference isn't there.
     const openai = section.locator('.routing-key[data-key="openai"]');
