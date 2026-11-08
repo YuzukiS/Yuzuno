@@ -102,12 +102,14 @@ export function RoutingSimulate({ policy, active, names, colourOf, accounts, key
     ...(assume.onePasswordDown ? { onePasswordDown: true } : {}),
   }), [assume]);
   const key = JSON.stringify([policy, sent]);
+  // Nothing assumed is no assumption: not sent at all.
+  const assumed = Object.keys(sent).length ? sent : undefined;
   // The week, asked again a moment after the order or an assumption changes.
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
     const wait = window.setTimeout(() => {
-      simulate(policy, new Date(start).toISOString(), new Date(start + DAYS * DAY * 60_000).toISOString(), STEP, sent, controller.signal)
+      simulate(policy, new Date(start).toISOString(), new Date(start + DAYS * DAY * 60_000).toISOString(), STEP, assumed, controller.signal)
         .then((next) => { if (!controller.signal.aborted) { setSegments(next); setError(""); } })
         .catch((e) => { if (!controller.signal.aborted) setError(errorText(e)); });
     }, 350);
@@ -119,7 +121,7 @@ export function RoutingSimulate({ policy, active, names, colourOf, accounts, key
     if (!active || segments === null) return;
     const controller = new AbortController();
     const wait = window.setTimeout(() => {
-      evaluate(policy, new Date(pickedAt).toISOString(), sent, controller.signal)
+      evaluate(policy, new Date(pickedAt).toISOString(), assumed, controller.signal)
         .then((next) => { if (!controller.signal.aborted) setRecord(next); })
         .catch(() => { /* the week says what it can */ });
     }, 250);

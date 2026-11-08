@@ -176,7 +176,7 @@ test("a picked time and an assumption are asked as Core takes them; Back to now"
 test("a Core without the simulation says it comes with routing itself", async () => {
   const page = mount(core({ simulate: () => [404, { error: "not found" }] }), "zh-Hans");
   await until(() => /按时间模拟要等路由本身/.test(q(page, ".routing-simulate")?.textContent ?? ""), "the note");
-  assert.equal(q(page, ".routing-strip"), null);
+  assert.ok(!q(page, ".routing-strip"));
 });
 
 test("a template follows routing or is fixed: saved as read but for routing, against its version; a list changed elsewhere is not overwritten", async () => {

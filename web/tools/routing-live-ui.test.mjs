@@ -87,6 +87,8 @@ function core({ evaluate = () => [200, record()], choices, readings } = {}) {
           { id: "cx", state: "chosen", reasons: [], readings: [] }] } }] }];
     if (p === "/api/routing/readings") return readings ? readings() : [200, { at: minutesAgo(0), staleAfterSeconds: 600,
       spend: { day: "2026-11-08", zone: "local", utcOffset: "+08:00", resetsAt: minutesAgo(-600), totalUsd: 1.23, byKey: { "deepseek-main": 1.23 } } }];
+    // As a Core has it: the templates list (S4b's Templates block reads it).
+    if (p === "/api/executor-templates") return [200, { workspace: { version: 1, templates: [], laterTemplates: 0 }, available: [], presets: [] }];
     if (p === "/api/routing/keys") return [200, { keys: [{ id: "deepseek-main", provider: "deepseek", source: "local", set: true, setAt: minutesAgo(60) }], onePasswordToken: { set: false } }];
     if (p === "/api/routing/accounts") return [200, { cswap: { command: "cswap", pinned: "1.0.0", accounts: [] }, codexHomes: [] }];
     return [404, { error: `not answered: ${method} ${p}` }];
@@ -133,7 +135,9 @@ test("the card above the order says whom Core would choose now, why not the ones
   const server = core();
   const page = mount(server);
   await until(() => q(page, ".routing-now"), "the now card");
-  assert.deepEqual(server.asked[0], { policy }, "asked with the page's policy");
+  // The card's own evaluation, now: no time given (the simulation's carry one).
+  const now = () => server.asked.filter((b) => !b.at);
+  assert.deepEqual(now()[0], { policy }, "asked with the page's policy");
   assert.equal(q(page, ".routing-now-title").textContent, "Now it would choose Claude Code · opus — Account #2");
   assert.deepEqual([...page.document.querySelectorAll(".routing-now-why li")].map((li) => li.textContent), [
     "1OpenCode · deepseek-flash · API: DeepSeek's peak price now; off-peak from 12:00",
@@ -159,8 +163,9 @@ test("an unsaved change is evaluated as it stands, and says so", async () => {
   const page = mount(server);
   await until(() => q(page, ".routing-now"), "the now card");
   button(page, "Move Claude Code · opus up").click();
-  await until(() => server.asked.length === 2, "asked again after the change");
-  assert.deepEqual(server.asked[1].policy.candidates.map((c) => c.id), ["cl", "ds", "cx"], "the draft, not the saved policy");
+  const now = () => server.asked.filter((b) => !b.at);
+  await until(() => now().length === 2, "asked again after the change");
+  assert.deepEqual(now()[1].policy.candidates.map((c) => c.id), ["cl", "ds", "cx"], "the draft, not the saved policy");
   await until(() => /with your unsaved changes/.test(q(page, ".routing-now .settings-row-meta").textContent), "the draft note");
 });
 
