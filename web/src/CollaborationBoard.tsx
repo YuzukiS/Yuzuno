@@ -5,7 +5,7 @@ import { DeliveryFlow, type DeliveryCandidate } from "./DeliveryFlow";
 import { openJobs } from "./Jobs";
 import { SendToAgentButton, startHandoffDrag } from "./SendToAgent";
 import type { HandoffSource } from "./handoff";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -78,6 +78,9 @@ export interface SharedTask {
   github?: GitHubLink[];
   id: string;
   title: string;
+  /** What it is about in plain words, at most 16 characters (T-43); the
+   * sidebar names its executor by it. Absent when none is set. */
+  shortName?: string | null;
   description: string;
   status: TaskStatus;
   assigneeAgentId?: string | null;
@@ -160,6 +163,7 @@ interface MessagePage {
 }
 interface TaskDraft {
   title: string;
+  shortName: string;
   description: string;
   status: TaskStatus;
   assigneeAgentId: string;
@@ -170,6 +174,7 @@ interface TaskDraft {
 
 const emptyTask: TaskDraft = {
   title: "",
+  shortName: "",
   description: "",
   status: "todo",
   assigneeAgentId: "",
@@ -179,6 +184,7 @@ const emptyTask: TaskDraft = {
 };
 const taskDraft = (task: SharedTask): TaskDraft => ({
   title: task.title,
+  shortName: task.shortName || "",
   description: task.description || "",
   status: task.status,
   assigneeAgentId: task.assigneeAgentId || "",
@@ -200,6 +206,32 @@ const timeLabel = (value?: string) =>
       })
     : "";
 
+/** The most characters a task's short name has, as Core counts them (T-43). */
+const SHORT_NAME_CHARS = 16;
+
+/** A task's short name (T-43): what it is about in plain words; the
+ * sidebar names its executor by it. One line; empty clears it. */
+function ShortNameField({ value, onChange, t }: { value: string; onChange: (value: string) => void; t: BoardText }) {
+  const hint = useId();
+  return (
+    <>
+      <label className="collab-field">
+        <span>
+          {t.shortName} <small>{t.optional}</small>
+        </span>
+        <input
+          maxLength={SHORT_NAME_CHARS}
+          placeholder={t.shortNamePlaceholder}
+          aria-describedby={hint}
+          value={value}
+          onChange={(event) => onChange(event.target.value.replace(/[\r\n]/g, ""))}
+        />
+      </label>
+      <p id={hint} className="collab-hint">{t.shortNameHint}</p>
+    </>
+  );
+}
+
 /** Only changed fields cross the wire. Comments never participate in this version check. */
 export function taskPatch(task: SharedTask, draft: TaskDraft) {
   const before = taskDraft(task);
@@ -208,7 +240,7 @@ export function taskPatch(task: SharedTask, draft: TaskDraft) {
     const value = draft[key].trim();
     if (value !== before[key])
       patch[key] =
-        (key === "assigneeAgentId" || key === "projectId") && !value
+        (key === "assigneeAgentId" || key === "projectId" || key === "shortName") && !value
           ? null
           : value;
   }
@@ -1293,6 +1325,7 @@ function NewTask({
     if (!draft.title.trim()) return;
     const answer = await mutation.execute<{ task: SharedTask }>("task_create", {
       title: draft.title.trim(),
+      ...(draft.shortName.trim() ? { shortName: draft.shortName.trim() } : {}),
       description: draft.description.trim(),
       ...(draft.assigneeAgentId
         ? { assigneeAgentId: draft.assigneeAgentId }
@@ -1335,6 +1368,7 @@ function NewTask({
             }
           />
         </label>
+        <ShortNameField t={t} value={draft.shortName} onChange={(shortName) => setDraft({ ...draft, shortName })} />
         <label className="collab-field">
           <span>
             {t.descriptionLabel} <small>{t.optional}</small>
@@ -1418,6 +1452,8 @@ function TaskPane({
   // Or a new executor Core creates (T-34): a general one ("", YN-2) or from a template.
   const [from, setFrom] = useState<"agent" | "template">("agent");
   const [templateId, setTemplateId] = useState("");
+  // The task's short name, which names a new executor in the sidebar (T-43).
+  const [shortName, setShortName] = useState("");
   const [templates, setTemplates] = useState<ExecutorTemplatesView["available"] | null>(null);
   const [general, setGeneral] = useState<ExecutorTemplatesView["general"]>(undefined);
   const [templatesError, setTemplatesError] = useState("");
@@ -1555,11 +1591,24 @@ function TaskPane({
   const dispatch = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!task || (from === "agent" && !toAgentId)) return;
+    let version = task.version;
+    // A new executor goes by its task's short name: a changed one is saved first.
+    const short = shortName.trim();
+    if (from === "template" && short !== (task.shortName || "")) {
+      const named = await mutation.execute<{ task: SharedTask }>("task_update", {
+        taskId: id,
+        expectedVersion: version,
+        patch: { shortName: short || null },
+      });
+      if (!named) return;
+      changed(named.task);
+      version = named.task.version;
+    }
     const answer = await mutation.execute<{ task: SharedTask }>(
       "task_dispatch",
       {
         taskId: id,
-        expectedVersion: task.version,
+        expectedVersion: version,
         ...(from === "agent" ? { toAgentId } : { executor: templateId ? { templateId } : {} }),
         priority: urgent ? "urgent" : "normal",
         ...(instruction.trim() ? { body: instruction.trim() } : {}),
@@ -1841,6 +1890,7 @@ function TaskPane({
                   setToAgentId(task.assigneeAgentId || "");
                   setFrom("agent");
                   setTemplateId("");
+                  setShortName(task.shortName || "");
                   setUrgent(false);
                   mutation.clearError();
                 }}
@@ -1913,6 +1963,7 @@ function TaskPane({
                   {templatesError ? <ErrorNote text={t.templatesUnread(templatesError)} />
                     : templates?.length === 0 ? <p className="collab-hint">{t.noTemplates}</p>
                     : <p className="collab-hint">{t.templateHint}</p>}
+                  <ShortNameField t={t} value={shortName} onChange={setShortName} />
                 </>
               )}
               <label className="collab-field">
@@ -1993,6 +2044,7 @@ function TaskPane({
                   }
                 />
               </label>
+              <ShortNameField t={t} value={draft.shortName} onChange={(shortName) => setDraft({ ...draft, shortName })} />
               <label className="collab-field">
                 <span>{t.descriptionLabel}</span>
                 <textarea

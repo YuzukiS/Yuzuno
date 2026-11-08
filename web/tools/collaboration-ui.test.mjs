@@ -228,6 +228,7 @@ test("a lost create response keeps the draft and retries the same request ID", a
     assert.equal(writes[0].body.requestId, writes[1].body.requestId);
     assert.equal(writes[0].body.title, "Claude model dropdown");
     assert.equal("sender" in writes[0].body, false);
+    assert.equal("shortName" in writes[0].body, false, "no short name given, none sent");
   } finally {
     page.close();
   }
@@ -516,6 +517,105 @@ test("a task goes to a new executor: a general one unless one of the workspace's
     assert.deepEqual(general.body.executor, {}, "a general executor names no template");
     assert.equal(general.body.expectedVersion, 2);
     assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
+test("a task's short name is edited where the task is and given with a new executor; emptied it clears, at most 16 characters (T-43)", async () => {
+  let current = task({ shortName: "Line preview" });
+  const view = { workspace: { version: 1, templates: [] }, available: [], defaultNamePattern: "{task} · {label}",
+    limits: { templates: 50, instructionsBytes: 8192, maxConcurrent: 64 }, opencodeEnabled: false,
+    general: { label: "Executor", harness: "codex", harnessSource: "builtin" } };
+  const page = mount((operation, body) => {
+    if (operation === "task_list") return { tasks: [current], hasMore: false };
+    if (operation === "task_get") return { task: current, activities: [], executions: [], hasMore: false };
+    if (operation === "executor-templates") return view;
+    if (operation === "task_update") {
+      const { shortName: _old, ...rest } = current;
+      current = { ...rest, version: current.version + 1, ...(body.patch.shortName ? { shortName: body.patch.shortName } : {}) };
+      return { task: current };
+    }
+    if (operation === "task_dispatch") {
+      current = { ...current, version: current.version + 1, assigneeAgentId: "executor-1" };
+      return { task: current, agentId: "executor-1" };
+    }
+    throw new Error(operation);
+  });
+  const writes = () => page.calls.filter((call) => call.operation === "task_update" || call.operation === "task_dispatch");
+  try {
+    page.render();
+    (await waitFor(() => page.document.querySelector(".collab-task-card"), "task card")).click();
+    await tick();
+    click(page, "Edit task");
+    await tick();
+    const edit = field(page, "Short name");
+    assert.equal(edit.value, "Line preview", "the edit form starts from the task's short name");
+    assert.equal(edit.maxLength, 16);
+    assert.match(page.document.querySelector(".collab-inset").textContent,
+      /At most 16 characters: what it is about in plain words, not a key or a number\. The sidebar names its executor by it\./);
+    await value(page, edit, "  ");
+    click(page, "Save changes");
+    await waitFor(() => writes().length === 1, "the save");
+    assert.deepEqual(writes()[0].body.patch, { shortName: null }, "an emptied short name clears it");
+    assert.equal(writes()[0].body.expectedVersion, 1);
+
+    // Sent to a new executor, which the sidebar names by it: a changed one
+    // is saved first, and the dispatch goes on the version that made.
+    await waitFor(() => !page.document.querySelector(".collab-inset"), "the edit closed");
+    click(page, "Give to agent");
+    await tick();
+    assert.equal(field(page, "Short name"), undefined, "an existing agent goes by its own name");
+    [...page.document.querySelectorAll(".collab-dispatch-from input")][1].click();
+    const name = await waitFor(() => field(page, "Short name"), "the short name for a new executor");
+    assert.equal(name.value, "", "the task has none now");
+    assert.equal(name.maxLength, 16);
+    await value(page, name, "Export settings");
+    click(page, "Create and send");
+    await waitFor(() => writes().length === 3, "the dispatch");
+    assert.deepEqual(writes().slice(1).map((call) => call.operation), ["task_update", "task_dispatch"], "named first, then sent");
+    assert.deepEqual(writes()[1].body.patch, { shortName: "Export settings" });
+    assert.equal(writes()[1].body.expectedVersion, 2);
+    assert.equal(writes()[2].body.expectedVersion, 3, "sent on the version its short name made");
+
+    // Unchanged, the dispatch goes by itself.
+    await waitFor(() => !page.document.querySelector(".collab-dispatch-from"), "the form closed");
+    click(page, "Give to agent");
+    await tick();
+    [...page.document.querySelectorAll(".collab-dispatch-from input")][1].click();
+    const again = await waitFor(() => field(page, "Short name"), "the short name again");
+    assert.equal(again.value, "Export settings");
+    click(page, "Create and send");
+    await waitFor(() => writes().length === 4, "the second dispatch");
+    assert.equal(writes()[3].operation, "task_dispatch", "nothing to save first");
+    assert.equal(writes()[3].body.expectedVersion, 4);
+    assert.equal(page.errors.length, 0, page.errors.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
+test("a new task takes a short name, said in Chinese, sent trimmed (T-43)", async () => {
+  const page = mount(quietCore({
+    task_list: { tasks: [], hasMore: false },
+    task_create: { httpStatus: 400, error: "Stopped here by the test" },
+  }));
+  try {
+    chinese(page);
+    page.render();
+    await waitFor(() => /暂时清闲/.test(page.document.body.textContent), "the empty list in Chinese");
+    click(page, "新建任务");
+    const form = await waitFor(() => page.document.querySelector('[aria-label="新建任务"]'), "the new task form");
+    const name = field(page, "短名");
+    assert.equal(name.placeholder, "导出设备偏好");
+    assert.equal(name.maxLength, 16);
+    assert.match(form.textContent, /短名 可选/);
+    assert.match(form.textContent, /最多 16 个字：用平常的话说它是做什么的，不写编号。左栏用它称呼这个任务的执行者。/);
+    await value(page, field(page, "任务标题"), "设置页：导出/导入偏好");
+    await value(page, name, " 导出设备偏好 ");
+    click(page, "创建任务");
+    await waitFor(() => page.calls.some((call) => call.operation === "task_create"), "the create");
+    assert.equal(page.calls.find((call) => call.operation === "task_create").body.shortName, "导出设备偏好");
   } finally {
     page.close();
   }

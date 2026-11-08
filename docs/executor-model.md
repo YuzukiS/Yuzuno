@@ -684,7 +684,10 @@ has the blocker (`blocked`); its state stays what it is.
   16 characters ("导出设备偏好", "Export settings"), not a key, a number or a
   PR: the sidebar names an executor by it. A lead or the user gives it with
   `task_create` or `task_update` (`shortName`; kept trimmed, one line; null
-  or empty clears it), typically when dispatching. Without one the task's
+  or empty clears it), typically when dispatching. In the app it is the
+  Short name (短名) field of the task board's new-task and edit forms, and
+  of the Dispatch form when a new executor does the task, which saves a
+  changed one before it sends the task. Without one the task's
   title stands in, and the lifecycle's `task` has no `shortName`. `task_get`'s current view and `task_list`'s compact rows
   carry it. A Core from before it (core.26 and earlier) reads such a task
   as before and leaves the short name out of its next save of that task.
