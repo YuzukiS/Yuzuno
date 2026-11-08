@@ -358,7 +358,10 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
 // Every pill row, at every mutation in the list and at every frame drawn
 // (sampled after the frame's paint, so what a ResizeObserver set before the
 // paint counts): the outline's room left of the words and right of the
-// ring, its middle on the ring's, the ring on the row's (YN-41).
+// ring, its middle on the ring's, the ring on the row's (YN-41). Not at an
+// outline's own move: each row's observer is a callback of its own with a
+// microtask checkpoint after it, so a read there sees rows whose callbacks
+// haven't run yet, a state never painted.
 const startSampler = (page) => page.evaluate(() => {
   const out = (window.__yn41f = []);
   const take = (why) => {
@@ -377,7 +380,8 @@ const startSampler = (page) => page.evaluate(() => {
     }
   };
   take("start");
-  const seen = new MutationObserver(() => take("mutation"));
+  const own = (m) => m.type === "attributes" && m.attributeName === "style" && m.target.classList?.contains("island-shell");
+  const seen = new MutationObserver((records) => records.every(own) || take("mutation"));
   seen.observe(document.querySelector(".agent-list"), { subtree: true, childList: true, attributes: true, characterData: true });
   const channel = new MessageChannel();
   channel.port1.onmessage = () => {
