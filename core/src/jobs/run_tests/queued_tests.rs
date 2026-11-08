@@ -66,15 +66,20 @@ fn a_queued_gpu_stage_waits_for_a_gpu_and_a_running_branch_keeps_the_run_running
     let mut train = stage("train", &[]);
     train["gpu"] = json!({"memoryMiB":128});
     let run = create(&s, "gpu", json!([train, stage("other", &[])]));
-    // Admission starts the CPU-only stage and holds the GPU one.
+    // Admission starts the CPU-only stage and holds the GPU one, which the
+    // fixture's 192 MiB budget also holds for RAM while the other runs.
     let other = start(&s);
     assert_eq!(other["run"]["stage"], "other");
     assert!(s.reserve_next_job(None, None, None).unwrap().is_none());
+    let train = latest(&s, &run, "train");
+    assert_eq!(train["status"], "queued");
+    assert!(train["reason"].as_str().unwrap().starts_with("Waiting for shared RAM reservation"), "{}", train["reason"]);
     let view = s.run(run["id"].as_str().unwrap()).unwrap();
     assert_eq!(view["status"], "running", "one branch runs, so the run runs");
     assert!(view.get("queue").is_none());
-    // That branch done, only the GPU stage is left, queued.
+    // That branch done, only the GPU stage is left: admission holds it for the GPU.
     assert!(success(&s, &other, "bbb"));
+    assert!(s.reserve_next_job(None, None, None).unwrap().is_none());
     let waiting = queue(&s, &run);
     assert_eq!((waiting["stage"].as_str(), waiting["waitingFor"].as_str()), (Some("train"), Some("gpu")), "{waiting}");
     assert!(waiting["reason"].as_str().unwrap().starts_with("Waiting for a GPU"), "{waiting}");
