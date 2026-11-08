@@ -10,9 +10,10 @@ version; a later slice adds to it.
 | S1a | Routing keys: the key file, its write-only routes, reading a key through 1Password | Done |
 | S1b | Accounts: claude-swap's accounts and how a binding to one resolves, its launcher, Codex homes | Done |
 | S1c | Handing a key or account to one executor's harness process: Claude Code, OpenCode and Codex | Done |
-| S2a | Readings: time windows and the daily API spend, read-only | This version |
+| S2a | Readings: time windows and the daily API spend, read-only | Done |
+| S3a | The policy: kept, checked and served; a template fixed against routing | This version |
 | S2b | Readings: subscription quotas (claude-swap, Codex) | Next |
-| S3 | Routing itself: the policy, the choice at dispatch and at start | Later |
+| S3b | Routing itself: the choice at dispatch and at start, `route_json` | Later |
 | S4 | The Settings page (YN-49) | Later |
 
 An executor starts with a routing key or account only when its runtime
@@ -294,6 +295,19 @@ The rules for every shape:
 
 These routes are on the same boundary as the routing keys. No Workspace tool
 writes the policy.
+
+At this version the policy is kept, checked and served, and nothing yet
+chooses by it: S3b will. It is kept in the Workspace's database as the JSON
+that was saved, under `executors.routing`.
+
+A save checks the policy strictly:
+- an `apiKey` credential's key must be set and fit the harness;
+- a Codex home must be listed;
+- a schedule's days and times must be well formed.
+
+A credential or condition of a kind a later Core added is kept, and routing
+reads it as unknown. A template whose `routing` is `"fixed"` starts its
+executors as it says, whatever the policy is.
 
 ```jsonc
 // GET → 200. Before the first save: { "version": 0, "policy": { "enabled": false, "candidates": [], "whenNone": "wait" }, … }

@@ -107,6 +107,11 @@ pub struct Template {
     /// One of `DELIVERY_MODES`; unset is `pr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_mode: Option<String>,
+    /// `fixed`: its executors start with this template's own harness and
+    /// model on the host's login, whatever the routing policy says (YN-34 S3).
+    /// Unset follows the Workspace's routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<String>,
     /// 1 to 12 steps its executors follow, descriptive for now: Core keeps
     /// no state of them. Unset is its delivery mode's (`default_steps`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -289,6 +294,7 @@ impl Template {
             }
         }
         machine_named(self.machine_id.as_deref(), &self.harness)?;
+        ensure!(self.routing.as_deref().is_none_or(|r| r == "fixed"), "A template's routing is \"fixed\" or unset");
         if let Some(text) = &self.instructions {
             ensure!(text.len() <= MAX_INSTRUCTIONS, "A template's instructions are at most 8 KiB");
         }
@@ -333,7 +339,7 @@ impl Template {
         Self {
             id: String::new(), label: GENERAL_LABEL.into(), name_pattern: None, harness, model: None, reasoning_effort: None,
             permission_preset: None, permission_mode: None, machine_id: None, instructions: None, origin: None,
-            delivery_mode: None, steps: None, when_to_choose: None,
+            delivery_mode: None, routing: None, steps: None, when_to_choose: None,
         }
     }
 
