@@ -17,7 +17,7 @@ import type { NativeTurn } from "./types";
 import type { InputDock, ReadBy } from "./input-dock";
 import { useAppearance } from "./appearance";
 import { strings, useLanguage } from "./i18n";
-import { TIP_DELAY_MS } from "./Tip";
+import { TIP_DELAY_MS, focusByKeyboard } from "./Tip";
 import { turnWords } from "./turn-text";
 import "./turn-dock.css";
 import "./input-dock.css";
@@ -179,6 +179,10 @@ export function TurnNavigator({
   const rest = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(rest.current), []);
   const [focused, setFocused] = useState<number | null>(null);
+  // Whether the keyboard moved focus to the focused Turn: only then does
+  // focus preview it, as any tip (Tip.tsx). A press or a tap focuses a Turn
+  // on its way to reading it, and previews nothing.
+  const [focusPreview, setFocusPreview] = useState(false);
   const [previewTop, setPreviewTop] = useState(8);
   const [engaged, setEngaged] = useState(false);
   const nav = useRef<HTMLElement>(null);
@@ -216,7 +220,7 @@ export function TurnNavigator({
   }, [turnKey, center, turnDock.numbers, turnDock.bars, numberRow]);
   const placed = useRef(layout);
   const lensFrame = useRef(0);
-  const highlighted = dialogTurn ?? hover ?? focused;
+  const highlighted = dialogTurn ?? hover ?? (focusPreview ? focused : null);
   const previewTurn = highlighted === null ? undefined : turns[highlighted];
   const previewMessage = previewTurn && userRequests(previewTurn)[0];
 
@@ -567,6 +571,7 @@ export function TurnNavigator({
                 }}
                 onFocus={() => {
                   focusInside.current = true;
+                  setFocusPreview(focusByKeyboard());
                   setFocused(turnIndex);
                   engage();
                   positionPreview(turnIndex);

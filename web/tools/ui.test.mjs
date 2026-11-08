@@ -476,6 +476,8 @@ test("image-only and mixed pasted requests retain attachment captions and exact 
           assert.match(node.textContent,/\[Image\]/);
           assert.equal(node.querySelectorAll(".pasted-text-chip").length,mixed ? 1 : 0);
         }
+        // The keyboard's focus previews a Turn (YN-44); a press's does not.
+        page.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
         page.document.querySelector('[data-turn-choice="image-turn"]').focus();
         const preview = await waitForPreviewState(() => {
           const shown = page.document.querySelector(".turn-dock-preview");
