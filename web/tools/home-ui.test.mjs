@@ -2305,6 +2305,8 @@ test("YN-38 an Ask's form asked again while the user answers: the answers that s
   home.projects[0].brief.sections.push(plan(1, [day([mon, tue]), notesField]));
   const p = await mount({ home });
   try {
+    // A form copies its answers on submit; jsdom's window lacks it (as above).
+    p.w.structuredClone = structuredClone;
     const planCard = () => card(p, "p-app", "plan");
     const radio = (label) => [...planCard().querySelectorAll(".clarification label")].find((l) => l.textContent.includes(label))?.querySelector("input");
     const fieldNotes = (label) => [...[...planCard().querySelectorAll(".clarification-field")].find((f) => f.querySelector("legend").textContent.startsWith(label))

@@ -397,6 +397,8 @@ export function AskReply({
   function formChanged(target: EventTarget) {
     if (!form || !(target as HTMLElement).closest?.(".clarification")) return;
     formTouched.current = true;
+    // Kept once per version and form, not on every keystroke.
+    if (formBegun?.version === section.version && JSON.stringify(formBegun.form) === JSON.stringify(form)) return;
     setFormBegun(form);
   }
   // A form nobody wrote in or sent from shows the question as it is now: a
