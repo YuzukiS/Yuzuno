@@ -432,6 +432,10 @@ dispatch is routed:
   again, among the candidates of its harness only. The first that holds
   gives it its model, effort and account or key (`changedAtStart`), and it
   starts in turn. **An executor's harness is fixed at its dispatch.**
+  If none ever could, it is released and starts in turn as it would without
+  routing, on the host's own login: its route says `released`, with
+  `routingOff` when routing was turned off, or `noCandidate` when no enabled
+  candidate of its harness is left.
 - **A start that fails for certain** is rebuilt once, as before. The rebuild
   leaves out the candidate the failed executor was started with
   (`excluded`), so it tries the next one.

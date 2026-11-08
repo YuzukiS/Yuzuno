@@ -125,6 +125,38 @@ pub(crate) fn waiting_list(db: &Connection) -> Result<Vec<(String, String, Strin
     }).collect())
 }
 
+/// Why an executor waiting for a candidate starts without one: routing is off, or no
+/// enabled candidate of its harness is left, so none could ever be chosen (#805 R1 P2).
+pub(crate) fn release_reason(policy: &Value, harness: &str) -> Option<Value> {
+    let (code, message, zh) = if policy["enabled"] != true {
+        ("routingOff", "Routing was turned off while it waited, so it starts as it would without routing",
+            "它等待期间路由已关闭，所以按没有路由时的方式启动")
+    } else if !policy["candidates"].as_array().into_iter().flatten().any(|c| c["enabled"] == true && c["harness"] == harness) {
+        ("noCandidate", "No enabled candidate of its harness is left, so it starts as it would without routing",
+            "已没有启用的同一工具候选，所以按没有路由时的方式启动")
+    } else {
+        return None;
+    };
+    Some(json!({"code": code, "message": message, "messageZh": zh}))
+}
+
+/// Releases each waiting executor `release_reason` names: it starts in turn on the host's
+/// own login, as its template says, and its route says why. Answers the ones released.
+pub(crate) fn release_waiting(db: &Connection) -> Result<Vec<String>> {
+    let policy = super::stored_in(db)?.policy;
+    let mut released = Vec::new();
+    for (agent, harness, _machine, mut route) in waiting_list(db)? {
+        if let Some(mut reason) = release_reason(&policy, &harness) {
+            reason["at"] = json!(Utc::now().to_rfc3339());
+            route["waiting"] = json!(false);
+            route["released"] = reason;
+            set_route(db, &agent, &route)?;
+            released.push(agent);
+        }
+    }
+    Ok(released)
+}
+
 pub(crate) fn set_route(db: &Connection, agent: &str, route: &Value) -> Result<()> {
     db.execute("UPDATE executor_dispatches SET route_json=?2 WHERE agent_id=?1", rusqlite::params![agent, route.to_string()])?;
     Ok(())
@@ -153,6 +185,10 @@ pub(crate) fn choices(db: &Connection, limit: usize) -> Result<Vec<Value>> {
 impl crate::store::Store {
     pub(crate) fn routing_waiting(&self) -> Result<Vec<(String, String, String, Value)>> {
         waiting_list(&*self.db.read()?)
+    }
+
+    pub(crate) fn release_routing_waiting(&self) -> Result<Vec<String>> {
+        release_waiting(&*self.db.write()?)
     }
 
     pub(crate) fn set_routing_route(&self, agent: &str, route: &Value) -> Result<()> {
@@ -184,7 +220,16 @@ impl crate::workspace::Workspace {
     /// Reads routing again for each executor waiting for a candidate, among
     /// the candidates of its harness; the first that holds gives it its
     /// model, effort and account or key, and it joins the queue to start.
+    /// One that no candidate could ever take is released first (`release_waiting`).
     pub(crate) async fn route_waiting(self: &std::sync::Arc<Self>) {
+        match self.stored(|store| store.release_routing_waiting()).await {
+            Ok(released) => {
+                for agent in released {
+                    eprintln!("Routing: executor {agent} waited for a candidate none can be; it starts as it would without routing");
+                }
+            }
+            Err(error) => eprintln!("Routing: the executors waiting for a candidate could not be released: {error:#}"),
+        }
         let waiting = match self.stored(|store| store.routing_waiting()).await {
             Ok(waiting) if !waiting.is_empty() => waiting,
             Ok(_) => return,

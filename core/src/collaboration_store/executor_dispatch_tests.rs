@@ -878,6 +878,26 @@ mod routing {
         assert_eq!(store.executor_slot_next(&in_flight).unwrap(), Some(plan.dispatch.agent_id.clone()));
         assert_eq!(store.executor_slot_next(&in_flight).unwrap(), None, "the waiting one is not started");
 
+        // Routing turned off while it waits: it is released and starts as without routing (#805 R1 P2).
+        let mut off = store.routing_policy().unwrap();
+        off.policy["enabled"] = json!(false);
+        store.save_routing_policy(off.version, off.policy.clone()).unwrap().unwrap();
+        assert_eq!(store.release_routing_waiting().unwrap(), [waits.dispatch.agent_id.clone()]);
+        let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
+        assert_eq!((route["waiting"].clone(), route["released"]["code"].clone()), (json!(false), json!("routingOff")));
+        assert_eq!(store.executor_slot_next(&in_flight).unwrap(), Some(waits.dispatch.agent_id.clone()), "it starts in turn");
+        assert!(store.routing_waiting().unwrap().is_empty());
+        // On again, with no enabled candidate of its harness: none could ever be chosen, so it is released too.
+        let mut on = store.routing_policy().unwrap();
+        on.policy["enabled"] = json!(true);
+        on.policy["candidates"][0]["enabled"] = json!(false);
+        let reason = |policy: &Value, harness: &str| crate::routing_policy::dispatch::release_reason(policy, harness).map(|r| r["code"].clone());
+        assert_eq!((reason(&on.policy, "opencode"), reason(&on.policy, "codex")), (Some(json!("noCandidate")), Some(json!("noCandidate"))),
+            "DeepSeek off, and Codex off since earlier");
+        on.policy["candidates"][1]["enabled"] = json!(true);
+        assert_eq!((reason(&on.policy, "opencode"), reason(&on.policy, "codex")), (Some(json!("noCandidate")), None),
+            "an enabled Codex candidate may hold later, so a Codex executor keeps waiting");
+
         // The newest choices first.
         let choices = store.routing_choices(10).unwrap();
         assert_eq!(choices.iter().map(|c| c["agentId"].as_str().unwrap().to_owned()).collect::<Vec<_>>(),
