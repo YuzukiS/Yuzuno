@@ -78,6 +78,7 @@ pub mod opencode_v2;
 pub mod opencode_revert_files;
 pub mod opencode_transfer;
 pub mod rail;
+pub mod routing_accounts;
 pub mod routing_keys;
 pub mod reading_handoff;
 pub mod record_rows;

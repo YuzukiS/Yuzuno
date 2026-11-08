@@ -135,7 +135,7 @@ async fn remove_token(State(ws): State<Arc<Workspace>>) -> Result<Json<Value>, R
 
 /// An Agent's credential is not the user: any Authorization header is
 /// refused, so no Agent bearer token is ever accepted here.
-async fn no_agent_credential(request: Request, next: Next) -> Response {
+pub(crate) async fn no_agent_credential(request: Request, next: Next) -> Response {
     if request.headers().contains_key(AUTHORIZATION) {
         return (StatusCode::FORBIDDEN, Json(json!({"error": "Routing keys take no Agent credential: only the user's own browser on Core's port changes them"})))
             .into_response();
