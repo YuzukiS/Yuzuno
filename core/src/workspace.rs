@@ -609,6 +609,8 @@ impl Workspace {
         let (tx, mut rx) = mpsc::channel(256);
         let events = crate::updates::events::EventBarrier::new(tx.clone());
         let backlog = Arc::new(crate::backlog::Backlog::default());
+        // A routing key a local Agent's app-server logs in with (YN-34 S1c).
+        let mut api_key = None;
         let rpc = if id == "_catalog" {
             Rpc::spawn(&self.program, &[], tx).await?
         } else {
@@ -623,7 +625,6 @@ impl Workspace {
             }).await?;
             self.changed(id);
             // A routing account or key goes to this Agent's app-server only (YN-34 S1c).
-            let mut api_key = None;
             let result = async {
                 if let Some(remote_agent) = agent.remote {
                     self.refuse_remote_profile(id).await?;

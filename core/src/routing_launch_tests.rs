@@ -318,7 +318,7 @@ async fn a_profiled_executor_is_not_forked_onto_another_account() {
         let text = format!("{e:#}");
         assert!(text.contains("a fork of it would start on another: it cannot be forked"), "{text}");
     };
-    refused(ws.preview_codex_fork("cx").await.unwrap_err());
+    refused(ws.preview_codex_fork("cx").await.map(|_| ()).unwrap_err());
     let fork = serde_json::from_value(json!({"requestId": uuid::Uuid::new_v4().to_string(), "throughTurnId": "t", "name": "f"})).unwrap();
     refused(ws.fork_codex_session("cx", fork).await.map(|_| ()).unwrap_err());
     refused(ws.opencode_fork_preview("oc", "t").await.unwrap_err());

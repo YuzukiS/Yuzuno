@@ -425,7 +425,7 @@ test("An OpenCode template keeps the model it names, and a harness change does n
   assert.equal(button(page, "Save templates").disabled, true, "nothing to save as read");
   await type(page, "Instructions", "Keep it short.");
   button(page, "Save templates").click();
-  await until(() => puts(page).length === 1, "the save");
+  await until(() => /Saved\./.test(page.document.querySelector("#settings-executor-templates").textContent), "the saved list");
   assert.deepEqual(puts(page)[0].body.templates, [{ id: "a", label: "A", harness: "opencode", model: "deepseek/deepseek-flash", instructions: "Keep it short." }],
     "an edit keeps its model");
   await type(page, "Harness", "codex");
