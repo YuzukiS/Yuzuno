@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { tipOf } from "./tip-dom.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
@@ -24,7 +25,6 @@ try {
 import {createRoot} from 'react-dom/client';
 import {GpuDevices, GpuDeviceSettings} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
 import {Jobs, ConversationJobs} from ${JSON.stringify(path.join(root, "src/Jobs.tsx"))};
-import { tipOf } from "./tip-dom.mjs";
 const root = createRoot(document.getElementById('root'));
 window.renderGpus = props => root.render(<GpuDevices {...props}/>);
 window.renderGpuSettings = props => root.render(<GpuDeviceSettings {...props}/>);

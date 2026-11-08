@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { tipOf } from "./tip-dom.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
@@ -22,7 +23,6 @@ try {
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {DiskReserveSettings, DiskSpace} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
-import { tipOf } from "./tip-dom.mjs";
 const root = createRoot(document.getElementById('root'));
 window.render = props => root.render(<DiskSpace {...props}/>);
 window.renderReserve = props => root.render(<DiskReserveSettings {...props}/>);`,
