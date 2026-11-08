@@ -123,6 +123,10 @@ pub struct Launch {
     pub data: PathBuf,
     pub state: PathBuf,
     pub cache: PathBuf,
+    /// A routing key for this server alone (routing_launch.rs, YN-34 S1c):
+    /// set on its process only, never in `environment`, which other processes
+    /// started for the Agent read.
+    pub extra: Vec<(String, crate::routing_keys::Secret)>,
 }
 
 impl Launch {
@@ -130,7 +134,7 @@ impl Launch {
     /// `cache`, the cache Core's Agents share.
     pub fn new(program: PathBuf, directory: PathBuf, folder: &Path, cache: PathBuf) -> Self {
         let own = folder.join("xdg");
-        Self { program, directory, database: folder.join("opencode.db"), data: own.join("data"), state: own.join("state"), cache }
+        Self { program, directory, database: folder.join("opencode.db"), data: own.join("data"), state: own.join("state"), cache, extra: Vec::new() }
     }
 
     /// What OpenCode gets besides Core's own environment: the database and
@@ -554,6 +558,7 @@ impl Server {
             .current_dir(&launch.directory)
             .env("OPENCODE_PASSWORD", &password)
             .envs(launch.environment())
+            .envs(launch.extra.iter().map(|(name, value)| (name.as_str(), value.expose())))
             .stdin(if cfg!(unix) { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
