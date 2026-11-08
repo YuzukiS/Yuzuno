@@ -857,7 +857,7 @@ mod routing {
         let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
         assert_eq!((route["waiting"].clone(), route["chosen"].clone()), (json!(true), Value::Null));
         create(&store, &waits);
-        assert!(crate::routing_policy::dispatch::waiting(&store.db.read().unwrap(), &waits.dispatch.agent_id).unwrap());
+        assert!(crate::routing_policy::dispatch::waiting(&*store.db.read().unwrap(), &waits.dispatch.agent_id).unwrap());
         let listed = store.routing_waiting().unwrap();
         assert_eq!(listed.iter().map(|(a, h, m, _)| (a.clone(), h.clone(), m.clone())).collect::<Vec<_>>(),
             [(waits.dispatch.agent_id.clone(), "opencode".to_owned(), "local".to_owned())]);

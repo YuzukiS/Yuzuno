@@ -142,15 +142,15 @@ pub(crate) fn choices(db: &Connection, limit: usize) -> Result<Vec<Value>> {
 
 impl crate::store::Store {
     pub(crate) fn routing_waiting(&self) -> Result<Vec<(String, String, String, Value)>> {
-        waiting_list(&self.db.read()?)
+        waiting_list(&*self.db.read()?)
     }
 
     pub(crate) fn set_routing_route(&self, agent: &str, route: &Value) -> Result<()> {
-        set_route(&self.db.write()?, agent, route)
+        set_route(&*self.db.write()?, agent, route)
     }
 
     pub(crate) fn routing_choices(&self, limit: usize) -> Result<Vec<Value>> {
-        choices(&self.db.read()?, limit)
+        choices(&*self.db.read()?, limit)
     }
 }
 
