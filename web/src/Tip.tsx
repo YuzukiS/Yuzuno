@@ -176,13 +176,14 @@ export function TipText({ title, kbd, status, tone, body, meta, when, value, lab
   const quiet = Array.isArray(facts) ? (facts.length ? facts.map((part, i) => <span key={i}>{i > 0 && " · "}{part}</span>) : null) : facts;
   return (
     <>
+      {/* What it is, quietly, above a value it names (the Value kind). */}
+      {label && <small className="tip-meta">{label}</small>}
       {(title || kbd) && (
         <span className="tip-head">
           {title && <strong className="tip-title">{title}</strong>}
           {kbd && <> <kbd className="tip-kbd">{kbd}</kbd></>}
         </span>
       )}
-      {label && <small className="tip-meta">{label}</small>}
       {value && <span className="tip-value">{value}</span>}
       {status && <span className="tip-status" data-tone={tone || undefined}>{status}</span>}
       {body && <span className="tip-body">{body}</span>}
