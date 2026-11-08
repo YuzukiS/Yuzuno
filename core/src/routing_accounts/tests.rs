@@ -39,7 +39,7 @@ async fn the_list_is_read_and_a_binding_resolves_at_each_launch() {
     let accounts = cswap_accounts(&cswap(tmp.path(), LIST, 0)).await.unwrap();
     assert_eq!(fs::read_to_string(tmp.path().join("args")).unwrap(), "list\n--json\n");
     assert_eq!(accounts.iter().map(|a| (a.number, a.active, a.label.as_str())).collect::<Vec<_>>(),
-        [(1, true, "Person@Example.com"), (2, false, "team"), (3, false, "other@example.com")]);
+        [(1, true, "Account-1"), (2, false, "team"), (3, false, "Account-3")], "an alias or the number, never the email");
     let personal = fingerprint("person@example.com", None);
     let team = fingerprint("person@example.com", Some("org-1"));
     // The host's current default login starts on the plain host login, not

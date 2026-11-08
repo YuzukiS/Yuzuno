@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+pub mod quota;
 pub mod routes;
 
 /// Where a schedule's days and times are read: UTC, or the Core host's local time.
@@ -149,7 +150,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             PRIMARY KEY(agent_id, entry));
         CREATE INDEX IF NOT EXISTS routing_spend_day ON routing_spend(day);",
     )?;
-    Ok(())
+    quota::migrate(db)
 }
 
 /// The Core host's local day, as spend is counted.
