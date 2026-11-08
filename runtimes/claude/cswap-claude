@@ -1,0 +1,9 @@
+#!/bin/sh
+# The Claude Code "executable" for a session bound to a claude-swap account
+# (YN-34 S1b): Core gives one bridge YUZUNO_CSWAP_PYTHON (claude-swap's own
+# Python) and YUZUNO_CSWAP_ACCOUNT (the slot resolved at this launch), and
+# names this file as the Claude executable. See cswap-run.py.
+set -eu
+: "${YUZUNO_CSWAP_PYTHON:?claude-swap's Python is not set}"
+: "${YUZUNO_CSWAP_ACCOUNT:?the claude-swap account is not set}"
+exec "$YUZUNO_CSWAP_PYTHON" -u "$(dirname "$0")/cswap-run.py" "$YUZUNO_CSWAP_ACCOUNT" -- "$@"

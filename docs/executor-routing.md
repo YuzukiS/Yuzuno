@@ -7,13 +7,14 @@ version; a later slice adds to it.
 
 | Slice | What it adds | State |
 | --- | --- | --- |
-| S1a | Routing keys: the key file, its write-only routes, reading a key through 1Password | This version |
-| S1b | Accounts: claude-swap accounts, Codex homes, an executor's account binding | Later |
+| S1a | Routing keys: the key file, its write-only routes, reading a key through 1Password | Done |
+| S1b | Accounts: claude-swap's accounts and how a binding to one resolves, its launcher, Codex homes | This version |
 | S1c | Handing a key or account to one executor's harness process | Later |
 | S2–S4 | Readings, routing itself, the Settings page | Later |
 
-Nothing at this version starts an executor with a routing key: S1a only keeps
-keys and reads them on request.
+Nothing at this version starts an executor with a routing key or an account:
+S1a keeps keys and reads them on request, S1b lists accounts and resolves a
+binding, and S1c will hand one to an executor.
 
 ## Routing keys
 
@@ -117,3 +118,61 @@ words of `op`'s message.
 An older Core has none of these routes and never reads the key file: it
 leaves the `secrets` folder as it is, and a newer Core uses it again. A file
 written by a later Core (a higher `version`) is not changed by this one.
+
+## Accounts
+
+### claude-swap accounts
+
+Several Claude subscription accounts are managed by
+[claude-swap](https://github.com/realiti4/claude-swap) (`cswap`), as
+[Claude account management](claude-swap.md) describes. Core reads its
+accounts and never handles their logins: claude-swap keeps each account's
+profile, refreshes its tokens and guards the default login.
+
+- **The list.** Core runs `cswap list --json` (schema 1). The command is a
+  setting: a name on `PATH` (`cswap`, the default) or an absolute path, set
+  with `PUT /api/routing/cswap {"command": …}`. `GET /api/routing/accounts`
+  answers each account's slot number, whether it is the host's current
+  default login, its label (its alias, else its email) and its usage status;
+  or why the list cannot be read (`cswapMissing`, `cswapError` with only the
+  error's type, `cswapSchema`, `cswapTimeout` after 60 s, `cswapFailed`).
+  The email is shown to your browser only and never kept.
+- **Binding.** An executor will be bound to an account by its fingerprint: a
+  hash of the account's email and organization. No email is kept, and slot
+  numbers, which claude-swap lets move, are not relied on.
+- **At each launch** the binding is resolved again from a fresh list:
+  - the account that is the host's current default login starts on the plain
+    host login, as a candidate with the host login does: claude-swap's
+    `--require-session` refuses that account, and the host login is that same
+    account;
+  - any other listed account starts through
+    `cswap run <slot> --require-session`;
+  - an account no longer listed is gone, and the executor does not start.
+    Core never starts it as another account. A refusal at launch (the account
+    became the default login after the list was read) fails that start the
+    same way: an executor is never moved to another account during its life.
+- **The launcher.** claude-swap 1.0.0's `run` has no quiet or JSON option and
+  prints a notice to stdout before it execs Claude Code, while the Agent SDK
+  reads Claude's JSON from that stdout. So a Claude executor on an account
+  will start through `runtimes/claude/cswap-claude`. It runs
+  `runtimes/claude/cswap-run.py` with claude-swap's own Python (the
+  interpreter its `cswap` script names on its first line), which points
+  Python's `sys.stdout` at stderr, writing through at once, leaves file
+  descriptor 1 alone, and calls `cswap run <slot> --require-session -- …`.
+  claude-swap then execs Claude, which writes to the original stdout.
+- This was written against claude-swap **1.0.0** and tested only with
+  stand-ins: a stub `cswap` and a stub `claude_swap` package. Whether it works
+  with a real claude-swap and two real accounts is a separate check, made with
+  your own install.
+
+### Codex homes
+
+Each Codex account is a `CODEX_HOME` folder you name, signed in with
+`codex login` there. `PUT /api/routing/codex-homes {"homes": [{id, label, home}]}`
+replaces the list (at most 16). Each home must be an absolute folder that
+exists, belongs to Core's user and no other user can write into, and is listed
+once. The host's own login (`~/.codex`, or Core's `CODEX_HOME`) needs no entry.
+
+These routes are on Core's own port only, like the routing keys', and refuse
+any `Authorization` header: the cswap command is a program Core runs.
+
