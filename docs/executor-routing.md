@@ -12,8 +12,9 @@ version; a later slice adds to it.
 | S1c | Handing a key or account to one executor's harness process: Claude Code, OpenCode and Codex | Done |
 | S2a | Readings: time windows and the daily API spend, read-only | Done |
 | S3a | The policy: kept, checked and served; a template fixed against routing | Done |
-| S2b | Readings: subscription quotas (claude-swap, Codex) | This version |
-| S3b | Routing itself: the choice at dispatch and at start, `route_json` | Later |
+| S2b | Readings: subscription quotas (claude-swap, Codex) | Done |
+| S3b1 | Choosing a candidate: Core's evaluator, `evaluate` and `simulate` | This version |
+| S3b2 | The choice at dispatch and at an executor's first start, `route_json`, `choices` | Next |
 | S4 | The Settings page (YN-49) | Later |
 
 An executor starts with a routing key or account only when its runtime
@@ -384,10 +385,39 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
   "earliest": { "at": "…", "candidate": "c-claude" } }            // only when none could be chosen
 ```
 
+### How a candidate is chosen (S3b1)
+
+Candidates are read in order, and the first one that meets every rule below
+is chosen. The other candidates are marked `notTried`.
+
+- **Turned on:** a candidate turned off is `off`.
+- **Not already failed:** one that already failed to start this executor is `failed`, so each is tried once.
+- **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`).
+- **Its credential is there:**
+  - an `apiKey` key must be set (`keyMissing`);
+  - a Codex home must be listed (`homeMissing`).
+- **A pool picks an account:** among its accounts for which each `quota` condition holds, the one with the most of min(5-hour, week) left. Ties go to the lower number. Each account is marked `pick`, `ok`, `low` or `unknown`.
+- **Its conditions hold:**
+  - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left;
+  - `quota`: `quotaLow`;
+  - `dailyApiCap`: `dailyCapReached`, counted on its key's spend today.
+- **Under the Workspace's daily cap:** for every `apiKey` candidate, `workspaceCapReached`.
+
+A reading that is missing, stale or unknown, or a kind this Core doesn't
+know, is unknown. Codex API-key spend is unknown too. The candidate's
+`unknown` rule then decides: `skip`, the default, marks it `unknown`, and
+`pass` lets it be chosen, with the unknowns kept as its reasons.
+
+When none is chosen, `earliest` names the soonest time a reason gives
+(`params.until`), such as the end of a time window or a quota's reset.
+
+`POST /api/routing/evaluate` and `POST /api/routing/simulate` (below) use
+this evaluator, with the readings as Core last observed them.
+
 ### More routes in S3b
 
 - `POST /api/routing/evaluate { policy?, at?, assume? }` answers one `route_json` with `at: "preview"`.
   - `policy` is an unsaved draft; by default, the saved one.
   - `assume` takes `{ accountsUsedUp: [fingerprint], codexUsedUp: [home], spendCapReached, onePasswordDown }`.
 - `POST /api/routing/simulate { policy?, from, to, stepMinutes, assume? }` answers `{ segments: [ { from, to, chosen } ] }`. It keeps the current readings and varies only the time.
-- `GET /api/routing/choices?limit=20` answers `{ choices: [ { dispatchId, taskId, executorName?, route } ] }`, newest first.
+- `GET /api/routing/choices?limit=20` (S3b2) answers `{ choices: [ { dispatchId, taskId, executorName?, route } ] }`, newest first.
