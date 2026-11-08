@@ -14,7 +14,8 @@ version; a later slice adds to it.
 | S3a | The policy: kept, checked and served; a template fixed against routing | Done |
 | S2b | Readings: subscription quotas (claude-swap, Codex) | Done |
 | S3b1 | Choosing a candidate: Core's evaluator, `evaluate` and `simulate` | Done |
-| S3b2 | The choice at dispatch, waiting for a candidate, `route_json`, `choices` | This version |
+| S3b2 | The choice at dispatch, waiting for a candidate, `route_json`, `choices` | Done |
+| S3b3 | A real DeepSeek executor through routing: a lab check | This version |
 | S4 | The Settings page (YN-49) | Later |
 
 An executor starts with a routing key or account only when its runtime
@@ -437,6 +438,30 @@ dispatch is routed:
   (`excluded`), so it tries the next one.
 - **An executor already routed is not routed again at its start,** nor ever
   moved to another account once started.
+
+### A real DeepSeek executor: the lab check (S3b3)
+
+`routing_policy::e2e_tests` holds one ignored test that runs a real OpenCode
+executor on DeepSeek through routing, in a lab Core: the test's own
+Workspace, serving Core's routes on a free loopback port, so dispatch, the
+slot pass, mail delivery and the executor's MCP are Core's own. It checks
+that:
+
+- the dispatch chooses the DeepSeek candidate, and the executor is OpenCode on `deepseek/deepseek-flash` with that key's profile;
+- the key is in its own `opencode serve` (and what that started) and in no other process of the lab Core, Core's own included;
+- its first turn, from the assignment's mail, completes, and its result is on the task;
+- the turn's cost counts toward the key's day;
+- no file of the lab Core but its key store holds the key.
+
+It runs only in a lab Job, never against the daily Core. It needs:
+- `YUZUNO_OPENCODE_BIN`, a real OpenCode 2.x;
+- `YN34_DEEPSEEK_KEY_FILE`, a key file of 0600 that only the test reads, into the lab's key store;
+- `XDG_CONFIG_HOME` and `TMPDIR` in a lab folder removed afterwards.
+
+```sh
+cargo test --locked --lib -- --ignored --exact --nocapture \
+  routing_policy::e2e_tests::a_routed_deepseek_executor_does_one_real_turn_and_submits_its_result_with_its_key_in_its_own_process_only
+```
 
 ### More routes in S3b
 
