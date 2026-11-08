@@ -52,8 +52,8 @@ pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
 /// What `limits.maxConcurrent` still answers, for that same release: a
 /// template page from before S5 reads its field's bound from it.
 const OLDER_PAGES_MAX_CONCURRENT: u32 = 64;
-const FIELDS: [&str; 15] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
-    "permissionMode", "machineId", "instructions", "maxConcurrent", "origin", "deliveryMode", "steps", "whenToChoose"];
+const FIELDS: [&str; 16] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
+    "permissionMode", "machineId", "instructions", "maxConcurrent", "origin", "deliveryMode", "steps", "whenToChoose", "routing"];
 /// How a template's work is delivered (YN-23, T-43 S1a): a pull request
 /// (unset, as every template saved before), a commit without one, or no
 /// repository change at all. Said in its executors' materials; Core holds
