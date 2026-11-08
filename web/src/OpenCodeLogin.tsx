@@ -88,9 +88,11 @@ const active = (field: Field, answers: Record<string, string>) =>
  * key or a form's answers go to Core once, in the request's body, and are
  * kept nowhere here: the fields are cleared after each request, and nothing
  * is stored or put in a link. Every button is `type="button"`: the section
- * sits in the settings form, whose submit saves the model.
+ * sits in the settings form, whose submit saves the model. `onChanged` is
+ * told after each login or logout OpenCode took: its providers, and so the
+ * models it lists, may have changed (YN-47).
  */
-export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled?: boolean }) {
+export function OpenCodeLogin({ agentId, disabled, onChanged }: { agentId: string; disabled?: boolean; onChanged?: () => void }) {
   const t = text(useLanguage());
   const base = `/agents/${encodeURIComponent(agentId)}/opencode/login`;
   const [logins, setLogins] = useState<Logins | null>(null);
@@ -105,6 +107,10 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
   const [code, setCode] = useState("");
   const live = useRef(true);
   useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  // The latest callback, for a sign-in that finishes after a render.
+  const changed = useRef(onChanged);
+  changed.current = onChanged;
+  const tell = () => { if (live.current) changed.current?.(); };
   const load = async () => {
     try { const read = shaped(await api<unknown>(base)); if (live.current) setLogins(read); } catch (e) { if (live.current) setError(errorText(e)); }
   };
@@ -117,7 +123,7 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
       try {
         const status = await api<{ status: string; message?: string }>(`${base}/oauth/${encodeURIComponent(attempt.integration)}/${encodeURIComponent(attempt.attemptId)}`);
         if (stopped) return;
-        if (status.status === "complete") { setAttempt(null); await load(); }
+        if (status.status === "complete") { setAttempt(null); await load(); tell(); }
         else if (status.status === "failed") { setAttempt(null); setError(t.failed(status.message || "")); }
         else if (status.status === "expired") { setAttempt(null); setError(t.expired); }
       } catch (e) { if (!stopped) { setAttempt(null); setError(errorText(e)); } }
@@ -144,6 +150,7 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
     if (form.kind === "key") {
       setLogins(shaped(await post<unknown>(`${base}/key`, { integration: integration.id, key, label: label || undefined, answer: answer() })));
       setMethod(-1);
+      tell();
     } else if (form.kind === "oauth" && form.id) {
       const started = await post<Omit<Attempt, "integration">>(`${base}/oauth`, { integration: integration.id, method: form.id, answer: answer() });
       setAttempt({ ...started, integration: integration.id });
@@ -153,7 +160,7 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
   const complete = () => act(async () => {
     if (!attempt) return;
     await post(`${base}/oauth/${encodeURIComponent(attempt.integration)}/${encodeURIComponent(attempt.attemptId)}/complete`, { code });
-    setAttempt(null); await load();
+    setAttempt(null); await load(); tell();
   });
   const cancel = () => act(async () => {
     if (!attempt) return;
@@ -162,6 +169,7 @@ export function OpenCodeLogin({ agentId, disabled }: { agentId: string; disabled
   });
   const logOut = (credential: string) => act(async () => {
     setLogins(shaped(await api<unknown>(`${base}/credential/${encodeURIComponent(credential)}`, { method: "DELETE" })));
+    tell();
   });
 
   const off = disabled || busy;
