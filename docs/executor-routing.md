@@ -18,8 +18,8 @@ version; a later slice adds to it.
 | S4 | The Settings page (YN-49) | Later |
 
 An executor starts with a routing key or account only when its runtime
-profile names one, and nothing at this version sets a profile: routing
-itself (S3) will.
+profile names one. Routing sets it at the executor's dispatch, while the
+routing policy is on ([Routing at dispatch](#routing-at-dispatch-s3b2)).
 
 ## Routing keys
 
