@@ -20,6 +20,7 @@ import {
 import { ringAgain, settleWhenLanded } from "./settle";
 import { ToastStack, type ToastText } from "./Toasts";
 import { animates } from "./motion";
+import { Tip, TipText } from "./Tip";
 import {
   Archive,
   ArchiveRestore,
@@ -4773,20 +4774,23 @@ export function App() {
                           onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
                       )}
                       {busy && (
-                        <button
-                          type="button"
-                          className="interrupt-button"
-                          title={shell.interruptTitle}
-                          disabled={previewMode || interrupting}
-                          onClick={() => void interrupt()}
-                        >
-                          {interrupting ? (
-                            <LoaderCircle size={13} className="spin" />
-                          ) : (
-                            <Square size={11} fill="currentColor" />
-                          )}
-                          {interrupting ? shell.interrupting : shell.interrupt}
-                        </button>
+                        <Tip content={<TipText title={shell.interrupt} kbd="Esc" />} describe={false}>
+                          <button
+                            type="button"
+                            className="interrupt-button"
+                            aria-label={interrupting ? shell.interrupting : shell.interrupt}
+                            aria-keyshortcuts="Escape"
+                            disabled={previewMode || interrupting}
+                            onClick={() => void interrupt()}
+                          >
+                            {interrupting ? (
+                              <LoaderCircle size={13} className="spin" />
+                            ) : (
+                              <Square size={11} fill="currentColor" />
+                            )}
+                            {interrupting ? shell.interrupting : shell.interrupt}
+                          </button>
+                        </Tip>
                       )}
                       <button
                         type="submit"

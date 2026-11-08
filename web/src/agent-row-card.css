@@ -1,0 +1,88 @@
+/* The Agent row's card (AgentRowCard.tsx, YN-44): the app's tip (tip.css)
+   with the row's ring and state on its second line, in the ring's own
+   colours (agent-island.css), so the card and the ring it sits beside
+   always agree. */
+.agent-card {
+  gap: 3px;
+}
+.agent-card-badge {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--tip-line);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 0.82em;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.agent-card-state {
+  --tone: var(--island-quiet);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 6px;
+  color: var(--text-secondary);
+}
+.agent-card-state[data-island="working"] { --tone: var(--island-working); }
+.agent-card-state[data-island="done"] { --tone: var(--island-ok); }
+.agent-card-state[data-island="waiting"] { --tone: var(--island-attention); }
+.agent-card-state[data-island="failed"] { --tone: var(--island-error); }
+/* The row's ring, smaller: the same strokes and motion. */
+.agent-card-state .island-ringbox,
+.agent-card-state .island-ring {
+  width: 14px;
+  height: 14px;
+}
+.agent-card-word {
+  color: var(--tone);
+  font-weight: 700;
+}
+.agent-card-pill {
+  --pill-tone: var(--island-quiet);
+  padding: 0 7px;
+  border: 1px solid var(--pill-tone);
+  border-radius: 999px;
+  color: var(--pill-tone);
+  font-size: 0.92em;
+  font-weight: 700;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+.agent-card-pill[data-tone="ok"] { --pill-tone: var(--island-ok); }
+.agent-card-pill[data-tone="bad"] { --pill-tone: var(--island-error); }
+.agent-card-pill[data-tone="info"] { --pill-tone: var(--island-unread); }
+.agent-card-pill[data-tone="working"] { --pill-tone: var(--island-working); }
+.agent-card-clock {
+  color: var(--text-quiet);
+  font-variant-numeric: tabular-nums;
+}
+/* What it is doing or asks: in full, up to three lines. */
+.agent-card-activity {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: var(--ink);
+}
+.agent-card-meaning {
+  color: var(--text-quiet);
+}
+.agent-card-unread {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+.agent-card-unread::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--island-unread);
+}
+.agent-card-facts {
+  display: grid;
+  gap: 1px;
+  margin-top: 4px;
+}

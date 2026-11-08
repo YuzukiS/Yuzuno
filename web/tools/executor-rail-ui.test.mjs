@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
+import { readTip } from "./tip-dom.mjs";
 
 // T-43 rail v11 (the user's answers to design/ask-rail-readability): an
 // executor's row in the built app, against a fixture Core. Line one is its
@@ -152,9 +153,21 @@ test("needs you is a row island by itself, with how long; line one is still its 
     assert.equal(p.form("w"), "row");
     assert.equal(p.pill("w"), null, "a row island has no pill");
     assert.equal(p.island("w").getAttribute("aria-label"), "YN-w · Design first · Answer its question on Home");
-    assert.match(p.island("w").title, /^Needs you · waiting 12m · Approve the design note\nAnswer its question on Home\n/);
     assert.equal(p.bell("w"), false, "no second \"needs you\" under it");
-    assert.match(p.row("w").querySelector(".agent-select").title, /YN-w · Export and import device preferences/, "its key and title in its link's title");
+    // The row's card (YN-44), one for the row and its ring, opened from its
+    // link by the keyboard: what the row shortens, in full, and its task,
+    // template, machine and dispatcher; never where a click goes. No native
+    // title on the ring or the link.
+    assert.equal(p.island("w").hasAttribute("title") || p.row("w").querySelector(".agent-select").hasAttribute("title"), false);
+    assert.deepEqual(await readTip(p.w, p.row("w").querySelector(".agent-select")), [
+      "Export settings",
+      "Needs you waiting 12m",
+      "Approve the design note",
+      "Waits for your answer in Home's Needs you",
+      "YN-w · Export and import device preferences",
+      "YN-w · Design first · Core host",
+      "Dispatched by you",
+    ]);
     // A standing Agent that needs you: its name, then the word and what it asks.
     assert.equal(p.row("s").querySelector(".agent-line-one").textContent, "Agent s");
     assert.equal(p.row("s").querySelector(":scope > .agent-row-state.is-alert .island-word").textContent, "Needs you");
@@ -252,6 +265,36 @@ test("in Chinese the row reads in Chinese", async () => {
     assert.equal(p.meta("a"), "共 1时30分");
     assert.equal(p.island("w").getAttribute("aria-label"), "YN-w · Design first · 去 Home 回答提问");
     assert.equal(p.island("v").getAttribute("aria-label"), "Agent v · 看结果");
+    // The card in Chinese (YN-44): the pill, what it means, the PR and who dispatched it.
+    const v = await readTip(p.w, p.row("v").querySelector(".agent-select"));
+    assert.equal(v[0], "Work v");
+    assert.match(v[1], /^等负责人 已用 /);
+    assert.ok(v.includes("已交付，接下来由负责人审查"), v.join(" | "));
+    assert.ok(v.some((line) => /^PR #688 · .+ · 由你派发$/.test(line)), v.join(" | "));
+    assert.deepEqual((await readTip(p.w, p.row("q").querySelector(".agent-select"))).slice(1, 3), ["排队 · 第 2 位", "在等执行者槽位，按顺序启动"]);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("the row's card says in full what the row shortens: a lead's updates unread, a state that stays and what it means, the PR, the time on the task", async () => {
+  const p = await mount();
+  try {
+    await waitFor(() => p.pill("v") === "Lead's turn" && p.clock("w") === "12m", "the pill and the wait");
+    const card = (id) => readTip(p.w, p.row(id).querySelector(".agent-select"));
+    assert.deepEqual(await card("l"), ["Dev Lead Lead", "Idle", "Updates unread", "Lead of this Project · Core host"],
+      "a lead: its badge, updates unread without a count");
+    const v = await card("v");
+    assert.equal(v[0], "Work v");
+    assert.match(v[1], /^Lead's turn for \d+m$/, "the pill in place of an idle ring's word, and since when");
+    assert.ok(v.includes("Handed in; the lead reviews it next"), v.join(" | "));
+    assert.ok(v.some((line) => /^PR #688 · .+ · Dispatched by you$/.test(line)), v.join(" | "));
+    const k = await card("k");
+    assert.deepEqual(k.slice(0, 3), ["Keep selection", "Working on its task for 1h5m", "Slice 2: evidence Job"]);
+    assert.ok(k.includes("YN-k · Keep the selection after a refresh"), k.join(" | "));
+    assert.ok(k.includes("YN-k · Design first · Core host"), k.join(" | "));
+    for (const lines of [v, k]) assert.doesNotMatch(lines.join("\n"), /Open |See |Click|Ring:|Row:/, "nothing about where a click goes");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

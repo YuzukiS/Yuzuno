@@ -258,14 +258,10 @@
 }
 /* Its latest moment (queued, started or finished) stays quiet whatever
    the status colour. */
-.work-dock-item .work-dock-label small.work-dock-when,
-.work-dock-tip > small.work-dock-when {
+.work-dock-item .work-dock-label small.work-dock-when {
   color: var(--text-quiet);
   font-size: calc(7.5px + var(--font-adjust, 3px));
   font-variant-numeric: tabular-nums;
-}
-.work-dock-tip > small.work-dock-when {
-  opacity: 0.8;
 }
 .work-dock-item:hover .work-dock-label strong {
   color: var(--accent-ink);
@@ -276,39 +272,6 @@
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-}
-
-/* Each node names itself beside the dock while pointed at or focused. */
-.work-dock-tip {
-  /* Drawn into the body (WorkDock.tsx), so its place is set from the item's
-     own rect and its width from the room beside it: the container units it
-     used have no container there, and the dock's scrolling box would clip it
-     wherever it sat inside. */
-  position: fixed;
-  z-index: 60;
-  translate: 0 -50%;
-  display: grid;
-  gap: 2px;
-  width: max-content;
-  padding: 8px 11px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface-raised);
-  box-shadow: 0 8px 26px var(--palette-shadow, #00000020);
-  color: var(--ink);
-  font-size: calc(9px + var(--font-adjust, 3px));
-  line-height: 1.45;
-  text-align: left;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  pointer-events: none;
-}
-.work-dock-tip > span {
-  color: var(--text-secondary);
-}
-.work-dock-tip > small {
-  color: var(--text-quiet);
-  font-size: 0.92em;
 }
 
 
@@ -387,15 +350,6 @@
     opacity: 0.8;
   }
 }
-/* Beside the node already; the tip need not say it twice. Keyed on the tip's
-   own flag, not on `@container conversation`: the tip is drawn into the page
-   so that it can escape the dock's scroll box, and there it has no
-   conversation container at all — this rule simply stopped matching, and a
-   wide conversation said the time twice (#459 R6, P3). WorkDock.tsx measures
-   the conversation where the container query reads it and sets `data-wide`. */
-.work-dock-tip[data-wide] > small.work-dock-when {
-  display: none;
-}
 /* The narrowest conversations keep a slimmer column. */
 @container conversation (max-width: 480px) {
   .conversation-body {
@@ -421,7 +375,7 @@
   height: 10px;
 }
 @media (prefers-reduced-motion: reduce) {
-  .work-dock :is(.work-dock-tip, .work-dock-node, .work-dock-label, .work-dock-label strong) {
+  .work-dock :is(.work-dock-node, .work-dock-label, .work-dock-label strong) {
     transition: none;
   }
   .work-dock .spin,

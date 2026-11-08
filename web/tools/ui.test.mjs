@@ -5883,7 +5883,8 @@ test("an idle Agent with unfinished jobs shows Waiting · Job in the Agent list 
   const runtime = (id) =>
     page.document.querySelector(`[data-agent-id="${id}"] .agent-island`)?.getAttribute("data-status");
   const liveReads = () => page.calls.filter((c) => c.url.endsWith("/api/jobs/live")).length;
-  const title = (id) => page.document.querySelector(`[data-agent-id="${id}"] .agent-select`)?.title || "";
+  // What it waits on, as its link describes it (its card says the same, YN-44).
+  const title = (id) => page.document.querySelector(`[data-agent-id="${id}"] .agent-select`)?.getAttribute("aria-description") || "";
   // A jobs change makes the app read live jobs again; wait for that read,
   // then for what it should show.
   const jobsChanged = async (shows, what) => {
@@ -5898,10 +5899,7 @@ test("an idle Agent with unfinished jobs shows Waiting · Job in the Agent list 
     for (let n = 0; n < 40 && runtime("b") !== "Waiting · Job"; n++) await pause();
     assert.equal(runtime("b"), "Waiting · Job");
     assert.equal(runtime("a"), "Working", "a running Agent stays Working");
-    assert.match(
-      page.document.querySelector('[data-agent-id="b"] .agent-select').title,
-      /2 jobs queued or running/,
-    );
+    assert.match(title("b"), /2 jobs queued or running/);
     // One of two finished: still waiting.
     live = { agents: { b: { active: 1, unknown: 0 } } };
     await jobsChanged(() => /\b1 job queued or running/.test(title("b")), "one job left");
