@@ -12,6 +12,7 @@ import { reviewPassed } from "./review-outcome";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import type { Agent, ClaudeRuntime } from "./types";
 import { strings, useLanguage, type Language } from "./i18n";
+import { Tip, TipLines, TipText } from "./Tip";
 import "./statusbar.css";
 
 // The bottom bar's own words (T-189). Names of jobs, runs and machines, Core's
@@ -21,12 +22,13 @@ const words = strings({
   specimen: "Visual specimen",
   reconnecting: "Live updates reconnecting",
   connecting: "Live updates connecting",
-  reviewsTitle: "Reviews in progress · open Jobs",
+  reviewsTip: "PR reviews in progress",
   reviews: (count: number) => `${count} ${count === 1 ? "review" : "reviews"} running`,
-  ciTitle: (partial: boolean) => `GitHub Actions runs in progress${partial ? "; Core lists more runs than the status bar read, so there may be more" : ""} · open Jobs`,
+  ciTip: "GitHub Actions runs in progress",
+  ciPartial: "Core lists more runs than the status bar read, so there may be more",
   ciUnread: "CI runs not all read",
   ci: (count: number, partial: boolean) => `${count}${partial ? "+" : ""} CI ${count === 1 && !partial ? "run" : "runs"}`,
-  noticeTitle: (text: string, more: number) => `${text}${more ? ` · ${more} more after it` : ""} · open Jobs`,
+  noticeMore: (more: number) => `${more} more after it`,
   review: (number: number, outcome: string) => `Review of PR #${number}: ${outcome}`,
   noFindings: "no findings",
   suggestions: "passed with suggestions",
@@ -34,8 +36,8 @@ const words = strings({
   job: (name: string, outcome: string) => `Job ${name} ${outcome}`,
   finished: "finished",
   failed: "failed",
-  memoryTitle: (machine: string, value: string, used: number, cpu: number, free: string | null) =>
-    `${machine}: jobs reserve ${value} of RAM and ${used} / ${cpu} CPU${free ? `; the host has ${free} free` : ""} · open Jobs`,
+  memoryTip: (value: string, used: number, cpu: number) => `Jobs reserve ${value} of RAM and ${used} / ${cpu} CPU`,
+  hostFree: (free: string) => `The host has ${free} free`,
   ram: "RAM",
   ramLabel: "Job RAM reserved",
   reserved: (value: string) => `${value} reserved`,
@@ -70,12 +72,13 @@ const words = strings({
   specimen: "视觉样本",
   reconnecting: "实时更新正在重新连接",
   connecting: "实时更新正在连接",
-  reviewsTitle: "正在进行的审查 · 打开 Job",
+  reviewsTip: "正在进行的 PR 审查",
   reviews: (count) => `${count} 个审查进行中`,
-  ciTitle: (partial) => `正在进行的 GitHub Actions 运行${partial ? "；Core 列出的运行比状态栏读取的多，因此可能还有更多" : ""} · 打开 Job`,
+  ciTip: "正在进行的 GitHub Actions 运行",
+  ciPartial: "Core 列出的运行比状态栏读取的多，因此可能还有更多",
   ciUnread: "CI 运行未全部读取",
   ci: (count, partial) => `${count}${partial ? "+" : ""} 个 CI 运行`,
-  noticeTitle: (text, more) => `${text}${more ? ` · 之后还有 ${more} 条` : ""} · 打开 Job`,
+  noticeMore: (more) => `之后还有 ${more} 条`,
   review: (number, outcome) => `PR #${number} 的审查：${outcome}`,
   noFindings: "无发现",
   suggestions: "通过，附建议",
@@ -83,7 +86,8 @@ const words = strings({
   job: (name, outcome) => `Job ${name} ${outcome}`,
   finished: "已完成",
   failed: "已失败",
-  memoryTitle: (machine, value, used, cpu, free) => `${machine}：Job 预留 ${value} 内存和 ${used} / ${cpu} CPU${free ? `；主机空闲 ${free}` : ""} · 打开 Job`,
+  memoryTip: (value, used, cpu) => `Job 预留 ${value} 内存和 ${used} / ${cpu} CPU`,
+  hostFree: (free) => `主机空闲 ${free}`,
   ram: "内存",
   ramLabel: "Job 预留的内存",
   reserved: (value) => `已预留 ${value}`,
@@ -261,75 +265,65 @@ export function StatusBar({
         )}
         {!previewMode && <CoreBacklog agents={agents} live={live} />}
         {background.reviews > 0 && (
-          <button
-            type="button"
-            className="statusbar-item"
-            title={t.reviewsTitle}
-            onClick={() => openJobs({ source: "reviews" })}
-          >
-            <GitPullRequest size={12} aria-hidden="true" />
-            {t.reviews(background.reviews)}
-          </button>
+          <Tip content={<TipText title={t.reviewsTip} />}>
+            <button type="button" className="statusbar-item" onClick={() => openJobs({ source: "reviews" })}>
+              <GitPullRequest size={12} aria-hidden="true" />
+              {t.reviews(background.reviews)}
+            </button>
+          </Tip>
         )}
         {(background.ci > 0 || background.ciPartial) && (
-          <button
-            type="button"
-            className="statusbar-item"
-            title={t.ciTitle(background.ciPartial)}
-            onClick={() => openJobs({ source: "github_actions" })}
-          >
-            <Workflow size={12} aria-hidden="true" />
-            {background.ci === 0 ? t.ciUnread : t.ci(background.ci, background.ciPartial)}
-          </button>
+          <Tip content={<TipText title={t.ciTip} body={background.ciPartial ? t.ciPartial : null} />}>
+            <button type="button" className="statusbar-item" onClick={() => openJobs({ source: "github_actions" })}>
+              <Workflow size={12} aria-hidden="true" />
+              {background.ci === 0 ? t.ciUnread : t.ci(background.ci, background.ciPartial)}
+            </button>
+          </Tip>
         )}
         <span className="statusbar-notice" role="status" aria-live="polite">
           {background.notice && (
-            <button
-              type="button"
-              className={`statusbar-item ${background.notice.ok ? "is-ok" : "is-failed"}`}
-              title={t.noticeTitle(background.notice.text, background.more)}
-              onClick={background.notice.open}
-            >
-              {background.notice.ok ? (
-                <Check size={12} aria-hidden="true" />
-              ) : (
-                <X size={12} aria-hidden="true" />
-              )}
-              {background.notice.text}
-              {background.more > 0 && <span className="statusbar-more"> +{background.more}</span>}
-            </button>
+            <Tip content={<TipText title={background.notice.text} meta={background.more ? t.noticeMore(background.more) : null} />}>
+              <button
+                type="button"
+                className={`statusbar-item ${background.notice.ok ? "is-ok" : "is-failed"}`}
+                onClick={background.notice.open}
+              >
+                {background.notice.ok ? (
+                  <Check size={12} aria-hidden="true" />
+                ) : (
+                  <X size={12} aria-hidden="true" />
+                )}
+                {background.notice.text}
+                {background.more > 0 && <span className="statusbar-more"> +{background.more}</span>}
+              </button>
+            </Tip>
           )}
         </span>
       </div>
       <div className="statusbar-end">
         {codex && (
-          <span
-            className={`statusbar-item statusbar-codex${codex.limited ? " is-failed" : ""}${codex.stale ? " is-stale" : ""}`}
-            title={codex.title}
-          >
-            <Sparkles size={12} aria-hidden="true" />
-            Codex {codex.text}
-          </span>
+          <Tip size="wide" content={<TipLines text={codex.title} />}>
+            <span className={`statusbar-item statusbar-codex${codex.limited ? " is-failed" : ""}${codex.stale ? " is-stale" : ""}`}>
+              <Sparkles size={12} aria-hidden="true" />
+              Codex {codex.text}
+            </span>
+          </Tip>
         )}
         {plan && (
-          <span
-            className={`statusbar-item${plan.limited ? " is-failed" : ""}`}
-            title={plan.title}
-          >
-            <Bot size={12} aria-hidden="true" />
-            Claude {plan.text}
-          </span>
+          <Tip size="wide" content={<TipLines text={plan.title} />}>
+            <span className={`statusbar-item${plan.limited ? " is-failed" : ""}`}>
+              <Bot size={12} aria-hidden="true" />
+              Claude {plan.text}
+            </span>
+          </Tip>
         )}
         {machines && (
-          <button
-            type="button"
-            className={`statusbar-item${machines.unreachable ? " is-failed" : ""}`}
-            title={machines.title}
-            onClick={onMachines}
-          >
-            <Server size={12} aria-hidden="true" />
-            {machines.text}
-          </button>
+          <Tip size="wide" content={<TipLines text={machines.title} />}>
+            <button type="button" className={`statusbar-item${machines.unreachable ? " is-failed" : ""}`} onClick={onMachines}>
+              <Server size={12} aria-hidden="true" />
+              {machines.text}
+            </button>
+          </Tip>
         )}
         {background.budget && <Memory budget={background.budget} t={t} />}
       </div>
@@ -369,29 +363,30 @@ function Memory({ budget, t }: { budget: Budget; t: Words }) {
   const cpu = (millis: number) => Number((millis / 1000).toFixed(1));
   const value = `${gib(budget.reserved.memoryMiB)} / ${gib(budget.budget.memoryMiB)}`;
   return (
-    <button
-      type="button"
-      className="statusbar-item statusbar-memory"
-      title={t.memoryTitle(budget.machine.name, value, cpu(budget.reserved.cpuMillis), cpu(budget.budget.cpuMillis), free)}
-      onClick={() => openJobs({ source: "local" })}
-    >
-      <span>{t.ram}</span>
-      <span
-        className="statusbar-meter"
-        role="meter"
-        aria-label={t.ramLabel}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(used)}
-        aria-valuetext={t.reserved(value)}
+    <Tip content={<TipText title={budget.machine.name} status={t.memoryTip(value, cpu(budget.reserved.cpuMillis), cpu(budget.budget.cpuMillis))} meta={free ? t.hostFree(free) : null} />}>
+      <button
+        type="button"
+        className="statusbar-item statusbar-memory"
+        onClick={() => openJobs({ source: "local" })}
       >
-        <span style={{ width: `${used}%` }} />
-      </span>
-      <span>
-        {value}
-        {host}
-      </span>
-    </button>
+        <span>{t.ram}</span>
+        <span
+          className="statusbar-meter"
+          role="meter"
+          aria-label={t.ramLabel}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(used)}
+          aria-valuetext={t.reserved(value)}
+        >
+          <span style={{ width: `${used}%` }} />
+        </span>
+        <span>
+          {value}
+          {host}
+        </span>
+      </button>
+    </Tip>
   );
 }
 

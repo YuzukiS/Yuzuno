@@ -9,6 +9,7 @@ import type { CodexContextSettings as ContextSettings } from "./types";
 import { CodexPermissions } from "./CodexPermissions";
 import { OpenCodeLogin } from "./OpenCodeLogin";
 import { langTag, strings, useLanguage } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import "./agent-settings.css";
 
 const defaults: Settings = {
@@ -418,11 +419,11 @@ export function AgentSettings({
   }
   return (
     <>
+      <Tip side="bottom" content={<TipText title={t.buttonTitle(agent.harness ?? "codex")} />}>
       <button
         type="button"
         className="conversation-action agent-settings-button"
         aria-label={t.button}
-        title={t.buttonTitle(agent.harness ?? "codex")}
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={disabled}
@@ -435,6 +436,7 @@ export function AgentSettings({
         </span>
         <ChevronDown size={12} className="settings-chevron" />
       </button>
+      </Tip>
       <Modal
         open={open}
         onOpenChange={changeOpen}

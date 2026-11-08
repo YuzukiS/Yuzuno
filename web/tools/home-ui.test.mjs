@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
+import { readTip } from "./tip-dom.mjs";
 import { composerText } from "./composer-driver.mjs";
 import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
 
@@ -385,7 +386,8 @@ test("the Home tab counts what Needs you lists, requests and open Asks, and keep
   try {
     // Sora's request and Mori's Ask; Mori's unread turns are not counted.
     await waitFor(() => count() === "2", "a request and an Ask");
-    assert.equal(p.button("Home").title, "Home · 2 waiting for your response");
+    // Its tip says how many (YN-44); no native title.
+    assert.deepEqual(await readTip(p.w, p.button("Home")), ["Home", "2 waiting for your response"]);
     // Home's own read is the count: an Ask answered elsewhere leaves it.
     p.state.home.needsYou = p.state.home.needsYou.filter((item) => item.kind !== "ask");
     p.doc.querySelector('[aria-label="Refresh Home"]').click();
@@ -403,7 +405,7 @@ test("the Home tab counts what Needs you lists, requests and open Asks, and keep
     p.event({ type: "workspace.changed", scope: "brief" });
     await waitFor(() => count() === "3", "two new Asks while Home is closed");
     assert.ok(homeReads() > before, "read for the count");
-    assert.equal(p.button("Home").title, "Home · 3 waiting for your response");
+    assert.deepEqual(await readTip(p.w, p.button("Home")), ["Home", "3 waiting for your response"]);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -3122,7 +3124,8 @@ test("the tab title and the app badge count what Home's tab counts; next needs y
     await waitFor(() => p.doc.title === "(3) Yuzuno · test", `the title counts: ${p.doc.title}`);
     assert.equal(badges.at(-1), 3);
     const button = p.doc.querySelector(".next-needs-you");
-    assert.equal(button.title, "Go to the next thing that needs you (Ctrl J)");
+    // Its name and shortcut are on it; no tip repeats them (YN-44).
+    assert.equal(button.hasAttribute("title"), false);
     assert.match(button.textContent, /^Next needs youCtrl J$/);
     // Home is open: the first is Mori's Ask, there.
     press();

@@ -213,3 +213,18 @@ export const chartTip: { contentStyle: CSSProperties; labelStyle: CSSProperties;
   itemStyle: { padding: 0, color: "var(--text-secondary)" },
   wrapperStyle: { zIndex: 60, outline: "none" },
 };
+
+/**
+ * A tip from lines of text another part of the app already writes (a plan's
+ * usage, a machine's state): the first line its name, every other line a
+ * quiet line of its own. Empty lines are left out.
+ */
+export function TipLines({ text }: { text: string }) {
+  const [first, ...rest] = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  return (
+    <>
+      {first && <strong className="tip-title">{first}</strong>}
+      {rest.map((line, i) => <small key={i} className="tip-meta">{line}</small>)}
+    </>
+  );
+}

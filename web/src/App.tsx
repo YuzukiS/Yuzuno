@@ -3510,15 +3510,12 @@ export function App() {
       >
         <div className="toolbar-brand" ref={brandBox}>
           {phone && !phoneList ? (
-            <button
-              ref={phoneBack}
-              className="phone-back"
-              title={shell.backTitle}
-              onClick={showAgentList}
-            >
-              <ChevronLeft size={18} />
-              {shell.back}
-            </button>
+            <Tip side="bottom" content={<TipText title={shell.backTitle} />}>
+              <button ref={phoneBack} className="phone-back" onClick={showAgentList}>
+                <ChevronLeft size={18} />
+                {shell.back}
+              </button>
+            </Tip>
           ) : (
             <>
               <Yuzu size={32} />
@@ -3531,48 +3528,39 @@ export function App() {
         </div>
         <div className="toolbar-middle">
           <span className="toolbar-separator" />
-          <button
-            className="icon-button"
-            aria-label={railOpen ? shell.hideRail : shell.showRail}
-            title={shell.toggleRail}
-            onClick={() => setRailOpen((v) => !v)}
-          >
-            <PanelLeft size={17} />
-          </button>
+          <Tip side="bottom" describe={false} content={<TipText title={railOpen ? shell.hideRail : shell.showRail} />}>
+            <button className="icon-button" aria-label={railOpen ? shell.hideRail : shell.showRail} onClick={() => setRailOpen((v) => !v)}>
+              <PanelLeft size={17} />
+            </button>
+          </Tip>
           <span className="workspace-name">{shell.workspace}</span>
           <span className="toolbar-context">
             {isNative ? shell.desktop : shell.web}
           </span>
           {/* Workspace-wide views live here; the sidebar is all agents. */}
           <nav className="toolbar-nav" aria-label={shell.views}>
-            <button
-              className={`catchup-nav ${homeOpen ? "selected" : ""}`}
-              aria-current={homeOpen ? "page" : undefined}
-              title={needsYou > 0 ? shell.homeWaiting(needsYou) : shell.home}
-              onClick={goHome}
-            >
-              <House size={15} />
-              <span className="toolbar-nav-label">{shell.home}</span>
-              {needsYou > 0 && (
-                <span className="nav-count attention">{needsYou}</span>
-              )}
-            </button>
-            <button
-              className="catchup-nav collab-nav"
-              title={shell.tasks}
-              onClick={() => setCollaborationOpen(true)}
-              disabled={loading}
-            >
-              <MessageSquare size={15} />
-              <span className="toolbar-nav-label">{shell.tasks}</span>
-            </button>
+            <Tip side="bottom" content={<TipText title={shell.home} status={needsYou > 0 ? shell.homeWaiting(needsYou) : null} tone="attention" />}>
+              <button className={`catchup-nav ${homeOpen ? "selected" : ""}`} aria-current={homeOpen ? "page" : undefined} onClick={goHome}>
+                <House size={15} />
+                <span className="toolbar-nav-label">{shell.home}</span>
+                {needsYou > 0 && (
+                  <span className="nav-count attention">{needsYou}</span>
+                )}
+              </button>
+            </Tip>
+            <Tip side="bottom" content={<TipText title={shell.tasks} />}>
+              <button className="catchup-nav collab-nav" onClick={() => setCollaborationOpen(true)} disabled={loading}>
+                <MessageSquare size={15} />
+                <span className="toolbar-nav-label">{shell.tasks}</span>
+              </button>
+            </Tip>
             <Jobs key={`jobs-${workspaceId}`} workspaceId={workspaceId} agent={agent} agents={workspace?.agents || []} projects={workspace?.projects || []} revision={String(jobsRevision)} mergeQueueRevision={String(mergeQueueRevision)} disabled={previewMode || loading} onOpenSettings={openSettingsAt} />
           </nav>
         </div>
         <div className="toolbar-actions">
+          <Tip side="bottom" content={<TipText title={core.label} tone={core.healthy ? "ok" : null} body={core.detail} meta={[core.browser, core.stream]} />}>
           <span
             className={`connection ${core.healthy ? "connected" : ""}`}
-            title={core.description}
             data-core-status={core.status}
           >
             {/* The dot is named too: the dot rule once matched every span in
@@ -3583,21 +3571,19 @@ export function App() {
                 and its title (T-15 V5). */}
             <span className="connection-label">{core.label}</span>
           </span>
+          </Tip>
           {/* Where the bottom bar has no room to stand, its way in stands
               here instead; StatusBar.tsx fills this (T-15 V5). */}
           <span className="core-status-slot" id="core-status-slot" />
           {updatesNeedReload && <UpdateBanner onOpen={() => setUpdatesOpen(true)} />}
-            <button
-              className="icon-button workspace-settings"
-              title={shell.settingsTitle}
-              aria-label={shell.settings}
-              onClick={() => setUpdatesOpen(true)}
-            >
-              <Settings2 size={16} />
-            </button>
+            <Tip side="bottom" describe={false} content={<TipText title={shell.settingsTip} body={shell.settingsBody} />}>
+              <button className="icon-button workspace-settings" aria-label={shell.settings} onClick={() => setUpdatesOpen(true)}>
+                <Settings2 size={16} />
+              </button>
+            </Tip>
+          <Tip side="bottom" describe={false} content={<TipText title={shell.inspector} />}>
           <button
             className={`icon-button ${(phone ? phoneInspector : inspector) ? "active" : ""}`}
-            title={shell.inspector}
             aria-label={shell.inspector}
             onClick={() => {
               if (!phone) return setInspector((v) => !v);
@@ -3608,6 +3594,7 @@ export function App() {
           >
             <PanelRight size={17} />
           </button>
+          </Tip>
         </div>
         {frame && <WindowControls frame={frame} />}
       </header>
@@ -3689,7 +3676,6 @@ export function App() {
           <button
             type="button"
             className="next-needs-you"
-            title={shell.nextNeedsYouTitle(`${shortcutModifier} ${boundKeys.nextNeedsYou}`, needsTargets.length)}
             onClick={goNextNeedsYou}
           >
             <BellRing size={14} />
@@ -3790,7 +3776,6 @@ export function App() {
           <button
             className="elsewhere-notice"
             onClick={goHome}
-            title={shell.elsewhereTitle}
           >
             <Bell size={14} />
             <span>{shell.elsewhere(outsidePending)}</span>
@@ -3901,7 +3886,9 @@ export function App() {
                 <div className="conversation-heading">
                   {/* Whole, on demand: pressing it lets the name wrap, for
                       the reader who has no pointer to hover with. */}
-                  <h1 ref={nameRef} title={agent.name} data-open={nameOpen || undefined}>
+                  {/* Its whole name in a tip while the line cuts it (YN-44). */}
+                  <Tip side="bottom" align="start" content={nameCut && !nameOpen ? <TipText title={agent.name} /> : null}>
+                  <h1 ref={nameRef} data-open={nameOpen || undefined}>
                     {nameCut || nameOpen ? (
                       <button
                         type="button"
@@ -3915,6 +3902,7 @@ export function App() {
                       agent.name
                     )}
                   </h1>
+                  </Tip>
                   <span className={`status-label runtime-${agent.status}`}>
                     <span className={`status-dot ${agent.status}`} />
                     {closed
@@ -3935,17 +3923,18 @@ export function App() {
                       rail takes the index where there is a rail, and a phone
                       opens the drawer it already has. One entry either way,
                       rather than one per shape (T-15). */}
-                  <button
-                    type="button"
-                    className="conversation-index-entry"
-                    aria-expanded={phone ? phoneDock === "turns" : railIndex && railOpen}
-                    aria-label={shell.readingIndex}
-                    title={shell.readingIndex}
-                    onClick={openIndexView}
-                  >
-                    <History size={14} aria-hidden="true" />
-                    <span>{readingTurnNumber || logicalTurns.length}/{logicalTurns.length}</span>
-                  </button>
+                  <Tip side="bottom" describe={false} content={<TipText title={shell.readingIndex} />}>
+                    <button
+                      type="button"
+                      className="conversation-index-entry"
+                      aria-expanded={phone ? phoneDock === "turns" : railIndex && railOpen}
+                      aria-label={shell.readingIndex}
+                      onClick={openIndexView}
+                    >
+                      <History size={14} aria-hidden="true" />
+                      <span>{readingTurnNumber || logicalTurns.length}/{logicalTurns.length}</span>
+                    </button>
+                  </Tip>
                 </div>
               </div>
               <div

@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { DialogExitGhost } from "./DialogExitGhost";
+import { Tip, TipText } from "./Tip";
 import { ArrowUpRight, Search, X } from "lucide-react";
 import { api, errorText, shortcutModifier } from "./api";
 import {
@@ -19,7 +20,6 @@ const GONE = "This message is no longer available in the loaded conversation.";
 const text = strings({
   gone: GONE,
   search: "Search conversation",
-  searchTitle: (modifier: string, key: string) => `Search this conversation (${modifier}+${key})`,
   saved: "Core-saved messages, including unloaded history. Up to 50 results.",
   loaded: "Loaded messages only.",
   nativePages: " Native history is searched only in pages you have loaded.",
@@ -41,7 +41,6 @@ const text = strings({
 }, {
   gone: "已载入的会话中不再有这条消息。",
   search: "搜索会话",
-  searchTitle: (modifier, key) => `搜索此会话（${modifier}+${key}）`,
   saved: "Core 保存的消息，包括未载入的历史。最多 50 条结果。",
   loaded: "仅限已载入的消息。",
   nativePages: "原生历史只在你已载入的页面中搜索。",
@@ -175,17 +174,18 @@ export function ConversationSearch({
       }}
     >
       <DialogExitGhost open={open} parts={[overlay, box]} />
-      <Dialog.Trigger asChild>
-        <button
-          className="conversation-action conversation-search-trigger"
-          aria-label={t.search}
-          title={t.searchTitle(shortcutModifier, keys.search)}
-          aria-keyshortcuts={`Control+${keys.search} Meta+${keys.search}`}
-          disabled={disabled}
-        >
-          <Search size={16} />
-        </button>
-      </Dialog.Trigger>
+      <Tip side="bottom" describe={false} content={<TipText title={t.search} kbd={`${shortcutModifier} ${keys.search}`} />}>
+        <Dialog.Trigger asChild>
+          <button
+            className="conversation-action conversation-search-trigger"
+            aria-label={t.search}
+            aria-keyshortcuts={`Control+${keys.search} Meta+${keys.search}`}
+            disabled={disabled}
+          >
+            <Search size={16} />
+          </button>
+        </Dialog.Trigger>
+      </Tip>
       <Dialog.Portal>
         <Dialog.Overlay ref={overlay} className="modal-overlay" />
         <Dialog.Content

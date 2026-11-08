@@ -51,6 +51,7 @@ import { jobWork, runWork } from "./work-activity.ts";
 import { useAppearance } from "./appearance";
 import { useDocumentVisible } from "./document-visible";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import { jobsText, type JobsText } from "./jobs-text";
 import { TASK_KEY } from "./intelligent-ui/task-key";
 import {
@@ -987,6 +988,8 @@ export function Jobs({
       }}
     >
       <DialogExitGhost open={open} parts={[overlay, box]} />
+      {/* One tip for the entry and its counts (YN-44): two would stack. */}
+      <Tip side="bottom" content={<TipText title={entry.label} status={budget ? t.countsTitle(budget.activeCount, budget.queuedCount, upstream) : null} body={entry.title} />}>
       <Dialog.Trigger asChild>
         <button
           type="button"
@@ -999,7 +1002,6 @@ export function Jobs({
           }}
           disabled={disabled}
           aria-label={entry.label}
-          title={entry.title}
         >
           <BriefcaseBusiness size={15} />
           <span className="toolbar-nav-label">{entry.label}</span>
@@ -1007,7 +1009,6 @@ export function Jobs({
             <span
               className="nav-count"
               aria-label={t.counts(budget.activeCount, budget.queuedCount, upstream)}
-              title={t.countsTitle(budget.activeCount, budget.queuedCount, upstream)}
             >
               {budget.activeCount} / {budget.queuedCount}
               {upstream !== undefined && ` / ${upstream}`}
@@ -1015,6 +1016,7 @@ export function Jobs({
           )}
         </button>
       </Dialog.Trigger>
+      </Tip>
       <Dialog.Portal>
         <Dialog.Overlay ref={overlay} className="modal-overlay" />
         <Dialog.Content
