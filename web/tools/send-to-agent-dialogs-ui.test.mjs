@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 import { composerText } from "./composer-driver.mjs";
+import { hoverTip } from "./tip-dom.mjs";
 
 // Send to Agent (T-152) out of the Tasks and Jobs dialogs, which cover the
 // rail: a drag shows the drop strip, and a drop adds a reference to that
@@ -190,7 +191,10 @@ test("Send to Agent follows a language change: its open menu, a refusal on the r
     assert.equal(menu.querySelector(".send-to-agent-note").textContent, "加入该 Agent 的草稿。在你发送之前，不会发出任何内容。");
     assert.deepEqual([...menu.querySelectorAll("[role=menuitem]")].map((b) => b.textContent), ["HanaCore 主机"], "Mori's own reply is not offered to Mori");
     assert.equal(sendButton().textContent, "发送给 Agent");
-    assert.match(sendButton().title, /^发送给 Agent：选择一个 Agent/);
+    // Closed again, its tip says what it does with it, in Chinese (YN-44: no click or drag hints).
+    sendButton().click();
+    await waitFor(() => !page.doc.querySelector(".send-to-agent-menu"), "the menu closes");
+    assert.deepEqual(await hoverTip(page.w, sendButton()), ["加入该 Agent 的草稿。在你发送之前，不会发出任何内容。"]);
     // Dragged onto Mori, the rail says why not.
     const own = dragData();
     fire(page, sendButton(), "dragstart", own);
@@ -209,7 +213,8 @@ test("Send to Agent follows a language change: its open menu, a refusal on the r
     const strip = await waitFor(() => page.doc.querySelector(".handoff-strip"), "the strip opens");
     assert.equal(strip.getAttribute("aria-label"), "可以放下的 Agent");
     assert.equal(strip.querySelector(".handoff-strip-label").textContent, "放到某个 Agent 上，即可加入其草稿");
-    assert.equal(chip(page, "b").title, "加入 Hana 的草稿");
+    // No tip shows during a drag: the strip's label says what a drop does.
+    assert.equal(chip(page, "b").hasAttribute("title"), false);
     assert.equal(chip(page, "b").textContent, "HanaCore 主机");
     fire(page, page.doc.body, "dragend", drag);
     await pause();

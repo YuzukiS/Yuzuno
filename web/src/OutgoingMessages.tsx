@@ -8,6 +8,7 @@ import type { AgentDetail } from "./types";
 import type { OutgoingMessage } from "./useConversationSend";
 import { langTag, strings, useLanguage } from "./i18n";
 import { formAnswer, SentFormAnswer } from "./intelligent-ui/SentFormAnswer";
+import { Tip, TipText } from "./Tip";
 
 // The previews' own words (T-189); the message and the harness's name as they are.
 const text = strings({
@@ -135,14 +136,15 @@ export const OutgoingMessages = memo(function OutgoingMessages({
             <span className="you-avatar">Y</span>{t.you}{" "}
             <small role="status">{status}</small>
             {(receipt.status === "uncertain" || receipt.status === "unknown" || receipt.status === "rejected" || steer === "endedUnconfirmed") && (
-              <button
-                type="button"
-                className="inline-link outgoing-hide"
-                title={t.hideTitle}
-                onClick={() => hide(receipt.input.clientMessageId)}
-              >
-                {t.hide}
-              </button>
+              <Tip content={<TipText body={t.hideTitle} />}>
+                <button
+                  type="button"
+                  className="inline-link outgoing-hide"
+                  onClick={() => hide(receipt.input.clientMessageId)}
+                >
+                  {t.hide}
+                </button>
+              </Tip>
             )}
           </div>
           {answer ? (

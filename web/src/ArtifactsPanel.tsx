@@ -2,6 +2,7 @@ import { ArrowUpRight, ChevronRight, FileText } from "lucide-react";
 import type { Artifact, NativeTurn } from "./types";
 import { groupArtifacts } from "./artifact-groups";
 import { strings, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import "./artifacts-panel.css";
 
 // The panel's own words (T-189); file names and paths as they are.
@@ -38,24 +39,24 @@ function ArtifactList({
   return (
     <div className="artifact-list">
       {files.map((file) => (
-        <button
-          key={file.path}
-          type="button"
-          className="artifact-row"
-          title={file.path}
-          onClick={() => onOpen(file.path)}
-        >
-          <span className="file-icon">
-            <FileText size={17} />
-          </span>
-          <span>
-            <strong>{file.name}</strong>
-            <small>
-              {file.kind === "image" ? t.imagePreview : t.openPreview}
-            </small>
-          </span>
-          <ArrowUpRight size={13} />
-        </button>
+        <Tip key={file.path} content={<TipText value={file.path} />} side="left" size="wide">
+          <button
+            type="button"
+            className="artifact-row"
+            onClick={() => onOpen(file.path)}
+          >
+            <span className="file-icon">
+              <FileText size={17} />
+            </span>
+            <span>
+              <strong>{file.name}</strong>
+              <small>
+                {file.kind === "image" ? t.imagePreview : t.openPreview}
+              </small>
+            </span>
+            <ArrowUpRight size={13} />
+          </button>
+        </Tip>
       ))}
     </div>
   );
@@ -84,7 +85,9 @@ export function ArtifactsPanel({
           <FileText size={14} />
           {t.artifacts}
         </h2>
-        <span title={t.inLatest}>{latest.length}</span>
+        <Tip content={<TipText title={t.inLatest} />}>
+          <span>{latest.length}</span>
+        </Tip>
       </div>
       <div role="group" aria-label={t.latestGroup}>
         {latestTurn && <p className="artifact-turn-label">{t.latest}</p>}

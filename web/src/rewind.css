@@ -1,5 +1,6 @@
 .rewind-open { display: inline-flex; align-items: center; gap: 4px; font-size: calc(9px + var(--font-adjust, 3px)); white-space: nowrap; }
-.reply-actions > .rewind-open { margin-left: auto; }
+/* Held in its tip's span (Tip `hold`), which takes its place in the row. */
+.reply-actions > .tip-hold:has(> .rewind-open) { margin-left: auto; }
 /* OpenCode's Fork (T-10), beside Rewind and as it is. */
 .fork-open { display: inline-flex; align-items: center; gap: 4px; font-size: calc(9px + var(--font-adjust, 3px)); white-space: nowrap; }
 .rewind-dialog { display: grid; gap: 12px; }

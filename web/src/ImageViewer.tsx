@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ImageOff, Minus, Plus } from "lucide-react";
 import { strings, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import {
   bounds,
   modeScale,
@@ -383,10 +384,12 @@ export function ImageViewer({
     <div className="input-image-dialog image-viewer" onKeyDown={key}>
       <div className="image-viewer-bar" role="group" aria-label={t.controls}>
         <div className="image-viewer-zoom">
-          <button type="button" aria-label={t.zoomOut} title={`${t.zoomOut} (−)`}
-            disabled={!limits || view.scale <= limits.min + 1e-6} onClick={() => zoomBy(1 / STEP, undefined, true)}>
-            <Minus size={16} aria-hidden="true" />
-          </button>
+          <Tip content={<TipText title={t.zoomOut} kbd="−" />} describe={false} side="bottom">
+            <button type="button" aria-label={t.zoomOut}
+              disabled={!limits || view.scale <= limits.min + 1e-6} onClick={() => zoomBy(1 / STEP, undefined, true)}>
+              <Minus size={16} aria-hidden="true" />
+            </button>
+          </Tip>
           <span className="image-viewer-scale">
             <output aria-label={t.zoom}>{scale}</output>
             {/* On a phone the views are a menu on the scale (image-viewer.css). */}
@@ -404,17 +407,20 @@ export function ImageViewer({
               <option value="actual">{t.actual}</option>
             </select>
           </span>
-          <button type="button" aria-label={t.zoomIn} title={`${t.zoomIn} (+)`}
-            disabled={!limits || view.scale >= limits.max - 1e-6} onClick={() => zoomBy(STEP, undefined, true)}>
-            <Plus size={16} aria-hidden="true" />
-          </button>
+          <Tip content={<TipText title={t.zoomIn} kbd="+" />} describe={false} side="bottom">
+            <button type="button" aria-label={t.zoomIn}
+              disabled={!limits || view.scale >= limits.max - 1e-6} onClick={() => zoomBy(STEP, undefined, true)}>
+              <Plus size={16} aria-hidden="true" />
+            </button>
+          </Tip>
         </div>
         <div className="image-viewer-modes">
           {(["fit", "width", "actual"] as const).map((each) => (
-            <button key={each} type="button" aria-pressed={shown && mode === each} disabled={!shown}
-              title={`${names[each]} (${{ fit: "0", width: "W", actual: "1" }[each]})`} onClick={() => choose(each)}>
-              {names[each]}
-            </button>
+            <Tip key={each} content={<TipText title={names[each]} kbd={{ fit: "0", width: "W", actual: "1" }[each]} />} describe={false} side="bottom">
+              <button type="button" aria-pressed={shown && mode === each} disabled={!shown} onClick={() => choose(each)}>
+                {names[each]}
+              </button>
+            </Tip>
           ))}
         </div>
         {/* How to zoom, only while there is something to zoom. */}

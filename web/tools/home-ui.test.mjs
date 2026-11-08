@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
-import { readTip } from "./tip-dom.mjs";
+import { hoverTip, readTip } from "./tip-dom.mjs";
 import { composerText } from "./composer-driver.mjs";
 import { doseStudy, fixtureFiles } from "./research-fixtures.mjs";
 
@@ -2609,7 +2609,7 @@ test("T-9 a refused or missing clipboard is said as such, never as copied; only 
     clipboard(p, async () => { throw new p.w.DOMException("Write permission denied.", "NotAllowedError"); });
     p.button("Copy report", report).click();
     await waitFor(() => p.button("Copy unavailable", report), "the refusal said");
-    assert.equal(p.button("Copy unavailable", report).title, "Clipboard unavailable. Select the text to copy.");
+    assert.deepEqual(await hoverTip(p.w, p.button("Copy unavailable", report)), ["Clipboard unavailable. Select the text to copy."]);
     assert.equal(p.button("Copied", report), undefined);
     await waitFor(() => p.button("Copy report", report), "ready again", 4);
     clipboard(p, null);

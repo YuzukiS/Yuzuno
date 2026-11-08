@@ -3,6 +3,7 @@ import { ListChecks, LoaderCircle, RefreshCw } from "lucide-react";
 import { HttpError, api, errorText, post } from "./api";
 import { Modal } from "./components";
 import { langTag, strings, useLanguage } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import type { Agent, CodexPlanState } from "./types";
 import "./remote.css";
 import "./session-import.css";
@@ -56,8 +57,8 @@ const text = strings({
   leavePlan: "Leave Plan mode",
   toDefault: "Switch to Default mode",
   toPlan: "Switch to Plan mode",
-  chipReported: "Codex reports Plan mode: it plans, and asks what it needs, before it changes files · open /plan",
-  chipPending: "A switch to Plan mode that Codex has not reported yet · open /plan",
+  chipReported: "Codex reports Plan mode: it plans, and asks what it needs, before it changes files.",
+  chipPending: "A switch to Plan mode that Codex has not reported yet.",
   chip: (reported: boolean): string => (reported ? "Plan mode" : "Plan mode?"),
 }, {
   notes: {
@@ -92,8 +93,8 @@ const text = strings({
   leavePlan: "离开 Plan 模式",
   toDefault: "切换到默认模式",
   toPlan: "切换到 Plan 模式",
-  chipReported: "Codex 报告为 Plan 模式：它会先规划，并在更改文件前询问所需信息 · 打开 /plan",
-  chipPending: "正在切换到 Plan 模式，Codex 尚未报告 · 打开 /plan",
+  chipReported: "Codex 报告为 Plan 模式：它会先规划，并在更改文件前询问所需信息。",
+  chipPending: "正在切换到 Plan 模式，Codex 尚未报告。",
   chip: (reported) => (reported ? "Plan 模式" : "Plan 模式？"),
 });
 type PlanWords = ReturnType<typeof text>;
@@ -229,10 +230,11 @@ export function CodexPlanChip({ state, onOpen }: { state: CodexPlanState | undef
   const language = useLanguage();
   const t = text(language);
   if (!reported && !switching) return null;
-  const title = reported ? t.chipReported : t.chipPending;
   return (
-    <button type="button" className="composer-tool composer-mode" data-unconfirmed={reported ? undefined : ""} title={title} onClick={onOpen} lang={langTag(language)}>
-      <ListChecks size={14} /> {t.chip(reported)}
-    </button>
+    <Tip content={<TipText body={reported ? t.chipReported : t.chipPending} />}>
+      <button type="button" className="composer-tool composer-mode" data-unconfirmed={reported ? undefined : ""} onClick={onOpen} lang={langTag(language)}>
+        <ListChecks size={14} /> {t.chip(reported)}
+      </button>
+    </Tip>
   );
 }

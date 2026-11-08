@@ -7,6 +7,7 @@
 // readers see one value.
 import { useId, useState, type ReactNode } from "react";
 import { Image as ImageIcon, LoaderCircle, Search } from "lucide-react";
+import { Tip, TipText } from "./Tip";
 import { strings, useLanguage } from "./i18n";
 import type { Model, OpenCodeProvider } from "./types";
 import "./opencode-model-picker.css";
@@ -157,7 +158,7 @@ export function OpenCodeModelPicker({
         </span>
         <span className="opencode-model-facts">
           {m.status && m.status !== "active" && <span className="opencode-model-status" lang="">{m.status}</span>}
-          {m.image && <span title={t.image} aria-label={t.image} role="img"><ImageIcon size={13} /></span>}
+          {m.image && <Tip content={<TipText title={t.image} />} describe={false}><span aria-label={t.image} role="img"><ImageIcon size={13} /></span></Tip>}
           {typeof m.context === "number" && m.context > 0 && <span>{windowSize(m.context)}</span>}
         </span>
       </label>

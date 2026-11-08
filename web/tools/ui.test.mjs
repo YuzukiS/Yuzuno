@@ -1006,14 +1006,14 @@ test("local Claude takes images and says large ones are scaled for Claude while 
   for (const harness of ["claude", "codex"]) {
     const page = await mount({ harness });
     try {
-      // The composer's "+" offers images to both; the entry's tooltip
-      // carries the note for Claude (T-44).
+      // The composer's "+" offers images to both; the entry's tip
+      // carries the note for Claude (T-44, YN-44).
       page.document.querySelector('.composer-tools button[aria-label="Add"]').click();
       await pause();
       const button = page.document.querySelector('.composer-add-menu [role="menuitem"][aria-label="Add images"]');
       assert.equal(button?.disabled, false, harness);
       assert.equal(button?.hasAttribute("aria-disabled"), false, harness);
-      assert.equal(/scaled or compressed when sent to Claude · originals are kept/.test(button?.title ?? ""), harness === "claude", harness);
+      assert.equal((await hoverTip(page.window, button)).some((line) => /scaled or compressed when sent to Claude · originals are kept/.test(line)), harness === "claude", harness);
       assert.deepEqual(page.errors, []);
     } finally { page.close(); }
   }
@@ -4538,7 +4538,8 @@ test("a turn Codex never saved is ended only after confirming, from the notice o
     assert.deepEqual(buttons, ["Reconnect and check", "End turn…"], "checking again stays offered beside ending");
     const send = page.document.querySelector('button[aria-label="Send message"], button[aria-label="Send while working"]');
     assert.ok(send.disabled, "the draft waits");
-    assert.equal(send.title, "End the unconfirmed turn, or check again, first");
+    // Why, in its tip: a pointer resting on a disabled button still opens one (YN-44).
+    assert.equal((await hoverTip(page.window, send)).at(-1), "End the unconfirmed turn, or check again, first");
     const ends = () => page.calls.filter((c) => c.url.includes("/missing-turns/end"));
 
     [...notice.querySelectorAll("button")].find((b) => b.textContent.includes("End turn")).click();
@@ -6328,7 +6329,7 @@ test("an OpenCode Agent at work takes a message into its running turn, not while
     await pause();
     const send = waiting.document.querySelector('[aria-label="Send message"]');
     assert.equal(send?.disabled, true, "not while a request waits for you");
-    assert.equal(send.title, "Wait for this turn to finish, or interrupt");
+    assert.equal((await hoverTip(waiting.window, send)).at(-1), "Wait for this turn to finish, or interrupt");
     assert.equal(waiting.document.querySelector('[aria-label="Send while working"]'), null);
     assert.equal(waiting.calls.filter((call) => call.init.method === "POST").length, 0);
   } finally { waiting.close(); }
@@ -6341,7 +6342,7 @@ test("an OpenCode Agent at work takes a message into its running turn, not while
       const button = page.document.querySelector('[aria-label="Send while working"]');
       return button && !button.disabled && button;
     }, "Send while working to accept the draft");
-    assert.equal(send.title, "Add input to the current turn");
+    assert.match((await hoverTip(page.window, send))[0], /^Add input to the current turn\b/);
     send.click();
     await pause(); await pause();
     const posts = page.calls.filter((call) => call.init.method === "POST");
@@ -6382,7 +6383,7 @@ test("a skill chosen in a Codex Agent's draft comes back as its chip after a rel
   try {
     const chip = page.document.querySelector(".skill-chip");
     assert.ok(chip, "the saved skill's chip is back");
-    assert.equal(chip.title, path);
+    assert.deepEqual(await hoverTip(page.window, chip), [path]);
     const sent = () => page.calls.filter((r) => r.url.endsWith("/messages")).map((r) => JSON.parse(r.init.body));
     page.document.querySelector('[aria-label="Send message"]').click();
     for (let i = 0; i < 20 && !sent().length; i++) await pause();
@@ -6419,7 +6420,7 @@ test("a skill chosen in a Codex Agent's composer is a chip its message invokes; 
     assert.equal(composerText(composer), "Ship it $deploy ");
     const chip = page.document.querySelector(".skill-chip");
     assert.match(chip.textContent, /Skill\$deployrepo · skills\/deploy/);
-    assert.equal(chip.title, path);
+    assert.deepEqual(await hoverTip(page.window, chip), [path]);
     page.document.querySelector('[aria-label="Send message"]').click();
     for (let i = 0; i < 20 && !sent().length; i++) await pause();
     assert.deepEqual(sent()[0].skills, [{ name: "deploy", path }]);
@@ -7070,7 +7071,7 @@ test("Codex's Plan mode shows in the composer, and leaving it only switches back
     setComposerText(composer, "keep this draft");
     await pause();
     const sign = await until(() => [...page.document.querySelectorAll(".composer-mode")].find((b) => b.textContent.trim() === "Plan mode"), "the Plan mode sign");
-    assert.match(sign.title, /Codex reports Plan mode/);
+    assert.match((await hoverTip(page.window, sign)).join(" "), /Codex reports Plan mode/);
     sign.click();
     await until(() => planButton(page, "Leave Plan mode"), "the /plan dialog");
     assert.ok(!planButton(page, "Switch to Plan mode"), "already in Plan mode, as Codex reports");

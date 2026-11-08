@@ -17,7 +17,7 @@ import type { NativeTurn } from "./types";
 import type { InputDock, ReadBy } from "./input-dock";
 import { useAppearance } from "./appearance";
 import { strings, useLanguage } from "./i18n";
-import { TIP_DELAY_MS, focusByKeyboard } from "./Tip";
+import { TIP_DELAY_MS, Tip, TipText, focusByKeyboard } from "./Tip";
 import { turnWords } from "./turn-text";
 import "./turn-dock.css";
 import "./input-dock.css";
@@ -412,11 +412,13 @@ export function TurnNavigator({
     </div>
   );
   const earlier = inputs?.hasBefore && (
-    <button type="button" className="turn-dock-earlier" disabled={inputs.loading}
-      aria-label={t.earlierInputs} title={t.earlierInputs} onClick={inputs.onEarlier}>
-      <History size={touch ? 14 : 12} aria-hidden="true" />
-      {touch && <span>{t.earlierInputs}</span>}
-    </button>
+    <Tip content={touch ? null : <TipText title={t.earlierInputs} />} describe={false}>
+      <button type="button" className="turn-dock-earlier" disabled={inputs.loading}
+        aria-label={t.earlierInputs} onClick={inputs.onEarlier}>
+        <History size={touch ? 14 : 12} aria-hidden="true" />
+        {touch && <span>{t.earlierInputs}</span>}
+      </button>
+    </Tip>
   );
   // On a phone the inputs are a list to read, each with its words: the
   // newest first, earlier ones loaded at its foot.
@@ -518,15 +520,14 @@ export function TurnNavigator({
       }}
     >
       {switcher || (
-        <span
-          className="turn-dock-heading"
-          title={t.nav(!!loadedNumbering)}
-        >
-          <History size={12} aria-hidden="true" />
-          <span className="sr-only">
-            {t.heading(!!loadedNumbering)}
+        <Tip content={<TipText title={t.nav(!!loadedNumbering)} />} describe={false}>
+          <span className="turn-dock-heading">
+            <History size={12} aria-hidden="true" />
+            <span className="sr-only">
+              {t.heading(!!loadedNumbering)}
+            </span>
           </span>
-        </span>
+        </Tip>
       )}
       {earlier}
       <ol
@@ -616,20 +617,21 @@ export function TurnNavigator({
       {/* Shown while the pointer or focus is at the dock, and only away
           from the latest content. */}
       {!atLatest && onLatest && (
-        <button
-          type="button"
-          className="turn-dock-latest"
-          title={t.latestTitle}
-          aria-label={t.latestLabel}
-          onClick={() => {
-            setHover(null);
-            setFocused(null);
-            setBrowse(null);
-            onLatest();
-          }}
-        >
-          <ArrowDownToLine size={13} aria-hidden="true" />
-        </button>
+        <Tip content={<TipText title={t.latestTitle} />} describe={false}>
+          <button
+            type="button"
+            className="turn-dock-latest"
+            aria-label={t.latestLabel}
+            onClick={() => {
+              setHover(null);
+              setFocused(null);
+              setBrowse(null);
+              onLatest();
+            }}
+          >
+            <ArrowDownToLine size={13} aria-hidden="true" />
+          </button>
+        </Tip>
       )}
       {previewTurn && (
         <div

@@ -1,14 +1,17 @@
 import { Fragment } from "react";
 import type { FooterPart, Moment } from "./conversation-time";
+import { Tip, TipText } from "./Tip";
 import "./conversation-time.css";
 
-/** A quiet hours-and-minutes stamp; the full date is in the tooltip. */
+/** A quiet hours-and-minutes stamp; the full date is in its tip. */
 export function MessageTime({ mark, className = "" }: { mark?: Moment; className?: string }) {
   if (!mark) return null;
   return (
-    <time className={`message-time ${className}`.trim()} dateTime={mark.dateTime} title={mark.title}>
-      {mark.label}
-    </time>
+    <Tip content={<TipText title={mark.title} />}>
+      <time className={`message-time ${className}`.trim()} dateTime={mark.dateTime}>
+        {mark.label}
+      </time>
+    </Tip>
   );
 }
 
@@ -23,10 +26,14 @@ export function TurnFooter({ parts }: { parts: FooterPart[] }) {
           {part.kind === "time" ? (
             <span>
               {part.prefix}
-              <time dateTime={part.moment.dateTime} title={part.title}>{part.label}</time>
+              <Tip content={<TipText title={part.title} />}>
+                <time dateTime={part.moment.dateTime}>{part.label}</time>
+              </Tip>
             </span>
           ) : (
-            <span title={part.title}>{part.text}</span>
+            <Tip content={part.title ? <TipText body={part.title} /> : null}>
+              <span>{part.text}</span>
+            </Tip>
           )}
         </Fragment>
       ))}

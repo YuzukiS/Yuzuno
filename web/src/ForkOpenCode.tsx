@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { ArrowUpRight, Folder, GitFork, LoaderCircle } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { Modal } from "./components";
+import { Tip, TipText } from "./Tip";
 import { strings, useLanguage } from "./i18n";
 import type { Agent, NativeTurn } from "./types";
 import "./session-import.css";
@@ -144,8 +145,11 @@ export function OpenCodeForkButton({ agent, turn }: { agent: Agent; turn: Native
   const t = text(useLanguage());
   if (!open || agent.harness !== "opencode" || turn.status !== "completed") return null;
   const blocked = ["working", "waiting"].includes(agent.status);
-  return <button type="button" className="quiet-button fork-open" disabled={blocked}
-    title={blocked ? t.busyTitle : t.forkTitle} onClick={() => open(turn.id)}><GitFork size={12} />{t.fork}</button>;
+  // Busy, it says why it waits (a disabled button still shows a tip).
+  return <Tip content={blocked ? <TipText body={t.busyTitle} /> : <TipText title={t.forkTitle} />} hold>
+    <button type="button" className="quiet-button fork-open" disabled={blocked} aria-description={blocked ? t.busyTitle : undefined}
+      onClick={() => open(turn.id)}><GitFork size={12} />{t.fork}</button>
+  </Tip>;
 }
 
 function OpenCodeForkDialog({ workspaceId, agent, turnId, onForked, onClose }: {

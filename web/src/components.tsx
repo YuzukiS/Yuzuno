@@ -15,6 +15,7 @@ import { SkillChips } from "./SkillChips";
 import { Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { DialogExitGhost } from "./DialogExitGhost";
+import { Tip, TipText } from "./Tip";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import {
@@ -254,43 +255,41 @@ export function CopyButton({
     }
   }, [state]);
   return (
-    <button
-      className="quiet-button copy-button"
-      disabled={state === "copying"}
-      onClick={async () => {
-        let loading: Promise<string> | undefined;
-        try {
-          const value = typeof text === "function" ? text() : text;
-          if (typeof value !== "string") {
-            setState("copying");
-            loading = value;
+    // Its name is its text; failed, the tip says why.
+    <Tip content={state === "error" ? <TipText body={problem !== null ? t.loadFailed(problem) : t.clipboardUnavailable} /> : null}>
+      <button
+        className="quiet-button copy-button"
+        disabled={state === "copying"}
+        onClick={async () => {
+          let loading: Promise<string> | undefined;
+          try {
+            const value = typeof text === "function" ? text() : text;
+            if (typeof value !== "string") {
+              setState("copying");
+              loading = value;
+            }
+            await copyText(value);
+            setState("copied");
+          } catch {
+            // A failed fetch is not a clipboard problem; say which it was.
+            const failed = await loading?.then(() => null, (e: unknown) => e);
+            setProblem(failed ? errorText(failed) : null);
+            setState("error");
           }
-          await copyText(value);
-          setState("copied");
-        } catch {
-          // A failed fetch is not a clipboard problem; say which it was.
-          const failed = await loading?.then(() => null, (e: unknown) => e);
-          setProblem(failed ? errorText(failed) : null);
-          setState("error");
-        }
-      }}
-      title={
-        state === "error"
-          ? problem !== null ? t.loadFailed(problem) : t.clipboardUnavailable
-          : name
-      }
-    >
-      {state === "copied" ? <Check size={13} /> : state === "copying" ? <LoaderCircle size={13} className="spin" /> : <Copy size={13} />}
-      <span>
-        {state === "copied"
-          ? t.copied
-          : state === "copying"
-            ? t.copyLoading
-            : state === "error"
-              ? problem !== null ? t.copyFailed : t.copyUnavailable
-              : name}
-      </span>
-    </button>
+        }}
+      >
+        {state === "copied" ? <Check size={13} /> : state === "copying" ? <LoaderCircle size={13} className="spin" /> : <Copy size={13} />}
+        <span>
+          {state === "copied"
+            ? t.copied
+            : state === "copying"
+              ? t.copyLoading
+              : state === "error"
+                ? problem !== null ? t.copyFailed : t.copyUnavailable
+                : name}
+        </span>
+      </button>
+    </Tip>
   );
 }
 /** Copies the link to one message (T-166), where links are offered. */
@@ -1228,31 +1227,33 @@ export function Turn({
         <TurnResults agentId={agent.id} turn={turn} onFile={onFile} onDraft={onAnswer} onInteract={onResultInteract} />
         {!running && <TurnFiles agent={agent} turn={turn} onSource={onFile} />}
         {running && (
-          <div
-            className="turn-activity"
-            data-state={activity.state}
-            role="status"
-            title={activity.detail}
-          >
-            {activity.state === "working" || activity.state === "compacting" ? (
-              <span className="activity-yuzu" aria-hidden="true">
-                <Yuzu size={17} />
-                <span className="activity-twinkle">✦</span>
-              </span>
-            ) : (
-              <MessageSquare size={13} aria-hidden="true" />
-            )}
-            <strong>{activity.label}</strong>
-            {(activity.state === "working" || activity.state === "compacting") && (
-              <ActivityElapsed startedAt={activityStartedAt(turn, activity.state)} />
-            )}
-            {/* The model an OpenCode Turn's message went to (YN-48). */}
-            {agent.harness === "opencode" && (turn._opencodeModel?.name || turn._opencodeModel?.id) && (
-              <span className="activity-model" title={turn._opencodeModel.default ? t.modelDefault : undefined}>
-                <span aria-hidden="true">· </span>{turn._opencodeModel.name || turn._opencodeModel.id}
-              </span>
-            )}
-          </div>
+          // One tip for the line, the model's default-ness with it.
+          <Tip content={<TipText body={activity.detail} meta={agent.harness === "opencode" && turn._opencodeModel?.default ? t.modelDefault : undefined} />} align="start">
+            <div
+              className="turn-activity"
+              data-state={activity.state}
+              role="status"
+            >
+              {activity.state === "working" || activity.state === "compacting" ? (
+                <span className="activity-yuzu" aria-hidden="true">
+                  <Yuzu size={17} />
+                  <span className="activity-twinkle">✦</span>
+                </span>
+              ) : (
+                <MessageSquare size={13} aria-hidden="true" />
+              )}
+              <strong>{activity.label}</strong>
+              {(activity.state === "working" || activity.state === "compacting") && (
+                <ActivityElapsed startedAt={activityStartedAt(turn, activity.state)} />
+              )}
+              {/* The model an OpenCode Turn's message went to (YN-48). */}
+              {agent.harness === "opencode" && (turn._opencodeModel?.name || turn._opencodeModel?.id) && (
+                <span className="activity-model">
+                  <span aria-hidden="true">· </span>{turn._opencodeModel.name || turn._opencodeModel.id}
+                </span>
+              )}
+            </div>
+          </Tip>
         )}
         {running && agent.harness === "opencode" && (
           <OpenCodeWaiting turn={turn} hasOutput={blocks.length > 0} onStop={onStop} onChangeModel={onChangeModel} />

@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { LoaderCircle, Plus } from "lucide-react";
 import { animates } from "./motion";
+import { Tip } from "./Tip";
 import "./composer-add.css";
 
 export type ComposerAddItem = {
   key: string;
   label: string;
   icon: ReactNode;
-  title?: string;
+  /** What it adds, beside its row: its label stays the row's own words. */
+  tip?: ReactNode;
   /** Shown under its label, and why it can't be chosen when `unavailable`. */
   note?: string;
   /** Kept in the menu, quieted, so it can say why (an Agent without images). */
@@ -27,9 +29,10 @@ const MENU_OUT_MS = 130;
  * open it, the arrow keys, Home and End move, Escape or Tab close it, and
  * focus goes back to "+". Escape is kept from the conversation's interrupt.
  */
-export function ComposerAddMenu({ label, title, menuLabel, items, disabled, busy }: {
+export function ComposerAddMenu({ label, tip, menuLabel, items, disabled, busy }: {
   label: string;
-  title: string;
+  /** What "+" holds. */
+  tip: ReactNode;
   menuLabel: string;
   items: ComposerAddItem[];
   disabled?: boolean;
@@ -112,47 +115,49 @@ export function ComposerAddMenu({ label, title, menuLabel, items, disabled, busy
           }}
         >
           {items.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              role="menuitem"
-              className="composer-add-item"
-              aria-label={item.label}
-              title={item.title}
-              aria-disabled={item.unavailable || item.disabled || undefined}
-              data-unavailable={item.unavailable ? "" : undefined}
-              onClick={() => {
-                if (item.unavailable || item.disabled) return;
-                close(true);
-                if (trigger.current) item.onSelect(trigger.current);
-              }}
-            >
-              {item.icon}
-              <span className="composer-add-text">
-                <span>{item.label}</span>
-                {item.note && <small>{item.note}</small>}
-              </span>
-            </button>
+            <Tip key={item.key} content={item.tip} side="right">
+              <button
+                type="button"
+                role="menuitem"
+                className="composer-add-item"
+                aria-label={item.label}
+                aria-disabled={item.unavailable || item.disabled || undefined}
+                data-unavailable={item.unavailable ? "" : undefined}
+                onClick={() => {
+                  if (item.unavailable || item.disabled) return;
+                  close(true);
+                  if (trigger.current) item.onSelect(trigger.current);
+                }}
+              >
+                {item.icon}
+                <span className="composer-add-text">
+                  <span>{item.label}</span>
+                  {item.note && <small>{item.note}</small>}
+                </span>
+              </button>
+            </Tip>
           ))}
         </div>
       )}
-      <button
-        ref={trigger}
-        type="button"
-        className="composer-tool composer-plus"
-        aria-label={label}
-        title={title}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-busy={busy || undefined}
-        disabled={disabled}
-        onClick={() => {
-          setFocusAt("first");
-          setOpen(!open);
-        }}
-      >
-        {busy ? <LoaderCircle size={17} className="spin" /> : <Plus size={18} />}
-      </button>
+      {/* Not while its menu is open: the menu says it all. */}
+      <Tip content={open ? null : tip} describe={false}>
+        <button
+          ref={trigger}
+          type="button"
+          className="composer-tool composer-plus"
+          aria-label={label}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-busy={busy || undefined}
+          disabled={disabled}
+          onClick={() => {
+            setFocusAt("first");
+            setOpen(!open);
+          }}
+        >
+          {busy ? <LoaderCircle size={17} className="spin" /> : <Plus size={18} />}
+        </button>
+      </Tip>
     </div>
   );
 }

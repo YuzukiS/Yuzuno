@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM } from "jsdom";
+import { hoverTip } from "./tip-dom.mjs";
 
 // Tool rows whose output Core sent as a preview fetch the full value on
 // request, keep it across snapshot refreshes, and copy it in full.
@@ -275,7 +276,8 @@ test("Copy turn copies every trimmed field in full, or fails visibly", async () 
       await tick();
       assert.equal(failing.copied.length, 0, "a preview is never copied as the whole text");
       assert.equal(failed.textContent, "Copy failed");
-      assert.match(failed.title, /couldn't get the full output of 1 item/);
+      // Why, in its tip (YN-44).
+      assert.match((await hoverTip(failing.window, failed)).join(" "), /couldn't get the full output of 1 item/);
     } finally {
       failing.close();
     }

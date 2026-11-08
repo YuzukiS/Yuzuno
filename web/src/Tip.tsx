@@ -1,5 +1,5 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { cloneElement, createContext, isValidElement, useContext, type CSSProperties, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
+import { cloneElement, createContext, isValidElement, useContext, useRef, useState, type CSSProperties, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
 import { langTag, useLanguage } from "./i18n";
 import "./tip.css";
 
@@ -63,6 +63,10 @@ function own(event: SyntheticEvent): boolean {
   return !opened || opened === trigger || !trigger.contains(opened);
 }
 
+/** Whether an element's text runs past its box: cut by an ellipsis or a clamp. */
+const overflows = (element: HTMLElement | null) =>
+  !!element && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
+
 /** Whether the keyboard moved focus last, for a card of its own that opens
  * on focus as a tip does (ContextUsage, the turn dock's preview). */
 export const focusByKeyboard = () => byKeyboard;
@@ -81,6 +85,16 @@ export type TipTone = "ok" | "bad" | "attention" | "working" | "info" | "quiet";
  *    technology while it shows (aria-describedby). Off where the trigger's
  *    own name or description already says it.
  *  - `open`, `onOpenChange`: to decide when it may show, or show it by hand.
+ *  - `cut`: only while the trigger's own text is cut (an ellipsis or a
+ *    clamp), measured when it would open: a name shown whole needs no tip.
+ *  - `hold`: for a control that may be disabled while its tip still says
+ *    something (why it waits). The trigger is then a span around it, which
+ *    takes the pointer while the control is disabled: WebKit (the Mac app)
+ *    and older Firefox send a disabled control no pointer events, Chromium
+ *    does. The span is always there, so the control is never remounted as
+ *    it is enabled and disabled. Say the reason to assistive technology on
+ *    the control too (`aria-description`): the keyboard cannot reach a
+ *    disabled control, so its tip never opens from there.
  * Content may come and go (empty: no tip), and the trigger stays the same
  * element either way: switching between a bare child and a wrapped one
  * would remount it, and a dialog opened from it would lose its place.
@@ -96,6 +110,8 @@ export function Tip({
   onOpenChange,
   className,
   card,
+  cut = false,
+  hold = false,
 }: {
   content: ReactNode;
   children: ReactElement;
@@ -108,9 +124,14 @@ export function Tip({
   className?: string;
   /** Data attributes on the card, for its own styles and checks. */
   card?: Record<`data-${string}`, string | undefined>;
+  cut?: boolean;
+  hold?: boolean;
 }) {
   const present = useContext(Present);
   const language = useLanguage();
+  const [cutShown, setCutShown] = useState(false);
+  // Radix types its trigger as a button; it is whatever element the child is.
+  const cutTrigger = useRef<HTMLButtonElement>(null);
   if (!isValidElement(children)) return children;
   const empty = content == null || content === false || content === "";
   const props = children.props as Record<string, unknown>;
@@ -123,13 +144,17 @@ export function Tip({
     ...(!describe || props["aria-describedby"] !== undefined ? { "aria-describedby": props["aria-describedby"] } : {}),
   } as Record<string, unknown>);
   const tip = (
-    <Tooltip.Root open={empty ? false : open} onOpenChange={empty ? undefined : onOpenChange}>
+    <Tooltip.Root
+      open={empty ? false : cut ? cutShown : open}
+      onOpenChange={empty ? undefined : cut ? (next) => setCutShown(next && overflows(cutTrigger.current)) : onOpenChange}
+    >
       <Tooltip.Trigger
+        ref={cut ? cutTrigger : undefined}
         asChild
         onFocus={(event) => { if (!byKeyboard || !own(event)) event.preventDefault(); }}
         onPointerMove={(event) => { if (!own(event)) event.preventDefault(); }}
       >
-        {trigger}
+        {hold ? <span className="tip-hold">{trigger}</span> : trigger}
       </Tooltip.Trigger>
       {!empty && <Tooltip.Portal>
         <Tooltip.Content
