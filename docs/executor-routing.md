@@ -239,7 +239,7 @@ policy to copy; a policy always holds its schedule inline.
 For an executor started with a routing key, Core counts what each turn
 cost, as its harness reports it:
 
-- **Claude Code:** the turn result's `total_cost_usd`.
+- **Claude Code:** what the turn added to its result's `total_cost_usd`. Claude Code reports that as the running total of its session, so Core keeps the last total it saw from each executor, across restarts, and counts the increase. A total below the last (after `/clear`, or in a new session) counts from zero. A zero total, as a crashed turn reports, counts nothing.
 - **OpenCode:** each finished step's `cost`, the executor's sub-agents' too.
 - **Codex:** not counted yet. Routing (S3) treats a Codex API-key candidate's spend as unknown.
 

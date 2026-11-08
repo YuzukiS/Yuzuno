@@ -3,9 +3,9 @@
 //! - **Time windows:** a weekly schedule, in UTC or the Core host's local time,
 //!   and the built-in DeepSeek peak.
 //! - **Daily API spend:** the spend of executors started with a routing key.
-//!   It is what their harness reports each turn: Claude Code's
-//!   `total_cost_usd` and OpenCode's step `cost`. That is an estimate, not a
-//!   bill.
+//!   It is what their harness reports: OpenCode's `cost` of each answer, and
+//!   the increase in Claude Code's `total_cost_usd`, a running total of its
+//!   session. That is an estimate, not a bill.
 //!
 //! Account quotas follow in S2b. Nothing here runs a model or calls a network
 //! service, and no record holds a key's value: spend is counted by key id.
@@ -147,7 +147,12 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
             source TEXT NOT NULL,
             at TEXT NOT NULL,
             PRIMARY KEY(agent_id, entry));
-        CREATE INDEX IF NOT EXISTS routing_spend_day ON routing_spend(day);",
+        CREATE INDEX IF NOT EXISTS routing_spend_day ON routing_spend(day);
+        CREATE TABLE IF NOT EXISTS routing_spend_totals(
+            agent_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            total REAL NOT NULL,
+            at TEXT NOT NULL);",
     )?;
     Ok(())
 }
@@ -181,6 +186,45 @@ impl Store {
         Ok(added == 1)
     }
 
+    /// Counts what Agent `agent` spent since its harness last reported a running
+    /// total, once per `entry`, if it runs on a routing API key. Claude Code's
+    /// `total_cost_usd` is such a total, across the turns of its session:
+    /// - the increase since the last total counts. The last total is kept across
+    ///   restarts, so a resumed session, whose first total already holds its
+    ///   earlier turns, counts only what is new;
+    /// - a total below the last (a `/clear`, or a new session) counts from zero;
+    /// - an entry already counted changes nothing.
+    ///
+    /// Answers what it counted now. A zero total (a crashed turn's) never
+    /// reaches here: `usd` drops it, and the last total stays.
+    pub(crate) fn record_running_spend(&self, agent: &str, entry: &str, total: f64, source: &str, day: NaiveDate) -> Result<Option<f64>> {
+        use rusqlite::OptionalExtension;
+        let Some(RuntimeProfile::ApiKey { key_id }) = self.runtime_profile(agent)? else { return Ok(None) };
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        if tx.query_row("SELECT 1 FROM routing_spend WHERE agent_id=?1 AND entry=?2", [agent, entry], |_| Ok(())).optional()?.is_some() {
+            return Ok(None);
+        }
+        let last: Option<f64> = tx.query_row("SELECT total FROM routing_spend_totals WHERE agent_id=?1", [agent], |r| r.get(0)).optional()?;
+        let spent = match last {
+            Some(last) if total >= last => total - last,
+            _ => total,
+        };
+        let at = Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO routing_spend_totals(agent_id, source, total, at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(agent_id) DO UPDATE SET source=excluded.source, total=excluded.total, at=excluded.at",
+            params![agent, source, total, at],
+        )?;
+        tx.execute(
+            "INSERT INTO routing_spend(agent_id, entry, day, key_id, usd, source, at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![agent, entry, day.to_string(), key_id, spent, source, at],
+        )?;
+        tx.execute("DELETE FROM routing_spend WHERE day < ?1", [(day - Duration::days(40)).to_string()])?;
+        tx.commit()?;
+        Ok(Some(spent))
+    }
+
     pub(crate) fn spend_on(&self, day: NaiveDate) -> Result<DaySpend> {
         let db = self.db.read()?;
         let mut statement = db.prepare("SELECT key_id, SUM(usd) FROM routing_spend WHERE day=?1 GROUP BY key_id ORDER BY key_id")?;
@@ -211,7 +255,8 @@ pub fn opencode_spend(info: &Value) -> Option<(String, f64)> {
     Some((format!("opencode:{}", info["id"].as_str()?), usd(&info["cost"])?))
 }
 
-/// What a Claude Code turn cost: its result's `total_cost_usd`, keyed by the result's uuid, else its turn.
+/// A Claude Code result's running total, `total_cost_usd`, keyed by the result's uuid, else its turn.
+/// It is the session's total so far, not the turn's: `count_running` counts its increase.
 pub fn claude_spend(event: &Value, turn: Option<&str>) -> Option<(String, f64)> {
     let key = event["uuid"].as_str().or(turn)?;
     Some((format!("claude:{key}"), usd(&event["total_cost_usd"])?))
@@ -221,6 +266,14 @@ pub fn claude_spend(event: &Value, turn: Option<&str>) -> Option<(String, f64)> 
 pub(crate) fn count(store: &Store, agent: &str, spend: Option<(String, f64)>, source: &str) {
     let Some((entry, usd)) = spend else { return };
     if let Err(error) = store.record_spend(agent, &entry, usd, source, today()) {
+        eprintln!("Workspace could not count {agent}'s routing spend: {error:#}");
+    }
+}
+
+/// Counts the increase in a running total of Agent `agent` (`record_running_spend`), never failing the event it came with.
+pub(crate) fn count_running(store: &Store, agent: &str, total: Option<(String, f64)>, source: &str) {
+    let Some((entry, total)) = total else { return };
+    if let Err(error) = store.record_running_spend(agent, &entry, total, source, today()) {
         eprintln!("Workspace could not count {agent}'s routing spend: {error:#}");
     }
 }
