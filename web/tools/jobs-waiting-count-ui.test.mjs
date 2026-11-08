@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import react from '@vitejs/plugin-react';
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { readTip } from "./tip-dom.mjs";
 const root = fileURLToPath(new URL('../', import.meta.url));
 await mkdir(path.join(root, 'node_modules/.cache'), { recursive: true });
 const fixture = await mkdtemp(path.join(root, 'node_modules/.cache/jobs-waiting-count-ui-'));
@@ -43,7 +44,7 @@ function mount(counts, language) {
   };
   w.eval(bundle);
   w.renderJobs({ workspaceId: 'w', agent, revision: '1', disabled: false });
-  return { doc: w.document, errors, close: () => w.close() };
+  return { w, doc: w.document, errors, close: () => w.close() };
 }
 const badge = p => p.doc.querySelector('.jobs-nav .nav-count');
 async function open(p) {
@@ -58,7 +59,9 @@ test('the badge counts running, queued and waiting for an earlier stage, and say
     await until(() => badge(p));
     assert.equal(badge(p).textContent, '2 / 0 / 1');
     assert.equal(badge(p).getAttribute('aria-label'), '2 active jobs, 0 queued jobs, 1 jobs waiting for an earlier stage');
-    assert.equal(badge(p).getAttribute('title'), '2 active · 0 queued · 1 waiting for an earlier stage of their run');
+    // The entry's one tip says the three in words (YN-44): no title of the badge's own.
+    assert.equal(badge(p).hasAttribute('title'), false);
+    assert.equal((await readTip(p.w, p.doc.querySelector('.jobs-nav')))[1], '2 active · 0 queued · 1 waiting for an earlier stage of their run');
     await open(p);
     assert.equal(p.doc.querySelector('.jobs-budget-counts').textContent, '2 of 4 active · 0 queued · 1 waiting');
     const tab = p.doc.querySelector('.jobs-rail-count');
@@ -82,7 +85,7 @@ test('in Simplified Chinese the three are named in it', async () => {
     await until(() => badge(p));
     assert.equal(badge(p).textContent, '2 / 0 / 1');
     assert.equal(badge(p).getAttribute('aria-label'), '2 个活跃 Job，0 个排队 Job，1 个等待上游阶段的 Job');
-    assert.equal(badge(p).getAttribute('title'), '2 个活跃 · 0 个排队 · 1 个等待所在运行的上游阶段');
+    assert.equal((await readTip(p.w, p.doc.querySelector('.jobs-nav')))[1], '2 个活跃 · 0 个排队 · 1 个等待所在运行的上游阶段');
     await open(p);
     assert.equal(p.doc.querySelector('.jobs-budget-counts').textContent, '2 / 4 个活跃 · 0 个排队 · 1 个等待上游');
     assert.equal(p.doc.querySelector('.jobs-rail-count').getAttribute('title'), '此机器上 2 个活跃 · 0 个排队 · 1 个等待上游阶段');
