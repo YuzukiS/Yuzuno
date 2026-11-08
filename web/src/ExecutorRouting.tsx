@@ -379,7 +379,9 @@ export function ExecutorRouting({ active }: { active: boolean }) {
   }, [active]);
   useLayoutEffect(() => {
     if (!focusGrip.current) return;
-    document.querySelector<HTMLButtonElement>(`.routing-cand[data-cand="${CSS.escape(focusGrip.current)}"] .routing-grip`)?.focus();
+    const id = focusGrip.current;
+    [...document.querySelectorAll<HTMLElement>(".routing-cand")].find((card) => card.dataset.cand === id)
+      ?.querySelector<HTMLButtonElement>(".routing-grip")?.focus();
     focusGrip.current = null;
   });
 

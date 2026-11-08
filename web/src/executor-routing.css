@@ -159,7 +159,6 @@
   position: relative;
   min-width: 0;
   border: 1px solid var(--line);
-  border-left: 3px solid var(--cc, var(--line));
   border-radius: 12px;
   background: color-mix(in srgb, var(--surface-soft) 38%, var(--surface-raised));
   transition: box-shadow .12s ease, border-color .12s ease;

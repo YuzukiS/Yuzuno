@@ -129,7 +129,8 @@ async function opened(page) {
   await until(() => !/not added yet|还没添加/.test(cards(page)[0].textContent), "the keys read");
 }
 async function save(page, words = "Save") {
-  await until(() => !button(page, words, bar(page))?.disabled, "Save ready");
+  // The bar's Save appears once the change has joined it (an effect after the render).
+  await until(() => { const b = button(page, words, bar(page)); return b && !b.disabled; }, "Save ready");
   button(page, words, bar(page)).click();
   await tick();
 }
