@@ -37,12 +37,15 @@ export function TipProvider({ children }: { children: ReactNode }) {
 // elsewhere caused (a dialog closed by a click, giving focus back) should not
 // open it either, as `:focus-visible` would have it. Read here rather than
 // with `matches(":focus-visible")`, which some engines don't answer.
+// On the window, in the capture phase, from when this module loads: before
+// any listener a component adds later, so one that stops a key there (the
+// context ring's Escape) cannot hide it from this one.
 let byKeyboard = false;
-if (typeof document !== "undefined") {
-  document.addEventListener("keydown", (event) => {
+if (typeof window !== "undefined") {
+  window.addEventListener("keydown", (event) => {
     if (!event.metaKey && !event.ctrlKey && !event.altKey) byKeyboard = true;
   }, true);
-  document.addEventListener("pointerdown", () => { byKeyboard = false; }, true);
+  window.addEventListener("pointerdown", () => { byKeyboard = false; }, true);
 }
 
 /**
