@@ -69,16 +69,30 @@ impl Lab {
         rows.iter().map(|raw| serde_json::from_str(raw).unwrap()).collect()
     }
 
-    /// The only slot taken by an executor that never runs, so one dispatched
-    /// next waits until a test moves it on.
+    /// This Core host's only slot taken by an executor that never runs, so
+    /// one dispatched next waits until a test moves it on. The limit is the
+    /// machine's (YN-2 S5): the Workspace's number this wrote before YN-29
+    /// limits nothing, and left two slots free for a pass to start it.
     fn occupy_the_slot(&self) {
         let db = self.ws.store.db.write().unwrap();
-        db.execute("INSERT INTO workspace_meta(key,value) VALUES('executors.slots',?1)", [json!({"version":1,"slots":1}).to_string()]).unwrap();
+        db.execute("INSERT INTO workspace_meta(key,value) VALUES(?1,?2)",
+            params![crate::executor_slots::machine_key("local"), json!({"version":1,"slots":1}).to_string()]).unwrap();
         db.execute("INSERT INTO executor_slots(agent_id,seq,task_id,machine_id,template_id,state,since,queued_at)
             VALUES('holder',0,'task-holder','local','reviewer','running','now','now')", []).unwrap();
         // An open Agent, so no pass releases it.
         drop(db);
         agent(&self.ws.store, "holder", "codex");
+    }
+
+    /// `agent`, dispatched behind the holder, still waits after a pass: one
+    /// its dispatch spawned may run before the test moves it on by hand, and
+    /// must start nothing (YN-29).
+    async fn waits(&self, agent: &str) {
+        for started in self.ws.executor_slots_pass().await {
+            started.await.unwrap();
+        }
+        let (state, reason, _, _) = self.slot(agent);
+        assert_eq!(state, "waiting", "a pass started it, beside the holder's slot: {reason:?}");
     }
 
     /// Only the passes the test runs: a dispatch spawns none, so none races
@@ -281,6 +295,7 @@ async fn an_uncertain_start_keeps_its_slot_open_and_mails_the_dispatcher_once() 
     lab.occupy_the_slot();
     let task = lab.task("Review the uncertain one").await;
     let first = lab.dispatch(&task, "uncertain").await;
+    lab.waits(&first).await;
     lab.taken(&first, 1);
     let permit = lab.ws.admission.enter_work().unwrap();
     lab.ws.settle_start(&first, &permit, Failure::Uncertain("its start was not confirmed".into()), false).await.unwrap();
@@ -304,6 +319,7 @@ async fn a_reopened_executor_whose_start_fails_is_not_rebuilt() {
     lab.occupy_the_slot();
     let task = lab.task("Review the reopened one").await;
     let first = lab.dispatch(&task, "reopened").await;
+    lab.waits(&first).await;
     lab.taken(&first, 2);
     let permit = lab.ws.admission.enter_work().unwrap();
     lab.ws.settle_start(&first, &permit, Failure::Definite("the runtime refused it".into()), false).await.unwrap();
@@ -324,6 +340,7 @@ async fn a_pass_settles_a_start_that_ended_without_it() {
     lab.occupy_the_slot();
     let task = lab.task("Review the raced one").await;
     let first = lab.dispatch(&task, "raced").await;
+    lab.waits(&first).await;
     lab.taken(&first, 1);
     lab.ws.store.update(&first, "runtime/error", &json!({}), |d| {
         d.agent.status = "error".into();
@@ -340,6 +357,7 @@ async fn a_pass_settles_a_start_that_ended_without_it() {
     // An executor a pass is still starting is not settled from outside.
     let task = lab.task("Review the one in flight").await;
     let other = lab.dispatch(&task, "in-flight").await;
+    lab.waits(&other).await;
     lab.taken(&other, 1);
     lab.ws.store.update(&other, "runtime/error", &json!({}), |d| d.agent.status = "error".into()).unwrap();
     lab.ws.executor_slots.in_flight.lock().unwrap().insert(other.clone());
