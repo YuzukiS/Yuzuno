@@ -172,3 +172,17 @@ fn named_runs_are_the_agents_own_existing_ones_each_once_and_cannot_form_a_cycle
     let ordered = try_after(&s, "a", "late-order", json!([{"runId":a_id,"when":"settled"}])).unwrap();
     assert_eq!(latest(&s, &ordered, "later")["status"], "queued", "it already ended");
 }
+
+#[test]
+fn the_tool_names_both_modes_within_its_description_limit() {
+    let tools = tool_definitions();
+    let submit = tools.iter().find(|t| t["name"] == "job_run_submit").unwrap();
+    let text = submit["description"].as_str().unwrap();
+    assert!(text.contains("when succeeded (default") && text.contains("or settled (ordering only"), "{text}");
+    assert!(text.encode_utf16().count() <= 2048, "{}", text.encode_utf16().count());
+    let after = &submit["inputSchema"]["properties"]["afterRuns"];
+    assert_eq!(after["maxItems"], 8);
+    assert_eq!(after["items"]["properties"]["when"]["enum"], json!(["succeeded", "settled"]));
+    assert_eq!(after["items"]["required"], json!(["runId"]));
+    assert!(after["items"]["properties"]["runId"]["description"].as_str().unwrap().contains("unique prefix"));
+}
