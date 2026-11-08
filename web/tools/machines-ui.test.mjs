@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { tipOf } from "./tip-dom.mjs";
 
 // An in-memory component bundle: no Core, browser, SSH or web/dist writes.
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -21,7 +22,6 @@ try {
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {MachinesPage, LastCheck} from ${JSON.stringify(path.join(root, "src/MachinesPage.tsx"))};
-import { tipOf } from "./tip-dom.mjs";
 const root=createRoot(document.getElementById('root'));
 window.renderMachines=(props)=>root.render(<MachinesPage {...props}/>);
 window.renderCheck=(props)=>root.render(<LastCheck {...props}/>);`,

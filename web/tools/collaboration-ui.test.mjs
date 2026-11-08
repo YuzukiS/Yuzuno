@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { tipOf, noTipOf } from "./tip-dom.mjs";
 
 // An in-memory component bundle: no live Core, browsers, or web/dist writes.
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -22,7 +23,6 @@ try {
 import {createRoot} from 'react-dom/client';
 import {CollaborationBoard} from ${JSON.stringify(path.join(root, "src/CollaborationBoard.tsx"))};
 import {Turn, turnText} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
-import { tipOf, noTipOf } from "./tip-dom.mjs";
 const root=createRoot(document.getElementById('root'));
 window.renderBoard=(props)=>root.render(<CollaborationBoard {...props}/>);
 window.renderTurn=(props)=>root.render(<Turn {...props}/>);
