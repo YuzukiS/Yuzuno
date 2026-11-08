@@ -176,13 +176,14 @@ export function TipText({ title, kbd, status, tone, body, meta, when, value, lab
   const quiet = Array.isArray(facts) ? (facts.length ? facts.map((part, i) => <span key={i}>{i > 0 && " · "}{part}</span>) : null) : facts;
   return (
     <>
+      {/* What it is, quietly, above a value it names (the Value kind). */}
+      {label && <small className="tip-meta">{label}</small>}
       {(title || kbd) && (
         <span className="tip-head">
           {title && <strong className="tip-title">{title}</strong>}
           {kbd && <> <kbd className="tip-kbd">{kbd}</kbd></>}
         </span>
       )}
-      {label && <small className="tip-meta">{label}</small>}
       {value && <span className="tip-value">{value}</span>}
       {status && <span className="tip-status" data-tone={tone || undefined}>{status}</span>}
       {body && <span className="tip-body">{body}</span>}
@@ -213,3 +214,18 @@ export const chartTip: { contentStyle: CSSProperties; labelStyle: CSSProperties;
   itemStyle: { padding: 0, color: "var(--text-secondary)" },
   wrapperStyle: { zIndex: 60, outline: "none" },
 };
+
+/**
+ * A tip from lines of text another part of the app already writes (a plan's
+ * usage, a machine's state): the first line its name, every other line a
+ * quiet line of its own. Empty lines are left out.
+ */
+export function TipLines({ text }: { text: string }) {
+  const [first, ...rest] = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  return (
+    <>
+      {first && <strong className="tip-title">{first}</strong>}
+      {rest.map((line, i) => <small key={i} className="tip-meta">{line}</small>)}
+    </>
+  );
+}

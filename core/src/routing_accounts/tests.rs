@@ -103,6 +103,7 @@ fn codex_homes_are_checked() {
         (vec![home("work", &open)], "Other users can write"),
         (vec![home("work", &tmp.path().join("missing"))], "is not there"),
         (vec![home("Work", &ok)], "1 to 48"),
+        (vec![home("login", &ok)], "the host's own Codex login"),
         (vec![home("work", &ok), home("work2", &ok)], "listed twice"),
         (vec![CodexHome { id: "rel".into(), label: "x".into(), home: "relative".into() }], "absolute"),
     ] {

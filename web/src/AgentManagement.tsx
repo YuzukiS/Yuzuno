@@ -12,6 +12,7 @@ import { api, errorText, post } from "./api";
 import { Modal } from "./components";
 import { useSurfaceIn } from "./surface";
 import { langTag, strings, useLanguage } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import { agentHarnessName } from "./machine-checks";
 import type { Agent } from "./types";
 import "./agent-management.css";
@@ -22,8 +23,7 @@ export type AgentAction = "close" | "reopen" | "delete" | "release";
 const text = strings({
   reopen: "Reopen agent",
   close: "Close agent",
-  reopenTitle: "Reopen this agent and keep its conversation",
-  closeTitle: "Close this agent and keep its conversation",
+  keepsConversation: "Its conversation is kept",
   actions: "Conversation actions",
   closeAsk: (name: string) => `Close ${name}?`,
   deleteAsk: (name: string) => `Delete ${name}?`,
@@ -65,8 +65,7 @@ const text = strings({
 }, {
   reopen: "重新打开 Agent",
   close: "关闭 Agent",
-  reopenTitle: "重新打开此 Agent，并保留其会话",
-  closeTitle: "关闭此 Agent，并保留其会话",
+  keepsConversation: "它的会话会保留",
   actions: "会话操作",
   closeAsk: (name) => `关闭 ${name}？`,
   deleteAsk: (name) => `删除 ${name}？`,
@@ -196,13 +195,12 @@ export function AgentManagement({
   }
   return (
     <>
-      {!released && <button
+      {!released && <Tip side="bottom" describe={false} content={<TipText title={agent.closedAt ? t.reopen : t.close} body={t.keepsConversation} />}><button
         type="button"
         className="conversation-action agent-close-button"
         disabled={disabled || !!busy}
         aria-label={agent.closedAt ? t.reopen : t.close}
         aria-haspopup={agent.closedAt ? undefined : "dialog"}
-        title={agent.closedAt ? t.reopenTitle : t.closeTitle}
         onClick={() => (agent.closedAt ? void act("reopen") : show("close"))}
       >
         {busy ? (
@@ -212,20 +210,21 @@ export function AgentManagement({
         ) : (
           <Archive size={16} />
         )}
-      </button>}
+      </button></Tip>}
       {actionsButton && (
-        <button
-          type="button"
-          className="conversation-action"
-          aria-label={t.actions}
-          title={t.actions}
-          aria-haspopup="dialog"
-          aria-expanded={!!mode}
-          disabled={!!busy}
-          onClick={() => show("actions")}
-        >
-          <MoreHorizontal size={16} />
-        </button>
+        <Tip side="bottom" describe={false} content={<TipText title={t.actions} />}>
+          <button
+            type="button"
+            className="conversation-action"
+            aria-label={t.actions}
+            aria-haspopup="dialog"
+            aria-expanded={!!mode}
+            disabled={!!busy}
+            onClick={() => show("actions")}
+          >
+            <MoreHorizontal size={16} />
+          </button>
+        </Tip>
       )}
       <Modal
         open={!!mode}

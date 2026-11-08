@@ -181,7 +181,7 @@ Each Codex account is a `CODEX_HOME` folder you name, signed in with
 `codex login` there. `PUT /api/routing/codex-homes {"homes": [{id, label, home}]}`
 replaces the list (at most 16). Each home must be an absolute folder that
 exists, belongs to Core's user and no other user can write into, and is listed
-once. The host's own login (`~/.codex`, or Core's `CODEX_HOME`) needs no entry.
+once. The host's own login (`~/.codex`, or Core's `CODEX_HOME`) needs no entry, and `login`, the name routing gives it, is no home's id.
 An executor bound to a home runs its app-server there, and Core reads its
 history and its sub-agents there too.
 
@@ -240,7 +240,7 @@ policy to copy; a policy always holds its schedule inline.
 For an executor started with a routing key, Core counts what each turn
 cost, as its harness reports it:
 
-- **Claude Code:** the turn result's `total_cost_usd`.
+- **Claude Code:** what the turn added to its result's `total_cost_usd`. Claude Code reports that as the running total of its session, so Core keeps the last total it saw from each executor, across restarts, and counts the increase. A total below the last (after `/clear`, or in a new session) counts from zero. A zero total, as a crashed turn reports, counts nothing.
 - **OpenCode:** each finished step's `cost`, the executor's sub-agents' too.
 - **Codex:** not counted yet. Routing (S3) treats a Codex API-key candidate's spend as unknown.
 
@@ -281,7 +281,7 @@ These are what is left of each account's 5-hour and weekly windows.
 
   Otherwise nothing is read. `cswap` is `null` and `codex` is empty until the first read.
 - **claude-swap accounts** come from `cswap list --json`. claude-swap reads each account's usage from Anthropic itself; its `pct` is the share used, and the readings show what is left. An account claude-swap has no usage for (an expired login, say) carries `unknown` with the claude-swap status as its code. When `cswap` cannot be run, `cswap.unavailable` says why.
-- **Codex** quotas are read for the host's own login and for each listed Codex home. Each read starts a `codex app-server` in that home, asks `account/read`, then `account/rateLimits/read`, and ends it. It runs no model. A login that is not a ChatGPT subscription (an API key, say) has no quota and carries `unknown`.
+- **Codex** quotas are read for the host's own login and for each listed Codex home. Each read starts a `codex app-server` in that home, asks `account/read`, then `account/rateLimits/read`, and ends it. It runs no model. A login that is not a ChatGPT subscription (an API key, say) has no quota and carries `unknown`. A home taken off the list leaves the readings at the next refresh.
 - **A reading over 10 minutes old is `stale`**, and routing reads it as unknown.
 - **No label or email is ever shown:** an account is its number and fingerprint.
 
