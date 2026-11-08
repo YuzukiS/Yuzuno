@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { tipOf } from "./tip-dom.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
@@ -29,7 +30,6 @@ import {JobsBudgetEditor} from ${src("JobsSettings.tsx")};
 import {Jobs} from ${src("Jobs.tsx")};
 import {SettingsCenter} from ${src("SettingsCenter.tsx")};
 import {settingsCatalog, translatedEditors} from ${src("settings-catalog.ts")};
-import { tipOf } from "./tip-dom.mjs";
 const root = createRoot(document.getElementById('root'));
 window.catalog = {settingsCatalog, translatedEditors};
 window.renderHost = props => root.render(<JobsBudgetEditor active {...props}/>);

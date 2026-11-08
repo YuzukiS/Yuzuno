@@ -22,6 +22,8 @@ export interface RouteRecord {
   candidates: RouteCandidate[];
   changedAtStart?: { from: string; reason: string | Reason };
   earliest?: { at: string; candidate: string };
+  /** An executor no candidate could ever take: it started without routing (#805). */
+  released?: Reason & { at?: string };
 }
 export interface Choice { dispatchId: string; taskId: string; executorName?: string; route: RouteRecord }
 export interface Spend { day: string; utcOffset?: string; resetsAt?: string; totalUsd: number; capUsd?: number; byKey: Record<string, number>; note?: string; noteZh?: string }
@@ -59,6 +61,11 @@ const candidateOf = (v: unknown): RouteCandidate | null => {
     ...(Array.isArray(c.accounts) ? { accounts: list(c.accounts, accountOf) } : {}),
   };
 };
+const releasedOf = (v: unknown): { released?: Reason & { at?: string } } => {
+  const why = reasonOf(v);
+  const at = (v as { at?: unknown } | null)?.at;
+  return why ? { released: { ...why, ...(text(at) ? { at } : {}) } } : {};
+};
 /** A record as this client reads it: only the fields it shows, an account by
  * number and fingerprint only. */
 export function routeRecord(v: unknown): RouteRecord {
@@ -75,6 +82,7 @@ export function routeRecord(v: unknown): RouteRecord {
     ...(r.changedAtStart && text(r.changedAtStart.from) ? { changedAtStart: { from: r.changedAtStart.from,
       reason: reasonOf(r.changedAtStart.reason) ?? (text(r.changedAtStart.reason) ? r.changedAtStart.reason : "") } } : {}),
     ...(r.earliest && text(r.earliest.at) && text(r.earliest.candidate) ? { earliest: { at: r.earliest.at, candidate: r.earliest.candidate } } : {}),
+    ...releasedOf(r.released),
   };
 }
 
@@ -129,4 +137,24 @@ export async function readReadings(signal?: AbortSignal): Promise<Readings | nul
 export function oldestReading(record: RouteRecord): number | null {
   const times = record.candidates.flatMap((c) => c.readings.map((r) => (r.observedAt ? Date.parse(r.observedAt) : NaN))).filter(Number.isFinite);
   return times.length ? Math.min(...times) : null;
+}
+
+/** A stretch of time and whom Core would choose in it (null: none, new executors wait). */
+export interface Segment { from: string; to: string; chosen: string | null }
+/** Whom Core would choose across a stretch of time, by a policy (a draft, or
+ * the saved one), keeping the readings it has now and varying only the time
+ * (YN-34 S3b). Null when this Core can't simulate routing yet. */
+export async function simulate(policy: Policy | undefined, from: string, to: string, stepMinutes: number, assume?: Assume, signal?: AbortSignal): Promise<Segment[] | null> {
+  try {
+    const answer = await api<{ segments?: unknown }>("/routing/simulate", { method: "POST", signal,
+      body: JSON.stringify({ ...(policy ? { policy } : {}), from, to, stepMinutes, ...(assume ? { assume } : {}) }) });
+    return list(answer.segments, (v) => {
+      const s = v as Partial<Segment> | null;
+      return s && text(s.from) && text(s.to) && Number.isFinite(Date.parse(s.from)) && Number.isFinite(Date.parse(s.to))
+        ? { from: s.from, to: s.to, chosen: text(s.chosen) ? s.chosen : null } : null;
+    });
+  } catch (e) {
+    if (e instanceof HttpError && (e.status === 404 || e.status === 405)) return null;
+    throw e;
+  }
 }

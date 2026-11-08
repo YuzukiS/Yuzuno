@@ -159,4 +159,13 @@ fn a_preview_can_assume_accounts_used_up_and_the_spend_cap_reached() {
     let active_used_up = Assume::from_json(&json!({"accountsUsedUp": ["aaaaaaaaaaaaaaaa"]}));
     let route = f.run(&login, utc(9, 12, 0), None, &[], &active_used_up);
     assert_eq!((states(&route), codes(&route, "c-login")), (vec![("c-login".to_owned(), "skipped".to_owned())], vec!["quotaLow".to_owned()]));
+    // A Codex account Core has no reading of yet can be assumed used up too, by its home (YN-49, from a lab Core).
+    let codex = json!({"enabled": true, "whenNone": "wait", "candidates": [
+        {"id": "c-codex", "enabled": true, "harness": "codex", "model": "gpt-test", "credential": {"kind": "login"}, "unknown": "pass",
+         "conditions": [{"kind": "quota", "fiveHourLeftPct": 10}]}]});
+    assert!(f.codex.is_empty(), "no Codex reading");
+    assert_eq!(states(&f.run(&codex, utc(9, 12, 0), None, &[], &Assume::default())), [("c-codex".into(), "chosen".into())],
+        "unknown, and it says pass");
+    let route = f.run(&codex, utc(9, 12, 0), None, &[], &Assume::from_json(&json!({"codexUsedUp": ["login"]})));
+    assert_eq!((states(&route), codes(&route, "c-codex")), (vec![("c-codex".to_owned(), "skipped".to_owned())], vec!["quotaLow".to_owned()]));
 }
