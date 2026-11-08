@@ -130,14 +130,24 @@ pub(crate) fn set_route(db: &Connection, agent: &str, route: &Value) -> Result<(
     Ok(())
 }
 
-/// The newest dispatches routing chose for: `{dispatchId, taskId, agentId, route}`.
+/// The newest dispatches routing chose for: `{dispatchId, taskId, agentId, executorName?, route}`; the name
+/// while the executor's record is kept.
 pub(crate) fn choices(db: &Connection, limit: usize) -> Result<Vec<Value>> {
     let mut statement = db.prepare(
-        "SELECT dispatch_id, task_id, agent_id, route_json FROM executor_dispatches WHERE route_json IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT ?1")?;
-    let rows = statement.query_map([limit as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))?
+        "SELECT d.dispatch_id, d.task_id, d.agent_id, d.route_json, json_extract(a.data,'$.agent.name')
+         FROM executor_dispatches d LEFT JOIN agents a ON a.id=d.agent_id
+         WHERE d.route_json IS NOT NULL ORDER BY d.created_at DESC, d.rowid DESC LIMIT ?1")?;
+    let rows = statement.query_map([limit as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+        r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows.into_iter().map(|(dispatch, task, agent, route)| json!({"dispatchId": dispatch, "taskId": task, "agentId": agent,
-        "route": serde_json::from_str::<Value>(&route).unwrap_or(Value::Null)})).collect())
+    Ok(rows.into_iter().map(|(dispatch, task, agent, route, name)| {
+        let mut choice = json!({"dispatchId": dispatch, "taskId": task, "agentId": agent,
+            "route": serde_json::from_str::<Value>(&route).unwrap_or(Value::Null)});
+        if let Some(name) = name {
+            choice["executorName"] = name.into();
+        }
+        choice
+    }).collect())
 }
 
 impl crate::store::Store {

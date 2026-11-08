@@ -882,5 +882,7 @@ mod routing {
         let choices = store.routing_choices(10).unwrap();
         assert_eq!(choices.iter().map(|c| c["agentId"].as_str().unwrap().to_owned()).collect::<Vec<_>>(),
             [waits.dispatch.agent_id.clone(), again.dispatch.agent_id.clone(), plan.dispatch.agent_id.clone()]);
+        assert_eq!((choices[0]["executorName"].clone(), choices[1].get("executorName")), (json!(waits.name), None),
+            "a made executor is named; the rebuild here was never made");
     }
 }
