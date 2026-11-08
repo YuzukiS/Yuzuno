@@ -12,6 +12,9 @@
 // - a pill that comes and goes, the row growing from two lines to three and
 //   back, leaves the ring centred and in its outline at every frame drawn;
 //   so does a rail made narrower while pills show (YN-41);
+// - the row's words, line one and line two together, are centred on the
+//   row and on the ring, within 1 px, in every row; an executor with nothing
+//   for line two has none, taking no height (YN-41, the user's second report);
 // - a pill's outline wraps its words and ring, 9 px left of the words and
 //   3 px right of the ring, at every row and at every frame drawn while its
 //   words change width without a new render (the CJK font held, then
@@ -85,6 +88,9 @@ const fixture = () => [
   executor("yn32", { title: "Export the device preferences file", shortName: "导出设备偏好文件" }, "running", { status: "working" }),
   // Archived, in the fold (YN-41).
   executor("yn20", { title: "Tidy the old notes", shortName: "整理旧说明" }, "archived"),
+  // Nothing for line two (no start time, nothing said): handed in, queued (YN-41).
+  executor("yn44", { title: "Theme names", shortName: "主题名称" }, "delivering", {}, { since: null, dispatchedAt: null }),
+  executor("yn45", { title: "Sort keys", shortName: "排序键" }, "queued", {}, { since: null, dispatchedAt: null, position: 3 }),
 ];
 // The live step's yn32: queued, then running again (YN-41).
 const queued32 = () => executor("yn32", { title: "Export the device preferences file", shortName: "导出设备偏好文件" }, "queued", {}, { position: 2 });
@@ -101,11 +107,13 @@ const EXPECTED = {
   yn27: ["idle", "pill", ["等合并", "Ready to merge"], false], yn21: ["waiting", "row", null, false], yn33: ["failed", "row", null, false],
   yn30: ["idle", "pill", ["排队 · 第 2 位", "Queued · 2 in line"], false], yn29: ["working", "ring", null, false],
   yn31: ["idle", "pill", ["审查中", "In review"], false], yn32: ["working", "ring", null, false],
+  yn44: ["idle", "pill", ["等负责人", "Lead's turn"], false], yn45: ["idle", "pill", ["排队 · 第 3 位", "Queued · 3 in line"], false],
 };
 const ONE = {
   lead: "Dev Lead 2负责人", dev9: "Dev 9", dev5: "Dev 5", dev6: "Dev 6", yn24: "设备偏好导出", yn26: "保持选中", yn27: "状态栏文案",
   yn21: "设备偏好设计", yn33: "Mac 发布", yn30: "导入旧设置", yn29: "Fix the selection that jumps to the first row after a refresh",
   yn31: "Show the review's findings beside the conversation without moving it", yn32: "导出设备偏好文件",
+  yn44: "主题名称", yn45: "排序键",
 };
 const yuzuno = { id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture/app" }, createdAt: "", updatedAt: "" };
 // Project cards show only with two Projects or more: a second one, and its rows, for those runs (YN-41).
@@ -180,12 +188,23 @@ const rows = (page) => page.locator(".agent-list article[data-agent-id]").evalua
   const one = r.querySelector(":scope > .agent-row-top .agent-line-one");
   const two = r.querySelector(":scope > .agent-row-meta, :scope > .agent-row-state");
   const cut = (el) => !!el && (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1);
+  // The words as shown: line one, and line two when it has words; each
+  // line's text boxes, a clamped line past its box's end left out (YN-41).
+  const shown = (el) => {
+    if (!el || getComputedStyle(el).display === "none") return [];
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const end = el.getBoundingClientRect().bottom + 1;
+    return [...range.getClientRects()].filter((x) => x.width > 0 && x.height > 0 && x.bottom <= end);
+  };
+  const words = [...shown(one), ...shown(two)];
+  const textMid = words.length ? (Math.min(...words.map((x) => x.top)) + Math.max(...words.map((x) => x.bottom))) / 2 : null;
   const pill = island?.querySelector(".island-pill");
   const outline = r.querySelector(":scope > .island-shell");
   const shell = outline?.getBoundingClientRect();
   const mid = (b) => b.top + b.height / 2;
   // Line one's words end before the pill's outline begins.
-  const words = (() => {
+  const wordsEnd = (() => {
     if (!one) return 0;
     const range = document.createRange();
     range.selectNodeContents(one);
@@ -203,11 +222,15 @@ const rows = (page) => page.locator(".agent-list article[data-agent-id]").evalua
     pads: pill && shell && outline.hasAttribute("style")
       ? [+(pill.getBoundingClientRect().left - shell.left).toFixed(2), +(shell.right - island.getBoundingClientRect().right).toFixed(2)] : null,
     footer: !!r.querySelector(":scope > .agent-row-bottom, :scope > .handoff-hint"),
+    // The words' middle less the row's and less the ring's; line two shown and its height (YN-41).
+    textOffset: textMid == null ? null : +(textMid - mid(row)).toFixed(2),
+    textVsRing: textMid == null || !ring ? null : +(textMid - mid(ring)).toFixed(2),
+    two: two ? { shown: getComputedStyle(two).display !== "none", height: +two.getBoundingClientRect().height.toFixed(2), words: two.textContent } : null,
     archived: !!r.closest(".rail-archived-rows"), linesOne: lines(one),
     marks: island?.querySelectorAll("svg path.r-mark").length ?? -1,
     rings: island ? [...island.querySelectorAll("svg circle")].map((c) => c.getAttribute("class")) : [],
     one: one?.textContent ?? null, lines: lines(one) + lines(two), cut: [one, two].some(cut) && !pill,
-    clear: !pill || !shell || words <= shell.left + 0.5, pillLeft: !pill || !ring || pill.getBoundingClientRect().right <= ring.left + 0.5,
+    clear: !pill || !shell || wordsEnd <= shell.left + 0.5, pillLeft: !pill || !ring || pill.getBoundingClientRect().right <= ring.left + 0.5,
     height: Math.round(row.height), text: r.textContent,
   };
 }));
@@ -219,6 +242,9 @@ function assertCentred(tag, list) {
     assert.ok(r.right, `${tag}: ${r.id}'s ring at the row's right`);
     assert.equal(r.footer, false, `${tag}: ${r.id} has nothing under its lines`);
     assert.ok(Math.abs(r.offset) <= 1, `${tag}: ${r.id}'s ring centred on its ${r.lines}-line row (${r.offset} px off)`);
+    assert.ok(r.textOffset != null && Math.abs(r.textOffset) <= 1 && Math.abs(r.textVsRing) <= 1,
+      `${tag}: ${r.id}'s words centred on its ${r.lines}-line row and its ring (${r.textOffset} / ${r.textVsRing} px off)`);
+    if (r.two && !r.two.words) assert.deepEqual([r.two.shown, r.two.height], [false, 0], `${tag}: ${r.id}'s empty line two takes no height`);
     if (r.form === "pill") {
       assert.notEqual(r.shellOffset, null, `${tag}: ${r.id}'s pill outline drawn`);
       assert.ok(Math.abs(r.shellOffset) <= 0.5, `${tag}: ${r.id}'s pill outline centred on its ring (${r.shellOffset} px off)`);
@@ -313,6 +339,22 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
         guide.className = "yn41-guide";
         guide.style.cssText = "position:absolute;left:0;right:0;top:50%;height:0;border-top:1px dashed #d0308a;z-index:5;pointer-events:none";
         r.append(guide);
+        // The words' middle, dotted (YN-41): line one, and line two when it has words, clamped lines left out.
+        const rects = [];
+        for (const el of [r.querySelector(":scope > .agent-row-top .agent-line-one"), r.querySelector(":scope > .agent-row-meta, :scope > .agent-row-state")]) {
+          if (!el || getComputedStyle(el).display === "none") continue;
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          const end = el.getBoundingClientRect().bottom + 1;
+          rects.push(...[...range.getClientRects()].filter((x) => x.width > 0 && x.height > 0 && x.bottom <= end));
+        }
+        if (rects.length) {
+          const top = r.getBoundingClientRect().top + r.clientTop;
+          const text = document.createElement("i");
+          text.className = "yn41-guide";
+          text.style.cssText = `position:absolute;left:0;right:0;top:${(Math.min(...rects.map((x) => x.top)) + Math.max(...rects.map((x) => x.bottom))) / 2 - top}px;height:0;border-top:1px dotted #1f6fd0;z-index:5;pointer-events:none`;
+          r.append(text);
+        }
       }
     });
     await list.screenshot({ path: join(output, `${tag}-1-guides.png`) });
