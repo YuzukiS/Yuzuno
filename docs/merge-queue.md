@@ -75,7 +75,8 @@ entry is created:
   the reviewed head refuses it too, even when a later round of the same head
   passed: only a new head, with a passing round of its own, clears it. So does
   one at the released head, or at a merge commit between the two: a round of
-  the earlier head does not clear it.
+  the earlier head does not clear it. A round whose only gap is binary files
+  passes when the release acknowledges them (below).
 - **No other entry holds the PR.**
 
 ### A head that adds only merges
@@ -130,6 +131,56 @@ alone.
 Core does not ask the user for exceptions. A head that does not meet these
 conditions is merged by a person, or reviewed again first.
 
+### Binary files the release acknowledges
+
+A review round reads text only. An image, icon or font the PR adds or changes
+is recorded as `unsupported` with reason `binary`; the round stays incomplete,
+its conclusion is `unknown`, and `unknown` never passes. The releaser (the
+task's dispatching lead, or the user) may acknowledge such files in the
+release, `acknowledgeBinaries`: each file's path, the SHA-256 of its content at
+the released head, and an optional note, after checking the files. Only a
+release carries it: the executor cannot release, and nothing else stores one.
+
+Core admits the round only when the files are its one gap:
+
+- The round reads as the review policy (version 3) records it: completed, the
+  reviewer said the patch is correct, no P0–P2 finding, and no reason code
+  besides `coverage_incomplete` and `unsupported_source`, so no
+  `model_unknown`, `verdict_conflict`, `invalid_report` or execution failure.
+  It stopped at no limit.
+- Every changed path is covered, or is `unsupported` for being binary at the
+  head and for nothing else: not also a link, a submodule, excluded or not
+  UTF-8 on its other side. Any `not_read`, `read_failed`, `budget_exhausted`,
+  `excluded` or other `unsupported` path refuses, and so does an unresolved
+  request that is not a refused read of one of those binary files.
+- A binary file removed at the head refuses: there is no content to bind.
+- The list names exactly those files, each once. A missing or extra file is
+  refused, naming it.
+
+Before the entry is created, Core then reads each listed file at the released
+head from its own object store (as for a head that adds only merges) and
+refuses with `binaries_refused`, naming the file, unless it is a regular,
+non-executable file (mode `100644`) of at most 2 MiB whose SHA-256 is the
+acknowledged one and whose leading bytes are a PNG, JPEG, GIF, WebP, ICO,
+ICNS, WOFF, WOFF2, TrueType or OpenType file. Executables, archives,
+WebAssembly, PDFs and anything unknown are refused, whatever their names. At
+most 64 files are listed. Each file's blob must be the one the round saw, so
+a merge after the round that changed one of them refuses too.
+
+The entry keeps the acknowledgement as `binaries`: who gave it and when, and
+each file with its SHA-256, note, blob, size and format. The release comment
+on the task lists the files. Each check after that asks again that the last
+round's gap is exactly those files with those blobs; a later round with any
+other gap stops the entry with `review_not_passing`. The review record itself
+is unchanged: the evidence names its conclusion (`unknown`) with `passes`
+false and `admittedBy: acknowledgedBinaries`. A new head stops the entry with
+`head_moved` as always, and its release must acknowledge its files again. CI,
+the gate, the post-check and main CI follow-up do not change.
+
+Known limit: a merged-in head (above) counts as reviewed only by a passing
+round of its own; one whose round passed only through an acknowledgement does
+not.
+
 ## What Core checks
 
 Every check reads GitHub afresh, in this order. The first condition that fails
@@ -145,7 +196,8 @@ entry is checked again from the new anchor.
    for its runs would only end at the six-hour limit. While GitHub is still
    computing whether the PR can merge, nothing is decided here.
 2. The last completed review round still passes at that head, or at the
-   reviewed head the entry's proof names (see A head that adds only merges).
+   reviewed head the entry's proof names (see A head that adds only merges),
+   or its only gap is still exactly the binary files the release acknowledged.
    If a round is running, Core waits for it.
 3. Two reads of the base branch name the same commit.
 4. The repository's queue is not paused (see below).
@@ -500,6 +552,8 @@ changes.
 The record holds:
 
 - the release (who, when, which request);
+- the binary files the release acknowledged, if any: who, when, and each file
+  with its SHA-256, note, blob, size and format;
 - the review round, and for a head that adds only merges, the proof: each
   merge, what it brought in and why that needs no review, its merge base, and
   the tree Core redid it to;
@@ -526,4 +580,6 @@ change, and core.26 ignores it. With core.26, a merged PR still waiting to be
 tagged for its release is never tagged: tag it by hand. An entry released as
 a head that adds only merges, still waiting, stops at its next check with
 `review_not_passing` (core.26 sees a last round that is not at the head), so
-nothing merges; a person merges it, or reviews it again.
+nothing merges; a person merges it, or reviews it again. An entry released
+with acknowledged binary files (YN-52), still waiting, stops the same way with
+a Core from before that change, which does not read the acknowledgement.

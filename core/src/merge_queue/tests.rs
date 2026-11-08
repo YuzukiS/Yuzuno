@@ -3610,3 +3610,226 @@ async fn a_conflict_listing_more_files_than_the_output_cap_is_still_refused_as_a
         "{refused}"
     );
 }
+
+/// Bytes that start like a PNG image, which is all the format check reads.
+fn png(n: u8) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR".to_vec();
+    bytes.extend([n; 48]);
+    bytes
+}
+fn sha256_of(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
+}
+impl Fixture {
+    /// A commit on `branch` (made from `from`) writing each file's bytes, as
+    /// an executable when asked.
+    fn assets(&self, branch: &str, from: &str, files: &[(&str, &[u8], bool)]) -> String {
+        self.git(&["checkout", "-q", "-B", branch, from]);
+        for (path, bytes, executable) in files {
+            let full = self.dir.path().join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, bytes).unwrap();
+            self.git(&["add", path]);
+            if *executable {
+                self.git(&["update-index", "--chmod=+x", path]);
+            }
+        }
+        self.git(&["commit", "-q", "-m", branch]);
+        self.git(&["rev-parse", "HEAD"])
+    }
+    fn blob(&self, commit: &str, path: &str) -> String {
+        self.git(&["rev-parse", &format!("{commit}:{path}")])
+    }
+}
+/// A completed round at `head` that read src/a.rs and could not read the
+/// binary files (path, blob at the head), as coverage policy 3 records it:
+/// the reviewer said the patch is correct, and the conclusion is unknown.
+fn binary_round(s: &Store, task: &str, head: &str, binaries: &[(&str, String)], edit: impl FnOnce(&mut Value)) -> String {
+    let task = internal(s, task);
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut paths = vec![json!({"path":"src/a.rs","status":"modified","state":"covered","head":{"blobSha":sha('c'),"mode":"100644"},
+        "facts":[{"kind":"covered","evidenceKind":"complete_diff"}]})];
+    for (path, blob) in binaries {
+        paths.push(json!({"path":path,"status":"added","state":"unsupported","reason":"binary","head":{"blobSha":blob,"mode":"100644"},
+            "facts":[{"kind":"unsupported","side":"head","reason":"binary","blobSha":blob,"found":"after_review"},{"kind":"not_read"}]}));
+    }
+    let mut data = json!({"id":id,"status":"completed","conclusion":"unknown","headSha":head,"round":1,"policyVersion":3,"coveragePolicyVersion":3,
+        "nativeCorrectness":"patch is correct","reasonCodes":["coverage_incomplete","unsupported_source"],"contextIncomplete":true,"findings":[],
+        "coverage":{"coveredFileCount":1,"fileCount":paths.len(),"terminalLimit":null,"failedRequests":[],"unresolvedRequests":0},
+        "scope":{"version":1,"headSha":head,"paths":paths}});
+    edit(&mut data);
+    s.db.write()
+        .unwrap()
+        .execute("INSERT INTO pr_reviews(id,task_id,link_id,status,data) VALUES(?1,?2,'7:pull:11','completed',?3)", rusqlite::params![id, task, data.to_string()])
+        .unwrap();
+    id
+}
+impl Lab {
+    async fn release_acknowledging(&self, actor: &str, key: &str, head: &str, files: Value) -> Result<Value> {
+        self.ws
+            .collaboration_call(Some(actor), "merge_enqueue", json!({"requestId":key,"taskId":self.task,
+                "pullUrl":"https://github.com/owner/repo/pull/11","headSha":head,"acknowledgeBinaries":files}))
+            .await
+    }
+}
+
+/// YN-52, the #804 shape: a PR adds two images, which its review round could
+/// not read, so the round concluded unknown and the release was refused. The
+/// releasing lead acknowledges them by their content; Core reads each at the
+/// released head, records the acknowledgement, admits the round as it is, and
+/// merges as usual. The round's own record keeps its conclusion.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_round_whose_only_gap_is_acknowledged_images_is_released_and_merges_with_its_conclusion_unchanged() {
+    let f = Fixture::new();
+    let base = f.first();
+    let (a, b) = (png(1), png(2));
+    let head = f.assets("pr", &base, &[("icons/a.png", &a, false), ("icons/b.png", &b, false)]);
+    let lab = lab(green_at(&head, &f, &[&head]));
+    lab.objects(&f);
+    let round = binary_round(&lab.ws.store, &lab.task, &head, &[("icons/a.png", f.blob(&head, "icons/a.png")), ("icons/b.png", f.blob(&head, "icons/b.png"))], |_| {});
+    let refused = lab.release_at("r0", &head).await.unwrap_err().to_string();
+    assert!(
+        refused.starts_with("review_not_passing") && refused.contains("concluded unknown")
+            && refused.contains("its only gap is 2 binary file(s) (icons/a.png, icons/b.png); a release may acknowledge them by their content with acknowledgeBinaries"),
+        "{refused}"
+    );
+    let files = json!([{"path":"icons/a.png","sha256":sha256_of(&a),"note":"badge, checked by eye"},{"path":"icons/b.png","sha256":sha256_of(&b)}]);
+    let e = lab.release_acknowledging("lead", "r1", &head, files).await.unwrap();
+    let acknowledged = &e["binaries"];
+    assert_eq!(acknowledged["by"], e["release"]["by"], "the releaser acknowledged them: {e}");
+    assert_eq!(acknowledged["at"], e["release"]["at"]);
+    let read = acknowledged["files"].as_array().unwrap();
+    assert_eq!(read.len(), 2, "{acknowledged}");
+    assert_eq!(
+        read[0],
+        json!({"path":"icons/a.png","sha256":sha256_of(&a),"note":"badge, checked by eye","blobSha":f.blob(&head, "icons/a.png"),"bytes":a.len(),"format":"png"}),
+        "each file as Core read it at the released head"
+    );
+    assert_eq!((read[1]["note"].clone(), read[1]["format"].clone()), (Value::Null, json!("png")));
+    assert!(writes(lab.dir.path()).is_empty(), "reading the files writes nothing to GitHub");
+    let comment = lab.comments().into_iter().find(|c| c.contains("released #11")).unwrap();
+    assert!(
+        comment.contains("acknowledges 2 binary file(s) its review round could not read")
+            && comment.contains(&format!("icons/a.png (png, {} bytes, SHA-256 {})", a.len(), sha256_of(&a))),
+        "{comment}"
+    );
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(e["state"], "merged", "{e}");
+    assert_eq!(writes(lab.dir.path()), ["PUT repos/owner/repo/pulls/11/merge"]);
+    let r = &e["lastEvidence"]["review"];
+    assert_eq!((r["id"].clone(), r["conclusion"].clone(), r["passes"].clone()), (json!(round), json!("unknown"), json!(false)), "{r}");
+    assert_eq!(r["admittedBy"], "acknowledgedBinaries");
+    assert_eq!(r["binaries"], json!([{"path":"icons/a.png","blobSha":f.blob(&head, "icons/a.png")},{"path":"icons/b.png","blobSha":f.blob(&head, "icons/b.png")}]));
+    assert_eq!(e["evidence"]["binaries"], e["binaries"], "the evidence record carries the acknowledgement");
+    let stored: String = lab.ws.store.db.read().unwrap().query_row("SELECT data FROM pr_reviews WHERE id=?1", [&round], |row| row.get(0)).unwrap();
+    let stored: Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!((stored["conclusion"].clone(), stored.get("binaries")), (json!("unknown"), None), "the review record is unchanged: {stored}");
+}
+
+/// Every way the acknowledgement can fail to be exactly the round's binary
+/// files, with the content Core reads at the head and an asset format, is
+/// refused at release and names the file; nothing is queued or written. The
+/// task's executor may not release, with or without an acknowledgement.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_acknowledgement_that_is_not_exactly_the_rounds_images_as_read_at_the_head_is_refused_naming_the_file() {
+    let f = Fixture::new();
+    let base = f.first();
+    let (a, b) = (png(1), png(2));
+    let exe = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff".to_vec();
+    let zip = b"PK\x03\x04\x14\x00\x00\x00\x08\x00".to_vec();
+    let mut big = png(3);
+    big.resize(binaries::BYTES + 1, 7);
+    let head = f.assets(
+        "pr",
+        &base,
+        &[("icons/a.png", &a, false), ("icons/b.png", &b, false), ("icons/tool.png", &exe, false), ("icons/pack.png", &zip, false),
+          ("icons/big.png", &big, false), ("icons/run.png", &png(4), true)],
+    );
+    let lab = lab(green_at(&head, &f, &[&head]));
+    lab.objects(&f);
+    let at = |path: &'static str| (path, f.blob(&head, path));
+    let file = |path: &str, bytes: &[u8]| json!({"path":path,"sha256":sha256_of(bytes)});
+    type Edit = fn(&mut Value);
+    let none: Edit = |_| {};
+    let cases: Vec<(Vec<(&str, String)>, Edit, Value, String)> = vec![
+        (vec![at("icons/a.png")], none, json!([file("icons/a.png", &b)]),
+            format!("binaries_refused: icons/a.png has SHA-256 {} at the released head, not the acknowledged {}", sha256_of(&a), sha256_of(&b))),
+        (vec![at("icons/tool.png")], none, json!([file("icons/tool.png", &exe)]),
+            "binaries_refused: icons/tool.png is not an image or font by its leading bytes (4d5a900003000000)".into()),
+        (vec![at("icons/pack.png")], none, json!([file("icons/pack.png", &zip)]), "binaries_refused: icons/pack.png is not an image or font".into()),
+        (vec![at("icons/big.png")], none, json!([file("icons/big.png", &big)]),
+            format!("binaries_refused: icons/big.png has {} bytes; an acknowledged file has at most {}", binaries::BYTES + 1, binaries::BYTES)),
+        (vec![at("icons/run.png")], none, json!([file("icons/run.png", &png(4))]), "binaries_refused: icons/run.png has mode 100755 at the released head".into()),
+        (vec![("icons/gone.png", sha('e'))], none, json!([file("icons/gone.png", &a)]),
+            format!("binaries_refused: icons/gone.png is not a file at the released head {}", &head[..12])),
+        (vec![at("icons/a.png"), at("icons/b.png")], none, json!([file("icons/a.png", &a)]),
+            "icons/b.png is a binary file the review round left unread, but the release does not acknowledge it".into()),
+        (vec![at("icons/a.png")], none, json!([file("icons/a.png", &a), file("icons/b.png", &b)]),
+            "icons/b.png is acknowledged, but it is not a binary file the review round left unread".into()),
+        (vec![at("icons/a.png")], (|r: &mut Value| {
+            r["scope"]["paths"].as_array_mut().unwrap().push(json!({"path":"src/b.rs","status":"modified","state":"not_read","facts":[{"kind":"not_read"}]}));
+        }) as Edit, json!([file("icons/a.png", &a)]),
+            "the acknowledged binary files do not cover it: src/b.rs is not_read in review round".into()),
+        // The content is right, but the round saw another blob at that path:
+        // caught when the release is committed, against the blob Core read.
+        (vec![("icons/a.png", sha('e'))], none, json!([file("icons/a.png", &a)]),
+            format!("icons/a.png at the released head is blob {}, not the blob eeeeeeeeeeee the review round saw", &f.blob(&head, "icons/a.png")[..12])),
+    ];
+    for (n, (binaries, edit, files, words)) in cases.into_iter().enumerate() {
+        binary_round(&lab.ws.store, &lab.task, &head, &binaries, edit);
+        let refused = lab.release_acknowledging("lead", &format!("r{n}"), &head, files).await.unwrap_err().to_string();
+        assert!(refused.contains(&words), "case {n}: {refused}");
+    }
+    binary_round(&lab.ws.store, &lab.task, &head, &[at("icons/a.png"), at("icons/b.png")], |_| {});
+    let both = json!([file("icons/a.png", &a), file("icons/b.png", &b)]);
+    let refused = lab.release_acknowledging("dev", "r-dev", &head, both.clone()).await.unwrap_err().to_string();
+    assert!(refused.starts_with("merge_release_not_allowed: the task's executor cannot release"), "{refused}");
+    assert!(lab.ws.collaboration_call(Some("lead"), "merge_get", json!({"taskId":lab.task})).await.is_err(), "nothing was queued");
+    assert!(writes(lab.dir.path()).is_empty(), "a refusal writes nothing to GitHub");
+    // With every file exactly as read, the same round is released.
+    let e = lab.release_acknowledging("lead", "r-ok", &head, both.clone()).await.unwrap();
+    assert_eq!(e["binaries"]["files"].as_array().unwrap().len(), 2, "{e}");
+    lab.ws.collaboration_call(Some("lead"), "merge_cancel", json!({"requestId":"c-ok","entryId":e["id"]})).await.unwrap();
+    // A P0–P2 finding is never acknowledged away (checked before the files).
+    binary_round(&lab.ws.store, &lab.task, &head, &[at("icons/a.png"), at("icons/b.png")], |r| r["findings"] = json!([{"priority":2,"title":"bug"}]));
+    let refused = lab.release_acknowledging("lead", "r-p2", &head, both).await.unwrap_err().to_string();
+    assert!(refused.starts_with("review_not_passing") && refused.contains("found 1 P0–P2 issue(s)"), "{refused}");
+}
+
+/// The acknowledgement belongs to the entry and its head. A later round at
+/// that head with another gap stops the entry at its next check; a new head
+/// stops it too, and its release must acknowledge the files again.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_acknowledgement_holds_only_for_its_entrys_head_and_the_round_it_was_given_for() {
+    let f = Fixture::new();
+    let base = f.first();
+    let a = png(1);
+    let head = f.assets("pr", &base, &[("icons/a.png", &a, false)]);
+    let next = f.assets("pr", &head, &[("icons/a.png", &png(5), false)]);
+    let lab = lab(green_at(&head, &f, &[&head]));
+    lab.objects(&f);
+    let files = json!([{"path":"icons/a.png","sha256":sha256_of(&a)}]);
+    binary_round(&lab.ws.store, &lab.task, &head, &[("icons/a.png", f.blob(&head, "icons/a.png"))], |_| {});
+    lab.release_acknowledging("lead", "r1", &head, files.clone()).await.unwrap();
+    binary_round(&lab.ws.store, &lab.task, &head, &[("icons/a.png", f.blob(&head, "icons/a.png"))], |r| {
+        r["reasonCodes"].as_array_mut().unwrap().push(json!("model_unknown"));
+    });
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("stopped"), json!("review_not_passing")), "{e}");
+    assert!(e["detail"].as_str().unwrap().contains("the acknowledged binary files do not cover it: review round"), "{}", e["detail"]);
+    assert!(writes(lab.dir.path()).is_empty());
+    // The PR moves to a new head with another image: its round needs a release
+    // acknowledging that content; the old acknowledgement does not carry over.
+    change(lab.dir.path(), |s| s["pull"]["head"]["sha"] = json!(next));
+    binary_round(&lab.ws.store, &lab.task, &next, &[("icons/a.png", f.blob(&next, "icons/a.png"))], |_| {});
+    let refused = lab.release_at("r2", &next).await.unwrap_err().to_string();
+    assert!(refused.contains("a release may acknowledge them by their content with acknowledgeBinaries"), "{refused}");
+    let refused = lab.release_acknowledging("lead", "r3", &next, files).await.unwrap_err().to_string();
+    assert!(refused.starts_with("binaries_refused: icons/a.png has SHA-256"), "the old hash is not the new content: {refused}");
+}
