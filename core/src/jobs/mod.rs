@@ -502,7 +502,6 @@ impl Submit {
         }
         self.validate_command()
     }
-    /// Everything but the request identity, which a run's stage takes from its run.
     /// A declared checkpoint's protocol, for a Job and for a run's stage.
     fn validate_checkpoint(&self) -> Result<()> {
         if let Some(checkpoint) = &self.checkpoint {
@@ -526,6 +525,7 @@ impl Submit {
         }
         Ok(())
     }
+    /// Everything but the request identity, which a run's stage takes from its run.
     fn validate_command(&self) -> Result<()> {
         ensure!(
             !self.name.trim().is_empty() && self.name.len() <= 160,
