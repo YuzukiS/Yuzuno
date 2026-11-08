@@ -126,14 +126,20 @@ pub(crate) fn waiting_list(db: &Connection) -> Result<Vec<(String, String, Strin
 }
 
 /// Why an executor waiting for a candidate starts without one: routing is off, or no
-/// enabled candidate of its harness is left, so none could ever be chosen (#805 R1 P2).
-pub(crate) fn release_reason(policy: &Value, harness: &str) -> Option<Value> {
+/// candidate it could ever be given is left, so none could be chosen (#805 R1 P2). A
+/// candidate it can be given is enabled, of its harness, not `excluded` for it (a
+/// rebuild's), and, when it waits on another machine, not this Core host's only (#805 R2 P3):
+/// what `evaluate` would pass over for it otherwise.
+pub(crate) fn release_reason(policy: &Value, harness: &str, excluded: &[String], machine: &str) -> Option<Value> {
+    let possible = |c: &Value| c["enabled"] == true && c["harness"] == harness
+        && !excluded.iter().any(|e| c["id"] == e.as_str())
+        && !(machine != "local" && host_only(c));
     let (code, message, zh) = if policy["enabled"] != true {
         ("routingOff", "Routing was turned off while it waited, so it starts as it would without routing",
             "它等待期间路由已关闭，所以按没有路由时的方式启动")
-    } else if !policy["candidates"].as_array().into_iter().flatten().any(|c| c["enabled"] == true && c["harness"] == harness) {
-        ("noCandidate", "No enabled candidate of its harness is left, so it starts as it would without routing",
-            "已没有启用的同一工具候选，所以按没有路由时的方式启动")
+    } else if !policy["candidates"].as_array().into_iter().flatten().any(possible) {
+        ("noCandidate", "No candidate it could be given is left, so it starts as it would without routing",
+            "已没有能给它的候选，所以按没有路由时的方式启动")
     } else {
         return None;
     };
@@ -145,8 +151,9 @@ pub(crate) fn release_reason(policy: &Value, harness: &str) -> Option<Value> {
 pub(crate) fn release_waiting(db: &Connection) -> Result<Vec<String>> {
     let policy = super::stored_in(db)?.policy;
     let mut released = Vec::new();
-    for (agent, harness, _machine, mut route) in waiting_list(db)? {
-        if let Some(mut reason) = release_reason(&policy, &harness) {
+    for (agent, harness, machine, mut route) in waiting_list(db)? {
+        let excluded: Vec<String> = route["excluded"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+        if let Some(mut reason) = release_reason(&policy, &harness, &excluded, &machine) {
             reason["at"] = json!(Utc::now().to_rfc3339());
             route["waiting"] = json!(false);
             route["released"] = reason;

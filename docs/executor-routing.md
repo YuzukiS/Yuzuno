@@ -435,8 +435,10 @@ dispatch is routed:
   starts in turn. **An executor's harness is fixed at its dispatch.**
   If none ever could, it is released and starts in turn as it would without
   routing, on the host's own login: its route says `released`, with
-  `routingOff` when routing was turned off, or `noCandidate` when no enabled
-  candidate of its harness is left.
+  `routingOff` when routing was turned off, or `noCandidate` when no candidate
+  it could be given is left: none enabled of its harness that is not excluded
+  for it after a failed start and, while it waits on another machine, not this
+  Core host's only.
 - **A start that fails for certain** is rebuilt once, as before. The rebuild
   leaves out the candidate the failed executor was started with
   (`excluded`), so it tries the next one.
