@@ -108,12 +108,11 @@ const open = async ({ name, phone, theme, palette, lang }) => {
     viewport: phone ? { width: 390, height: 844 } : { width: 1280, height: 800 },
     hasTouch: phone, isMobile: phone, deviceScaleFactor: 2, reducedMotion: "reduce" });
   const page = await context.newPage();
-  await page.addInitScript(({ theme, palette, lang, phone }) => {
+  await page.addInitScript(({ theme, palette, lang }) => {
     window.EventSource = class { close() {} };
     localStorage.setItem("yuzuno.appearance", JSON.stringify({ theme, fontSize: 16, palette }));
     if (lang !== "en") localStorage.setItem("yuzuno.language", JSON.stringify({ language: lang }));
-    if (!phone) localStorage.setItem("yuzuno.selected", JSON.stringify("a"));
-  }, { theme, palette, lang, phone });
+  }, { theme, palette, lang });
   await page.route("**/*", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() !== "GET") return route.fulfill({ json: { ok: true } });
@@ -249,7 +248,11 @@ for (const screen of desktop) {
   await page.waitForTimeout(100);
   check(!(await readTip(page)), `${screen.name}: Escape closes it`);
   await page.locator('.agent-list article[data-agent-id="k"] .agent-select').blur();
-  // The Work dock's CI run, the reference itself, and Interrupt.
+  // Builder's conversation (at work): the Work dock's runs, the reference
+  // itself, and Interrupt.
+  await page.locator('.agent-list article[data-agent-id="a"] .agent-select').click();
+  await page.locator(".interrupt-button").waitFor({ timeout: 5_000 }).catch(() => {});
+  await away(page);
   const dock = page.locator(".work-dock-item").first();
   if (await dock.count()) {
     const tip = await rest(page, dock, `${screen.name} Work dock item`);
