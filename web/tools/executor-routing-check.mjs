@@ -117,12 +117,12 @@ const words = {
   en: { settings: "Settings and updates", tab: "Executor routing", title: "Accounts and keys", account1: "Account #1", addKey: "Add a key", save: "Save",
     value: "DeepSeek API key (for OpenCode): value", check: "Check", notFound: "1Password has no op://Yuzuno/OpenAI/api key", set: "Set · ",
     replaceToken: "Replace token", token: "Service account token",
-    first: "OpenCode · deepseek-flash", second: "Claude Code · opus", edit: (t) => `Edit ${t}`, down: (t) => `Move ${t} down`, saveBar: "Save",
+    first: "OpenCode · deepseek-flash", firstName: "OpenCode · deepseek-flash · API", second: "Claude Code · opus", edit: (t) => `Edit ${t}`, down: (t) => `Move ${t} down`, saveBar: "Save",
     saved: "All changes saved.", conflict: /A newer version \(4/, model: "Model" },
   zh: { settings: "Settings and updates", tab: "执行者路由", title: "账号和密钥", account1: "账号 #1", addKey: "添加 key", save: "保存",
     value: "DeepSeek API key（OpenCode 用）：值", check: "检查", notFound: "1Password 里找不到 op://Yuzuno/OpenAI/api key", set: "已设置 · ",
     replaceToken: "替换令牌", token: "服务账号令牌",
-    first: "OpenCode · deepseek-flash", second: "Claude Code · opus", edit: (t) => `编辑 ${t}`, down: (t) => `下移 ${t}`, saveBar: "保存",
+    first: "OpenCode · deepseek-flash", firstName: "OpenCode · deepseek-flash · API", second: "Claude Code · opus", edit: (t) => `编辑 ${t}`, down: (t) => `下移 ${t}`, saveBar: "保存",
     saved: "所有更改都已保存。", conflict: /Core 里有更新的版本（4/, model: "模型" },
 };
 
@@ -196,7 +196,7 @@ async function run({ width, height, theme, lang }) {
     const titles = () => order.locator(".routing-cand .routing-cand-title > span:first-child").allInnerTexts();
     assert.deepEqual((await titles()).slice(0, 2), [w.first, w.second]);
     if (phone) {
-      await press(order.getByRole("button", { name: w.down(w.first), exact: true }));
+      await press(order.getByRole("button", { name: w.down(w.firstName), exact: true }));
     } else {
       // A real drag of the first card's handle to below the second card.
       const grip = await order.locator(".routing-cand").first().locator(".routing-grip").boundingBox();

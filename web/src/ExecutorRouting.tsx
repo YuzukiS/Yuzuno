@@ -310,6 +310,10 @@ function credentialWords(c: Candidate, t: Text, keys: RoutingKey[], accounts: Ac
   return home ? { text: t.codexHome(home.label), missing: false } : { text: t.codexHomeMissing(cred.id), missing: !!accounts };
 }
 const titleOf = (c: Candidate) => c.label?.trim() || `${harnessName[c.harness] ?? c.harness} · ${modelShort(c.model) || "?"}`;
+/** A candidate's name where its card's API tag isn't beside it (labels,
+ * announcements, a newer version's order): one with an API key says so, so
+ * "Claude Code · opus" by subscription and by API key are told apart. */
+const nameOf = (c: Candidate) => (c.label?.trim() || c.credential.kind !== "apiKey" ? titleOf(c) : `${titleOf(c)} · API`);
 
 /** What keeps a candidate from being saved, by where it is ("" the candidate, else a condition's place). */
 function problemsOf(c: Candidate, t: Text): { at: string; text: string }[] {
@@ -396,7 +400,7 @@ export function ExecutorRouting({ active }: { active: boolean }) {
     if (!policy || to < 0 || to >= policy.candidates.length || from === to) return;
     const c = policy.candidates[from];
     edit((p) => ({ ...p, candidates: moved(p.candidates, from, to) }));
-    setLive(t.movedTo(titleOf(c), to + 1));
+    setLive(t.movedTo(nameOf(c), to + 1));
     if (focus) focusGrip.current = c.id;
   };
 
@@ -458,7 +462,7 @@ export function ExecutorRouting({ active }: { active: boolean }) {
         <div className="routing-conflict" role="alert">
           <p><CircleAlert size={14} className="routing-icon" aria-hidden="true" /> {t.conflict(conflict.version, conflict.updatedAt && Number.isFinite(Date.parse(conflict.updatedAt)) ? savedAt(time).format(Date.parse(conflict.updatedAt)) : "")}</p>
           <p className="settings-row-help">{conflict.policy.enabled ? t.conflictOrder : t.conflictOff}</p>
-          {conflict.policy.enabled && <ol className="routing-conflict-order">{conflict.policy.candidates.map((c) => <li key={c.id}>{titleOf(c)}</li>)}</ol>}
+          {conflict.policy.enabled && <ol className="routing-conflict-order">{conflict.policy.candidates.map((c) => <li key={c.id}>{nameOf(c)}</li>)}</ol>}
           <div className="routing-form-actions">
             <button type="button" className="secondary-button" onClick={() => adopt(conflict)}>{t.useSaved}</button>
             <button type="button" className="quiet-button" onClick={() => { setView(conflict); setConflict(null); }}>{t.keepMine}</button>
@@ -574,6 +578,7 @@ function CandidateList({ policy, t, keys, accounts, open, problems, refusedId, r
     <ol ref={list} className={`routing-list${policy.enabled ? "" : " is-off"}`} aria-label={t.orderTitle}>
       {policy.candidates.map((c, i) => {
         const title = titleOf(c);
+        const name = nameOf(c);
         const cred = credentialWords(c, t, keys, accounts);
         const issues = problems.get(c.id) ?? [];
         const expanded = open === c.id;
@@ -583,7 +588,7 @@ function CandidateList({ policy, t, keys, accounts, open, problems, refusedId, r
           <li key={c.id} className={`routing-cand${c.enabled ? "" : " is-disabled"}${dragging ? " is-dragging" : ""}${refusedId === c.id ? " is-refused" : ""}`}
             data-cand={c.id} style={{ ["--cc" as string]: `var(--route-c${colourOf(c.id)})`, ...(dragging ? { transform: `translateY(${drag.dy}px)` } : {}) }}>
             <div className="routing-cand-head">
-              <button type="button" className="routing-grip" aria-label={t.grip(title)} aria-roledescription="sortable"
+              <button type="button" className="routing-grip" aria-label={t.grip(name)} aria-roledescription="sortable"
                 onPointerDown={(e) => start(e, i)} onPointerMove={follow} onPointerUp={end} onPointerCancel={() => setDrag(null)} onKeyDown={(e) => keyMove(e, i)}>
                 <GripVertical size={16} aria-hidden="true" />
               </button>
@@ -599,13 +604,13 @@ function CandidateList({ policy, t, keys, accounts, open, problems, refusedId, r
               </div>
               <div className="routing-cand-end">
                 <span className="routing-move">
-                  <button type="button" className="icon-button" aria-label={t.moveUp(title)} disabled={i === 0} onClick={() => onMove(i, i - 1)}><ChevronUp size={16} /></button>
-                  <button type="button" className="icon-button" aria-label={t.moveDown(title)} disabled={i === policy.candidates.length - 1} onClick={() => onMove(i, i + 1)}><ChevronDown size={16} /></button>
+                  <button type="button" className="icon-button" aria-label={t.moveUp(name)} disabled={i === 0} onClick={() => onMove(i, i - 1)}><ChevronUp size={16} /></button>
+                  <button type="button" className="icon-button" aria-label={t.moveDown(name)} disabled={i === policy.candidates.length - 1} onClick={() => onMove(i, i + 1)}><ChevronDown size={16} /></button>
                 </span>
-                <input type="checkbox" role="switch" className="settings-toggle" aria-label={t.enable(title)} checked={c.enabled}
+                <input type="checkbox" role="switch" className="settings-toggle" aria-label={t.enable(name)} checked={c.enabled}
                   onChange={(e) => onEdit(c.id, (x) => ({ ...x, enabled: e.target.checked }))} />
                 <button type="button" className="icon-button" aria-expanded={expanded} aria-controls={`routing-edit-${c.id}`}
-                  aria-label={expanded ? t.collapse(title) : t.edit(title)} onClick={() => onOpen(expanded ? null : c.id)}>
+                  aria-label={expanded ? t.collapse(name) : t.edit(name)} onClick={() => onOpen(expanded ? null : c.id)}>
                   {expanded ? <ChevronUp size={15} /> : <Pencil size={15} />}
                 </button>
               </div>

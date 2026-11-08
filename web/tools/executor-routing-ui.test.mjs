@@ -147,7 +147,7 @@ test("the saved order with its chips; a move by the arrows saved whole against t
   assert.equal(page.document.querySelector(".settings-current").textContent, "version 3");
   assert.equal(bar(page).hidden, true, "nothing to save yet");
   const colour = card(page, "ds").style.getPropertyValue("--cc");
-  button(page, "Move OpenCode · deepseek-flash down").click();
+  button(page, "Move OpenCode · deepseek-flash · API down").click();
   await tick();
   assert.deepEqual(titles(page), ["Claude Code · opus", "OpenCode · deepseek-flash"]);
   assert.equal(card(page, "ds").style.getPropertyValue("--cc"), colour, "its colour moves with it");
@@ -167,12 +167,12 @@ test("a handle's arrow keys move its candidate, say where to, and keep the focus
   const page = mount(core());
   await opened(page);
   const grip = card(page, "ds").querySelector(".routing-grip");
-  assert.equal(grip.getAttribute("aria-label"), "Reorder OpenCode · deepseek-flash: drag, or press the up and down arrow keys");
+  assert.equal(grip.getAttribute("aria-label"), "Reorder OpenCode · deepseek-flash · API: drag, or press the up and down arrow keys");
   grip.focus();
   grip.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
   await tick();
   assert.deepEqual(titles(page), ["Claude Code · opus", "OpenCode · deepseek-flash"]);
-  assert.equal(page.document.querySelector('[aria-live="polite"]').textContent, "OpenCode · deepseek-flash moved to place 2");
+  assert.equal(page.document.querySelector('[aria-live="polite"]').textContent, "OpenCode · deepseek-flash · API moved to place 2");
   assert.equal(page.document.activeElement, card(page, "ds").querySelector(".routing-grip"), "the focus stays on the moved handle");
   card(page, "ds").querySelector(".routing-grip").dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
   await tick();
@@ -211,7 +211,7 @@ test("a newer version is shown and not overwritten; saving over it takes a choic
   const server = core({ put: (body, state) => (body.expectedVersion === 3 ? (state.view = newer, [409, { code: "version_conflict", error: "version_conflict: the routing changed", current: newer }]) : null) });
   const page = mount(server);
   await opened(page);
-  button(page, "Move OpenCode · deepseek-flash down").click();
+  button(page, "Move OpenCode · deepseek-flash · API down").click();
   await save(page);
   await until(() => page.document.querySelector(".routing-conflict"), "the newer version");
   const conflict = page.document.querySelector(".routing-conflict");
@@ -235,7 +235,7 @@ test("Use the saved version takes the newer one in place of the changes", async 
   const newer = { version: 5, limits: { candidates: 8 }, policy: { enabled: false, whenNone: "wait", candidates: [clone(cl)] } };
   const page = mount(core({ put: () => [409, { code: "version_conflict", error: "version_conflict", current: newer }] }), "zh-Hans");
   await opened(page);
-  button(page, "下移 OpenCode · deepseek-flash").click();
+  button(page, "下移 OpenCode · deepseek-flash · API").click();
   await save(page, "保存");
   await until(() => page.document.querySelector(".routing-conflict"), "the newer version");
   assert.match(page.document.querySelector(".routing-conflict").textContent, /Core 里有更新的版本（5）。什么都没有被覆盖，你的改动还在这里。路由关着。/);
@@ -287,7 +287,7 @@ test("routing off, the Workspace cap, a weekly schedule of its own and a pool of
   await tick();
   assert.ok(page.document.querySelector(".routing-off-note"), "says what off means");
   await set(page, byLabel(page, "At most $ a day, all API keys"), "");
-  button(page, "Edit OpenCode · deepseek-flash").click();
+  button(page, "Edit OpenCode · deepseek-flash · API").click();
   await until(() => card(page, "ds").querySelector(".routing-window"), "the time window");
   await set(page, card(page, "ds").querySelector(".routing-window-head .routing-inline-field select"), "local");
   button(page, "Period 1: Sat", card(page, "ds")).click();
