@@ -554,10 +554,25 @@ export interface Model {
   defaultReasoningEffort?: string;
   /** OpenCode: the names of the model's variants (T-10). */
   variants?: string[];
+  /** OpenCode (YN-47): its provider, its own name and status, its context window (null when none is listed), and
+   * whether it reads images. */
+  providerId?: string;
+  providerName?: string;
+  name?: string;
+  status?: string;
+  context?: number | null;
+  image?: boolean;
   supportedReasoningEfforts?: {
     reasoningEffort: string;
     description: string;
   }[];
+}
+/** An OpenCode Agent's provider (YN-47): where its access comes from, a login (`credential`), an environment variable
+ * OpenCode reads (`env`) or neither (`ready`); null when Core could not read it. */
+export interface OpenCodeProvider {
+  id: string;
+  name: string;
+  source: "credential" | "env" | "ready" | null;
 }
 export interface CatchupItem {
   id: string;
