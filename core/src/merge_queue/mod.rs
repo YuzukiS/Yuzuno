@@ -141,11 +141,13 @@ pub(super) async fn tick(ws: &Arc<Workspace>) -> Result<()> {
             }
             Some("merging") => merging = Some(entry.clone()),
             Some("merged") => merged = Some(entry.clone()),
-            _ => {
+            _ if entry["batch"]["cleanup"] == "pending" => {
                 let outcome = remote::cleanup(ws, &entry).await.map_err(|e| format!("{e:#}"));
                 let key = id.clone();
                 ws.stored(move |s| s.merge_cleaned(&key, outcome)).await?;
             }
+            // Due only to tag its merge for the release (below).
+            _ => {}
         }
         if let Some(e) = merging {
             announced = true;
@@ -154,10 +156,24 @@ pub(super) async fn tick(ws: &Arc<Workspace>) -> Result<()> {
             let key = id.clone();
             merged = ws.stored(move |s| s.merge_answered(&key, attempt, outcome, cooldown)).await?;
         }
+        let followed = merged.is_some();
         if let Some(e) = merged {
             let outcome = remote::follow(ws, &e).await.map_err(|e| format!("{e:#}"));
             let key = id.clone();
             announced |= ws.stored(move |s| s.merge_followed(&key, attempt, outcome)).await?;
+        }
+        // YN-33: a merge whose post-check held is tagged for its release once
+        // that post-check is recorded, here or on a later pass. Read again,
+        // since the follow-up above may have just recorded it.
+        if !followed && entry["grouping"]["state"] != "pending" {
+            continue;
+        }
+        let key = id.clone();
+        let entry = ws.stored(move |s| s.merge_entry(&key)).await?;
+        if entry["grouping"]["state"] == "pending" && entry["grouping"]["nextAt"].as_i64().unwrap_or(0) <= chrono::Utc::now().timestamp() {
+            let outcome = remote::group(ws, &entry).await.map_err(|e| format!("{e:#}"));
+            let key = id.clone();
+            ws.stored(move |s| s.merge_grouped(&key, outcome)).await?;
         }
     }
     if !due_was_empty {
@@ -317,10 +333,12 @@ struct Switch {
     /// Core reverts on its own when main CI goes red after a merge; needs reverts on.
     #[serde(rename = "autoRevert")]
     auto_revert: Option<bool>,
+    /// The user's consent to tagging merged PRs for their release (YN-33).
+    grouping: Option<bool>,
 }
 async fn switch(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>, Json(b): Json<Switch>) -> Result<Json<Value>, ApiError> {
-    if b.enabled.is_none() && b.landing.is_none() && b.policy.is_none() && b.revert.is_none() && b.auto_revert.is_none() {
-        return Err(anyhow::anyhow!("invalid_input: give enabled, landing, policy, revert, autoRevert or any of them").into());
+    if b.enabled.is_none() && b.landing.is_none() && b.policy.is_none() && b.revert.is_none() && b.auto_revert.is_none() && b.grouping.is_none() {
+        return Err(anyhow::anyhow!("invalid_input: give enabled, landing, policy, revert, autoRevert, grouping or any of them").into());
     }
     // A landing this Core does not have, or an unknown policy, is refused
     // before anything is saved.
@@ -341,6 +359,9 @@ async fn switch(AppState(ws): AppState<Arc<Workspace>>, Path(id): Path<i64>, Jso
             }
             if b.revert.is_some() || b.auto_revert.is_some() {
                 answer = s.merge_set_reverts(id, b.revert, b.auto_revert)?;
+            }
+            if let Some(grouping) = b.grouping {
+                answer = s.merge_set_grouping(id, grouping)?;
             }
             if let Some(enabled) = b.enabled {
                 answer = s.merge_set_enabled(id, enabled)?;

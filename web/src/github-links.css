@@ -258,11 +258,13 @@
   margin-bottom: 4px;
   font-weight: 600;
 }
-.merge-queue-switch > .merge-queue-reverts {
+.merge-queue-switch > .merge-queue-reverts,
+.merge-queue-switch > .merge-queue-grouping {
   margin-top: 8px;
 }
 .merge-queue-policy > .merge-queue-policy-option,
-.merge-queue-reverts > .merge-queue-policy-option {
+.merge-queue-reverts > .merge-queue-policy-option,
+.merge-queue-grouping > .merge-queue-policy-option {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -270,7 +272,8 @@
   cursor: pointer;
 }
 .merge-queue-policy > .merge-queue-policy-option input,
-.merge-queue-reverts > .merge-queue-policy-option input {
+.merge-queue-reverts > .merge-queue-policy-option input,
+.merge-queue-grouping > .merge-queue-policy-option input {
   flex: 0 0 14px;
   width: 14px;
   height: 14px;
@@ -279,7 +282,8 @@
   accent-color: var(--green);
 }
 .merge-queue-policy > .merge-queue-policy-option span,
-.merge-queue-reverts > .merge-queue-policy-option span {
+.merge-queue-reverts > .merge-queue-policy-option span,
+.merge-queue-grouping > .merge-queue-policy-option span {
   display: flex;
   flex-direction: column;
   min-width: 0;

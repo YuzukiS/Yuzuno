@@ -5,7 +5,9 @@
 //! its own `queue/merge-{entry}` and `queue/revert-{entry}` branches and their
 //! PRs. CI is never rerun: no write here can start, rerun or cancel a workflow.
 //! A revert's own writes (its commit, branch and PR, YN-18 S2d-2) also need
-//! the user's consent to reverts for the repository.
+//! the user's consent to reverts for the repository. Tagging a merged PR for
+//! its release (its milestone and its task's label, YN-33) needs the user's
+//! consent to release grouping; it touches only that PR and `task:` labels.
 use crate::workspace::Workspace;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -49,18 +51,33 @@ pub(super) enum Write<'a> {
     CreateCommit { tree: &'a str, parent: &'a str, message: String },
     /// `POST pulls`: the PR of Core's own revert branch, not a draft.
     OpenRevertPull { branch: &'a str, base: &'a str, title: String, body: String },
+    /// `POST labels`: a task's label `task:<key>`, when the repository has none.
+    CreateLabel { name: &'a str, color: &'a str, description: String },
+    /// `POST issues/{n}/labels`: add the task's label to the merged PR; its
+    /// other labels stay.
+    AddLabel { number: u64, name: &'a str },
+    /// `PATCH issues/{n}`: the merged PR's milestone, when it has none.
+    SetMilestone { number: u64, milestone: u64 },
+}
+
+/// A task's label: `task:` and the task's key.
+fn task_label(name: &str) -> Result<()> {
+    ensure!(
+        name.strip_prefix("task:").is_some_and(|key| !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')),
+        "merge_write_refused: not a task label"
+    );
+    Ok(())
 }
 
 /// One write to `repo`, refused unless the user's switch for `repository` is
 /// on at this moment. Answers GitHub's status and body; an uncertain outcome
 /// is an error; for the merge it stops the entry with merge_unknown.
 pub(super) async fn write(ws: &Arc<Workspace>, repository: i64, repo: &str, w: Write<'_>) -> Result<(u16, Value)> {
-    let on = ws
+    let settings = ws
         .stored(move |s| s.merge_repository(repository))
         .await
-        .map_err(|e| anyhow::anyhow!("not_sent: the merge queue switch could not be read: {e:#}"))?["enabled"]
-        == true;
-    if !on {
+        .map_err(|e| anyhow::anyhow!("not_sent: the merge queue switch could not be read: {e:#}"))?;
+    if settings["enabled"] != true {
         bail!("merge_queue_disabled: the merge queue is off for {repo}; Core writes nothing to GitHub until the user turns it on");
     }
     let reverting = match &w {
@@ -69,8 +86,10 @@ pub(super) async fn write(ws: &Arc<Workspace>, repository: i64, repo: &str, w: W
         _ => false,
     };
     if reverting {
-        let allowed = ws.stored(move |s| s.merge_repository(repository)).await?["revert"] == true;
-        ensure!(allowed, "merge_revert_not_allowed: reverts are off for {repo}; the user turns them on in Projects → repositories");
+        ensure!(settings["revert"] == true, "merge_revert_not_allowed: reverts are off for {repo}; the user turns them on in Projects → repositories");
+    }
+    if matches!(w, Write::CreateLabel { .. } | Write::AddLabel { .. } | Write::SetMilestone { .. }) {
+        ensure!(settings["grouping"] == true, "merge_grouping_off: release grouping is off for {repo}; the user turns it on in Projects → repositories");
     }
     let client = &ws.github.client;
     let deadline = if matches!(w, Write::Merge { .. }) { client.merge_deadline } else { client.deadline };
@@ -107,6 +126,15 @@ pub(super) async fn write(ws: &Arc<Workspace>, repository: i64, repo: &str, w: W
             ours(branch)?;
             ("POST", format!("repos/{repo}/pulls"), Some(json!({"head":branch,"base":base,"title":title,"body":body,"draft":false})))
         }
+        Write::CreateLabel { name, color, description } => {
+            task_label(name)?;
+            ("POST", format!("repos/{repo}/labels"), Some(json!({"name":name,"color":color,"description":description})))
+        }
+        Write::AddLabel { number, name } => {
+            task_label(name)?;
+            ("POST", format!("repos/{repo}/issues/{number}/labels"), Some(json!({"labels":[name]})))
+        }
+        Write::SetMilestone { number, milestone } => ("PATCH", format!("repos/{repo}/issues/{number}"), Some(json!({"milestone":milestone}))),
     };
     let _slot = ws.github.slots.acquire().await?;
     client.answered_write(method, &endpoint, body.as_ref(), deadline).await

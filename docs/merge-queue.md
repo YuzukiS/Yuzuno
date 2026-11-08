@@ -43,9 +43,16 @@ login:
   on top of it), the branch `queue/revert-{entry}` and its PR (not a draft),
   the merge of that PR, and removing the branch afterwards.
 
+- Only while the user allows release grouping for the repository (see Release
+  grouping), after a merge whose post-check held: the merged PR's milestone
+  (`PATCH issues/{n}`, only when it has none), its task's label added to it
+  (`POST issues/{n}/labels`, which keeps its other labels), and that label
+  made first (`POST labels`), only when the repository has none.
+
 Core never force-pushes. It closes only the batch and revert PRs it opened and
 deletes only the `queue/merge-{entry}` and `queue/revert-{entry}` branches it
-created. It never starts, reruns or cancels a workflow.
+created. It tags only a PR it merged, and makes only `task:` labels. It never
+starts, reruns or cancels a workflow.
 
 ## Who may release
 
@@ -333,6 +340,33 @@ branch is removed after it merges or stops. Once main's push CI on the revert
 is green, the pause ends, journaled as ended by the revert, and every waiting
 entry is re-anchored there. If that CI is red too, the queue stays paused.
 
+## Release grouping
+
+Release notes group merged PRs by release and by task: each PR carries its
+release's milestone and its task's label `task:<key>`. Only while the user
+allows it for the repository (`{"grouping": true}` in its switch block in
+Projects → repositories; off by default; turning it on lists its writes
+first), Core tags each PR it merged, right after the merge's post-check held:
+
+- The milestone: the repository's open milestone with the highest number, the
+  newest open one, read when the PR is tagged; a closed one never counts. A PR
+  that already has a milestone keeps it. With no open milestone the PR gets the
+  label only, and the task says so.
+- The label: `task:` and the task's key as Core shows it then, for example
+  `task:YN-33`. When the repository has no such label, Core makes it first,
+  with the task's title as its description, cut to GitHub's 100 characters (99
+  and "…"), and the colour `1d76db`, or `5319e7` for a task numbered `T-<n>`, as
+  the labels made by hand before. The PR's other labels stay.
+
+Tagging never changes the merge, its entry's state or the queue. It does not
+pause, revert or hold up the next merge or the follow-up of main's push CI, and
+an entry can be `done` while its tag is still pending. Each write is
+idempotent, so one whose answer was lost is simply sent again. While the switch
+is off, or GitHub's rate limit refuses a write, Core waits and counts no
+failure. After eight other failures in a row Core stops and says on the task
+what to set by hand. Turning grouping off ends a pending tag with no more
+writes. A merge whose post-check failed or never ran is not tagged.
+
 ## Pauses
 
 A repository's queue pauses on red main CI, a failed post-check, a
@@ -417,8 +451,16 @@ The record holds:
 - the merge: each request sent, the merge commit, and the post-check of its
   parents and tree;
 - the batch's removal;
+- the release grouping: the milestone and the label, what Core did with each
+  (set, already there, kept, or none open; added or made), and any failure;
 - main's push CI on the merge commit;
 - the stop reason and detail, if any.
 
 `merge_get` returns an entry with its history and evidence. `merge_list` lists
 entries.
+
+## Going back to an older Core
+
+What the queue records after core.26 is in its JSON records, with no table
+change, and core.26 ignores it. With core.26, a merged PR still waiting to be
+tagged for its release is never tagged: tag it by hand.

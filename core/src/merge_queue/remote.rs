@@ -49,8 +49,11 @@ pub(super) fn segment(s: &str) -> String {
         })
         .collect()
 }
+/// The items of a list answer: under `key`, or the answer itself for an
+/// empty key (a list GitHub answers as a bare array, such as milestones).
 pub(super) fn array(value: &Value, key: &str) -> Vec<Value> {
-    value[key].as_array().cloned().unwrap_or_default()
+    let list = if key.is_empty() { value } else { &value[key] };
+    list.as_array().cloned().unwrap_or_default()
 }
 fn short(sha: &str) -> &str {
     &sha[..12.min(sha.len())]
@@ -697,6 +700,81 @@ pub(super) async fn cleanup(ws: &Arc<Workspace>, entry: &Value) -> Result<Value>
         deleted = true;
     }
     Ok(json!({"closed":closed,"deleted":deleted,"at":crate::model::now()}))
+}
+
+/// The colours of the task labels Dev 9 made by hand before the queue tagged
+/// its merges (YN-33): one for tasks numbered `T-<n>`, one for a Project's key.
+fn label_color(key: &str) -> &'static str {
+    if key.starts_with("T-") { "5319e7" } else { "1d76db" }
+}
+/// A label's description is the task's title, cut to GitHub's 100 characters.
+pub(super) fn label_description(title: &str) -> String {
+    if title.chars().count() <= 100 {
+        title.to_owned()
+    } else {
+        title.chars().take(99).chain(std::iter::once('…')).collect()
+    }
+}
+
+/// Tag a merged PR for its release (YN-33): the repository's newest open
+/// milestone (the highest-numbered one) when the PR has none, and its task's
+/// label `task:<key>`, made first when the repository lacks it. Only after
+/// the merge's post-check held, and only while the user allows it. Each write
+/// is idempotent, so a retry after a lost answer is safe; nothing here can
+/// change the merge.
+pub(super) async fn group(ws: &Arc<Workspace>, entry: &Value) -> Result<Value> {
+    let t = target(entry)?;
+    ensure!(entry["merge"]["post"]["ok"] == true, "merge_write_refused: only a merge whose post-check held is tagged");
+    let task = entry["taskId"].as_str().context("The entry has no task")?.to_owned();
+    let repository = t.repository;
+    let (key, title, allowed) = ws.stored(move |s| s.merge_grouping_task(&task, repository)).await?;
+    if !allowed {
+        return Ok(json!({"skipped":"off"}));
+    }
+    let issue = read(ws, format!("repos/{}/issues/{}", t.repo, t.number)).await?;
+    let (open, _, more) = pages(ws, format!("repos/{}/milestones?state=open&per_page=100", t.repo), "").await?;
+    ensure!(!more, "More open milestones than Core reads ({} pages); the newest one is not known", PAGES);
+    let newest = open
+        .iter()
+        .filter_map(|m| Some((m["number"].as_u64()?, m["title"].clone())))
+        .max_by_key(|(number, _)| *number);
+    let own = &issue["milestone"];
+    let milestone = match newest {
+        _ if own.is_object() => {
+            let present = newest.as_ref().is_some_and(|(number, _)| own["number"].as_u64() == Some(*number));
+            json!({"action":if present { "present" } else { "kept" },"number":own["number"],"title":own["title"]})
+        }
+        None => json!({"action":"none"}),
+        Some((number, title)) => {
+            let (code, answer) = writes::write(ws, t.repository, &t.repo, Write::SetMilestone { number: t.number, milestone: number }).await?;
+            limited(code, &answer)?;
+            ensure!(code == 200, "GitHub answered {code} setting the milestone of #{}: {}", t.number, answer["message"]);
+            json!({"action":"set","number":number,"title":title})
+        }
+    };
+    let name = format!("task:{key}");
+    let present = issue["labels"].as_array().into_iter().flatten().any(|l| l["name"] == name.as_str());
+    let mut created = false;
+    if !present {
+        match read(ws, format!("repos/{}/labels/{}", t.repo, segment(&name))).await {
+            Ok(_) => {}
+            Err(e) if e.to_string().starts_with("not_found") => {
+                let description = label_description(&title);
+                let (code, answer) =
+                    writes::write(ws, t.repository, &t.repo, Write::CreateLabel { name: &name, color: label_color(&key), description }).await?;
+                limited(code, &answer)?;
+                // 422: it exists after all, made meanwhile or by a create whose
+                // answer was lost.
+                ensure!(matches!(code, 201 | 422), "GitHub answered {code} creating the label {name}: {}", answer["message"]);
+                created = code == 201;
+            }
+            Err(e) => return Err(e),
+        }
+        let (code, answer) = writes::write(ws, t.repository, &t.repo, Write::AddLabel { number: t.number, name: &name }).await?;
+        limited(code, &answer)?;
+        ensure!(code == 200, "GitHub answered {code} adding the label {name} to #{}: {}", t.number, answer["message"]);
+    }
+    Ok(json!({"milestone":milestone,"label":{"name":name,"action":if present { "present" } else { "added" },"created":created},"at":crate::model::now()}))
 }
 
 /// A write GitHub's rate limit refused is a wait for later, not a failure.
