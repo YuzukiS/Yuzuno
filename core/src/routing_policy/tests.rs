@@ -144,3 +144,50 @@ async fn the_policy_is_the_users_own_browsers_only() {
     }
     assert_eq!(lab.ws.store.routing_policy().unwrap().version, 0);
 }
+
+async fn post(app: &axum::Router, uri: &str, body: Value, extra: Vec<(&'static str, String)>) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method("POST").uri(uri).header("x-yuzuno-client", "desktop").header("content-type", "application/json")
+        .header("host", "127.0.0.1:4317");
+    for (name, value) in extra {
+        builder = builder.header(name, value);
+    }
+    let response = app.clone().oneshot(builder.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn evaluate_and_simulate_answer_from_cores_own_evaluator_for_a_draft_or_the_saved_policy() {
+    let lab = lab();
+    let mut deepseek = deepseek();
+    deepseek["conditions"] = json!([deepseek["conditions"][0].clone()]);
+    let draft = policy(vec![deepseek, json!({"id": "c-codex", "enabled": true, "harness": "codex", "model": "gpt-test",
+        "credential": {"kind": "login"}, "conditions": []})]);
+    // 2026-11-09 is a Monday; 02:00 UTC is DeepSeek's peak.
+    let (status, route) = post(&lab.local, "/api/routing/evaluate", json!({"policy": draft, "at": "2026-11-09T02:00:00Z"}), vec![]).await;
+    assert_eq!(status, StatusCode::OK, "{route}");
+    assert_eq!((route["at"].clone(), route["chosen"].clone(), route["candidates"][0]["reasons"][0]["code"].clone()),
+        (json!("preview"), json!("c-codex"), json!("outsideWindow")));
+    let (_, route) = post(&lab.local, "/api/routing/evaluate", json!({"policy": draft, "at": "2026-11-09T12:00:00Z"}), vec![]).await;
+    assert_eq!(route["chosen"], "c-deepseek");
+    let (_, saved) = post(&lab.local, "/api/routing/evaluate", json!({}), vec![]).await;
+    assert_eq!((saved["chosen"].clone(), saved["candidates"].clone()), (Value::Null, json!([])), "the saved policy: none yet");
+    let (status, refused) = post(&lab.local, "/api/routing/evaluate", json!({"policy": {"enabled": "yes", "candidates": []}}), vec![]).await;
+    assert_eq!((status, refused["path"].clone()), (StatusCode::BAD_REQUEST, json!("enabled")), "a draft is checked as a save is");
+    let (status, sim) = post(&lab.local, "/api/routing/simulate",
+        json!({"policy": draft, "from": "2026-11-09T00:00:00Z", "to": "2026-11-09T12:00:00Z", "stepMinutes": 30}), vec![]).await;
+    assert_eq!(status, StatusCode::OK, "{sim}");
+    let segments: Vec<(String, String, Value)> = sim["segments"].as_array().unwrap().iter()
+        .map(|s| (s["from"].as_str().unwrap()[11..16].to_owned(), s["to"].as_str().unwrap()[11..16].to_owned(), s["chosen"].clone())).collect();
+    assert_eq!(segments, [
+        ("00:00".into(), "01:00".into(), json!("c-deepseek")), ("01:00".into(), "04:00".into(), json!("c-codex")),
+        ("04:00".into(), "06:00".into(), json!("c-deepseek")), ("06:00".into(), "10:00".into(), json!("c-codex")),
+        ("10:00".into(), "12:00".into(), json!("c-deepseek"))], "off-peak around the peaks: {sim}");
+    let (status, _) = post(&lab.local, "/api/routing/simulate", json!({"from": "2026-11-09T00:00:00Z", "to": "2026-11-20T00:00:00Z", "stepMinutes": 5}), vec![]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "at most 2016 steps");
+    for uri in ["/api/routing/evaluate", "/api/routing/simulate"] {
+        let (status, _) = post(&lab.local, uri, json!({}), vec![("authorization", "Bearer an-agents-token".into())]).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: an Agent's credential is refused");
+    }
+}
