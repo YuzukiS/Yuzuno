@@ -22,7 +22,7 @@ import type { LiveRefState, Section } from "../types";
 import { formatTime, shownRefId, type LiveRef, type LiveRefKind, type LiveRefsProps } from "./brief-catalog";
 import { useTimeDisplay } from "../../time-preferences";
 import { useLanguage, useStrings } from "../../i18n";
-import { briefText } from "./brief-text";
+import { briefText, refStateWord } from "./brief-text";
 
 const kinds: Record<LiveRefKind, { icon: LucideIcon }> = {
   task: { icon: ClipboardList },
@@ -125,7 +125,7 @@ function Chip({ item }: { item: LiveRef }) {
       ) : (
         state?.state && (
           <em className="brief-ref-state" data-tone={state.tone || "neutral"}>
-            {state.state}
+            {refStateWord(t, item.kind, state)}
             {state.stages && ` · ${t.refStages(state.stages.done, state.stages.total)}`}
           </em>
         )
@@ -160,7 +160,7 @@ function Chip({ item }: { item: LiveRef }) {
 /** What Core says of one item now, as a list row shows it; a change in it
  * is a change the reader is told about. */
 const factsOf = (state: LiveRefState | undefined) =>
-  state ? JSON.stringify([state.found, state.unavailable, state.title, state.state, state.assignee?.id, state.updatedAt, state.archived, state.key, state.stages]) : "";
+  state ? JSON.stringify([state.found, state.unavailable, state.title, state.state, state.assignee?.id, state.updatedAt, state.archived, state.key, state.stages, state.waitingFor]) : "";
 
 /**
  * One item as a row of a list the Agent ordered (T-9): Core's title and
@@ -196,7 +196,7 @@ function Row({ item, stale, readAt }: { item: LiveRef; stale: boolean; readAt: s
   const name = (state?.found && state.title) || item.label || id;
   // A task's state in the board's own words; others as Core reports them.
   const word = state?.state
-    ? (item.kind === "task" ? (boardText(language).statuses as Record<string, string>)[state.state] ?? state.state : state.state) +
+    ? (item.kind === "task" ? (boardText(language).statuses as Record<string, string>)[state.state] ?? state.state : refStateWord(t, item.kind, state)) +
       // A run's stages, beside its state (YN-7).
       (state.stages ? ` · ${t.refStages(state.stages.done, state.stages.total)}` : "")
     : null;

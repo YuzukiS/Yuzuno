@@ -1035,6 +1035,34 @@ async fn a_live_reference_to_a_run_shows_its_status_stages_task_and_newest_job()
     assert_eq!(refs["run:nope"], json!({"kind":"run","id":"nope","found":false}));
 }
 
+/// YN-30: a run whose work is only queued reads "queued" in a neutral tone,
+/// not "running" and active, with what its first stage in the queue waits for.
+#[tokio::test]
+async fn a_live_reference_to_a_queued_run_says_what_it_waits_for_and_is_not_active() {
+    let (_dir, ws, _project) = lab();
+    ws.store.collaboration_call(None, "task_create", json!({"requestId":"t","title":"Sweep"})).unwrap();
+    let task_id: String = ws.store.db.read().unwrap().query_row("SELECT id FROM collaboration_tasks", [], |r| r.get(0)).unwrap();
+    {
+        let db = ws.store.db.write().unwrap();
+        db.execute("INSERT INTO local_job_runs(id,task_id,agent_id,data) VALUES('run-q',?1,'a',?2)", rusqlite::params![task_id,
+            json!({"id":"run-q","taskId":task_id,"taskRef":"T-1","name":"gpu sweep","cancelRequestedAt":null,
+                "stages":[{"key":"train","needs":[]},{"key":"eval","needs":["train"]}]}).to_string()]).unwrap();
+        for (job, stage, status, reason) in [("job-train", "train", "queued", "Waiting for a GPU: GPU-0 has 32 MiB free"),
+            ("job-eval", "eval", "waiting", "Waiting for its upstream stages")] {
+            db.execute("INSERT INTO local_jobs(id,task_id,agent_id,status,data) VALUES(?1,?2,'a',?3,?4)", rusqlite::params![job, task_id, status,
+                json!({"id":job,"name":stage,"status":status,"reason":reason,"run":{"id":"run-q","stage":stage,"attempt":1}}).to_string()]).unwrap();
+            db.execute("INSERT INTO local_job_run_attempts(run_id,stage,attempt,job_id) VALUES('run-q',?1,1,?2)", [stage, job]).unwrap();
+        }
+    }
+    let mut change = put("queued", "report");
+    change["body"] = json!({"root":"body","elements":{"body":{"type":"BriefBody","props":{},"children":["refs"]},
+        "refs":{"type":"LiveRefs","props":{"items":[{"kind":"run","id":"run-q"}]}}}});
+    accept(&ws, "a", input("q1", 0, vec![change])).await;
+    let refs = section(&brief(&ws, "a"), "queued")["refs"].clone();
+    assert_eq!(refs["run:run-q"], json!({"kind":"run","id":"run-q","found":true,"title":"gpu sweep","state":"queued","tone":"neutral",
+        "waitingFor":"gpu","taskId":"T-1","stages":{"done":0,"total":2},"jobId":"job-eval"}));
+}
+
 /// T-56: a section may name a task by any key it has or had; it shows with
 /// the key it has now, through a Project key change too.
 #[tokio::test]

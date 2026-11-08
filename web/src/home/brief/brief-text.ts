@@ -42,6 +42,17 @@ export const briefText = strings({
   refKind: { task: "Task", pr: "Pull request", ci: "CI run", job: "Job", run: "Job run", review: "Review", agent: "Agent", machine: "Machine" } as Record<RefWord, string>,
   /** A run's stages, beside its state (YN-7). */
   refStages: (done: number, total: number) => `${done}/${total} ${total === 1 ? "stage" : "stages"}`,
+  /** A queued run, by what its first stage in the queue waits for (YN-30). */
+  refQueued: {
+    gpu: "queued: waiting for a GPU",
+    memory: "queued: waiting for memory",
+    cpu: "queued: waiting for CPU",
+    slot: "queued: waiting for a job slot",
+    disk: "queued: waiting for disk space",
+    exclusive: "queued: waiting for an exclusive job",
+    budget: "queued: waiting for the budget",
+    capacity: "queued",
+  } as Record<string, string>,
   refAsOf: (at: string) => ` · as of ${at}`,
   open: (what: string) => `Open ${what}`,
   notFound: "not found",
@@ -153,6 +164,16 @@ export const briefText = strings({
   references: "引用",
   refKind: { task: "任务", pr: "拉取请求", ci: "CI 运行", job: "Job", run: "Job 运行", review: "审查", agent: "Agent", machine: "机器" },
   refStages: (done, total) => `${done}/${total} 个阶段`,
+  refQueued: {
+    gpu: "排队：等 GPU",
+    memory: "排队：等内存",
+    cpu: "排队：等 CPU",
+    slot: "排队：等槽位",
+    disk: "排队：等磁盘空间",
+    exclusive: "排队：等独占 Job",
+    budget: "排队：等预算",
+    capacity: "排队中",
+  },
   refAsOf: (at) => ` · 截至 ${at}`,
   open: (what) => `打开 ${what}`,
   notFound: "未找到",
@@ -233,3 +254,17 @@ export const briefText = strings({
   stepsLabel: "步骤",
   timelineState: { done: "已完成", now: "进行中", next: "计划" },
 });
+
+/**
+ * Core's state word for a live reference, as a chip, a row or a copy shows
+ * it. A queued run says what it waits for in the interface language
+ * (YN-30); every other state is Core's own word.
+ */
+export function refStateWord(
+  t: ReturnType<typeof briefText>,
+  kind: string,
+  state: { state?: string; waitingFor?: string },
+): string | undefined {
+  if (kind === "run" && state.state === "queued") return t.refQueued[state.waitingFor ?? "capacity"] ?? t.refQueued.capacity;
+  return state.state;
+}

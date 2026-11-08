@@ -21,7 +21,10 @@ use std::{
 };
 
 mod analysis;
+mod queued;
 pub(super) use analysis::Decision as AnalysisDecision;
+#[cfg(test)]
+pub(super) use queued::waiting_for;
 
 const MAX_STAGES: usize = 16;
 /// Every attempt of one stage, automatic and explicit retries together.
@@ -1117,8 +1120,8 @@ pub(super) fn job_changed(store: &Store, db: &Connection, job: &Value) -> Result
 
 fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
     let latest = latest(all);
-    let (mut active, mut unknown, mut failed, mut blocked, mut done) =
-        (false, false, false, false, true);
+    let (mut active, mut queued, mut unknown, mut failed, mut blocked, mut done) =
+        (false, false, false, false, false, true);
     let waiting_analysis = run["stages"].as_array().into_iter().flatten().any(analysis::waiting);
     for stage in run["stages"].as_array().into_iter().flatten() {
         done &= !analysis::pending(stage);
@@ -1130,7 +1133,9 @@ fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
         };
         match job["status"].as_str().unwrap_or("") {
             "succeeded" => continue,
-            "queued" | "starting" | "running" | "cancelling" => active = true,
+            "starting" | "running" | "cancelling" => active = true,
+            // Waiting in the shared queue: nothing of it runs yet (YN-30).
+            "queued" => queued = true,
             "unknown" => unknown = true,
             "waiting" => {
                 blocked |= job["reason"]
@@ -1142,7 +1147,7 @@ fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
         done = false;
     }
     if run["cancelRequestedAt"].is_string() {
-        return if active || unknown {
+        return if active || queued || unknown {
             "cancelling"
         } else {
             "cancelled"
@@ -1152,6 +1157,8 @@ fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
         "succeeded"
     } else if active {
         "running"
+    } else if queued {
+        "queued"
     } else if unknown {
         "unknown"
     } else if failed {
@@ -1187,8 +1194,16 @@ pub(super) fn live_ref(db: &Connection, id: &str) -> Result<Option<Value>> {
         })
         .count();
     let newest = all.values().flatten().max_by_key(|job| job["cursor"].as_i64().unwrap_or(0)).map(|job| job["id"].clone());
-    Ok(Some(json!({"name":run["name"],"status":run_status(&run, &all),"stagesDone":done,"stages":stages.len(),
-        "taskRef":run["taskRef"],"jobId":newest})))
+    let status = run_status(&run, &all);
+    let mut shown = json!({"name":run["name"],"status":status,"stagesDone":done,"stages":stages.len(),
+        "taskRef":run["taskRef"],"jobId":newest});
+    // What a queued run waits for (YN-30), only when it is queued.
+    if status == "queued" {
+        if let Some(first) = queued::first(&run, &latest, &QueueState::read(db)?) {
+            shown["waitingFor"] = first["waitingFor"].clone();
+        }
+    }
+    Ok(Some(shown))
 }
 
 pub(super) fn run_view(db: &Connection, id: &str) -> Result<Value> {
@@ -1245,6 +1260,13 @@ pub(super) fn run_view(db: &Connection, id: &str) -> Result<Value> {
         }
     }
     run["awaitingAnalysis"] = json!(run["stages"].as_array().into_iter().flatten().any(analysis::waiting));
+    // A queued run says which stage is first in the queue and what it waits
+    // for (YN-30); other runs have no queue field.
+    if status == "queued" {
+        if let Some(first) = queued::first(&run, &latest(&all), &queue) {
+            run["queue"] = first;
+        }
+    }
     run["status"] = json!(status);
     run["cost"] = cost(&all);
     Ok(run)
@@ -1459,9 +1481,13 @@ impl Store {
                     .flatten()
                     .map(|s| json!({"key":s["key"],"status":s["status"],"attempts":s["attempts"].as_array().map_or(0, Vec::len)}))
                     .collect();
-                Ok(json!({"id":run["id"],"name":run["name"],"experiment":run["experiment"],"status":run["status"],
+                let mut row = json!({"id":run["id"],"name":run["name"],"experiment":run["experiment"],"status":run["status"],
                     "taskRef":run["taskRef"],"agentId":run["agentId"],"agent":run["agent"],"createdAt":run["createdAt"],
-                    "cursor":run["cursor"],"stages":stages,"cost":run["cost"],"awaitingAnalysis":run["awaitingAnalysis"]}))
+                    "cursor":run["cursor"],"stages":stages,"cost":run["cost"],"awaitingAnalysis":run["awaitingAnalysis"]});
+                if run["queue"].is_object() {
+                    row["queue"] = run["queue"].clone();
+                }
+                Ok(row)
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(

@@ -110,6 +110,14 @@ impl<'a> Refs<'a> {
             // task, and the Job of its newest attempt, where Jobs shows the run.
             "run" => crate::jobs::run_live_ref(db, id)?.map(|run| {
                 let mut shown = state(json!({"found":true,"title":run["name"]}), run["status"].as_str().unwrap_or("unknown"));
+                // A queued run (YN-30) is not at work yet: it reads neutral,
+                // with what its first stage in the queue waits for.
+                if run["status"] == "queued" {
+                    shown["tone"] = json!("neutral");
+                    if run["waitingFor"].is_string() {
+                        shown["waitingFor"] = run["waitingFor"].clone();
+                    }
+                }
                 shown["taskId"] = run["taskRef"].clone();
                 shown["stages"] = json!({"done":run["stagesDone"],"total":run["stages"]});
                 if run["jobId"].is_string() {
