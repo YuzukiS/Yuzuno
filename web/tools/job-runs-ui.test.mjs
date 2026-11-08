@@ -162,6 +162,32 @@ test('a stage stopped at a checkpoint resumes from it, not as a fresh retry, and
   } finally { p.close(); }
 });
 
+// YN-30: a run that starts after other runs names them, how it waits for each and where each stands, says when one
+// holds it, and can be cancelled.
+test('a run held by a run it waits for names that run and can be cancelled (YN-30)', async () => {
+  const reason = 'Waiting for run sweep (1234abcd) to succeed, and it is failed: this stage starts by itself once that run is retried or resumed and succeeds, or cancel this run';
+  const waiting = { ...base, id: 'job-11', name: 'Analysis · read', status: 'waiting', reserved: false, cursor: 11, startedAt: null, finishedAt: null,
+    reason, run: { id: 'run-2', stage: 'read', attempt: 1 } };
+  const heldRun = { id: 'run-2', name: 'Analysis', experiment: null, status: 'blocked_by_run', costLimitUsd: null, cancelRequestedAt: null,
+    cost: { knownUsd: 0, unknownEntries: 0, attemptsRunning: 0, complete: true },
+    afterRuns: [{ runId: '1234abcd-0000-4000-8000-00000000000a', name: 'sweep', when: 'succeeded', status: 'failed' },
+      { runId: '9f8e7d6c-5b4a-4321-8fed-cba987654321', name: 'olmo', when: 'settled', status: 'succeeded' }],
+    stages: [{ key: 'read', status: 'waiting', needs: [], retry: null, reusedFrom: null, attempts: [{ id: 'job-11', status: 'waiting', reason, run: { attempt: 1 } }] }] };
+  const p = mount(url => url === '/api/jobs/job-11' ? waiting : url === '/api/jobs/runs/run-2' ? heldRun : { jobs: [waiting], liveJobs: [waiting], hasMore: false, nextBefore: null });
+  try {
+    await open(p);
+    await until(() => row(p, '· read'));
+    row(p, '· read').click();
+    await until(() => p.doc.querySelector('.job-run'));
+    const card = p.doc.querySelector('.job-run');
+    assert.equal(card.querySelector('.job-card-heading small').textContent, 'Held by a run it waits for');
+    assert.equal(card.querySelector('.job-run-after').textContent, 'Starts after sweep succeeds (failed), olmo finishes (succeeded)');
+    assert.equal(card.querySelector('.job-run-wait').textContent, reason);
+    assert.equal(!!button(p, 'Cancel run'), true);
+    assert.deepEqual(p.errors, []);
+  } finally { p.close(); }
+});
+
 test("a run's cost and an attempt's say what recorded none, and a known $0 stays $0 (T-17)", async () => {
   // A run's total as Core now gives it, and an attempt's own usage summary
   // as the host writes it, read in a fresh panel each.

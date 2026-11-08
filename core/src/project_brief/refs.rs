@@ -11,7 +11,7 @@ use std::collections::HashMap;
 fn tone(state: &str) -> &'static str {
     match state {
         "failed" | "changes_requested" | "error" | "rejected" | "interrupted" | "unreachable" | "waiting" | "blocked"
-        | "waiting_analysis" => {
+        | "waiting_analysis" | "blocked_by_run" => {
             "attention"
         }
         // Queued is waiting its turn, not at work (YN-30): neutral, as any other word.

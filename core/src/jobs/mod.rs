@@ -1301,6 +1301,9 @@ pub async fn call(
                 stage.env.entry("LANG".into()).or_insert_with(|| "C.UTF-8".into());
             }
             input.validate()?;
+            // The runs it waits for by whole ID, so a repeat naming them by
+            // a prefix is the same submission (YN-30).
+            let input = ws.stored(move |s| s.resolve_after_runs(input)).await?;
             let queries: Vec<_> = input
                 .stages
                 .iter()
@@ -1320,6 +1323,13 @@ pub async fn call(
             let helper = host::helper(&ws.data_dir).await?;
             let capability = host::invoke(&helper, "capabilities", None, None).await?;
             let machine = host::machine_info().await?;
+            // What the runs it waits for declare: its root stages' guards
+            // leave those files out, as a stage's leaves out what its
+            // upstream stages declare (YN-30).
+            let after_paths = {
+                let named = input.clone();
+                ws.stored(move |s| s.after_run_artifacts(&named)).await?
+            };
             let mut prepared = Vec::new();
             let mut reused = std::collections::HashMap::new();
             // Artifacts each stage and its ancestors declare, by stage.
@@ -1331,6 +1341,9 @@ pub async fn call(
                 let mut exclude = std::collections::BTreeSet::new();
                 for need in stage.needs() {
                     exclude.extend(produced.get(need).into_iter().flatten().cloned());
+                }
+                if stage.needs().is_empty() {
+                    exclude.extend(after_paths.iter().cloned());
                 }
                 // Each stage freezes its own inputs now, as a submitted job does,
                 // except the artifacts its earlier stages will write.
@@ -1743,6 +1756,13 @@ const CHECKPOINT: &str = "For a command that can save and exit at a safe point w
     and exits stoppedExitCode within graceSeconds. Only then, with Core's own SHA-256 of every file, is it resumable; otherwise it is \
     stopped like a cancel and is not. Resuming is the user's choice: a new attempt of the same command with $YUZUNO_RESUME_FROM set to \
     that manifest. Unlike pause, this frees the job's memory.";
+/// job_run_submit's afterRuns (YN-30).
+const AFTER_RUNS: &str = "Earlier runs of your own (whole ID or unique prefix) this run starts after: its stages that need no other stage \
+    start only once each has settled as when says. when succeeded (default): it must succeed; the artifacts its stages declared are this \
+    run's upstream, left out of its Git guard and checked by SHA-256 before its stages start, as between stages. when settled: ordering \
+    only; it must end, succeeded or cancelled. While one has failed, is unknown or held, or (succeeded) was cancelled, this run is \
+    blocked_by_run with the reason and you get one mail; it starts by itself if that run is retried and settles as waited for. A cancelled \
+    run cannot be named with when succeeded. Dependencies are fixed at submission, so they cannot form a cycle.";
 /// What a stage's checkpoint adds: the resume is the stage's next attempt.
 const STAGE_CHECKPOINT: &str = "For a stage, the stop and resume are of its running attempt; the resume is the stage's next \
     attempt (same frozen inputs, counted in its attempts), and stages that need it wait until it succeeds. An Agent's job_run_retry \
@@ -1814,6 +1834,9 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "costLimitUsd":{"type":"number","exclusiveMinimum":0},
                 "method":{"type":"object","additionalProperties":false,"properties":{"activitySeq":{"type":"integer","minimum":1}},"required":["activitySeq"],
                     "description":"The task's method record (task_comment research, type method) this run follows, by its activity. A later method version leaves the run as it was; only a changed command or input needs a new run."},
+                "afterRuns":{"type":"array","maxItems":8,"description":AFTER_RUNS,
+                    "items":{"type":"object","properties":{"runId":run_ref,
+                        "when":{"type":"string","enum":["succeeded","settled"],"default":"succeeded"}},"required":["runId"],"additionalProperties":false}},
                 "stages":{"type":"array","minItems":1,"maxItems":16,"description":"In dependency order: a stage may need only earlier stages.","items":{"type":"object","properties":stage,"required":stage_required,"additionalProperties":false}}}),
             vec!["requestId","taskId","name","stages"]),
         make("job_run_get", "Read a run: each stage's attempts (job IDs, status, reasons, verified artifacts with SHA-256, identity), its upstream, retries and recorded cost across all attempts. Each attempt has resourceSummary (actual peak memory and CPU time / worker monotonic wall time versus declared resources); missing/invalid/remote values are null. Includes worker wrapper and pauses in wall time, excludes collector. Retries stay separate, reused producers do not execute in this run, and memory peaks are not additive. Unknown cost is reported apart, never as zero. status queued: no stage runs yet; queue then names the first queued stage, its Job, Core's reason and waitingFor. mail: the run's own mail by status and its delivery, as in job_get.", run_id.clone(), vec!["runId"]),

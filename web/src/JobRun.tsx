@@ -91,6 +91,8 @@ export type Run = {
    * reason and what it waits for (gpu, memory, cpu, slot, disk, exclusive,
    * budget or capacity). */
   queue?: { stage: string; jobId: string; waitingFor: string; reason: string } | null;
+  /** The runs it starts after (YN-30), with their status now. */
+  afterRuns?: { runId: string; name: string; when: "succeeded" | "settled"; status?: string }[] | null;
 };
 /** What a task's Jobs recorded spending (job_cost, T-17). */
 export type TaskSpend = {
@@ -137,6 +139,7 @@ const text = strings({
     waiting: "Waiting",
     blocked: "Stopped at its cost limit",
     checkpointed: "A stage stopped at checkpoint",
+    blocked_by_run: "Held by a run it waits for",
     succeeded: "Completed",
     failed: "A stage did not succeed",
     unknown: "A stage's outcome is unknown",
@@ -169,6 +172,9 @@ const text = strings({
     exclusive: "Queued: waiting for an exclusive job",
     budget: "Queued: waiting for the budget",
   } as Record<string, string>,
+  /** The runs it starts after (YN-30): each by name, how it waits, and its status in Core's words. */
+  after: (runs: string) => `Starts after ${runs}`,
+  afterRun: (name: string, when: string, status: string) => `${name} ${when === "settled" ? "finishes" : "succeeds"} (${status})`,
   noCost: "None recorded",
   unknownCost: (count: number) => `plus ${count} of unknown cost`,
   truncated: "usage file too long to read whole",
@@ -248,6 +254,7 @@ const text = strings({
     waiting: "等待中",
     blocked: "已在成本上限处停止",
     checkpointed: "有阶段已于检查点停止",
+    blocked_by_run: "被所等的运行卡住",
     succeeded: "已完成",
     failed: "有阶段未成功",
     unknown: "有阶段的结果未知",
@@ -279,6 +286,8 @@ const text = strings({
     exclusive: "排队：等独占 Job",
     budget: "排队：等预算",
   },
+  after: (runs) => `在 ${runs} 之后开始`,
+  afterRun: (name, when, status) => `${name}${when === "settled" ? "结束" : "成功"}（${status}）`,
   noCost: "未记录",
   unknownCost: (count) => `另有 ${count} 项成本未知`,
   truncated: "用量文件过长，无法完整读取",
@@ -428,7 +437,7 @@ export function RunCard({
   // A stage stopped at a checkpoint resumes from it (the user's Resume on
   // its attempt), not from scratch (YN-30).
   const retryable = !run.cancelRequestedAt && latest?.id === jobId && ended.has(latest.status) && mine?.status !== "checkpointed";
-  const live = ["queued", "running", "waiting", "blocked", "failed", "checkpointed"].includes(run.status);
+  const live = ["queued", "running", "waiting", "blocked", "failed", "checkpointed", "blocked_by_run"].includes(run.status);
   const said = (run.status === "queued" && run.queue && t.queuedFor[run.queue.waitingFor]) || t.run[run.status] || run.status;
   const awaiting = run.stages.some((stage) => stage.analysis?.state === "waiting");
   return (
@@ -441,6 +450,11 @@ export function RunCard({
         <strong>{run.name}</strong>
         {run.experiment && <span> · {run.experiment}</span>}
       </p>
+      {!!run.afterRuns?.length && (
+        <p className="job-run-after">
+          {t.after(run.afterRuns.map((a) => t.afterRun(a.name, a.when, a.status ?? "")).join(language === "zh-Hans" ? "、" : ", "))}
+        </p>
+      )}
       {run.method && (
         <p className="job-run-method">
           {t.follows(run.method.title || "", run.method.activitySeq, run.method.version)}
