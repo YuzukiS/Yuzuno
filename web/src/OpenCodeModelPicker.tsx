@@ -144,7 +144,7 @@ export function OpenCodeModelPicker({
   const savedName = saved ? (savedRow ? `${described(savedRow).providerName} · ${described(savedRow).name}` : saved)
     : defaultName ? `${t.savedDefault} (${defaultName})` : t.savedDefault;
   // With sources read and nothing logged in, the login below is how a provider's models arrive.
-  const noLogin = !!providers?.length && !providers.some((p) => p.source === "credential" || p.source === "env");
+  const noLogin = !!providers?.some((p) => p.source !== null) && !providers.some((p) => p.source === "credential" || p.source === "env");
   const row = (m: Model) => {
     const d = described(m);
     return (

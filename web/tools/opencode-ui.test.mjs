@@ -979,6 +979,21 @@ test("an OpenCode Agent's models are grouped by provider, logged-in first, and s
     assert.equal(gone.document.querySelector(".opencode-model-search input").placeholder, "搜索 3 个模型，或输入 提供方/模型");
     assert.deepEqual(gone.errors, []);
   } finally { gone.close(); }
+
+  // Sources Core could not read (null, R1 99f7cc4f of #795): no group says how it is reached, and nothing points to a
+  // login that may well be there already.
+  const unread = mount((url, init) => url.endsWith("/agents/oc/models")
+    ? { models: listed.slice(1), providers: providers.slice(1).map((p) => ({ ...p, source: null })), opencode: { version: "2.2.5", verified: "2.2.5" } }
+    : handler(url, init));
+  try {
+    unread.window.renderSettings({ agent, onSaved() {} }); await tick();
+    unread.document.querySelector(".agent-settings-button").click();
+    const list = () => unread.document.querySelector('[role="radiogroup"][aria-label="Model"]');
+    await until(() => list()?.querySelectorAll('input[type="radio"]').length === 5, "the list with sources unread");
+    assert.ok(!unread.document.querySelector(".opencode-model-login-hint"), "no login hint");
+    assert.ok(!unread.document.querySelector(".opencode-model-source"), "no group says how it is reached");
+    assert.deepEqual(unread.errors, []);
+  } finally { unread.close(); }
 });
 
 // R1 81aad988 of #788 (P3): a sign-in that finishes while the dialog's own read is out (here the read a composer
