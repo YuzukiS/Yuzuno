@@ -5,6 +5,7 @@
 import { Fragment, useState, type DragEvent, type ReactNode } from "react";
 import { StatusMark } from "./WorkDock";
 import { strings, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 
 /** Where a row belongs: still going, or ended however it ended. */
 export type Placement = "active" | "done";
@@ -182,9 +183,11 @@ export function JobRow({
         <span className="job-row-title">
           <strong>{name}</strong>
           {time && (
-            <span className="job-row-time" title={timeTitle}>
-              {time}
-            </span>
+            <Tip content={timeTitle ? <TipText title={timeTitle} /> : null}>
+              <span className="job-row-time">
+                {time}
+              </span>
+            </Tip>
           )}
         </span>
         <small>

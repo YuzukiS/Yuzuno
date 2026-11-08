@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import react from '@vitejs/plugin-react';
 import { JSDOM, VirtualConsole } from 'jsdom';
-import { readTip } from "./tip-dom.mjs";
+import { readTip, tipOf } from "./tip-dom.mjs";
 const root = fileURLToPath(new URL('../', import.meta.url));
 await mkdir(path.join(root, 'node_modules/.cache'), { recursive: true });
 const fixture = await mkdtemp(path.join(root, 'node_modules/.cache/jobs-waiting-count-ui-'));
@@ -66,7 +66,8 @@ test('the badge counts running, queued and waiting for an earlier stage, and say
     assert.equal(p.doc.querySelector('.jobs-budget-counts').textContent, '2 of 4 active · 0 queued · 1 waiting');
     const tab = p.doc.querySelector('.jobs-rail-count');
     assert.equal(tab.textContent, '3', 'the local tab counts all three');
-    assert.equal(tab.getAttribute('title'), '2 active · 0 queued · 1 waiting for an earlier stage on this machine');
+    // One tip for the whole tab (YN-44), its count in words.
+    assert.deepEqual(await tipOf(tab.closest('button')), ['2 active · 0 queued · 1 waiting for an earlier stage on this machine']);
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
 });
@@ -88,7 +89,7 @@ test('in Simplified Chinese the three are named in it', async () => {
     assert.equal((await readTip(p.w, p.doc.querySelector('.jobs-nav')))[1], '2 个活跃 · 0 个排队 · 1 个等待所在运行的上游阶段');
     await open(p);
     assert.equal(p.doc.querySelector('.jobs-budget-counts').textContent, '2 / 4 个活跃 · 0 个排队 · 1 个等待上游');
-    assert.equal(p.doc.querySelector('.jobs-rail-count').getAttribute('title'), '此机器上 2 个活跃 · 0 个排队 · 1 个等待上游阶段');
+    assert.deepEqual(await tipOf(p.doc.querySelector('.jobs-rail-count').closest('button')), ['此机器上 2 个活跃 · 0 个排队 · 1 个等待上游阶段']);
   } finally { p.close(); }
 });
 

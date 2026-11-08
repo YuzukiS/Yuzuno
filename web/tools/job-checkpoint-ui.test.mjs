@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import react from '@vitejs/plugin-react';
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { tipOf } from "./tip-dom.mjs";
 const root = fileURLToPath(new URL('../', import.meta.url));
 await mkdir(path.join(root, 'node_modules/.cache'), { recursive: true });
 const fixture = await mkdtemp(path.join(root, 'node_modules/.cache/job-checkpoint-ui-'));
@@ -79,8 +80,9 @@ test('stop at a checkpoint is offered apart from pause, says how it differs, and
     await select(p);
     assert.ok(button(p, 'Pause'), 'pause stays available beside it');
     const stop = button(p, 'Stop at checkpoint');
-    assert.match(stop.title, /Unlike Pause, this ends the attempt and frees its memory/);
-    assert.match(stop.title, /It has 120 s: if it is still running then, it is cancelled and cannot be resumed\./);
+    const stopSays = (await tipOf(stop)).join(' ');
+    assert.match(stopSays, /Unlike Pause, this ends the attempt and frees its memory/);
+    assert.match(stopSays, /It has 120 s: if it is still running then, it is cancelled and cannot be resumed\./);
     assert.match(p.doc.querySelector('.job-detail').textContent, /On stop: SIGTERM, 120 s to save, exits 75/);
     assert.deepEqual(posts(p), [], 'nothing is stopped by opening it');
     stop.click();
@@ -106,7 +108,8 @@ test('a job without a checkpoint, or paused, is not stopped at one', async () =>
   try {
     await select(paused);
     assert.equal(button(paused, 'Stop at checkpoint').disabled, true);
-    assert.match(button(paused, 'Stop at checkpoint').title, /Resume it first: a paused command cannot save a checkpoint/);
+    // Disabled while paused, it still says why (Tip `hold`, YN-44).
+    assert.match((await tipOf(button(paused, 'Stop at checkpoint'))).join(' '), /Resume it first: a paused command cannot save a checkpoint/);
   } finally { paused.close(); }
 });
 

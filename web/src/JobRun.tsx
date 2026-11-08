@@ -7,6 +7,7 @@ import { RotateCcw, Square } from "lucide-react";
 import { api, API_BASE, errorText, post } from "./api";
 import { JobCard } from "./JobParts";
 import { strings, useLanguage, useStrings, type Language } from "./i18n";
+import { Tip, TipText } from "./Tip";
 
 export type Artifact = {
   path: string;
@@ -444,7 +445,7 @@ export function RunCard({
     <JobCard
       title={t.title}
       className="job-run"
-      aside={<small title={run.status === "queued" ? run.queue?.reason || undefined : undefined}>{said}</small>}
+      aside={<Tip content={run.status === "queued" && run.queue?.reason ? <TipText body={run.queue.reason} /> : null}><small>{said}</small></Tip>}
     >
       <p className="job-run-name">
         <strong>{run.name}</strong>
@@ -476,16 +477,16 @@ export function RunCard({
                 </button>
               ) : (
                 stage.attempts.map((attempt) => (
-                  <button
-                    key={attempt.id}
-                    type="button"
-                    className="quiet-button"
-                    aria-current={attempt.id === jobId ? "true" : undefined}
-                    title={attempt.reason || undefined}
-                    onClick={() => onOpen(attempt.id)}
-                  >
-                    {t.attempt(attempt.run.attempt, stage.retry ? stage.retry.attempts : null)}
-                  </button>
+                  <Tip key={attempt.id} content={attempt.reason ? <TipText body={attempt.reason} /> : null}>
+                    <button
+                      type="button"
+                      className="quiet-button"
+                      aria-current={attempt.id === jobId ? "true" : undefined}
+                      onClick={() => onOpen(attempt.id)}
+                    >
+                      {t.attempt(attempt.run.attempt, stage.retry ? stage.retry.attempts : null)}
+                    </button>
+                  </Tip>
                 ))
               )}
               {stage.needs.length > 0 && <small>{t.needs(stage.needs.join(", "))}</small>}

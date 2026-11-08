@@ -6,6 +6,7 @@ import type { MachineLoad } from "./home/types";
 import { strings, useStrings } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import { SettingsSlider } from "./SettingsSlider";
+import { Tip, TipLines, TipText } from "./Tip";
 type Resources = { cpuMillis: number; memoryMiB: number; swapMiB: number };
 /** Memory in GiB once it reaches one, else MiB. */
 export const memoryText = (miB: number) =>
@@ -645,7 +646,7 @@ export function DiskSpace({ disk }: { disk: DiskView }) {
     return (
       <UsageMeter
         className="jobs-disk-volume is-unknown"
-        label={<span className="jobs-disk-paths" title={read}>{t.disk}</span>}
+        label={<Tip content={<TipText title={read} />}><span className="jobs-disk-paths">{t.disk}</span></Tip>}
         used={null}
         reserved={null}
         total={1}
@@ -664,12 +665,12 @@ export function DiskSpace({ disk }: { disk: DiskView }) {
             key={index}
             className={`jobs-disk-volume${v.low ? " is-low" : ""}${v.error ? " is-unknown" : ""}`}
             label={
-              <span
-                className="jobs-disk-paths"
-                title={[...v.paths.map((p) => `${p.role}: ${p.path}`), read].join("\n")}
-              >
-                {label}
-              </span>
+              // What it holds, a line each, and when it was read.
+              <Tip content={<TipLines text={[label, ...v.paths.map((p) => `${p.role}: ${p.path}`), read].join("\n")} />} size="wide">
+                <span className="jobs-disk-paths">
+                  {label}
+                </span>
+              </Tip>
             }
             used={known ? v.totalBytes! - v.availableBytes! : null}
             reserved={null}
@@ -806,9 +807,11 @@ export function WindowsJobs({ windows }: { windows: WindowsJobsView }) {
       title={t.windowsTitle(windows.activeCount, ceiling)}
     >
       <span className="jobs-cell-foot">
-        <span className="jobs-reserved-text" title={t.windowsCeiling(ceiling)}>
-          {t.sharesBudget}
-        </span>
+        <Tip content={<TipText title={t.windowsCeiling(ceiling)} />}>
+          <span className="jobs-reserved-text">
+            {t.sharesBudget}
+          </span>
+        </Tip>
       </span>
     </UsageMeter>
   );
@@ -976,9 +979,11 @@ export function GpuDevices({
             key={d.uuid}
             className={`jobs-gpu${d.admission === "closed" ? " is-closed" : ""}`}
             label={
-              <span className="jobs-gpu-name" title={`${name}\n${d.uuid}\n${sampled}${gpus.scope}`}>
-                {short}
-              </span>
+              <Tip content={<TipLines text={`${name}\n${d.uuid}\n${sampled}${gpus.scope}`} />} size="wide">
+                <span className="jobs-gpu-name">
+                  {short}
+                </span>
+              </Tip>
             }
             used={used}
             reserved={held || null}
@@ -993,12 +998,12 @@ export function GpuDevices({
             <span className="jobs-cell-foot">
               <span className="jobs-gpu-total">{t.of(memoryText(d.memoryTotalMiB))}</span>
               {held > 0 && (
-                <span
-                  className="jobs-gpu-held"
-                  title={d.reservations.map((r) => `${r.name}: ${memoryText(r.memoryMiB)} ${r.mode}`).join("\n")}
-                >
-                  {t.reserved(memoryText(held))}
-                </span>
+                // Whose it is, a line each.
+                <Tip content={<TipLines text={[t.reserved(memoryText(held)), ...d.reservations.map((r) => `${r.name}: ${memoryText(r.memoryMiB)} ${r.mode}`)].join("\n")} />}>
+                  <span className="jobs-gpu-held">
+                    {t.reserved(memoryText(held))}
+                  </span>
+                </Tip>
               )}
               {busyPct != null && <span className="jobs-gpu-busy">{t.busy(Math.round(busyPct))}</span>}
               <span className="jobs-gpu-mode">
@@ -1041,15 +1046,16 @@ function GpuPause({
 }) {
   const t = useStrings(text);
   return (
-    <button
-      type="button"
-      className="quiet-button jobs-gpu-pause"
-      disabled={busy}
-      onClick={() => void act(resume)}
-      title={resume ? t.resumeGpuTitle : t.pauseGpuTitle}
-    >
-      {resume ? t.resumeGpu : t.pauseGpu}
-    </button>
+    <Tip content={<TipText body={resume ? t.resumeGpuTitle : t.pauseGpuTitle} />}>
+      <button
+        type="button"
+        className="quiet-button jobs-gpu-pause"
+        disabled={busy}
+        onClick={() => void act(resume)}
+      >
+        {resume ? t.resumeGpu : t.pauseGpu}
+      </button>
+    </Tip>
   );
 }
 

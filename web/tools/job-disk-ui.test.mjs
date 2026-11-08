@@ -22,6 +22,7 @@ try {
     `import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {DiskReserveSettings, DiskSpace} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
+import { tipOf } from "./tip-dom.mjs";
 const root = createRoot(document.getElementById('root'));
 window.render = props => root.render(<DiskSpace {...props}/>);
 window.renderReserve = props => root.render(<DiskReserveSettings {...props}/>);`,
@@ -100,7 +101,8 @@ test("each filesystem is one bar of what is used, its folders in the tip, a low 
     assert.deepEqual(rows.map((r) => r.querySelector(".jobs-disk-paths").textContent), ["Disk 1", "Disk 2", "Disk 3"]);
     assert.equal(rows[0].querySelector(".jobs-disk-free").textContent, "107.0 GiB free");
     assert.equal(rows[0].querySelector(".jobs-disk-total").textContent, "of 1500.0 GiB");
-    assert.match(rows[0].querySelector(".jobs-disk-paths").title, /^Core data and job records: \/data\nworking directory: \/data\/w\nRead /);
+    // Its tip (YN-44): its name, then what it holds and when it was read.
+    assert.match((await tipOf(rows[0].querySelector(".jobs-disk-paths"))).slice(1).join("\n"), /^Core data and job records: \/data\nworking directory: \/data\/w\nRead /);
     const used = Number.parseFloat(rows[0].querySelector(".jobs-meter-used").style.width);
     assert.ok(Math.abs(used - (1393 / 1500) * 100) < 0.01, `used share ${used}`);
     assert.equal(rows[0].querySelector(".jobs-meter-reserved"), null, "a disk has nothing reserved");

@@ -19,6 +19,7 @@ import {
   type Placement,
 } from "./JobParts";
 import { randomId } from "./random-id";
+import { Tip, TipText } from "./Tip";
 
 export type Run = {
   id: string;
@@ -213,7 +214,7 @@ const ciText = strings({
   reading: "Reading runs…",
   attempt: (attempt: string) => `attempt ${attempt}`,
   earlier: "Earlier CI runs",
-  openTitle: "Open run, logs and artifacts on GitHub",
+  openHolds: "The run, its logs and its artifacts",
   openOnGitHub: "Open on GitHub",
   notBeingWatched: "Not being watched — showing the last observation. Use refresh to check this attempt once without restarting monitoring.",
   olderPrCommit: "Older PR commit. This result does not describe the current PR head.",
@@ -319,7 +320,7 @@ const ciText = strings({
   reading: "正在读取运行…",
   attempt: (attempt) => `第 ${attempt} 次尝试`,
   earlier: "更早的 CI 运行",
-  openTitle: "在 GitHub 上打开运行、日志和产物",
+  openHolds: "运行、日志和产物",
   openOnGitHub: "在 GitHub 上打开",
   notBeingWatched: "未被监视 — 正在显示上次的观察结果。使用刷新可检查此尝试一次，而不会重新开始监视。",
   olderPrCommit: "较旧的 PR 提交。此结果不描述当前的 PR head。",
@@ -865,20 +866,21 @@ export function CiJobs({
         actions={
           <>
             {!creating && (
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={t.checkNow}
-                title={t.checkNow}
-                aria-busy={check?.status === "busy"}
-                disabled={check?.status === "busy"}
-                onClick={() => void refresh()}
-              >
-                <RefreshCw
-                  size={15}
-                  className={check?.status === "busy" ? "spin" : undefined}
-                />
-              </button>
+              <Tip content={<TipText title={t.checkNow} />} describe={false}>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={t.checkNow}
+                  aria-busy={check?.status === "busy"}
+                  disabled={check?.status === "busy"}
+                  onClick={() => void refresh()}
+                >
+                  <RefreshCw
+                    size={15}
+                    className={check?.status === "busy" ? "spin" : undefined}
+                  />
+                </button>
+              </Tip>
             )}
             <button
               type="button"
@@ -1115,16 +1117,18 @@ export function CiJobs({
                     role={runActive(chosen) ? "status" : undefined}
                   >
                     {safeLink(chosen.url) && (
-                      <a
-                        className="secondary-button"
-                        href={safeLink(chosen.url)}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={t.openTitle}
-                      >
-                        <ExternalLink size={13} aria-hidden="true" />
-                        {t.openOnGitHub}
-                      </a>
+                      // What it holds there; its words say where it goes.
+                      <Tip content={<TipText body={t.openHolds} />}>
+                        <a
+                          className="secondary-button"
+                          href={safeLink(chosen.url)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <ExternalLink size={13} aria-hidden="true" />
+                          {t.openOnGitHub}
+                        </a>
+                      </Tip>
                     )}
                   </JobDetailHeading>
                   {chosen.runWatched === false && (

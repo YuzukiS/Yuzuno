@@ -24,6 +24,7 @@ try {
 import {createRoot} from 'react-dom/client';
 import {GpuDevices, GpuDeviceSettings} from ${JSON.stringify(path.join(root, "src/JobBudget.tsx"))};
 import {Jobs, ConversationJobs} from ${JSON.stringify(path.join(root, "src/Jobs.tsx"))};
+import { tipOf } from "./tip-dom.mjs";
 const root = createRoot(document.getElementById('root'));
 window.renderGpus = props => root.render(<GpuDevices {...props}/>);
 window.renderGpuSettings = props => root.render(<GpuDeviceSettings {...props}/>);
@@ -114,7 +115,7 @@ test("each GPU is a bar of its memory and of what managed jobs reserve on it, an
     await until(() => p.document.querySelectorAll(".jobs-gpu").length === 2);
     const [first, second] = p.document.querySelectorAll(".jobs-gpu");
     assert.equal(first.querySelector(".jobs-gpu-name").textContent, "GPU 0 · RTX 5090");
-    assert.match(first.querySelector(".jobs-gpu-name").title,
+    assert.match((await tipOf(first.querySelector(".jobs-gpu-name"))).join("\n"),
       new RegExp(`^GPU 0 · NVIDIA GeForce RTX 5090\\n${GPU0}\\nSampled .+\\. Admission among this Core's managed jobs by declared GPU memory\\.$`));
     // In use is the whole card (32607 − 16972 MiB); reserved is what train holds.
     assert.equal(first.querySelector(".jobs-gpu-free").textContent, "15.3 GiB in use");
@@ -123,7 +124,7 @@ test("each GPU is a bar of its memory and of what managed jobs reserve on it, an
     assert.ok(Math.abs(share(first, "used") - (15635 / 32607) * 100) < 0.01);
     assert.ok(Math.abs(share(first, "reserved") - (8192 / 32607) * 100) < 0.01);
     assert.equal(first.querySelector(".jobs-gpu-held").textContent, "8.0 GiB reserved");
-    assert.equal(first.querySelector(".jobs-gpu-held").title, "train: 8.0 GiB exclusive");
+    assert.deepEqual((await tipOf(first.querySelector(".jobs-gpu-held"))).slice(1), ["train: 8.0 GiB exclusive"]);
     assert.equal(second.querySelector(".jobs-gpu-name").textContent, "GPU 1 · RTX A4000");
     assert.equal(first.querySelector(":scope > small"), null);
     assert.equal(first.querySelector(".jobs-gpu-mode").textContent, "Exclusive", "an open GPU says it takes one job at a time");

@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import react from '@vitejs/plugin-react';
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { tipOf } from "./tip-dom.mjs";
 const root = fileURLToPath(new URL('../', import.meta.url));
 await mkdir(path.join(root, 'node_modules/.cache'), { recursive: true });
 const fixture = await mkdtemp(path.join(root, 'node_modules/.cache/merge-queue-ui-'));
@@ -474,7 +475,8 @@ test('in Chinese the pause, actions and refusals are Chinese, and Core text stay
     assert.match(acknowledged.firstChild.textContent, /^Lead Sora 已按内容确认 2 个；审查轮读不了它们，结论仍是未知$/);
     assert.deepEqual([...acknowledged.querySelectorAll('li')].map(li => li.textContent),
       [`icons/a.png · png · 62 字节 · ${'1'.repeat(12)} · Synthetic note`, `icons/b.png · png · 70 字节 · ${'2'.repeat(12)}`]);
-    assert.equal(acknowledged.querySelector('li code[title]').getAttribute('title'), '1'.repeat(64), 'the whole SHA-256 is on hover');
+    const sha = [...acknowledged.querySelectorAll('li code')].find((code) => code.textContent === '1'.repeat(12));
+    assert.equal((await tipOf(sha)).at(-1), '1'.repeat(64), 'the whole SHA-256 is in its tip');
     // The panel's own words have no English: what is left once the data
     // (names, repositories, SHAs, task references, Core's text) is taken out.
     const box = panel(p).cloneNode(true);

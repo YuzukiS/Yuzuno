@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import react from '@vitejs/plugin-react';
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { tipOf } from "./tip-dom.mjs";
 const root = fileURLToPath(new URL('../', import.meta.url));
 await mkdir(path.join(root, 'node_modules/.cache'), { recursive: true });
 const fixture = await mkdtemp(path.join(root, 'node_modules/.cache/jobs-ui-'));
@@ -792,7 +793,7 @@ test('the machine card puts what jobs use on the bars of what they reserve, and 
     assert.equal(ram.querySelector('.jobs-meter-used').style.width, '3.125%');
     assert.equal(ram.querySelector('.jobs-meter-reserved').style.width, '6.25%');
     assert.equal(ram.querySelector('.jobs-budget-host').textContent, '2.0 GiB free on the host');
-    assert.match(p.doc.querySelector('.jobs-budget-key').title, /bounded result collector/);
+    assert.match((await tipOf(p.doc.querySelector('.jobs-budget-key'))).join(' '), /bounded result collector/);
     // Hidden, the card stops reading the machine; shown again, it reads at once.
     Object.defineProperty(p.doc, 'visibilityState', { configurable: true, get: () => 'hidden' });
     p.doc.dispatchEvent(new p.window.Event('visibilitychange'));
