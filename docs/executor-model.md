@@ -814,6 +814,37 @@ announced only when it changes, not on every check. A write to its task
 announces it only when it can change the state: a result, a dispatch, a
 claim, or a new status or blocker. A progress-only update doesn't.
 
+## An executor's account or key
+
+An executor on this Core host may be started with a routing account or key
+(its runtime profile; see [Executor routing](executor-routing.md)), which
+the routing slices set. Nothing at this version sets one; without one an
+executor starts on the host's own login, as before.
+
+- **Where it lives.** In its own table, never in the Agent's record, so an
+  older Core's rewrite of the record cannot drop it.
+- **Each start reads it again**, a reconnect too, and hands what it gives to
+  that executor's harness process only: never to Core's own environment, so
+  never to another Agent, a Job, a review run or a catalog read.
+- **A claude-swap account is resolved at each start** from a fresh
+  `cswap list`:
+  - the account that is the host's current default login starts on the
+    plain host login: `cswap run --require-session` refuses that account,
+    and the host login is that same account;
+  - any other listed account starts through `cswap run <slot> --require-session`;
+  - an account no longer listed does not start.
+- **An executor is never moved to another account during its life.** A
+  refusal, an account that is gone, or a key that cannot be read fails that
+  start with its reason. The start is then a failed start like any other
+  (see [Executors at once](#executors-at-once)). Its session lives in that
+  account's profile, so another account could not resume it anyway.
+- **On another machine** an executor with a profile does not start: keys and
+  accounts stay on this Core host.
+- **With an older Core**, the profile is not read: such an executor is
+  reconnected on the host's own login. A Claude session started in a
+  claude-swap profile is then not found. Close such executors before going
+  back to an older Core.
+
 ## An executor's session
 
 An executor's session has two tabs, 概览 · Overview and 会话 · Conversation:
