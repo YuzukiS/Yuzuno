@@ -253,3 +253,17 @@ test("with no reading at all, an unknown candidate's card says none came yet, no
   await until(() => q(known, ".routing-now"), "the now card");
   assert.equal(q(known, ".routing-now .settings-row-meta").textContent, "No reading was needed");
 });
+
+test("a choice released to start without routing says so, with Core's words, not that none was available", async () => {
+  const released = { code: "noCandidate", message: "No enabled candidate of its harness is left, so it starts as it would without routing",
+    messageZh: "已没有启用的同一工具候选，所以按没有路由时的方式启动", at: minutesAgo(1) };
+  const choices = () => [200, { choices: [{ dispatchId: "d-9", taskId: "T-909", agentId: "agent-9", executorName: "T-909 · Dev",
+    route: { at: "dispatch", evaluatedAt: minutesAgo(30), chosen: null, waiting: false, released, candidates: [{ id: "cl", state: "skipped", reasons: [], readings: [] }] } }] }];
+  const what = async (page) => {
+    await until(() => page.document.querySelectorAll(".routing-recent-row").length === 1, "the choice");
+    const row = q(page, ".routing-recent-row");
+    return [row.querySelector(".routing-recent-what b").textContent, row.querySelector(".routing-recent-what small").textContent];
+  };
+  assert.deepEqual(await what(mount(core({ choices }))), ["T-909 · Dev → started without routing", released.message]);
+  assert.deepEqual(await what(mount(core({ choices }), "zh-Hans")), ["T-909 · Dev → 未经路由启动", released.messageZh]);
+});

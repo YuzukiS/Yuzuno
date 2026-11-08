@@ -22,6 +22,8 @@ export interface RouteRecord {
   candidates: RouteCandidate[];
   changedAtStart?: { from: string; reason: string | Reason };
   earliest?: { at: string; candidate: string };
+  /** An executor no candidate could ever take: it started without routing (#805). */
+  released?: Reason & { at?: string };
 }
 export interface Choice { dispatchId: string; taskId: string; executorName?: string; route: RouteRecord }
 export interface Spend { day: string; utcOffset?: string; resetsAt?: string; totalUsd: number; capUsd?: number; byKey: Record<string, number>; note?: string; noteZh?: string }
@@ -59,6 +61,11 @@ const candidateOf = (v: unknown): RouteCandidate | null => {
     ...(Array.isArray(c.accounts) ? { accounts: list(c.accounts, accountOf) } : {}),
   };
 };
+const releasedOf = (v: unknown): { released?: Reason & { at?: string } } => {
+  const why = reasonOf(v);
+  const at = (v as { at?: unknown } | null)?.at;
+  return why ? { released: { ...why, ...(text(at) ? { at } : {}) } } : {};
+};
 /** A record as this client reads it: only the fields it shows, an account by
  * number and fingerprint only. */
 export function routeRecord(v: unknown): RouteRecord {
@@ -75,6 +82,7 @@ export function routeRecord(v: unknown): RouteRecord {
     ...(r.changedAtStart && text(r.changedAtStart.from) ? { changedAtStart: { from: r.changedAtStart.from,
       reason: reasonOf(r.changedAtStart.reason) ?? (text(r.changedAtStart.reason) ? r.changedAtStart.reason : "") } } : {}),
     ...(r.earliest && text(r.earliest.at) && text(r.earliest.candidate) ? { earliest: { at: r.earliest.at, candidate: r.earliest.candidate } } : {}),
+    ...releasedOf(r.released),
   };
 }
 
