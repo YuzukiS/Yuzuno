@@ -178,6 +178,42 @@ function stepRef(step: Step, t: ReturnType<typeof text>): string {
   }
 }
 
+/**
+ * A long material, capped and scrolling inside (YN-46): the cap is
+ * executor-overview.css's (about 12 lines); a short one keeps its own height.
+ * While more of it is below or above, it says so with a fade at that edge,
+ * and only then is it a region a keyboard can scroll.
+ */
+function CappedText({ text, label }: { text: string; label: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ above: false, below: false });
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const read = () => {
+      const above = el.scrollTop > 1;
+      const below = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+      setEdges((was) => (was.above === above && was.below === below ? was : { above, below }));
+    };
+    read();
+    el.addEventListener("scroll", read, { passive: true });
+    // Its width, the text size or its card opening again change what fits.
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(read);
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", read);
+      observer?.disconnect();
+    };
+  }, [text]);
+  const scrolls = edges.above || edges.below;
+  return (
+    <div ref={box} className="executor-overview-capped" data-above={edges.above || undefined} data-below={edges.below || undefined}
+      {...(scrolls ? { tabIndex: 0, role: "region", "aria-label": label } : {})}>
+      {text}
+    </div>
+  );
+}
+
 type Job = ExecutorOverviewData["jobs"][number];
 
 /** Its red Job and the green one after it (T-43 S5, a red-first template's
@@ -203,7 +239,8 @@ export function redGreen(steps: Step[], jobs: Job[]): { red: Job; green: Job } |
  * state its record gives; what it is doing now; a banner while it needs you;
  * its PR's changes; its evidence (its Jobs, the PR's review and CI, the merge
  * entry), each with its own conclusion; and its result. The same records as
- * its Conversation, read another way.
+ * its Conversation, read another way. On a wide pane its steps and what it is
+ * doing now are a column of their own beside the rest (YN-46).
  */
 export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }: {
   agent: Agent;
@@ -284,36 +321,40 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
         <summary><h3>{t.materials}</h3><span className="note">{t.materialsNote}</span></summary>
         {m ? (
           <dl className="executor-overview-kv">
-            {m.acceptance && <><dt>{t.acceptance}</dt><dd>{m.acceptance}</dd></>}
+            {m.acceptance && <><dt>{t.acceptance}</dt><dd><CappedText text={m.acceptance} label={t.acceptance} /></dd></>}
             {(m.repository || m.baseSha) && <><dt>{t.repository}</dt><dd>{m.repository ?? ""}{m.baseSha ? ` @ ${short(m.baseSha)}` : ""}</dd></>}
             {m.worktree && <><dt>{t.worktree}</dt><dd><code>{m.worktree}</code></dd></>}
-            {m.returnRequirements && <><dt>{t.returns}</dt><dd>{m.returnRequirements}</dd></>}
+            {m.returnRequirements && <><dt>{t.returns}</dt><dd><CappedText text={m.returnRequirements} label={t.returns} /></dd></>}
             {m.handoverVersion != null && <><dt>{t.handover}</dt><dd>v{m.handoverVersion}</dd></>}
             {m.contextSummary && <><dt>{t.context}</dt><dd className="clamped">{m.contextSummary}</dd></>}
           </dl>
         ) : <p className="empty">{t.noMaterials}</p>}
       </details>
-      <section className="executor-overview-card">
-        <h3>{t.steps} <span className="note">{t.stepsNote}</span></h3>
-        <ol className="executor-overview-steps">
-          {steps.map((step, i) => (
-            <li key={i} className="step" data-state={step.state}>
-              <span className="mark" aria-hidden="true" />
-              {/* Its place, so "step 2" in an ask points somewhere (S5); the list says it to a screen reader. */}
-              <span className="no" aria-hidden="true">{i + 1}</span>
-              <span className="label">{step.label || t.stepKind[step.kind] || step.kind}</span>
-              <span className="state">{t.stepState[step.state]}</span>
-              <span className="ref">{stepRef(step, t)}</span>
-            </li>
-          ))}
-        </ol>
-        {data.steps.length > SHOWN_STEPS && (
-          <button type="button" className="more" onClick={() => setAllSteps((v) => !v)} aria-expanded={allSteps}>
-            {allSteps ? t.fewer : t.more(data.steps.length - SHOWN_STEPS)}
-          </button>
-        )}
-      </section>
-      <p className="executor-overview-now"><strong>{t.now}</strong>{agent.workSummary?.text || t.nothingNow}</p>
+      {/* Its steps and what it is doing now: their own column when the pane
+          is wide enough, beside the rest (YN-46, executor-overview.css). */}
+      <div className="executor-overview-progress">
+        <section className="executor-overview-card">
+          <h3>{t.steps} <span className="note">{t.stepsNote}</span></h3>
+          <ol className="executor-overview-steps">
+            {steps.map((step, i) => (
+              <li key={i} className="step" data-state={step.state}>
+                <span className="mark" aria-hidden="true" />
+                {/* Its place, so "step 2" in an ask points somewhere (S5); the list says it to a screen reader. */}
+                <span className="no" aria-hidden="true">{i + 1}</span>
+                <span className="label">{step.label || t.stepKind[step.kind] || step.kind}</span>
+                <span className="state">{t.stepState[step.state]}</span>
+                <span className="ref">{stepRef(step, t)}</span>
+              </li>
+            ))}
+          </ol>
+          {data.steps.length > SHOWN_STEPS && (
+            <button type="button" className="more" onClick={() => setAllSteps((v) => !v)} aria-expanded={allSteps}>
+              {allSteps ? t.fewer : t.more(data.steps.length - SHOWN_STEPS)}
+            </button>
+          )}
+        </section>
+        <p className="executor-overview-now"><strong>{t.now}</strong>{agent.workSummary?.text || t.nothingNow}</p>
+      </div>
       <section className="executor-overview-card">
         <h3>{t.changes} {pr?.changes && <span className="note">{t.changesSize(pr.changes.additions, pr.changes.deletions, pr.changes.files)}</span>}</h3>
         {!pr ? <p className="empty">{t.noChanges}</p>
