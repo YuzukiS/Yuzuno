@@ -134,11 +134,12 @@ async function type(page, label, value) {
 /** Where a secret must never be (YN-49, the Lead's gate on #794): the page's
  * markup, any field's value or value attribute, this site's storage, the
  * URL, the console, and any request but its own write. */
-function nowhere(page, secret, ownWrite) {
+function nowhere(page, secret, ownWrite, typedIn) {
   const { window, document } = page;
   assert.ok(!document.documentElement.outerHTML.includes(secret), "not in the page's markup");
   for (const input of document.querySelectorAll("input")) {
-    assert.notEqual(input.value, secret, "no field holds it");
+    // Only the field it was typed into may still hold it (to try again), as its own value.
+    if (input.getAttribute("aria-label") !== typedIn) assert.notEqual(input.value, secret, "no field holds it");
     assert.ok(!(input.getAttribute("value") ?? "").includes(secret), "no value attribute holds it");
   }
   for (const storage of [window.localStorage, window.sessionStorage]) {
@@ -222,7 +223,8 @@ test("no answer from Core: the error says so, the value stays in its field only,
   button(page, "Save", page.document.querySelector(".routing-new-key")).click();
   await until(() => page.document.querySelector('.routing-add-key [role="alert"]'), "the error");
   assert.equal(page.document.querySelector('.routing-add-key [role="alert"]').textContent, "No answer from Core over the network.");
-  nowhere(page, SECRET, page.calls.find((c) => c.method === "PUT"));
+  assert.equal(field(page, "DeepSeek API key (for OpenCode): value").value, SECRET, "kept in its own field to try again");
+  nowhere(page, SECRET, page.calls.find((c) => c.method === "PUT"), "DeepSeek API key (for OpenCode): value");
   button(page, "Cancel", page.document.querySelector(".routing-new-key")).click();
   await tick();
   assert.equal(field(page, "DeepSeek API key (for OpenCode): value"), null, "the field is gone, and its value with it");
