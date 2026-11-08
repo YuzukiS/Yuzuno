@@ -18,6 +18,7 @@ import { extname, resolve } from "node:path";
 import { deflateSync } from "node:zlib";
 import { chromium } from "playwright-core";
 import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { tipText } from "./tip-browser.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -890,7 +891,10 @@ try {
       await expect("referenced file", async () => {
         const referenced = files.locator(".brief-attachment").nth(3);
         assert.equal(await referenced.locator('.brief-chip[data-state="changed"]').innerText(), "May have changed");
-        assert.equal(await referenced.locator(".brief-path").getAttribute("title"), "/data/runs/exp-12/checkpoints/epoch-40.safetensors");
+        // The whole path is its tip only while CSS cuts its directory (YN-44 `cut`).
+        const path = referenced.locator(".brief-path");
+        const cutShort = await path.evaluate((el) => [el, ...el.children].some((c) => c.scrollWidth > c.clientWidth + 1));
+        assert.equal(await tipText(page, path), cutShort ? "/data/runs/exp-12/checkpoints/epoch-40.safetensors" : null, `cut short: ${cutShort}`);
         assert.match(await referenced.innerText(), /Referenced/);
         assert.equal(await referenced.locator("img, .brief-preview").count(), 0, "a referenced file is never previewed");
       });
@@ -963,11 +967,11 @@ try {
     const gpu = page.locator(".home-gpus li");
     assert.match(await gpu.textContent(), /NVIDIA GeForce RTX 5090.*Use 63%.*Memory/is);
     assert.equal(await gpu.locator(".home-meter").count(), 2, "a bar for use and one for memory");
-    assert.match(await gpu.getAttribute("title"), /other programs included; not split by Agent or Job/);
+    assert.match(await tipText(page, gpu), /other programs included; not split by Agent or Job/);
     // The Jobs here are one line (T-18): how many and the first; each Job's project and Agent in its tip.
     const job = page.locator(".home-machine-jobs .home-machine-job-line");
     assert.match(await job.textContent(), /1 running\s*cargo test -j2/);
-    assert.match(await job.getAttribute("title"), /cargo test -j2 · Yuzuno app · Mori/);
+    assert.match(await tipText(page, job), /cargo test -j2 · Yuzuno app · Mori/);
   });
 
   const looks = {};

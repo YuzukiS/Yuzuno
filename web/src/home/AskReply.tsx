@@ -21,6 +21,7 @@ import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import { repliedThenUpdated } from "./brief-layout";
 import type { Section } from "./types";
+import { Tip, TipText } from "../Tip";
 
 type ReplyContext = {
   projectId: string;
@@ -215,15 +216,17 @@ function TextReply({
           }
         }}
       />
-      <button
-        type="submit"
-        className="primary-button"
-        disabled={disabled || held || busy || !text.trim()}
-        title={returnSends(sendKey, touchKeyboard()) ? t.sendTitleReturn : t.sendTitle(shortcutModifier)}
-      >
-        {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
-        {t.send}
-      </button>
+      {/* Its key, as the composer's Send says it. */}
+      <Tip content={<TipText title={t.send} kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`} />} describe={false}>
+        <button
+          type="submit"
+          className="primary-button"
+          disabled={disabled || held || busy || !text.trim()}
+        >
+          {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
+          {t.send}
+        </button>
+      </Tip>
     </form>
   );
 }

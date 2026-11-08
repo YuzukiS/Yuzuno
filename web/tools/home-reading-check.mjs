@@ -15,6 +15,7 @@ import { extname, resolve } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { chromium } from "playwright-core";
 import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { tipText } from "./tip-browser.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -211,11 +212,11 @@ try {
     await closeReport();
     check(`${viewport.name}: the closed author's page says who left it and that it can be claimed`);
 
-    // Short labels lead; the current title is in the tooltip and the accessible name.
+    // Short labels lead; the current title is in the tip and the accessible name.
     await openReport("development");
     const chip = opened.locator('.brief-ref[data-kind="task"]').first();
     assert.equal(await chip.locator("span").first().innerText(), "UI refine 9");
-    assert.match(await chip.getAttribute("title"), /^(Open )?Task T-9: UI refine 9: Home cards/);
+    assert.match(await tipText(page, chip), /^Task T-9: UI refine 9: Home cards/);
     assert.match(await chip.evaluate((el) => el.textContent), /^UI refine 9: UI refine 9: Home cards/);
     const chipBox = await chip.boundingBox();
     assert.ok(chipBox.height < 40, `a chip stays one line (${chipBox.height})`);

@@ -10,6 +10,7 @@ import { formatTime, researchPath, type ResearchDeskProps } from "./brief-catalo
 import { researchText, type DeskView } from "./research-text";
 import { useSurfaceIn } from "../../surface";
 import "./research.css";
+import { Tip, TipText } from "../../Tip";
 
 /**
  * A research desk (T-9): claims with their intervals, what may and may not
@@ -295,10 +296,12 @@ function Radios<T extends string>({
 function OriginMark({ origin }: { origin: Origin }) {
   const t = useStrings(researchText);
   return (
-    <span className="research-origin" data-origin={origin} title={t.origin[origin]}>
-      <span aria-hidden="true" className="research-origin-dot" />
-      <span className="research-sr">{t.origin[origin]}</span>
-    </span>
+    <Tip content={<TipText title={t.origin[origin]} />} describe={false}>
+      <span className="research-origin" data-origin={origin}>
+        <span aria-hidden="true" className="research-origin-dot" />
+        <span className="research-sr">{t.origin[origin]}</span>
+      </span>
+    </Tip>
   );
 }
 
@@ -434,7 +437,7 @@ function SourceLine({ source, info, lines, prefix = true }: { source: Source; in
       </span>
       {source.snapshot && info?.sha256 && info.available && (
         <span className="research-snapshot">
-          {t.snapshot} <code>{source.snapshot}</code> · SHA-256 <code title={info.sha256}>{info.sha256.slice(0, 12)}</code>
+          {t.snapshot} <code>{source.snapshot}</code> · SHA-256 <Tip content={<TipText label="SHA-256" value={info.sha256} />} size="wide"><code>{info.sha256.slice(0, 12)}</code></Tip>
           {info.takenAt && <> · {t.taken(formatTime(info.takenAt, time))}</>}
           <span className="research-note">{t.notRechecked}</span>
         </span>

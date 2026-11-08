@@ -27,6 +27,7 @@ import {
 import { returnOverviewText } from "./return-overview-text";
 import type { HomeData } from "./types";
 import "./return-overview.css";
+import { Tip, TipText } from "../Tip";
 
 /** A held reading, with explicit refresh. Needs you and failures are always
  * live alongside it. Mount with a Workspace key; no visit timestamp or
@@ -107,16 +108,18 @@ export function HomeReturnOverview({
         <span className="home-return-asof">
           {t.observed(absolute(reading.at, time))}
         </span>
-        <button
-          type="button"
-          className={`quiet-button home-return-refresh${changed ? " has-update" : ""}`}
-          disabled={!changed || readFailed}
-          title={t.updateHelp}
-          onClick={() => setReading(latest)}
-        >
-          <RefreshCw size={13} />
-          {changed ? t.newReading : t.update}
-        </button>
+        {/* Held: disabled while nothing is new, it still says what it updates. */}
+        <Tip content={<TipText body={t.updateHelp} />} hold>
+          <button
+            type="button"
+            className={`quiet-button home-return-refresh${changed ? " has-update" : ""}`}
+            disabled={!changed || readFailed}
+            onClick={() => setReading(latest)}
+          >
+            <RefreshCw size={13} />
+            {changed ? t.newReading : t.update}
+          </button>
+        </Tip>
       </header>
       {stale.shown && (
         <div className="home-return-stale-slot">

@@ -34,6 +34,7 @@ import { BriefDensity } from "./home-density";
 import { homeText } from "./home-text";
 import { useReportOpen } from "./report/report-open";
 import { DataAsOf, PinButton } from "./SectionCard";
+import { Tip, TipText } from "../Tip";
 import { SectionBody } from "./SectionBody";
 import type { Section } from "./types";
 import "./summary-card.css";
@@ -158,51 +159,56 @@ export const SummaryCard = memo(function SummaryCard({
         {sub && <span className="home-sub-of">{home.inTopic(topic)}</span>}
         <span className={`home-kind kind-${section.kind}`}>{home.kind[section.kind]}</span>
         {changed && (
-          <span className="home-changed" title={home.changedTitle}>
-            {section.seen ? home.updated : home.new}
-          </span>
+          <Tip content={<TipText body={home.changedTitle} />}>
+            <span className="home-changed">
+              {section.seen ? home.updated : home.new}
+            </span>
+          </Tip>
         )}
         {orphaned && (
-          <span
-            className="home-unmaintained"
-            title={home.notMaintainedTitle(section.owner.name, home.gone[section.owner.state as keyof typeof home.gone] ?? home.inactive, home.kindInSentence[section.kind])}
-          >
-            {home.notMaintained}
-          </span>
+          <Tip content={<TipText body={home.notMaintainedTitle(section.owner.name, home.gone[section.owner.state as keyof typeof home.gone] ?? home.inactive, home.kindInSentence[section.kind])} />}>
+            <span className="home-unmaintained">
+              {home.notMaintained}
+            </span>
+          </Tip>
         )}
         {!!section.repairs?.length && (
-          <span className="home-repaired" title={home.repairedTitle(section.owner.name)}>
-            {home.repaired}
-          </span>
+          <Tip content={<TipText body={home.repairedTitle(section.owner.name)} />}>
+            <span className="home-repaired">
+              {home.repaired}
+            </span>
+          </Tip>
         )}
         <span className="home-summary-actions">
           {replyable && (
-            <button
-              type="button"
-              className="icon-button home-reply-open"
-              ref={replyButton}
-              aria-expanded={replying}
-              aria-label={home.replyLabel(section.title)}
-              title={home.replyTitle(section.owner.name)}
-              onClick={() => {
-                setReplyOpened(true);
-                setReplying((value) => !value);
-              }}
-            >
-              <MessageSquareReply size={14} />
-            </button>
+            <Tip content={<TipText title={home.replyTitle(section.owner.name)} />} describe={false}>
+              <button
+                type="button"
+                className="icon-button home-reply-open"
+                ref={replyButton}
+                aria-expanded={replying}
+                aria-label={home.replyLabel(section.title)}
+                onClick={() => {
+                  setReplyOpened(true);
+                  setReplying((value) => !value);
+                }}
+              >
+                <MessageSquareReply size={14} />
+              </button>
+            </Tip>
           )}
           {changed && !readOnly && (
-            <button
-              type="button"
-              className="icon-button home-seen"
-              disabled={seeing}
-              aria-label={home.seenLabel(section.title)}
-              title={home.seen}
-              onClick={() => void seen()}
-            >
-              {seeing ? <LoaderCircle size={14} className="spin" /> : <Eye size={14} />}
-            </button>
+            <Tip content={<TipText title={home.seen} />} describe={false}>
+              <button
+                type="button"
+                className="icon-button home-seen"
+                disabled={seeing}
+                aria-label={home.seenLabel(section.title)}
+                onClick={() => void seen()}
+              >
+                {seeing ? <LoaderCircle size={14} className="spin" /> : <Eye size={14} />}
+              </button>
+            </Tip>
           )}
           <MoreActions section={section} projectId={projectId} readOnly={readOnly} widget={widget && own ? { ...widget, own } : undefined} />
         </span>
@@ -242,7 +248,9 @@ export const SummaryCard = memo(function SummaryCard({
           {status && section.status ? (
             <DataAsOf status={section.status} stale={stale} />
           ) : (
-            <span title={absolute(section.updatedAt, time)}>{relative(section.updatedAt, language)}</span>
+            <Tip content={<TipText title={absolute(section.updatedAt, time)} />}>
+              <span>{relative(section.updatedAt, language)}</span>
+            </Tip>
           )}
         </span>
         {report && (
@@ -322,18 +330,19 @@ function MoreActions({
         }
       }}
     >
-      <button
-        ref={trigger}
-        type="button"
-        className="icon-button"
-        aria-expanded={open}
-        aria-controls={listId}
-        aria-label={t.moreLabel(section.title)}
-        title={t.more}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <MoreHorizontal size={14} />
-      </button>
+      <Tip content={open ? null : <TipText title={t.more} />} describe={false}>
+        <button
+          ref={trigger}
+          type="button"
+          className="icon-button"
+          aria-expanded={open}
+          aria-controls={listId}
+          aria-label={t.moreLabel(section.title)}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <MoreHorizontal size={14} />
+        </button>
+      </Tip>
       <span id={listId} className="home-summary-more-list" role="group" aria-label={t.more} hidden={!open}>
         {widget && (
           <SizeChoice name={`${widget.id}-size`} legend={t.widgetSizeHeading} value={widget.chosen} own={widget.own} variant="menu" onChange={widget.onResize} />
@@ -520,27 +529,29 @@ function CardFileChip({ section, projectId, file, onReport, agents }: { section:
   const Icon = file.kind === "image" ? ImageIcon : file.kind === "page" ? Globe : FileText;
   return (
     <>
-      <button
-        type="button"
-        className="home-card-file"
-        title={file.name}
-        disabled={!inPlace && !onReport}
-        onClick={(event) => {
-          if (file.kind === "image" && inPlace) viewer.open();
-          else if (file.kind === "page" && inPlace)
-            openInPortal({
-              kind: "snapshot",
-              source: { kind: "briefAttachment", projectId, section: section.key, name: file.name, version: section.version },
-              name: file.name,
-              from: `Home · ${section.title}`,
-              replyTo: pageReplyTo(section, projectId, workspaceId, file.name, agents),
-            }, event.currentTarget);
-          else onReport?.(event.currentTarget);
-        }}
-      >
-        <Icon size={12} aria-hidden="true" />
-        <span>{file.name}</span>
-      </button>
+      {/* Its whole name, when the chip cuts it. */}
+      <Tip content={<TipText title={file.name} />} cut>
+        <button
+          type="button"
+          className="home-card-file"
+          disabled={!inPlace && !onReport}
+          onClick={(event) => {
+            if (file.kind === "image" && inPlace) viewer.open();
+            else if (file.kind === "page" && inPlace)
+              openInPortal({
+                kind: "snapshot",
+                source: { kind: "briefAttachment", projectId, section: section.key, name: file.name, version: section.version },
+                name: file.name,
+                from: `Home · ${section.title}`,
+                replyTo: pageReplyTo(section, projectId, workspaceId, file.name, agents),
+              }, event.currentTarget);
+            else onReport?.(event.currentTarget);
+          }}
+        >
+          <Icon size={12} aria-hidden="true" />
+          <span>{file.name}</span>
+        </button>
+      </Tip>
       {viewer.dialog}
     </>
   );

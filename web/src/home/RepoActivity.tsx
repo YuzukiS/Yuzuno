@@ -29,6 +29,7 @@ import { useTimeDisplay } from "../time-preferences";
 import { useLanguage, type Language } from "../i18n";
 import { homeText } from "./home-text";
 import "./repo-activity.css";
+import { Tip, TipText } from "../Tip";
 
 export type RepoCommit = {
   sha: string;
@@ -157,14 +158,19 @@ function runState(run: RepoRun): { word: RunWord; tone: Tone; icon: LucideIcon }
 /** One line; the whole line opens GitHub when its link is safe. */
 function Row({ href, label, children }: { href: string; label: string; children: ReactNode }) {
   const safe = githubPage(href);
-  return safe ? (
-    <a className="repo-row" href={safe} target="_blank" rel="noopener noreferrer" title={label}>
-      {children}
-    </a>
-  ) : (
-    <span className="repo-row" title={label}>
-      {children}
-    </span>
+  // The whole line in words: a narrow card cuts some of its parts.
+  return (
+    <Tip content={<TipText title={label} />} size="wide" align="start">
+      {safe ? (
+        <a className="repo-row" href={safe} target="_blank" rel="noopener noreferrer">
+          {children}
+        </a>
+      ) : (
+        <span className="repo-row">
+          {children}
+        </span>
+      )}
+    </Tip>
   );
 }
 
@@ -402,9 +408,11 @@ function AsOf({ observedAt }: { observedAt: string | null }) {
   const language = useLanguage();
   const t = homeText(language);
   return (
-    <small className="repo-asof" title={absolute(observedAt, time)}>
-      {observedAt ? t.asOf(relative(observedAt, language)) : t.notRead}
-    </small>
+    <Tip content={observedAt ? <TipText title={absolute(observedAt, time)} /> : null}>
+      <small className="repo-asof">
+        {observedAt ? t.asOf(relative(observedAt, language)) : t.notRead}
+      </small>
+    </Tip>
   );
 }
 
@@ -476,9 +484,11 @@ function Line({ repo, reading = true }: { repo: RepoActivityRepository | { fullN
 /** The muted line under a repository that is not freshly read. */
 function Problem({ lead, text }: { lead: string; text: string }) {
   return (
-    <p className="repo-activity-problem" title={`${lead} · ${text}`}>
-      <CircleAlert size={11} aria-hidden /> {lead} · {text}
-    </p>
+    <Tip content={<TipText title={lead} body={text} />} size="wide" cut>
+      <p className="repo-activity-problem">
+        <CircleAlert size={11} aria-hidden /> {lead} · {text}
+      </p>
+    </Tip>
   );
 }
 

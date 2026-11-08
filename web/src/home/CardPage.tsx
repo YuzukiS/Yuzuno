@@ -12,6 +12,7 @@ import { cardText } from "./card-text";
 import { useFrameBridge } from "./frame-bridge";
 import { PageSendBar, pageReplyTo, usePageSend } from "./PageSend";
 import type { Section } from "./types";
+import { Tip, TipText } from "../Tip";
 
 type PageFigure = Extract<CardFigure, { kind: "page" }>;
 
@@ -179,16 +180,17 @@ export function CardPage({ projectId, section, figure, title, workspaceId, agent
         </p>
       )}
       {shown.state === "ready" && (
-        <button
-          ref={large}
-          type="button"
-          className="icon-button home-card-page-large"
-          aria-label={t.pageOpenLarge(figure.name)}
-          title={t.pageOpenLarge(figure.name)}
-          onClick={() => openInPortal(target(), large.current)}
-        >
-          <Maximize2 size={13} />
-        </button>
+        <Tip content={<TipText title={t.pageOpenLarge(figure.name)} />} describe={false}>
+          <button
+            ref={large}
+            type="button"
+            className="icon-button home-card-page-large"
+            aria-label={t.pageOpenLarge(figure.name)}
+            onClick={() => openInPortal(target(), large.current)}
+          >
+            <Maximize2 size={13} />
+          </button>
+        </Tip>
       )}
     </div>
     {live && <PageSendBar to={to} state={sending.state} onSend={(text) => void sending.send(text)} onDiscard={sending.discard} />}

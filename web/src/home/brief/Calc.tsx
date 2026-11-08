@@ -4,6 +4,7 @@ import { calcResults, type FormulaValue } from "../../intelligent-ui/brief-formu
 import { langTag, useLanguage, useStrings } from "../../i18n";
 import { briefText } from "./brief-text";
 import type { ButtonProps, CalcProps } from "./brief-catalog";
+import { Tip, TipText } from "../../Tip";
 
 /** The variables a place holds now, as formulas read them. */
 function variablesOf(state: Record<string, unknown>): Record<string, FormulaValue> {
@@ -29,9 +30,11 @@ export function BriefCalc({ title, layout = "list", items }: CalcProps) {
     new Intl.NumberFormat(langTag(language), digits === undefined ? { maximumFractionDigits: 2 } : { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value);
   const value = (item: CalcProps["items"][number], number: number) =>
     Number.isNaN(number) ? (
-      <span className="brief-calc-none" title={t.notComputed}>
-        —<span className="sr-only"> {t.notComputed}</span>
-      </span>
+      <Tip content={<TipText body={t.notComputed} />} describe={false}>
+        <span className="brief-calc-none">
+          —<span className="sr-only"> {t.notComputed}</span>
+        </span>
+      </Tip>
     ) : (
       <>
         {item.prefix && <span className="brief-calc-affix">{item.prefix}</span>}

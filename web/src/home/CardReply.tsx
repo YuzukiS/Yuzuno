@@ -12,6 +12,7 @@ import { dropPendingReply, explain, latestSection, OLDER_CORE, olderCore, outbox
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import type { ProjectPanel, Section } from "./types";
+import { Tip, TipText } from "../Tip";
 
 /**
  * Replies to report and status cards (T-174). A reply goes to the card's
@@ -243,9 +244,11 @@ export function CardReply({
           {t.replyTo} <strong>“{section.title}”</strong> · {t.version(section.version)}
         </span>
         {onClose && (
-          <button type="button" className="icon-button" aria-label={t.closeReplyLabel} title={t.closeReply} onClick={onClose}>
-            <X size={13} />
-          </button>
+          <Tip content={<TipText title={t.closeReply} />} describe={false}>
+            <button type="button" className="icon-button" aria-label={t.closeReplyLabel} onClick={onClose}>
+              <X size={13} />
+            </button>
+          </Tip>
         )}
       </div>
       <TargetPicker agents={agents} value={target} onChange={(agentId) => change({ agentId })} disabled={busy} label={t.to} />
@@ -284,10 +287,12 @@ export function CardReply({
             }
           }}
         />
-        <button type="submit" className="primary-button" disabled={busy || !target || !draft.text.trim()} title={returnSends(sendKey, touchKeyboard()) ? t.sendTitleReturn : t.sendTitle(shortcutModifier)}>
-          {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
-          {t.send}
-        </button>
+        <Tip content={<TipText title={t.send} kbd={returnSends(sendKey, touchKeyboard()) ? "↵" : `${shortcutModifier} ↵`} />} describe={false}>
+          <button type="submit" className="primary-button" disabled={busy || !target || !draft.text.trim()}>
+            {busy ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}
+            {t.send}
+          </button>
+        </Tip>
       </form>
       {busy && <p className="home-note" role="status">{t.sending}</p>}
       {sent && (

@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useStrings } from "../i18n";
 import { homeText } from "./home-text";
+import { Tip, TipText } from "../Tip";
 import { readCardCollapsed, saveCardCollapsed } from "./panel-memory";
 
 /** The Workspace whose card choices Home keeps (T-115); "" keeps them for
@@ -48,17 +49,18 @@ export function FoldButton({
 }) {
   const t = useStrings(homeText);
   return (
-    <button
-      type="button"
-      className="icon-button home-fold"
-      aria-expanded={!collapsed}
-      aria-controls={controls}
-      aria-label={label}
-      title={collapsed ? t.expand : t.collapse}
-      onClick={onToggle}
-    >
-      {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-    </button>
+    <Tip content={<TipText title={collapsed ? t.expand : t.collapse} />} describe={false}>
+      <button
+        type="button"
+        className="icon-button home-fold"
+        aria-expanded={!collapsed}
+        aria-controls={controls}
+        aria-label={label}
+        onClick={onToggle}
+      >
+        {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+      </button>
+    </Tip>
   );
 }
 

@@ -54,7 +54,6 @@ export const briefText = strings({
     capacity: "queued",
   } as Record<string, string>,
   refAsOf: (at: string) => ` · as of ${at}`,
-  open: (what: string) => `Open ${what}`,
   notFound: "not found",
   // A list of references (T-9).
   refUnavailable: "couldn't read",
@@ -175,7 +174,6 @@ export const briefText = strings({
     capacity: "排队中",
   },
   refAsOf: (at) => ` · 截至 ${at}`,
-  open: (what) => `打开 ${what}`,
   notFound: "未找到",
   refUnavailable: "读取失败",
   refAssignee: "负责人 ",

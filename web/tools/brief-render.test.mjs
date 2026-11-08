@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { hoverTip } from "./tip-dom.mjs";
 
 // T-85: a Brief section body drawn by Home's renderer. The real
 // BriefSectionBody in JSDOM, with bodies first accepted by the real brief
@@ -312,7 +313,7 @@ test("a section using every component renders each part from this Core only", as
   assert.match(deltas[0], /^−0\.025/);
   assert.match(deltas[1], /^\+35 samples\/s/);
   assert.equal(deltas[2], "Previously 12k of 40k");
-  assert.equal(document.querySelector('.brief-delta[data-sign="-1"]').title, "Previously 0.437");
+  assert.deepEqual(await hoverTip(page.window, document.querySelector('.brief-delta[data-sign="-1"]')), ["Previously 0.437"]);
 
   // The table, from interactive results, without selection.
   assert.equal(document.querySelectorAll(".result-table-scroll tbody tr").length, 2);
@@ -366,7 +367,11 @@ test("a section using every component renders each part from this Core only", as
   assert.match(huge.textContent, /May have changed/);
   assert.match(huge.textContent, /Referenced/);
   const where = huge.querySelector("code.brief-path");
-  assert.equal(where.title, "/home/me/experiments/round-12/outputs/sweep/huge.jsonl", "the full path on hover");
+  // Its tip shows the whole path once the directory is cut (YN-44: a box narrower than its text).
+  const dir = where.querySelector(".brief-path-dir");
+  Object.defineProperty(dir, "clientWidth", { configurable: true, get: () => 80 });
+  Object.defineProperty(dir, "scrollWidth", { configurable: true, get: () => 240 });
+  assert.deepEqual(await hoverTip(page.window, where), ["/home/me/experiments/round-12/outputs/sweep/huge.jsonl"], "the full path on hover");
   // CSS cuts the directory short; the file name is its own, unclipped part.
   assert.equal(where.querySelector(".brief-path-dir").textContent, "/home/me/experiments/round-12/outputs/sweep/");
   assert.equal(where.querySelector(".brief-path-name").textContent, "huge.jsonl");
@@ -709,15 +714,15 @@ test("live references show Core's current state and open with what it knows", as
     "agent:agent-b": { kind: "agent", id: "agent-b", found: true, title: "Coder (Claude)", state: "idle", tone: "neutral" },
   };
   page.window.renderSection(readSection(page, everything, { attachments: everythingAttachments, refs }), PROJECT);
-  const ref = (kind, id) => document.querySelector(`.brief-ref[data-kind="${kind}"]${id ? `[title*="${id}"]` : ""}`);
+  const ref = (kind, id) => [...document.querySelectorAll(`.brief-ref[data-kind="${kind}"]`)].find((el) => !id || el.textContent.includes(id));
   const task = ref("task");
   assert.equal(task.dataset.tone, "active");
   // The Agent's short label leads (T-173); Core's current title is in the
-  // tooltip and read out after it.
+  // tip and read out after it.
   assert.equal(task.querySelector("span").textContent, "Home V1");
   assert.equal(task.querySelector(".sr-only").textContent, ": Home V1 slice 1");
   assert.match(task.textContent, /^Home V1: Home V1 slice 1T-85doing$/, "label, current title, then the id and its state");
-  assert.match(task.title, /^(Open )?Task T-85: Home V1 slice 1 · as of /);
+  assert.match((await hoverTip(page.window, task))[0], /^Task T-85: Home V1 slice 1 · as of /, "what it is, no \"Open\" (YN-44)");
   assert.equal(ref("pr").getAttribute("href"), "https://github.com/owner/repo/pull/12");
   assert.match(ref("pr").textContent, /Brief renderer.*merged/);
   assert.equal(ref("pr").querySelector("span").textContent, "Brief renderer", "without a label, the current title");
@@ -1701,7 +1706,7 @@ test("YN-16 S2 a Calc follows its inputs, shows a dash with its reason where it 
   assert.ok(row(document, "each").hasAttribute("data-emphasis") && /Per person/.test(row(document, "each").textContent));
   assert.ok(!row(document, "extra"), "its when is false: no extra");
   // 600 × 1.1 / (4 − 4): a dash that says why, never NaN or Infinity.
-  assert.equal(row(document, "spare").querySelector(".brief-calc-none").getAttribute("title"), "Can't be worked out for these values");
+  assert.deepEqual(await hoverTip(window, row(document, "spare").querySelector(".brief-calc-none")), ["Can't be worked out for these values"]);
   assert.ok(!/NaN|Infinity/.test(document.querySelector(".brief-calc").textContent));
   // Inputs change the numbers.
   const plus = document.querySelectorAll(".brief-step")[1];
@@ -1735,7 +1740,8 @@ test("YN-16 S2 a Calc's numbers are in the interface language; a stored press is
   window.chooseLanguage("zh-Hans");
   const section = readSection(page, bill());
   window.renderSection(section, PROJECT);
-  await until(() => row(document, "spare")?.querySelector(".brief-calc-none")?.getAttribute("title") === "按这些值无法算出", "the reason in Chinese");
+  await until(() => row(document, "spare")?.querySelector(".brief-calc-none .sr-only")?.textContent.trim() === "按这些值无法算出", "the reason in Chinese");
+  assert.deepEqual(await hoverTip(window, row(document, "spare").querySelector(".brief-calc-none")), ["按这些值无法算出"]);
   window.chooseLanguage("en");
   // A body Core kept before any check could carry anything under on: only setState of a variable name is run.
   const stored = JSON.parse(JSON.stringify(section));

@@ -5,6 +5,7 @@ import { absolute, relative } from "./format";
 import type { NeedsYouItem } from "./types";
 import { FoldButton, useCardFold } from "./card-fold";
 import { homeText } from "./home-text";
+import { Tip, TipText } from "../Tip";
 
 export const needsYouKey = (item: NeedsYouItem) =>
   item.kind === "approval"
@@ -50,34 +51,35 @@ export function NeedsYou({
         <ol className="home-needs-list">
           {items.map((item) => (
             <li key={needsYouKey(item)}>
-              <button
-                type="button"
-                className={`home-needs-item kind-${item.kind}`}
-                data-needs-you={needsYouKey(item)}
-                title={t.waitingSince(item.kind === "executor" ? [item.agentName, item.title, item.reason].filter(Boolean).join(" · ") : item.title, absolute(item.since, time))}
-                onClick={() => onJump(item)}
-              >
-                {item.kind === "approval" ? (
-                  <ShieldCheck size={14} />
-                ) : item.kind === "question" ? (
-                  <MessagesSquare size={14} />
-                ) : item.kind === "executor" ? (
-                  item.state === "delivering" ? <BadgeCheck size={14} /> : item.state === "failed" ? <CircleAlert size={14} /> : <OctagonPause size={14} />
-                ) : (
-                  <MessageCircleQuestionMark size={14} />
-                )}
-                <span className="home-needs-text">
-                  {/* An executor you dispatched (T-36 S3): what it waits for,
-                      then its task; its name repeats its task's number. */}
-                  <span className="home-needs-source">
-                    {projectName(item.projectId)} · {item.kind === "executor" && item.state ? t.executorNeeds[item.state] : item.agentName}
+              <Tip content={<TipText title={t.waitingSince(item.kind === "executor" ? [item.agentName, item.title, item.reason].filter(Boolean).join(" · ") : item.title, absolute(item.since, time))} />} size="wide">
+                <button
+                  type="button"
+                  className={`home-needs-item kind-${item.kind}`}
+                  data-needs-you={needsYouKey(item)}
+                  onClick={() => onJump(item)}
+                >
+                  {item.kind === "approval" ? (
+                    <ShieldCheck size={14} />
+                  ) : item.kind === "question" ? (
+                    <MessagesSquare size={14} />
+                  ) : item.kind === "executor" ? (
+                    item.state === "delivering" ? <BadgeCheck size={14} /> : item.state === "failed" ? <CircleAlert size={14} /> : <OctagonPause size={14} />
+                  ) : (
+                    <MessageCircleQuestionMark size={14} />
+                  )}
+                  <span className="home-needs-text">
+                    {/* An executor you dispatched (T-36 S3): what it waits for,
+                        then its task; its name repeats its task's number. */}
+                    <span className="home-needs-source">
+                      {projectName(item.projectId)} · {item.kind === "executor" && item.state ? t.executorNeeds[item.state] : item.agentName}
+                    </span>
+                    <strong>{item.kind === "executor" && item.taskId ? `${item.taskId} · ${item.title}` : item.title}</strong>
+                    {/* Why (T-43 S4a): why its start failed, what blocks its task. */}
+                    {item.kind === "executor" && item.reason && <span className="home-needs-reason">{item.reason}</span>}
                   </span>
-                  <strong>{item.kind === "executor" && item.taskId ? `${item.taskId} · ${item.title}` : item.title}</strong>
-                  {/* Why (T-43 S4a): why its start failed, what blocks its task. */}
-                  {item.kind === "executor" && item.reason && <span className="home-needs-reason">{item.reason}</span>}
-                </span>
-                <span className="home-needs-since">{relative(item.since, language)}</span>
-              </button>
+                  <span className="home-needs-since">{relative(item.since, language)}</span>
+                </button>
+              </Tip>
             </li>
           ))}
         </ol>
