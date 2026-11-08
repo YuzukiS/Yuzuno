@@ -107,7 +107,10 @@ function mount(server, language) {
     const method = init.method || "GET";
     const body = init.body && JSON.parse(init.body);
     calls.push({ url, method, body });
-    const [status, value] = await server.route(url, method, body);
+    const answer = await server.route(url, method, body);
+    // No answer at all, as a browser's fetch rejects: with the page's own TypeError.
+    if (answer === "network") throw new window.TypeError("Failed to fetch");
+    const [status, value] = answer;
     return { ok: status < 400, status, json: async () => value, text: async () => JSON.stringify(value) };
   };
   window.eval(bundle);
@@ -211,7 +214,7 @@ test("a refused key keeps its field for another try, and Core's words are shown"
 
 test("no answer from Core: the error says so, the value stays in its field only, and goes on Cancel", async () => {
   const server = core();
-  const page = mount({ route: (url, method, body) => (method === "PUT" ? Promise.reject(new TypeError("Failed to fetch")) : server.route(url, method, body)) });
+  const page = mount({ route: (url, method, body) => (method === "PUT" ? "network" : server.route(url, method, body)) });
   await until(() => button(page, "Add a key"), "Add a key");
   button(page, "Add a key", page.document.querySelector(".routing-add-key .settings-row-action")).click();
   await until(() => field(page, "DeepSeek API key (for OpenCode): value"), "the value field");
