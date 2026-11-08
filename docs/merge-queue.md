@@ -73,7 +73,9 @@ entry is created:
   review of its own, so it is refused, unless all it adds are merges that need
   no review of their own (below). A P0–P2 finding of any completed round at
   the reviewed head refuses it too, even when a later round of the same head
-  passed: only a new head, with a passing round of its own, clears it.
+  passed: only a new head, with a passing round of its own, clears it. So does
+  one at the released head, or at a merge commit between the two: a round of
+  the earlier head does not clear it.
 - **No other entry holds the PR.**
 
 ### A head that adds only merges
@@ -99,8 +101,10 @@ release reads, before the entry is created:
 
 The entry keeps what was read as its proof (`reviewMerges`), and the release's
 comment says so. Each check after that asks again that the last round is still
-the one the proof was read for and passes, and that every merged-in head that
-counted as reviewed still has a passing round and no P0–P2 finding. CI, the
+the one the proof was read for and passes, that no round of the PR at the
+released head or at a merge commit of the proof found a P0–P2 issue, and that
+every merged-in head that counted as reviewed still has a passing round and no
+P0–P2 finding. CI, the
 gate and the post-check do not change: CI must still be green at the released
 head, and the merge lands the tested tree. Core writes nothing to GitHub for
 the proof.

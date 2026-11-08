@@ -234,6 +234,25 @@ fn rounds_in_repository(db: &Connection, repository_id: i64, head: &str) -> Resu
         .collect();
     rows
 }
+/// Every completed round of this PR at a head the review check judges for
+/// `entry`: the head the last round reviewed and the released head, and for a
+/// head that adds only merges (YN-33), each merge commit of its proof. A
+/// P0–P2 finding at any of them holds the release back: another round of
+/// an earlier head never clears it.
+fn rounds_at_heads(db: &Connection, link: &str, reviewed: &str, entry: &Value) -> Result<Vec<Value>> {
+    let mut heads: Vec<String> = vec![reviewed.to_owned()];
+    let merges = entry["reviewMerges"]["merges"].as_array().into_iter().flatten().filter_map(|m| m["commit"].as_str());
+    for head in entry["headSha"].as_str().into_iter().chain(merges) {
+        if !heads.iter().any(|h| h == head) {
+            heads.push(head.to_owned());
+        }
+    }
+    let mut rounds = Vec::new();
+    for head in &heads {
+        rounds.extend(rounds_at(db, link, head)?);
+    }
+    Ok(rounds)
+}
 /// The rounds the review check reads for `entry` (YN-33): every completed
 /// round at the head the last round reviewed, and for each merged-in head the
 /// entry's proof calls reviewed, every completed round at it in the repository.
@@ -355,7 +374,6 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, pr
     );
     let (latest, running) = review(db, &link)?;
     let reviewed = latest.as_ref().and_then(|r| r["headSha"].as_str()).unwrap_or(&input.head_sha).to_owned();
-    let at_reviewed = rounds_at(db, &link, &reviewed)?;
     let later = reviewed != input.head_sha && !running;
     let candidate = match proof {
         Some(proof) => json!({"headSha":input.head_sha,"repositoryId":repository_id,"reviewMerges":proof}),
@@ -363,8 +381,9 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, pr
         None if later => json!({"headSha":input.head_sha,"reviewMerges":{"head":input.head_sha,"reviewedHead":reviewed,"merges":[]}}),
         None => json!({"headSha":input.head_sha}),
     };
+    let at_heads = rounds_at_heads(db, &link, &reviewed, &candidate)?;
     let merged = merged_rounds(db, &candidate)?;
-    match checks::review(&candidate, latest.as_ref(), running, &at_reviewed, &merged) {
+    match checks::review(&candidate, latest.as_ref(), running, &at_heads, &merged) {
         Ok(_) => {}
         Err(Hold::Wait(detail)) => bail!("review_running: {detail}"),
         Err(Hold::Stop(reason, detail)) => bail!("{reason}: {detail}"),
@@ -677,14 +696,14 @@ pub(super) struct Recorded {
 
 impl Store {
     /// The newest completed round of the PR, whether one is running, every
-    /// completed round at the head it reviewed, and the rounds at each head the
-    /// entry's proof calls reviewed (YN-33).
+    /// completed round of it at the heads the check judges (`rounds_at_heads`),
+    /// and the rounds at each head the entry's proof calls reviewed (YN-33).
     pub(super) fn merge_review(&self, entry: &Value) -> Result<(Option<Value>, bool, Vec<Value>, Vec<(String, Vec<Value>)>)> {
         let db = self.db.read()?;
         let link = entry["linkId"].as_str().context("The entry has no PR link")?;
         let (latest, running) = review(&db, link)?;
         let reviewed = latest.as_ref().and_then(|r| r["headSha"].as_str()).or(entry["headSha"].as_str()).unwrap_or("").to_owned();
-        Ok((latest, running, rounds_at(&db, link, &reviewed)?, merged_rounds(&db, entry)?))
+        Ok((latest, running, rounds_at_heads(&db, link, &reviewed, entry)?, merged_rounds(&db, entry)?))
     }
     /// A passing completed round at `head` on any PR of the repository with no
     /// P0–P2 finding in any round there (YN-33): the newest such round, with

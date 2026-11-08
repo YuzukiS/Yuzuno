@@ -59,15 +59,15 @@ pub(super) fn pull(entry: &Value, pr: &Value) -> Check<()> {
 /// and passes under the project's review policy, and that no completed round
 /// at that head found a P0–P2 issue (YN-12 item 1, YN-18 S2d): such a finding
 /// is fixed only by a new head, never by another round of the same head.
-/// `at_reviewed` is every completed round of the PR at the head the last round
-/// reviewed.
+/// `at_heads` is every completed round of the PR at the head the last round
+/// reviewed, at the released head, and at each merge commit of the proof.
 ///
 /// The last round may have reviewed an earlier head when the entry holds the
 /// proof (`reviewMerges`, YN-33) that the released head is that head plus
 /// merges that need no review of their own; `merged` is then every completed
 /// round, on any PR of the repository, at each merged-in head the proof calls
 /// reviewed, which must still pass with no P0–P2 finding.
-pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_reviewed: &[Value], merged: &[(String, Vec<Value>)]) -> Check<Value> {
+pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_heads: &[Value], merged: &[(String, Vec<Value>)]) -> Check<Value> {
     if running {
         return wait("A review round of this PR is still running; the last completed round decides");
     }
@@ -94,12 +94,26 @@ pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_re
     let blocking = |round: &Value| {
         round["findings"].as_array().into_iter().flatten().filter(|f| f["priority"].as_u64().is_some_and(|p| p <= 2)).count()
     };
-    if let Some(earlier) = at_reviewed.iter().filter(|o| o["headSha"] == r["headSha"]).find(|o| blocking(o) > 0) {
+    if let Some(earlier) = at_heads.iter().filter(|o| o["headSha"] == r["headSha"]).find(|o| blocking(o) > 0) {
         return stop(
             "review_not_passing",
             format!("Review round {} ({}) at {which} found {} P0–P2 issue(s); a later round of the same head does not clear them, so a new head needs a passing round of its own",
                 earlier["round"], earlier["id"].as_str().unwrap_or("?"), blocking(earlier)),
         );
+    }
+    if via_merges {
+        // A P0–P2 finding at the released head, or at a merge commit on the way
+        // to it, is not cleared by a round of the earlier head (S2 R1, P2).
+        let merges: Vec<&Value> = proof["merges"].as_array().into_iter().flatten().map(|m| &m["commit"]).collect();
+        let judged = |o: &&Value| o["headSha"] == entry["headSha"] || merges.contains(&&o["headSha"]);
+        if let Some(bad) = at_heads.iter().filter(judged).find(|o| blocking(o) > 0) {
+            let at = if bad["headSha"] == entry["headSha"] { "the released head".to_owned() } else { format!("merge commit {}", short(&bad["headSha"])) };
+            return stop(
+                "review_not_passing",
+                format!("Review round {} ({}) at {at} found {} P0–P2 issue(s); a round of the earlier head {} does not clear them, so a new head needs a passing round of its own",
+                    bad["round"], bad["id"].as_str().unwrap_or("?"), blocking(bad), short(&r["headSha"])),
+            );
+        }
     }
     let mut passed = json!({"id":r["id"],"round":r["round"],"conclusion":r["conclusion"],"headSha":r["headSha"],
         "coverage":format!("{}/{}", r["coverage"]["coveredFileCount"], r["coverage"]["fileCount"]),"passes":true});
