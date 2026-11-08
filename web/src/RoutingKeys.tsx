@@ -249,17 +249,21 @@ export function RoutingKeys({ active }: { active: boolean }) {
   const open = (what: string | null) => { setError(null); setEditing(what); };
   const errorAt = (at: string) => error?.at === at && <p className="inline-error" role="alert">{error.text}</p>;
   const reloadKeys = async () => setKeys(await readKeys());
-  const reloadOp = async () => setOp(await readOnePassword());
+  // op's own read can take long (it runs op --version): a change doesn't wait for it.
+  const reloadOp = () => { readOnePassword().then(setOp).catch(() => { /* the row keeps what it had */ }); };
 
+  // Whether the token is set, from the keys' own read (R1 42b80551): the
+  // 1Password read also asks op for its version and can answer later, or not.
+  const tokenSet = !!keys?.onePasswordToken.set;
   const keyRow = (key: RoutingKey) => {
     const title = t.keyTitle(providerName[key.provider], harnessOf[key.provider]);
     const check = checks[key.id];
     const editingSource = editing?.startsWith(`key:${key.id}:`) ? editing.split(":")[2] as KeySource : null;
     const shownSource = editingSource ?? key.source;
-    const bad = key.source === "1password" && (!op?.token.set || check?.ok === false);
+    const bad = key.source === "1password" && (!tokenSet || check?.ok === false);
     const status = key.source === "local"
       ? (key.set ? t.keySet(when(key.setAt)) : t.keyUnset)
-      : !op?.token.set ? t.tokenUnset : check ? (check.ok ? t.checked : check.reason ? reasonText(check.reason, language) : "") : "";
+      : !tokenSet ? t.tokenUnset : check ? (check.ok ? t.checked : check.reason ? reasonText(check.reason, language) : "") : "";
     return (
       <div className="settings-row routing-key" key={key.id} data-key={key.id}>
         {key.source === "1password" ? <Lock size={16} className="settings-row-icon" aria-hidden="true" /> : <KeyRound size={16} className="settings-row-icon" aria-hidden="true" />}
@@ -299,7 +303,7 @@ export function RoutingKeys({ active }: { active: boolean }) {
         {!editingSource && editing !== `remove:${key.id}` && (
           <div className="settings-row-action">
             {key.source === "1password" && (
-              <button type="button" className="secondary-button" disabled={busy || !op?.token.set}
+              <button type="button" className="secondary-button" disabled={busy || !tokenSet}
                 onClick={() => void act(`key:${key.id}`, async () => { const r = await checkKey(key.id); setChecks((c) => ({ ...c, [key.id]: r })); })}>
                 <ShieldCheck size={14} /> {t.check}
               </button>
@@ -423,11 +427,11 @@ export function RoutingKeys({ active }: { active: boolean }) {
               <p className="settings-row-meta">{t.opHelp}</p>
               {editing === "token" && (
                 <SecretForm label={t.tokenValue} placeholder={t.tokenPlaceholder} t={t} busy={busy} onCancel={() => open(null)}
-                  onSave={(value) => act("token", async () => { await putToken(value); await Promise.all([reloadKeys(), reloadOp()]); })} />
+                  onSave={(value) => act("token", async () => { await putToken(value); setChecks({}); await reloadKeys(); reloadOp(); })} />
               )}
               {editing === "remove-token" && (
                 <Confirm message={t.removeTokenConfirm} t={t} busy={busy} onCancel={() => open(null)}
-                  onConfirm={() => void act("token", async () => { await removeToken(); await Promise.all([reloadKeys(), reloadOp()]); })} />
+                  onConfirm={() => void act("token", async () => { await removeToken(); setChecks({}); await reloadKeys(); reloadOp(); })} />
               )}
               {errorAt("token")}
             </div>

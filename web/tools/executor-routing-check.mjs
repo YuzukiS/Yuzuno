@@ -110,7 +110,11 @@ async function run({ width, height, theme, lang }) {
   await context.route("**/*", route);
   const page = await context.newPage();
   page.on("pageerror", (error) => report.errors.push(`${tag}: ${error.message}`));
-  page.on("console", (message) => message.type() === "error" && !/Failed to load resource/.test(message.text()) && report.errors.push(`${tag} console: ${message.text()}`));
+  const consoleLines = [];
+  page.on("console", (message) => {
+    consoleLines.push(message.text());
+    if (message.type() === "error" && !/Failed to load resource/.test(message.text())) report.errors.push(`${tag} console: ${message.text()}`);
+  });
   const press = (locator) => (phone ? locator.tap() : locator.click());
   const shot = async (name) => {
     const file = join(output, `${tag}-${name}.png`);
@@ -123,10 +127,19 @@ async function run({ width, height, theme, lang }) {
   /** Nothing in Settings wider than its box. */
   const fits = () => dialog.evaluate((el) => [el, el.querySelector(".settings-pane"), el.querySelector(".routing-keys")].filter(Boolean)
     .map((part) => ({ name: part.className.split(" ")[0], scroll: part.scrollWidth, client: part.clientWidth })).filter((p) => p.scroll > p.client + 1));
-  /** The page's text and markup hold no secret, email or label. */
+  /** The page's text and markup hold no secret, email or label; nor do this
+   * site's storage, the URL, any field's value attribute or the console. */
   const clean = async (when) => {
     const htmlNow = await page.content();
     for (const secret of [SECRET, TOKEN, ...EMAILS, "team alias"]) assert.ok(!htmlNow.includes(secret), `${tag} ${when}: the page holds ${secret}`);
+    const kept = await page.evaluate(() => JSON.stringify([
+      Object.entries(localStorage), Object.entries(sessionStorage), location.href,
+      [...document.querySelectorAll("input")].map((i) => i.getAttribute("value") ?? ""),
+    ]));
+    for (const secret of [SECRET, TOKEN]) {
+      assert.ok(!kept.includes(secret), `${tag} ${when}: storage, the URL or a value attribute holds ${secret}`);
+      assert.ok(!consoleLines.some((line) => line.includes(secret)), `${tag} ${when}: the console holds ${secret}`);
+    }
   };
   try {
     await page.goto(`https://${HOST}/`);

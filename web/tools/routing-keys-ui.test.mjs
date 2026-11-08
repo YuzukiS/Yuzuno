@@ -93,8 +93,11 @@ function core(over = {}) {
 function mount(server, language) {
   const calls = [];
   const errors = [];
+  // Everything the page writes to its console, to look for a secret in.
+  const logged = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
+  for (const level of ["log", "info", "warn", "error", "debug", "trace", "dir"]) virtualConsole.on(level, (...args) => logged.push(args.map(String).join(" ")));
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole,
   });
@@ -109,7 +112,7 @@ function mount(server, language) {
   };
   window.eval(bundle);
   window.renderKeys();
-  return { window, document: window.document, calls, errors };
+  return { window, document: window.document, calls, errors, logged };
 }
 const html = (page) => page.document.documentElement.outerHTML;
 const button = (page, label, within = page.document) =>
@@ -124,6 +127,29 @@ async function type(page, label, value) {
   Object.getOwnPropertyDescriptor(proto, "value").set.call(node, value);
   node.dispatchEvent(new page.window.Event(node.tagName === "SELECT" ? "change" : "input", { bubbles: true }));
   await tick();
+}
+/** Where a secret must never be (YN-49, the Lead's gate on #794): the page's
+ * markup, any field's value or value attribute, this site's storage, the
+ * URL, the console, and any request but its own write. */
+function nowhere(page, secret, ownWrite) {
+  const { window, document } = page;
+  assert.ok(!document.documentElement.outerHTML.includes(secret), "not in the page's markup");
+  for (const input of document.querySelectorAll("input")) {
+    assert.notEqual(input.value, secret, "no field holds it");
+    assert.ok(!(input.getAttribute("value") ?? "").includes(secret), "no value attribute holds it");
+  }
+  for (const storage of [window.localStorage, window.sessionStorage]) {
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
+      assert.ok(!key.includes(secret) && !(storage.getItem(key) ?? "").includes(secret), "not in this site's storage");
+    }
+  }
+  assert.ok(!window.location.href.includes(secret), "not in the URL");
+  assert.ok(!page.logged.some((line) => line.includes(secret)), "not in the console");
+  for (const call of page.calls) {
+    assert.ok(!call.url.includes(secret), "not in any request's URL");
+    if (call !== ownWrite) assert.ok(!JSON.stringify(call.body ?? "").includes(secret), `not in ${call.method} ${call.url}`);
+  }
 }
 const writes = (page) => page.calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${new URL(c.url, "http://isolated.test").pathname}`);
 
@@ -148,6 +174,7 @@ test("a new local key is sent once and never shown: not while typed, not once ke
   assert.equal(page.document.querySelector(".routing-new-key .routing-field input").value, "deepseek");
   await type(page, "DeepSeek API key (for OpenCode): value", SECRET);
   assert.ok(!html(page).includes(SECRET), "a typed key is the field's own value, not written into the page");
+  assert.equal(field(page, "DeepSeek API key (for OpenCode): value").getAttribute("value"), null, "React never sets its value attribute");
   button(page, "Save", page.document.querySelector(".routing-new-key")).click();
   await until(() => row(page, "deepseek"), "the kept key's row");
   const put = page.calls.find((c) => c.method === "PUT");
@@ -156,6 +183,9 @@ test("a new local key is sent once and never shown: not while typed, not once ke
   assert.ok([...page.document.querySelectorAll("input")].every((i) => i.value !== SECRET), "no field holds it");
   assert.match(row(page, "deepseek").textContent, /DeepSeek API key \(for OpenCode\).*Set · /);
   assert.deepEqual(writes(page), ["PUT /api/routing/keys/deepseek"]);
+  // The kept state is read again from Core and shown: still no value anywhere.
+  assert.ok(page.calls.filter((c) => c.method === "GET" && c.url === "/api/routing/keys").length >= 2, "the keys read again after the save");
+  nowhere(page, SECRET, put);
 });
 
 test("a refused key keeps its field for another try, and Core's words are shown", async () => {
@@ -171,10 +201,47 @@ test("a refused key keeps its field for another try, and Core's words are shown"
   assert.equal(row(page, "anthropic").querySelector('[role="alert"]').textContent, "The routing key id is taken by another provider");
   assert.equal(field(page, "Anthropic API key (for Claude Code): value").value, SECRET, "kept in the field to try again");
   assert.ok(!html(page).includes(SECRET), "still not in the page");
+  assert.ok(!row(page, "anthropic").querySelector('[role="alert"]').textContent.includes(SECRET), "nor in the error shown");
   button(page, "Cancel", row(page, "anthropic")).click();
   await tick();
   assert.ok(!field(page, "Anthropic API key (for Claude Code): value"), "Cancel closes the field");
   assert.equal(row(page, "anthropic").querySelector(".routing-reference").textContent, "op://Vault/Anthropic API/credential", "the key is as it was");
+  nowhere(page, SECRET, page.calls.find((c) => c.method === "PUT"));
+});
+
+test("no answer from Core: the error says so, the value stays in its field only, and goes on Cancel", async () => {
+  const server = core();
+  const page = mount({ route: (url, method, body) => (method === "PUT" ? Promise.reject(new TypeError("Failed to fetch")) : server.route(url, method, body)) });
+  await until(() => button(page, "Add a key"), "Add a key");
+  button(page, "Add a key", page.document.querySelector(".routing-add-key .settings-row-action")).click();
+  await until(() => field(page, "DeepSeek API key (for OpenCode): value"), "the value field");
+  await type(page, "DeepSeek API key (for OpenCode): value", SECRET);
+  button(page, "Save", page.document.querySelector(".routing-new-key")).click();
+  await until(() => page.document.querySelector('.routing-add-key [role="alert"]'), "the error");
+  assert.equal(page.document.querySelector('.routing-add-key [role="alert"]').textContent, "No answer from Core over the network.");
+  nowhere(page, SECRET, page.calls.find((c) => c.method === "PUT"));
+  button(page, "Cancel", page.document.querySelector(".routing-new-key")).click();
+  await tick();
+  assert.equal(field(page, "DeepSeek API key (for OpenCode): value"), null, "the field is gone, and its value with it");
+});
+
+test("a 1Password key's row takes the token from the keys' read, not the slower op read (R1 42b80551)", async () => {
+  const server = core();
+  // op's version read never answers here, as a slow or failing op can.
+  const page = mount({ route: (url, method, body) => (url.endsWith("/routing/1password") ? new Promise(() => {}) : server.route(url, method, body)) });
+  await until(() => row(page, "anthropic"), "the 1Password key");
+  assert.doesNotMatch(row(page, "anthropic").textContent, /token is not set/, "the token is set, as the keys' read says");
+  assert.equal(button(page, "Check", row(page, "anthropic")).disabled, false, "Check can be pressed");
+  button(page, "Check", row(page, "anthropic")).click();
+  await until(() => /1Password has no/.test(row(page, "anthropic").textContent), "the check's answer");
+  // A new token starts the checks over: the answer was the old token's.
+  button(page, "Replace token").click();
+  await until(() => field(page, "Service account token"), "the token field");
+  await type(page, "Service account token", TOKEN);
+  button(page, "Save", page.document.querySelector(".routing-op")).click();
+  await until(() => !field(page, "Service account token"), "the token kept");
+  assert.doesNotMatch(row(page, "anthropic").textContent, /1Password has no/, "the old token's answer is gone");
+  nowhere(page, TOKEN, page.calls.find((c) => c.method === "PUT" && c.url.endsWith("/token")));
 });
 
 test("a 1Password key: Check says why it can't be read, in the page's language; its reference changes; Remove asks first", async () => {
@@ -213,6 +280,7 @@ test("the service account's token is write-only too; removing it asks first", as
   await until(() => button(page, "Remove token"), "the token kept");
   assert.deepEqual(page.calls.find((c) => c.method === "PUT").body, { value: TOKEN });
   assert.ok(!html(page).includes(TOKEN), "not in the page once kept");
+  nowhere(page, TOKEN, page.calls.find((c) => c.method === "PUT"));
   button(page, "Remove token").click();
   await until(() => page.document.querySelector(".routing-op .settings-confirm"), "the confirmation");
   button(page, "Remove", page.document.querySelector(".routing-op .settings-confirm")).click();
