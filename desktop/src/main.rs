@@ -1,5 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// The taskbar badge does its drawing on Windows only.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod badge;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod badge_rules;
 #[cfg(windows)]
 mod chrome;
 mod connection;
@@ -707,6 +712,22 @@ async fn open_core(
                 .permission("allow-desktop-notifications-request"),
             )
             .map_err(|e| format!("Could not enable system notifications: {e}"))?;
+        // Home's count on the taskbar button (YN-43), likewise from the
+        // selected workspace only (the command checks the origin again).
+        window
+            .add_capability(
+                CapabilityBuilder::new(format!(
+                    "desktop-badge-{}",
+                    core.origin().ascii_serialization()
+                ))
+                .local(false)
+                .webview("main")
+                .remote(format!("{}/*", core.origin().ascii_serialization()))
+                .permission("allow-desktop-badge"),
+            )
+            .map_err(|e| format!("Could not enable the taskbar badge: {e}"))?;
+        // The new workspace's page sends its own count once it loads.
+        badge::clear(window);
         updates.forget();
     }
     *selected = Some(core.clone());
@@ -978,7 +999,8 @@ fn main() {
             update::desktop_update_install,
             notify::desktop_notifications,
             notify::desktop_notify,
-            notify::desktop_notifications_request
+            notify::desktop_notifications_request,
+            badge::desktop_badge
         ])
         .setup(move |app| {
             // An update's installer restarts this app with its launch
@@ -1082,6 +1104,21 @@ fn main() {
             #[cfg(not(target_os = "macos"))]
             let builder = builder.menu(menu);
             let builder = builder
+                // A page other than the selected workspace (the connection
+                // page, or another origin) takes the taskbar badge off; the
+                // workspace page sets it again when it loads (YN-43).
+                .on_page_load(|window, payload| {
+                    if !matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                        return;
+                    }
+                    let state = window.state::<ConnectionState>();
+                    let workspace = state.selected.lock().is_ok_and(|selected| {
+                        connection::permits_workspace(window.label(), payload.url(), selected.as_ref())
+                    });
+                    if !workspace {
+                        badge::clear(&window);
+                    }
+                })
                 .on_navigation(move |url| {
                     let permitted = navigation_target
                         .lock()
@@ -1097,6 +1134,7 @@ fn main() {
                     tauri::webview::NewWindowResponse::Deny
                 });
             let window = builder.build()?;
+            badge::watch(&window);
             #[cfg(windows)]
             {
                 // Keep menu accelerators, but remove the extra Windows menu row.

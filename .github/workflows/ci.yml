@@ -192,6 +192,13 @@ jobs:
           rustc --edition 2021 --test desktop/src/health.rs -o "$RUNNER_TEMP/desktop-health"
           "$RUNNER_TEMP/desktop-health"
 
+      # Likewise what the taskbar badge shows for a count and display scale,
+      # and its approved pictures (YN-43).
+      - name: Desktop badge rules
+        run: |
+          rustc --edition 2021 --test desktop/src/badge_rules.rs -o "$RUNNER_TEMP/desktop-badge"
+          "$RUNNER_TEMP/desktop-badge"
+
       # Cargo dependencies only (the workspace's own build output is not
       # kept). Restores on every run; saves only from main, so a PR cannot
       # write a cache that main later reads.
