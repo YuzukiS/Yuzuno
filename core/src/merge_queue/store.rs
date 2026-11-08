@@ -94,11 +94,23 @@ fn entry(db: &Connection, id: &str) -> Result<Value> {
         .optional()?;
     Ok(serde_json::from_str(&raw.context("merge_entry_not_found: No such merge entry")?)?)
 }
+/// When the entry is next due: its own next check, or earlier when a tag for
+/// its release (YN-33) is due first. A tag has its own time (`grouping.nextAt`),
+/// so an ended entry is due only for it, and its follow-up keeps its own pace.
+fn due_at(e: &Value) -> i64 {
+    let own = e["nextCheck"].as_i64().unwrap_or(0);
+    if e["grouping"]["state"] != "pending" {
+        return own;
+    }
+    let tag = e["grouping"]["nextAt"].as_i64().unwrap_or(0);
+    let rest = matches!(e["state"].as_str(), Some("queued" | "waiting" | "ready" | "merging" | "merged")) || e["batch"]["cleanup"] == "pending";
+    if rest { own.min(tag) } else { tag }
+}
 fn save(db: &Connection, e: &Value) -> Result<()> {
     // A revert entry's number becomes its revert PR's once Core opened it.
     db.execute(
         "UPDATE merge_entries SET state=?1,next_check=?2,data=?3,number=COALESCE(?5,number) WHERE id=?4",
-        params![e["state"].as_str(), e["nextCheck"].as_i64().unwrap_or(0), e.to_string(), e["id"].as_str(), e["number"].as_i64()],
+        params![e["state"].as_str(), due_at(e), e.to_string(), e["id"].as_str(), e["number"].as_i64()],
     )?;
     // A chain step that stopped or was cancelled left the chain: the step
     // after it rebuilds now, not after its backoff (YN-18 S2e).
@@ -137,7 +149,9 @@ fn repository(db: &Connection, id: i64) -> Result<Value> {
     }
     // YN-18 S2d-2: the user's consent to one-step reverts, and to Core
     // reverting on its own; both off until the user turns them on.
-    for key in ["revert", "autoRevert"] {
+    // YN-33: the user's consent to tagging merged PRs for their release
+    // (milestone and task label); off until the user turns it on.
+    for key in ["revert", "autoRevert", "grouping"] {
         if !v[key].is_boolean() {
             v[key] = json!(false);
         }
@@ -368,7 +382,7 @@ fn record(e: &Value) -> Value {
     let last = &e["lastEvidence"];
     json!({"entry":e["id"],"repository":e["repository"],"pr":e["number"],"head":e["headSha"],"state":e["state"],
         "release":e["release"],"review":last["review"],"main":last["main"],"gate":last["gate"],"mergeRef":last["mergeRef"],"policy":last["policy"],"checkedAt":last["checkedAt"],
-        "batch":e["batch"],"merge":e["merge"],
+        "batch":e["batch"],"merge":e["merge"],"grouping":e["grouping"],
         "stop":if e["state"] == "stopped" { json!({"reason":e["reason"],"detail":e["detail"]}) } else { Value::Null }})
 }
 
@@ -789,12 +803,14 @@ impl Store {
     }
 
     /// Entries with something due, oldest release first: a check, a merge to
-    /// reconcile, a merge to follow, or a batch of Core's own to remove.
+    /// reconcile, a merge to follow, a batch of Core's own to remove, or a
+    /// merge to tag for its release (YN-33).
     pub(super) fn merge_due(&self) -> Result<Vec<Value>> {
         let db = self.db.read()?;
         let mut q = db.prepare(
             "SELECT data FROM merge_entries WHERE next_check<=?1
-             AND (state IN ('queued','waiting','ready','merging','merged') OR json_extract(data,'$.batch.cleanup')='pending')
+             AND (state IN ('queued','waiting','ready','merging','merged') OR json_extract(data,'$.batch.cleanup')='pending'
+                  OR json_extract(data,'$.grouping.state')='pending')
              ORDER BY rowid LIMIT 8",
         )?;
         let rows = q
@@ -1099,6 +1115,11 @@ impl Store {
                         e["merge"]["post"] = json!({"ok":true,"commit":f.merge_commit,"at":now()});
                         announce_as = Some("normal");
                         next_chain_step(&tx, id)?;
+                        // Only a merge whose post-check held is tagged for its
+                        // release (YN-33), and only with the user's consent.
+                        if repository(&tx, e["repositoryId"].as_i64().unwrap_or(0))?["grouping"] == true {
+                            e["grouping"] = json!({"state":"pending","failures":0,"nextAt":0});
+                        }
                     }
                     Some(Err(hold)) => {
                         let detail = match hold { Hold::Stop(_, d) | Hold::Wait(d) => d };
@@ -1480,6 +1501,104 @@ impl Store {
         let data = repository(&tx, repository_id)?;
         tx.commit()?;
         Ok(data)
+    }
+    /// The user's consent to tagging the PRs the queue merged for their
+    /// release (YN-33): the newest open milestone and the task's label.
+    /// Journaled with the switch.
+    pub(super) fn merge_set_grouping(&self, repository_id: i64, grouping: bool) -> Result<Value> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let known: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM github_repositories WHERE id=?1)", [repository_id], |r| r.get(0))?;
+        ensure!(known, "not_found: link the repository to a Project first");
+        let mut data = repository(&tx, repository_id)?;
+        if data["grouping"] != grouping {
+            let on = data["enabled"] == true;
+            switched(&mut data, on, "user", if grouping { "Release grouping turned on" } else { "Release grouping turned off" });
+            data["grouping"] = json!(grouping);
+        }
+        data["updatedAt"] = json!(now());
+        save_repository(&tx, repository_id, &data)?;
+        let data = repository(&tx, repository_id)?;
+        tx.commit()?;
+        Ok(data)
+    }
+    /// What a merged entry is tagged with (YN-33): its task's current key and
+    /// title, and whether the user still allows tagging for the repository.
+    pub(super) fn merge_grouping_task(&self, task: &str, repository_id: i64) -> Result<(String, String, bool)> {
+        let db = self.db.read()?;
+        let key = collab::task_number(&db, task)?;
+        let title = collab::load_task(&db, task)?.title;
+        Ok((key, title, repository(&db, repository_id)?["grouping"] == true))
+    }
+    /// One attempt to tag a merged entry for its release (YN-33). It never
+    /// changes the merge, its state or the queue: a failure is retried later,
+    /// and after eight in a row Core stops and says what to set by hand.
+    pub(super) fn merge_grouped(&self, id: &str, outcome: std::result::Result<Value, String>) -> Result<()> {
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let mut e = entry(&tx, id)?;
+        if e["grouping"]["state"] != "pending" {
+            return Ok(());
+        }
+        let now_epoch = epoch();
+        let n = e["number"].as_u64().unwrap_or(0);
+        let (state, reason) = (e["state"].as_str().unwrap_or("").to_owned(), e["reason"].clone());
+        let mut comment = None;
+        match outcome {
+            Ok(done) if done["skipped"] == "off" => {
+                e["grouping"] = json!({"state":"off","at":now()});
+                history(&mut e, &state, &reason, &json!(format!("Release grouping was turned off before Core tagged #{n}; nothing was tagged")));
+            }
+            Ok(done) => {
+                let milestone = match done["milestone"]["action"].as_str() {
+                    Some("none") => "no open milestone".to_owned(),
+                    Some("kept") => format!("its own milestone {} kept", done["milestone"]["title"].as_str().unwrap_or("?")),
+                    _ => format!("milestone {}", done["milestone"]["title"].as_str().unwrap_or("?")),
+                };
+                let label = format!("label {}{}", done["label"]["name"].as_str().unwrap_or("?"), if done["label"]["created"] == true { " (created)" } else { "" });
+                let text = format!("Tagged #{n} for its release: {milestone}, {label}");
+                history(&mut e, &state, &reason, &json!(text));
+                if done["milestone"]["action"] == "none" {
+                    comment = Some(format!("Merge queue: tagged #{n} with {} only: the repository has no open milestone, so #{n} has none. Set the release's milestone by hand. Entry {id}.",
+                        done["label"]["name"].as_str().unwrap_or("?")));
+                }
+                e["grouping"] = json!({"state":"done","milestone":done["milestone"],"label":done["label"],"at":now()});
+            }
+            // The switch being off, or GitHub's rate limit, is a wait and no
+            // failure, as for removing a batch.
+            Err(error) if error.starts_with("merge_queue_disabled") || error.starts_with("rate_limited") => {
+                e["grouping"]["error"] = json!(error);
+                e["grouping"]["nextAt"] = json!(now_epoch + 600);
+            }
+            Err(error) if error.starts_with("merge_grouping_off") => {
+                e["grouping"] = json!({"state":"off","at":now()});
+                history(&mut e, &state, &reason, &json!(format!("Release grouping was turned off before Core tagged #{n}; nothing more was tagged")));
+            }
+            Err(error) => {
+                let failures = e["grouping"]["failures"].as_i64().unwrap_or(0) + 1;
+                e["grouping"]["failures"] = json!(failures);
+                e["grouping"]["error"] = json!(error);
+                if failures >= READ_FAILURES {
+                    e["grouping"]["state"] = json!("failed");
+                    let text = format!(
+                        "Core stopped tagging #{n} for its release after {failures} failures in a row; the last: {error}. The merge stands. Set the release's milestone and the label task:{} on #{n} by hand.",
+                        e["taskReference"].as_str().unwrap_or("?")
+                    );
+                    history(&mut e, &state, &reason, &json!(text));
+                    comment = Some(format!("Merge queue: {text} Entry {id}."));
+                } else {
+                    e["grouping"]["nextAt"] = json!(now_epoch + (60i64 << (failures - 1).min(3)).min(600));
+                }
+            }
+        }
+        e["evidence"] = record(&e);
+        save(&tx, &e)?;
+        if let Some(body) = comment {
+            collab::activity(&tx, e["taskId"].as_str().unwrap_or(""), "comment", &system(), &json!({"mergeEntryId":id}),
+                json!({"mergeEntryId":id,"body":body}))?;
+        }
+        tx.commit()?;
+        Ok(())
     }
     /// Join entry `id` to the repository's chain of batches at its batch
     /// decision (YN-18 S2e). With no step still to merge or in flight, a new

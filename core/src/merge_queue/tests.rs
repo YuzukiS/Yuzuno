@@ -113,7 +113,10 @@ fn green() -> Value {
                 "60":[{"id":601,"name":"Core (build and test)","conclusion":"success"},{"id":602,"name":"Web UI","conclusion":"success"}]},
         "logs":{"501":log(&merge_sha()),"502":log(&merge_sha()),"601":log(&batch_merge_ref()),"602":log(&batch_merge_ref())},
         "refs":{},"pulls":{},"batchCommit":batch_commit(),"batchTree":tree(),"mergeSha":merge_commit(),"mergeTree":tree(),
-        "mergeAnswers":[],"calls":[]})
+        "mergeAnswers":[],"calls":[],
+        "issue":{"number":11,"labels":[{"name":"enhancement"}],"milestone":null},
+        "milestones":[{"number":1,"title":"core.26","state":"open"},{"number":2,"title":"core.27","state":"open"},{"number":3,"title":"core.28","state":"closed"}],
+        "labels":{}})
 }
 /// The batch's CI finished green on its own merge ref.
 fn batch_green(s: &mut Value) {
@@ -228,7 +231,33 @@ if method=='PUT' and path=='pulls/11/merge':
     s['pull'].update({'merged':True,'state':'closed','merged_at':'now','merge_commit_sha':m['sha']}); save()
     if answer=='lost': out(502,{'message':'Bad gateway'})
     out(200,{'sha':m['sha'],'merged':True,'message':'Pull Request successfully merged'})
+if method=='PATCH' and path=='issues/11':
+    q=s.get('milestoneAnswers') or []
+    answer=q.pop(0) if q else None
+    if answer=='502':
+        save(); out(502,{'message':'Bad gateway'})
+    s['issue']['milestone']=next(m for m in s['milestones'] if m['number']==body['milestone']); save(); out(200,s['issue'])
+if method=='POST' and path=='labels':
+    if body['name'] in s['labels']:
+        save(); out(422,{'message':'Validation Failed','errors':[{'resource':'Label','code':'already_exists','field':'name'}]})
+    s['labels'][body['name']]=body; save(); out(201,body)
+if method=='POST' and path=='issues/11/labels':
+    q=s.get('labelAnswers') or []
+    answer=q.pop(0) if q else None
+    if answer=='502':
+        save(); out(502,{'message':'Bad gateway'})
+    if answer=='429':
+        save(); out(429,{'message':'API rate limit exceeded'})
+    for n in body['labels']:
+        if not any(l['name']==n for l in s['issue']['labels']): s['issue']['labels'].append({'name':n})
+    save(); out(200,s['issue']['labels'])
 if method!='GET': out(404,{})
+if path=='issues/11': out(200,s['issue'])
+if path.startswith('milestones?'): out(200,[m for m in s['milestones'] if m.get('state','open')=='open'])
+if path.startswith('labels/'):
+    import urllib.parse
+    n=urllib.parse.unquote(path[len('labels/'):])
+    out(200,s['labels'][n]) if n in s['labels'] else out(404,{'message':'Not Found'})
 if path=='pulls/11' and s.get('pullDown'): out(502,{'message':'Bad gateway'})
 if path=='pulls/11':
     q=s.get('pullQueue') or []
@@ -331,7 +360,11 @@ impl Lab {
     }
     /// The next step is due now, whatever wait the last one set.
     fn due(&self) {
-        self.ws.store.db.write().unwrap().execute("UPDATE merge_entries SET next_check=0", []).unwrap();
+        let db = self.ws.store.db.write().unwrap();
+        db.execute("UPDATE merge_entries SET next_check=0", []).unwrap();
+        // A pending tag for the release (YN-33) has its own time.
+        db.execute("UPDATE merge_entries SET data=json_set(data,'$.grouping.nextAt',0) WHERE json_extract(data,'$.grouping.state')='pending'", [])
+            .unwrap();
     }
     async fn step(&self) -> Value {
         self.due();
@@ -2913,4 +2946,232 @@ async fn a_ready_entry_is_not_checked_again_while_the_switch_stays_off() {
     let e = lab.entry().await;
     assert_eq!((e["state"].clone(), e["checks"].clone()), (json!("ready"), json!(1)), "while the switch stays off, a ready entry is not checked again: {e}");
     assert_eq!(calls(lab.dir.path()).len(), reads, "nor read from GitHub");
+}
+
+/// The task's key as Core shows it now, and its label.
+fn task_label(lab: &Lab) -> (String, String) {
+    let task = internal(&lab.ws.store, &lab.task);
+    let key = crate::collaboration_store::task_number(&lab.ws.store.db.read().unwrap(), &task).unwrap();
+    let label = format!("task:{key}");
+    (key, label)
+}
+/// The grouping writes the fake GitHub received after the merge request.
+fn grouping_writes(root: &std::path::Path) -> Vec<Value> {
+    calls(root)
+        .into_iter()
+        .filter(|c| c["method"] != "GET" && !c["endpoint"].as_str().unwrap().ends_with("/merge"))
+        .map(|c| json!([format!("{} {}", c["method"].as_str().unwrap(), c["endpoint"].as_str().unwrap()), c["body"]]))
+        .collect()
+}
+
+/// YN-33 finding 1: with the user's consent, a merge whose post-check held is
+/// tagged for its release right after it: the newest open milestone (the
+/// highest-numbered; a closed one does not count) and the task's label, made
+/// first with Dev 9's colour and the task's title when the repository lacks it.
+/// Its other labels stay, and main CI is followed as before.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_verified_merge_is_tagged_with_the_newest_open_milestone_and_its_task_label_made_when_missing() {
+    let lab = lab(green());
+    let (key, label) = task_label(&lab);
+    assert_eq!(lab.paused()["grouping"], false, "release grouping is off until the user turns it on");
+    let r = lab.ws.store.merge_set_grouping(7, true).unwrap();
+    assert_eq!(r["grouping"], true);
+    assert_eq!(r["switches"].as_array().unwrap().last().unwrap()["detail"], "Release grouping turned on", "the switch journal records it: {r}");
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["merge"]["post"]["ok"].clone()), (json!("merged"), json!(true)), "{e}");
+    let color = if key.starts_with("T-") { "5319e7" } else { "1d76db" };
+    assert_eq!(
+        grouping_writes(lab.dir.path()),
+        [
+            json!(["PATCH repos/owner/repo/issues/11", {"milestone":2}]),
+            json!(["POST repos/owner/repo/labels", {"name":label,"color":color,"description":"Merge PR"}]),
+            json!(["POST repos/owner/repo/issues/11/labels", {"labels":[label]}]),
+        ],
+        "right after the post-check: core.27, the newest open milestone, then the task label, made first"
+    );
+    let order: Vec<String> = writes(lab.dir.path());
+    assert_eq!(order[0], "PUT repos/owner/repo/pulls/11/merge", "nothing is tagged before the merge: {order:?}");
+    let g = &e["grouping"];
+    assert_eq!(g["state"], "done", "{e}");
+    assert_eq!((g["milestone"]["action"].clone(), g["milestone"]["title"].clone()), (json!("set"), json!("core.27")));
+    assert_eq!((g["label"]["name"].clone(), g["label"]["created"].clone(), g["label"]["action"].clone()), (json!(label), json!(true), json!("added")));
+    assert_eq!(e["evidence"]["grouping"], *g, "the evidence record holds it");
+    let issue = serde_json::from_slice::<Value>(&std::fs::read(lab.dir.path().join("gh.json")).unwrap()).unwrap()["issue"].clone();
+    assert_eq!(issue["labels"], json!([{"name":"enhancement"},{"name":label}]), "the PR's other labels stay");
+    assert!(e["history"].as_array().unwrap().iter().any(|h| h["detail"] == format!("Tagged #11 for its release: milestone core.27, label {label} (created)")), "{e}");
+    change(lab.dir.path(), |s| main_ci(s, "success"));
+    let e = lab.step().await;
+    assert_eq!(e["state"], "done", "main CI is followed as before: {e}");
+    lab.step().await;
+    assert_eq!(grouping_writes(lab.dir.path()).len(), 3, "a merge is tagged once");
+}
+
+/// A label the repository already has is added without being made again; a
+/// PR that already carries it gets no write for it; a PR's own milestone is
+/// kept, never replaced; and with no open milestone the PR gets the label
+/// only, and the task says so.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_existing_label_is_not_made_again_a_prs_own_milestone_is_kept_and_no_open_milestone_is_said() {
+    // The label exists and the PR has core.26 already.
+    let lab = lab(green());
+    let (_, label) = task_label(&lab);
+    lab.ws.store.merge_set_grouping(7, true).unwrap();
+    change(lab.dir.path(), |s| {
+        s["labels"][&label] = json!({"name":label,"color":"1d76db"});
+        s["issue"]["milestone"] = json!({"number":1,"title":"core.26"});
+    });
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(grouping_writes(lab.dir.path()), [json!(["POST repos/owner/repo/issues/11/labels", {"labels":[label]}])], "only the label is added: {e}");
+    assert_eq!((e["grouping"]["milestone"]["action"].clone(), e["grouping"]["milestone"]["title"].clone()), (json!("kept"), json!("core.26")), "{e}");
+    assert_eq!(e["grouping"]["label"]["created"], false);
+    assert!(lab.comments().iter().all(|c| !c.contains("no open milestone")), "nothing for a person to do");
+
+    // The PR already has both: nothing is written.
+    let lab = lab_with(|s| s["issue"] = json!({"number":11,"labels":[],"milestone":{"number":2,"title":"core.27"}}));
+    let (_, label) = task_label(&lab);
+    change(lab.dir.path(), |s| s["issue"]["labels"] = json!([{"name":label}]));
+    lab.ws.store.merge_set_grouping(7, true).unwrap();
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert!(grouping_writes(lab.dir.path()).is_empty(), "a PR tagged already gets no write: {e}");
+    assert_eq!((e["grouping"]["milestone"]["action"].clone(), e["grouping"]["label"]["action"].clone()), (json!("present"), json!("present")), "{e}");
+
+    // No open milestone: the label only, and the task says so.
+    let lab = lab_with(|s| s["milestones"] = json!([{"number":1,"title":"core.26","state":"closed"}]));
+    let (_, label) = task_label(&lab);
+    lab.ws.store.merge_set_grouping(7, true).unwrap();
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!(
+        grouping_writes(lab.dir.path()).iter().map(|w| w[0].as_str().unwrap().to_owned()).collect::<Vec<_>>(),
+        ["POST repos/owner/repo/labels", "POST repos/owner/repo/issues/11/labels"],
+        "no milestone write: {e}"
+    );
+    assert_eq!((e["grouping"]["state"].clone(), e["grouping"]["milestone"]["action"].clone()), (json!("done"), json!("none")), "{e}");
+    assert!(lab.comments().iter().any(|c| c.contains(&format!("tagged #11 with {label} only: the repository has no open milestone"))), "{:?}", lab.comments());
+}
+
+/// Tagging never touches the merge: failed writes are retried with a backoff
+/// while main CI is followed and after the entry is done, never pause the
+/// queue or revert anything, and after eight in a row Core stops and tells the
+/// task what to set by hand. A rate limit is a wait, not a failure.
+#[cfg(unix)]
+#[tokio::test]
+async fn tagging_failures_never_undo_the_merge_and_end_after_eight_with_what_to_set_by_hand() {
+    let lab = lab_with(|s| s["milestoneAnswers"] = json!(vec!["502"; 9]));
+    let (_, label) = task_label(&lab);
+    lab.ws.store.merge_set_grouping(7, true).unwrap();
+    lab.ws.store.merge_set_reverts(7, Some(true), Some(true)).unwrap();
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["state"].clone(), e["grouping"]["state"].clone(), e["grouping"]["failures"].clone()), (json!("merged"), json!("pending"), json!(1)), "{e}");
+    let next = e["grouping"]["nextAt"].as_i64().unwrap();
+    assert!(next > chrono::Utc::now().timestamp(), "a failure is retried later: {e}");
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.entry().await["grouping"]["failures"], 1, "not before its time");
+    change(lab.dir.path(), |s| main_ci(s, "success"));
+    let e = lab.step().await;
+    assert_eq!((e["state"].clone(), e["reason"].clone()), (json!("done"), Value::Null), "main CI ends the entry whatever tagging does: {e}");
+    assert_eq!(e["grouping"]["state"], "pending", "a done entry is still tagged: {e}");
+    // A rate limit on the next attempt: a wait, not a failure.
+    change(lab.dir.path(), |s| {
+        s["milestoneAnswers"] = json!(vec!["502"; 6]);
+        s["issue"]["milestone"] = json!({"number":2,"title":"core.27"});
+        s["labelAnswers"] = json!(["429"]);
+    });
+    let e = lab.step().await;
+    assert_eq!(e["grouping"]["failures"], 2, "{e}");
+    assert!(e["grouping"]["error"].as_str().unwrap().starts_with("rate_limited"), "{e}");
+    change(lab.dir.path(), |s| {
+        s["issue"]["milestone"] = Value::Null;
+        s["labelAnswers"] = json!([]);
+    });
+    for _ in 0..6 {
+        lab.step().await;
+    }
+    let e = lab.entry().await;
+    assert_eq!((e["grouping"]["state"].clone(), e["grouping"]["failures"].clone()), (json!("failed"), json!(8)), "{e}");
+    assert_eq!((e["state"].clone(), e["merge"]["sha"].clone()), (json!("done"), json!(merge_commit())), "the merge stands: {e}");
+    assert!(lab.paused()["paused"].is_null(), "tagging never pauses the queue");
+    assert!(writes(lab.dir.path()).iter().all(|w| !w.contains("git/commits") && !w.contains("queue/revert-")), "nor reverts anything");
+    let comment = lab.comments().into_iter().find(|c| c.contains("Core stopped tagging #11")).expect("the task is told");
+    assert!(comment.contains(&format!("Set the release's milestone and the label {label} on #11 by hand")), "{comment}");
+    let count = writes(lab.dir.path()).len();
+    lab.step().await;
+    assert_eq!(writes(lab.dir.path()).len(), count, "Core stops trying");
+    assert!(lab.ws.store.merge_due().unwrap().is_empty(), "and the entry is no longer due");
+}
+
+/// Without the user's consent, or when the post-check did not hold, nothing is
+/// tagged; consent taken back while a tag is pending ends it with no more writes.
+#[cfg(unix)]
+#[tokio::test]
+async fn nothing_is_tagged_without_consent_or_a_held_post_check() {
+    let lab = lab(green());
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    change(lab.dir.path(), |s| main_ci(s, "success"));
+    let e = lab.step().await;
+    assert_eq!((e["state"].clone(), e["grouping"].clone()), (json!("done"), Value::Null), "grouping is off by default: {e}");
+    assert!(grouping_writes(lab.dir.path()).is_empty());
+
+    let lab = lab_with(|s| s["mergeTree"] = json!(sha('c')));
+    lab.ws.store.merge_set_grouping(7, true).unwrap();
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    let e = lab.entry().await;
+    assert_eq!((e["reason"].clone(), e["grouping"].clone()), (json!("post_check_failed"), Value::Null), "{e}");
+    lab.step().await;
+    assert!(grouping_writes(lab.dir.path()).is_empty(), "a merge that did not land as tested is not tagged");
+
+    let lab = lab_with(|s| s["milestoneAnswers"] = json!(["502"]));
+    lab.ws.store.merge_set_grouping(7, true).unwrap();
+    lab.release(Some("lead"), "r1").await.unwrap();
+    tick(&lab.ws).await.unwrap();
+    assert_eq!(lab.entry().await["grouping"]["state"], "pending");
+    let tried = grouping_writes(lab.dir.path()).len();
+    lab.ws.store.merge_set_grouping(7, false).unwrap();
+    let e = lab.step().await;
+    assert_eq!(e["grouping"]["state"], "off", "{e}");
+    assert_eq!(grouping_writes(lab.dir.path()).len(), tried, "no more writes once the user turned grouping off");
+    let w = writes::write(&lab.ws, 7, "owner/repo", writes::Write::AddLabel { number: 11, name: "task:X-1" }).await;
+    assert!(w.unwrap_err().to_string().starts_with("merge_grouping_off"), "every tagging write needs the consent");
+}
+
+/// The user turns grouping on and off on the switch's route; no Agent tool
+/// reaches it. A label's description is the task title cut to GitHub's 100
+/// characters, counted as characters.
+#[cfg(unix)]
+#[tokio::test]
+async fn release_grouping_is_the_users_on_the_route_and_label_descriptions_fit_githubs_limit() {
+    use tower::ServiceExt;
+    let lab = lab(green());
+    let put = axum::http::Request::builder()
+        .method("PUT")
+        .uri("/api/merge-queue/repositories/7")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(json!({"grouping":true}).to_string()))
+        .unwrap();
+    let response = router().with_state(lab.ws.clone()).oneshot(put).await.unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+    assert_eq!((body["grouping"].clone(), body["enabled"].clone()), (json!(true), json!(true)), "the switch stays as it was: {body}");
+    for tool in tool_definitions() {
+        assert!(!tool.to_string().contains("\"grouping\""), "no Agent tool sets grouping: {}", tool["name"]);
+    }
+    let long: String = "合并队列".repeat(30);
+    let cut = remote::label_description(&long);
+    assert_eq!((cut.chars().count(), cut.ends_with('…')), (100, true), "{cut}");
+    assert_eq!(remote::label_description("Merge PR"), "Merge PR");
+    let exact: String = "x".repeat(100);
+    assert_eq!(remote::label_description(&exact), exact, "100 characters fit as they are");
 }
