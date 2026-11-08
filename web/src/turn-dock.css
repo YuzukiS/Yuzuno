@@ -242,14 +242,21 @@
   position: absolute;
   z-index: 12;
   right: calc(100% + 8px);
+  /* Drawn as the app's one tip is (tip.css), from the same tokens; it stays
+     the dock's own, placed beside the Turn it previews. */
+  display: grid;
+  gap: 2px;
   width: min(290px, calc(100cqw - 86px));
   max-height: calc(100% - 16px);
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--surface-raised);
+  box-sizing: border-box;
+  padding: var(--tip-pad);
+  border: 1px solid var(--tip-line);
+  border-radius: var(--tip-radius);
+  background: var(--tip-bg);
   color: var(--ink);
-  box-shadow: 0 8px 26px var(--palette-shadow, #00000020);
+  box-shadow: var(--tip-shadow);
+  font-size: var(--tip-font);
+  line-height: 1.45;
   pointer-events: none;
   overflow: hidden;
   animation: dock-preview-in var(--motion-micro) var(--ease-standard);
@@ -264,12 +271,14 @@
 .turn-dock-preview > div {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: 10px;
-  font-size: calc(9px + var(--font-adjust, 3px));
+}
+.turn-dock-preview > div > strong {
+  font-weight: 700;
 }
 .turn-dock-preview > div > span {
   color: var(--text-secondary);
-  font-size: 0.85em;
 }
 .turn-dock-preview p {
   display: -webkit-box;
@@ -277,13 +286,8 @@
   -webkit-line-clamp: 4;
   overflow: hidden;
   overflow-wrap: anywhere;
-  margin: 7px 0;
-  line-height: 1.5;
-  font-size: calc(10px + var(--font-adjust, 3px));
-}
-.turn-dock-preview small {
-  color: var(--text-quiet);
-  font-size: calc(7px + var(--font-adjust, 3px));
+  margin: 0;
+  color: var(--text-secondary);
 }
 /* A middle-sized pane — a folding phone opened, a split window — is the one
    size that cannot afford the mirrored gutter: it is past the narrow rule

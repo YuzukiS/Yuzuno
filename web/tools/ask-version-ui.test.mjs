@@ -8,13 +8,17 @@ import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
 
-// A reply to an ask names the version of the ask the user answered and the
+// A reply to an ask names the version of the ask it answers and the
 // Workspace that page showed (T-9): every way of answering (an option, a
 // choice, a form, free text) sends `askVersion` and `workspaceId`, never a
-// card's `version`. Core refuses a reply to a version that is no longer the
-// live ask, sending nothing; the reply box says so and what was written
-// stays. A retry of a send not confirmed goes again exactly as it was. The
-// real AskReply, with Core answered here.
+// card's `version`. It always answers the latest version (YN-38): the one on
+// screen, and when Core refuses that because it has a newer one, Home reads
+// the ask again and the reply goes there, as long as it answers the same
+// thing there; words always do. Answers begun on an earlier version are
+// carried to the latest by field and option ID, never to an option the user
+// did not pick, and the form says what changed. A retry of a send not
+// confirmed goes again exactly as it was. The real AskReply, with Core
+// answered here.
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
 await mkdir(cache, { recursive: true });
@@ -98,12 +102,13 @@ function core(refuse = () => null) {
   };
 }
 
-/** `answer(body)`: what Core answers a reply; a thrown error is a lost connection. */
+/** `answer(body)`: what Core answers a reply; a thrown error is a lost connection.
+ * `box.asks`: the sections Core's Home read has now, by key (YN-38). */
 function mount(answer = accepted) {
   const errors = [];
   const posts = [];
   let ids = 0;
-  const box = { answer, sent: 0 };
+  const box = { answer, sent: 0, asks: {} };
   let window;
   let document;
   // A new page, with what the one before kept in this browser.
@@ -122,6 +127,10 @@ function mount(answer = accepted) {
     window.fetch = async (url, init = {}) => {
       const body = init.body ? JSON.parse(init.body) : null;
       posts.push({ url: String(url), method: init.method || "GET", body });
+      if (String(url).endsWith("/api/home")) {
+        const home = { projects: [{ project: { id: "p1", name: "P1" }, brief: { version: 1, history: [], sections: Object.values(box.asks) } }] };
+        return { ok: true, status: 200, json: async () => home, text: async () => JSON.stringify(home) };
+      }
       const { status, body: reply } = await box.answer(body);
       return { ok: status < 400, status, json: async () => reply, text: async () => JSON.stringify(reply) };
     };
@@ -151,9 +160,11 @@ function mount(answer = accepted) {
   const button = (text) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === text);
   const replies = () => posts.filter((post) => post.method === "POST" && /\/brief\/reply$/.test(post.url)).map((post) => post.body);
   const notes = () => [...document.querySelectorAll(".home-note, .inline-error")].map((n) => n.textContent);
+  /** Home's reads of the asks (YN-38: only after Core refused a reply because the ask moved on). */
+  const homeReads = () => posts.filter((post) => post.url.endsWith("/api/home")).length;
   return {
     get window() { return window; }, get document() { return document; },
-    errors, posts, replies, render, field, sendButton, type, button, notes, box, reload, outbox, close: () => window.close(),
+    errors, posts, replies, render, field, sendButton, type, button, notes, box, reload, outbox, homeReads, close: () => window.close(),
   };
 }
 
@@ -212,32 +223,55 @@ test("a form's answers go as the text Home writes of them with the same ids besi
   assert.deepEqual(page.errors, []);
 });
 
-test("refused because the ask changed: nothing more is sent, the words stay, and they go to the new version only when the user says so", async (t) => {
-  const page = mount((body) => body.askVersion === 2 ? refused("ask_changed: the ask is now version 3") : accepted(body));
+test("YN-38 words Core refuses because the ask moved on go to its latest version, read then, as a new message; no step, no other read", async (t) => {
+  const page = mount((body) => body.askVersion === 2 ? refused("ask_changed: version 2 of the ask `plan` can't be answered now") : accepted(body));
   t.after(page.close);
   page.render(section("plan", 2));
   await page.type("Plan A, as discussed.");
-  page.sendButton().click();
-  await tick();
-  assert.equal(page.replies().length, 1);
-  assert.ok(page.notes().some((n) => /The question changed before your reply was sent, so nothing was sent/.test(n)), JSON.stringify(page.notes()));
-  assert.equal(page.box.sent, 1, "Home reads the ask again");
-  assert.equal(page.field().value, "Plan A, as discussed.", "the words stay");
-  assert.equal(page.window.localStorage.getItem("yuzuno.home-outbox.v1"), null, "never submitted: no retry record");
-  // Home shows the question as it is now: the reply waits for the user.
-  page.render(section("plan", 3));
-  assert.ok(page.notes().some((n) => /You began this reply on version 2 of this ask; Home shows version 3/.test(n)), JSON.stringify(page.notes()));
-  assert.equal(page.sendButton().disabled, true, "not sent to version 3 by itself");
-  page.button("Refer it to version 3").click();
-  await tick();
+  // Core already has version 3; this page has not read it yet.
+  page.box.asks.plan = section("plan", 3, everything, { question: "Which plan should we take now?" });
   page.sendButton().click();
   await tick();
   const sent = page.replies();
-  assert.equal(sent.length, 2);
-  assert.equal(sent[1].askVersion, 3);
-  assert.equal(sent[1].text, "Plan A, as discussed.");
-  assert.notEqual(sent[1].clientMessageId, sent[0].clientMessageId, "a reply to another version is another message");
+  assert.equal(sent.length, 2, JSON.stringify(page.posts));
+  assert.deepEqual(sent.map((b) => [b.askVersion, b.text]), [[2, "Plan A, as discussed."], [3, "Plan A, as discussed."]]);
+  assert.notEqual(sent[1].clientMessageId, sent[0].clientMessageId, "Core never had the refused one: a new message");
+  assert.equal(page.homeReads(), 1, "Home read the ask once, after the refusal");
+  assert.ok(!page.notes().some((n) => /nothing was sent/.test(n)), JSON.stringify(page.notes()));
+  assert.equal(page.outbox().length, 0);
+  // Answered: the answer shows in place, and the draft is gone.
+  assert.match(page.document.querySelector(".home-ask-replied")?.textContent ?? "", /Plan A, as discussed\./);
+  assert.ok(!page.button("Refer it to version 3"));
   assert.deepEqual(page.errors, []);
+});
+
+test("YN-38 a pick Core refuses because the ask moved on goes to the latest only where it asks the same and offers the same option, worded the same", async (t) => {
+  const cases = [
+    // [what the latest version is, whether the pick goes there]
+    ["the body changed, the question and options did not", (v) => section("opt", v), true],
+    ["the option is worded otherwise", (v) => section("opt", v, { ...everything, options: [{ id: "ship", label: "Ship tomorrow" }, everything.options[1]] }), false],
+    ["the option is gone", (v) => section("opt", v, { ...everything, options: [everything.options[1], { id: "hold", label: "Hold" }] }), false],
+    ["the question changed", (v) => section("opt", v, everything, { question: "Ship the hotfix today?" }), false],
+  ];
+  for (const [how, latest, goes] of cases) {
+    const page = mount((body) => body.askVersion === 2 ? refused("ask_changed: version 2 of the ask `opt` can't be answered now") : accepted(body));
+    try {
+      page.render(section("opt", 2));
+      page.box.asks.opt = latest(3);
+      page.button("Ship today").click();
+      await tick();
+      const sent = page.replies();
+      assert.deepEqual(sent.map((b) => [b.askVersion, b.choice]), goes ? [[2, "ship"], [3, "ship"]] : [[2, "ship"]], `${how}: ${JSON.stringify(sent)}`);
+      assert.equal(page.homeReads(), 1, how);
+      if (!goes) {
+        assert.ok(page.notes().some((n) => /The question changed before your reply was sent, so nothing was sent/.test(n)), `${how}: ${JSON.stringify(page.notes())}`);
+        assert.equal(page.box.sent, 1, `${how}: Home reads the ask again, to show the latest`);
+      }
+      assert.deepEqual(page.errors, [], how);
+    } finally {
+      page.close();
+    }
+  }
 });
 
 // One reply, however it is given (an option, a choice, a form, free text):
@@ -260,8 +294,17 @@ const formOf = (page) => ({
   radio: (label) => [...page.document.querySelectorAll(".clarification label")].find((l) => l.textContent.includes(label)).querySelector("input"),
   submit: () => page.document.querySelector(".clarification footer .primary-button"),
   notes: () => [...page.document.querySelectorAll(".clarification-delivery")].map((n) => n.textContent),
+  /** What the form says changed on the field labelled `label` (YN-38). */
+  carried: (label) => {
+    const field = [...page.document.querySelectorAll(".clarification-field")].find((f) => f.querySelector("legend").textContent.startsWith(label));
+    return [...(field?.querySelectorAll(".clarification-carried p") ?? [])].map((n) => n.textContent);
+  },
+  /** What the form says about answers to fields it no longer asks. */
+  gone: () => [...page.document.querySelectorAll(".clarification form > .clarification-carried")].map((n) => n.textContent),
+  errors: () => [...page.document.querySelectorAll(".clarification-error")].map((n) => n.textContent),
 });
-const formReferNote = (n) => /You began this reply on version 2 of this ask; Home shows version 3/.test(n);
+/** Said above a form whose answers were given on an earlier version (YN-38). */
+const carriedNote = (n) => /This ask is now version \d+\. Your answers are kept where they still fit/.test(n);
 /** The same form ID, asking something else. */
 const changedForm = {
   id: "plan", title: "Which part ships first now?",
@@ -382,7 +425,7 @@ test("② a choice whose outcome is unknown goes again as it was after its label
   assert.deepEqual(page.errors, []);
 });
 
-test("③ answers begun on a form that keeps its ID but asks something else go to the new version only once the user refers them", async (t) => {
+test("③ YN-38 answers begun on a form that keeps its ID but is worded otherwise are kept after a reload, said so, and go to the new version as they are", async (t) => {
   const c = core();
   const page = mount((body) => c.answer(body));
   t.after(page.close);
@@ -392,44 +435,110 @@ test("③ answers begun on a form that keeps its ID but asks something else go t
   await tick();
   page.reload();
   page.render(section("form", 3, { form: changedForm }));
-  assert.ok(f.notes().some(formReferNote), JSON.stringify(f.notes()));
-  assert.equal(f.submit().disabled, true, "not sent to version 3 by itself");
-  assert.equal(f.radio("Core").checked, true, "the answers stay");
-  page.button("Refer it to version 3").click();
-  await tick();
-  assert.ok(!f.notes().some(formReferNote), JSON.stringify(f.notes()));
+  assert.ok(page.notes().some(carriedNote), JSON.stringify(page.notes()));
+  assert.deepEqual(f.carried("First part to ship"), ["Reworded after you answered. Check your answer."]);
+  assert.equal(f.radio("Core").checked, true, "the answer stays: the same field and option");
+  assert.equal(f.submit().disabled, false, "no step before it can be sent");
+  assert.ok(!page.button("Refer it to version 3") && !page.button("Discard"));
   f.submit().click();
   await tick();
-  const [referred] = page.replies();
-  assert.equal(referred.askVersion, 3);
-  assert.match(referred.text, /^Answers to “Which part ships first now\?”:\n- First part to ship: Core/);
+  const [sent] = page.replies();
+  assert.equal(sent.askVersion, 3);
+  assert.match(sent.text, /^Answers to “Which part ships first now\?”:\n- First part to ship: Core/);
+  assert.deepEqual(sent.form, { formId: "plan", answers: { part: "core" } });
+  assert.equal(c.delivered.size, 1);
+  assert.ok(!page.notes().some(carriedNote), "said until sent");
+  assert.deepEqual(page.errors, []);
+});
+
+/** The same form ID, required, before and after an option and a field go and a required field comes (YN-38). */
+const strict = {
+  id: "plan", title: "Which parts ship first?",
+  fields: [
+    { id: "part", type: "single", label: "First part", required: true,
+      options: [{ id: "ui", label: "The UI" }, { id: "core", label: "Core" }] },
+    { id: "when", type: "text", label: "When", required: false },
+  ],
+};
+const strictLater = {
+  id: "plan", title: "Which parts ship first?",
+  fields: [
+    { id: "part", type: "single", label: "First part", required: true,
+      options: [{ id: "ui", label: "The UI" }, { id: "docs", label: "The docs" }] },
+    { id: "owner", type: "single", label: "Who ships it", required: true,
+      options: [{ id: "mori", label: "Mori" }, { id: "hana", label: "Hana" }] },
+  ],
+};
+
+test("④ YN-38 a removed option leaves its field empty, never at another option, and says so on the field; a new required field and a field no longer asked are said too; the user answers and sends", async (t) => {
+  const page = mount();
+  t.after(page.close);
+  const f = formOf(page);
+  page.render(section("form", 2, { form: strict }));
+  f.radio("Core").click();
+  await tick();
+  const when = page.document.querySelector(".clarification textarea");
+  Object.getOwnPropertyDescriptor(page.window.HTMLTextAreaElement.prototype, "value").set.call(when, "Friday");
+  when.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  await tick();
+  // The owner asks again in place, while the user is answering.
+  page.render(section("form", 3, { form: strictLater }));
+  await tick();
+  assert.deepEqual(f.carried("First part"), ["No longer offered: “Core”. Choose again."]);
+  assert.deepEqual(f.carried("Who ships it"), ["New since you began answering."]);
+  assert.deepEqual(f.gone(), ["No longer asked: “When”. That answer won't be sent."]);
+  assert.ok(page.notes().some(carriedNote), JSON.stringify(page.notes()));
+  assert.ok(["The UI", "The docs"].every((label) => !f.radio(label).checked), "no option picked for the user");
+  // Sent as it is: the form says what is missing, and nothing goes.
+  f.submit().click();
+  await tick();
+  assert.equal(page.replies().length, 0, "nothing sent");
+  assert.deepEqual(f.errors(), ["Choose an option.", "Choose an option."]);
+  f.radio("The docs").click();
+  await tick();
+  assert.deepEqual(f.carried("First part"), [], "answered again: said no more");
+  f.radio("Hana").click();
+  await tick();
+  f.submit().click();
+  await tick();
+  const [sent] = page.replies();
+  assert.equal(sent.askVersion, 3);
+  assert.deepEqual(sent.form, { formId: "plan", answers: { part: "docs", owner: "hana" } });
+  assert.doesNotMatch(sent.text, /Friday|When/, "a field no longer asked sends nothing");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-38 a form's answers Core refuses because the ask moved on go to the latest only when it asks the same with the same form; otherwise they stay, carried, to be sent", async (t) => {
+  const c = core((body) => body.askVersion === 2 && "ask_changed: version 2 of the ask `form` can't be answered now");
+  const page = mount((body) => c.answer(body));
+  t.after(page.close);
+  const f = formOf(page);
+  // The same question and form: sent there as they are.
+  page.render(section("same", 2, { form }));
+  page.box.asks.same = section("same", 3, { form });
+  f.radio("Core").click();
+  await tick();
+  f.submit().click();
+  await tick();
+  assert.deepEqual(page.replies().map((b) => [b.key, b.askVersion]), [["same", 2], ["same", 3]]);
+  assert.equal(c.delivered.size, 1);
+  // Another form: nothing more goes; the latest shows with the answers carried.
+  page.render(section("other", 2, { form: strict }));
+  page.box.asks.other = section("other", 3, { form: strictLater });
+  f.radio("Core").click();
+  await tick();
+  f.submit().click();
+  await tick();
+  assert.deepEqual(page.replies().slice(2).map((b) => [b.key, b.askVersion]), [["other", 2]], "not sent to a form the user has not seen");
+  assert.ok(page.notes().some((n) => /The question changed before your reply was sent, so nothing was sent/.test(n)), JSON.stringify(page.notes()));
+  page.render(section("other", 3, { form: strictLater }));
+  await tick();
+  assert.deepEqual(f.carried("First part"), ["No longer offered: “Core”. Choose again."]);
   assert.equal(c.delivered.size, 1);
   assert.deepEqual(page.errors, []);
 });
 
-test("④ discarded, answers begun on the earlier form are gone and the form answers the new version", async (t) => {
-  const page = mount();
-  t.after(page.close);
-  const f = formOf(page);
-  page.render(section("form", 2, { form }));
-  f.radio("Core").click();
-  await tick();
-  page.render(section("form", 3, { form: changedForm }));
-  page.button("Discard").click();
-  await tick();
-  assert.ok(!f.notes().some(formReferNote), JSON.stringify(f.notes()));
-  assert.equal(f.radio("Core").checked, false, "the answers begun on version 2 are gone");
-  f.radio("The docs").click();
-  await tick();
-  f.submit().click();
-  await tick();
-  const [fresh] = page.replies();
-  assert.equal(fresh.askVersion, 3);
-  assert.match(fresh.text, /- First part to ship: The docs/);
-  assert.deepEqual(page.errors, []);
-});
-
-test("① a form whose outcome is unknown goes again as it was after its wording changed and the page reloaded; refer is no retry; Core delivers it once", async (t) => {
+test("① a form whose outcome is unknown goes again as it was after its wording changed and the page reloaded; a new submit is no retry; Core delivers it once", async (t) => {
   const c = core();
   const page = mount((body) => c.answer(body));
   t.after(page.close);
@@ -444,8 +553,6 @@ test("① a form whose outcome is unknown goes again as it was after its wording
   page.reload();
   page.render(section("form", 3, { form: changedForm }));
   // Whatever the form shows now, nothing mints a new id for that reply.
-  page.button("Refer it to version 3")?.click();
-  await tick();
   f.submit().click();
   await tick();
   assert.ok(page.replies().every((body) => body.clientMessageId === first.clientMessageId),
@@ -463,9 +570,8 @@ test("① a form whose outcome is unknown goes again as it was after its wording
 });
 
 const formVersions = (page) => Object.keys(JSON.parse(page.window.localStorage.getItem("yuzuno.home-ask-form-versions.v1") || "{}"));
-const unknownNote = (n) => /The question version for these saved answers is unknown/.test(n);
 
-test("answers whose version record was evicted are held after a reload, and stay so when changed; a new form's defaults are not held", async (t) => {
+test("YN-38 answers whose version record was evicted are kept after a reload where they fit, said so, and sent as they are; a new form's defaults are not said to be kept", async (t) => {
   const page = mount();
   t.after(page.close);
   const f = formOf(page);
@@ -483,28 +589,18 @@ test("answers whose version record was evicted are held after a reload, and stay
   assert.ok(Object.keys(page.window.localStorage).some((k) => k.startsWith("yuzuno.clarification.v1:") && k.includes(":p1:form:")), "its answers were not");
   page.reload();
   page.render(section("form", 2, { form }));
-  assert.ok(page.notes().some(unknownNote), `answers of an unknown version are not taken for version 2's: ${JSON.stringify(page.notes())}`);
-  assert.ok(f.notes().some((n) => /Use the saved answers for the current question, or clear them, first/.test(n)), JSON.stringify(f.notes()));
-  assert.equal(f.submit().disabled, true, "not sent to version 2 by itself");
+  assert.ok(page.notes().some(carriedNote), `answers of an unknown version are said to be kept: ${JSON.stringify(page.notes())}`);
   assert.equal(f.radio("Core").checked, true, "the answers stay");
-  // Changing an answer does not settle it: only Refer or Discard does.
-  f.radio("The UI").click();
-  await tick();
-  assert.ok(page.notes().some(unknownNote), JSON.stringify(page.notes()));
-  assert.ok(!formVersions(page).some((k) => k.includes(":p1:form:")), "no version bound by a change");
-  assert.equal(page.replies().length, 0);
-  page.button("Use for the current question").click();
-  await tick();
-  const chosen = f.radio("Core").checked ? "Core" : "The UI";
+  assert.equal(f.submit().disabled, false, "no step before they can be sent");
+  assert.equal(page.replies().length, 0, "nothing sent by itself");
   f.submit().click();
   await tick();
-  const [referred] = page.replies();
-  assert.equal(referred.askVersion, 2);
-  assert.match(referred.text, new RegExp(`- First part: ${chosen}`));
-  // A new form at its defaults has nothing kept: never taken for answers from before.
+  const [sent] = page.replies();
+  assert.equal(sent.askVersion, 2);
+  assert.match(sent.text, /- First part: Core/);
+  // A new form at its defaults has nothing kept: never said to be.
   page.render(section("fresh", 2, { form: defaulted("ui") }));
-  assert.ok(!page.notes().some(unknownNote), JSON.stringify(page.notes()));
-  assert.ok(!f.notes().some((n) => /You began this reply|saved answers/.test(n)), JSON.stringify(f.notes()));
+  assert.ok(!page.notes().some(carriedNote), JSON.stringify(page.notes()));
   assert.equal(f.submit().disabled, false);
   assert.deepEqual(page.errors, []);
 });
@@ -518,7 +614,7 @@ test("a changed schema alone is never an edit: an untouched form follows the que
   assert.equal(f.radio("The docs").checked, true, "version 2's own default");
   page.render(section("form", 3, { form: defaulted("core") }));
   assert.equal(f.radio("Core").checked, true, "version 3's own default");
-  assert.ok(!page.notes().some(unknownNote) && !f.notes().some((n) => /You began this reply/.test(n)), JSON.stringify([page.notes(), f.notes()]));
+  assert.ok(!page.notes().some(carriedNote) && !page.document.querySelector(".clarification-carried"), JSON.stringify([page.notes(), f.notes()]));
   assert.ok(!Object.keys(page.window.localStorage).some((k) => k.startsWith("yuzuno.clarification.v1:")), "no answers kept");
   assert.deepEqual(formVersions(page), [], "no version kept");
   assert.equal(f.submit().disabled, false);
@@ -678,8 +774,9 @@ test("④ discarding the unconfirmed reply forgets it here and says it may have 
   page.button("Clear pending record").click();
   await tick();
   assert.deepEqual(page.outbox(), []);
-  assert.ok(f.notes().some(formReferNote), JSON.stringify(f.notes()));
+  // The answers stay, for the version on screen now (YN-38).
   assert.equal(f.radio("The UI").checked, true);
+  assert.equal(f.submit().disabled, false);
   assert.equal(page.replies().length, 2, "nothing more sent");
   assert.equal(c.delivered.size, 2, "both had reached Core: discarding here takes back neither");
   assert.deepEqual(page.errors, []);
@@ -698,7 +795,7 @@ test("in place, an unedited form shows the new question's own defaults; a form s
   assert.equal(f.radio("Core").checked, true, "the default of version 2");
   assert.equal(f.radio("The UI").checked, false, "not version 1's");
   assert.equal(page.document.activeElement, page.field(), "focus stays where the user is");
-  assert.ok(!f.notes().some((n) => /You began this reply on version/.test(n)) && !page.notes().some(unknownNote), JSON.stringify(f.notes()));
+  assert.ok(!page.notes().some(carriedNote) && !page.document.querySelector(".clarification-carried"), JSON.stringify(f.notes()));
   f.submit().click();
   await tick();
   const [fresh] = page.replies();
@@ -723,7 +820,7 @@ test("in place, an unedited form shows the new question's own defaults; a form s
   assert.deepEqual(page.errors, []);
 });
 
-test("when this browser keeps nothing, a form begun on version 1 is still held at version 2, and an unconfirmed reply goes again as it was here", async (t) => {
+test("YN-38 when this browser keeps nothing, a form begun on version 1 answers version 2 as it is, and an unconfirmed reply goes again as it was here", async (t) => {
   const c = core();
   const page = mount((body) => c.answer(body));
   t.after(page.close);
@@ -736,11 +833,10 @@ test("when this browser keeps nothing, a form begun on version 1 is still held a
   f.radio("Core").click();
   await tick();
   page.render(section("form", 2, { form }));
-  assert.ok(f.notes().some((n) => /You began this reply on version 1 of this ask; Home shows version 2/.test(n)), JSON.stringify(f.notes()));
-  assert.equal(f.submit().disabled, true, "not sent to version 2 by itself");
   assert.equal(f.radio("Core").checked, true, "the answers stay");
-  assert.ok(page.button("Refer it to version 2") && page.button("Discard"));
-  assert.equal(page.replies().length, 0, "nothing sent");
+  assert.equal(f.submit().disabled, false, "no step before they can be sent");
+  assert.ok(!page.button("Refer it to version 2") && !page.button("Discard"));
+  assert.equal(page.replies().length, 0, "nothing sent by itself");
   // Free text whose outcome is unknown goes again under its client id.
   c.lose(true);
   page.render(section("plan", 1));

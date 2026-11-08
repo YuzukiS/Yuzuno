@@ -18,7 +18,7 @@ export type Notice = {
   title: string;
   body: string;
   /** Opened on a click: the Agent's conversation, Home for an Ask, or
-   * Settings → Backup of this Workspace for a backup. */
+   * Settings → Backup & restore of this Workspace for a backup. */
   agentId?: string;
   home?: boolean;
   backup?: { workspaceId: string };
@@ -132,7 +132,7 @@ const backupFailure = (state: string) =>
  * A notice when the daily backup's last run is newly known to have failed
  * (T-196): compared with the read before, as for Agents, so the first read
  * gives none, and a run already failed then gives none again. It names no
- * folder and no error: Settings → Backup shows them.
+ * folder and no error: Settings → Backup & restore shows them.
  */
 export function backupNotice(workspaceId: string, before: BackupRun | null | undefined, after: BackupRun | null): Notice | null {
   const failure = after && backupFailure(after.state);
@@ -144,7 +144,7 @@ export function backupNotice(workspaceId: string, before: BackupRun | null | und
     kind: "backupFailed",
     tag: tag("backupFailed", `${workspaceId}:${after.operationId || after.slot}`),
     title,
-    body: `The backup due at ${at} ${ended}. Open Settings → Backup to see why.`,
+    body: `The backup due at ${at} ${ended}. Open Settings → Backup & restore to see why.`,
     backup: { workspaceId },
   };
 }

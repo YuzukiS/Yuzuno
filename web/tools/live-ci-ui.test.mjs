@@ -157,7 +157,7 @@ test("idle CI and Jobs coexist, unknown jobs stay Check job, runtime states win"
     assert.equal(combined("a"), true, "two waits take their own line");
     const title = () =>
       p.window.document.querySelector('[data-agent-id="a"] .agent-select')
-        .title;
+        .getAttribute("aria-description");
     assert.match(title(), /2 jobs queued or running/);
     assert.match(title(), /2 GitHub Actions runs/);
     ci({ a: { running: 1, discovering: 0, check: 1 } });

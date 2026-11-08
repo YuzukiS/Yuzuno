@@ -81,47 +81,13 @@
   }
 }
 
-/* The few more facts beside a capsule, on hover or keyboard focus. It only
-   describes: the capsule under it still takes the click. */
-.tool-call-tip {
-  position: fixed;
-  z-index: 50;
-  width: max-content;
-  max-width: min(360px, calc(100vw - 16px));
-  box-sizing: border-box;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-raised, var(--input));
-  color: var(--ink);
-  box-shadow: 0 6px 20px #0002;
-  font-size: calc(9px + var(--font-adjust, 3px));
-  line-height: 1.55;
-  overflow-wrap: anywhere;
-  pointer-events: none;
-}
-.tool-call-tip > p {
-  margin: 0;
-}
-.tool-call-tip-name {
-  font-weight: 600;
-}
-.tool-call-tip-state {
-  color: var(--text-secondary);
-}
-.tool-call-tip-state:is([data-tone="failed"], [data-tone="refused"]) {
-  color: var(--error-ink, #a37961);
-}
-.tool-call-tip-state:is([data-tone="unconfirmed"], [data-tone="queued"]) {
-  color: var(--accent-ink, #786637);
-}
-.tool-call-tip-hint {
-  margin-top: 6px !important;
-  color: var(--text-secondary);
-  font-size: calc(8px + var(--font-adjust, 3px));
-}
+/* The few more facts below a capsule (ToolCall.tsx): the app's one tip
+   (tip.css) with the call's facts as a short list in it. */
 .tool-call-details {
   margin: 4px 0 6px;
+}
+.tool-call-tip .tool-call-details {
+  margin: 2px 0 0;
 }
 .tool-call-details dl {
   display: grid;

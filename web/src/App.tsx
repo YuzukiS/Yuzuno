@@ -20,6 +20,7 @@ import {
 import { ringAgain, settleWhenLanded } from "./settle";
 import { ToastStack, type ToastText } from "./Toasts";
 import { animates } from "./motion";
+import { Tip, TipText } from "./Tip";
 import {
   Archive,
   ArchiveRestore,
@@ -266,7 +267,9 @@ const LiveTurn = memo(Turn, (a: TurnProps, b: TurnProps) =>
   a.questionSources === b.questionSources &&
   a.inputNumbers === b.inputNumbers &&
   !a.onOpenQuestion === !b.onOpenQuestion &&
-  !a.onResultInteract === !b.onResultInteract,
+  !a.onResultInteract === !b.onResultInteract &&
+  !a.onStop === !b.onStop &&
+  !a.onChangeModel === !b.onChangeModel,
 );
 function readStorage<T>(key: string, fallback: T): T {
   try {
@@ -3226,8 +3229,12 @@ export function App() {
     setNotice(shell.addedToDraft);
   }
   // Stable callbacks for memoized Turns that always reach the latest handlers.
-  const turnHandlers = useRef({ openFile, holdResultReading, appendToDraft, submitMessage });
-  turnHandlers.current = { openFile, holdResultReading, appendToDraft, submitMessage };
+  // A waiting OpenCode Turn's Stop and Change model (YN-48): its Agent is the one shown.
+  const openModelSettings = () => setModelRequest({ model: "", nonce: Date.now() });
+  const turnHandlers = useRef({ openFile, holdResultReading, appendToDraft, submitMessage, interrupt, openModelSettings });
+  turnHandlers.current = { openFile, holdResultReading, appendToDraft, submitMessage, interrupt, openModelSettings };
+  const turnStop = useCallback(() => void turnHandlers.current.interrupt(), []);
+  const turnChangeModel = useCallback(() => turnHandlers.current.openModelSettings(), []);
   const turnFile = useCallback(
     (path: string, line?: number) => turnHandlers.current.openFile(path, line),
     [],
@@ -4352,6 +4359,8 @@ export function App() {
                             ? undefined
                             : turnAnswer
                         }
+                        onStop={previewMode || closed ? undefined : turnStop}
+                        onChangeModel={previewMode || closed ? undefined : turnChangeModel}
                       />
                     )}</ConversationRows>
                   ) : (
@@ -4773,20 +4782,23 @@ export function App() {
                           onOpen={() => setPlanRequest({ agentId: selected, draft: null, nonce: Date.now() })} />
                       )}
                       {busy && (
-                        <button
-                          type="button"
-                          className="interrupt-button"
-                          title={shell.interruptTitle}
-                          disabled={previewMode || interrupting}
-                          onClick={() => void interrupt()}
-                        >
-                          {interrupting ? (
-                            <LoaderCircle size={13} className="spin" />
-                          ) : (
-                            <Square size={11} fill="currentColor" />
-                          )}
-                          {interrupting ? shell.interrupting : shell.interrupt}
-                        </button>
+                        <Tip content={<TipText title={shell.interrupt} kbd="Esc" />} describe={false}>
+                          <button
+                            type="button"
+                            className="interrupt-button"
+                            aria-label={interrupting ? shell.interrupting : shell.interrupt}
+                            aria-keyshortcuts="Escape"
+                            disabled={previewMode || interrupting}
+                            onClick={() => void interrupt()}
+                          >
+                            {interrupting ? (
+                              <LoaderCircle size={13} className="spin" />
+                            ) : (
+                              <Square size={11} fill="currentColor" />
+                            )}
+                            {interrupting ? shell.interrupting : shell.interrupt}
+                          </button>
+                        </Tip>
                       )}
                       <button
                         type="submit"

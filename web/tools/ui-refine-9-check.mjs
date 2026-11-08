@@ -642,7 +642,7 @@ try {
       try {
         // The pages in order, in their four groups (YN-8).
         const full = ["Appearance", "Typing & time", "Language", "Shortcuts", "Notifications", "Move to another device",
-          "Projects", "Machines", "Agent defaults", "Executors", "Home", "Phone access",
+          "Projects", "Machines", "Agent defaults", "Executors", "Executor routing", "Home", "Phone access",
           "Storage", "Backup & restore", "Diagnostics", "Updates", "Runtime", "About & help"];
         assert.deepEqual(await settings.locator(".settings-nav [role=tab] .settings-nav-label").allInnerTexts(), full);
         const desktop = settings.locator('#settings-page [aria-label="Desktop app"]');
