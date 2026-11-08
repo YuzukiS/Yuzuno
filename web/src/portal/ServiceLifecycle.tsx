@@ -13,6 +13,7 @@ import { clockTime, currentRetry, minutesUntil, outcomeUnknown, recoveryActive, 
 import { serviceText } from "./service-text";
 import "./service-lifecycle.css";
 import { randomId } from "../random-id";
+import { Tip, TipText } from "../Tip";
 
 type Attempt = { draft: ServiceControlDraft; request: ServiceControlRequest; state: "sending" | "unknown" | "refused" | "recorded"; stale?: boolean };
 
@@ -255,7 +256,7 @@ export function ServiceLifecycle({ service, browserReach, previewUrl = null, dis
   return <section className="portal-job portal-lifecycle" aria-label={t.title} data-service-id={service.id} data-job-id={job.jobId} data-recovery={windowed ? recovery.state : undefined}>
     <header className="service-lifecycle-head">
       <span className={`service-lifecycle-mark state-${unknown ? "unknown" : job.status}`}><Server size={18} /></span>
-      <div className="service-lifecycle-heading"><h3>{headline}</h3><p title={reason}>{reason}</p></div>
+      <div className="service-lifecycle-heading"><h3>{headline}</h3><Tip content={reason ? <TipText body={reason} /> : null} size="wide" cut><p>{reason}</p></Tip></div>
       <div className="service-lifecycle-deadline"><Clock3 size={14} /><span>{ended
         ? <><small>{t.endedAt}</small><strong>{validServiceTime(job.finishedAt) ? absolute(job.finishedAt, time) : t.timeUnknown}</strong></>
         : <><small>{t.due}</small><strong>{deadline ? absolute(deadline, time) : currentTimeout && !job.startedAt ? t.durationFromStart(currentTimeout) : t.dueUnknown}</strong>{active && deadline && <em>{t.sharedDeadline}</em>}</>}</span></div>

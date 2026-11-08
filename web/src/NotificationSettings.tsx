@@ -24,6 +24,7 @@ import { browserPushHost, pushSupport } from "./push-client";
 import { SaveStatus } from "./SaveStatus";
 import { strings, useLanguage, type Language } from "./i18n";
 import "./notification-settings.css";
+import { Tip, TipText } from "./Tip";
 
 type Kind = { title: string; help: string };
 type Access = { label: string; help: string };
@@ -331,9 +332,11 @@ export function NotificationSettings() {
           <h3>{t.title}</h3>
           <p>{t.intro}</p>
         </div>
-        <span className="settings-current" title={t.current}>
-          {current}
-        </span>
+        <Tip content={<TipText title={t.current} />}>
+          <span className="settings-current">
+            {current}
+          </span>
+        </Tip>
       </header>
       <div className="settings-group appearance-group">
         <div className="settings-row">

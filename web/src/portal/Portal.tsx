@@ -28,6 +28,7 @@ import { serviceText } from "./service-text";
 import { useFrameBridge } from "../home/frame-bridge";
 import { PageSendBar, usePageSend } from "../home/PageSend";
 import "./portal.css";
+import { Tip, TipText } from "../Tip";
 
 // The Portal's own words (T-189); names, paths and addresses as they are.
 const text = strings({
@@ -360,7 +361,6 @@ function PortalHost() {
           role="separator"
           aria-orientation="vertical"
           aria-label={t.resize}
-          title={t.resize}
           tabIndex={0}
           aria-valuenow={shape.mode === "side" ? shape.width : undefined}
           onPointerDown={startDrag}
@@ -547,9 +547,11 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
     <>
       <header className="portal-head">
         {full && (
-          <button type="button" className="icon-button" aria-label={t.back} title={t.back} onClick={closePortal}>
-            <ChevronLeft size={18} />
-          </button>
+          <Tip content={<TipText title={t.back} />} describe={false}>
+            <button type="button" className="icon-button" aria-label={t.back} onClick={closePortal}>
+              <ChevronLeft size={18} />
+            </button>
+          </Tip>
         )}
         {!full && (
           <span className="portal-kind" aria-hidden="true">
@@ -562,9 +564,11 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
         </span>
         {browserUrl && (
           full ? (
-            <button type="button" className="icon-button portal-box" aria-label={t.inBrowser} title={t.inBrowser} onClick={() => openOutside(browserUrl)}>
-              <ArrowUpRight size={16} />
-            </button>
+            <Tip content={<TipText title={t.inBrowser} />} describe={false}>
+              <button type="button" className="icon-button portal-box" aria-label={t.inBrowser} onClick={() => openOutside(browserUrl)}>
+                <ArrowUpRight size={16} />
+              </button>
+            </Tip>
           ) : (
             <button type="button" className="secondary-button portal-outside" onClick={() => openOutside(browserUrl)}>
               {t.inBrowser}
@@ -573,13 +577,17 @@ function PortalBody({ target, full }: { target: PortalTarget; full: boolean }) {
           )
         )}
         {!full && (minted.state === "ready" || (target.kind === "service" && !idle && !unchecked)) && (
-          <button type="button" className="icon-button" aria-label={t.reload} title={t.reload} onClick={() => { setLoads(0); setReloads((n) => n + 1); }}>
-            <RotateCw size={15} />
-          </button>
+          <Tip content={<TipText title={t.reload} />} describe={false}>
+            <button type="button" className="icon-button" aria-label={t.reload} onClick={() => { setLoads(0); setReloads((n) => n + 1); }}>
+              <RotateCw size={15} />
+            </button>
+          </Tip>
         )}
-        <button type="button" className="icon-button portal-box" aria-label={t.close} title={t.close} onClick={closePortal}>
-          <X size={16} />
-        </button>
+        <Tip content={<TipText title={t.close} />} describe={false}>
+          <button type="button" className="icon-button portal-box" aria-label={t.close} onClick={closePortal}>
+            <X size={16} />
+          </button>
+        </Tip>
       </header>
       {target.kind === "snapshot" && (
         <p className="portal-note">

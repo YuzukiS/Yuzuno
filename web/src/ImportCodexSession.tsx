@@ -18,6 +18,7 @@ import type {
   PermissionCatalog,
 } from "./types";
 import "./session-import.css";
+import { Tip, TipText } from "./Tip";
 
 export interface CodexSessionPreview {
   threadId: string;
@@ -277,9 +278,12 @@ export function ImportCodexSession({
                 dialog's scrolled view (T-19 SX-35). */}
             {/* A stale preview is out of reach: its error shows below the form, once. */}
             {errorShown && !stale ? (
-              <p key="error" role="alert" className="remote-field-error kept-error" title={errorShown}>
-                <span>{errorShown}</span>
-              </p>
+              // The whole error, when its one line cuts it.
+              <Tip key="error" content={<TipText body={errorShown} />} size="wide" cut>
+                <p role="alert" className="remote-field-error kept-error">
+                  <span>{errorShown}</span>
+                </p>
+              </Tip>
             ) : (
               <p key="line" className="remote-field-error kept-error is-empty" aria-hidden="true">
                 <span>&nbsp;</span>

@@ -15,6 +15,7 @@ import {
 } from "./i18n";
 import { localizedEntry, settingsCatalog, translatedEditors } from "./settings-catalog";
 import "./device-preferences.css";
+import { Tip, TipText } from "./Tip";
 
 // Each language is named in its own words, whatever the interface's.
 const names: Record<Language, string> = { en: "English", "zh-Hans": "简体中文" };
@@ -86,9 +87,11 @@ export function LanguagePreferencesSection() {
           <h3 id="settings-language-title">{t.title}</h3>
           <p>{t.intro}</p>
         </div>
-        <span className="settings-current" title={t.current}>
-          {names[language]}
-        </span>
+        <Tip content={<TipText title={t.current} />}>
+          <span className="settings-current">
+            {names[language]}
+          </span>
+        </Tip>
       </header>
       {/* One card, as Appearance (YN-8): each language named in its own words. */}
       <div className="settings-group appearance-group">

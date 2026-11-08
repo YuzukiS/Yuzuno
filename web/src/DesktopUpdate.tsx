@@ -10,6 +10,7 @@ import { errorText, isTauri, openDesktopConnection } from "./api";
 import { strings, useStrings } from "./i18n";
 import { updateBytes } from "./updates";
 import "./desktop-update.css";
+import { Tip, TipText } from "./Tip";
 
 /** The desktop shell's own update state (desktop/src/update.rs). */
 export type DesktopUpdateStatus = {
@@ -224,9 +225,11 @@ export function DesktopUpdate({
           <p>{t.checks}</p>
         </div>
         {status && (
-          <span className="settings-current desktop-update-version" title={t.installedNow}>
-            {t.version(status.version)}
-          </span>
+          <Tip content={<TipText title={t.installedNow} />}>
+            <span className="settings-current desktop-update-version">
+              {t.version(status.version)}
+            </span>
+          </Tip>
         )}
       </header>
       <div className="settings-group">

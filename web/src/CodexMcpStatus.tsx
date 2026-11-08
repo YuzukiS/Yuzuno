@@ -4,6 +4,7 @@ import { api } from "./api";
 import { strings, type Language } from "./i18n";
 import type { Agent } from "./types";
 import "./claude-mcp-status.css";
+import { Tip, TipText } from "./Tip";
 
 type Server = { name: string; status: string; error: string | null; failureReason: string | null; observedAt: string };
 type View = { state: string; reason: string; generation: number | null; servers: Server[]; more: number };
@@ -110,10 +111,12 @@ function StatusPanel({ agent, heading, headingLevel = 2, anchor = true, language
   return <section id={anchor ? "agent-mcp-status" : undefined} tabIndex={anchor ? -1 : undefined} className="inspector-section claude-mcp-status" aria-label={t.section}>
     <div className="section-title">
       <Heading><Plug size={14} />{heading ?? t.heading}</Heading>
-      <button type="button" className="icon-button" aria-label={t.readAgain} title={t.readAgainTitle}
-        disabled={busy || !connected} onClick={() => void load()}>
-        <RefreshCw size={13} className={busy ? "mcp-refreshing" : undefined} />
-      </button>
+      <Tip content={<TipText title={t.readAgainTitle} />} describe={false}>
+        <button type="button" className="icon-button" aria-label={t.readAgain}
+          disabled={busy || !connected} onClick={() => void load()}>
+          <RefreshCw size={13} className={busy ? "mcp-refreshing" : undefined} />
+        </button>
+      </Tip>
     </div>
     <p className="mcp-status-note">{t.note}</p>
     {notice && <p className="mcp-status-note" role="status">{notice}</p>}

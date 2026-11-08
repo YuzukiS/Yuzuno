@@ -20,6 +20,7 @@ import {
   type RemoteAccessView,
 } from "./remote-access";
 import "./remote-access.css";
+import { Tip, TipText } from "./Tip";
 
 /** The fields as typed: empty means Core's default; `previews` is whether
  * phone access includes previews (T-5). */
@@ -505,9 +506,11 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
           <p>{t.intro}</p>
         </div>
         {view && (
-          <span className="settings-current" title={t.asReported}>
-            {badge(view, language)}
-          </span>
+          <Tip content={<TipText title={t.asReported} />}>
+            <span className="settings-current">
+              {badge(view, language)}
+            </span>
+          </Tip>
         )}
       </header>
       {/* Until Core answers, the section says it is reading (T-19 ST:R1). */}
@@ -749,15 +752,17 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
                   <button type="button" className="secondary-button" disabled={checking || sending || busy} onClick={() => void runCheck()}>
                     {checking ? t.checking : t.check}
                   </button>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    title={checked ? undefined : t.checkFirst}
-                    disabled={!checked || sending || busy || !workspaceId}
-                    onClick={() => void send(true)}
-                  >
-                    {sending ? t.starting : t.apply}
-                  </button>
+                  <Tip content={checked ? null : <TipText body={t.checkFirst} />} hold>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={!checked || sending || busy || !workspaceId}
+                      aria-description={checked ? undefined : t.checkFirst}
+                      onClick={() => void send(true)}
+                    >
+                      {sending ? t.starting : t.apply}
+                    </button>
+                  </Tip>
                   {(enabledNow || legacyLeft) && (
                     <button type="button" className="secondary-button" disabled={sending || busy || !workspaceId} onClick={() => void send(false)}>
                       {enabledNow ? t.turnOff : legacyTried ? t.legacyRetry : t.legacyRemove}

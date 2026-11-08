@@ -4,6 +4,7 @@ import { api } from "./api";
 import { strings, type Language } from "./i18n";
 import type { Agent } from "./types";
 import "./claude-mcp-status.css";
+import { Tip, TipText } from "./Tip";
 
 type Server = { name: string; status: string; reason?: string };
 type View = {
@@ -162,10 +163,12 @@ function StatusPanel({ agent, cachedOnOpen = false, heading, headingLevel = 2, l
   return <section className="inspector-section claude-mcp-status" aria-label={t.section}>
     <div className="section-title">
       <Heading><Plug size={14} />{heading ?? t.heading}</Heading>
-      <button type="button" className="icon-button" aria-label={t.refresh} title={t.refresh}
-        disabled={busy || disconnected} onClick={() => void load(true)}>
-        <RefreshCw size={13} className={busy ? "mcp-refreshing" : undefined} />
-      </button>
+      <Tip content={<TipText title={t.refresh} />} describe={false}>
+        <button type="button" className="icon-button" aria-label={t.refresh}
+          disabled={busy || disconnected} onClick={() => void load(true)}>
+          <RefreshCw size={13} className={busy ? "mcp-refreshing" : undefined} />
+        </button>
+      </Tip>
     </div>
     <p className="mcp-status-note" role="status">
       {busy ? t.reading : notice ?? (view?.state === "ready" ? t.reported : t.unknown)}

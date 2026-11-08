@@ -4,6 +4,7 @@
 // between choices and forms and screen readers see one value.
 import { useId, type ReactNode } from "react";
 import "./choice-chips.css";
+import { Tip, TipText } from "./Tip";
 
 export type Choice = {
   value: string;
@@ -49,24 +50,24 @@ export function ChoiceChips({
       <legend>{label}</legend>
       <div className="choice-chip-row">
         {choices.map((choice) => (
-          <label
-            key={choice.value}
-            className="choice-chip"
-            title={choice.title}
-            data-value={choice.value}
-          >
-            <input
-              type="radio"
-              name={group}
-              value={choice.value}
-              checked={value === choice.value}
-              disabled={choice.disabled}
-              onChange={() => onChange(choice.value)}
-            />
-            {choice.icon && <span className="choice-chip-icon">{choice.icon}</span>}
-            <span className="choice-chip-label">{choice.label}</span>
-            {choice.note && <small>{choice.note}</small>}
-          </label>
+          <Tip key={choice.value} content={choice.title ? <TipText body={choice.title} /> : null}>
+            <label
+              className="choice-chip"
+              data-value={choice.value}
+            >
+              <input
+                type="radio"
+                name={group}
+                value={choice.value}
+                checked={value === choice.value}
+                disabled={choice.disabled}
+                onChange={() => onChange(choice.value)}
+              />
+              {choice.icon && <span className="choice-chip-icon">{choice.icon}</span>}
+              <span className="choice-chip-label">{choice.label}</span>
+              {choice.note && <small>{choice.note}</small>}
+            </label>
+          </Tip>
         ))}
         {after}
       </div>

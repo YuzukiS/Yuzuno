@@ -3,6 +3,7 @@ import { api, errorText } from "./api";
 import { strings, useStrings } from "./i18n";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import { useRevealIn } from "./surface";
+import { Tip, TipText } from "./Tip";
 
 type Style = "default" | "visual";
 type Presentation = {
@@ -157,10 +158,12 @@ export function HomePresentationSettings({ active }: { active: boolean }) {
           <p>{t.intro}</p>
         </div>
         {saved && (
-          <span className="settings-current" title={t.inUse}>
-            {saved.style === "visual" ? t.visual : t.standard}
-            {saved.note ? t.withNote : ""}
-          </span>
+          <Tip content={<TipText title={t.inUse} />}>
+            <span className="settings-current">
+              {saved.style === "visual" ? t.visual : t.standard}
+              {saved.note ? t.withNote : ""}
+            </span>
+          </Tip>
         )}
       </header>
       {saved && (
