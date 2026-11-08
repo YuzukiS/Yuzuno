@@ -26,7 +26,7 @@ import {createRoot} from 'react-dom/client';
 import {ExecutorRouting} from ${src("ExecutorRouting.tsx")};
 import {SaveBarScope} from ${src("SettingsSaveBar.tsx")};
 const root=createRoot(document.getElementById('root'));
-window.renderRouting=()=>root.render(<SaveBarScope><ExecutorRouting active/></SaveBarScope>);`);
+window.renderRouting=(active=true)=>root.render(<SaveBarScope><ExecutorRouting active={active}/></SaveBarScope>);`);
   const result = await build({
     root, configFile: false, logLevel: "silent", plugins: [react()],
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
@@ -321,4 +321,59 @@ test("routing off, the Workspace cap, a weekly schedule of its own and a pool of
   assert.ok(!("dailyApiCapUsd" in sent), "no cap once emptied");
   assert.deepEqual(sent.candidates[0].conditions[0].schedule, { timeZone: "local", slots: [{ days: [1, 2, 3, 4, 5, 6], from: "01:00", to: "24:00" }, PEAK.slots[1]] });
   assert.deepEqual(sent.candidates[1].credential, { kind: "pool", manager: "cswap", accounts: ["a1b2c3d4e5f60718", "9a8b7c6d5e4f3021"], pick: "mostRemaining" });
+});
+
+test("leaving the page and coming back keeps the unsaved order; a version saved meanwhile is shown, not put over it (R1 75964dfb)", async () => {
+  const server = core();
+  const page = mount(server);
+  await opened(page);
+  button(page, "Move OpenCode · deepseek-flash · API down").click();
+  await tick();
+  const reads = () => page.calls.filter((c) => c.method === "GET" && c.url === "/api/routing/policy").length;
+  // Settings hides the page (a search, another page) and shows it again: it reads the policy again.
+  page.window.renderRouting(false);
+  await tick();
+  page.window.renderRouting(true);
+  await until(() => reads() === 2, "read again");
+  await tick();
+  assert.deepEqual(titles(page), ["Claude Code · opus", "OpenCode · deepseek-flash"], "the move is still there");
+  assert.match(bar(page).textContent, /1 change not saved/);
+  // Another save lands while the page is hidden: shown as a newer version, the draft kept.
+  server.state.view = { ...server.state.view, version: 4, updatedAt: "2026-11-08T05:30:00Z", policy: { ...server.state.view.policy, candidates: [clone(cl)] } };
+  page.window.renderRouting(false);
+  await tick();
+  page.window.renderRouting(true);
+  await until(() => page.document.querySelector(".routing-conflict"), "the newer version shown");
+  assert.match(page.document.querySelector(".routing-conflict").textContent, /A newer version \(4/);
+  assert.deepEqual(titles(page), ["Claude Code · opus", "OpenCode · deepseek-flash"], "still the draft");
+  assert.equal(puts(page).length, 0, "nothing saved");
+});
+
+test("with no change, coming back shows what Core has now", async () => {
+  const server = core();
+  const page = mount(server);
+  await opened(page);
+  server.state.view = { ...server.state.view, version: 4, policy: { ...server.state.view.policy, candidates: [clone(cl)] } };
+  page.window.renderRouting(false);
+  await tick();
+  page.window.renderRouting(true);
+  await until(() => titles(page).length === 1, "the newer version adopted");
+  assert.equal(page.document.querySelector(".settings-current").textContent, "version 4");
+  assert.ok(!page.document.querySelector(".routing-conflict"), "no conflict: nothing was being edited");
+});
+
+test("changing the tool drops a daily spend cap with the key it can't use (R1 75964dfb)", async () => {
+  const view = savedView();
+  view.policy.candidates.push({ id: "ca", enabled: true, harness: "claude", model: "opus", credential: { kind: "apiKey", keyId: "anthropic" }, unknown: "skip",
+    conditions: [{ kind: "dailyApiCap", usd: 8 }, { kind: "timeWindow", inside: true, schedule: PEAK }] });
+  const page = mount(core({ view }));
+  await opened(page);
+  button(page, "Edit Claude Code · opus · API").click();
+  await until(() => card(page, "ca").querySelector(".routing-edit"), "its editor");
+  await set(page, editorField(page, "ca", "Tool"), "codex");
+  assert.deepEqual(chips(card(page, "ca")), ["DeepSeek peak hours"], "the cap went with the key; the time window stays");
+  await save(page);
+  await until(() => puts(page).length === 1, "the save");
+  const sent = puts(page)[0].body.policy.candidates.find((c) => c.id === "ca");
+  assert.deepEqual([sent.harness, sent.credential, sent.conditions.map((c) => c.kind)], ["codex", { kind: "login" }, ["timeWindow"]]);
 });
