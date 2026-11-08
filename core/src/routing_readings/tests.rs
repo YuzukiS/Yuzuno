@@ -25,7 +25,9 @@ fn the_deepseek_peak_is_utc_weekdays_one_to_four_and_six_to_ten() {
     assert_eq!(peak.changes_at(utc(2026, 11, 9, 2, 30)), Some(utc(2026, 11, 9, 4, 0)), "the peak ends at 04:00");
     assert_eq!(peak.changes_at(utc(2026, 11, 9, 4, 0)), Some(utc(2026, 11, 9, 6, 0)), "and starts again at 06:00");
     assert_eq!(peak.changes_at(utc(2026, 11, 13, 12, 0)), Some(utc(2026, 11, 16, 1, 0)), "after Friday, next Monday");
-    assert_eq!(schedule_now(&peak, utc(2026, 11, 14, 12, 0)), json!({"inside": false, "changesAt": "2026-11-16T01:00:00+00:00"}));
+    let now = schedule_now(&peak, utc(2026, 11, 14, 12, 0));
+    assert_eq!((&now["inside"], &now["changesAt"]), (&json!(false), &json!("2026-11-16T01:00:00+00:00")));
+    assert_eq!(serde_json::from_value::<Schedule>(now["schedule"].clone()).unwrap(), peak, "the preset's schedule, to copy");
 }
 
 #[test]
@@ -79,7 +81,8 @@ fn spend_is_counted_once_per_entry_only_for_executors_on_a_routing_key() {
     assert!(!ws.store.record_spend("on-home", "claude:r2", 9.0, "claude", day).unwrap(), "nor a Codex home");
     let spend = ws.store.spend_on(day).unwrap();
     assert_eq!((spend.total_usd, spend.by_key.get("deepseek").copied()), (0.75, Some(0.75)));
-    assert_eq!(ws.store.spend_on(day.succ_opt().unwrap()).unwrap().total_usd, 0.0, "each day on its own");
+    let empty = ws.store.spend_on(day.succ_opt().unwrap()).unwrap().total_usd;
+    assert!(empty == 0.0 && empty.is_sign_positive(), "each day on its own, and nothing is 0, not -0: {empty}");
     // Days older than 40 are dropped when a newer one is counted.
     let later = day + Duration::days(41);
     assert!(ws.store.record_spend("on-key", "opencode:msg_3", 0.1, "opencode", later).unwrap());
@@ -135,8 +138,10 @@ async fn the_readings_route_is_the_users_own_browsers_only_and_shows_spend_and_s
     assert_eq!(status, StatusCode::OK, "{body}");
     let read: Value = serde_json::from_str(&body).unwrap();
     assert_eq!((read["spend"]["totalUsd"].clone(), read["spend"]["byKey"]["deepseek"].clone()), (json!(0.3), json!(0.3)));
-    assert_eq!(read["spend"]["day"], today().to_string());
-    assert!(read["schedules"]["deepseek-peak"]["inside"].is_boolean() && read["accounts"] == json!([]), "{read}");
+    assert_eq!((read["spend"]["day"].clone(), read["spend"]["zone"].clone(), read["staleAfterSeconds"].clone()),
+        (json!(today().to_string()), json!("local"), json!(600)));
+    assert_eq!(read["spend"]["resetsAt"], json!(day_ends(today()).unwrap().to_rfc3339()), "the next local midnight");
+    assert!(read["presets"]["deepseek-peak"]["inside"].is_boolean() && read["presets"]["deepseek-peak"]["schedule"]["timeZone"] == "UTC", "{read}");
     let (status, _) = call(local.clone(), vec![("authorization", "Bearer an-agents-token".into())]).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "an Agent's credential is refused");
     let (status, body) = call(remote, vec![("host", "core.example-tailnet.ts.net:8444".into()),

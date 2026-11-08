@@ -212,21 +212,21 @@ file, `/proc/<pid>/environ` and login files are all yours to read.
 
 ## Readings
 
-What routing decides with, as Core last observed it. Nothing here runs a
-model, calls a network service, or holds a key's value.
+These are what routing decides with, as Core last observed them. Nothing
+here runs a model, calls a network service, or holds a key's value.
 
 ### Time windows
 
-A schedule is a set of weekly slots. Each slot has:
+A schedule is weekly slots, read in `UTC` or the Core host's `local` time.
 
-- `days`, from 1 (Monday) to 7 (Sunday);
-- `from` and `to`, both `HH:MM`. `from` is inclusive and `to` exclusive; `to` may be `24:00`, and a slot whose `to` is not after its `from` runs past midnight into the next day.
+- `days` run from 1 (Monday) to 7 (Sunday).
+- `from` and `to` are `HH:MM`. `from` is inclusive and `to` exclusive, and `to` may be `24:00`.
+- A slot whose `to` is not after its `from` runs past midnight into the next day.
 
-A schedule's times are read in `UTC` or in the Core host's `local` time.
-
-Core has one built-in schedule, `deepseek-peak`: DeepSeek's peak hours, UTC
-Monday to Friday 01:00–04:00 and 06:00–10:00. Holidays count as working days.
-Off-peak is outside this schedule.
+The built-in preset `deepseek-peak` is DeepSeek's peak hours: UTC Monday to
+Friday, 01:00–04:00 and 06:00–10:00. Holidays count as working days. DeepSeek
+off-peak is `inside: false` on this schedule. Presets are offered for a
+policy to copy; a policy always holds its schedule inline.
 
 ### The daily API spend
 
@@ -237,14 +237,17 @@ cost, as its harness reports it:
 - **OpenCode:** each finished step's `cost`.
 - **Codex:** not counted yet. Routing (S3) treats a Codex API-key candidate's spend as unknown.
 
-Each entry is counted once, by key id, on the Core host's local date. An
-executor on a login or a claude-swap account spends no key and counts
-nothing. Entries are kept 40 days, also after their Agent is deleted. This
-is what the harnesses report: **an estimate, not a bill**.
+Each entry is counted once, by key id, on the Core host's local date.
+
+- An executor on a login or a claude-swap account spends no key and counts nothing.
+- An OpenCode answer that finished while Core was not connected to it is not counted.
+- Entries are kept 40 days, also after their Agent is deleted.
+
+This is what the harnesses report: **an estimate, not a bill**.
 
 ### `GET /api/routing/readings`
 
-This route is read-only and on the same boundary as the routing keys:
+This route is read-only and has the same boundary as the routing keys:
 - it is on Core's own port, for your own browser;
 - it is not on the phone entry;
 - it refuses any `Authorization` header.
@@ -253,89 +256,108 @@ It answers from what Core last observed and starts no read itself.
 
 ```jsonc
 { "at": "2026-11-08T04:30:00+00:00",
-  "accounts": [],                                  // subscription quotas: S2b
-  "spend": { "day": "2026-11-08", "timeZone": "local", "totalUsd": 1.23,
-    "byKey": { "deepseek": 0.81 }, "note": "…", "noteZh": "…" },
-  "schedules": { "deepseek-peak": { "inside": false, "changesAt": "2026-11-09T01:00:00+00:00" } } }
+  "staleAfterSeconds": 600,
+  "spend": { "day": "2026-11-08", "zone": "local", "utcOffset": "+08:00",
+    "resetsAt": "2026-11-08T16:00:00+00:00",          // the next local midnight
+    "totalUsd": 1.23, "byKey": { "deepseek": 0.81 }, "note": "…", "noteZh": "…" },
+  "presets": { "deepseek-peak": { "schedule": { "timeZone": "UTC", "slots": […] },
+    "inside": false, "changesAt": "2026-11-09T01:00:00+00:00" } } }
 ```
+
+S2b adds subscription quotas, in this form. No label or email is ever
+shown: an account is its number and fingerprint.
+
+```jsonc
+  "cswap": { "observedAt": "…", "unavailable": { "code": "…", "message": "…", "messageZh": "…" },   // unavailable only when it could not be read
+    "accounts": [ { "number": 2, "fingerprint": "3f2a…", "active": false,
+      "fiveHour": { "leftPct": 71, "resetsAt": "…" }, "week": { "leftPct": 40, "resetsAt": "…" },
+      "observedAt": "…", "source": "cswap",           // "cswap" | "agent" (reported by a running Agent)
+      "unknown": { "code": "…", "message": "…", "messageZh": "…" } } ] },
+  "codex": [ { "home": "login", "fiveHour": { … }, "week": { … }, "observedAt": "…", "source": "codex" },
+             { "home": "work", "unknown": { … } } ]
+```
+
+S3 adds `spend.capUsd` and `spend.byCandidate`.
 
 ## Shapes for routing and its Settings page
 
-These shapes are fixed ahead of their code, so the Settings page (YN-49)
-can be built against them. Readings is above. S2b fills `accounts`; S3 adds
-the policy and `route_json`.
+These shapes are fixed ahead of their code, so that routing (S3) and the
+Settings page (YN-49) can be built against them at once.
 
 The rules for every shape:
 - Times are RFC 3339.
 - Ids are 1 to 48 of `a-z`, `0-9` and `-`.
-- No shape ever holds a key's value, an email or a token.
+- No shape holds a key's value, an email or a token.
+- Fields a later Core adds are kept by a save: on the policy, on each candidate and on each condition.
 
-### `accounts[]` in the readings (S2b)
-
-```jsonc
-{ "harness": "claude", "credential": { "kind": "pool", "manager": "cswap" },
-  "fingerprint": "3f2a…", "number": 2, "label": "Account-2", "hostLogin": false,
-  "fiveHour": { "leftPct": 71, "resetsAt": "…" }, "week": { "leftPct": 40, "resetsAt": "…" },
-  "observedAt": "…", "source": "cswap",             // "cswap" | "codex" | "agent" (reported by a running Agent)
-  "state": "fresh" }                                // "fresh" | "stale" (over 10 minutes) | "unknown", with "reason" and "reasonZh"
-```
-
-A Codex home appears as `{ "harness": "codex", "credential": { "kind": "codexHome", "id": "work" }, … }`. The Codex host login appears as `{ "harness": "codex", "credential": { "kind": "login" }, … }`.
-
-### The policy: `GET` and `PUT /api/routing/policy` (S3)
+### The policy: `GET` and `PUT /api/routing/policy` (S3a)
 
 These routes are on the same boundary as the routing keys. No Workspace tool
 writes the policy.
 
 ```jsonc
-// GET → 200
-{ "version": 3,                                     // 0 before the first save
+// GET → 200. Before the first save: { "version": 0, "policy": { "enabled": false, "candidates": [], "whenNone": "wait" }, … }
+{ "version": 3, "updatedAt": "…", "limits": { "candidates": 8 },
   "policy": {
-    "enabled": true,                                // false: executors start as their template says
-    "whenNone": "wait",                             // the only value in this version
-    "dailyApiCapUsd": 5,                            // optional: the total across API-key candidates
-    "candidates": [                                 // at most 8, in order
-      { "id": "deepseek-offpeak", "label": "DeepSeek off-peak", "enabled": true,
-        "harness": "opencode",                      // "codex" | "claude" | "opencode"
-        "model": "deepseek/deepseek-flash",         // as that harness names it; empty is its default
-        "reasoningEffort": "high",                  // Codex only, optional
+    "enabled": true,                                  // false: executors start as their template says
+    "whenNone": "wait",                               // the only value in this version
+    "dailyApiCapUsd": 5,                              // optional: the total across apiKey candidates
+    "candidates": [
+      { "id": "c-deepseek", "label": "DeepSeek off-peak", // label optional, at most 60; empty shows "harness · model"
+        "enabled": true,
+        "harness": "opencode",                        // "claude" | "codex" | "opencode"
+        "model": "deepseek/deepseek-flash",           // as that harness names it; empty is its default
+        "reasoningEffort": "high",                    // Codex only, optional
         "credential": { "kind": "apiKey", "keyId": "deepseek" },
-        "conditions": [
-          { "kind": "window", "schedule": "deepseek-peak", "inside": false, "minLeftMinutes": 30 },
-          { "kind": "dailySpend", "capUsd": 2 } ],
-        "unknown": "skip" } ] } }                   // "skip" (default) | "pass"
+        "conditions": [                               // all must hold
+          { "kind": "timeWindow", "inside": false, "minMinutesLeft": 30,
+            "schedule": { "timeZone": "UTC", "slots": [ { "days": [1,2,3,4,5], "from": "01:00", "to": "04:00" },
+                                                        { "days": [1,2,3,4,5], "from": "06:00", "to": "10:00" } ] } },
+          { "kind": "dailyApiCap", "usd": 2 } ],
+        "unknown": "skip" } ] } }                     // "skip" (the default) | "pass"
 
-// PUT { "expectedVersion": 3, "policy": { … } } → 200 { "version": 4, "policy": { … } }
-// A stale version → 409 version_conflict. A refused field → 400, naming its path.
+// PUT { "expectedVersion": 3, "policy": { … } } → 200, the same as GET with the new version
+// A stale version → 409 { "code": "version_conflict", "error": "…", "current": { "version", "policy", "updatedAt" } }
+// A refused field → 400 { "code": "invalid", "error": "…", "path": "candidates[2].conditions[0].usd" }
 ```
-
-Fields a later Core adds are kept by a save.
 
 `credential` takes one of these forms:
 - `{ "kind": "login" }`: the host's own login for that harness.
 - `{ "kind": "pool", "manager": "cswap", "accounts": "all" | ["<fingerprint>", …], "pick": "mostRemaining" }`: Claude Code only.
-- `{ "kind": "apiKey", "keyId": "<routing key id>" }`. The key's provider must fit the harness:
+- `{ "kind": "apiKey", "keyId": "<routing key id>" }`. Its provider comes from the key; a provider that doesn't fit the harness is refused:
   - Claude Code takes `anthropic`;
   - Codex takes `openai`;
   - OpenCode takes `deepseek`, `anthropic` or `openai`.
-- `{ "kind": "codexHome", "id": "<Codex home id>" }`: Codex only.
+- `{ "kind": "codexHome", "id": "<Codex home id>" }`: Codex only. Use one candidate per home.
 
 `conditions[]` entries take one of these forms:
-- `{ "kind": "window", "schedule": "<built-in id>" | { "timeZone": "UTC" | "local", "slots": […] }, "inside": true | false, "minLeftMinutes"?: n }`.
-- `{ "kind": "quota", "fiveHourLeftPct"?: n, "weekLeftPct"?: n }`: for `login`, `pool` and `codexHome` credentials only.
-- `{ "kind": "dailySpend", "capUsd": n }`: for `apiKey` credentials only. It applies on top of `dailyApiCapUsd`.
+- `{ "kind": "timeWindow", "inside": bool, "schedule": { "timeZone": "UTC" | "local", "slots": […] }, "minMinutesLeft"?: n }`. With `minMinutesLeft`, the condition must still hold for that many more minutes.
+- `{ "kind": "quota", "fiveHourLeftPct"?: n, "weekLeftPct"?: n }`: for `login`, `pool` and `codexHome` credentials. It is the share left.
+- `{ "kind": "dailyApiCap", "usd": n }`: this candidate's own cap, for `apiKey` credentials. The Workspace's `dailyApiCapUsd` always applies too.
 
-### `route_json`: why a candidate was chosen (S3)
+### `route_json`: why a candidate was chosen (S3b)
 
 It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under `executorSlot.route`.
 
 ```jsonc
-{ "policyVersion": 4, "evaluatedAt": "…", "at": "dispatch",    // "dispatch" | "start"
-  "chosen": "deepseek-offpeak",                                 // null while waiting
+{ "policyVersion": 4, "evaluatedAt": "…", "at": "dispatch",      // "dispatch" | "start" | "preview"
+  "chosen": "c-deepseek",                                         // null when none could be chosen
+  "account": { "number": 2, "fingerprint": "3f2a…" },             // or { "home": "work" }, when the credential has one
   "candidates": [
-    { "id": "claude-pool", "label": "Claude pool", "state": "skipped",   // chosen | skipped | unknown | failed | notTried
-      "reason": "…", "reasonZh": "…",
-      "readings": [ { "what": "fiveHourLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ] } ],
-  "changedAtStart": { "from": "claude-pool", "reason": "…" },  // only when the start-time check chose another
-  "waiting": { "earliestAt": "…", "reason": "…" } }            // only when none could be chosen
+    { "id": "c-claude", "label": "Claude pool", "harness": "claude", "model": "opus",
+      "state": "skipped",                                         // chosen | skipped | unknown | failed | notTried | off
+      "reasons": [ { "code": "quotaLow", "message": "…", "messageZh": "…",
+                     "params": { "until": "…" }, "condition": 0 } ], // params carry ISO times for the user's own time zone
+      "readings": [ { "what": "fiveHourLeft", "account": "2", "value": 12, "observedAt": "…", "source": "cswap" } ],
+      "accounts": [ { "number": 2, "fingerprint": "3f2a…", "state": "low" } ] } ],   // pick | ok | low | unknown
+  "changedAtStart": { "from": "c-claude", "reason": "…" },        // only when the start-time check chose another
+  "earliest": { "at": "…", "candidate": "c-claude" } }            // only when none could be chosen
 ```
+
+### More routes in S3b
+
+- `POST /api/routing/evaluate { policy?, at?, assume? }` answers one `route_json` with `at: "preview"`.
+  - `policy` is an unsaved draft; by default, the saved one.
+  - `assume` takes `{ accountsUsedUp: [fingerprint], codexUsedUp: [home], spendCapReached, onePasswordDown }`.
+- `POST /api/routing/simulate { policy?, from, to, stepMinutes, assume? }` answers `{ segments: [ { from, to, chosen } ] }`. It keeps the current readings and varies only the time.
+- `GET /api/routing/choices?limit=20` answers `{ choices: [ { dispatchId, taskId, executorName?, route } ] }`, newest first.

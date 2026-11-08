@@ -14,19 +14,21 @@ async fn readings(State(ws): State<Arc<Workspace>>) -> impl IntoResponse {
     let day = super::today();
     match ws.stored(move |store| store.spend_on(day)).await {
         Ok(spend) => {
-            let schedules: Map<String, Value> = super::BUILTIN.iter()
+            let presets: Map<String, Value> = super::BUILTIN.iter()
                 .filter_map(|id| super::builtin(id).map(|s| (id.to_string(), super::schedule_now(&s, at))))
                 .collect();
             (StatusCode::OK, Json(json!({
                 "at": at.to_rfc3339(),
-                // Account quotas: S2b.
-                "accounts": [],
+                // Readings older than this are unknown to routing. Account quotas (cswap, codex): S2b.
+                "staleAfterSeconds": 600,
                 "spend": {
-                    "day": spend.day, "timeZone": "local", "totalUsd": spend.total_usd, "byKey": spend.by_key,
+                    "day": spend.day, "zone": "local", "utcOffset": chrono::Local::now().offset().to_string(),
+                    "resetsAt": super::day_ends(day).map(|t| t.to_rfc3339()),
+                    "totalUsd": spend.total_usd, "byKey": spend.by_key,
                     "note": "What the harnesses report for executors on a routing key: an estimate, not a bill. Codex is not counted yet.",
                     "noteZh": "执行者用路由密钥时各工具自己报的花费：是估算，不是账单。Codex 暂不计入。",
                 },
-                "schedules": schedules,
+                "presets": presets,
             })))
         }
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("{error:#}")}))),

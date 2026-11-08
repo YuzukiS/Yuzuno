@@ -124,9 +124,15 @@ impl Schedule {
     }
 }
 
-/// A schedule as the readings show it now.
+/// A preset as the readings offer it: its schedule, and where it stands now.
 pub fn schedule_now(schedule: &Schedule, at: DateTime<Utc>) -> Value {
-    serde_json::json!({"inside": schedule.inside(at), "changesAt": schedule.changes_at(at).map(|t| t.to_rfc3339())})
+    serde_json::json!({"schedule": schedule, "inside": schedule.inside(at), "changesAt": schedule.changes_at(at).map(|t| t.to_rfc3339())})
+}
+
+/// When the Core host's local day after `day` begins, in UTC.
+pub fn day_ends(day: NaiveDate) -> Option<DateTime<Utc>> {
+    let next = day.succ_opt()?.and_hms_opt(0, 0, 0)?;
+    next.and_local_timezone(Local).earliest().map(|t| t.with_timezone(&Utc))
 }
 
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
@@ -180,7 +186,7 @@ impl Store {
         let mut statement = db.prepare("SELECT key_id, SUM(usd) FROM routing_spend WHERE day=?1 GROUP BY key_id ORDER BY key_id")?;
         let by_key: BTreeMap<String, f64> = statement.query_map([day.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
-        Ok(DaySpend { day: day.to_string(), total_usd: by_key.values().sum(), by_key })
+        Ok(DaySpend { day: day.to_string(), total_usd: by_key.values().fold(0.0, |total, usd| total + usd), by_key })
     }
 
     /// Whether `entry` of `agent` was already counted (for tests and callers that ask first).
