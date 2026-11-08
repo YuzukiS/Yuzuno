@@ -33,8 +33,8 @@ const MAX_HOMES: usize = 16;
 /// `cswap list` may read each account's usage over the network.
 const LIST_TIMEOUT: Duration = if cfg!(test) { Duration::from_secs(5) } else { Duration::from_secs(60) };
 
-/// One claude-swap account as Core shows it. The email is shown to the
-/// user's own browser only, never kept: Core keeps the fingerprint.
+/// One claude-swap account as Core shows it: by its number, alias and
+/// fingerprint. Its email is neither shown nor kept (YN-34 S2b).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Account {
@@ -44,6 +44,29 @@ pub struct Account {
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_status: Option<String>,
+    /// What is left of its 5-hour and weekly windows, as claude-swap read it
+    /// (YN-34 S2b): `pct` there is the share used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub five_hour: Option<Window>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub week: Option<Window>,
+}
+
+/// One usage window: the share left (0–100), when known, and when it resets.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Window {
+    pub left_pct: Option<f64>,
+    pub resets_at: Option<String>,
+}
+
+fn window(value: &Value) -> Option<Window> {
+    if !value.is_object() {
+        return None;
+    }
+    let left_pct = value["pct"].as_f64().filter(|n| n.is_finite()).map(|used| (100.0 - used).clamp(0.0, 100.0));
+    let resets_at = value["resetsAt"].as_str().filter(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok()).map(str::to_owned);
+    Some(Window { left_pct, resets_at })
 }
 
 /// Why claude-swap's accounts cannot be read now.
@@ -132,13 +155,17 @@ fn account(row: &Value) -> Option<Account> {
     let number = u32::try_from(row["number"].as_u64()?).ok()?;
     let email = row["email"].as_str().filter(|e| !e.trim().is_empty())?;
     let organization = row["organizationUuid"].as_str().filter(|o| !o.is_empty());
-    let label = row["alias"].as_str().filter(|a| !a.trim().is_empty()).unwrap_or(email);
+    // Its alias, else its number: never its email, which pages and records don't show (YN-34 S2b).
+    let label = row["alias"].as_str().filter(|a| !a.trim().is_empty() && !a.contains('@')).map(str::to_owned)
+        .unwrap_or_else(|| format!("Account-{number}"));
     Some(Account {
         number,
         fingerprint: fingerprint(email, organization),
         active: row["active"].as_bool() == Some(true),
         label: label.chars().take(120).collect(),
-        usage_status: row["usageStatus"].as_str().map(|s| s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(32).collect()),
+        usage_status: row["usageStatus"].as_str().map(|s| s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(32).collect()),
+        five_hour: window(&row["usage"]["fiveHour"]),
+        week: window(&row["usage"]["sevenDay"]),
     })
 }
 
@@ -207,6 +234,8 @@ pub fn check_homes(homes: &[CodexHome]) -> Result<()> {
     let uid = rustix::process::geteuid().as_raw();
     for (i, home) in homes.iter().enumerate() {
         crate::routing_keys::check_id(&home.id)?;
+        // Routing's readings and policy name the host's own login `login` (#800 R1 P2).
+        ensure!(home.id != "login", "login names the host's own Codex login, which needs no entry; give this Codex home another id");
         let label = home.label.trim();
         ensure!(!label.is_empty() && label.chars().count() <= 60, "A Codex home's label is 1 to 60 characters");
         let path = Path::new(&home.home);

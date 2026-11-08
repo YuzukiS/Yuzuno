@@ -12,15 +12,19 @@ use std::sync::Arc;
 async fn readings(State(ws): State<Arc<Workspace>>) -> impl IntoResponse {
     let at = Utc::now();
     let day = super::today();
-    match ws.stored(move |store| store.spend_on(day)).await {
-        Ok(spend) => {
+    match ws.stored(move |store| Ok((store.spend_on(day)?, store.quotas()?))).await {
+        Ok((spend, kept)) => {
+            let (cswap, codex) = super::quota::view(&kept, at);
             let presets: Map<String, Value> = super::BUILTIN.iter()
                 .filter_map(|id| super::builtin(id).map(|s| (id.to_string(), super::schedule_now(&s, at))))
                 .collect();
             (StatusCode::OK, Json(json!({
                 "at": at.to_rfc3339(),
-                // Readings older than this are unknown to routing. Account quotas (cswap, codex): S2b.
-                "staleAfterSeconds": 600,
+                // Readings older than this are unknown to routing.
+                "staleAfterSeconds": super::quota::STALE_AFTER_SECONDS,
+                // Null until first read; read while the policy needs them (S2b).
+                "cswap": cswap,
+                "codex": codex,
                 "spend": {
                     "day": spend.day, "zone": "local", "utcOffset": chrono::Local::now().offset().to_string(),
                     "resetsAt": super::day_ends(day).map(|t| t.to_rfc3339()),

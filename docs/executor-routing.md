@@ -11,9 +11,10 @@ version; a later slice adds to it.
 | S1b | Accounts: claude-swap's accounts and how a binding to one resolves, its launcher, Codex homes | Done |
 | S1c | Handing a key or account to one executor's harness process: Claude Code, OpenCode and Codex | Done |
 | S2a | Readings: time windows and the daily API spend, read-only | Done |
-| S3a | The policy: kept, checked and served; a template fixed against routing | This version |
-| S2b | Readings: subscription quotas (claude-swap, Codex) | Next |
-| S3b | Routing itself: the choice at dispatch and at start, `route_json` | Later |
+| S3a | The policy: kept, checked and served; a template fixed against routing | Done |
+| S2b | Readings: subscription quotas (claude-swap, Codex) | Done |
+| S3b1 | Choosing a candidate: Core's evaluator, `evaluate` and `simulate` | This version |
+| S3b2 | The choice at dispatch and at an executor's first start, `route_json`, `choices` | Next |
 | S4 | The Settings page (YN-49) | Later |
 
 An executor starts with a routing key or account only when its runtime
@@ -142,10 +143,10 @@ profile, refreshes its tokens and guards the default login.
   setting: a name on `PATH` (`cswap`, the default) or an absolute path, set
   with `PUT /api/routing/cswap {"command": …}`. `GET /api/routing/accounts`
   answers each account's slot number, whether it is the host's current
-  default login, its label (its alias, else its email) and its usage status;
+  default login, its label (its alias, else `Account-<number>`, never its email) and its usage status;
   or why the list cannot be read (`cswapMissing`, `cswapError` with only the
   error's type, `cswapSchema`, `cswapTimeout` after 60 s, `cswapFailed`).
-  The email is shown to your browser only and never kept.
+  No email is shown or kept.
 - **Binding.** An executor will be bound to an account by its fingerprint: a
   hash of the account's email and organization. No email is kept, and slot
   numbers, which claude-swap lets move, are not relied on.
@@ -180,7 +181,7 @@ Each Codex account is a `CODEX_HOME` folder you name, signed in with
 `codex login` there. `PUT /api/routing/codex-homes {"homes": [{id, label, home}]}`
 replaces the list (at most 16). Each home must be an absolute folder that
 exists, belongs to Core's user and no other user can write into, and is listed
-once. The host's own login (`~/.codex`, or Core's `CODEX_HOME`) needs no entry.
+once. The host's own login (`~/.codex`, or Core's `CODEX_HOME`) needs no entry, and `login`, the name routing gives it, is no home's id.
 An executor bound to a home runs its app-server there, and Core reads its
 history and its sub-agents there too.
 
@@ -270,8 +271,19 @@ It answers from what Core last observed and starts no read itself.
     "inside": false, "changesAt": "2026-11-09T01:00:00+00:00" } } }
 ```
 
-S2b adds subscription quotas, in this form. No label or email is ever
-shown: an account is its number and fingerprint.
+### Subscription quotas
+
+These are what is left of each account's 5-hour and weekly windows.
+
+- **When they are read:** in the background every 5 minutes, while the policy is on and a candidate needs them:
+  - a Claude Code candidate on a claude-swap pool, or on the host login with a `quota` condition;
+  - a Codex candidate on the host login or a Codex home, with a `quota` condition.
+
+  Otherwise nothing is read. `cswap` is `null` and `codex` is empty until the first read.
+- **claude-swap accounts** come from `cswap list --json`. claude-swap reads each account's usage from Anthropic itself; its `pct` is the share used, and the readings show what is left. An account claude-swap has no usage for (an expired login, say) carries `unknown` with the claude-swap status as its code. When `cswap` cannot be run, `cswap.unavailable` says why.
+- **Codex** quotas are read for the host's own login and for each listed Codex home. Each read starts a `codex app-server` in that home, asks `account/read`, then `account/rateLimits/read`, and ends it. It runs no model. A login that is not a ChatGPT subscription (an API key, say) has no quota and carries `unknown`. A home taken off the list leaves the readings at the next refresh.
+- **A reading over 10 minutes old is `stale`**, and routing reads it as unknown.
+- **No label or email is ever shown:** an account is its number and fingerprint.
 
 ```jsonc
   "cswap": { "observedAt": "…", "unavailable": { "code": "…", "message": "…", "messageZh": "…" },   // unavailable only when it could not be read
@@ -373,10 +385,39 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
   "earliest": { "at": "…", "candidate": "c-claude" } }            // only when none could be chosen
 ```
 
+### How a candidate is chosen (S3b1)
+
+Candidates are read in order, and the first one that meets every rule below
+is chosen. The other candidates are marked `notTried`.
+
+- **Turned on:** a candidate turned off is `off`.
+- **Not already failed:** one that already failed to start this executor is `failed`, so each is tried once.
+- **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`).
+- **Its credential is there:**
+  - an `apiKey` key must be set (`keyMissing`);
+  - a Codex home must be listed (`homeMissing`).
+- **A pool picks an account:** among its accounts for which each `quota` condition holds, the one with the most of min(5-hour, week) left. Ties go to the lower number. Each account is marked `pick`, `ok`, `low` or `unknown`.
+- **Its conditions hold:**
+  - `timeWindow`: `outsideWindow`, or `windowEndsSoon` when fewer than `minMinutesLeft` minutes are left;
+  - `quota`: `quotaLow`;
+  - `dailyApiCap`: `dailyCapReached`, counted on its key's spend today.
+- **Under the Workspace's daily cap:** for every `apiKey` candidate, `workspaceCapReached`.
+
+A reading that is missing, stale or unknown, or a kind this Core doesn't
+know, is unknown. Codex API-key spend is unknown too. The candidate's
+`unknown` rule then decides: `skip`, the default, marks it `unknown`, and
+`pass` lets it be chosen, with the unknowns kept as its reasons.
+
+When none is chosen, `earliest` names the soonest time a reason gives
+(`params.until`), such as the end of a time window or a quota's reset.
+
+`POST /api/routing/evaluate` and `POST /api/routing/simulate` (below) use
+this evaluator, with the readings as Core last observed them.
+
 ### More routes in S3b
 
 - `POST /api/routing/evaluate { policy?, at?, assume? }` answers one `route_json` with `at: "preview"`.
   - `policy` is an unsaved draft; by default, the saved one.
   - `assume` takes `{ accountsUsedUp: [fingerprint], codexUsedUp: [home], spendCapReached, onePasswordDown }`.
 - `POST /api/routing/simulate { policy?, from, to, stepMinutes, assume? }` answers `{ segments: [ { from, to, chosen } ] }`. It keeps the current readings and varies only the time.
-- `GET /api/routing/choices?limit=20` answers `{ choices: [ { dispatchId, taskId, executorName?, route } ] }`, newest first.
+- `GET /api/routing/choices?limit=20` (S3b2) answers `{ choices: [ { dispatchId, taskId, executorName?, route } ] }`, newest first.

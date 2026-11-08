@@ -121,6 +121,10 @@ const queueEn = {
   releasedBy: "Released by",
   you: "You",
   review: "Review round",
+  binaries: "Binary files",
+  binariesAcknowledged: (count: number, by: string) =>
+    `${count} acknowledged by ${by} by their content; the review round could not read them and stays unknown`,
+  bytes: (n: number) => `${n} bytes`,
   frozenHead: "Frozen head",
   base: "Base branch",
   anchor: "Anchor main",
@@ -261,6 +265,9 @@ const queueText = strings<QueueText>(queueEn, {
   releasedBy: "放行者",
   you: "你",
   review: "审查轮次",
+  binaries: "二进制文件",
+  binariesAcknowledged: (count, by) => `${by} 已按内容确认 ${count} 个；审查轮读不了它们，结论仍是未知`,
+  bytes: (n) => `${n} 字节`,
   frozenHead: "冻结的头提交",
   base: "基础分支",
   anchor: "锚定主分支",
@@ -1180,6 +1187,32 @@ function EntryDetail({
               <dt>{t.review}</dt>
               <dd>
                 <code>{e.release.reviewId}</code>
+              </dd>
+            </>
+          )}
+          {!!e.binaries?.files?.length && (
+            <>
+              <dt>{t.binaries}</dt>
+              <dd>
+                {t.binariesAcknowledged(e.binaries.files.length, actorName(e.binaries.by, t) || "?")}
+                <ul className="merge-runs merge-binaries">
+                  {e.binaries.files.map((f) => (
+                    <li key={f.path}>
+                      <code>{f.path}</code>
+                      {" · "}
+                      <code>{f.format || "?"}</code>
+                      {f.bytes != null && ` · ${t.bytes(f.bytes)}`}
+                      {" · "}
+                      <code title={f.sha256}>{f.sha256.slice(0, 12)}</code>
+                      {f.note && (
+                        <>
+                          {" · "}
+                          <span className="merge-core-text">{f.note}</span>
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               </dd>
             </>
           )}

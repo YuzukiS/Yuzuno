@@ -20,6 +20,7 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 
+pub mod evaluate;
 pub mod routes;
 
 pub const KEY: &str = "executors.routing";

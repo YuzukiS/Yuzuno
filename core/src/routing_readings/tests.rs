@@ -64,6 +64,41 @@ fn agent(id: &str) -> crate::model::AgentDetail {
     },"turns":[],"pending":[],"artifacts":[]})).unwrap()
 }
 
+/// The minute-by-minute scan `changes_at` replaced (#801 R1), kept to check it against.
+fn changes_by_minutes(schedule: &Schedule, at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let now = schedule.inside(at);
+    let start = at.with_second(0)?.with_nanosecond(0)? + Duration::minutes(1);
+    (0..8 * 24 * 60).map(|n| start + Duration::minutes(n)).find(|t| schedule.inside(*t) != now)
+}
+
+/// In local time this runs over the host's own clock changes, when it has them:
+/// the US ones of 2026-11-01 and 2027-03-14 on a host in New York, say.
+#[test]
+fn changes_at_finds_what_a_minute_by_minute_scan_finds_across_midnight_and_clock_changes() {
+    let slot = |days: &[u8], from: &str, to: &str| Slot { days: days.to_vec(), from: from.into(), to: to.into() };
+    let mut schedules = vec![builtin("deepseek-peak").unwrap()];
+    for time_zone in [Zone::Utc, Zone::Local] {
+        schedules.push(Schedule { time_zone, slots: vec![slot(&[1, 2, 3, 4, 5, 6, 7], "22:00", "02:30")] });
+        schedules.push(Schedule { time_zone, slots: vec![slot(&[7], "01:30", "03:00"), slot(&[3], "00:00", "24:00")] });
+        schedules.push(Schedule { time_zone, slots: vec![slot(&[1, 2, 3, 4, 5, 6, 7], "00:00", "24:00")] });
+        schedules.push(Schedule { time_zone, slots: vec![] });
+        // On 2027-03-14 a New York clock skips 02:00–02:59, this slot's start among them.
+        schedules.push(Schedule { time_zone, slots: vec![slot(&[7], "02:15", "05:00")] });
+    }
+    let mut instants = Vec::new();
+    for start in [utc(2026, 10, 31, 0, 0), utc(2027, 3, 13, 0, 0), utc(2026, 11, 9, 0, 0)] {
+        instants.extend((0..45).map(|n| start + Duration::minutes(n * 97) + Duration::seconds(n % 60)));
+    }
+    // Right at the clock changes there: before 2026-11-01 02:00 EDT turns 01:00 EST, in the repeated hour,
+    // and before 2027-03-14 02:00 EST turns 03:00 EDT.
+    instants.extend([utc(2026, 11, 1, 5, 40), utc(2026, 11, 1, 6, 10), utc(2027, 3, 14, 6, 30), utc(2027, 3, 14, 6, 59)]);
+    for at in instants {
+        for schedule in &schedules {
+            assert_eq!(schedule.changes_at(at), changes_by_minutes(schedule, at), "{schedule:?} at {at}");
+        }
+    }
+}
+
 #[test]
 fn spend_is_counted_once_per_entry_only_for_executors_on_a_routing_key() {
     let dir = tempfile::tempdir().unwrap();

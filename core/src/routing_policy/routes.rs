@@ -63,9 +63,93 @@ async fn write(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
     }
 }
 
+/// The policy a preview evaluates: a draft from the body, checked as a save is, else the saved one.
+async fn draft(ws: &Arc<Workspace>, body: &Value) -> Result<(i64, Value), Response> {
+    let invalid = |path: &str, error: &str| answer(StatusCode::BAD_REQUEST, json!({"code": "invalid", "error": error, "path": path}));
+    match body.get("policy") {
+        Some(policy) if !policy.is_null() => {
+            let dir = ws.data_dir.clone();
+            let keys = match tokio::task::spawn_blocking(move || KeyStore::of(&dir).keys()).await {
+                Ok(Ok(keys)) => keys.into_iter().map(|k| (k.id, k.provider)).collect(),
+                Ok(Err(error)) => return Err(invalid("", &format!("The routing keys cannot be read: {error:#}"))),
+                Err(error) => return Err(failed(error.into())),
+            };
+            let codex_homes = ws.stored(|store| store.codex_homes()).await.map_err(failed)?.into_iter().map(|h| h.id).collect();
+            check(policy, &Known { keys, codex_homes }).map_err(|r| invalid(&r.path, &r.error))?;
+            Ok((-1, policy.clone()))
+        }
+        _ => ws.stored(|store| store.routing_policy()).await.map(|p| (p.version, p.policy)).map_err(failed),
+    }
+}
+
+fn time(body: &Value, field: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, Response> {
+    match body.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_str().and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| Some(t.with_timezone(&chrono::Utc)))
+            .ok_or_else(|| answer(StatusCode::BAD_REQUEST, json!({"code": "invalid", "error": format!("{field} is an RFC 3339 time"), "path": field}))),
+    }
+}
+
+/// `POST /api/routing/evaluate {policy?, at?, assume?}`: what routing would choose, from Core's own evaluator.
+async fn evaluate(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
+    let Ok(body) = serde_json::from_slice::<Value>(&body) else { return answer(StatusCode::BAD_REQUEST, json!({"code": "invalid", "error": "The body is JSON", "path": ""})) };
+    let (version, policy) = match draft(&ws, &body).await { Ok(p) => p, Err(r) => return r };
+    let now = match time(&body, "at") { Ok(t) => t.unwrap_or_else(chrono::Utc::now), Err(r) => return r };
+    let gathered = match ws.routing_gathered().await { Ok(g) => g, Err(e) => return failed(e) };
+    let assume = super::evaluate::Assume::from_json(&body["assume"]);
+    // On the blocking pool, as every evaluation is, never on the async runtime (#801 R1).
+    match tokio::task::spawn_blocking(move || super::evaluate::evaluate(version, &policy, "preview", &gathered.inputs(now, None, &[], None, &assume))).await {
+        Ok(route) => answer(StatusCode::OK, route.record),
+        Err(error) => failed(error.into()),
+    }
+}
+
+/// `POST /api/routing/simulate {policy?, from, to, stepMinutes, assume?}`: what would be chosen across a time
+/// span, with the readings as they are now; consecutive steps with the same choice are one segment.
+async fn simulate(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
+    let invalid = |path: &str, error: &str| answer(StatusCode::BAD_REQUEST, json!({"code": "invalid", "error": error, "path": path}));
+    let Ok(body) = serde_json::from_slice::<Value>(&body) else { return invalid("", "The body is JSON") };
+    let (version, policy) = match draft(&ws, &body).await { Ok(p) => p, Err(r) => return r };
+    let (from, to) = match (time(&body, "from"), time(&body, "to")) {
+        (Ok(Some(from)), Ok(Some(to))) if from < to => (from, to),
+        (Err(r), _) | (_, Err(r)) => return r,
+        _ => return invalid("from", "from and to are times, from before to"),
+    };
+    let step = match body["stepMinutes"].as_i64() {
+        Some(n) if (5..=1440).contains(&n) => chrono::Duration::minutes(n),
+        _ => return invalid("stepMinutes", "stepMinutes is 5 to 1440"),
+    };
+    if (to - from).num_minutes() / step.num_minutes() > 2016 {
+        return invalid("to", "At most 2016 steps");
+    }
+    let gathered = match ws.routing_gathered().await { Ok(g) => g, Err(e) => return failed(e) };
+    let assume = super::evaluate::Assume::from_json(&body["assume"]);
+    // Up to 2016 evaluations: on the blocking pool, never on the async runtime (#801 R1).
+    let segments = tokio::task::spawn_blocking(move || {
+        let mut segments: Vec<Value> = Vec::new();
+        let mut at = from;
+        while at < to {
+            let chosen = super::evaluate::evaluate(version, &policy, "preview", &gathered.inputs(at, None, &[], None, &assume)).record["chosen"].clone();
+            let end = (at + step).min(to);
+            match segments.last_mut() {
+                Some(last) if last["chosen"] == chosen => last["to"] = end.to_rfc3339().into(),
+                _ => segments.push(json!({"from": at.to_rfc3339(), "to": end.to_rfc3339(), "chosen": chosen})),
+            }
+            at = end;
+        }
+        segments
+    }).await;
+    match segments {
+        Ok(segments) => answer(StatusCode::OK, json!({"segments": segments})),
+        Err(error) => failed(error.into()),
+    }
+}
+
 pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/routing/policy", get(read).put(write))
+        .route("/api/routing/evaluate", axum::routing::post(evaluate))
+        .route("/api/routing/simulate", axum::routing::post(simulate))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(middleware::from_fn(crate::routing_keys::routes::no_agent_credential))
 }
