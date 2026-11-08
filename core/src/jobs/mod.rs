@@ -1325,7 +1325,8 @@ pub async fn call(
             let machine = host::machine_info().await?;
             // What the runs it waits for declare: its root stages' guards
             // leave those files out, as a stage's leaves out what its
-            // upstream stages declare (YN-30).
+            // upstream stages declare, and every later stage inherits that
+            // through `produced` (YN-30).
             let after_paths = {
                 let named = input.clone();
                 ws.stored(move |s| s.after_run_artifacts(&named)).await?
@@ -1757,8 +1758,8 @@ const CHECKPOINT: &str = "For a command that can save and exit at a safe point w
     stopped like a cancel and is not. Resuming is the user's choice: a new attempt of the same command with $YUZUNO_RESUME_FROM set to \
     that manifest. Unlike pause, this frees the job's memory.";
 /// job_run_submit's afterRuns (YN-30).
-const AFTER_RUNS: &str = "Earlier runs of your own (whole ID or unique prefix) this run starts after: its stages that need no other stage \
-    start only once each has settled as when says. when succeeded (default): it must succeed; the artifacts its stages declared are this \
+const AFTER_RUNS: &str = "Earlier runs of your own (whole ID or unique prefix) this run starts after: none of its stages starts until each \
+    has settled as when says. when succeeded (default): it must succeed; the artifacts its stages declared are this \
     run's upstream, left out of its Git guard and checked by SHA-256 before its stages start, as between stages. when settled: ordering \
     only; it must end, succeeded or cancelled. While one has failed, is unknown or held, or (succeeded) was cancelled, this run is \
     blocked_by_run with the reason and you get one mail; it starts by itself if that run is retried and settles as waited for. A cancelled \

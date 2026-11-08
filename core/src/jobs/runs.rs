@@ -1489,7 +1489,7 @@ impl Store {
         // The runs it waits for: its own Agent's, resolved and checked (YN-30).
         let owner_id = actor.or(input.agent_id.as_deref()).context("A job must be associated with an Agent")?;
         let after_runs = after::check(&tx, owner_id, &input.after_runs)?;
-        let root_needs: Vec<String> = after_runs.iter().filter_map(|a| a["runId"].as_str()).map(after::need).collect();
+        let run_needs: Vec<String> = after_runs.iter().filter_map(|a| a["runId"].as_str()).map(after::need).collect();
         let id = uuid::Uuid::new_v4().to_string();
         let mut owner = Value::Null;
         let mut list = Vec::new();
@@ -1505,8 +1505,13 @@ impl Store {
                 capability.clone(),
             )?;
             owner = json!({"agentId":job["agentId"],"agent":job["agent"]});
-            // A root stage also needs each run this one waits for (YN-30).
-            let needs = if stage.needs.is_empty() { root_needs.clone() } else { stage.needs.clone() };
+            // Every stage it runs also needs each run this one waits for
+            // (YN-30): a reused stage runs nothing, so a stage behind one
+            // still waits, and gets their artifacts with its own upstream.
+            let mut needs = stage.needs.clone();
+            if prepared.reuse.is_none() {
+                needs.extend(run_needs.iter().cloned());
+            }
             list.push(
                 json!({"key":stage.key,"name":prepared.submit.name,"needs":needs,
                 "retry":stage.retry,"reusedFrom":prepared.reuse,"waitForAnalysis":stage.wait_for_analysis}),

@@ -3,12 +3,13 @@
 //!
 //! - `succeeded` (the default): that run must settle succeeded; the
 //!   artifacts its stages declared are this run's upstream, left out of its
-//!   Git guard and checked by digest before its stages start, as between
-//!   the stages of one run;
+//!   Git guard and checked by digest before each of its stages starts, as
+//!   between the stages of one run;
 //! - `settled`: ordering only; that run must settle, succeeded or cancelled.
 //!
-//! The run's own record holds, in each root stage (one with no needs), a
-//! need `run:<id>` per named run; a stage key cannot hold `:`. A Core without
+//! The run's own record holds, in each stage it runs (each one not reused:
+//! a reused stage runs nothing, so a stage behind it must still wait), a need
+//! `run:<id>` per named run; a stage key cannot hold `:`. A Core without
 //! afterRuns (core.26 and older) reads such a need as a stage with no attempt,
 //! Blocked, so it never starts the run early. While a named run has failed, is unknown, is held
 //! (cost limit, a checkpoint, a run it waits for) or, for `succeeded`, was
@@ -39,7 +40,7 @@ pub(crate) struct AfterRun {
     pub when: When,
 }
 
-/// The need a root stage holds for a named run.
+/// The need each stage a run runs holds for a run it waits for.
 pub(super) fn need(id: &str) -> String {
     format!("{PREFIX}{id}")
 }
@@ -260,7 +261,7 @@ pub(super) fn view(run: &mut Value, states: &HashMap<String, State>) {
 mod tests {
     use super::*;
 
-    /// How a Core without afterRuns (core.26 and older) reads a root stage's need of a run: as a
+    /// How a Core without afterRuns (core.26 and older) reads a stage's need of a run: as a
     /// stage with no attempt, Blocked, so the stage never starts there. The
     /// same need with the run's state is an ordinary wait.
     #[test]
