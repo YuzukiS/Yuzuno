@@ -143,9 +143,12 @@ fn remote_machine(db: &Connection, machine: &str, harness: &str) -> Result<Optio
         return Ok(None);
     }
     let raw: Option<String> = db.query_row("SELECT data FROM machines WHERE id=?1", [machine], |r| r.get(0)).optional()?;
-    let remote: crate::remote::RemoteMachine = serde_json::from_str(&raw.with_context(|| {
-        format!("machine_not_found: no registered machine is {machine}; the Machines list names them")
-    })?)?;
+    // The refusal names where it could run instead (YN-37), by id and name only.
+    let Some(raw) = raw else {
+        bail!("machine_not_found: no registered machine is {machine}; this executor can run on {}. machines_list lists them",
+            crate::machine_list::usable_for(db, harness)?);
+    };
+    let remote: crate::remote::RemoteMachine = serde_json::from_str(&raw)?;
     ensure!(!(harness == "codex" && remote.contained),
         "machine_contained: {} keeps its Agents contained, and runs no Codex Agent there; use a Claude Code template, or another machine",
         remote.name);

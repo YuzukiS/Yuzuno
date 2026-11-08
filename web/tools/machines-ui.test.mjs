@@ -940,3 +940,38 @@ test("the executor limit reads in Chinese on the Machines page (T-189)", async (
     page.close();
   }
 });
+
+// YN-37: each machine's page shows the id a dispatch names it by, with a
+// copy button and one line saying so; the Core host's is local.
+test("each machine's page shows its id to copy, the one a dispatch names, in English and Chinese", async () => {
+  for (const language of ["en", "zh"]) {
+    const page = mount((url) => (url.endsWith("/jobs/budget") ? { budget: null } : undefined));
+    const copied = [];
+    Object.defineProperty(page.window.navigator, "clipboard", { value: { writeText: async (text) => void copied.push(text) } });
+    try {
+      if (language === "zh") chinese(page);
+      render(page);
+      await loaded(page);
+      for (const id of ["local", "mini"]) {
+        const shown = await show(page, id);
+        const block = shown.querySelector(".machine-id");
+        assert.ok(block, `${id}'s page has its id`);
+        assert.equal(block.querySelector(".machine-id-value").textContent, id);
+        assert.match(block.textContent, language === "en" ? /^Machine ID/ : /^机器 ID/);
+        assert.match(block.querySelector(".machine-id-note").textContent, language === "en"
+          ? /^A dispatch to this machine names it by this ID \(machineId\)\.$/ : /^派发到这台机器时，用这个 ID（machineId）指定它。$/);
+        const copy = button(block, language === "en" ? "Copy ID" : "复制 ID");
+        assert.ok(copy, "a copy button");
+        copy.click();
+        await until(() => copied.at(-1) === id, `${id} copied`);
+        await until(() => button(block, language === "en" ? "Copied" : "已复制"), "it says it copied");
+      }
+      assert.deepEqual(copied, ["local", "mini"]);
+      // The SSH destination stays where it was; the id is not it.
+      assert.doesNotMatch(page.document.querySelector(".machine-id").textContent, /mac-mini/);
+      assert.deepEqual(page.errors, []);
+    } finally {
+      page.close();
+    }
+  }
+});
