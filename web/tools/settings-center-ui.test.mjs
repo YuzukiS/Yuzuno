@@ -70,10 +70,10 @@ function mount({ phone = false, languages } = {}) {
   return { w, doc, calls, destinations, errors, props, button, type, tab, shown, close: () => w.close() };
 }
 
-test("eighteen pages in four groups and bilingual search expose real scope, without fake controls", async (t) => {
+test("nineteen pages in four groups and bilingual search expose real scope, without fake controls", async (t) => {
   const p = mount(); t.after(p.close); p.w.renderSettings(p.props);
   await until(() => p.doc.querySelector('[type="search"]'));
-  assert.equal(p.doc.querySelectorAll('[role="tab"]').length, 18);
+  assert.equal(p.doc.querySelectorAll('[role="tab"]').length, 19);
   const query = p.doc.querySelector('[type="search"]');
   for (const [term, title, scope] of [
     ["预算", "Core host Job budget", "Core execution machine"],

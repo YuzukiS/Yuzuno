@@ -146,10 +146,10 @@ const refuseLanguage = (page, refuse) => page.evaluate((refuse) => {
 }, refuse);
 // Settings' pages in their four groups (YN-8).
 const EN_TABS = ["Appearance", "Typing & time", "Language", "Shortcuts", "Notifications", "Move to another device",
-  "Projects", "Machines", "Agent defaults", "Executors", "Home", "Phone access",
+  "Projects", "Machines", "Agent defaults", "Executors", "Executor routing", "Home", "Phone access",
   "Storage", "Backup & restore", "Diagnostics", "Updates", "Runtime", "About & help"];
 const ZH_TABS = ["外观", "输入与时间", "语言", "快捷键", "通知", "迁移到其他设备",
-  "项目", "机器", "Agent 默认", "执行者", "主页", "手机访问",
+  "项目", "机器", "Agent 默认", "执行者", "执行者路由", "主页", "手机访问",
   "存储", "备份与恢复", "诊断", "更新", "运行环境", "关于与帮助"];
 
 try {
