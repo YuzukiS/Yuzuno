@@ -50,7 +50,7 @@ export const newAgentText = strings({
   makeDefault: (project: string, machine: string) => `Make this ${project}’s default folder on ${machine}`,
   saveDefault: (project: string, machine: string) => `Save as ${project}’s default folder on ${machine}`,
   openCodeNote:
-    "Uses OpenCode’s own default model, login and permission rules on your Core host; OpenCode may download or update its own dependencies when it starts. Experimental: no images, rewind or slash commands, and a message waits until the current turn ends.",
+    "Uses OpenCode’s own default model and permission rules on your Core host; OpenCode may download or update its own dependencies when it starts. Log in to a provider in the Agent’s settings, unless OpenCode’s config or environment gives it a key; a model can be chosen there too. Experimental: rewind, OpenCode’s slash commands and messages sent while it works are supported; images need a chosen model that reads them, and a sub-agent’s own conversation isn’t shown.",
   model: "Model",
   harnessDefault: "Harness default",
   defaultIs: (value: string) => `Default · ${value}`,
@@ -207,7 +207,7 @@ export const newAgentText = strings({
   makeDefault: (project, machine) => `将它设为 ${project} 在 ${machine} 上的默认文件夹`,
   saveDefault: (project, machine) => `保存为 ${project} 在 ${machine} 上的默认文件夹`,
   openCodeNote:
-    "使用你的 Core 主机上 OpenCode 自己的默认模型、登录和权限规则；OpenCode 启动时可能会下载或更新它自己的依赖。实验性：不支持图片、回退或斜杠命令，消息会等当前 Turn 结束后才处理。",
+    "使用你的 Core 主机上 OpenCode 自己的默认模型和权限规则；OpenCode 启动时可能会下载或更新它自己的依赖。除非 OpenCode 的配置或环境变量已提供密钥，请在 Agent 的设置中登录提供方；也可以在那里选择模型。实验性：支持回退、OpenCode 的斜杠命令和在它工作时发送消息；图片需要选定能读图片的模型，子 Agent 自己的对话不会显示。",
   model: "模型",
   harnessDefault: "Harness 默认值",
   defaultIs: (value) => `默认 · ${value}`,
