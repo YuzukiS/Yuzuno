@@ -150,6 +150,14 @@ async function open({ width, height, touch, theme, lang }) {
 
 const card = (page, key) => page.locator(`[data-section-key="${key}"]`).first();
 const replies = (writes) => writes.filter((w) => w.path.endsWith("/brief/reply")).map((w) => w.body);
+/** Until `count` replies to `key` were sent, and the page has settled on them. An Ask answered on its card
+ * becomes its answer card (YN-21), so the reply sent, not a block on the card, says it went. */
+async function sent(page, writes, key, count) {
+  const deadline = Date.now() + 10_000;
+  while (replies(writes).filter((r) => r.key === key).length < count && Date.now() < deadline) await page.waitForTimeout(50);
+  assert.equal(replies(writes).filter((r) => r.key === key).length, count, `${key}: ${JSON.stringify(replies(writes))}`);
+  await page.waitForTimeout(300);
+}
 /** Home reads itself again, as Core's event would make it. */
 async function refresh(page, key, version) {
   await page.locator(".home-refresh").first().click();
@@ -200,7 +208,7 @@ try {
       await form.locator(".clarification label", { hasText: "Friday" }).click();
       await form.locator(".clarification label", { hasText: "Hana" }).click();
       await form.locator(".clarification footer .primary-button").click();
-      await form.locator(".home-ask-replied").waitFor({ timeout: 10_000 });
+      await sent(page, writes, "plan", 1);
       const [answers] = replies(writes);
       assert.equal(answers.askVersion, 2);
       assert.deepEqual(answers.form, { formId: "release-plan", answers: { day: "fri", notes: "After the docs land.", who: "hana" } });
@@ -232,9 +240,11 @@ try {
       await ask.locator(".home-text-reply textarea").fill("Ship after QA.");
       sections[1] = { ...sections[1], version: 2, ask: { ...sections[1].ask, question: "Anything before we ship on Monday?" } };
       await ask.locator(".home-text-reply button[type=submit]").click();
-      await ask.locator(".home-ask-replied").waitFor({ timeout: 10_000 });
+      await sent(page, writes, "words", 2);
       const said = replies(writes).filter((r) => r.key === "words");
       assert.deepEqual(said.map((r) => [r.askVersion, r.text]), [[1, "Ship after QA."], [2, "Ship after QA."]]);
+      assert.equal(await card(page, "words").locator('[role="alert"]').count(), 0, "no refusal shown");
+      await shoot(page, "words", `words-sent-latest-${view.name}`);
       record(`${view.name}: words refused at version 1 go to version 2`, said);
     } finally {
       report.writes.push(...writes.map((write) => ({ view: view.name, ...write })));
