@@ -203,3 +203,46 @@ details[data-source-jump][open]::details-content {
 .truncation-notice[role="alert"] {
   color: var(--error-ink, #a37961);
 }
+
+/* What a running OpenCode Turn waits on (YN-48): the model its message went
+   to, beside the elapsed time; OpenCode's retry of its provider; and, once
+   it has shown nothing for a while, that no reply came yet. */
+.turn-activity .activity-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+.opencode-waiting {
+  display: grid;
+  gap: 6px;
+  max-width: 62ch;
+  margin: -6px 0 14px 30px;
+  color: var(--text-secondary);
+  font-size: calc(10px + var(--font-adjust, 3px));
+  line-height: 1.5;
+}
+.opencode-waiting p {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+.opencode-waiting strong {
+  font-weight: 500;
+  color: var(--ink);
+}
+.opencode-retry-error {
+  color: var(--error-ink, #a37961);
+  overflow-wrap: anywhere;
+}
+.opencode-waiting-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: -6px;
+}
+@media (max-width: 720px) {
+  .opencode-waiting {
+    margin-left: 0;
+  }
+}

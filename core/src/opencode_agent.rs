@@ -433,6 +433,20 @@ fn unlisted(model: &str) -> String {
     }
 }
 
+/// The model a message is sent to, as its Turn shows it while it waits
+/// (YN-48): `{id, name}` of the Agent's chosen model, else of the one
+/// OpenCode runs a session on with none chosen (`default`: true). Read
+/// before the message goes; one OpenCode doesn't say is none, and the
+/// message goes all the same.
+async fn calling(server: &Server, chosen: Option<&ModelChoice>) -> Option<Value> {
+    let shown = |model: &ModelChoice| format!("{} · {}", model.provider_name, model.name);
+    if let Some(model) = chosen {
+        return Some(json!({"id": model.id(), "name": shown(model)}));
+    }
+    let (id, name) = server.default_model().await.ok().flatten()?;
+    Some(json!({"id": id, "name": name, "default": true}))
+}
+
 /// The model chosen for an Agent, as its OpenCode lists it now; None for
 /// OpenCode's own default. One it no longer lists is refused.
 async fn chosen(server: &Server, model: &str) -> Result<Option<ModelChoice>> {
@@ -568,8 +582,11 @@ impl Workspace {
         // Where each provider gets its access (YN-47), from 2.x's integrations, which a
         // release older than logins lacks: unknown then, or when they could not be read.
         let sources = if opencode::login_supported(version) { c.server.provider_sources().await.ok() } else { None };
+        // What "Harness default" is now (YN-48): the model OpenCode runs a session on with none chosen.
+        let default = c.server.default_model().await.ok().flatten()
+            .map(|(id, name)| models.iter().find(|m| m.id() == id).map(offered).unwrap_or_else(|| json!({"id":id,"model":id,"displayName":name})));
         Ok(json!({"models":models.iter().map(offered).collect::<Vec<_>>(),"providers":offered_providers(&models, sources.as_ref()),
-            "opencode":native}))
+            "opencode":native,"default":default}))
     }
 
     /// Chooses the model for an Agent's next messages, keeping its variant.
@@ -969,34 +986,67 @@ impl Workspace {
 
     /// The connection's event stream, read until its generation is gone. It
     /// holds neither the Workspace nor the server, so dropping the Workspace
-    /// ends OpenCode and then this.
+    /// ends OpenCode and then this. Each event is applied in a task of its
+    /// own, and so is opening the stream again (YN-48): one that panics ends
+    /// only that task. A panicking event is read as the stream breaking,
+    /// logged with its cause, then the stream opened again and the session
+    /// read whole (`opencode_resubscribe`, within RESUBSCRIBE); and if that
+    /// fails, or panics too, the connection ends (`opencode_disconnected`):
+    /// the Agent says so and its running Turn is settled as unknown. Never is
+    /// the Agent left working with nothing more of its session read.
     fn opencode_watch(self: &Arc<Self>, id: &str, generation: u64, mut events: Events, server: Weak<Server>) {
         let (ws, id) = (Arc::downgrade(self), id.to_owned());
         tokio::spawn(async move {
             loop {
                 let next = events.next().await;
                 let Some(workspace) = ws.upgrade() else { return };
-                match next {
-                    Ok(Some(event)) => workspace.dispatch_opencode_event(&id, generation, event).await,
-                    ended => {
-                        if workspace.opencode_current(&id, generation).is_none() {
-                            return;
-                        }
-                        let reason = match ended {
-                            Err(error) => error.to_string(),
-                            _ => "OpenCode 结束了事件流".into(),
-                        };
-                        match workspace.opencode_resubscribe(&id, generation, &server).await {
-                            Some(again) => events = again,
-                            None => {
-                                workspace.opencode_disconnected(&id, generation, &reason).await;
-                                return;
+                let reason = match next {
+                    Ok(Some(event)) => {
+                        let (applying, agent) = (workspace.clone(), id.clone());
+                        match tokio::spawn(async move { applying.dispatch_opencode_event(&agent, generation, event).await }).await {
+                            Ok(()) => continue,
+                            Err(failed) => {
+                                let cause = failure(failed);
+                                eprintln!("Workspace OpenCode event of Agent {id} failed: {cause}; its stream is opened again");
+                                format!("Core 处理 OpenCode 的事件时出错：{cause}")
                             }
                         }
+                    }
+                    Err(error) => error.to_string(),
+                    Ok(None) => "OpenCode 结束了事件流".into(),
+                };
+                if workspace.opencode_current(&id, generation).is_none() {
+                    return;
+                }
+                workspace.opencode_unpoison(&id, generation);
+                let (opening, agent, held) = (workspace.clone(), id.clone(), server.clone());
+                match tokio::spawn(async move { opening.opencode_resubscribe(&agent, generation, &held).await }).await {
+                    Ok(Some(again)) => events = again,
+                    Ok(None) => {
+                        workspace.opencode_disconnected(&id, generation, &reason).await;
+                        return;
+                    }
+                    Err(failed) => {
+                        let cause = failure(failed);
+                        eprintln!("Workspace OpenCode stream of Agent {id} was not opened again: {cause}");
+                        workspace.opencode_disconnected(&id, generation, &format!("{reason}；再次读取时也出错：{cause}")).await;
+                        return;
                     }
                 }
             }
         });
+    }
+
+    /// After a task of connection `generation` panicked (`opencode_watch`):
+    /// what it held is used again, not left poisoned; reading the session
+    /// whole next makes what it read consistent again.
+    fn opencode_unpoison(&self, id: &str, generation: u64) {
+        let Some(c) = self.opencode_current(id, generation) else { return };
+        c.cursor.clear_poison();
+        c.usage.clear_poison();
+        c.children.clear_poison();
+        c.logins.clear_poison();
+        c.mcp_confirmed.clear_poison();
     }
 
     async fn opencode_resubscribe(&self, id: &str, generation: u64, server: &Weak<Server>) -> Option<Events> {
@@ -1122,6 +1172,11 @@ impl Workspace {
     }
 
     fn opencode_event(&self, id: &str, generation: u64, event: &Value) {
+        // A test's own event whose application panics, for what reading the stream does then (YN-48).
+        #[cfg(test)]
+        if event["type"] == "yuzuno.test.panic" {
+            panic!("an event whose application panics, sent by a test");
+        }
         let Some(c) = self.opencode_current(id, generation) else { return };
         let Some(session) = opencode::session_of(event) else { return };
         let kind = event["type"].as_str().unwrap_or("unknown");
@@ -1173,6 +1228,8 @@ impl Workspace {
             return;
         }
         let applied: Vec<&Value> = read.iter().filter(|one| projected(type_of(one)) || type_of(one) == "message.part.delta").collect();
+        // When Core saw it, for a Turn it ends (`ended_live`).
+        let seen = crate::conversation_time::now_ms();
         let written = if applied.is_empty() {
             // Kept as evidence; it changes nothing here.
             self.store.update_meta(id, &journal, &kept, |_| {}).map(drop)
@@ -1181,12 +1238,14 @@ impl Workspace {
                 turns.extend(event_turns(&self.store, id, one)?);
                 Ok::<_, anyhow::Error>(turns)
             }).and_then(|turns| self.store.record_event(id, &journal, &kept, Sel::Turns(turns), |d| {
+                let running = running_ids(d);
                 for one in &applied {
                     project(d, generation, &c.session, one);
                     if type_of(one) == "message.updated" {
                         measure(d, &c, &one["data"]["info"]);
                     }
                 }
+                ended_live(d, &running, seen);
                 refresh_status(d);
             }).map(drop))
         };
@@ -1538,6 +1597,9 @@ impl Workspace {
                 .into_keys().collect(),
             None => BTreeSet::new(),
         };
+        // The model it goes to, shown while its Turn waits (YN-48): read before the check below, which is the last
+        // await before the Turn is recorded and the message sent.
+        let calling = calling(&c.server, model.as_ref()).await;
         ensure!(self.opencode_current(id, c.generation).is_some(), "OpenCode 连接已变化，消息未发送；草稿保留");
         let message = MessageId::new();
         let turn = message.as_str().to_owned();
@@ -1556,6 +1618,9 @@ impl Workspace {
             stale(d);
             let entry = d.turn_mut(&requested);
             entry["status"] = "inProgress".into();
+            if let Some(calling) = calling {
+                entry["_opencodeModel"] = calling;
+            }
             // What 2.x admits for it comes under an ID of its own (`command_input`).
             if let Some(name) = awaited {
                 entry["_opencodeCommand"] = json!({"name":name,"awaiting":true});
@@ -2547,6 +2612,14 @@ fn message(d: &mut AgentDetail, info: &Value) {
                 turn["_opencodeAnswers"] = json!({});
             }
             turn["_opencodeAnswers"][id] = json!({"completed":info["time"]["completed"],"error":info["error"],"finish":info["finish"],"parent":parent});
+            // The model its step runs on, as 2.x says, while it runs (YN-48): another than the one the Turn was sent to
+            // is shown by its ID.
+            if let (true, Some(provider), Some(model)) = (turn["status"] == "inProgress", info["providerID"].as_str(), info["modelID"].as_str()) {
+                let named = format!("{provider}/{model}");
+                if turn["_opencodeModel"]["id"] != named.as_str() {
+                    turn["_opencodeModel"] = json!({"id": named, "name": named});
+                }
+            }
         }
         // A shell command of 2.x's (T-32 slice 4a, D2): its Turn's, as the message before it says; no answer.
         Some("shell") => {
@@ -2657,6 +2730,10 @@ fn part(d: &mut AgentDetail, part: &Value) {
     let (Some(message), Some(id)) = (part["messageID"].as_str(), part["id"].as_str()) else { return };
     let Some(turn) = d.turns.iter_mut().find(|t| t["_opencodeAnswers"].get(message).is_some() || t["_opencodeShells"].get(message).is_some())
         else { return };
+    // Its answer goes on: what OpenCode waited on before is over (YN-48).
+    if let Some(fields) = turn.as_object_mut() {
+        fields.remove("_opencodeRetry");
+    }
     let item = match part["type"].as_str() {
         Some("shell") => json!({"id":id,"type":"commandExecution","command":part["command"],"status":part["status"],
             "aggregatedOutput":part["output"],"exitCode":part["exit"],"nativeMessageId":message}),
@@ -2816,7 +2893,16 @@ fn tool_status(status: Option<&str>) -> &'static str {
 }
 
 fn status(d: &mut AgentDetail, status: &Value) {
+    // What OpenCode waits on before trying its provider again (YN-48), until its answer goes on.
+    if status["type"] == "retry" {
+        if let Some(turn) = running(d) {
+            turn["_opencodeRetry"] = json!({"attempt":status["attempt"],"next":status["next"],"message":status["message"]});
+        }
+    }
     if status["type"] == "idle" {
+        if let Some(fields) = running(d).and_then(Value::as_object_mut) {
+            fields.remove("_opencodeRetry");
+        }
         // A compaction whose end was unknown is no longer running, and may still be settled.
         if let Some(turn) = d.turns.iter_mut().rev().find(|t| matches!(t["_opencodeCompact"]["state"].as_str(), Some("pending" | "unknown"))) {
             settle_compaction(turn, true);
@@ -2826,6 +2912,22 @@ fn status(d: &mut AgentDetail, status: &Value) {
                 settle(turn);
             }
         }
+    }
+}
+
+/// The Turns in progress, before a live event is applied (`ended_live`).
+fn running_ids(d: &AgentDetail) -> Vec<String> {
+    d.turns.iter().filter(|t| t["status"] == "inProgress").filter_map(|t| t["id"].as_str().map(str::to_owned)).collect()
+}
+
+/// Each of `running` that a live event ended records `at`, when Core saw it
+/// end, as Claude's and Codex's Turns do (conversation_time): its footer
+/// then says how long it ran, from `_yuzunoStartedAt`, and when it was done
+/// (YN-48). A whole read that finds a Turn ended records nothing, since it
+/// does not say when that was.
+fn ended_live(d: &mut AgentDetail, running: &[String], at: i64) {
+    for turn in d.turns.iter_mut().filter(|t| t["id"].as_str().is_some_and(|id| running.iter().any(|r| r == id))) {
+        crate::conversation_time::mark_turn_completed(turn, at);
     }
 }
 
@@ -2946,6 +3048,18 @@ fn ended(d: &mut AgentDetail, message: &str) {
 fn restarted(d: &mut AgentDetail) {
     ended(d, "OpenCode 进程已重新启动；这一轮的结果未确认，不会重发。原 Session 与历史保留。");
     d.pending.clear();
+}
+
+/// Why a task ended without its answer: what it panicked with, else how it
+/// was cancelled.
+fn failure(failed: tokio::task::JoinError) -> String {
+    if !failed.is_panic() {
+        return failed.to_string();
+    }
+    let payload = failed.into_panic();
+    payload.downcast_ref::<&str>().map(|said| (*said).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic with no message".into())
 }
 
 fn refresh_status(d: &mut AgentDetail) {

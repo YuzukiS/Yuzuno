@@ -237,6 +237,18 @@ a new one.
   message of its own (as after an automatic compaction). It is refused, and the draft kept, while a permission
   or question waits for you, while the turn is being interrupted, or for a
   command, which only runs on its own.
+- **While a turn waits:** a running turn names the model its message went
+  to: the one chosen in the Agent's settings, else OpenCode's own default
+  (its config's `model`, else its newest enabled model), which the Agent's
+  settings also show. When OpenCode retries a provider it can't reach, the
+  turn says which attempt it is, when OpenCode tries next, and why the last
+  attempt failed. Once the turn has shown nothing for 30 seconds, it says no
+  reply came yet, with Stop and Change model. OpenCode may wait on a
+  provider that never answers for minutes before retrying.
+- **Known limit:** an event stream that breaks is opened again and the
+  session read whole. One that stays open but stops carrying the session's
+  events would leave the turn working until the Agent connects again. No
+  known OpenCode 2.2.5 behaviour does this.
 - **History:** each Agent keeps its session in an OpenCode database in Core's
   data folder (`opencode/<agent id>/opencode.db`). Deleting the Agent keeps
   it, as deleting a Codex or Claude Agent keeps their native sessions.
