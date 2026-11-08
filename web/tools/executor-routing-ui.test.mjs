@@ -4,7 +4,7 @@
 // is marked where it is; fields this version doesn't know go back as they came.
 // Fixture HTTP only, shaped as YN-34 S3 answers (docs/executor-routing.md); no Core.
 import "./jsdom-guard.mjs";
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -84,6 +84,10 @@ function core({ view = savedView(), put } = {}) {
   } };
 }
 
+// The live view refreshes every minute (S4b): each window is closed after the
+// file's tests, so its timers don't keep the process running.
+const windows = [];
+after(() => { for (const window of windows) window.close(); });
 function mount(server, language) {
   const calls = [];
   const errors = [];
@@ -93,6 +97,7 @@ function mount(server, language) {
     url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole,
   });
   const { window } = dom;
+  windows.push(window);
   if (language) window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
   window.fetch = async (url, init = {}) => {
     const method = init.method || "GET";
