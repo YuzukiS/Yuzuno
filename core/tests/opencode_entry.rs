@@ -67,7 +67,8 @@ async fn a_core_started_without_the_switch_creates_a_local_opencode_agent_and_ke
     // What it does not do is refused before anything is created.
     for (body, refusal) in [
         (json!({"name":"O","harness":"opencode","cwd":work,"machineId":"m1"}), "本机"),
-        (json!({"name":"O","harness":"opencode","cwd":work,"model":"some/model"}), "默认模型"),
+        // A model as OpenCode names it is taken (a template's, YN-34 S1c); another is not.
+        (json!({"name":"O","harness":"opencode","cwd":work,"model":"some-model"}), "<provider>/<model>"),
         (json!({"name":"O","harness":"opencode","cwd":dir.path().join("missing")}), "工作目录"),
     ] {
         let (status, text) = call(&router, "POST", "/api/agents", body).await;
