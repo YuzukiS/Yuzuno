@@ -123,7 +123,8 @@ export function Tip({
   const present = useContext(Present);
   const language = useLanguage();
   const [cutShown, setCutShown] = useState(false);
-  const cutTrigger = useRef<HTMLElement>(null);
+  // Radix types its trigger as a button; it is whatever element the child is.
+  const cutTrigger = useRef<HTMLButtonElement>(null);
   if (!isValidElement(children)) return children;
   const empty = content == null || content === false || content === "";
   const props = children.props as Record<string, unknown>;

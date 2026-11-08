@@ -273,11 +273,11 @@ for (const screen of desktop) {
     if (shots) await page.screenshot({ path: join(shots, `${screen.name}-page.png`) });
   }
   // S2b: the composer's, the conversation's and the context panel's titles,
-  // now tips. Send is disabled here (Claude at work takes no message): a
-  // resting pointer still shows its tip, which says why.
+  // now tips. Send is disabled here (no draft yet): a resting pointer still
+  // shows its tip, its name and key (jsdom tests read the reasons it gives).
   const s2b = [
     { what: "Send, disabled", at: page.locator(".send-button"),
-      expect: (t) => t.lines.length === 2 && /Wait for this turn to finish|请等待这个 Turn 结束/.test(t.lines[1]) },
+      expect: (t) => t.lines.length === 1 && /^(Send message|发送消息) (↵|Ctrl ↵|⌘ ↵)$/.test(t.lines[0]) },
     { what: "+", at: page.locator(".composer-plus"),
       expect: (t) => /^(Add to your draft|添加到草稿)$/.test(t.lines[0]) && t.lines.length === 2 },
     { what: "a message's time", at: page.locator(".message-time").first(),
@@ -289,7 +289,7 @@ for (const screen of desktop) {
     { what: "the context panel's work source", at: page.locator(".inspector-work-source"),
       expect: (t) => /^(Agent report|Agent 报告)$/.test(t.lines.join(" ")) },
   ];
-  check(await page.locator(".send-button").isDisabled(), `${screen.name}: Send is disabled while Claude is at work`);
+  check(await page.locator(".send-button").isDisabled(), `${screen.name}: Send is disabled with no draft`);
   for (const { what, at: anchor, expect } of s2b) {
     if (!(await anchor.count())) { check(false, `${screen.name}: ${what} to rest on`); continue; }
     const tip = await rest(page, anchor, `${screen.name} ${what}`);

@@ -1006,14 +1006,14 @@ test("local Claude takes images and says large ones are scaled for Claude while 
   for (const harness of ["claude", "codex"]) {
     const page = await mount({ harness });
     try {
-      // The composer's "+" offers images to both; the entry's tooltip
-      // carries the note for Claude (T-44).
+      // The composer's "+" offers images to both; the entry's tip
+      // carries the note for Claude (T-44, YN-44).
       page.document.querySelector('.composer-tools button[aria-label="Add"]').click();
       await pause();
       const button = page.document.querySelector('.composer-add-menu [role="menuitem"][aria-label="Add images"]');
       assert.equal(button?.disabled, false, harness);
       assert.equal(button?.hasAttribute("aria-disabled"), false, harness);
-      assert.equal(/scaled or compressed when sent to Claude · originals are kept/.test(button?.title ?? ""), harness === "claude", harness);
+      assert.equal((await hoverTip(page.window, button)).some((line) => /scaled or compressed when sent to Claude · originals are kept/.test(line)), harness === "claude", harness);
       assert.deepEqual(page.errors, []);
     } finally { page.close(); }
   }
