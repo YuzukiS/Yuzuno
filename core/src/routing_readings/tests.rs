@@ -92,6 +92,30 @@ fn spend_is_counted_once_per_entry_only_for_executors_on_a_routing_key() {
     assert_eq!(ws.store.spend_on(later).unwrap().total_usd, 0.1);
 }
 
+/// Claude Code's `total_cost_usd` is the running total of its session (#798 R1 P2).
+#[test]
+fn a_running_total_counts_its_increase_once_across_a_restart_and_a_lower_one_counts_from_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspace.db");
+    let day = NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
+    {
+        let store = Store::open(&path).unwrap();
+        store.insert(&agent("on-key")).unwrap();
+        store.insert(&agent("on-login")).unwrap();
+        store.set_runtime_profile("on-key", Some(&RuntimeProfile::ApiKey { key_id: "anthropic".into() })).unwrap();
+        assert_eq!(store.record_running_spend("on-key", "claude:r1", 0.25, "claude", day).unwrap(), Some(0.25), "the first total counts whole");
+        assert_eq!(store.record_running_spend("on-key", "claude:r2", 0.5, "claude", day).unwrap(), Some(0.25), "then only its increase");
+        assert_eq!(store.record_running_spend("on-key", "claude:r2", 0.5, "claude", day).unwrap(), None, "the same entry again counts nothing");
+        assert_eq!(store.record_running_spend("on-login", "claude:r9", 9.0, "claude", day).unwrap(), None, "a host login spends no key");
+    }
+    // After a restart the session is resumed: its first total already holds the earlier turns.
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.record_running_spend("on-key", "claude:r3", 0.75, "claude", day).unwrap(), Some(0.25));
+    // A total below the last (a /clear, or a new session) counts from zero.
+    assert_eq!(store.record_running_spend("on-key", "claude:r4", 0.125, "claude", day).unwrap(), Some(0.125));
+    assert_eq!(store.spend_on(day).unwrap().by_key.get("anthropic").copied(), Some(0.875));
+}
+
 #[test]
 fn only_a_finished_answers_plausible_cost_is_read() {
     let info = |extra: Value| {

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { readTip } from "./tip-dom.mjs";
 
 // OpenCode Agents (T-110): offered only when Core says it creates them, and
 // answered in OpenCode's own terms. Bundled in memory, without the running UI's dist.
@@ -302,7 +303,8 @@ test("an OpenCode Agent's settings choose only its model and that model's varian
     page.window.renderSettings({ agent, onSaved() {} }); await tick();
     const opener = page.document.querySelector(".agent-settings-button");
     assert.ok(opener !== null, "OpenCode has the settings button");
-    assert.equal(opener.title, "OpenCode model and variant");
+    // What its settings are, in its tip (YN-44).
+    assert.equal((await readTip(page.window, opener))[0], "OpenCode model and variant");
     assert.equal(opener.textContent.trim(), "Model & variant");
     opener.click(); await tick(); await tick();
     const dialog = page.document.querySelector('[role="dialog"]');

@@ -3,6 +3,7 @@ import { LoaderCircle, Monitor, RotateCw, Server, WifiOff } from "lucide-react";
 import { errorText, reconnectAgent } from "./api";
 import type { Agent } from "./types";
 import type { WorkspaceMachine } from "./RemoteCreateAgent";
+import { Tip, TipText } from "./Tip";
 import "./remote.css";
 
 export type RemoteWorkspaceAgent = Agent & {
@@ -16,17 +17,13 @@ export type RemoteWorkspaceAgent = Agent & {
 export function MachineBadge({ agent }: { agent: RemoteWorkspaceAgent }) {
   const machineName = agent.remote?.machine.name || "Core host";
   return (
-    <span
-      className="remote-machine-badge"
-      title={
-        agent.remote
-          ? `SSH · ${agent.remote.machine.target || machineName}`
-          : "Local · Core host"
-      }
-    >
-      {agent.remote ? <Server size={12} /> : <Monitor size={12} />}
-      <span>{machineName}</span>
-    </span>
+    // How it is reached and where, in full (YN-44).
+    <Tip side="bottom" content={<TipText label={agent.remote ? "SSH" : "Local"} title={agent.remote ? agent.remote.machine.target || machineName : "Core host"} />}>
+      <span className="remote-machine-badge">
+        {agent.remote ? <Server size={12} /> : <Monitor size={12} />}
+        <span>{machineName}</span>
+      </span>
+    </Tip>
   );
 }
 

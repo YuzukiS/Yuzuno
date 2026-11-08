@@ -8,6 +8,7 @@ import vm from "node:vm";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { composerView, composerText, composerSelection, setComposerText, savedDraftText } from "./composer-driver.mjs";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
+import { hoverTip } from "./tip-dom.mjs";
 import { comparisonExample } from "../src/intelligent-ui/examples.ts";
 
 const distUrl = process.env.YUZUNO_UI_DIST
@@ -3702,9 +3703,11 @@ test("the model label carries the saved reasoning effort only where turns are se
     const page = await mount({ harness, settings });
     try {
       const metadata = page.document.querySelector(".composer-footnote .conversation-metadata");
-      const model = [...metadata.children].find((chip) => chip.title.startsWith("Model:"));
+      const model = [...metadata.children].find((chip) => chip.textContent.startsWith("test-model"));
       assert.equal(model.textContent, label, harness);
-      assert.equal(/Reasoning effort: xhigh/.test(model.title), harness === "codex");
+      // Its tip names it and says the effort where turns are sent it (YN-44).
+      assert.deepEqual(await hoverTip(page.window, model), harness === "codex"
+        ? ["Model", "test-model", "Reasoning effort: xhigh"] : ["Model", "test-model"], harness);
     } finally { page.close(); }
   }
 });
