@@ -1,5 +1,5 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { cloneElement, createContext, isValidElement, useContext, type ReactElement, type ReactNode } from "react";
+import { cloneElement, createContext, isValidElement, useContext, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
 import { langTag, useLanguage } from "./i18n";
 import "./tip.css";
 
@@ -45,6 +45,21 @@ if (typeof document !== "undefined") {
   document.addEventListener("pointerdown", () => { byKeyboard = false; }, true);
 }
 
+/**
+ * Whether an event is the trigger's own: on it or on what it holds, not on a
+ * menu, dialog or list it opened. React passes a portal's events on to its
+ * React parents, so a dialog opened from an Agent row reaches the row, and
+ * focus moving into it would open the row's card over it (and Escape would
+ * close the card, not the dialog).
+ */
+function own(event: SyntheticEvent): boolean {
+  const trigger = event.currentTarget as Element;
+  const target = event.target as Element;
+  if (!trigger.contains(target)) return false;
+  const opened = target.closest?.('[role="menu"], [role="dialog"], [role="listbox"]');
+  return !opened || opened === trigger || !trigger.contains(opened);
+}
+
 export type TipSide = "top" | "right" | "bottom" | "left";
 export type TipTone = "ok" | "bad" | "attention" | "working" | "info" | "quiet";
 
@@ -87,18 +102,22 @@ export function Tip({
   const present = useContext(Present);
   const language = useLanguage();
   if (content == null || content === false || content === "" || !isValidElement(children)) return children;
-  const own = children.props as Record<string, unknown>;
+  const props = children.props as Record<string, unknown>;
   // Radix marks its trigger with `data-state` and, while open,
   // `aria-describedby`. A trigger's own values of either win, and a trigger
   // without them keeps none: CSS and checks read `data-state` as the
   // element's own state.
   const trigger = cloneElement(children, {
-    "data-state": own["data-state"],
-    ...(!describe || own["aria-describedby"] !== undefined ? { "aria-describedby": own["aria-describedby"] } : {}),
+    "data-state": props["data-state"],
+    ...(!describe || props["aria-describedby"] !== undefined ? { "aria-describedby": props["aria-describedby"] } : {}),
   } as Record<string, unknown>);
   const tip = (
     <Tooltip.Root open={open} onOpenChange={onOpenChange}>
-      <Tooltip.Trigger asChild onFocus={(event) => { if (!byKeyboard) event.preventDefault(); }}>
+      <Tooltip.Trigger
+        asChild
+        onFocus={(event) => { if (!byKeyboard || !own(event)) event.preventDefault(); }}
+        onPointerMove={(event) => { if (!own(event)) event.preventDefault(); }}
+      >
         {trigger}
       </Tooltip.Trigger>
       <Tooltip.Portal>

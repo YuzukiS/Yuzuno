@@ -482,6 +482,16 @@ test("the row's card opens after the pointer rests 300 ms, at once from the keyb
     page.pointer(row, "pointermove", { pointerType: "touch" });
     await tick(450);
     assert.equal(shownCard(page), null, "nothing on touch");
+    // Its actions from the keyboard: the menu's focus reaches the row through
+    // React (a portal), and opens no card over the menu.
+    await openTip(page.window, select);
+    page.key(select, "ContextMenu");
+    await tick();
+    assert.ok(page.menu(), "the actions");
+    assert.equal(shownCard(page), null, "no card over the menu");
+    page.key(page.document.activeElement, "Escape");
+    await tick();
+    assert.equal(page.menu(), null, "one Escape closes the menu");
   } finally {
     page.close();
   }
