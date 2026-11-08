@@ -25,40 +25,8 @@
   border-radius: 7px;
   font-size: 10px;
 }
-.input-image-hover {
-  display: none;
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  z-index: 15;
-  width: 200px;
-  max-width: 45vw;
-  padding: 7px;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: 0 8px 30px #0003;
-  pointer-events: none;
-}
-.input-image-hover img {
-  display: block;
-  width: 100%;
-  height: 150px;
-  object-fit: contain;
-}
-.input-image-hover span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 5px;
-  font-size: 11px;
-  color: var(--muted);
-}
-.input-image-open:hover .input-image-hover,
-.input-image-open:focus-visible .input-image-hover {
-  display: block;
-}
+/* Its larger look (ImageAttachments.tsx) is the app's one tip with the
+   image in it (tip.css .tip-image). */
 .input-image-markup {
   position: absolute;
   bottom: -4px;

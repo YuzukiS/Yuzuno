@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import "./context-usage.css";
 import type { ContextUsage as Usage } from "./types";
 import { strings, useStrings } from "./i18n";
+import { TIP_DELAY_MS, focusByKeyboard } from "./Tip";
 
 // The meter's own words (T-189); the counts as the conversation reports them.
 const text = strings({
@@ -61,6 +62,9 @@ export function ContextUsage({
   const [pinned, setPinned] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const tooltipId = useId();
+  // A pointer rests as long on it as on any tip before its card opens.
+  const rest = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(rest.current), []);
 
   useEffect(() => {
     if (!open) return;
@@ -91,8 +95,12 @@ export function ContextUsage({
       className="context-usage"
       data-level={level}
       ref={root}
-      onMouseEnter={() => setOpen(true)}
+      onMouseEnter={() => {
+        window.clearTimeout(rest.current);
+        rest.current = window.setTimeout(() => setOpen(true), TIP_DELAY_MS);
+      }}
       onMouseLeave={() => {
+        window.clearTimeout(rest.current);
         if (!pinned && !root.current?.contains(document.activeElement))
           setOpen(false);
       }}
@@ -108,7 +116,7 @@ export function ContextUsage({
         className="context-usage-button"
         aria-label={t.button(label, sample)}
         aria-describedby={open ? tooltipId : undefined}
-        onFocus={() => setOpen(true)}
+        onFocus={() => { if (focusByKeyboard()) setOpen(true); }}
         onClick={() => {
           setOpen(!pinned);
           setPinned(!pinned);

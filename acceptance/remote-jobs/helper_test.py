@@ -171,7 +171,10 @@ class HelperTests(unittest.TestCase):
         """
         unreadable = Path(self.tmp.name) / "pids-unreadable"
         blind_env = {"YUZUNO_JOBS_PIDS_UNREADABLE_FILE": str(unreadable)}
-        attempt = self.attempt("sleep 2")
+        # The command ends only once the test writes `go`, after the machine
+        # became blind: however late the start's reply arrives, it exits while
+        # this machine cannot be asked.
+        attempt = self.attempt("while [ ! -e go ]; do sleep 0.05; done")
         started = self.call(dict(attempt, action="start"), env_extra=blind_env)
         # A start answers running while its command is still going.
         self.assertIn(started["status"], ("started", "running"), started)
@@ -179,6 +182,7 @@ class HelperTests(unittest.TestCase):
         result = folder / "result.json"
         # From here this machine cannot be asked, the supervisor included.
         unreadable.write_text("while this exists, the machine cannot be asked\n")
+        (self.work / "go").write_text("")
         # The command exits, then its supervisor gives up on BLIND_LIMIT
         # seconds of failed enumeration and ends.
         deadline = time.monotonic() + 30
@@ -287,7 +291,10 @@ class HelperTests(unittest.TestCase):
         self.assertIn("no machine-id", self.call({"action": "hello"}, expect=3)["error"])
 
     def test_a_command_runs_once_in_its_own_group_and_its_output_and_outcome_are_kept(self):
-        job = self.attempt("echo begin; echo once >> runs.txt; sleep 1; echo end")
+        # The command waits for `go` before it ends, so the checks of its
+        # process below do not race its exit, however late the start's reply
+        # arrives.
+        job = self.attempt("echo begin; echo once >> runs.txt; while [ ! -e go ]; do sleep 0.05; done; echo end")
         reply = self.start(job)
         self.assertFalse(reply["duplicate"])
         started = reply["started"]
@@ -304,6 +311,7 @@ class HelperTests(unittest.TestCase):
         again = self.start(job)
         self.assertTrue(again["duplicate"])
         self.assertEqual(again["started"]["pid"], started["pid"])
+        (self.work / "go").write_text("")
         state = self.settle(job)
         self.assertEqual((state["result"]["status"], state["result"]["exitCode"]), ("succeeded", 0))
         self.assertEqual((self.work / "runs.txt").read_text(), "once\n")
@@ -694,8 +702,9 @@ class HelperTests(unittest.TestCase):
         cancelled = self.attempt("echo late >> late.txt")
         self.assertEqual(self.call(self.bound(cancelled, "cancel", fence=True))["status"], "fenced")
         self.call(dict(cancelled, action="start"), expect=3)
-        # A fence never touches an attempt that exists.
-        running = self.attempt("sleep 1")
+        # A fence never touches an attempt that exists. Its command runs
+        # until tearDown ends it, so it is still running when asked.
+        running = self.attempt("while [ ! -e go ]; do sleep 0.05; done")
         self.start(running)
         self.assertEqual(self.call(self.bound(running, "status", fence=True))["status"], "running")
 

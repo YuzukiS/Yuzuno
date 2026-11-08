@@ -251,6 +251,9 @@ try {
     ]) {
       await page.locator(".agent-row").filter({ hasText: name }).click();
       const trigger = page.locator(".context-usage-button");
+      // A keyboard's focus opens the card, as any tip's (YN-44): the row was
+      // just clicked, so a key comes first.
+      await page.keyboard.press("Shift");
       await trigger.focus();
       await page.getByRole("tooltip").waitFor();
       assert.match(

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { SquareDashedMousePointer, X } from "lucide-react";
 import { Modal } from "./components";
+import { Tip } from "./Tip";
 import { API_BASE } from "./api";
 import { ImageViewer } from "./ImageViewer";
 import { langTag, strings, useLanguage, useStrings } from "./i18n";
@@ -58,22 +59,31 @@ export function ImageAttachments({
     <div className="input-images">
       {images.map((image, index) => (
         <div className="input-image" key={`${image.agentId}:${image.id}`}>
-          <button
-            type="button"
-            className="input-image-open"
-            aria-label={t.open(index + 1, image.name || t.attached)}
-            onClick={() => setOpened(image)}
+          {/* A larger look and its name in the app's one tip (Tip.tsx), the
+              Preview kind; its button already says the name. */}
+          <Tip
+            side="top"
+            align="start"
+            describe={false}
+            className="input-image-hover"
+            content={<>
+              <img className="tip-image" src={inputImageUrl(image.agentId, image.id, true)} alt="" />
+              <small className="tip-meta">{image.name || t.image(index + 1)}</small>
+            </>}
           >
-            <img
-              src={inputImageUrl(image.agentId, image.id, true)}
-              alt={image.name || t.image(index + 1)}
-              loading="lazy"
-            />
-            <span className="input-image-hover" aria-hidden="true">
-              <img src={inputImageUrl(image.agentId, image.id, true)} alt="" />
-              <span>{image.name || t.image(index + 1)}</span>
-            </span>
-          </button>
+            <button
+              type="button"
+              className="input-image-open"
+              aria-label={t.open(index + 1, image.name || t.attached)}
+              onClick={() => setOpened(image)}
+            >
+              <img
+                src={inputImageUrl(image.agentId, image.id, true)}
+                alt={image.name || t.image(index + 1)}
+                loading="lazy"
+              />
+            </button>
+          </Tip>
           {onAnnotate && annotateThumbnails && (
             <button
               type="button"

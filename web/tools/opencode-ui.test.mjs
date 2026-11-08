@@ -67,7 +67,7 @@ const hostShown = (page, times = 1) =>
 const local = { id: "local", name: "Core host", kind: "local", defaultCwd: "/workspace" };
 const remote = { id: "mini", name: "Mac mini", kind: "ssh", target: "mac-mini", defaultCwd: "/Users/test/projects" };
 
-function mount(handler) {
+function mount(handler, setup) {
   const calls = [];
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -85,6 +85,8 @@ function mount(handler) {
     const status = body?.__status ?? 200;
     return { ok: status < 400, status, json: async () => body, text: async () => JSON.stringify(body) };
   };
+  // Before the bundle runs, as a saved language is read when it loads.
+  setup?.(window);
   window.eval(bundle);
   return { window, document: window.document, calls, errors, close: () => window.close() };
 }
@@ -122,7 +124,9 @@ test("OpenCode is offered only when Core creates it, on the Core host, with Open
     assert.equal(button(page, "Add SSH machine").disabled, true, "no SSH machine to add for OpenCode");
     assert.equal(group(page, "Model"), null, "no model choice");
     assert.doesNotMatch(page.document.body.textContent, /Loading|Couldn’t load models/);
-    assert.match(page.document.body.textContent, /OpenCode’s own default model, login and permission rules/);
+    assert.match(page.document.body.textContent, /OpenCode’s own default model and permission rules/);
+    assert.match(page.document.body.textContent, /rewind, OpenCode’s slash commands and messages sent while it works are supported/);
+    assert.doesNotMatch(page.document.body.textContent, /no images, rewind or slash commands/);
     assert.match(page.document.body.textContent, /OpenCode may download or update its own\s+dependencies when it starts/);
     assert.equal(page.calls.some((call) => /harness=opencode/.test(call.url)), false, "no model list is asked for");
     await value(page, [...page.document.querySelectorAll("label")].find((l) => l.textContent.trim().startsWith("Name")).querySelector("input"), "Ocean");
@@ -804,6 +808,248 @@ test("an OpenCode Agent is logged in to a provider from its settings, and the pa
     await press("Log out");
     assert.ok(page.calls.some((call) => call.init.method === "DELETE" && call.url.endsWith("/opencode/login/credential/crd_1")));
     assert.match(section().textContent, /Not logged in to any provider here/);
+  } finally { page.close(); }
+});
+
+// YN-47: OpenCode lists a provider's models once it is logged in (and no longer once logged out), so the dialog reads
+// its catalog again after each; what is chosen there and not saved stays chosen.
+test("an OpenCode Agent's settings read its models again after a login or logout, keeping the model chosen (YN-47)", async () => {
+  const free = { id: "opencode/beam-free", model: "opencode/beam-free", displayName: "OpenCode · Beam Free", description: null, variants: [] };
+  const flash = { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", displayName: "DeepSeek · DeepSeek V4.1 Flash", description: null,
+    variants: ["none", "low", "high", "max"] };
+  const view = (connections) => ({ state: "ready", reason: null, version: "2.2.5", integrations: [
+    { id: "deepseek", name: "DeepSeek", connections, methods: [{ kind: "key", id: null, label: "Manually enter API Key", fields: [], names: [] }] },
+  ] });
+  const login = { kind: "credential", id: "crd_9", label: "DeepSeek", method: "key", needsAuth: null };
+  const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
+  let listed = [free];
+  let refuse = true;
+  // The model OpenCode would use with none chosen (YN-48's `default`), which a login can change.
+  const resolved = () => (listed.includes(flash) ? flash : free);
+  const page = mount((url, init) => {
+    if (url.endsWith("/agents/oc/models")) return { models: listed, default: resolved(), opencode: { version: "2.2.5", verified: "2.2.5" } };
+    if (url.endsWith("/agents/oc/opencode/login")) return view([]);
+    if (url.endsWith("/opencode/login/key")) {
+      if (refuse) return { __status: 400, error: "OpenCode 拒绝了登录（HTTP 400，integration_authorization）" };
+      listed = [flash, free];
+      return view([login]);
+    }
+    if (url.endsWith("/opencode/login/credential/crd_9") && init.method === "DELETE") { listed = [free]; return view([]); }
+    return undefined;
+  });
+  const section = () => page.document.querySelector(".opencode-login");
+  const reads = () => page.calls.filter((call) => call.url.endsWith("/agents/oc/models")).length;
+  const offered = () => [...(group(page, "Model")?.querySelectorAll("input") || [])].map((input) => input.value);
+  const press = async (text) => {
+    const found = [...section().querySelectorAll("button")].find((node) => node.textContent.trim() === text);
+    assert.ok(found !== undefined, `the section has ${text}`);
+    found.click(); await tick(); await tick();
+  };
+  try {
+    page.window.renderSettings({ agent, onSaved() {} }); await tick();
+    page.document.querySelector(".agent-settings-button").click();
+    await until(() => section()?.querySelector(".opencode-login-provider select"), "the login section");
+    assert.deepEqual(offered(), ["", "opencode/beam-free"], "before the login: only what OpenCode lists without one");
+    const defaultRow = () => page.document.querySelector('.opencode-model-row[data-value=""]').textContent;
+    assert.equal(defaultRow(), "OpenCode defaultnow OpenCode · Beam Free", "OpenCode's default, named as Core resolved it");
+    choice(page, "Model", "opencode/beam-free").click(); await tick();
+
+    const select = section().querySelector(".opencode-login-provider select");
+    Object.getOwnPropertyDescriptor(page.window.HTMLSelectElement.prototype, "value").set.call(select, "deepseek");
+    select.dispatchEvent(new page.window.Event("change", { bubbles: true })); await tick();
+    await press("Log in with an API key");
+    await value(page, section().querySelector('input[type="password"]'), "fixture-key-yn47");
+    await press("Log in");
+    assert.equal(reads(), 1, "a refused login reads nothing again");
+
+    refuse = false;
+    await value(page, section().querySelector('input[type="password"]'), "fixture-key-yn47");
+    await press("Log in");
+    await until(() => offered().includes("deepseek/deepseek-flash"), "the logged-in provider's model to be offered");
+    assert.equal(reads(), 2, "read once again after the login");
+    assert.deepEqual(offered(), ["", "deepseek/deepseek-flash", "opencode/beam-free"]);
+    assert.ok(choice(page, "Model", "opencode/beam-free").checked, "the model chosen before the login stays chosen");
+    assert.equal(defaultRow(), "OpenCode defaultnow DeepSeek · DeepSeek V4.1 Flash", "the default read again with the list");
+    assert.ok(!page.calls.some((call) => call.url.endsWith("/agents/oc/settings")), "nothing saved by it");
+
+    await press("Log out");
+    await until(() => !offered().includes("deepseek/deepseek-flash"), "the logged-out provider's model to be gone");
+    assert.equal(reads(), 3, "read once again after the logout");
+    assert.ok(choice(page, "Model", "opencode/beam-free").checked, "still chosen");
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+});
+
+// YN-47, the user's choice A (design/yn47-model-picker): one list in the dialog, grouped by provider, logged-in
+// providers first and OpenCode's own last, searchable; a `provider/model` OpenCode doesn't list is explained, not saved.
+test("an OpenCode Agent's models are grouped by provider, logged-in first, and searched; an unlisted one is explained (YN-47)", async () => {
+  const listed = [
+    { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", displayName: "DeepSeek · DeepSeek V4.1 Flash", description: null,
+      variants: ["none", "low", "high", "max"], providerId: "deepseek", providerName: "DeepSeek", name: "DeepSeek V4.1 Flash", status: "active",
+      context: 1048576, image: true },
+    { id: "lmstudio/qwen3-coder", model: "lmstudio/qwen3-coder", displayName: "LMStudio · Qwen3 Coder", description: null, variants: [],
+      providerId: "lmstudio", providerName: "LMStudio", name: "Qwen3 Coder", status: "active", context: null, image: false },
+    { id: "opencode/beam-free", model: "opencode/beam-free", displayName: "OpenCode · Beam Free", description: null, variants: [],
+      providerId: "opencode", providerName: "OpenCode", name: "Beam Free", status: "active", context: 200000, image: false },
+    { id: "openrouter/anthropic/claude-x", model: "openrouter/anthropic/claude-x", displayName: "OpenRouter · Claude X", description: "beta",
+      variants: [], providerId: "openrouter", providerName: "OpenRouter", name: "Claude X", status: "beta", context: 128000, image: false },
+  ];
+  const providers = [
+    { id: "deepseek", name: "DeepSeek", source: "credential" }, { id: "lmstudio", name: "LMStudio", source: "ready" },
+    { id: "opencode", name: "OpenCode", source: "ready" }, { id: "openrouter", name: "OpenRouter", source: "env" },
+  ];
+  const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "deepseek/deepseek-flash", settings: { reasoningEffort: "max" },
+    status: "idle", connectionState: "connected" };
+  const handler = (url, init) => url.endsWith("/agents/oc/models") ? { models: listed, providers, opencode: { version: "2.2.5", verified: "2.2.5" } }
+    : url.endsWith("/agents/oc/settings") ? { ...agent, model: JSON.parse(init.body).model }
+    : url.endsWith("/agents/oc/opencode/login") ? { state: "ready", reason: null, version: "2.2.5", integrations: [] } : undefined;
+  const page = mount(handler);
+  const picker = () => page.document.querySelector(".opencode-model-picker");
+  const offered = () => [...(group(page, "Model")?.querySelectorAll('input[type="radio"]') || [])].map((input) => input.value);
+  const heads = () => [...picker().querySelectorAll(".opencode-model-group-head")].map((h) => [...h.children].map((c) => c.textContent).join(" "));
+  const search = async (text) => { await value(page, picker().querySelector('input[type="search"]'), text); };
+  const row = (id) => picker().querySelector(`.opencode-model-row[data-value="${id}"]`);
+  try {
+    page.window.renderSettings({ agent, onSaved() {} }); await tick();
+    page.document.querySelector(".agent-settings-button").click();
+    await until(() => offered().length === 5, "the grouped list");
+    assert.deepEqual(offered(), ["", "deepseek/deepseek-flash", "openrouter/anthropic/claude-x", "lmstudio/qwen3-coder", "opencode/beam-free"],
+      "OpenCode's default, then a login's provider, an environment variable's, the rest, and OpenCode's own last");
+    assert.deepEqual(heads(), ["DeepSeek Logged in 1", "OpenRouter From the environment 1", "LMStudio No login needed 1", "OpenCode No login needed 1"]);
+    assert.equal(picker().querySelector(".opencode-model-saved").textContent, "Saved: DeepSeek · DeepSeek V4.1 Flash · max", "the saved model and variant");
+    assert.ok(choice(page, "Model", "deepseek/deepseek-flash").checked, "the saved model chosen");
+    assert.match(row("deepseek/deepseek-flash").textContent, /DeepSeek V4\.1 Flashdeepseek\/deepseek-flash.*1M/);
+    assert.ok(row("deepseek/deepseek-flash").querySelector('[aria-label="Reads images"]'), "it reads images");
+    assert.match(row("openrouter/anthropic/claude-x").textContent, /beta128K$/, "a status other than active, and the window");
+    assert.ok(!/\d/.test(row("lmstudio/qwen3-coder").querySelector(".opencode-model-facts").textContent), "no window when none is listed");
+    assert.ok(!picker().querySelector(".opencode-model-login-hint"), "a provider is logged in: no hint");
+    assert.equal(row("").textContent, "OpenCode defaultits own config decides", "no `default` in the answer: unnamed");
+    assert.deepEqual([...group(page, "Variant").querySelectorAll("input")].map((i) => i.value), ["", "none", "low", "high", "max"]);
+
+    // A search keeps the rows it matches, by name, provider or id, marked; their groups say how many.
+    await search("flash");
+    assert.deepEqual(offered(), ["deepseek/deepseek-flash"]);
+    assert.deepEqual(heads(), ["DeepSeek Logged in 1"]);
+    assert.ok(row("deepseek/deepseek-flash").querySelector("mark")?.textContent.toLowerCase() === "flash");
+    await search("openrouter");
+    assert.deepEqual(offered(), ["openrouter/anthropic/claude-x"], "by provider");
+    await search("zzz");
+    assert.deepEqual(offered(), []);
+    assert.equal(picker().querySelector(".opencode-model-empty")?.textContent, "No model matches “zzz”.");
+    // A model OpenCode doesn't list: why it can't run, and where to add it. Enter in the search saves nothing.
+    await search("deepseek/deepseek-v9");
+    const unlisted = picker().querySelector(".opencode-model-unlisted")?.textContent || "";
+    assert.match(unlisted, /OpenCode doesn’t list deepseek\/deepseek-v9, so it can’t run it/);
+    assert.match(unlisted, /Add deepseek-v9 to provider\.deepseek\.models in your OpenCode config/);
+    const enter = new page.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    picker().querySelector('input[type="search"]').dispatchEvent(enter);
+    await tick();
+    assert.ok(enter.defaultPrevented, "Enter in the search doesn't submit the settings");
+    assert.ok(!page.calls.some((call) => call.url.endsWith("/agents/oc/settings")), "nothing saved");
+    await search("nope/model");
+    assert.match(picker().querySelector(".opencode-model-unlisted")?.textContent || "", /OpenCode has no provider nope/);
+
+    // Choosing from a search: its variants, and Save sends it.
+    await search("claude");
+    choice(page, "Model", "openrouter/anthropic/claude-x").click(); await tick();
+    assert.ok(group(page, "Variant") === null, "Claude X lists no variant");
+    page.document.querySelector(".agent-settings-form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }));
+    await until(() => page.calls.some((call) => call.url.endsWith("/agents/oc/settings")), "the save");
+    assert.deepEqual(page.calls.find((call) => call.url.endsWith("/agents/oc/settings")).body, { model: "openrouter/anthropic/claude-x", effort: null });
+    assert.deepEqual(page.errors, []);
+  } finally { page.close(); }
+
+  // A saved model OpenCode no longer lists stays shown, first, and can't be saved; with nothing logged in, the login
+  // below is pointed to. In Chinese.
+  const gone = mount((url, init) => url.endsWith("/agents/oc/models")
+    ? { models: listed.slice(1), providers: providers.slice(1, 3), opencode: { version: "2.2.5", verified: "2.2.5" } } : handler(url, init),
+  (window) => window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" })));
+  try {
+    gone.window.renderSettings({ agent, onSaved() {} }); await tick();
+    gone.document.querySelector(".agent-settings-button").click();
+    const list = () => gone.document.querySelector('[role="radiogroup"][aria-label="模型"]');
+    await until(() => list()?.querySelectorAll('input[type="radio"]').length === 5, "the list, in Chinese");
+    const first = list().querySelector(".opencode-model-row");
+    assert.equal(first.dataset.value, "deepseek/deepseek-flash");
+    assert.match(first.textContent, /OpenCode 现在没有列出它/);
+    assert.ok(first.querySelector("input").checked);
+    assert.ok(gone.document.querySelector('.agent-settings-form button[type="submit"]').disabled, "not saved while OpenCode doesn't list it");
+    assert.match(gone.document.querySelector(".opencode-model-login-hint")?.textContent || "", /在下面登录一个提供方/);
+    assert.match(gone.document.querySelector(".opencode-model-group-head").textContent, /无需登录/);
+    assert.equal(gone.document.querySelector(".opencode-model-search input").placeholder, "搜索 3 个模型，或输入 提供方/模型");
+    assert.deepEqual(gone.errors, []);
+  } finally { gone.close(); }
+
+  // Sources Core could not read (null, R1 99f7cc4f of #795): no group says how it is reached, and nothing points to a
+  // login that may well be there already.
+  const unread = mount((url, init) => url.endsWith("/agents/oc/models")
+    ? { models: listed.slice(1), providers: providers.slice(1).map((p) => ({ ...p, source: null })), opencode: { version: "2.2.5", verified: "2.2.5" } }
+    : handler(url, init));
+  try {
+    unread.window.renderSettings({ agent, onSaved() {} }); await tick();
+    unread.document.querySelector(".agent-settings-button").click();
+    const list = () => unread.document.querySelector('[role="radiogroup"][aria-label="Model"]');
+    await until(() => list()?.querySelectorAll('input[type="radio"]').length === 5, "the list with sources unread");
+    assert.ok(!unread.document.querySelector(".opencode-model-login-hint"), "no login hint");
+    assert.ok(!unread.document.querySelector(".opencode-model-source"), "no group says how it is reached");
+    assert.deepEqual(unread.errors, []);
+  } finally { unread.close(); }
+});
+
+// R1 81aad988 of #788 (P3): a sign-in that finishes while the dialog's own read is out (here the read a composer
+// `/model` asks for) waits for that read, so the requested model is still chosen; the catalog is read again after it.
+test("a sign-in finishing while the dialog's own read is out reads again after it, and the requested model is still chosen (YN-47)", async () => {
+  const flash = { id: "deepseek/deepseek-flash", model: "deepseek/deepseek-flash", displayName: "DeepSeek · DeepSeek Flash", description: null, variants: [] };
+  const free = { id: "opencode/beam-free", model: "opencode/beam-free", displayName: "OpenCode · Beam Free", description: null, variants: [] };
+  const copilot = { kind: "oauth", id: "github-copilot/device", label: "Login with GitHub Copilot", fields: [], names: [] };
+  const view = { state: "ready", reason: null, version: "2.2.5", integrations: [{ id: "github-copilot", name: "GitHub Copilot", methods: [copilot], connections: [] }] };
+  const agent = { id: "oc", name: "Ocean", harness: "opencode", model: "", settings: null, status: "idle", connectionState: "connected" };
+  let reads = 0, complete = false, release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const page = mount(async (url) => {
+    if (url.endsWith("/agents/oc/models")) {
+      reads += 1;
+      // The second read (the composer's request) is held until released.
+      if (reads === 2) await held;
+      return { models: [flash, free], opencode: { version: "2.2.5", verified: "2.2.5" } };
+    }
+    if (url.endsWith("/agents/oc/opencode/login")) return view;
+    if (url.endsWith("/opencode/login/oauth")) return { attemptId: "con_1", url: "https://github.com/login/device", instructions: "", mode: "auto", time: {} };
+    if (url.endsWith("/opencode/login/oauth/github-copilot/con_1")) return { status: complete ? "complete" : "pending" };
+    return undefined;
+  });
+  const section = () => page.document.querySelector(".opencode-login");
+  const press = async (text) => {
+    const found = [...section().querySelectorAll("button")].find((node) => node.textContent.trim() === text);
+    assert.ok(found !== undefined, `the section has ${text}`);
+    found.click(); await tick(); await tick();
+  };
+  const wait = async (ready, what, ms = 6000) => {
+    for (const start = Date.now(); Date.now() - start < ms;) { if (ready()) return; await new Promise((r) => setTimeout(r, 20)); }
+    assert.fail(`timed out waiting for ${what}`);
+  };
+  try {
+    page.window.renderSettings({ agent, onSaved() {} }); await tick();
+    page.document.querySelector(".agent-settings-button").click();
+    await until(() => section()?.querySelector(".opencode-login-provider select") && choice(page, "Model", "opencode/beam-free"), "the dialog");
+    const select = section().querySelector(".opencode-login-provider select");
+    Object.getOwnPropertyDescriptor(page.window.HTMLSelectElement.prototype, "value").set.call(select, "github-copilot");
+    select.dispatchEvent(new page.window.Event("change", { bubbles: true })); await tick();
+    await press("Login with GitHub Copilot");
+    await press("Log in");
+    await until(() => section().querySelector('a[href="https://github.com/login/device"]'), "the sign-in under way");
+
+    // The composer's `/model deepseek/deepseek-flash`: the open dialog reads again, held.
+    page.window.renderSettings({ agent, onSaved() {}, request: { model: "deepseek/deepseek-flash", nonce: 1, agentId: "oc" } });
+    await until(() => reads === 2, "the requested read out");
+    complete = true;
+    await wait(() => !section().querySelector('a[href="https://github.com/login/device"]'), "the sign-in to finish");
+    await tick(); await tick();
+    assert.equal(reads, 2, "no read while the dialog's own is out");
+    release();
+    await wait(() => reads === 3, "the read after it");
+    await until(() => choice(page, "Model", "deepseek/deepseek-flash")?.checked, "the requested model chosen");
+    assert.deepEqual(page.errors, []);
   } finally { page.close(); }
 });
 

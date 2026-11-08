@@ -8,6 +8,7 @@ import {
   YAxis,
 } from "recharts";
 import type { ChartProps } from "./spec";
+import { chartTip } from "../Tip";
 import { ResultTable } from "./ResultTable";
 import { emptyView, useResult } from "./ResultContext";
 
@@ -55,12 +56,7 @@ export function ResultChart(props: ChartProps) {
               tickLine={false}
             />
             <Tooltip
-              contentStyle={{
-                background: "var(--paper)",
-                borderColor: "var(--line)",
-                color: "var(--ink)",
-                borderRadius: 8,
-              }}
+              {...chartTip}
               cursor={{ fill: "var(--cream)" }}
               formatter={(value) => [`${value} ${props.unit}`, "Value"]}
             />

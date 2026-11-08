@@ -1,7 +1,7 @@
 // A daily backup's failure as a system notification (T-196), through the app
 // as built: Core's change stream says the last run changed, the app reads it
 // only while this device chose the kind and its browser allows it, notifies
-// once per run, and a click opens Settings → Backup of this Workspace, where
+// once per run, and a click opens Settings → Backup & restore of this Workspace, where
 // the reason shows. The browser's Notification API is a recorder; nothing
 // here asks the system, retries or starts a backup.
 import "./jsdom-guard.mjs";
@@ -105,7 +105,7 @@ async function mount({ saved = { enabled: true, categories: { backupFailed: true
   return { w, d, core, send, reads, errors, close: () => w.close() };
 }
 
-test("a failed daily backup is one notification, not repeated on a reconnect, and its click opens Settings → Backup", async () => {
+test("a failed daily backup is one notification, not repeated on a reconnect, and its click opens Settings → Backup & restore", async () => {
   const p = await mount();
   try {
     p.send({ type: "reset", reason: "new" });
@@ -122,7 +122,7 @@ test("a failed daily backup is one notification, not repeated on a reconnect, an
     const [shown] = p.core.shown;
     assert.deepEqual({ title: shown.title, body: shown.body, tag: shown.tag }, {
       title: "The daily backup failed",
-      body: "The backup due at 2026-10-26 03:00 UTC did not finish. Open Settings → Backup to see why.",
+      body: "The backup due at 2026-10-26 03:00 UTC did not finish. Open Settings → Backup & restore to see why.",
       tag: "yuzuno:backupFailed:ws-synthetic:op-26",
     });
 
@@ -139,7 +139,7 @@ test("a failed daily backup is one notification, not repeated on a reconnect, an
     const posts = () => p.core.calls.filter((c) => c.method !== "GET").map((c) => c.path);
     const postsBefore = posts();
     shown.notification.onclick();
-    await until(() => p.d.querySelector("#settings-editor-backup"), "Settings → Backup");
+    await until(() => p.d.querySelector("#settings-editor-backup"), "Settings → Backup & restore");
     await until(() => /Not enough space/.test(p.d.querySelector("#settings-editor-backup").textContent), "the reason in Settings");
     await pause(200);
     assert.deepEqual(posts(), postsBefore, "no backup, retry or removal is started");

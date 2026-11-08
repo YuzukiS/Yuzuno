@@ -470,10 +470,12 @@ def v2_error(error):
     return {'type': (error or {}).get('name') or 'UnknownError', 'message': ((error or {}).get('data') or {}).get('message') or ''}
 
 
-def v2_content_index(session, message_id, part_id):
-    """A part's ordinal among its answer's entries (text, reasoning, tool), as 2.x numbers them."""
+def v2_content_index(session, message_id, part_id, kind):
+    """A text's or reasoning's ordinal as 2.x numbers it: its place among its answer's entries of the same kind, each kind
+    counted from 0 (2.2.5 core/src/session/runner/publish-llm-event.ts `fragments`, one counter per kind, YN-48). Its
+    place in the answer's content, which a whole read keys it by (`v2_view`), counts every kind."""
     stored = messages.get(session, {}).get(message_id) or {}
-    entries = [q for q in stored.get('parts', []) if v2_entry(q) is not None]
+    entries = [q for q in stored.get('parts', []) if (v2_entry(q) or {}).get('type') == kind]
     return next((n for n, q in enumerate(entries) if q.get('id') == part_id), len(entries))
 
 
@@ -625,7 +627,7 @@ def v2_events(kind, p):
         entry = v2_entry(q)
         if info.get('role') != 'assistant' or info.get('summary') or entry is None:
             return []
-        ordinal = v2_content_index(session, mid, q.get('id'))
+        ordinal = v2_content_index(session, mid, q.get('id'), entry['type'])
         state = v2_of(session)
         first = (mid, q.get('id')) not in state['parts']
         state['parts'].add((mid, q.get('id')))
@@ -1744,6 +1746,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': listed})
         if key == ('GET', 'api', 'model'):
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_models()})
+        if key == ('GET', 'api', 'model', 'default'):
+            # The model 2.x runs a session on with none of its own (2.2.5 core/src/model.ts `default`): mode
+            # `defaultModel`'s, else the first it lists (all are released 0 here); null with none (YN-48).
+            listed, wanted = v2_models(), modes['defaultModel'] or {}
+            found = next((m for m in listed if m['providerID'] == wanted.get('providerID') and m['id'] == wanted.get('modelID')),
+                         None if wanted else (listed[0] if listed else None))
+            return self.reply(200, {'location': {'directory': str(WORK)}, 'data': found})
         if key == ('GET', 'api', 'provider'):
             return self.reply(200, {'location': {'directory': str(WORK)}, 'data': v2_providers()})
         if parts[:1] == ['api']:

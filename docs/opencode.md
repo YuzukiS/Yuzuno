@@ -134,7 +134,11 @@ a new one.
   the list moves on with an OpenCode update.
 - **Model, login and permissions:** OpenCode's own configuration, unless a
   model, and one of its variants, is chosen in the Agent's settings from what
-  its OpenCode's configured providers list (`/api/model`, names only). The
+  its OpenCode's configured providers list (`/api/model`, names only). A model
+  it doesn't list is not saved: 2.2.5 takes any model for a session but fails
+  its run with "Model unavailable". To use one its catalog lacks, add it to
+  that provider's models in your OpenCode config (`provider.<id>.models`); an
+  OpenCode started with that config lists it. The
   choice is made the session's before a new message when the session's is
   another, and one OpenCode no longer lists refuses the message before
   anything is sent. Yuzuno reads no OpenCode credentials, keeps nothing else
@@ -233,6 +237,18 @@ a new one.
   message of its own (as after an automatic compaction). It is refused, and the draft kept, while a permission
   or question waits for you, while the turn is being interrupted, or for a
   command, which only runs on its own.
+- **While a turn waits:** a running turn names the model its message went
+  to: the one chosen in the Agent's settings, else OpenCode's own default
+  (its config's `model`, else its newest enabled model), which the Agent's
+  settings also show. When OpenCode retries a provider it can't reach, the
+  turn says which attempt it is, when OpenCode tries next, and why the last
+  attempt failed. Once the turn has shown nothing for 30 seconds, it says no
+  reply came yet, with Stop and Change model. OpenCode may wait on a
+  provider that never answers for minutes before retrying.
+- **Known limit:** an event stream that breaks is opened again and the
+  session read whole. One that stays open but stops carrying the session's
+  events would leave the turn working until the Agent connects again. No
+  known OpenCode 2.2.5 behaviour does this.
 - **History:** each Agent keeps its session in an OpenCode database in Core's
   data folder (`opencode/<agent id>/opencode.db`). Deleting the Agent keeps
   it, as deleting a Codex or Claude Agent keeps their native sessions.
