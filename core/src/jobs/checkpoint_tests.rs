@@ -89,17 +89,31 @@ fn a_checkpoint_is_declared_for_this_host_only_and_its_protocol_is_checked() {
     let mut forged = request("forged");
     forged["checkpointFrom"] = json!({"jobId":"other","dir":"/workspace"});
     assert!(parse(forged).is_err());
-    // job_submit offers it; a run's stages do not, and refuse it.
+    // job_submit offers it, and so does a run's stage (YN-30), with the
+    // same protocol checked and the stage named.
     let definitions = tool_definitions();
     let tool = |name: &str| definitions.iter().find(|d| d["name"] == name).unwrap().clone();
     let declared = &tool("job_submit")["inputSchema"]["properties"]["checkpoint"];
     assert_eq!(declared["required"], json!(["graceSeconds", "stoppedExitCode"]));
     assert_eq!(declared["properties"]["signal"]["enum"], json!(["SIGTERM", "SIGINT", "SIGUSR1"]));
+    assert!(!declared["description"].as_str().unwrap().contains("not in a run's stages"));
     let stage = &tool("job_run_submit")["inputSchema"]["properties"]["stages"]["items"]["properties"];
-    assert!(stage.get("checkpoint").is_none() && stage.get("key").is_some(), "{stage}");
-    let run = json!({"requestId":"run","taskId":"T-1","name":"Run","stages":[{"key":"train","cwd":"/workspace","argv":["/usr/bin/true"],
-        "resources":{"cpuMillis":500,"memoryMiB":128,"swapMiB":0},"checkpoint":{"graceSeconds":60,"stoppedExitCode":75}}]});
-    assert!(serde_json::from_value::<runs::RunSubmit>(run).is_err());
+    assert_eq!(stage["checkpoint"]["required"], declared["required"]);
+    assert!(stage["checkpoint"]["description"].as_str().unwrap().contains("the resume is the stage's next attempt"), "{stage}");
+    let run = |checkpoint: Value| serde_json::from_value::<runs::RunSubmit>(json!({"requestId":"run","taskId":"T-1","name":"Run",
+        "stages":[{"key":"train","cwd":"/workspace","argv":["/usr/bin/true"],"timeoutSeconds":3600,
+            "resources":{"cpuMillis":500,"memoryMiB":128,"swapMiB":0},"checkpoint":checkpoint}]}));
+    let accepted = run(json!({"graceSeconds":60,"stoppedExitCode":75})).unwrap();
+    accepted.validate().unwrap();
+    // Not part of the stage's identity: a reuse matches with or without it.
+    let plain = run(Value::Null).unwrap();
+    let snapshot = json!({"cwd":"/workspace","git":{"head":"abc"},"files":[]});
+    assert_eq!(runs::spec_identity(&accepted.submit(&accepted.stages[0]), &snapshot, &[])["specSha256"],
+        runs::spec_identity(&plain.submit(&plain.stages[0]), &snapshot, &[])["specSha256"]);
+    let error = run(json!({"graceSeconds":5,"stoppedExitCode":75})).unwrap().validate().unwrap_err().to_string();
+    assert!(error.starts_with("Stage train: checkpoint.graceSeconds must be 10–900"), "{error}");
+    let error = run(json!({"graceSeconds":60,"stoppedExitCode":0})).unwrap().validate().unwrap_err().to_string();
+    assert!(error.contains("stoppedExitCode must be 1–125"), "{error}");
 }
 
 #[test]
