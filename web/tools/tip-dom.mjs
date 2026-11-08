@@ -83,3 +83,14 @@ export async function hoverTip(w, target, { seconds = 3 } = {}) {
 
 /** `hoverTip` in the element's own window: a test that holds only the element. */
 export const tipOf = (target, options) => hoverTip(target.ownerDocument.defaultView, target, options);
+
+/** Rests a pointer on `target` past the delay and leaves again: true when no tip opened. */
+export async function noTipOf(target) {
+  const w = target.ownerDocument.defaultView;
+  target.dispatchEvent(new w.PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" }));
+  await pause(600);
+  const none = !shownTip(w);
+  target.dispatchEvent(new w.PointerEvent("pointerout", { bubbles: true, pointerType: "mouse", relatedTarget: w.document.body }));
+  await pause(450);
+  return none;
+}

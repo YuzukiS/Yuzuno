@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
+import { tipOf } from "./tip-dom.mjs";
 
 // The task board (T-119) in the built app against an in-memory Core: tasks
 // grouped by what they wait for, one line on where each stands, the detail's
@@ -171,21 +172,23 @@ test("a card says where its executor stands: queued with its place, starting wit
   const p = await mount();
   try {
     const slot = (id) => p.row(id).querySelector(".collab-executor-slot");
+    // Its tip's lines under the words it shows (YN-44), as its title was.
+    const said = async (el) => (await tipOf(el)).slice(1).join("\n");
     assert.equal(slot("T-3")?.textContent, "Queued (number 2)", "a queued executor's card says its place");
     assert.equal(slot("T-3").dataset.slotState, "waiting");
     // Each machine has the only limit (YN-2 S5): the wait is for a slot there.
-    assert.match(slot("T-3").title, /waits for a free slot on its machine and starts in turn\. Settings → Machines sets how many run at once on each machine\./);
+    assert.match((await said(slot("T-3"))), /waits for a free slot on its machine and starts in turn\. Settings → Machines sets how many run at once on each machine\./);
     // A start that didn't finish says why on the card itself (R1 1ec1008a P3-2).
     assert.equal(slot("T-5").textContent, "Start not finished: its start was not confirmed");
-    assert.equal(slot("T-5").title,
+    assert.equal((await said(slot("T-5"))),
       "Its executor keeps its slot, open; its start didn't finish: its start was not confirmed. Connect starts it again; Close frees its slot.");
     // A machine `auto` chose is named, with what it was chosen by in the title (T-35 S3).
     assert.equal(slot("T-2").textContent, "Running · Lab box (chosen automatically)");
     assert.equal(slot("T-2").dataset.slotState, "running");
-    assert.match(slot("T-2").title, /Chosen automatically\. The machines in the order Core weighed them:/);
-    assert.match(slot("T-2").title, /Lab box: a free executor slot \(0 running, no limit of its own\); 7168 of 8192 MiB and 4 of 4 CPUs spare in its Jobs budget/);
-    assert.match(slot("T-2").title, /this Core host: a free executor slot \(1 running, limit 2\); 2048 of 4096 MiB and 1 of 2 CPUs spare/);
-    assert.match(slot("T-2").title, /Boxed: left out: it keeps its Agents contained/);
+    assert.match((await said(slot("T-2"))), /Chosen automatically\. The machines in the order Core weighed them:/);
+    assert.match((await said(slot("T-2"))), /Lab box: a free executor slot \(0 running, no limit of its own\); 7168 of 8192 MiB and 4 of 4 CPUs spare in its Jobs budget/);
+    assert.match((await said(slot("T-2"))), /this Core host: a free executor slot \(1 running, limit 2\); 2048 of 4096 MiB and 1 of 2 CPUs spare/);
+    assert.match((await said(slot("T-2"))), /Boxed: left out: it keeps its Agents contained/);
     assert.ok(!/chosen automatically/.test(slot("T-3").textContent + slot("T-5").textContent), "without a choice, a card reads as before");
     // Booleans only: a failing assert must never print a jsdom node.
     for (const id of ["T-1", "T-4"]) assert.ok(!slot(id), `${id} has no executor slot`);
@@ -209,9 +212,10 @@ test("a card whose executor has a lifecycle names the machine auto chose on that
       : t.id === "T-3" ? { ...t, executor: lifecycle("T-3", { state: "queued", position: 2 }) } : t) });
   try {
     const chip = (id) => p.row(id).querySelector(".collab-executor-state");
+    const said = async (el) => (await tipOf(el)).slice(1).join("\n");
     assert.equal(chip("T-2").textContent, "Executor · Running · Lab box (chosen automatically)", "the lifecycle chip names the machine auto chose");
-    assert.match(chip("T-2").title, /Chosen automatically\. The machines in the order Core weighed them:/);
-    assert.match(chip("T-2").title, /Lab box: a free executor slot \(0 running, no limit of its own\)/);
+    assert.match((await said(chip("T-2"))), /Chosen automatically\. The machines in the order Core weighed them:/);
+    assert.match((await said(chip("T-2"))), /Lab box: a free executor slot \(0 running, no limit of its own\)/);
     assert.equal(p.row("T-2").querySelector(".collab-executor-slot"), null, "the lifecycle chip stands in for the slot chip");
     assert.equal(chip("T-3").textContent, "Executor · Queued · 2 in line", "without a choice, the lifecycle chip reads as before");
     await open(p, "T-2");
@@ -227,10 +231,11 @@ test("a card names the machine auto chose in Chinese too, its numbers in the tit
   const p = await mount({ language: "zh-Hans" });
   try {
     const slot = p.row("T-2").querySelector(".collab-executor-slot");
+    const said = async (el) => (await tipOf(el)).slice(1).join("\n");
     assert.match(slot.textContent, /Lab box（自动选择）$/);
-    assert.match(slot.title, /自动选择。Core 依次比较的机器：/);
-    assert.match(slot.title, /Lab box：有空闲执行者槽位（0 个运行中，没有自己的上限）；Job 预算中剩余内存 7168 \/ 8192 MiB、CPU 4 \/ 4/);
-    assert.match(slot.title, /Boxed：未选：it keeps its Agents contained/, "Core's reason stays as written");
+    assert.match((await said(slot)), /自动选择。Core 依次比较的机器：/);
+    assert.match((await said(slot)), /Lab box：有空闲执行者槽位（0 个运行中，没有自己的上限）；Job 预算中剩余内存 7168 \/ 8192 MiB、CPU 4 \/ 4/);
+    assert.match((await said(slot)), /Boxed：未选：it keeps its Agents contained/, "Core's reason stays as written");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

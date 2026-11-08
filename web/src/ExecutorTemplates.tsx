@@ -15,6 +15,7 @@ import type { WorkspaceMachine } from "./RemoteCreateAgent";
 import { ChoiceCards } from "./SettingsChoices";
 import { timeFormatter, useTimeDisplay } from "./time-preferences";
 import "./executor-templates.css";
+import { Tip, TipText } from "./Tip";
 
 const text = strings({
   title: "Executor templates",
@@ -450,16 +451,22 @@ function StepsField({ d, t, edit }: { d: Draft; t: Text; edit: (change: Partial<
                     </select>
                   )}
                   <span className="executor-step-actions">
-                    <button type="button" className="icon-button" aria-label={t.moveUp(n)} title={t.moveUp(n)} disabled={i === 0} onClick={() => move(i, i - 1)}>
-                      <ArrowUp size={13} />
-                    </button>
-                    <button type="button" className="icon-button" aria-label={t.moveDown(n)} title={t.moveDown(n)} disabled={i === steps.length - 1} onClick={() => move(i, i + 1)}>
-                      <ArrowDown size={13} />
-                    </button>
-                    <button type="button" className="icon-button" aria-label={t.removeStep(n)} title={t.removeStep(n)}
-                      onClick={() => edit({ steps: steps.filter((x) => x.key !== s.key) })}>
-                      <Trash2 size={13} />
-                    </button>
+                    <Tip content={<TipText title={t.moveUp(n)} />} describe={false}>
+                      <button type="button" className="icon-button" aria-label={t.moveUp(n)} disabled={i === 0} onClick={() => move(i, i - 1)}>
+                        <ArrowUp size={13} />
+                      </button>
+                    </Tip>
+                    <Tip content={<TipText title={t.moveDown(n)} />} describe={false}>
+                      <button type="button" className="icon-button" aria-label={t.moveDown(n)} disabled={i === steps.length - 1} onClick={() => move(i, i + 1)}>
+                        <ArrowDown size={13} />
+                      </button>
+                    </Tip>
+                    <Tip content={<TipText title={t.removeStep(n)} />} describe={false}>
+                      <button type="button" className="icon-button" aria-label={t.removeStep(n)}
+                        onClick={() => edit({ steps: steps.filter((x) => x.key !== s.key) })}>
+                        <Trash2 size={13} />
+                      </button>
+                    </Tip>
                   </span>
                   {refused && <span className="inline-error executor-step-error">{t.kindNeedsPr}</span>}
                 </li>
@@ -743,7 +750,7 @@ function LastChange({ change, t }: { change: TemplateChange; t: Text }) {
   return (
     <p className="settings-row-help executor-template-changed">
       {t.lastChanged}{who}
-      {Number.isFinite(ms) && <> · <time dateTime={moment(ms, time).dateTime} title={moment(ms, time).title}>{changedAt(time).format(ms)}</time></>}
+      {Number.isFinite(ms) && <> · <Tip content={<TipText title={moment(ms, time).title} />}><time dateTime={moment(ms, time).dateTime}>{changedAt(time).format(ms)}</time></Tip></>}
       {reason && <> · {reason}</>}
     </p>
   );

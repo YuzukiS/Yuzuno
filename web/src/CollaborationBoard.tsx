@@ -48,6 +48,7 @@ import { harnessNames } from "./storage-overview";
 import { executorChoiceText, type ExecutorChoice } from "./executor-choice";
 import { lifecycleText, stateDetail, stateLabel, type ExecutorLifecycle } from "./executor-lifecycle";
 import { randomId } from "./random-id";
+import { Tip, TipLines, TipText } from "./Tip";
 
 type BoardText = ReturnType<typeof boardText>;
 
@@ -424,10 +425,13 @@ function ExecutorChip({ lifecycle, choice }: { lifecycle: ExecutorLifecycle; cho
   const chosen = executorChoiceText(choice, useLanguage());
   const title = [...stateDetail(lifecycle, t), ...(chosen ? [chosen.title] : [])].join("\n");
   return (
-    <span className="collab-executor-state" data-executor-state={lifecycle.state} title={title}>
-      {t.executor} · {stateLabel(lifecycle, t)}
-      {chosen && ` · ${chosen.text}`}
-    </span>
+    // What the state means, a line each, under the words it shows.
+    <Tip content={title ? <TipLines text={`${t.executor} · ${stateLabel(lifecycle, t)}${chosen ? ` · ${chosen.text}` : ""}\n${title}`} /> : null} size="wide">
+      <span className="collab-executor-state" data-executor-state={lifecycle.state}>
+        {t.executor} · {stateLabel(lifecycle, t)}
+        {chosen && ` · ${chosen.text}`}
+      </span>
+    </Tip>
   );
 }
 
@@ -999,14 +1003,15 @@ export function CollaborationBoard({
             const choice = executorChoiceText(task.executorSlot.choice, language);
             const help = t.executorSlotHelp(task.executorSlot.state, task.executorSlot.reason);
             return (
-              <span
-                className="collab-executor-slot"
-                data-slot-state={task.executorSlot.state}
-                title={choice ? `${help}\n${choice.title}` : help}
-              >
-                {t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}
-                {choice && ` · ${choice.text}`}
-              </span>
+              <Tip content={<TipLines text={`${t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}${choice ? ` · ${choice.text}` : ""}\n${choice ? `${help}\n${choice.title}` : help}`} />} size="wide">
+                <span
+                  className="collab-executor-slot"
+                  data-slot-state={task.executorSlot.state}
+                >
+                  {t.executorSlot(task.executorSlot.state, task.executorSlot.position, task.executorSlot.reason)}
+                  {choice && ` · ${choice.text}`}
+                </span>
+              </Tip>
             );
           })()}
           <GitHubSummary links={task.github} openOnly />
@@ -1016,13 +1021,14 @@ export function CollaborationBoard({
               {t.result}
             </span>
           )}
-          <time
-            className="collab-row-time"
-            dateTime={task.updatedAt}
-            title={t.updatedAt(timeLabel(task.updatedAt))}
-          >
-            {relative(task.updatedAt, language)}
-          </time>
+          <Tip content={<TipText title={t.updatedAt(timeLabel(task.updatedAt))} />}>
+            <time
+              className="collab-row-time"
+              dateTime={task.updatedAt}
+            >
+              {relative(task.updatedAt, language)}
+            </time>
+          </Tip>
         </span>
       </button>
     );
@@ -1143,16 +1149,17 @@ export function CollaborationBoard({
                   label={t.owner}
                   empty={t.everyone}
                 />
-                <button
-                  className="icon-button"
-                  disabled={loading}
-                  onClick={refresh}
-                  aria-label={t.refreshTasks}
-                  aria-busy={loading || undefined}
-                  title={loading ? t.refreshingTasks : t.refreshTasks}
-                >
-                  <RefreshCw size={17} className={loading ? "spin" : ""} />
-                </button>
+                <Tip content={<TipText title={loading ? t.refreshingTasks : t.refreshTasks} />} describe={false} hold>
+                  <button
+                    className="icon-button"
+                    disabled={loading}
+                    onClick={refresh}
+                    aria-label={t.refreshTasks}
+                    aria-busy={loading || undefined}
+                  >
+                    <RefreshCw size={17} className={loading ? "spin" : ""} />
+                  </button>
+                </Tip>
               </div>
               <ErrorNote text={error} />
               {outdated && (
@@ -1822,24 +1829,26 @@ function TaskPane({
           <ArrowLeft size={16} />
           {t.allTasks}
         </button>
-        <button
-          className="icon-button"
-          onClick={() => void load()}
-          disabled={loading}
-          aria-label={t.refreshDetails}
-          aria-busy={loading || undefined}
-          title={loading ? t.refreshingDetails : t.refreshDetails}
-        >
-          <RefreshCw size={16} className={loading ? "spin" : ""} />
-        </button>
-        <button
-          className="icon-button collab-close"
-          onClick={onClose}
-          aria-label={t.closeTask}
-          title={t.close}
-        >
-          <X size={17} />
-        </button>
+        <Tip content={<TipText title={loading ? t.refreshingDetails : t.refreshDetails} />} describe={false} hold>
+          <button
+            className="icon-button"
+            onClick={() => void load()}
+            disabled={loading}
+            aria-label={t.refreshDetails}
+            aria-busy={loading || undefined}
+          >
+            <RefreshCw size={16} className={loading ? "spin" : ""} />
+          </button>
+        </Tip>
+        <Tip content={<TipText title={t.close} />} describe={false}>
+          <button
+            className="icon-button collab-close"
+            onClick={onClose}
+            aria-label={t.closeTask}
+          >
+            <X size={17} />
+          </button>
+        </Tip>
       </div>
       <ErrorNote text={readError} />
       {!task ? (
@@ -2414,16 +2423,17 @@ function Messages({
               ))}
             </select>
           </label>
-          <button
-            className="icon-button"
-            disabled={loading}
-            onClick={() => void load()}
-            aria-label={t.refreshMessages}
-            aria-busy={loading || undefined}
-            title={loading ? t.refreshingMessages : t.refreshMessages}
-          >
-            <RefreshCw size={17} className={loading ? "spin" : ""} />
-          </button>
+          <Tip content={<TipText title={loading ? t.refreshingMessages : t.refreshMessages} />} describe={false} hold>
+            <button
+              className="icon-button"
+              disabled={loading}
+              onClick={() => void load()}
+              aria-label={t.refreshMessages}
+              aria-busy={loading || undefined}
+            >
+              <RefreshCw size={17} className={loading ? "spin" : ""} />
+            </button>
+          </Tip>
         </div>
         <ErrorNote text={error} />
         {!page && loading ? (

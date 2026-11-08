@@ -12,6 +12,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { tipText } from "./tip-browser.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -201,7 +202,8 @@ try {
   await page.locator('.collab-task-card[data-task-id="T-43"]').waitFor({ timeout: 10_000 });
   assert.deepEqual(await slotTexts(page), { "T-41": "Running", "T-42": "Start not finished: its start was not confirmed",
     "T-43": "Queued (number 1)", "T-44": "Queued (number 2)", "T-45": null });
-  assert.equal(await page.locator('.collab-task-card[data-task-id="T-42"] .collab-executor-slot').getAttribute("title"),
+  // In its tip (YN-44), under the words the chip shows.
+  assert.equal((await tipText(page, page.locator('.collab-task-card[data-task-id="T-42"] .collab-executor-slot'))).split("\n").slice(1).join("\n"),
     "Its executor keeps its slot, open; its start didn't finish: its start was not confirmed. Connect starts it again; Close frees its slot.");
   await page.locator(".collab-cards").screenshot({ path: join(output, "3-board-en.png") });
   check("each card says queued with its place, a start not finished with why, or running; one without an executor says nothing");

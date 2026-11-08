@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { uiTestBundle } from './ui-test-bundle.mjs';
+import { tipOf } from "./tip-dom.mjs";
 const dist=pathToFileURL(resolve(process.env.YUZUNO_UI_DIST || 'dist')+'/');
 const html=await readFile(new URL('index.html',dist),'utf8');
 const bundle=await uiTestBundle(new URL(html.match(/src="\/(assets\/[^" ]+\.js)"/)[1],dist));
@@ -129,7 +130,7 @@ test('a task\'s links follow a language change; the draft, open checks and notic
   for(const kept of ['修复 GitHub integration','feature → main','aaaaaaaa','unavailable: offline · 已保留上次成功的快照。'])assert.ok(text.includes(kept),kept);
   assert.equal(zh.querySelector('.github-checks div span').textContent,'Core');
   assert.ok([...zh.querySelectorAll('button')].some(b=>b.textContent==='监视 aaaaaaaa 的 Actions…'));
-  const unlink=zh.querySelector('[aria-label="取消链接 owner/repo#8"]');assert.ok(unlink&&unlink.title==='只移除关联');
+  const unlink=zh.querySelector('[aria-label="取消链接 owner/repo#8"]');assert.ok(unlink);assert.deepEqual(await tipOf(unlink),['只移除关联']);
   assert.equal(zh.querySelector('.github-notice').textContent,'已链接。GitHub 与任务状态彼此独立。');
   assert.equal(zh.querySelector('.github-link-form input').value,'https://github.com/owner/repo/pull/11 草稿');
   assert.ok(zh.querySelector('.github-checks').open,'the checks stay open');

@@ -7,6 +7,7 @@ import { projectName } from "./projects";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import type { Agent, Project } from "./types";
 import "./project-leads.css";
+import { Tip, TipText } from "./Tip";
 
 /** A Project's leads as Core keeps them (`/api/projects/{id}/leads`, T-33). */
 export interface ProjectLeadsValue {
@@ -188,25 +189,28 @@ export function ProjectMembers({ project, agents, projects, disabled, onChanged 
                     {agent.name}
                     {agent.closedAt ? t.closed : ""}
                   </strong>
-                  <small title={agent.cwd}>
-                    {agent.remote?.machine.name || t.coreHost} · {agent.cwd}
-                  </small>
+                  <Tip content={<TipText value={agent.cwd} />} size="wide" cut>
+                    <small>
+                      {agent.remote?.machine.name || t.coreHost} · {agent.cwd}
+                    </small>
+                  </Tip>
                 </span>
                 {executor ? (
                   <span className="settings-tag">{t.executor}</span>
                 ) : (can || ids.includes(agent.id)) && saved ? (
                   leadSwitch(agent.id, agent.name, can)
                 ) : null}
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label={t.removeFrom(agent.name, project.name)}
-                  title={t.removeTip}
-                  disabled={!!moving}
-                  onClick={() => void move(agent, null)}
-                >
-                  {moving === agent.id ? <LoaderCircle size={14} className="spin" /> : <X size={14} />}
-                </button>
+                <Tip content={<TipText title={t.removeTip} />} describe={false}>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label={t.removeFrom(agent.name, project.name)}
+                    disabled={!!moving}
+                    onClick={() => void move(agent, null)}
+                  >
+                    {moving === agent.id ? <LoaderCircle size={14} className="spin" /> : <X size={14} />}
+                  </button>
+                </Tip>
               </li>
             );
           })}

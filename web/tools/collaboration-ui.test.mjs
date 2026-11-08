@@ -22,6 +22,7 @@ try {
 import {createRoot} from 'react-dom/client';
 import {CollaborationBoard} from ${JSON.stringify(path.join(root, "src/CollaborationBoard.tsx"))};
 import {Turn, turnText} from ${JSON.stringify(path.join(root, "src/components.tsx"))};
+import { tipOf, noTipOf } from "./tip-dom.mjs";
 const root=createRoot(document.getElementById('root'));
 window.renderBoard=(props)=>root.render(<CollaborationBoard {...props}/>);
 window.renderTurn=(props)=>root.render(<Turn {...props}/>);
@@ -1867,7 +1868,7 @@ test("a record's proposed next check or stop shows as a proposal, in English and
       const next = await waitFor(() => page.document.querySelector(".task-research-next"), "the proposal");
       assert.equal(next.getAttribute("data-action"), "check");
       assert.ok(next.textContent.includes(label) && next.textContent.includes("Time ten fresh processes"), next.textContent);
-      assert.equal(next.getAttribute("title"), note);
+      assert.deepEqual(await tipOf(next), [note]);
       assert.ok(!page.calls.some((call) => call.operation === "task_research_get"), "nothing is read for a proposal");
       assert.deepEqual(page.errors, []);
     } finally {
@@ -1962,21 +1963,21 @@ test("value, low, high and n past JavaScript's safe integers read as approximate
       const identity = (row) => row.querySelector(".task-research-identity");
       // The safe boundary and 0 are exact, unmarked.
       assert.equal(value(edge).textContent, "9007199254740991 events");
-      assert.equal(value(edge).getAttribute("title"), null);
+      assert.ok(await noTipOf(value(edge)), "exact: no tip");
       assert.equal(identity(edge).textContent, "process · n = 0");
-      assert.equal(identity(edge).getAttribute("title"), null);
+      assert.ok(await noTipOf(identity(edge)), "exact: no tip");
       // Past it: value, both bounds and n are marked, the u64 maximum too.
       assert.equal(value(big).textContent, "≈9007199254740992 [≈−9007199254740992, ≈18446744073709552000] events");
-      assert.equal(value(big).getAttribute("title"), note);
+      assert.deepEqual(await tipOf(value(big)), [note]);
       assert.equal(identity(big).textContent, `${missingLevel} · n = ≈9007199254740992`);
-      assert.equal(identity(big).getAttribute("title"), note);
+      assert.deepEqual(await tipOf(identity(big)), [note]);
       // Exactly 2^53 may itself be a rounded value: marked as well.
       assert.equal(value(pow).textContent, "≈9007199254740992 events");
       assert.equal(identity(pow).textContent, "seed · n = ≈9007199254740992");
-      assert.equal(identity(pow).getAttribute("title"), note);
+      assert.deepEqual(await tipOf(identity(pow)), [note]);
       // A safe n with a sample level, on an excluded entry, is exact.
       assert.equal(identity(safe).textContent, "seed · n = 9007199254740991");
-      assert.equal(identity(safe).getAttribute("title"), null);
+      assert.ok(await noTipOf(identity(safe)), "exact: no tip");
       assert.deepEqual(page.errors, []);
     } finally {
       page.close();
@@ -2564,16 +2565,17 @@ test("other filters keep the cards shown, dimmed and busy, until Core answers; a
 test("Refresh tasks, task details and messages say they are busy while the read they asked for is on its way (T-19 GL-07)", async () => {
   const board = quietBoard();
   const { page, state, held, refreshButton } = board;
-  const says = (label) => ({ busy: refreshButton(label).getAttribute("aria-busy"), title: refreshButton(label).getAttribute("title") });
+  // What it says: busy to assistive technology, and in its tip (YN-44), held so a busy one still shows it.
+  const says = async (label) => ({ busy: refreshButton(label).getAttribute("aria-busy"), title: (await tipOf(refreshButton(label)))[0] });
   const during = async (operation, label) => {
     state.holding = new Set([operation]);
     refreshButton(label).click();
     await tick();
-    const seen = says(label);
+    const seen = await says(label);
     held[operation]();
     state.holding = new Set();
     await waitFor(() => !refreshButton(label).disabled, `${label} answered`);
-    return { seen, after: says(label) };
+    return { seen, after: await says(label) };
   };
   try {
     page.render({ revision: 0 });

@@ -13,6 +13,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { idleJobsBudget, noCiRuns, noJobs, noLiveJobs, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { tipText } from "./tip-browser.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -253,7 +254,7 @@ try {
   await openBoard(page);
   const chip = page.locator('.collab-task-card[data-task-id="T-51"] .collab-executor-slot');
   assert.equal(await chip.textContent(), "Running · Lab box (chosen automatically)");
-  const title = await chip.getAttribute("title");
+  const title = await tipText(page, chip); // its tip (YN-44)
   assert.match(title, /Chosen automatically\. The machines in the order Core weighed them:/);
   assert.match(title, /Lab box: a free executor slot \(0 running, limit 3\); 7168 of 8192 MiB and 4 of 4 CPUs spare in its Jobs budget/);
   assert.match(title, /Boxed: left out: it keeps its Agents contained/);

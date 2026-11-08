@@ -960,25 +960,23 @@ function ProjectDetail({
               {archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
               {archived ? t.unarchive : t.archive}
             </button>
-            <button
-              type="button"
-              className="danger-button"
-              disabled={!!action.busy || members.length > 0 || tasks > 0}
-              title={
-                members.length || tasks
-                  ? t.stillLinked(members.length, tasks)
-                  : t.deleteEmpty
-              }
-              onClick={() =>
-                void action.run("delete", async () => {
-                  await remove(path);
-                  onDeleted();
-                })
-              }
-            >
-              <Trash2 size={14} />
-              {t.delete}
-            </button>
+            <Tip content={<TipText body={members.length || tasks ? t.stillLinked(members.length, tasks) : t.deleteEmpty} />} hold>
+              <button
+                type="button"
+                className="danger-button"
+                disabled={!!action.busy || members.length > 0 || tasks > 0}
+                aria-description={members.length || tasks ? t.stillLinked(members.length, tasks) : undefined}
+                onClick={() =>
+                  void action.run("delete", async () => {
+                    await remove(path);
+                    onDeleted();
+                  })
+                }
+              >
+                <Trash2 size={14} />
+                {t.delete}
+              </button>
+            </Tip>
           </div>
         </fieldset>
       </div>
@@ -1028,7 +1026,7 @@ function Unassigned({
             <div className="project-suggestion-folder">
               <Folder size={15} />
               <span>
-                <strong title={group.cwd}>{group.cwd}</strong>
+                <Tip content={<TipText value={group.cwd} />} size="wide" cut><strong>{group.cwd}</strong></Tip>
                 <small>
                   {group.machineId === "local" ? t.coreHost : group.machineName} ·{" "}
                   {group.agents.map((agent) => agent.name).join(", ")}
