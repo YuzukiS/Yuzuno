@@ -33,6 +33,7 @@ const text = strings({
   recentUnavailable: "Recent choices come with routing itself (YN-34 S3b).",
   at: { dispatch: "at dispatch", start: "changed before starting", preview: "preview" } as Record<string, string>,
   noneChosen: "none available",
+  released: "started without routing",
   changedFrom: (from: string) => `Chosen again before starting, in place of ${from}`,
   spendToday: (usd: string) => `Spent today with API keys: $${usd}`,
   spendCap: (usd: string, cap: string) => `Spent today with API keys: $${usd} of $${cap}`,
@@ -65,6 +66,7 @@ const text = strings({
   recentUnavailable: "最近的选择要等路由本身（YN-34 S3b）。",
   at: { dispatch: "派发时", start: "启动前改选", preview: "预览" },
   noneChosen: "都不可用",
+  released: "未经路由启动",
   changedFrom: (from) => `启动前改选，原来是 ${from}`,
   spendToday: (usd) => `今天用 API key 花了 $${usd}`,
   spendCap: (usd, cap) => `今天用 API key 花了 $${usd} / $${cap}`,
@@ -264,8 +266,8 @@ export function RecentChoices({ active, names }: { active: boolean; names: (id: 
                   <time dateTime={r.evaluatedAt}>{when}</time>
                   <span className="routing-recent-what">
                     {/* An executor's name starts with its task's id by default: the id once. */}
-                    <b>{c.executorName?.includes(c.taskId) ? c.executorName : `${c.taskId}${c.executorName ? ` · ${c.executorName}` : ""}`} → {r.chosen ? names(r.chosen, chosen) : t.noneChosen}{account ? ` · ${account}` : ""}</b>
-                    <small>{r.changedAtStart ? t.changedFrom(names(r.changedAtStart.from)) : t.at[r.at] ?? r.at}</small>
+                    <b>{c.executorName?.includes(c.taskId) ? c.executorName : `${c.taskId}${c.executorName ? ` · ${c.executorName}` : ""}`} → {r.chosen ? names(r.chosen, chosen) : r.released ? t.released : t.noneChosen}{account ? ` · ${account}` : ""}</b>
+                    <small>{r.released ? reasonWords(r.released, language) : r.changedAtStart ? t.changedFrom(names(r.changedAtStart.from)) : t.at[r.at] ?? r.at}</small>
                   </span>
                   {expanded ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
                 </button>

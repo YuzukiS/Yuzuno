@@ -5,6 +5,8 @@ import { PRESETS, PolicyRefused, isKnown, modelShort, moved, newCandidateId, pat
 import { langTag, useLanguage } from "./i18n";
 import { ROUTING_CREDENTIALS_CHANGED, readAccountsShared, readKeys, type AccountsView, type RoutingKey } from "./routing-keys";
 import { CandidateLive, NowCard, RecentChoices, SpendLine, StatePill, useLiveRouting } from "./RoutingLive";
+import { RoutingSimulate } from "./RoutingSimulate";
+import { RoutingTemplates } from "./RoutingTemplates";
 import type { RouteCandidate, RouteRecord } from "./routing-live";
 import { useSaveBarPart } from "./SettingsSaveBar";
 import { Tip, TipText } from "./Tip";
@@ -200,6 +202,9 @@ export function ExecutorRouting({ active }: { active: boolean }) {
             </span>
           </div>
         )}
+        {policy.enabled && policy.candidates.length > 0 && (
+          <RoutingSimulate policy={policy} active={active} held={invalid} names={nameOf} colourOf={colourOf} accounts={accounts} keys={keys} />
+        )}
         <div className="settings-group routing-workspace">
           <div className="settings-row">
             <Clock size={16} className="settings-row-icon" aria-hidden="true" />
@@ -227,6 +232,7 @@ export function ExecutorRouting({ active }: { active: boolean }) {
             </div>
           </div>
         </div>
+        <RoutingTemplates active={active} />
         <RecentChoices active={active} names={(id, fallback) => {
           const c = policy.candidates.find((x) => x.id === id);
           return c ? nameOf(c) : fallback?.label || [fallback?.harness && (harnessName[fallback.harness as Harness] ?? fallback.harness), modelShort(fallback?.model ?? "")].filter(Boolean).join(" · ") || id;
