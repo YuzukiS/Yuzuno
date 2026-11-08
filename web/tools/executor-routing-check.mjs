@@ -60,6 +60,8 @@ const fresh = () => ({
   ] } },
   // A run that checks a conflict has another save land first.
   conflictNext: false,
+  templates: { version: 2, laterTemplates: 0, templates: [
+    { id: "dev", label: "Development (PR)", harness: "codex", model: "gpt-6.1-sol" }, { id: "review", label: "Review", harness: "claude", routing: "fixed" }] },
 });
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const peakReason = { code: "peak", message: "DeepSeek's peak price now; off-peak from 12:00", messageZh: "现在是 DeepSeek 高峰价，12:00 起是闲时", condition: 0 };
@@ -90,7 +92,7 @@ async function route(r) {
   if (url.hostname !== HOST) { report.unexpected.push(request.url()); return r.abort(); }
   const body = request.postData() ? JSON.parse(request.postData()) : undefined;
   // Evaluating is a read, by POST: not a write.
-  if (method !== "GET" && path !== "/api/routing/evaluate") report.writes.push({ method, path, body });
+  if (method !== "GET" && path !== "/api/routing/evaluate" && path !== "/api/routing/simulate") report.writes.push({ method, path, body });
   // A secret may be in its own write only.
   const own = (method === "PUT" && /^\/api\/routing\/keys\/[^/]+$/.test(path)) || (method === "PUT" && path === "/api/routing/1password/token");
   if (!own && (request.postData() ?? "").match(new RegExp(`${SECRET}|${TOKEN}`))) report.errors.push(`a secret was sent to ${method} ${path}`);
@@ -99,6 +101,19 @@ async function route(r) {
   if (path === "/api/routing/policy" && method === "GET") return json(state.policy);
   // S4b: Core's evaluation of the draft it is sent, the recent choices and today's spend.
   if (path === "/api/routing/evaluate" && method === "POST") return json(evaluation(body.policy ?? state.policy.policy));
+  // The week: DeepSeek until 10:00, the first other enabled candidate until 22:00 (none if its account is assumed used up), then none.
+  if (path === "/api/routing/simulate" && method === "POST") {
+    const from = Date.parse(body.from), H = 3_600_000, segments = [];
+    const second = (body.policy ?? state.policy.policy).candidates.find((c) => c.enabled && c.harness !== "opencode")?.id ?? null;
+    const middle = body.assume?.accountsUsedUp?.length ? null : second;
+    for (let d = 0; d < 7; d++) for (const [a, b, chosen] of [[0, 10, "ds"], [10, 22, middle], [22, 24, null]])
+      segments.push({ from: new Date(from + (24 * d + a) * H).toISOString(), to: new Date(from + (24 * d + b) * H).toISOString(), chosen });
+    return json({ segments });
+  }
+  if (path === "/api/executor-templates") {
+    if (method === "PUT") { state.templates = { version: state.templates.version + 1, templates: body.templates, laterTemplates: 0 }; }
+    return json({ workspace: state.templates, available: [], presets: [] });
+  }
   if (path === "/api/routing/choices") return json({ choices: [
     { dispatchId: "d-905", taskId: "T-905", executorName: "T-905 · Dev", route: { ...evaluation(state.policy.policy), at: "dispatch", evaluatedAt: ago(6) } },
     { dispatchId: "d-904", taskId: "T-904", route: { at: "start", evaluatedAt: ago(200), chosen: "cx", changedAtStart: { from: "cl", reason: "Account #2 ran low while waiting" },
@@ -291,6 +306,19 @@ async function run({ width, height, theme, lang }) {
       await page.mouse.move(0, 0);
       assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, a record open`);
       await shot("recent");
+      // The week, assuming account #2 used up; the templates, one fixed.
+      const sim = order.locator(".routing-simulate");
+      await sim.locator(".routing-strip-row").nth(6).waitFor({ timeout: 10_000 });
+      await press(sim.locator(".routing-pill").nth(1));
+      await sim.locator(".routing-strip-run.is-wait").nth(7).waitFor({ timeout: 10_000 });
+      await sim.scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+      assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, the week drawn`);
+      await shot("simulate");
+      const fixedTemplate = order.locator('.routing-template[data-template="review"]');
+      await fixedTemplate.scrollIntoViewIfNeeded();
+      assert.match(await fixedTemplate.innerText(), lang === "zh" ? /固定：Claude Code/ : /Fixed: Claude Code/);
+      await shot("templates");
       assert.match(await order.locator(".routing-spend").innerText(), /\$3\.40 (of|\/) \$20/);
     }
     // The keys, scrolled to: a 1Password key whose reference isn't there.
