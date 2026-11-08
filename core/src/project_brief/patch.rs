@@ -3,6 +3,13 @@
 //! section again, as it checks an edit. Paths are JSON Pointers (RFC 6901)
 //! into the body, e.g. /elements/refs/props/items/3/note, so an Agent
 //! changes one value without sending the block it is in.
+//!
+//! YN-31: on an array, a token @<id> names its one item whose "id" is <id>,
+//! e.g. /elements/table/props/rows/@r8/cells/status, so a row stays named
+//! when rows are inserted or reordered. JSON Pointer has no such token (an
+//! array's are indices, or - for the end), so none of its paths changes
+//! meaning; on an object @x is still the key "@x". No item, or two, with
+//! that id refuses the operation as any path not in the body does.
 use serde_json::{Map, Value};
 
 /// At most this many operations in one patch change.
@@ -50,8 +57,17 @@ pub(super) fn apply(body: &mut Value, ops: &[Value]) -> Result<(), Failed> {
             }
             "move" => {
                 let from = from()?;
-                if path.len() > from.len() && path.starts_with(&from) {
+                // Compared as locations, with each @id as the index it names
+                // before the move, so /rows/@r3 and /rows/2 are the same item.
+                let (at, to) = (located(body, &from), located(body, &path));
+                if to.len() > at.len() && to.starts_with(&at) {
                     return Err(fail("path", "patch_path", format!("{} is inside {}: a value can't be moved into itself.", shown(&path), shown(&from))));
+                }
+                if to == at {
+                    // A move to where the value is changes nothing (RFC 6902
+                    // 4.4), also when @id would no longer find it once removed.
+                    find(body, &from).map_err(|reason| fail("from", "patch_path", reason))?;
+                    continue;
                 }
                 let value = remove(body, &from).map_err(|reason| fail("from", "patch_path", reason))?;
                 add(body, &path, value).map_err(|reason| fail("path", "patch_path", reason))?;
@@ -107,7 +123,70 @@ fn shown(tokens: &[String]) -> String {
     if tokens.is_empty() {
         return "the body".into();
     }
-    tokens.iter().map(|token| format!("/{}", token.replace('~', "~0").replace('/', "~1"))).collect()
+    tokens.iter().map(|token| format!("/{}", escaped(token))).collect()
+}
+
+/// One token as a pointer writes it.
+fn escaped(token: &str) -> String {
+    token.replace('~', "~0").replace('/', "~1")
+}
+
+/// Where `token` is in `list`: an index, or @id, the one item whose "id" is
+/// id (YN-31), which where a value is added is the place before it. None
+/// when there is no such entry or two items have that id; `missing` says
+/// which.
+fn position(token: &str, list: &[Value], adding: bool) -> Option<usize> {
+    let Some(id) = token.strip_prefix('@') else {
+        return index(token, list.len(), adding);
+    };
+    let mut found = with_id(list, id);
+    match (found.next(), found.next()) {
+        (Some(at), None) if !id.is_empty() => Some(at),
+        _ => None,
+    }
+}
+
+/// The indices of the items of `list` whose "id" is `id`.
+fn with_id<'a>(list: &'a [Value], id: &'a str) -> impl Iterator<Item = usize> + 'a {
+    list.iter().enumerate().filter(move |(_, item)| item["id"].as_str() == Some(id)).map(|(at, _)| at)
+}
+
+/// Why @id names no single item of `list`, the array at `at`.
+fn missing_id(at: &str, id: &str, list: &[Value]) -> String {
+    if id.is_empty() {
+        return format!("{at}: @ names an item by its id, e.g. @r8; give the id after it.");
+    }
+    let found: Vec<String> = with_id(list, id).map(|i| i.to_string()).collect();
+    if found.len() > 1 {
+        return format!("{at} has {} items whose id is \"{id}\" (at {}): name one by its index.", found.len(), found.join(", "));
+    }
+    let ids: Vec<&str> = list.iter().filter_map(|item| item["id"].as_str()).collect();
+    if ids.is_empty() {
+        return format!("{at} has no item with an id, so there is no @{}: name an entry by its index.", escaped(id));
+    }
+    let more = if ids.len() > 12 { ", …" } else { "" };
+    format!("{at} has no item whose id is \"{id}\"; its ids are {}{more}.", ids[..ids.len().min(12)].join(", "))
+}
+
+/// `tokens` with each @id that names an item replaced by that item's index,
+/// as far as the body has them: two paths to the same place are then equal.
+fn located(body: &Value, tokens: &[String]) -> Vec<String> {
+    let mut node = Some(body);
+    tokens
+        .iter()
+        .map(|token| {
+            let (written, next) = match node {
+                Some(Value::Array(list)) => match position(token, list, false) {
+                    Some(at) => (at.to_string(), list.get(at)),
+                    None => (token.clone(), None),
+                },
+                Some(Value::Object(map)) => (token.clone(), map.get(token)),
+                _ => (token.clone(), None),
+            };
+            node = next;
+            written
+        })
+        .collect()
 }
 
 /// An array index: digits without a leading zero, below `len`, or `len`
@@ -126,7 +205,12 @@ fn index(token: &str, len: usize, adding: bool) -> Option<usize> {
 fn missing(tokens: &[String], depth: usize, node: &Value) -> String {
     let (at, token) = (shown(&tokens[..depth]), &tokens[depth]);
     match node {
+        Value::Array(list) if token.starts_with('@') => missing_id(&at, &token[1..], list),
         Value::Array(list) if list.is_empty() => format!("{at} has no entries, so there is no {token}."),
+        // A row named by its bare id, as an object's key would be.
+        Value::Array(list) if with_id(list, token).next().is_some() => format!(
+            "{at} has {} entries (0-{}), so there is no {token}; to name the item whose id is \"{token}\", write @{}.",
+            list.len(), list.len() - 1, escaped(token)),
         Value::Array(list) => format!("{at} has {} entries (0-{}), so there is no {token}.", list.len(), list.len() - 1),
         Value::Object(map) => {
             let keys: Vec<&str> = map.keys().take(12).map(String::as_str).collect();
@@ -143,7 +227,7 @@ fn find<'a>(body: &'a Value, tokens: &[String]) -> Result<&'a Value, String> {
     for (depth, token) in tokens.iter().enumerate() {
         let next = match node {
             Value::Object(map) => map.get(token),
-            Value::Array(list) => index(token, list.len(), false).and_then(|i| list.get(i)),
+            Value::Array(list) => position(token, list, false).and_then(|i| list.get(i)),
             _ => None,
         };
         node = next.ok_or_else(|| missing(tokens, depth, node))?;
@@ -158,7 +242,7 @@ fn find_mut<'a>(body: &'a mut Value, tokens: &[String]) -> &'a mut Value {
         node = match node {
             Value::Object(map) => map.get_mut(token).expect("found before"),
             Value::Array(list) => {
-                let at = index(token, list.len(), false).expect("found before");
+                let at = position(token, list, false).expect("found before");
                 &mut list[at]
             }
             _ => unreachable!("found before"),
@@ -188,8 +272,13 @@ fn add(body: &mut Value, tokens: &[String], value: Value) -> Result<(), String> 
         }
         Value::Array(list) => {
             let len = list.len();
-            let at = index(last, len, true)
-                .ok_or_else(|| format!("{} has {len} entries: add at an index 0-{len} or at - for the end.", shown(&tokens[..tokens.len() - 1])))?;
+            let Some(at) = position(last, list, true) else {
+                let above = shown(&tokens[..tokens.len() - 1]);
+                return Err(match last.strip_prefix('@') {
+                    Some(id) => missing_id(&above, id, list),
+                    None => format!("{above} has {len} entries: add at an index 0-{len}, at - for the end or at @<id> before that item."),
+                });
+            };
             list.insert(at, value);
             Ok(())
         }
@@ -202,7 +291,7 @@ fn remove(body: &mut Value, tokens: &[String]) -> Result<Value, String> {
     let (node, last) = parent(body, tokens)?;
     Ok(match node {
         Value::Object(map) => map.remove(last).expect("found before"),
-        Value::Array(list) => list.remove(index(last, list.len(), false).expect("found before")),
+        Value::Array(list) => list.remove(position(last, list, false).expect("found before")),
         _ => unreachable!("parent is an object or an array"),
     })
 }
@@ -299,6 +388,106 @@ mod tests {
         let large = json!([{"op":"add","path":"/elements/big","value":"y".repeat(MAX_BUILT_BYTES)}]);
         assert_eq!(patched(body.clone(), large).unwrap_err().code, "too_large", "a large value is measured too");
         assert!(patched(body, json!([{"op":"copy","from":"/elements/text","path":"/elements/again"}])).is_ok(), "a copy within the bound applies");
+    }
+
+    /// A table's rows r1, r2, r8, r9, each with a status.
+    fn rows() -> Value {
+        let rows: Vec<Value> = ["r1", "r2", "r8", "r9"].iter().map(|id| json!({"id":id,"cells":{"status":"todo"}})).collect();
+        json!({"elements":{"t":{"type":"Table","props":{"rows":rows}},"body":{"children":["t"]}}})
+    }
+
+    fn ids(body: &Value) -> Vec<&str> {
+        body["elements"]["t"]["props"]["rows"].as_array().unwrap().iter().map(|row| row["id"].as_str().unwrap()).collect()
+    }
+
+    /// YN-31: @id names the item whose id it is, wherever an index can go,
+    /// and the rest of the path goes on inside it.
+    #[test]
+    fn an_array_item_is_named_by_its_id() {
+        let done = patched(rows(), json!([{"op":"test","path":"/elements/t/props/rows/@r8/id","value":"r8"},
+            {"op":"replace","path":"/elements/t/props/rows/@r8/cells/status","value":"done"},
+            {"op":"add","path":"/elements/t/props/rows/@r8/cells/note","value":"Merged."}])).unwrap();
+        assert_eq!(done["elements"]["t"]["props"]["rows"][2]["cells"], json!({"status":"done","note":"Merged."}));
+        let mut expected = rows();
+        expected["elements"]["t"]["props"]["rows"][2]["cells"] = json!({"status":"done","note":"Merged."});
+        assert_eq!(done, expected, "nothing else changed");
+
+        // After rows are inserted and reordered, @r8 still names r8.
+        let moved = patched(rows(), json!([{"op":"add","path":"/elements/t/props/rows/0","value":{"id":"r0","cells":{}}},
+            {"op":"move","from":"/elements/t/props/rows/@r9","path":"/elements/t/props/rows/1"},
+            {"op":"replace","path":"/elements/t/props/rows/@r8/cells/status","value":"done"}])).unwrap();
+        assert_eq!(ids(&moved), ["r0", "r9", "r1", "r2", "r8"]);
+        assert_eq!(moved["elements"]["t"]["props"]["rows"][4]["cells"]["status"], "done");
+
+        // Where a value is added, @id is the place before that item; remove, move and copy take it too.
+        let added = patched(rows(), json!([{"op":"add","path":"/elements/t/props/rows/@r8","value":{"id":"r5"}}])).unwrap();
+        assert_eq!(ids(&added), ["r1", "r2", "r5", "r8", "r9"]);
+        let removed = patched(rows(), json!([{"op":"remove","path":"/elements/t/props/rows/@r2"}])).unwrap();
+        assert_eq!(ids(&removed), ["r1", "r8", "r9"]);
+        let up = patched(rows(), json!([{"op":"move","from":"/elements/t/props/rows/@r9","path":"/elements/t/props/rows/@r1"}])).unwrap();
+        assert_eq!(ids(&up), ["r9", "r1", "r2", "r8"]);
+        let down = patched(rows(), json!([{"op":"move","from":"/elements/t/props/rows/@r1","path":"/elements/t/props/rows/@r9"}])).unwrap();
+        assert_eq!(ids(&down), ["r2", "r8", "r1", "r9"], "the path is read once the row is removed, as RFC 6902 reads a move");
+        let same = patched(rows(), json!([{"op":"move","from":"/elements/t/props/rows/@r8","path":"/elements/t/props/rows/@r8"}])).unwrap();
+        assert_eq!(same, rows(), "a move to where it is changes nothing");
+        let copied = patched(rows(), json!([{"op":"replace","path":"/elements/t/props/rows/@r2/cells/status","value":"done"},
+            {"op":"copy","from":"/elements/t/props/rows/@r2/cells","path":"/elements/t/props/rows/@r9/cells"}])).unwrap();
+        assert_eq!(copied["elements"]["t"]["props"]["rows"][3]["cells"], json!({"status":"done"}));
+
+        // An id is unescaped like any token: ~1 is /.
+        let refs = json!({"items":[{"kind":"pr","id":"YuzukiS/Yuzuno#12"},{"kind":"task","id":"T-3"}]});
+        let noted = patched(refs, json!([{"op":"add","path":"/items/@YuzukiS~1Yuzuno#12/note","value":"Green."}])).unwrap();
+        assert_eq!(noted["items"][0]["note"], "Green.");
+    }
+
+    #[test]
+    fn an_id_that_names_no_item_or_two_is_refused() {
+        let missing = patched(rows(), json!([{"op":"replace","path":"/elements/t/props/rows/@r7/cells/status","value":"done"}])).unwrap_err();
+        assert_eq!((missing.index, missing.field, missing.code), (0, "path", "patch_path"));
+        assert_eq!(missing.reason, "/elements/t/props/rows has no item whose id is \"r7\"; its ids are r1, r2, r8, r9.");
+        let into = patched(rows(), json!([{"op":"add","path":"/elements/t/props/rows/@r7","value":{"id":"r7"}}])).unwrap_err();
+        assert_eq!((into.code, into.reason.as_str()), ("patch_path", missing.reason.as_str()), "nor is it a place to add at");
+        let from = patched(rows(), json!([{"op":"move","from":"/elements/t/props/rows/@r7","path":"/elements/t/props/rows/0"}])).unwrap_err();
+        assert_eq!((from.field, from.code), ("from", "patch_path"));
+
+        // A copy makes a second r8: from then on @r8 names no single row.
+        let twice = patched(rows(), json!([{"op":"copy","from":"/elements/t/props/rows/@r8","path":"/elements/t/props/rows/-"},
+            {"op":"replace","path":"/elements/t/props/rows/@r8/cells/status","value":"done"}])).unwrap_err();
+        assert_eq!((twice.index, twice.field, twice.code), (1, "path", "patch_path"));
+        assert_eq!(twice.reason, "/elements/t/props/rows has 2 items whose id is \"r8\" (at 2, 4): name one by its index.");
+        let mut doubled = rows();
+        doubled["elements"]["t"]["props"]["rows"][3]["id"] = json!("r8");
+        for op in [json!({"op":"remove","path":"/elements/t/props/rows/@r8"}), json!({"op":"add","path":"/elements/t/props/rows/@r8","value":{}}),
+            json!({"op":"test","path":"/elements/t/props/rows/@r8/id","value":"r8"})] {
+            assert_eq!(patched(doubled.clone(), json!([op])).unwrap_err().code, "patch_path", "{op}");
+        }
+
+        let empty = patched(rows(), json!([{"op":"remove","path":"/elements/t/props/rows/@"}])).unwrap_err();
+        assert_eq!(empty.reason, "/elements/t/props/rows: @ names an item by its id, e.g. @r8; give the id after it.");
+        let no_ids = patched(rows(), json!([{"op":"remove","path":"/elements/body/children/@t"}])).unwrap_err();
+        assert_eq!(no_ids.reason, "/elements/body/children has no item with an id, so there is no @t: name an entry by its index.");
+        let moved_in = patched(rows(), json!([{"op":"move","from":"/elements/t/props/rows/@r8","path":"/elements/t/props/rows/2/cells/r8"}])).unwrap_err();
+        assert!(moved_in.reason.contains("can't be moved into itself"), "the same row by index: {}", moved_in.reason);
+        let moved_in = patched(rows(), json!([{"op":"move","from":"/elements/t/props/rows/2","path":"/elements/t/props/rows/@r8/cells/r8"}])).unwrap_err();
+        assert!(moved_in.reason.contains("can't be moved into itself"), "the same row by id: {}", moved_in.reason);
+    }
+
+    /// Paths without @ mean what they meant: indices, - and object keys,
+    /// a key "@x" included.
+    #[test]
+    fn plain_pointers_keep_their_meaning() {
+        let done = patched(rows(), json!([{"op":"replace","path":"/elements/t/props/rows/2/cells/status","value":"done"},
+            {"op":"add","path":"/elements/t/props/rows/-","value":{"id":"r10"}},
+            {"op":"add","path":"/elements/@x","value":1}])).unwrap();
+        assert_eq!((done["elements"]["t"]["props"]["rows"][2]["cells"]["status"].clone(), done["elements"]["@x"].clone()), (json!("done"), json!(1)));
+        assert_eq!(ids(&done), ["r1", "r2", "r8", "r9", "r10"]);
+        assert_eq!(patched(done, json!([{"op":"remove","path":"/elements/@x"}])).unwrap()["elements"].get("@x"), None);
+        // A bare id is not an index: refused, with the way to name that row.
+        let bare = patched(rows(), json!([{"op":"replace","path":"/elements/t/props/rows/r8/cells/status","value":"done"}])).unwrap_err();
+        assert_eq!((bare.code, bare.reason.as_str()), ("patch_path",
+            "/elements/t/props/rows has 4 entries (0-3), so there is no r8; to name the item whose id is \"r8\", write @r8."));
+        let far = patched(rows(), json!([{"op":"add","path":"/elements/t/props/rows/9","value":{}}])).unwrap_err();
+        assert_eq!(far.reason, "/elements/t/props/rows has 4 entries: add at an index 0-4, at - for the end or at @<id> before that item.");
     }
 
     #[test]
