@@ -13,13 +13,13 @@ version; a later slice adds to it.
 | S2a | Readings: time windows and the daily API spend, read-only | Done |
 | S3a | The policy: kept, checked and served; a template fixed against routing | Done |
 | S2b | Readings: subscription quotas (claude-swap, Codex) | Done |
-| S3b1 | Choosing a candidate: Core's evaluator, `evaluate` and `simulate` | This version |
-| S3b2 | The choice at dispatch and at an executor's first start, `route_json`, `choices` | Next |
+| S3b1 | Choosing a candidate: Core's evaluator, `evaluate` and `simulate` | Done |
+| S3b2 | The choice at dispatch, waiting for a candidate, `route_json`, `choices` | This version |
 | S4 | The Settings page (YN-49) | Later |
 
 An executor starts with a routing key or account only when its runtime
-profile names one, and nothing at this version sets a profile: routing
-itself (S3) will.
+profile names one. Routing sets it at the executor's dispatch, while the
+routing policy is on ([Routing at dispatch](#routing-at-dispatch-s3b2)).
 
 ## Routing keys
 
@@ -414,10 +414,38 @@ When none is chosen, `earliest` names the soonest time a reason gives
 `POST /api/routing/evaluate` and `POST /api/routing/simulate` (below) use
 this evaluator, with the readings as Core last observed them.
 
+### Routing at dispatch (S3b2)
+
+When the policy is on and the template is not `routing: "fixed"`, a
+dispatch is routed:
+
+- **A candidate is chosen in the dispatch's own transaction.** It reads the
+  readings as Core last observed them, and gives the executor:
+  - its harness, model and effort. Its permissions are the template's for that harness, else that harness's defaults;
+  - its account or key: its runtime profile, set as soon as the executor exists and before it can start.
+  A candidate that runs on this Core host only makes it run here. The record
+  of why is kept on the dispatch (`route_json`), in `task_get` under
+  `executorSlot.route`, and in `GET /api/routing/choices`.
+- **When none can be chosen, the executor waits.** It is made with the
+  harness of the first candidate that could run there, and stays in the
+  queue while executors after it start. At each slot pass routing is read
+  again, among the candidates of its harness only. The first that holds
+  gives it its model, effort and account or key (`changedAtStart`), and it
+  starts in turn. **An executor's harness is fixed at its dispatch.**
+  If none ever could, it is released and starts in turn as it would without
+  routing, on the host's own login: its route says `released`, with
+  `routingOff` when routing was turned off, or `noCandidate` when no enabled
+  candidate of its harness is left.
+- **A start that fails for certain** is rebuilt once, as before. The rebuild
+  leaves out the candidate the failed executor was started with
+  (`excluded`), so it tries the next one.
+- **An executor already routed is not routed again at its start,** nor ever
+  moved to another account once started.
+
 ### More routes in S3b
 
 - `POST /api/routing/evaluate { policy?, at?, assume? }` answers one `route_json` with `at: "preview"`.
   - `policy` is an unsaved draft; by default, the saved one.
   - `assume` takes `{ accountsUsedUp: [fingerprint], codexUsedUp: [home], spendCapReached, onePasswordDown }`.
 - `POST /api/routing/simulate { policy?, from, to, stepMinutes, assume? }` answers `{ segments: [ { from, to, chosen } ] }`. It keeps the current readings and varies only the time.
-- `GET /api/routing/choices?limit=20` (S3b2) answers `{ choices: [ { dispatchId, taskId, executorName?, route } ] }`, newest first.
+- `GET /api/routing/choices?limit=20` answers `{ choices: [ { dispatchId, taskId, agentId, executorName?, route } ] }`, newest first. `executorName` is there while the executor's record is kept.

@@ -145,11 +145,21 @@ async fn simulate(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
     }
 }
 
+/// `GET /api/routing/choices?limit=20`: the newest dispatches routing chose for, with why (YN-34 S3b2).
+async fn choices(State(ws): State<Arc<Workspace>>, axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>) -> Response {
+    let limit = query.get("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(20).clamp(1, 100);
+    match ws.stored(move |store| store.routing_choices(limit)).await {
+        Ok(choices) => answer(StatusCode::OK, json!({"choices": choices})),
+        Err(error) => failed(error),
+    }
+}
+
 pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/routing/policy", get(read).put(write))
         .route("/api/routing/evaluate", axum::routing::post(evaluate))
         .route("/api/routing/simulate", axum::routing::post(simulate))
+        .route("/api/routing/choices", get(choices))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(middleware::from_fn(crate::routing_keys::routes::no_agent_credential))
 }

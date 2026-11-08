@@ -42,6 +42,12 @@ pub(super) fn migrate(db: &Connection) -> Result<()> {
     if !has {
         db.execute_batch("ALTER TABLE executor_dispatches ADD COLUMN choice_json TEXT")?;
     }
+    // YN-34 S3b2: why routing chose its candidate, or that it waits for one.
+    let has: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('executor_dispatches') WHERE name='route_json')", [], |r| r.get(0))?;
+    if !has {
+        db.execute_batch("ALTER TABLE executor_dispatches ADD COLUMN route_json TEXT")?;
+    }
     Ok(())
 }
 
@@ -98,6 +104,8 @@ pub(crate) struct Plan {
     pub(crate) folders: Vec<String>,
     pub(crate) project_id: Option<String>,
     task_id: String,
+    /// The account or key routing chose (YN-34 S3b2), set once the executor exists.
+    pub(crate) profile: Option<crate::routing_launch::RuntimeProfile>,
 }
 
 /// What a template dispatch does next.
@@ -226,6 +234,12 @@ impl Store {
     /// saved; one choosing its machine without it is refused with
     /// NeedsLocalBudget before anything is written.
     pub(crate) fn executor_dispatch_begin(&self, actor: Option<&str>, input: Value, local: LocalDefault<'_>) -> Result<Next> {
+        self.executor_dispatch_begin_routed(actor, input, local, None)
+    }
+
+    /// As `executor_dispatch_begin`, with what routing reads (YN-34 S3b2), gathered before the transaction.
+    pub(crate) fn executor_dispatch_begin_routed(&self, actor: Option<&str>, input: Value, local: LocalDefault<'_>,
+        routing: Option<&crate::routing_policy::evaluate::Gathered>) -> Result<Next> {
         ensure!(input.is_object(), "invalid_input: expected an object");
         let mut writer = self.db.write()?;
         let tx = writer.transaction()?;
@@ -260,7 +274,7 @@ impl Store {
             None | Some(Value::Null) => None,
             Some(_) => Some(required_text(executor, "templateId", 48)?),
         };
-        let given_machine = optional_text(executor, "machineId", 128)?.filter(|m| !m.is_empty());
+        let mut given_machine = optional_text(executor, "machineId", 128)?.filter(|m| !m.is_empty());
         let task = load_task(&tx, &required_text(&request, "taskId", 128)?)?;
         check_version(&task, &request)?;
         ensure!(task.archived_at.is_none(), "task_archived: unarchive the task first");
@@ -288,6 +302,22 @@ impl Store {
                 let (harness, _) = crate::agent_defaults::new_agent_harness(&tx, project.as_deref())?;
                 (Template::general(harness), "builtin")
             }
+        };
+        // YN-34 S3b2: the Workspace's routing gives it its harness, model and
+        // account or key, unless its template is fixed; why is kept with it.
+        let routed = match routing {
+            Some(gathered) => crate::routing_policy::dispatch::route(&tx, gathered, &template, &request_id,
+                given_machine.as_deref().or(template.machine_id.as_deref()))?,
+            None => None,
+        };
+        let (template, route_json, profile) = match routed {
+            Some(routed) => {
+                if routed.machine.is_some() {
+                    given_machine = routed.machine;
+                }
+                (routed.template, Some(routed.route.to_string()), routed.profile)
+            }
+            None => (template, None, None),
         };
         // Where it runs (T-35 S3a, Lead 2 Q1): the dispatch's machine, else
         // its template's, else this Core host; `auto`, the one Core chooses
@@ -348,9 +378,9 @@ impl Store {
         // its instructions reach it with the task, not only its settings.
         let given = template.given(source);
         tx.execute(
-            "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at,choice_json)
-             VALUES(?1,?2,?3,?4,?5,?6,?10,?7,?8,'pending',?9,?9,?11)",
-            params![key, request_id, request.to_string(), task.id, template.id, project, given.to_string(), agent_id, at, machine, choice],
+            "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at,choice_json,route_json)
+             VALUES(?1,?2,?3,?4,?5,?6,?10,?7,?8,'pending',?9,?9,?11,?12)",
+            params![key, request_id, request.to_string(), task.id, template.id, project, given.to_string(), agent_id, at, machine, choice, route_json],
         )?;
         let number = task_number(&tx, &task.id)?;
         tx.commit()?;
@@ -362,6 +392,7 @@ impl Store {
             folders,
             project_id: project,
             task_id: task.id,
+            profile,
         })))
     }
 
