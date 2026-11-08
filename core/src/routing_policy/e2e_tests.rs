@@ -155,7 +155,9 @@ async fn a_routed_deepseek_executor_does_one_real_turn_and_submits_its_result_wi
 
     // 4. Its spend counts toward the key's day; the key is in no record of the lab Core.
     let spend = ws.store.spend_on(crate::routing_readings::today()).unwrap();
-    eprintln!("spend today: {:.6} USD on deepseek (what OpenCode reported)", spend.by_key.get("deepseek").copied().unwrap_or(0.0));
+    let spent = spend.by_key.get("deepseek").copied().unwrap_or(0.0);
+    eprintln!("spend today: {spent:.6} USD on deepseek (what OpenCode reported)");
+    assert!(spent > 0.0, "the turn's cost counts toward the key's day (#806 R1)");
     ws.close_agent(&agent).await.unwrap();
     let mut files = Vec::new();
     files_outside_secrets(&data, &mut files);
