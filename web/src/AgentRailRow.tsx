@@ -209,11 +209,11 @@ export function AgentRailRow({
   const unread = agent.kind === "lead" ? agent.unreadCount : 0;
   const description = t.description(shown, executor ? null : waiting?.detail ?? null, machine, unread);
   // Its island (T-43, rail v11, the user's answers): a ring at the row's
-  // top right says one of five states; every other state is a pill beside
-  // it that stays while it holds. A click on the row opens the
-  // conversation; a click on the ring goes straight to its state's place
-  // (Home for what it asks, its task, or the conversation). Needs you and
-  // failed are row islands until handled.
+  // right, centred on its lines (YN-41), says one of five states; every
+  // other state is a pill beside it that stays while it holds. A click on
+  // the row opens the conversation; a click on the ring goes straight to
+  // its state's place (Home for what it asks, its task, or the
+  // conversation). Needs you and failed are row islands until handled.
   const island = islandView({ agent, executor, lifecycle, unseen, waiting: waiting?.label ?? null, statusLabel: label, compacting, waitingSince });
   const words = islandText(language);
   const now = useMinute();

@@ -99,16 +99,18 @@
   gap: 1px;
 }
 /* A row (T-43 灵动环 v10.2, the user's design): line one, a standing
-   Agent's name or an executor's activity; line two, what a standing Agent
-   last said or an executor's task key and clock. Three lines at most. The
-   ring at the top right, then the "…" where the reader is. The row's height
-   follows what it says. */
+   Agent's name or an executor's task; line two, what a standing Agent last
+   said or what an executor is doing and its clock. Three lines at most. The
+   ring at the right, centred on the row's lines however many there are
+   (YN-41). The row's height follows what it says; where a finger's row is
+   taller than its words, the words and the ring sit in its middle. */
 .agent-list .agent-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   column-gap: 0;
   row-gap: 0;
   align-items: start;
+  align-content: center;
   position: relative;
   isolation: isolate;
   padding: 7px 9px 7px 12px;
@@ -129,10 +131,13 @@
   grid-row: 2;
   margin-top: 1px;
 }
+/* The ring, or its pill and the ring, beside both lines and centred on them
+   (YN-41): line one's one or two lines and line two. What is under them, a
+   "needs you" or a drop's hint, spans the row below. */
 .agent-list .agent-row > .agent-island {
   grid-column: 2;
-  grid-row: 1;
-  align-self: start;
+  grid-row: 1 / span 2;
+  align-self: center;
   justify-self: end;
   margin: 0 0 0 8px;
 }

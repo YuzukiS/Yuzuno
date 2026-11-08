@@ -159,12 +159,12 @@ type IslandProps = {
 };
 
 /**
- * The ring at the row's top right (T-43). With somewhere to go, it is a
- * button labelled with where ("Answer its question on Home"): its hit area
- * is larger than the ring (28 px with a mouse, 40 on touch) with nothing
- * drawn, and on hover or focus the ring scales up a little in place (a
- * thicker stroke under reduced motion). With nowhere of its own, it is part
- * of the row, whose click opens the conversation.
+ * The ring at the row's right, centred on its lines (T-43, YN-41). With
+ * somewhere to go, it is a button labelled with where ("Answer its question
+ * on Home"): its hit area is larger than the ring (28 px with a mouse, 40 on
+ * touch) with nothing drawn, and on hover or focus the ring scales up a
+ * little in place (a thicker stroke under reduced motion). With nowhere of
+ * its own, it is part of the row, whose click opens the conversation.
  */
 export const AgentIsland = forwardRef<HTMLButtonElement, IslandProps>(
   function AgentIsland({ view, form, name, pill, onGo, detail, ...hooks }, ref) {
@@ -239,7 +239,9 @@ function shellBox(row: HTMLElement, form: IslandForm): Box | null {
  * pill or the whole row, and shrinks back into the ring. Its rest is CSS's
  * (the row's box); a pill's box is set here. Each change of form animates
  * from the ring's circle, or from where it was, and back into the ring;
- * nothing moves under reduced motion.
+ * nothing moves under reduced motion. While a pill shows, its box follows
+ * the ring whenever the row's size changes (YN-41: the ring is centred on
+ * the row's lines, so a line that wraps or unwraps moves it), at once.
  */
 export function useIslandShell(row: RefObject<HTMLElement | null>, shell: RefObject<HTMLElement | null>, form: IslandForm, words: string | null = null) {
   const last = useRef<{ form: IslandForm; box: Box | null } | null>(null);
@@ -247,7 +249,7 @@ export function useIslandShell(row: RefObject<HTMLElement | null>, shell: RefObj
     const el = row.current, outline = shell.current;
     if (!el || !outline) return;
     const box = shellBox(el, form);
-    if (form === "pill" && box) Object.assign(outline.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px`, borderRadius: `${box.radius}px` });
+    if (form === "pill" && box) place(outline, box);
     else outline.removeAttribute("style");
     const prev = last.current;
     last.current = { form, box };
@@ -264,4 +266,20 @@ export function useIslandShell(row: RefObject<HTMLElement | null>, shell: RefObj
     if (from) outline.animate([frame(from), frame(box)], { duration: 320, easing: EASE_OUT });
     el.querySelector<HTMLElement>(":scope > .agent-island .island-pill")?.animate?.([{ opacity: 0 }, { opacity: 1 }], { duration: 220, delay: 120, fill: "backwards" });
   }, [form, words]);
+  useLayoutEffect(() => {
+    const el = row.current, outline = shell.current;
+    if (form !== "pill" || !el || !outline || typeof ResizeObserver !== "function") return;
+    const follow = new ResizeObserver(() => {
+      const box = shellBox(el, "pill");
+      if (!box) return;
+      place(outline, box);
+      if (last.current?.form === "pill") last.current.box = box;
+    });
+    follow.observe(el);
+    return () => follow.disconnect();
+  }, [form]);
+}
+
+function place(outline: HTMLElement, box: Box) {
+  Object.assign(outline.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px`, borderRadius: `${box.radius}px` });
 }
