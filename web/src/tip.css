@@ -89,12 +89,13 @@
 .tip-body {
   color: var(--text-secondary);
 }
-/* A state word takes its state's colour; nothing else in a tip does. */
-.tip [data-tone="ok"] { color: var(--success-ink, var(--green)); }
-.tip [data-tone="bad"] { color: var(--error-ink, var(--coral)); }
-.tip [data-tone="attention"] { color: var(--attention-ink, var(--accent-ink)); }
-.tip [data-tone="working"] { color: var(--state-working, var(--accent-ink)); }
-.tip [data-tone="info"] { color: var(--accent-ink); }
+/* A state word takes its state's colour; nothing else in a tip does (a
+   card's own marks, such as the Agent row card's pill, keep theirs). */
+.tip-status[data-tone="ok"] { color: var(--success-ink, var(--green)); }
+.tip-status[data-tone="bad"] { color: var(--error-ink, var(--coral)); }
+.tip-status[data-tone="attention"] { color: var(--attention-ink, var(--accent-ink)); }
+.tip-status[data-tone="working"] { color: var(--state-working, var(--accent-ink)); }
+.tip-status[data-tone="info"] { color: var(--accent-ink); }
 .tip-meta {
   color: var(--text-quiet);
   font-size: 0.92em;

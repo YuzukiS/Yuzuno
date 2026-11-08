@@ -186,9 +186,11 @@ const shot = async (page, file, anchor, tip) => {
 };
 
 const summary = [];
+/** Leave every trigger, and wait out the moment in which the next one would
+ * open at once (TIP_SKIP_MS, 400 ms). */
 const away = async (page) => {
   await page.mouse.move(700, 420);
-  await page.waitForTimeout(120);
+  await page.waitForTimeout(600);
 };
 
 /** Rest the pointer on `anchor`: nothing at 150 ms, the tip by 600 ms. */
@@ -226,6 +228,16 @@ for (const screen of desktop) {
     await away(page);
     check(!(await readTip(page)), `${screen.name} row ${id}: leaving closes it`);
   }
+  // From one row straight to the next: the next card at once.
+  await away(page);
+  await page.locator('.agent-list article[data-agent-id="k"] .agent-line-one').hover();
+  await page.waitForTimeout(500);
+  await page.locator('.agent-list article[data-agent-id="w"] .agent-line-one').hover();
+  await page.waitForTimeout(80);
+  const next = await readTip(page);
+  check(!!next && next.lines[0] === "Release notes",
+    `${screen.name}: moving straight to the next row shows its card at once (${next?.lines?.[0]})`);
+  await away(page);
   // The keyboard: at once, and Escape closes it.
   await page.keyboard.press("Shift");
   const started = Date.now();
@@ -253,7 +265,10 @@ for (const screen of desktop) {
     check(await stop.getAttribute("aria-label") !== null, `${screen.name} Interrupt keeps an accessible name`);
     await shot(page, `${screen.name}-interrupt.png`, stop, tip);
     summary.push({ screen: screen.name, what: "interrupt", lines: tip?.lines });
-  } else check(false, `${screen.name}: the Interrupt button to rest on`);
+  } else {
+    check(false, `${screen.name}: the Interrupt button to rest on (${await page.evaluate(() => document.querySelector(".composer-send-actions")?.outerHTML.slice(0, 200) ?? "no composer actions")})`);
+    if (shots) await page.screenshot({ path: join(shots, `${screen.name}-page.png`) });
+  }
   await context.close();
 }
 
@@ -284,7 +299,6 @@ for (const screen of [
   await hold(page, page.locator('.agent-list article[data-agent-id="q"] .agent-line-one'), 60);
   await page.waitForTimeout(450);
   check(!(await readTip(page)), `${screen.name}: a tap shows no tip`);
-  await page.goBack().catch(() => {});
   await page.goto("https://tips.test/");
   await page.locator('.agent-list article[data-agent-id="k"]').waitFor({ timeout: 10_000 });
   await page.waitForTimeout(500);
