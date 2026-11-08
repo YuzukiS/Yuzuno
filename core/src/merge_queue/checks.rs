@@ -67,6 +67,10 @@ pub(super) fn pull(entry: &Value, pr: &Value) -> Check<()> {
 /// merges that need no review of their own; `merged` is then every completed
 /// round, on any PR of the repository, at each merged-in head the proof calls
 /// reviewed, which must still pass with no P0–P2 finding.
+///
+/// A last round that does not pass is admitted when the entry acknowledges
+/// binary files (`binaries.files`, YN-52) that are exactly its one gap; see
+/// `binaries`. Its conclusion is reported as it is, with `passes` false.
 pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_heads: &[Value], merged: &[(String, Vec<Value>)]) -> Check<Value> {
     if running {
         return wait("A review round of this PR is still running; the last completed round decides");
@@ -84,12 +88,35 @@ pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_he
         );
     }
     let which = if via_merges { format!("the reviewed head {}", short(&r["headSha"])) } else { "this head".to_owned() };
+    // A round whose only gap is binary files the release acknowledged by
+    // their content (YN-52) is admitted; the round's own conclusion stays.
+    let mut acknowledged = None;
     if !crate::pr_review::policy::passes(r) {
-        return stop(
-            "review_not_passing",
-            format!("The last completed review round ({}) at {which} concluded {}, which does not pass under the review policy",
-                r["id"].as_str().unwrap_or("?"), r["conclusion"].as_str().unwrap_or("unknown")),
-        );
+        let listed = &entry["binaries"]["files"];
+        let why = match super::binaries::gap(r) {
+            Ok(gap) if listed.is_array() => match super::binaries::matches(&gap, listed) {
+                Ok(()) => {
+                    acknowledged = Some(gap);
+                    None
+                }
+                Err(why) => Some(format!("the acknowledged binary files do not match it: {why}")),
+            },
+            Ok(gap) => Some(format!(
+                "its only gap is {} binary file(s) ({}{}); a release may acknowledge them by their content with acknowledgeBinaries",
+                gap.len(),
+                gap.iter().take(3).map(|b| b.path.as_str()).collect::<Vec<_>>().join(", "),
+                if gap.len() > 3 { ", …" } else { "" }
+            )),
+            Err(why) if listed.is_array() => Some(format!("the acknowledged binary files do not cover it: {why}")),
+            Err(_) => None,
+        };
+        if acknowledged.is_none() {
+            return stop(
+                "review_not_passing",
+                format!("The last completed review round ({}) at {which} concluded {}, which does not pass under the review policy{}",
+                    r["id"].as_str().unwrap_or("?"), r["conclusion"].as_str().unwrap_or("unknown"), why.map(|w| format!("; {w}")).unwrap_or_default()),
+            );
+        }
     }
     let blocking = |round: &Value| {
         round["findings"].as_array().into_iter().flatten().filter(|f| f["priority"].as_u64().is_some_and(|p| p <= 2)).count()
@@ -116,7 +143,13 @@ pub(super) fn review(entry: &Value, latest: Option<&Value>, running: bool, at_he
         }
     }
     let mut passed = json!({"id":r["id"],"round":r["round"],"conclusion":r["conclusion"],"headSha":r["headSha"],
-        "coverage":format!("{}/{}", r["coverage"]["coveredFileCount"], r["coverage"]["fileCount"]),"passes":true});
+        "coverage":format!("{}/{}", r["coverage"]["coveredFileCount"], r["coverage"]["fileCount"]),"passes":acknowledged.is_none()});
+    if let Some(gap) = &acknowledged {
+        // The round does not pass by itself: what admits it is the release's
+        // acknowledgement of these files, whose content Core read at release.
+        passed["admittedBy"] = json!("acknowledgedBinaries");
+        passed["binaries"] = json!(gap.iter().map(|b| json!({"path":b.path,"blobSha":b.blob})).collect::<Vec<_>>());
+    }
     if via_merges {
         for m in proof["merges"].as_array().into_iter().flatten().filter(|m| m["why"]["kind"] == "reviewed") {
             let other = m["mergedIn"].as_str().unwrap_or("");

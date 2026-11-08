@@ -337,8 +337,10 @@ pub(super) struct Plan {
 }
 /// `proof`: the entry's proof that the released head is the reviewed head
 /// plus merges (YN-33), once read; before it is, the reviewed head's round is
-/// checked alone and the plan names that head.
-fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, proof: Option<&Value>) -> Result<Plan> {
+/// checked alone and the plan names that head. `binaries`: the acknowledged
+/// binary files (YN-52), as listed before their content is read, and as read
+/// at the released head (each with its blob) once it is.
+fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, proof: Option<&Value>, binaries: Option<&Value>) -> Result<Plan> {
     let (task, _) = collab::task_key(db, &input.task_id)?;
     let reference = collab::task_number(db, &task)?;
     let shared = collab::load_task(db, &task)?;
@@ -375,18 +377,29 @@ fn plan(store: &Store, db: &Connection, actor: Option<&str>, input: &Enqueue, pr
     let (latest, running) = review(db, &link)?;
     let reviewed = latest.as_ref().and_then(|r| r["headSha"].as_str()).unwrap_or(&input.head_sha).to_owned();
     let later = reviewed != input.head_sha && !running;
-    let candidate = match proof {
+    let mut candidate = match proof {
         Some(proof) => json!({"headSha":input.head_sha,"repositoryId":repository_id,"reviewMerges":proof}),
         // Before the proof is read, only the reviewed head's round is checked.
         None if later => json!({"headSha":input.head_sha,"reviewMerges":{"head":input.head_sha,"reviewedHead":reviewed,"merges":[]}}),
         None => json!({"headSha":input.head_sha}),
     };
+    if let Some(files) = binaries {
+        candidate["binaries"] = json!({"files":files});
+    }
     let at_heads = rounds_at_heads(db, &link, &reviewed, &candidate)?;
     let merged = merged_rounds(db, &candidate)?;
     match checks::review(&candidate, latest.as_ref(), running, &at_heads, &merged) {
         Ok(_) => {}
         Err(Hold::Wait(detail)) => bail!("review_running: {detail}"),
         Err(Hold::Stop(reason, detail)) => bail!("{reason}: {detail}"),
+    }
+    // An acknowledgement only ever stands in for files a round could not
+    // read (YN-52): one for a round that passes by itself lists extra files.
+    if let Some(r) = latest.as_ref().filter(|r| binaries.is_some() && crate::pr_review::policy::passes(r)) {
+        bail!(
+            "binaries_refused: the last completed review round ({}) passes by itself, so it left no binary file to acknowledge; release without acknowledgeBinaries",
+            r["id"].as_str().unwrap_or("?")
+        );
     }
     let busy: Option<(String, String)> = db
         .query_row(
@@ -453,7 +466,7 @@ fn short(sha: &Value) -> String {
 fn record(e: &Value) -> Value {
     let last = &e["lastEvidence"];
     json!({"entry":e["id"],"repository":e["repository"],"pr":e["number"],"head":e["headSha"],"state":e["state"],
-        "release":e["release"],"review":last["review"],"main":last["main"],"gate":last["gate"],"mergeRef":last["mergeRef"],"policy":last["policy"],"checkedAt":last["checkedAt"],
+        "release":e["release"],"binaries":e["binaries"],"review":last["review"],"main":last["main"],"gate":last["gate"],"mergeRef":last["mergeRef"],"policy":last["policy"],"checkedAt":last["checkedAt"],
         "batch":e["batch"],"merge":e["merge"],"grouping":e["grouping"],
         "stop":if e["state"] == "stopped" { json!({"reason":e["reason"],"detail":e["detail"]}) } else { Value::Null }})
 }
@@ -726,18 +739,21 @@ impl Store {
         if let Some(old) = previous(&db, actor, "merge_enqueue", &input.request_id, &value)? {
             return Ok(Err(old));
         }
-        Ok(Ok(plan(self, &db, actor, input, None)?))
+        let listed = input.acknowledge_binaries.as_ref().map(|files| json!(files));
+        Ok(Ok(plan(self, &db, actor, input, None, listed.as_ref())?))
     }
 
     /// Commit a release, checking everything again inside the transaction.
-    pub(super) fn merge_enqueue(&self, actor: Option<&str>, input: &Enqueue, pr: &Value, main: &str, proof: Option<Value>) -> Result<Value> {
+    /// `binaries`: each acknowledged binary file as read at the released head.
+    pub(super) fn merge_enqueue(&self, actor: Option<&str>, input: &Enqueue, pr: &Value, main: &str, proof: Option<Value>, binaries: Option<Value>) -> Result<Value> {
         let mut db = self.db.write()?;
         let tx = db.transaction()?;
         let value = serde_json::to_value(input)?;
         if let Some(old) = previous(&tx, actor, "merge_enqueue", &input.request_id, &value)? {
             return Ok(old);
         }
-        let p = plan(self, &tx, actor, input, proof.as_ref())?;
+        ensure!(binaries.is_some() == input.acknowledge_binaries.is_some(), "The acknowledged binary files were not read at the released head");
+        let p = plan(self, &tx, actor, input, proof.as_ref(), binaries.as_ref())?;
         // The head the last round reviewed did not change since the proof was
         // read; a release needing one carries it.
         ensure!(p.reviewed.is_none() || proof.is_some(), "review_not_passing: the last review round no longer reviewed the head the proof was read for; release again");
@@ -754,10 +770,11 @@ impl Store {
         let (latest, _) = review(&tx, &p.link)?;
         let id = uuid::Uuid::new_v4().to_string();
         let at = now();
+        let binaries = binaries.map(|files| json!({"by":p.author,"at":at,"files":files}));
         let e = json!({"id":id,"entryId":id,"taskId":p.task,"taskReference":p.reference,"repositoryId":p.repository_id,
             "repository":p.repository,"number":p.number,"url":format!("https://github.com/{}/pull/{}",p.repository,p.number),
             "linkId":p.link,"headSha":input.head_sha,"baseBranch":pr["base"]["ref"],"mainAtRelease":main,"mainAnchoredAt":at,
-            "requireWorkflows":input.require_workflows.clone().unwrap_or_default(),"note":input.note,"reviewMerges":proof,
+            "requireWorkflows":input.require_workflows.clone().unwrap_or_default(),"note":input.note,"reviewMerges":proof,"binaries":binaries,
             "release":{"by":p.author,"requestId":input.request_id,"at":at,"source":p.source,"reviewId":latest.as_ref().map(|r| r["id"].clone())},
             "state":"queued","reason":null,"detail":"Released; Core checks it before anything else happens.","attempt":0,"checks":0,
             "waits":0,"readFailures":0,"waitingSince":null,"nextCheck":0,"evidence":null,"lastEvidence":null,"batch":null,"merge":null,
@@ -773,8 +790,20 @@ impl Store {
                 short(&e["reviewMerges"]["reviewedHead"]), m.len()),
             _ => String::new(),
         };
+        let acknowledged = match e["binaries"]["files"].as_array() {
+            Some(files) => format!(
+                " The release acknowledges {} binary file(s) its review round could not read, each read at this head by Core: {}.",
+                files.len(),
+                files
+                    .iter()
+                    .map(|f| format!("{} ({}, {} bytes, SHA-256 {})", f["path"].as_str().unwrap_or("?"), f["format"].as_str().unwrap_or("?"), f["bytes"], f["sha256"].as_str().unwrap_or("?")))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            None => String::new(),
+        };
         collab::activity(&tx, &p.task, "comment", &p.author, &p.source, json!({"mergeEntryId":id,
-            "body":format!("Merge queue: released #{} at {head} on main {} (entry {id}). The release says the review pair is complete.{merges} Core checks the last round at this head, CI and main, and merges the PR as a merge commit pinned to this head once every check holds, while the queue is on for {}.",
+            "body":format!("Merge queue: released #{} at {head} on main {} (entry {id}). The release says the review pair is complete.{merges}{acknowledged} Core checks the last round at this head, CI and main, and merges the PR as a merge commit pinned to this head once every check holds, while the queue is on for {}.",
                 p.number, &main[..12.min(main.len())], p.repository)}))?;
         tx.commit()?;
         Ok(e)

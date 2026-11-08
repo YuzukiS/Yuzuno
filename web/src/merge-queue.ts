@@ -108,6 +108,15 @@ export interface MergeRecord {
     detail?: string;
   } | null;
 }
+/** YN-52: one binary file the release acknowledged, as Core read it at the head. */
+export interface MergeBinary {
+  path: string;
+  sha256: string;
+  note?: string | null;
+  blobSha?: string;
+  bytes?: number;
+  format?: string;
+}
 export interface MergeHistoryItem {
   at: string;
   state: MergeState | string;
@@ -131,6 +140,8 @@ export interface MergeEntry {
   mainAtRelease?: string | null;
   mainAnchoredAt?: string | null;
   release?: { by?: MergeActor; at?: string; reviewId?: string | null };
+  /** YN-52: binary files the release acknowledged by their content; the review round stays unknown. */
+  binaries?: { by?: MergeActor; at?: string; files?: MergeBinary[] } | null;
   state: MergeState | string;
   reason?: string | null;
   detail?: string | null;
