@@ -924,14 +924,26 @@ async fn a_model_opencode_lists_goes_with_the_next_messages_and_nothing_else_of_
     let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
     assert_eq!(catalog["models"], json!([
         {"id":"deepseek/deepseek-flash","model":"deepseek/deepseek-flash","displayName":"DeepSeek · DeepSeek Flash","description":null,
-         "variants":["high","max"]},
+         "variants":["high","max"],"providerId":"deepseek","providerName":"DeepSeek","name":"DeepSeek Flash","status":"active",
+         "context":1000,"image":false},
         {"id":"openrouter/anthropic/claude-x","model":"openrouter/anthropic/claude-x","displayName":"OpenRouter · Claude X","description":"beta",
-         "variants":[]},
+         "variants":[],"providerId":"openrouter","providerName":"OpenRouter","name":"Claude X","status":"beta","context":1000,"image":false},
     ]));
+    // Each provider once, in the models' order, with where it gets its access (YN-47): neither is logged in yet.
+    assert_eq!(catalog["providers"], json!([
+        {"id":"deepseek","name":"DeepSeek","source":"ready"}, {"id":"openrouter","name":"OpenRouter","source":"ready"},
+    ]));
+    lab.ws.opencode_login_key(ID, key_login("deepseek", "fixture-catalog-key", None)).await.unwrap();
+    let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    assert_eq!(catalog["providers"][0], json!({"id":"deepseek","name":"DeepSeek","source":"credential"}), "logged in, read again");
+    assert!(!catalog.to_string().contains("fixture-catalog-key") && !catalog.to_string().contains("fixture-secret"), "{catalog}");
 
-    // Only a model OpenCode lists is saved.
-    let refused = lab.ws.opencode_set_model(ID, "nope/model".into()).await.unwrap_err().to_string();
-    assert!(refused.contains("设置未保存"), "{refused}");
+    // Only a model OpenCode lists is saved; the refusal says how to add one to a provider (YN-47).
+    let refused = lab.ws.opencode_set_model(ID, "deepseek/deepseek-v9".into()).await.unwrap_err().to_string();
+    assert!(refused.contains("OpenCode 没有列出 deepseek/deepseek-v9") && refused.contains("provider.deepseek.models")
+        && refused.contains("设置未保存"), "{refused}");
+    let refused = lab.ws.opencode_set_model(ID, "nope".into()).await.unwrap_err().to_string();
+    assert!(refused.contains("提供方/模型") && refused.contains("设置未保存"), "{refused}");
     assert_eq!(lab.detail().agent.model, "");
     let chosen = lab.ws.opencode_set_model(ID, " openrouter/anthropic/claude-x ".into()).await.unwrap();
     assert_eq!(chosen.model, "openrouter/anthropic/claude-x");
