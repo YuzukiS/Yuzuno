@@ -171,8 +171,9 @@ test("the recent choices open to their records; today's spend sits by the cap", 
   const page = mount(core());
   await until(() => page.document.querySelectorAll(".routing-recent-row").length === 2, "the recent choices");
   const rows = [...page.document.querySelectorAll(".routing-recent-row")];
-  assert.match(rows[0].textContent, /\dT-905 · Dev → Claude Code · opus · Account #2at dispatch$/, "the task's id once, as its executor's name has it");
-  assert.match(rows[1].textContent, /T-904 → Codex · gpt-6\.1-solChosen again before starting, in place of Claude Code · opus$/);
+  const what = (row) => [row.querySelector(".routing-recent-what b").textContent, row.querySelector(".routing-recent-what small").textContent];
+  assert.deepEqual(what(rows[0]), ["T-905 · Dev → Claude Code · opus · Account #2", "at dispatch"], "the task's id once, as its executor's name has it");
+  assert.deepEqual(what(rows[1]), ["T-904 → Codex · gpt-6.1-sol", "Chosen again before starting, in place of Claude Code · opus"]);
   rows[1].click();
   await tick();
   assert.deepEqual([...q(page, "#routing-recent-d-2").querySelectorAll("li")].map((li) => li.textContent), [
