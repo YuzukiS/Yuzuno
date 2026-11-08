@@ -550,6 +550,7 @@ test("a task's short name is edited where the task is and given with a new execu
     click(page, "Edit task");
     await tick();
     const edit = field(page, "Short name");
+    assert.ok(edit, "the edit form has a Short name field");
     assert.equal(edit.value, "Line preview", "the edit form starts from the task's short name");
     assert.equal(edit.maxLength, 16);
     assert.match(page.document.querySelector(".collab-inset").textContent,
@@ -607,6 +608,7 @@ test("a new task takes a short name, said in Chinese, sent trimmed (T-43)", asyn
     click(page, "新建任务");
     const form = await waitFor(() => page.document.querySelector('[aria-label="新建任务"]'), "the new task form");
     const name = field(page, "短名");
+    assert.ok(name, "the new task form has a 短名 field");
     assert.equal(name.placeholder, "导出设备偏好");
     assert.equal(name.maxLength, 16);
     assert.match(form.textContent, /短名 可选/);
