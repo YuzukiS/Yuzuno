@@ -1122,6 +1122,11 @@ impl Workspace {
     }
 
     fn opencode_event(&self, id: &str, generation: u64, event: &Value) {
+        // A test's own event whose application panics, for what reading the stream does then (YN-48).
+        #[cfg(test)]
+        if event["type"] == "yuzuno.test.panic" {
+            panic!("an event whose application panics, sent by a test");
+        }
         let Some(c) = self.opencode_current(id, generation) else { return };
         let Some(session) = opencode::session_of(event) else { return };
         let kind = event["type"].as_str().unwrap_or("unknown");
