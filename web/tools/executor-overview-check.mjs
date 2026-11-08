@@ -305,12 +305,21 @@ async function run({ width, height, theme, lang = "en" }) {
     // colours, and which rules set them, are kept in the report.
     const legible = await page.evaluate(() => {
       const card = document.querySelector(".conversation-body .gate-ask");
-      const rgb = (text) => (text.match(/[\d.]+/g) || []).slice(0, 3).map(Number);
+      // Any CSS colour (color-mix gives color(srgb …)) as the rgb a canvas paints it.
+      const rgb = (css) => {
+        const c = document.createElement("canvas");
+        c.width = c.height = 1;
+        const x = c.getContext("2d");
+        x.fillStyle = "#000";
+        x.fillStyle = css;
+        x.fillRect(0, 0, 1, 1);
+        return [...x.getImageData(0, 0, 1, 1).data].slice(0, 3);
+      };
       const lum = ([r, g, b]) => [r, g, b].map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
         .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
       const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
-      // The card's background is a tint over the page: the page's colour stands in for it.
-      const ground = rgb(getComputedStyle(document.querySelector(".conversation-scroll") || document.body).backgroundColor);
+      // The card's own background: a tint mixed into the opaque paper.
+      const ground = rgb(getComputedStyle(card).backgroundColor);
       const rules = (el) => [...document.styleSheets].flatMap((sheet) => { try { return [...sheet.cssRules]; } catch { return []; } })
         .flatMap((rule) => rule.cssRules ? [...rule.cssRules] : [rule])
         .filter((rule) => rule.selectorText && rule.style?.color && el.matches(rule.selectorText)).map((rule) => `${rule.selectorText} { color: ${rule.style.color} }`);

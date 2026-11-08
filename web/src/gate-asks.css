@@ -14,6 +14,9 @@
   flex-direction: column;
   gap: 6px;
   min-width: 0;
+  /* Its own ink: in a Conversation the inherited colour is the transcript's,
+     which dark mode leaves faint on this tint. */
+  color: var(--ink);
 }
 .gate-ask h3 {
   margin: 0;
