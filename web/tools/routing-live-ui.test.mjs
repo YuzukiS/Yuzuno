@@ -188,8 +188,8 @@ test("a Core without the live routes says they come with routing itself; nothing
   const page = mount(core({ evaluate: missing, choices: missing, readings: missing }));
   await until(() => q(page, ".routing-now-unavailable") && q(page, ".routing-recent .settings-block-help:last-of-type")?.textContent.includes("S3b"), "the notes");
   assert.equal(q(page, ".routing-now-unavailable").textContent, "This Core can't say yet which candidate it would choose: that comes with routing itself (YN-34 S3b).");
-  assert.equal(q(page, ".routing-spend"), null, "no spend line");
+  assert.ok(!q(page, ".routing-spend"), "no spend line");
   assert.equal(page.document.querySelectorAll(".routing-state").length, 0);
   assert.equal(page.document.querySelectorAll(".routing-cand").length, 3, "the order as ever");
-  assert.equal(q(page, '[role="alert"]'), null, "no error");
+  assert.ok(!q(page, '[role="alert"]'), "no error");
 });

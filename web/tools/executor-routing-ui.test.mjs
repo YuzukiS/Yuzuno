@@ -230,7 +230,7 @@ test("a newer version is shown and not overwritten; saving over it takes a choic
   assert.equal(button(page, "Save", bar(page)).disabled, true, "no blind second save");
   button(page, "Keep mine, to save over it", conflict).click();
   await tick();
-  assert.equal(page.document.querySelector(".routing-conflict"), null);
+  assert.ok(!page.document.querySelector(".routing-conflict"));
   assert.equal(puts(page).length, 1, "keeping mine saves nothing by itself");
   await save(page);
   await until(() => puts(page).length === 2 && /All changes saved/.test(bar(page).textContent), "the save over it");
