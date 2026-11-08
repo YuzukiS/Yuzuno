@@ -77,7 +77,7 @@ async fn each_way_the_list_cannot_be_read_says_why_without_cswaps_words() {
 fn the_command_and_its_python_are_checked() {
     assert_eq!(check_command(" cswap ").unwrap(), "cswap");
     assert_eq!(check_command("/opt/tools/bin/cswap").unwrap(), "/opt/tools/bin/cswap");
-    for bad in ["", "cswap list", "bin/cswap", "cswap\n", "cswap\tx"] {
+    for bad in ["", "cswap list", "bin/cswap", "cs\nwap", "cswap\tx"] {
         assert!(check_command(bad).is_err(), "{bad:?}");
     }
     let tmp = tempfile::tempdir().unwrap();
