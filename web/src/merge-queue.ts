@@ -375,7 +375,7 @@ export const refusalsZh: Record<string, string> = {
   merge_not_active: "此条目已不再占用它的 PR，无法取消。",
   merge_not_stopped: "只有已停止的条目才能重试。",
   merge_dry_run_ended: "此条目是在 Core 真正合并之前放行合并的；请重新将该 PR 放行合并。",
-  merge_revert_not_allowed: "不能回退：只有合并后主分支 CI 变红的条目才能回退，且需由用户在「项目 → 仓库」中允许回退，并由该仓库所属项目的负责人或你发起。",
+  merge_revert_not_allowed: "不能回退：只有合并后主分支 CI 变红的条目才能回退，且需由用户在“设置 → 项目 → 该项目 → 仓库”中允许回退，并由该仓库所属项目的负责人或你发起。",
   merge_revert_running: "这个合并的回退已经在进行中。",
   merge_cleanup_pending: "Core 仍在移除此条目的批次；完成后再试。",
   merge_already_queued: "另一条目已占用此 PR。",

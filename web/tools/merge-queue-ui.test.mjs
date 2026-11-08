@@ -301,7 +301,7 @@ test('a merge that turned main red offers Revert on its pause banner only when r
       await until(() => banner());
       if (!allowed) {
         assert.equal(button(banner(), 'Revert #17'), undefined, 'no Revert while reverts are off');
-        assert.ok(banner().querySelector('.merge-revert-off').textContent.includes('Turn them on in Projects → repositories'), 'it says where reverts are turned on');
+        assert.ok(banner().querySelector('.merge-revert-off').textContent.includes('Turn them on in Settings → Projects → its Project → Repositories'), 'it says where reverts are turned on');
         continue;
       }
       const box = banner().querySelector('.merge-action-revert');

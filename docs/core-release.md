@@ -57,10 +57,10 @@ not carry, so no release ships an unpinned validator.
 - It runs `tools/build-release-inputs-ci.py`, then `tools/release-inputs-check.py`. The check refuses inputs from another commit, repository, run or attempt, an archive that differs from `build.json`, and any file of the Claude Agent SDK (anything in its directory but the placeholder with exactly its bytes), before `core-inputs-<SHA>-<run attempt>` is uploaded for 14 days.
 - `core-release.py init` then names both runs: `--ci-run` is the CI run that tested the commit, `--inputs-run` this one. The artifact, its name and `build.json` must belong to the inputs run, and its files must not include the SDK, by the same rule.
 
-**Started main runs finish:**
-- On `main`, a later push does not cancel a run that has started, so its inputs artifact is completed. A newer push to a PR still cancels that PR's older run.
-- GitHub keeps one pending run per branch. While a main run executes, the next push's run waits; a further push cancels that waiting run and takes its place.
-- So only a run that has started is sure to finish. Choose a candidate from a started or finished run.
+**Every main commit's runs finish:**
+- `CI` gives each push to `main` a concurrency group of its own commit (#697), so every `main` commit gets its own run: a later push neither cancels it nor replaces it while it waits. A newer push to a PR still cancels that PR's older run.
+- `release-inputs.yml` groups its builds by commit too and never cancels one that has started, so its inputs artifact is completed.
+- So any `main` commit can be a candidate once its own `CI` run has passed; the inputs build still has to start while it is the head of `main`.
 - Nothing reruns or releases automatically.
 
 Historical release inputs were built by the former private repository's self-hosted WSL Rust lane; the public repository builds them only on request, as above. The retained build tooling uses Rust 1.97.1, Node

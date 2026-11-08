@@ -292,8 +292,9 @@ Core.
 
 Each repository has a landing policy, `policy` in
 `GET /api/merge-queue/repositories/{id}`, set only by the user, in the same
-switch block of Projects → repositories (`PUT …` with `{"policy": …}`; no MCP
-tool). It follows the user's merge rule of 2026-11-07:
+switch block, in Settings → Projects → its Project → Repositories (`PUT …`
+with `{"policy": …}`; no MCP tool). It follows the user's merge rule of
+2026-11-07:
 
 | Policy | When | What a merge needs |
 | --- | --- | --- |
@@ -363,11 +364,12 @@ When main's push CI goes red after a merge the queue made, the entry ends
 one step: by a lead of a Project the repository is linked to (`merge_revert`
 with the entry), or by the user (Revert on the pause in Jobs → Merge queue).
 Only while the user allows reverts for the repository, in its switch block in
-Projects → repositories (`{"revert": true}`); allowing them lists their writes
-first. With automatic reverts on as well (`{"autoRevert": true}`, off by
-default), Core asks for the revert itself as soon as main goes red, and the
-mail says so. Turning reverts off turns automatic reverts off too, and stops a
-revert under way (`revert_not_allowed`).
+Settings → Projects → its Project → Repositories (`{"revert": true}`);
+allowing them lists their writes first. With automatic reverts on as well
+(`{"autoRevert": true}`, off by default), Core asks for the revert itself as
+soon as main goes red, and the mail says so. Turning reverts off turns
+automatic reverts off too, and stops a revert under way
+(`revert_not_allowed`).
 
 A revert is an entry of the queue (`kind: "revert"`, `revert.of` naming the
 reverted entry). One runs at a time per merge. Its first check builds it:
@@ -400,8 +402,9 @@ entry is re-anchored there. If that CI is red too, the queue stays paused.
 Release notes group merged PRs by release and by task: each PR carries its
 release's milestone and its task's label `task:<key>`. Only while the user
 allows it for the repository (`{"grouping": true}` in its switch block in
-Projects → repositories; off by default; turning it on lists its writes
-first), Core tags each PR it merged, right after the merge's post-check held:
+Settings → Projects → its Project → Repositories; off by default; turning it
+on lists its writes first), Core tags each PR it merged, right after the
+merge's post-check held:
 
 - The milestone: the repository's open milestone with the highest number, the
   newest open one, read when the PR is tagged; a closed one never counts. A PR
