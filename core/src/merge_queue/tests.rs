@@ -3452,3 +3452,41 @@ async fn a_released_proof_holds_only_while_the_last_round_is_the_one_it_was_read
     assert_eq!(e["reason"], "review_not_passing", "{e}");
     assert!(e["detail"].as_str().unwrap().contains("at this head concluded changes_requested"), "{}", e["detail"]);
 }
+
+/// S2 review 68bae873 (P2): a P0–P2 finding of a round at the released head,
+/// or at a merge commit on the way to it, holds the release back even when
+/// the last round, at the earlier reviewed head, passed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_p0_to_p2_finding_at_the_released_head_or_a_merge_on_the_way_is_not_cleared_by_the_earlier_heads_round() {
+    let f = Fixture::new();
+    let base = f.first();
+    let below = f.commit("below", &base, "below.txt", "below\n");
+    let next = f.commit("next", &base, "next.txt", "next\n");
+    let reviewed = f.commit("pr", &base, "pr.txt", "pr\n");
+    let first = f.merge("pr", &reviewed, &below, None);
+    let released = f.merge("pr", &first, &next, None);
+    let mut state = green_at(&released, &f, &[&released, &first, &reviewed]);
+    compared(&mut state, &below, &main_sha(), &below);
+    compared(&mut state, &next, &main_sha(), &next);
+    compared(&mut state, &reviewed, &below, &base);
+    compared(&mut state, &first, &next, &base);
+    let lab = lab(state);
+    lab.objects(&f);
+    // A finding at the merge commit on the way, then a passing round of the reviewed head.
+    round_on(&lab.ws.store, &lab.task, "7:pull:11", &first, &base, &[2]);
+    review(&lab.ws.store, &lab.task, &reviewed, "no_findings");
+    let refused = lab.release_at("r1", &released).await.unwrap_err().to_string();
+    assert!(
+        refused.starts_with("review_not_passing") && refused.contains(&format!("at merge commit {} found 1 P0–P2 issue(s); a round of the earlier head {}", &first[..12], &reviewed[..12])),
+        "{refused}"
+    );
+    // A finding at the released head itself: refused before GitHub is read.
+    round_on(&lab.ws.store, &lab.task, "7:pull:11", &released, &base, &[1]);
+    review(&lab.ws.store, &lab.task, &reviewed, "no_findings");
+    let reads = calls(lab.dir.path()).len();
+    let refused = lab.release_at("r2", &released).await.unwrap_err().to_string();
+    assert!(refused.contains("at the released head found 1 P0–P2 issue(s)"), "{refused}");
+    assert_eq!(calls(lab.dir.path()).len(), reads, "refused before any read");
+    assert!(writes(lab.dir.path()).is_empty());
+}
