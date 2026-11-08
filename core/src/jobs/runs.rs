@@ -20,6 +20,7 @@ use std::{
     sync::Arc,
 };
 
+mod after;
 mod analysis;
 mod queued;
 pub(super) use analysis::Decision as AnalysisDecision;
@@ -83,6 +84,9 @@ pub(super) struct RunSubmit {
     /// The task's method record this run follows (T-17), fixed by activity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     method: Option<ResearchRef>,
+    /// Earlier runs of the same Agent this one starts after (YN-30).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    after_runs: Vec<after::AfterRun>,
     pub(super) stages: Vec<Stage>,
 }
 
@@ -202,6 +206,11 @@ impl RunSubmit {
         ensure!(
             (1..=MAX_STAGES).contains(&self.stages.len()),
             "A run has 1–{MAX_STAGES} stages"
+        );
+        ensure!(
+            self.after_runs.len() <= after::MAX_AFTER,
+            "afterRuns names at most {} runs",
+            after::MAX_AFTER
         );
         let mut earlier = BTreeSet::new();
         for stage in &self.stages {
@@ -581,7 +590,12 @@ enum Upstream {
     Pending(String),
     Blocked(String),
 }
-fn upstream(run: &Value, stage: &Value, latest: &HashMap<String, Value>) -> Upstream {
+fn upstream(
+    run: &Value,
+    stage: &Value,
+    latest: &HashMap<String, Value>,
+    after: &HashMap<String, after::State>,
+) -> Upstream {
     let mut ready = Vec::new();
     // Inspect every need before reporting an ordinary wait: a failed sibling
     // needs attention even when an earlier dependency is awaiting analysis.
@@ -592,6 +606,19 @@ fn upstream(run: &Value, stage: &Value, latest: &HashMap<String, Value>) -> Upst
         .flatten()
         .filter_map(Value::as_str)
     {
+        // Another run this one waits for (YN-30). Without its state, as a
+        // Core without afterRuns (core.26 and older) reads it, it is a stage
+        // with no attempt below.
+        if let Some(state) = after::run_of(need).and_then(|id| Some((id, after.get(id)?))) {
+            match after::gate(state.0, state.1) {
+                Upstream::Ready(list) => ready.extend(list),
+                Upstream::Pending(reason) => {
+                    pending.get_or_insert(reason);
+                }
+                blocked @ Upstream::Blocked(_) => return blocked,
+            }
+            continue;
+        }
         let info = run["stages"]
             .as_array()
             .into_iter()
@@ -670,6 +697,7 @@ fn stalled_stages(db: &Connection, id: &str) -> Result<BTreeSet<String>> {
     let run = get_run(db, id)?;
     let all = attempts(db, id)?;
     let latest = latest(&all);
+    let after = after::states(db, &run)?;
     let limited = limit_reached(&run, &all).is_some();
     let mut stalled = BTreeSet::new();
     // Run order is dependency order: a stage needs only earlier ones.
@@ -684,7 +712,7 @@ fn stalled_stages(db: &Connection, id: &str) -> Result<BTreeSet<String>> {
             .flatten()
             .filter_map(Value::as_str)
             .any(|need| stalled.contains(need));
-        if limited || behind || matches!(upstream(&run, stage, &latest), Upstream::Blocked(_)) {
+        if limited || behind || matches!(upstream(&run, stage, &latest, &after), Upstream::Blocked(_)) {
             stalled.insert(key.to_owned());
         }
     }
@@ -695,7 +723,12 @@ fn stalled_stages(db: &Connection, id: &str) -> Result<BTreeSet<String>> {
 /// every stage it depends on, directly or through others, against the attempt
 /// that last declared that file in run order. Its Git guard leaves exactly
 /// these files out, so each one left out is checked by digest instead.
-fn guard_checks(run: &Value, stage: &Value, latest: &HashMap<String, Value>) -> Vec<Value> {
+fn guard_checks(
+    run: &Value,
+    stage: &Value,
+    latest: &HashMap<String, Value>,
+    after: &HashMap<String, after::State>,
+) -> Vec<Value> {
     let stages = run["stages"].as_array().cloned().unwrap_or_default();
     let needs_of = |key: &str| -> Vec<String> {
         stages
@@ -720,8 +753,24 @@ fn guard_checks(run: &Value, stage: &Value, latest: &HashMap<String, Value>) -> 
         }
     }
     // Run order is dependency order: a later stage that declares the same
-    // file is the one whose digest the file must still have.
+    // file is the one whose digest the file must still have. The runs this
+    // one waits for come first (YN-30): each settled before it started.
     let mut by_file: BTreeMap<String, (String, Value, Value)> = BTreeMap::new();
+    let runs = ancestors.iter().filter_map(|need| after::run_of(need)).filter_map(|id| Some((id, after.get(id)?)));
+    for (id, state) in runs {
+        let Upstream::Ready(producers) = after::gate(id, state) else { continue };
+        for producer in producers {
+            let key = producer["stage"].as_str().unwrap_or("").to_owned();
+            for artifact in producer["artifacts"].as_array().cloned().unwrap_or_default() {
+                let file = format!(
+                    "{}/{}",
+                    producer["cwd"].as_str().unwrap_or("").trim_end_matches('/'),
+                    artifact["path"].as_str().unwrap_or("")
+                );
+                by_file.insert(file, (key.clone(), producer.clone(), artifact));
+            }
+        }
+    }
     for info in stages
         .iter()
         .filter(|s| ancestors.contains(s["key"].as_str().unwrap_or("")))
@@ -777,6 +826,11 @@ fn latest(all: &BTreeMap<String, Vec<Value>>) -> HashMap<String, Value> {
 /// Release every waiting stage whose upstream truly succeeded, keep the reason
 /// of the others current, then tell the Agent once if the run is over.
 pub(super) fn advance(store: &Store, db: &Connection, id: &str) -> Result<bool> {
+    advance_at(store, db, id, 0)
+}
+/// How many runs deep a change goes on to the runs waiting for it (YN-30).
+const DEPENDANT_DEPTH: u32 = 16;
+fn advance_at(store: &Store, db: &Connection, id: &str, depth: u32) -> Result<bool> {
     let mut run = get_run(db, id)?;
     if run["settledAt"].is_string() {
         return Ok(false);
@@ -785,6 +839,7 @@ pub(super) fn advance(store: &Store, db: &Connection, id: &str) -> Result<bool> 
     if run["cancelRequestedAt"].is_null() {
         let all = attempts(db, id)?;
         let latest = latest(&all);
+        let after = after::states(db, &run)?;
         changed |= analysis::open(db, &mut run, &latest)?;
         let stages = run["stages"].as_array().cloned().unwrap_or_default();
         for stage in &stages {
@@ -796,7 +851,7 @@ pub(super) fn advance(store: &Store, db: &Connection, id: &str) -> Result<bool> 
             else {
                 continue;
             };
-            let reason = match upstream(&run, stage, &latest) {
+            let reason = match upstream(&run, stage, &latest, &after) {
                 Upstream::Pending(reason) | Upstream::Blocked(reason) => reason,
                 Upstream::Ready(upstream) => match limit_reached(&run, &all) {
                     Some(reason) => reason,
@@ -807,7 +862,7 @@ pub(super) fn advance(store: &Store, db: &Connection, id: &str) -> Result<bool> 
                             .to_owned();
                         job["identity"]["sha256"] = json!(full_identity(&spec, &upstream));
                         job["upstream"] = json!(upstream);
-                        job["guardChecks"] = json!(guard_checks(&run, stage, &latest));
+                        job["guardChecks"] = json!(guard_checks(&run, stage, &latest, &after));
                         job["status"] = json!("queued");
                         job["reason"] = json!("Waiting for shared machine capacity");
                         save(db, &job)?;
@@ -822,6 +877,11 @@ pub(super) fn advance(store: &Store, db: &Connection, id: &str) -> Result<bool> 
                 changed = true;
             }
         }
+        // A run it waits for that holds it is told once (YN-30).
+        if after::notice(db, &mut run, &after)? {
+            save_run(db, &run)?;
+            changed = true;
+        }
     }
     changed |= settle(store, db, &mut run)?;
     // A run waiting on a stage that ended without success, an unknown outcome
@@ -830,11 +890,18 @@ pub(super) fn advance(store: &Store, db: &Connection, id: &str) -> Result<bool> 
     if run["settledAt"].is_null() {
         let idle = matches!(
             run_status(&run, &attempts(db, id)?),
-            "failed" | "unknown" | "checkpointed" | "blocked" | "waiting_analysis"
+            "failed" | "unknown" | "checkpointed" | "blocked_by_run" | "blocked" | "waiting_analysis"
         );
         if run["idleAt"].is_string() != idle {
             run["idleAt"] = if idle { json!(now()) } else { Value::Null };
             save_run(db, &run)?;
+        }
+    }
+    // The runs waiting for this one read it again, in this transaction: a
+    // success releases them, a failure holds them, a retry frees them.
+    if depth < DEPENDANT_DEPTH {
+        for dependant in after::dependants(db, id)? {
+            changed |= advance_at(store, db, &dependant, depth + 1)?;
         }
     }
     Ok(changed)
@@ -1153,6 +1220,8 @@ fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
     let latest = latest(all);
     let (mut active, mut queued, mut unknown, mut failed, mut stopped, mut blocked, mut done) =
         (false, false, false, false, false, false, true);
+    // A run it waits for holds it (YN-30), as told in its mail.
+    let held = run["afterRunsNoticed"].as_object().is_some_and(|told| !told.is_empty());
     let waiting_analysis = run["stages"].as_array().into_iter().flatten().any(analysis::waiting);
     for stage in run["stages"].as_array().into_iter().flatten() {
         done &= !analysis::pending(stage);
@@ -1198,6 +1267,8 @@ fn run_status(run: &Value, all: &BTreeMap<String, Vec<Value>>) -> &'static str {
         "failed"
     } else if stopped {
         "checkpointed"
+    } else if held {
+        "blocked_by_run"
     } else if blocked {
         "blocked"
     } else if waiting_analysis {
@@ -1306,6 +1377,11 @@ pub(super) fn run_view(db: &Connection, id: &str) -> Result<Value> {
     }
     run["status"] = json!(status);
     run["cost"] = cost(&all);
+    // The runs it waits for, with their status now (YN-30).
+    if run["afterRuns"].is_array() {
+        let states = after::states(db, &run)?;
+        after::view(&mut run, &states);
+    }
     Ok(run)
 }
 
@@ -1410,6 +1486,10 @@ impl Store {
             .transpose()?;
         let mut payload = serde_json::to_value(&input)?;
         payload["taskId"] = json!(task);
+        // The runs it waits for: its own Agent's, resolved and checked (YN-30).
+        let owner_id = actor.or(input.agent_id.as_deref()).context("A job must be associated with an Agent")?;
+        let after_runs = after::check(&tx, owner_id, &input.after_runs)?;
+        let run_needs: Vec<String> = after_runs.iter().filter_map(|a| a["runId"].as_str()).map(after::need).collect();
         let id = uuid::Uuid::new_v4().to_string();
         let mut owner = Value::Null;
         let mut list = Vec::new();
@@ -1425,8 +1505,15 @@ impl Store {
                 capability.clone(),
             )?;
             owner = json!({"agentId":job["agentId"],"agent":job["agent"]});
+            // Every stage it runs also needs each run this one waits for
+            // (YN-30): a reused stage runs nothing, so a stage behind one
+            // still waits, and gets their artifacts with its own upstream.
+            let mut needs = stage.needs.clone();
+            if prepared.reuse.is_none() {
+                needs.extend(run_needs.iter().cloned());
+            }
             list.push(
-                json!({"key":stage.key,"name":prepared.submit.name,"needs":stage.needs,
+                json!({"key":stage.key,"name":prepared.submit.name,"needs":needs,
                 "retry":stage.retry,"reusedFrom":prepared.reuse,"waitForAnalysis":stage.wait_for_analysis}),
             );
             if prepared.reuse.is_some() {
@@ -1465,6 +1552,9 @@ impl Store {
             "stages":list,"createdAt":now(),"cancelRequestedAt":null,"notifications":{},"settledAt":null});
         if let Some(method) = method {
             run["method"] = method;
+        }
+        if !after_runs.is_empty() {
+            run["afterRuns"] = json!(after_runs);
         }
         tx.execute(
             "INSERT INTO local_job_runs(id,task_id,agent_id,data) VALUES(?1,?2,?3,?4)",
@@ -1612,6 +1702,20 @@ impl Store {
         let view = run_view(&tx, run_id)?;
         tx.commit()?;
         Ok(view)
+    }
+    /// A submission's afterRuns by whole run ID (YN-30), before its repeat
+    /// is compared: a prefix and the whole ID name the same submission.
+    pub(super) fn resolve_after_runs(&self, mut input: RunSubmit) -> Result<RunSubmit> {
+        for after in &mut input.after_runs {
+            after.run_id = self.resolve_id(super::ids::Kind::Run, &after.run_id)?;
+        }
+        Ok(input)
+    }
+    /// The artifact paths the runs a submission waits for declare: its root
+    /// stages' guards leave them out (YN-30).
+    pub(super) fn after_run_artifacts(&self, input: &RunSubmit) -> Result<BTreeSet<String>> {
+        let ids: Vec<String> = input.after_runs.iter().map(|a| a.run_id.clone()).collect();
+        after::declared(&*self.db.read()?, &ids)
     }
     /// The user's resume of a stage attempt stopped at a verified checkpoint
     /// (YN-30): the stage's next attempt, made as a retry makes one, with the
