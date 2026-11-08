@@ -127,3 +127,47 @@ test("a run's chip says its state and stages done, and opens Jobs on its newest 
   }
 });
 
+
+// YN-30: a run whose work only waits in the queue says "queued" and what its first stage waits for, in the
+// interface language and a neutral tone, as a chip and as a list row; a kind the UI does not know reads as plainly queued.
+test("a queued run's chip and row say what it waits for, not that it runs (YN-30)", async () => {
+  const errors = [];
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on("jsdomError", (error) => errors.push(error.message));
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+    url: "http://isolated.test/", runScripts: "outside-only", pretendToBeVisual: true, virtualConsole,
+  });
+  const { window } = dom;
+  try {
+    window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    window.eval(bundle);
+    const items = [{ kind: "run", id: "run-g", label: "gpu sweep" }, { kind: "run", id: "run-c", label: "prep" }, { kind: "run", id: "run-n", label: "later" }];
+    const queued = (layout) => ({ ...section,
+      body: { root: "body", elements: { body: { type: "BriefBody", props: {}, children: ["refs"] },
+        refs: { type: "LiveRefs", props: { ...(layout ? { layout } : {}), items } } } },
+      refs: {
+        "run:run-g": { kind: "run", id: "run-g", found: true, title: "gpu sweep", state: "queued", tone: "neutral", waitingFor: "gpu",
+          taskId: "T-1", stages: { done: 0, total: 2 }, jobId: "job-g" },
+        "run:run-c": { kind: "run", id: "run-c", found: true, title: "prep", state: "queued", tone: "neutral", waitingFor: "capacity",
+          taskId: "T-1", stages: { done: 0, total: 1 }, jobId: "job-c" },
+        "run:run-n": { kind: "run", id: "run-n", found: true, title: "later", state: "queued", tone: "neutral", waitingFor: "network",
+          taskId: "T-1", stages: { done: 1, total: 3 }, jobId: "job-n" },
+      } });
+    const words = (selector) => [...window.document.querySelectorAll(selector)].map((ref) =>
+      [ref.querySelector(".brief-ref-state")?.textContent, ref.dataset.tone]);
+    window.renderSection(queued());
+    await tick();
+    assert.deepEqual(words(".brief-ref"), [["queued: waiting for a GPU · 0/2 stages", "neutral"], ["queued · 0/1 stage", "neutral"],
+      ["queued · 1/3 stages", "neutral"]]);
+    window.renderSection(queued("list"));
+    await tick();
+    assert.deepEqual(words(".brief-ref-row").map(([word]) => word), ["queued: waiting for a GPU · 0/2 stages", "queued · 0/1 stage", "queued · 1/3 stages"]);
+    window.chooseLanguage("zh-Hans");
+    window.renderSection(queued());
+    await tick();
+    assert.deepEqual(words(".brief-ref").map(([word]) => word), ["排队：等 GPU · 0/2 个阶段", "排队中 · 0/1 个阶段", "排队中 · 1/3 个阶段"]);
+    assert.deepEqual(errors, []);
+  } finally {
+    window.close();
+  }
+});

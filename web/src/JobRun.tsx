@@ -87,6 +87,10 @@ export type Run = {
   /** The method record of the task this run follows (T-17), as cited. */
   method?: { activitySeq: number; id?: string; title?: string; version?: number | null } | null;
   methodNow?: LineNow | null;
+  /** A queued run (YN-30): its first stage in the queue, that attempt, Core's
+   * reason and what it waits for (gpu, memory, cpu, slot, disk, exclusive,
+   * budget or capacity). */
+  queue?: { stage: string; jobId: string; waitingFor: string; reason: string } | null;
 };
 /** What a task's Jobs recorded spending (job_cost, T-17). */
 export type TaskSpend = {
@@ -128,6 +132,7 @@ export type TaskSpend = {
 const text = strings({
   run: {
     waiting_analysis: "Awaiting analysis",
+    queued: "Queued",
     running: "Running",
     waiting: "Waiting",
     blocked: "Stopped at its cost limit",
@@ -151,6 +156,16 @@ const text = strings({
     interrupted: "Interrupted",
     unknown: "Outcome unknown",
     reused: "Reused",
+  } as Record<string, string>,
+  /** A queued run, by what its first stage in the queue waits for (YN-30). */
+  queuedFor: {
+    gpu: "Queued: waiting for a GPU",
+    memory: "Queued: waiting for memory",
+    cpu: "Queued: waiting for CPU",
+    slot: "Queued: waiting for a job slot",
+    disk: "Queued: waiting for disk space",
+    exclusive: "Queued: waiting for an exclusive job",
+    budget: "Queued: waiting for the budget",
   } as Record<string, string>,
   noCost: "None recorded",
   unknownCost: (count: number) => `plus ${count} of unknown cost`,
@@ -226,6 +241,7 @@ const text = strings({
 }, {
   run: {
     waiting_analysis: "等待分析",
+    queued: "排队中",
     running: "运行中",
     waiting: "等待中",
     blocked: "已在成本上限处停止",
@@ -249,6 +265,15 @@ const text = strings({
     interrupted: "已中断",
     unknown: "结果未知",
     reused: "已复用",
+  },
+  queuedFor: {
+    gpu: "排队：等 GPU",
+    memory: "排队：等内存",
+    cpu: "排队：等 CPU",
+    slot: "排队：等槽位",
+    disk: "排队：等磁盘空间",
+    exclusive: "排队：等独占 Job",
+    budget: "排队：等预算",
   },
   noCost: "未记录",
   unknownCost: (count) => `另有 ${count} 项成本未知`,
@@ -397,13 +422,14 @@ export function RunCard({
   const mine = run.stages.find((s) => s.attempts.some((a) => a.id === jobId));
   const latest = mine?.attempts[mine.attempts.length - 1];
   const retryable = !run.cancelRequestedAt && latest?.id === jobId && ended.has(latest.status);
-  const live = run.status === "running" || run.status === "waiting" || run.status === "blocked" || run.status === "failed";
+  const live = ["queued", "running", "waiting", "blocked", "failed"].includes(run.status);
+  const said = (run.status === "queued" && run.queue && t.queuedFor[run.queue.waitingFor]) || t.run[run.status] || run.status;
   const awaiting = run.stages.some((stage) => stage.analysis?.state === "waiting");
   return (
     <JobCard
       title={t.title}
       className="job-run"
-      aside={<small>{t.run[run.status] || run.status}</small>}
+      aside={<small title={run.status === "queued" ? run.queue?.reason || undefined : undefined}>{said}</small>}
     >
       <p className="job-run-name">
         <strong>{run.name}</strong>
@@ -443,7 +469,7 @@ export function RunCard({
                 ))
               )}
               {stage.needs.length > 0 && <small>{t.needs(stage.needs.join(", "))}</small>}
-              {last?.status === "waiting" && last.reason && <small className="job-run-wait">{last.reason}</small>}
+              {(last?.status === "waiting" || last?.status === "queued") && last.reason && <small className="job-run-wait">{last.reason}</small>}
               {stage.analysis?.record && stage.analysis.state !== "waiting" && (
                 <small className="job-run-explained">
                   {t.explained(

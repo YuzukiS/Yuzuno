@@ -88,7 +88,8 @@ fn successful_gate_releases_resources_survives_restart_and_notifies_once() {
         .to_string()
         .contains("stale_analysis_gate"));
     let continued = s.decide_run(Some("a"), &choice).unwrap();
-    assert_eq!(continued["status"], "running");
+    // Its dependant released into the queue (YN-30).
+    assert_eq!(continued["status"], "queued");
     assert!(continued["idleAt"].is_null());
     assert_eq!(s.decide_run(Some("a"), &choice).unwrap(), continued);
     let other = decision(&run, "train", "continue", "cancel");
@@ -226,7 +227,7 @@ fn simultaneous_continue_retries_and_cancel_never_duplicate_or_revive_work() {
         .collect();
     barrier.wait();
     for thread in threads {
-        assert_eq!(thread.join().unwrap()["status"], "running");
+        assert_eq!(thread.join().unwrap()["status"], "queued");
     }
     assert_eq!(
         attempts(&s.run(run["id"].as_str().unwrap()).unwrap(), "b").len(),
