@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, CircleCheck, CircleDashed, CircleHelp, CircleMinus, CircleSlash, CircleX } from "lucide-react";
-import { errorText } from "./api";
+import { errorText, HttpError } from "./api";
 import type { Candidate, Policy } from "./executor-routing";
 import { strings, useLanguage, type Language } from "./i18n";
 import { evaluate, oldestReading, readChoices, readReadings, type CandidateState, type Choice, type Reading, type Reason, type Readings, type RouteCandidate, type RouteRecord } from "./routing-live";
@@ -18,6 +18,8 @@ const text = strings({
   home: (id: string) => `Codex account ${id}`,
   liveUnavailable: "This Core can't say yet which candidate it would choose: that comes with routing itself (YN-34 S3b).",
   liveFailed: "Couldn't ask Core which candidate it would choose:",
+  liveHeld: "Whom Core would choose shows again once the marked block is corrected.",
+  liveRefused: "Core can't judge this draft yet:",
   states: { chosen: "Would choose", skipped: "Skipped", unknown: "Unknown", failed: "Start failed", notTried: "Not reached", off: "Off" } as Record<CandidateState, string>,
   accountStates: { pick: "Would use", ok: "Enough", low: "Not enough", unknown: "No reading" } as Record<string, string>,
   what: { fiveHourLeft: "5-hour left", weekLeft: "Week left", spendToday: "Spent today" } as Record<string, string>,
@@ -47,6 +49,8 @@ const text = strings({
   home: (id) => `Codex 账号 ${id}`,
   liveUnavailable: "这个 Core 还说不出此刻会选哪一项：要等路由本身（YN-34 S3b）。",
   liveFailed: "没能问到 Core 此刻会选哪一项：",
+  liveHeld: "改好标出的那一块，这里会再显示此刻会选谁。",
+  liveRefused: "Core 还判断不了这份草稿：",
   states: { chosen: "会选这个", skipped: "跳过", unknown: "未知", failed: "启动失败", notTried: "没轮到", off: "已停用" },
   accountStates: { pick: "会用这个", ok: "够用", low: "不够", unknown: "读不到" },
   what: { fiveHourLeft: "5 小时剩", weekLeft: "本周剩", spendToday: "今日已花" },
@@ -79,11 +83,14 @@ function ago(ms: number, t: Text, now = Date.now()): string {
 }
 
 /** Core's evaluation of the page's policy, unsaved changes included, now:
- * asked again a moment after each change and every minute while shown. */
-export function useLiveRouting(policy: Policy | null, active: boolean) {
+ * asked again a moment after each change and every minute while shown. Not
+ * asked while the page already knows the draft can't be saved (`held`); a
+ * draft Core refuses (400) is a note, not an error. */
+export function useLiveRouting(policy: Policy | null, active: boolean, held = false) {
   const [record, setRecord] = useState<RouteRecord | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState("");
+  const [refused, setRefused] = useState("");
   const [tick, setTick] = useState(0);
   const sent = useRef(0);
   useEffect(() => {
@@ -93,7 +100,7 @@ export function useLiveRouting(policy: Policy | null, active: boolean) {
   }, [active]);
   const key = policy ? JSON.stringify(policy) : "";
   useEffect(() => {
-    if (!active || !policy) return;
+    if (!active || !policy || held) return;
     const controller = new AbortController();
     const asked = ++sent.current;
     const wait = window.setTimeout(() => {
@@ -102,27 +109,36 @@ export function useLiveRouting(policy: Policy | null, active: boolean) {
         setUnavailable(next === null);
         setRecord(next);
         setError("");
-      }).catch((e) => { if (!controller.signal.aborted && asked === sent.current) setError(errorText(e)); });
+        setRefused("");
+      }).catch((e) => {
+        if (controller.signal.aborted || asked !== sent.current) return;
+        const refusal = e instanceof HttpError && e.status === 400;
+        setRefused(refusal ? errorText(e) : "");
+        setError(refusal ? "" : errorText(e));
+      });
     }, 350);
     return () => { window.clearTimeout(wait); controller.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, key, tick]);
-  return { record, unavailable, error };
+  }, [active, key, tick, held]);
+  const stale = held || !!refused;
+  return { record: stale ? null : record, unavailable, error: held ? "" : error, refused: held ? "" : refused, held };
 }
 
 /** 「现在会选……」: the candidate Core would choose now, why each one before it
  * wasn't, and how old the readings were. */
-export function NowCard({ record, policy, names, colourOf, changed, error, unavailable }: {
+export function NowCard({ record, policy, names, colourOf, changed, error, unavailable, held, refused }: {
   record: RouteRecord | null; policy: Policy; names: (c: Candidate) => string; colourOf: (id: string) => number;
-  changed: boolean; error: string; unavailable: boolean;
+  changed: boolean; error: string; unavailable: boolean; held?: boolean; refused?: string;
 }) {
   const language = useLanguage();
   const t = text(language);
   const time = useTimeDisplay();
   if (unavailable) return <p className="settings-block-help routing-now-unavailable">{t.liveUnavailable}</p>;
+  if (held) return <p className="settings-block-help routing-now-held">{t.liveHeld}</p>;
+  if (refused) return <p className="settings-block-help routing-now-held">{t.liveRefused} <span lang="en">{refused}</span></p>;
   if (error) return <p className="inline-error routing-now-error" role="alert">{t.liveFailed} {error}</p>;
   if (!record) return null;
-  if (!policy.enabled) return <div className="routing-now is-off" role="status"><p className="routing-now-title">{t.nowOff}</p></div>;
+  if (!policy.enabled) return <div className="routing-now is-off"><p className="routing-now-title" role="status">{t.nowOff}</p></div>;
   const byId = new Map(policy.candidates.map((c, i) => [c.id, { c, i }]));
   const chosen = record.chosen ? byId.get(record.chosen) : undefined;
   const upTo = chosen ? policy.candidates.slice(0, chosen.i + 1) : policy.candidates;
@@ -131,10 +147,10 @@ export function NowCard({ record, policy, names, colourOf, changed, error, unava
   const account = record.account && ("number" in record.account ? t.account(record.account.number) : t.home(record.account.home));
   const earliest = !chosen && record.earliest ? byId.get(record.earliest.candidate) : undefined;
   return (
-    <div className={`routing-now${chosen ? "" : " is-wait"}`} role="status" style={chosen ? { ["--cc" as string]: `var(--route-c${colourOf(chosen.c.id)})` } : undefined}>
+    <div className={`routing-now${chosen ? "" : " is-wait"}`} style={chosen ? { ["--cc" as string]: `var(--route-c${colourOf(chosen.c.id)})` } : undefined}>
       <span className={`routing-num routing-now-badge${chosen ? "" : " is-wait"}`} aria-hidden="true">{chosen ? chosen.i + 1 : "…"}</span>
       <div className="routing-now-main">
-        <p className="routing-now-title">
+        <p className="routing-now-title" role="status">
           {chosen ? <>{t.nowWould} {names(chosen.c)}{account ? ` — ${account}` : ""}</> : t.nowNone}
         </p>
         {earliest && record.earliest && Number.isFinite(Date.parse(record.earliest.at)) && (

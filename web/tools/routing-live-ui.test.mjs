@@ -121,6 +121,13 @@ const q = (page, selector) => page.document.querySelector(selector);
 const card = (page, id) => q(page, `.routing-cand[data-cand="${id}"]`);
 const button = (page, label, within = page.document) =>
   [...within.querySelectorAll("button")].find((b) => b.textContent.trim() === label || b.getAttribute("aria-label") === label);
+async function set(page, node, value) {
+  assert.ok(node, "the field");
+  Object.getOwnPropertyDescriptor(page.window.HTMLInputElement.prototype, "value").set.call(node, value);
+  node.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  await tick();
+}
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("the card above the order says whom Core would choose now, why not the ones before, and from how old readings", async () => {
   const server = core();
@@ -132,6 +139,9 @@ test("the card above the order says whom Core would choose now, why not the ones
     "1OpenCode · deepseek-flash · API: DeepSeek's peak price now; off-peak from 12:00",
     "2Account #2: 71% of 5 hours and 58% of the week left, the most of the usable accounts"]);
   assert.match(q(page, ".routing-now .settings-row-meta").textContent, /^From readings 2 min ago$/);
+  // Only the title is a live region: the "N min ago" under it changes every minute.
+  assert.equal(q(page, ".routing-now").getAttribute("role"), null);
+  assert.equal(q(page, ".routing-now-title").getAttribute("role"), "status");
   // Each card: its state, its reasons, its readings by account.
   assert.equal(card(page, "ds").querySelector(".routing-state").textContent, "Skipped");
   assert.equal(card(page, "ds").querySelector(".routing-why").textContent, "DeepSeek's peak price now; off-peak from 12:00");
@@ -192,4 +202,32 @@ test("a Core without the live routes says they come with routing itself; nothing
   assert.equal(page.document.querySelectorAll(".routing-state").length, 0);
   assert.equal(page.document.querySelectorAll(".routing-cand").length, 3, "the order as ever");
   assert.ok(!q(page, '[role="alert"]'), "no error");
+});
+
+test("a draft the page can't save isn't sent to Core: a quiet note stands in for the card until it is corrected", async () => {
+  const server = core();
+  const page = mount(server);
+  await until(() => q(page, ".routing-now"), "the now card");
+  assert.equal(server.asked.length, 1);
+  await set(page, q(page, '[aria-label="At most $ a day, all API keys"]'), "0");
+  await wait(500);
+  assert.equal(server.asked.length, 1, "not asked while the cap can't be saved");
+  assert.equal(q(page, ".routing-now-held")?.textContent, "Whom Core would choose shows again once the marked block is corrected.");
+  assert.ok(!q(page, ".routing-now"), "no card from before the change");
+  assert.equal(page.document.querySelectorAll(".routing-state").length, 0, "no state from before the change");
+  assert.ok(!q(page, ".routing-now-error"), "no error");
+  await set(page, q(page, '[aria-label="At most $ a day, all API keys"]'), "25");
+  await until(() => server.asked.length === 2, "asked again once corrected");
+  assert.equal(server.asked[1].policy.dailyApiCapUsd, 25);
+  await until(() => q(page, ".routing-now"), "the card again");
+  assert.ok(!q(page, ".routing-now-held"));
+});
+
+test("a draft Core refuses to judge is a note with Core's words, not an error", async () => {
+  const refuses = core({ evaluate: () => [400, { code: "invalid", error: "candidates[1].model: a model has no spaces", path: "candidates[1].model" }] });
+  const page = mount(refuses);
+  await until(() => q(page, ".routing-now-held"), "the note");
+  assert.equal(q(page, ".routing-now-held").textContent, "Core can't judge this draft yet: candidates[1].model: a model has no spaces");
+  assert.ok(!q(page, ".routing-now-error") && !q(page, ".routing-now"), "no error, no card");
+  assert.equal(page.document.querySelectorAll(".routing-state").length, 0);
 });

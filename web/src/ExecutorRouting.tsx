@@ -83,11 +83,12 @@ export function ExecutorRouting({ active }: { active: boolean }) {
   const policy = draft;
   const changed = !!view && !!policy && JSON.stringify(policy) !== JSON.stringify(view.policy);
   editing.current = { changed, version: view?.version };
-  // What Core would choose now, by this page's policy, unsaved changes included (S4b).
-  const evaluation = useLiveRouting(policy, active && !!view);
   const problems = new Map((policy?.candidates ?? []).map((c) => [c.id, problemsOf(c, t, keys, accounts)]));
   const capBad = policy?.dailyApiCapUsd != null && !usdFits(policy.dailyApiCapUsd);
   const invalid = [...problems.values()].some((p) => p.length > 0) || capBad;
+  // What Core would choose now, by this page's policy, unsaved changes included
+  // (S4b); not asked while the draft can't be saved.
+  const evaluation = useLiveRouting(policy, active && !!view, invalid);
   const edit = (change: (p: Policy) => Policy) => { setDraft((p) => (p ? change(p) : p)); setRefused(null); setSaveError(""); };
   const editCandidate = (id: string, change: (c: Candidate) => Candidate) =>
     edit((p) => ({ ...p, candidates: p.candidates.map((c) => (c.id === id ? change(c) : c)) }));
@@ -172,7 +173,7 @@ export function ExecutorRouting({ active }: { active: boolean }) {
       {saveError && <p className="inline-error" role="alert">{saveError}</p>}
       {policy && view && <>
         {!policy.enabled && <p className="settings-block-help routing-off-note">{t.offNote}</p>}
-        <NowCard record={evaluation.record} policy={policy} names={nameOf} colourOf={colourOf} changed={changed} error={evaluation.error} unavailable={evaluation.unavailable} />
+        <NowCard record={evaluation.record} policy={policy} names={nameOf} colourOf={colourOf} changed={changed} error={evaluation.error} unavailable={evaluation.unavailable} held={evaluation.held} refused={evaluation.refused} />
         <div className="routing-order-head">
           <h4 className="settings-group-title">{t.orderTitle} <span className="settings-current">{t.version(view.version)}</span></h4>
           <p className="settings-block-help">{t.orderHelp}</p>
