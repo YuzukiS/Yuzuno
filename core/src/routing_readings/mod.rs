@@ -121,11 +121,74 @@ impl Schedule {
     pub fn changes_at(&self, at: DateTime<Utc>) -> Option<DateTime<Utc>> {
         let now = self.inside(at);
         let start = at.with_second(0)?.with_nanosecond(0)? + Duration::minutes(1);
-        (0..8 * 24 * 60).map(|n| start + Duration::minutes(n)).find(|t| self.inside(*t) != now)
+        let end = start + Duration::minutes(8 * 24 * 60);
+        // Whether it is inside changes only where the zone's clock reaches a slot's
+        // start or end, or jumps (a clock change): those instants, in order, are
+        // all that need checking (#801 R1: not each minute of eight days).
+        let mut instants = self.edges(start, end);
+        instants.sort();
+        instants.dedup();
+        instants.into_iter().find(|t| self.inside(*t) != now)
+    }
+
+    /// Every instant in `[start, end)` where `inside` may change: each slot's start
+    /// and end minute on each day, both times where a clock change repeats it, and,
+    /// in local time, each clock change itself (a skipped edge changes there).
+    fn edges(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<DateTime<Utc>> {
+        let marks: Vec<u32> = self.slots.iter()
+            .flat_map(|slot| [minutes(&slot.from, false).ok(), minutes(&slot.to, true).ok()]).flatten().collect();
+        let mut out = Vec::new();
+        let (first, last) = match self.time_zone {
+            Zone::Utc => (start.date_naive(), end.date_naive()),
+            Zone::Local => (start.with_timezone(&Local).date_naive(), end.with_timezone(&Local).date_naive()),
+        };
+        let mut day = first - Duration::days(1);
+        while day <= last + Duration::days(1) {
+            for mark in &marks {
+                let Some(midnight) = day.and_hms_opt(0, 0, 0) else { continue };
+                let clock = midnight + Duration::minutes(i64::from(*mark));
+                match self.time_zone {
+                    Zone::Utc => out.push(clock.and_utc()),
+                    Zone::Local => match clock.and_local_timezone(Local) {
+                        chrono::LocalResult::Single(t) => out.push(t.with_timezone(&Utc)),
+                        chrono::LocalResult::Ambiguous(a, b) => out.extend([a.with_timezone(&Utc), b.with_timezone(&Utc)]),
+                        chrono::LocalResult::None => {}
+                    },
+                }
+            }
+            day += Duration::days(1);
+        }
+        if self.time_zone == Zone::Local {
+            out.extend(clock_changes(start, end));
+        }
+        out.retain(|t| *t >= start && *t < end);
+        out
     }
 }
 
 /// A preset as the readings offer it: its schedule, and where it stands now.
+/// The first minute of each change of the Core host's UTC offset in `[start, end)`.
+fn clock_changes(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<DateTime<Utc>> {
+    use chrono::Offset;
+    let offset = |t: DateTime<Utc>| t.with_timezone(&Local).offset().fix().local_minus_utc();
+    let mut out = Vec::new();
+    let mut at = start;
+    while at < end {
+        let next = (at + Duration::hours(1)).min(end);
+        if offset(at) != offset(next) {
+            // The change is in (at, next]: the first minute with next's offset.
+            let (mut low, mut high) = (at, next);
+            while high - low > Duration::minutes(1) {
+                let middle = low + Duration::minutes((high - low).num_minutes() / 2);
+                if offset(middle) == offset(at) { low = middle } else { high = middle }
+            }
+            out.push(high);
+        }
+        at = next;
+    }
+    out
+}
+
 pub fn schedule_now(schedule: &Schedule, at: DateTime<Utc>) -> Value {
     serde_json::json!({"schedule": schedule, "inside": schedule.inside(at), "changesAt": schedule.changes_at(at).map(|t| t.to_rfc3339())})
 }
