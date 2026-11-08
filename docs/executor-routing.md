@@ -474,5 +474,6 @@ cargo test --locked --lib -- --ignored --exact --nocapture \
 - `POST /api/routing/evaluate { policy?, at?, assume? }` answers one `route_json` with `at: "preview"`.
   - `policy` is an unsaved draft; by default, the saved one.
   - `assume` takes `{ accountsUsedUp: [fingerprint], codexUsedUp: [home], spendCapReached, onePasswordDown }`.
+    A Codex home assumed used up fails its quota condition even before Core has a reading of it; a claude-swap account is known only from a reading.
 - `POST /api/routing/simulate { policy?, from, to, stepMinutes, assume? }` answers `{ segments: [ { from, to, chosen } ] }`. It keeps the current readings and varies only the time.
 - `GET /api/routing/choices?limit=20` answers `{ choices: [ { dispatchId, taskId, agentId, executorName?, route } ] }`, newest first. `executorName` is there while the executor's record is kept.
