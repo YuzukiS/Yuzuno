@@ -1123,6 +1123,10 @@ impl Workspace {
             // A sub-agent's requests are the Agent's to answer; nothing else
             // of it changes the record. Any other session's is not the Agent's.
             let Some(child) = c.child(session) else { return };
+            // A sub-agent's answers spend the executor's routing key too (YN-34 S2a, R1 ea94344d).
+            for one in read.iter().filter(|one| type_of(one) == "message.updated") {
+                crate::routing_readings::count(&self.store, id, crate::routing_readings::opencode_spend(&one["data"]["info"]), "opencode");
+            }
             let asked: Vec<&Value> = read.iter().filter(|one| requested(type_of(one))).collect();
             if asked.is_empty() {
                 return;

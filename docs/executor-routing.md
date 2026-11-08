@@ -234,7 +234,7 @@ For an executor started with a routing key, Core counts what each turn
 cost, as its harness reports it:
 
 - **Claude Code:** the turn result's `total_cost_usd`.
-- **OpenCode:** each finished step's `cost`.
+- **OpenCode:** each finished step's `cost`, the executor's sub-agents' too.
 - **Codex:** not counted yet. Routing (S3) treats a Codex API-key candidate's spend as unknown.
 
 Each entry is counted once, by key id, on the Core host's local date.
