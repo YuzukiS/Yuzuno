@@ -186,3 +186,50 @@ fn the_tool_names_both_modes_within_its_description_limit() {
     assert_eq!(after["items"]["required"], json!(["runId"]));
     assert!(after["items"]["properties"]["runId"]["description"].as_str().unwrap().contains("unique prefix"));
 }
+
+/// #768 R1 P2: a reused stage runs nothing, so a stage behind it still waits
+/// for the named runs, in both modes; with when succeeded it also gets their
+/// artifacts as its upstream.
+#[test]
+fn a_stage_behind_a_reused_one_still_waits_for_the_named_runs() {
+    let (_dir, s) = setup();
+    // An earlier run whose prep succeeded, to reuse.
+    create(&s, "earlier", json!([stage("prep", &[])]));
+    let done = start(&s);
+    assert!(success(&s, &done, "ppp"));
+    let done = s.job(done["id"].as_str().unwrap()).unwrap();
+    // The run they wait for, still queued.
+    let a = create(&s, "a", json!([stage("other", &[])]));
+    let a_id = a["id"].as_str().unwrap().to_owned();
+    let mut waiting = Vec::new();
+    for when in ["settled", "succeeded"] {
+        let mut prep = stage("prep", &[]);
+        prep["reuse"] = done["id"].clone();
+        let input: RunSubmit = serde_json::from_value(json!({"requestId":format!("b-{when}"),"taskId":"T-1","name":format!("b-{when}"),
+            "stages":[prep, stage("gpu", &["prep"])],"afterRuns":[{"runId":a_id,"when":when}]})).unwrap();
+        input.validate().unwrap();
+        let mut prepared = prepare(&input);
+        // The HTTP submission path verifies the reuse before create_run.
+        prepared[0].reuse = Some(json!({"jobId":done["id"],"attempt":done["attempt"],"cwd":done["cwd"],
+            "artifacts":done["result"]["artifacts"],"identity":done["identity"]["sha256"]}));
+        let b = s.create_run(Some("a"), input, prepared, machine(), json!({})).unwrap();
+        let gpu = latest(&s, &b, "gpu");
+        assert_eq!(gpu["status"], "waiting", "{when}: {gpu}");
+        let verb = if when == "settled" { "finish" } else { "succeed" };
+        assert_eq!(gpu["reason"], format!("Waiting for run Fixture run ({}) to {verb} (queued)", &a_id[..8]), "{when}");
+        waiting.push((when, b));
+    }
+    let other = start(&s);
+    assert_eq!(other["run"]["id"], a["id"], "only the named run's stage was queued");
+    assert!(success(&s, &other, "ooo"));
+    for (when, b) in waiting {
+        let gpu = latest(&s, &b, "gpu");
+        assert_eq!(gpu["status"], "queued", "{when}");
+        let from: Vec<&Value> = gpu["upstream"].as_array().unwrap().iter().map(|u| &u["jobId"]).collect();
+        let expected = if when == "succeeded" { vec![&done["id"], &other["id"]] } else { vec![&done["id"]] };
+        assert_eq!(from.len(), expected.len(), "{when}: {}", gpu["upstream"]);
+        for id in expected {
+            assert!(from.contains(&id), "{when}: {id} in {}", gpu["upstream"]);
+        }
+    }
+}
