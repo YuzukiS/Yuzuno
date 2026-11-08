@@ -79,7 +79,8 @@ const queued32 = () => executor("yn32", { title: "Export the device preferences 
 let agents = fixture();
 const pr = (number, approved, running, ci = "success") => ({ number, url: `https://github.com/owner/repo/pull/${number}`, state: "open", headSha: "a".repeat(40), ci,
   reviews: { approved, changesRequested: false, running } });
-const live = { executors: { yn24: { pr: pr(681, 0, true) }, yn26: { pr: pr(688, 1, false) }, yn27: { pr: pr(705, 2, false) }, yn31: { pr: pr(712, 0, true) } } };
+const live = { executors: { yn24: { pr: pr(681, 0, true) }, yn26: { pr: pr(688, 1, false) }, yn27: { pr: pr(705, 2, false) }, yn31: { pr: pr(712, 0, true) },
+  yn43: { pr: pr(716, 0, true) } } };
 // Each row at rest: [ring, form, pill (zh, en) or null, dot].
 const EXPECTED = {
   lead: ["working", "ring", null, true], dev9: ["done", "ring", null, false], dev5: ["idle", "ring", null, false],
@@ -94,7 +95,14 @@ const ONE = {
   yn21: "设备偏好设计", yn33: "Mac 发布", yn30: "导入旧设置", yn29: "Fix the selection that jumps to the first row after a refresh",
   yn31: "Show the review's findings beside the conversation without moving it", yn32: "导出设备偏好文件",
 };
-const projects = [{ id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture/app" }, createdAt: "", updatedAt: "" }];
+const yuzuno = { id: "p1", name: "Yuzuno", defaultDirs: { local: "/fixture/app" }, createdAt: "", updatedAt: "" };
+// Project cards show only with two Projects or more: a second one, and its rows, for those runs (YN-41).
+const lab = { id: "p2", name: "Lab", defaultDirs: { local: "/fixture/lab" }, createdAt: "", updatedAt: "" };
+const labRows = () => [
+  standing("dev7", "Dev 7", { projectId: "p2", status: "working", workSummary: { kind: "progress", source: "agent", text: "Reading the run's logs" } }),
+  executor("yn43", { title: "Plot the second run", shortName: "第二次运行的图" }, "delivering", { projectId: "p2" }),
+];
+let projects = [yuzuno];
 const home = () => ({ generatedAt: ago(0), order: ["p1"],
   needsYou: [{ kind: "approval", projectId: "p1", agentId: "yn21", agentName: "YN-21 · Design first", requestId: "q1", title: "批准设计说明", since: ago(12.5) }],
   projects: [{ project: { id: "p1", name: "Yuzuno" }, agents: { working: 3, idle: 5, waiting: 1, error: 1, offline: 1, total: 11 },
@@ -215,7 +223,8 @@ const hitArea = (page, id) => page.locator(`.agent-list article[data-agent-id="$
 async function run({ width, height, theme, lang = "zh", rail = 240, density = "detailed", groups = "headers", live = false }) {
   const phone = width < 600;
   const tag = `${width}-${phone ? "phone" : rail}-${density}-${groups}-${theme}-${lang}`;
-  agents = fixture();
+  agents = groups === "cards" ? [...fixture(), ...labRows()] : fixture();
+  projects = groups === "cards" ? [yuzuno, lab] : [yuzuno];
   const context = await browser.newContext({ viewport: { width, height }, locale: lang === "zh" ? "zh-CN" : "en-US", timezoneId: "Asia/Shanghai",
     reducedMotion: "reduce", colorScheme: theme, deviceScaleFactor: 2, ...(phone ? { hasTouch: true, isMobile: true } : {}) });
   await context.addInitScript(({ theme, lang, rail, density, groups }) => {
@@ -241,7 +250,7 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
     await page.mouse.move(0, 0);
     if (!phone) assert.equal(await page.evaluate(() => document.querySelector('[style*="--rail-width"]')?.style.getPropertyValue("--rail-width")), `${rail}px`, `${tag}: the rail is ${rail} px`);
     assert.equal(await page.evaluate(() => document.documentElement.dataset.agentList), density, `${tag}: the list is ${density}`);
-    if (groups === "cards") assert.ok(await list.locator(".project-group-cards article[data-agent-id]").count() > 0, `${tag}: rows in a Project card`);
+    if (groups === "cards") assert.deepEqual(await list.locator(".project-group-cards").evaluateAll((cards) => cards.map((c) => c.querySelectorAll("article[data-agent-id]").length > 0)), [true, true], `${tag}: rows in two Project cards`);
     const all = await rows(page);
     const seen = Object.fromEntries(all.map((r) => [r.id, r]));
     report.rows[tag] = seen;
