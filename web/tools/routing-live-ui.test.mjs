@@ -213,17 +213,19 @@ test("a draft the page can't save isn't sent to Core: a quiet note stands in for
   const server = core();
   const page = mount(server);
   await until(() => q(page, ".routing-now"), "the now card");
-  assert.equal(server.asked.length, 1);
+  // The card's own evaluation, now: no time given (the simulation's carry one).
+  const now = () => server.asked.filter((b) => !b.at);
+  assert.equal(now().length, 1);
   await set(page, q(page, '[aria-label="At most $ a day, all API keys"]'), "0");
   await wait(500);
-  assert.equal(server.asked.length, 1, "not asked while the cap can't be saved");
+  assert.equal(now().length, 1, "not asked while the cap can't be saved");
   assert.equal(q(page, ".routing-now-held")?.textContent, "Whom Core would choose shows again once the marked block is corrected.");
   assert.ok(!q(page, ".routing-now"), "no card from before the change");
   assert.equal(page.document.querySelectorAll(".routing-state").length, 0, "no state from before the change");
   assert.ok(!q(page, ".routing-now-error"), "no error");
   await set(page, q(page, '[aria-label="At most $ a day, all API keys"]'), "25");
-  await until(() => server.asked.length === 2, "asked again once corrected");
-  assert.equal(server.asked[1].policy.dailyApiCapUsd, 25);
+  await until(() => now().length === 2, "asked again once corrected");
+  assert.equal(now()[1].policy.dailyApiCapUsd, 25);
   await until(() => q(page, ".routing-now"), "the card again");
   assert.ok(!q(page, ".routing-now-held"));
 });
