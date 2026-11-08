@@ -132,9 +132,14 @@ def main():
 "#).unwrap();
     let claude = script(d, "claude", "#!/bin/sh\nprintf '{\"type\":\"system\",\"args\":\"%s\",\"config\":\"%s\"}\\n' \"$*\" \"$CLAUDE_CONFIG_DIR\"\n");
     let launcher = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runtimes/claude/cswap-claude");
+    // python3 from PATH; a host without one has nothing to run the launcher with.
+    let Some(python) = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).map(|dir| dir.join("python3")).find(|p| p.is_file()) else {
+        eprintln!("skipped: no python3 on PATH");
+        return;
+    };
     let run = |account: Option<&str>| {
         let mut command = std::process::Command::new(&launcher);
-        command.args(["--print", "hi"]).env("YUZUNO_CSWAP_PYTHON", "/usr/bin/python3").env("PYTHONPATH", d.join("pkg"))
+        command.args(["--print", "hi"]).env("YUZUNO_CSWAP_PYTHON", &python).env("PYTHONPATH", d.join("pkg"))
             .env("STUB_DIR", d).env("STUB_CLAUDE", &claude).env_remove("YUZUNO_CSWAP_ACCOUNT");
         if let Some(account) = account {
             command.env("YUZUNO_CSWAP_ACCOUNT", account);
@@ -192,6 +197,14 @@ async fn the_routes_are_the_users_own_browsers_only() {
     let (status, _) = call(local.clone(), "PUT", "/api/routing/codex-homes",
         Some(serde_json::json!({"homes":[{"id":"work","label":"Work","home":"relative"}]})), vec![]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    let home = tmp.path().join("codex-work");
+    fs::create_dir(&home).unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+    let (status, saved) = call(local.clone(), "PUT", "/api/routing/codex-homes",
+        Some(serde_json::json!({"homes":[{"id":" work ","label":"  Work  ","home":format!(" {} ", home.display())}]})), vec![]).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let kept = ws.stored(|store| store.codex_homes()).await.unwrap();
+    assert_eq!((kept[0].id.as_str(), kept[0].label.as_str(), kept[0].home.clone()), ("work", "Work", home.display().to_string()), "kept as checked");
     for (method, uri) in [("GET", "/api/routing/accounts"), ("PUT", "/api/routing/cswap"), ("PUT", "/api/routing/codex-homes")] {
         let (status, answer) = call(local.clone(), method, uri, Some(serde_json::json!({"command":"/tmp/evil"})),
             vec![("authorization", "Bearer an-agents-token".into())]).await;

@@ -57,7 +57,9 @@ async fn put_cswap(State(ws): State<Arc<Workspace>>, body: Bytes) -> Result<Json
 
 async fn put_homes(State(ws): State<Arc<Workspace>>, body: Bytes) -> Result<Json<Value>, Refused> {
     let write: HomesWrite = serde_json::from_slice(&body).map_err(|e| anyhow::anyhow!("The body is {{\"homes\": [{{id, label, home}}]}}: {e}"))?;
-    let homes = write.homes;
+    // Kept as checked: id, label and folder trimmed (R1 4cdc9655, P3).
+    let homes: Vec<CodexHome> = write.homes.into_iter()
+        .map(|h| CodexHome { id: h.id.trim().into(), label: h.label.trim().into(), home: h.home.trim().into() }).collect();
     let saved = homes.clone();
     ws.stored(move |store| store.save_codex_homes(&saved)).await?;
     Ok(Json(json!({"codexHomes": homes})))
