@@ -24,6 +24,11 @@ async fn an_executor_asks_for_its_gate_on_home_and_its_overview_waits_for_the_an
          VALUES('user','r1','{}',?1,'design',?2,'local',?3,'b','dispatched','now','now')",
         params![internal, project, json!({"id":"design","label":"Design first","steps":steps}).to_string()],
     ).unwrap();
+    // Its design note is in: the stage before the gate is over.
+    s.db.write().unwrap().execute(
+        "INSERT INTO collaboration_task_activity(task_id,data) VALUES(?1,?2)",
+        params![internal, json!({"kind":"result","result":{"id":"note","dispatchId":"d1","reportedAt":"2026-11-07T10:00:00Z"}}).to_string()],
+    ).unwrap();
     let gate = |task: &str, step: u64| {
         let mut change = put("gates/design", "ask");
         change["ask"]["gate"] = json!({"taskId":task,"step":step});
@@ -62,7 +67,8 @@ async fn an_executor_asks_for_its_gate_on_home_and_its_overview_waits_for_the_an
     assert_eq!((step["kind"].clone(), step["state"].clone()), (json!("gate"), json!("blocked")));
     assert_eq!((step["ref"]["kind"].clone(), step["ref"]["projectId"].clone(), step["ref"]["key"].clone(), step["ref"]["state"].clone()),
         (json!("ask"), json!(project), json!("gates/design"), json!("open")));
-    assert_eq!(shown["steps"][4]["state"], "todo", "nothing after the gate begun");
+    assert_eq!(shown["steps"][2]["state"], "done", "its design note is in");
+    assert_eq!(shown["steps"][4]["state"], "todo", "nothing after the gate begun, though the stage before it is over");
     // Answered on Home: done. Its executor resolves it: still done.
     assert!(sections::mark_replied_live(&ws.store, &project, "gates/design", "Approve").unwrap());
     let answered = read();
