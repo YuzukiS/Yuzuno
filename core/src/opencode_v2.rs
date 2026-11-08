@@ -218,6 +218,17 @@ fn sub_agents_result(item: &Value) -> bool {
     item["type"] == "synthetic" && item["payload"]["metadata"]["source"] == "subagent"
 }
 
+/// The kind of entry a text or reasoning event of 2.x's is about.
+fn entry_kind(kind: &str) -> Option<&'static str> {
+    if kind.starts_with("session.text.") {
+        Some("text")
+    } else if kind.starts_with("session.reasoning.") {
+        Some("reasoning")
+    } else {
+        None
+    }
+}
+
 /// A user's or a synthetic message as Core's record takes one.
 fn user(id: &str, created: &Value) -> Value {
     json!({"id": id, "role": "user", "time": {"created": created}})
@@ -292,6 +303,40 @@ pub struct OpenStep {
     pub parent: Option<String>,
     pub created: Value,
     pub model: Value,
+    /// Its content entries so far, in order (`Entry`).
+    pub entries: Vec<Entry>,
+}
+
+/// One content entry of an answer, as its live events name it: a text's or
+/// a reasoning's kind and ordinal, a tool's kind alone. 2.x numbers its text
+/// and its reasoning entries apart, each kind from 0 (2.2.5
+/// core/src/session/runner/publish-llm-event.ts `fragments`: one counter per
+/// kind), and keeps all of an answer's entries in one content list, in the
+/// order they started (core/src/session/message-updater.ts: a text's, a
+/// reasoning's and a tool input's start each add one). A whole read keys a
+/// text or reasoning item by its place in that list (`content_part`); a live
+/// event's item is keyed by the same place (`Open::entry`), never by its
+/// ordinal alone, which the answer's first text and first reasoning share
+/// (YN-48).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Entry {
+    pub kind: String,
+    pub ordinal: Option<u64>,
+}
+
+/// An open answer's entries as a whole read stores them: each text and
+/// reasoning numbered within its kind, as 2.x's live events number it.
+fn entries_of(content: &Value) -> Vec<Entry> {
+    let mut counts: HashMap<String, u64> = HashMap::new();
+    content.as_array().into_iter().flatten().map(|entry| {
+        let kind = entry["type"].as_str().unwrap_or_default().to_owned();
+        let ordinal = matches!(kind.as_str(), "text" | "reasoning").then(|| {
+            let next = counts.entry(kind.clone()).or_default();
+            *next += 1;
+            *next - 1
+        });
+        Entry { kind, ordinal }
+    }).collect()
 }
 
 /// A tool under way at a whole read (its input streaming, or running), with
@@ -357,7 +402,7 @@ pub fn read_messages(messages: &Value) -> Read {
                     .filter_map(|(ordinal, entry)| content_part(id, ordinal, entry)).collect();
                 if message["time"]["completed"].is_null() && message["error"].is_null() {
                     steps.push(OpenStep { id: id.to_owned(), parent: user.clone(), created: message["time"]["created"].clone(),
-                        model: message["model"].clone() });
+                        model: message["model"].clone(), entries: entries_of(&message["content"]) });
                     for entry in message["content"].as_array().into_iter().flatten().filter(|e| e["type"] == "tool"
                         && matches!(e["state"]["status"].as_str(), Some("streaming" | "running"))) {
                         let Some(tool) = entry["id"].as_str() else { continue };
@@ -418,6 +463,8 @@ struct Step {
     parent: Option<String>,
     created: Value,
     model: Value,
+    /// Its content entries so far, in 2.x's order (`Entry`).
+    entries: Vec<Entry>,
 }
 
 #[derive(Default)]
@@ -467,8 +514,8 @@ impl Cursor {
     /// else of before it is kept. Text that streamed and was not yet written
     /// is not: an entry's end writes it whole.
     pub fn resumed(&mut self, session: &str, read: &Read, inbox: &Value) {
-        let steps = read.steps.iter().map(|s| (s.id.clone(), Step { parent: s.parent.clone(), created: s.created.clone(), model: s.model.clone() }))
-            .collect();
+        let steps = read.steps.iter().map(|s| (s.id.clone(), Step { parent: s.parent.clone(), created: s.created.clone(), model: s.model.clone(),
+            entries: s.entries.clone() })).collect();
         let tools = read.tools.iter().map(|t| (t.id.clone(), Tool { message: t.message.clone(), name: t.name.clone(), input: t.input.clone() }))
             .collect();
         let inputs = inbox.as_array().into_iter().flatten()
@@ -592,10 +639,27 @@ impl Open {
         vec![json!({"id": event["id"], "type": "message.updated", "data": {"sessionID": event["data"]["sessionID"], "info": info}})]
     }
 
+    /// The item ID of answer `message`'s `kind` entry `ordinal`: its place
+    /// in the answer's content (`Entry`). A start adds an entry there, as
+    /// 2.x's does; another event of it is the newest entry of that kind and
+    /// ordinal, or, its start not seen by this connection, added then.
+    fn entry(&mut self, message: &str, kind: &str, ordinal: u64, started: bool) -> String {
+        let entries = &mut self.steps.entry(message.to_owned()).or_default().entries;
+        let found = if started { None } else { entries.iter().rposition(|e| e.kind == kind && e.ordinal == Some(ordinal)) };
+        let at = found.unwrap_or_else(|| {
+            entries.push(Entry { kind: kind.to_owned(), ordinal: Some(ordinal) });
+            entries.len() - 1
+        });
+        entry_id(message, at as u64)
+    }
+
     fn read_gathered(&mut self, event: &Value) -> Vec<Value> {
         let d = &event["data"];
         let Some(answer) = d["assistantMessageID"].as_str() else { return self.read_one(event) };
-        let this = d["ordinal"].as_u64().map(|ordinal| entry_id(answer, ordinal));
+        let this = match (entry_kind(event["type"].as_str().unwrap_or_default()), d["ordinal"].as_u64()) {
+            (Some(kind), Some(ordinal)) => Some(self.entry(answer, kind, ordinal, event["type"].as_str().is_some_and(|k| k.ends_with(".started")))),
+            _ => None,
+        };
         let others: Vec<String> = self.gathered.iter().filter(|(id, gathered)| gathered.message == answer && Some(id.as_str()) != this.as_deref())
             .map(|(id, _)| id.clone()).collect();
         let session = d["sessionID"].clone();
@@ -677,7 +741,9 @@ impl Open {
                 // As 2.x stores an answer: started when the step says, ended at its end's event
                 // (core/src/session/message-updater.ts), so a whole read says the same times.
                 let created = if d["started"].is_number() { d["started"].clone() } else { at.clone() };
-                let step = Step { parent: self.user.clone(), created, model: d["model"].clone() };
+                // Started again (a retry): 2.x keeps what its content holds (core/src/session/message-updater.ts).
+                let entries = self.steps.remove(id).map(|step| step.entries).unwrap_or_default();
+                let step = Step { parent: self.user.clone(), created, model: d["model"].clone(), entries };
                 let info = answer(id, step.parent.as_deref(), &step.created, &Value::Null, &Value::Null, &Value::Null, &Value::Null, &step.model);
                 self.steps.insert(id.to_owned(), step);
                 vec![message(info)]
@@ -692,7 +758,8 @@ impl Open {
             "session.text.started" | "session.text.ended" | "session.reasoning.started" | "session.reasoning.ended" => {
                 let (Some(message), Some(ordinal)) = (d["assistantMessageID"].as_str(), d["ordinal"].as_u64()) else { return vec![] };
                 let entry = if kind.starts_with("session.text") { "text" } else { "reasoning" };
-                let id = entry_id(message, ordinal);
+                // Its start was placed already (`read_gathered`): this finds it.
+                let id = self.entry(message, entry, ordinal, false);
                 // The whole text replaces what streamed, and what had not been written yet.
                 let text = if kind.ends_with(".ended") { self.gathered.remove(&id); d["text"].clone() } else { Value::from("") };
                 vec![updated(part(&id, message, entry, &text))]
@@ -700,7 +767,7 @@ impl Open {
             "session.text.delta" | "session.reasoning.delta" => {
                 let (Some(message), Some(ordinal), Some(added)) = (d["assistantMessageID"].as_str(), d["ordinal"].as_u64(), d["delta"].as_str())
                     else { return vec![] };
-                let id = entry_id(message, ordinal);
+                let id = self.entry(message, if kind == "session.text.delta" { "text" } else { "reasoning" }, ordinal, false);
                 let now = at.as_i64().unwrap_or_default();
                 let gathered = self.gathered.entry(id.clone()).or_insert_with(|| Gathered {
                     message: message.to_owned(), kind: if kind == "session.text.delta" { "text" } else { "reasoning" }, text: String::new(), since: now });
@@ -713,6 +780,10 @@ impl Open {
             }
             "session.tool.input.started" | "session.tool.called" | "session.tool.progress" | "session.tool.success" | "session.tool.failed" => {
                 let (Some(message), Some(id)) = (d["assistantMessageID"].as_str(), d["id"].as_str()) else { return vec![] };
+                // A tool's input starting adds its entry to the answer's content, after the entries before it (`Entry`).
+                if kind == "session.tool.input.started" {
+                    self.steps.entry(message.to_owned()).or_default().entries.push(Entry { kind: "tool".into(), ordinal: None });
+                }
                 let tool = self.tools.entry(id.to_owned()).or_insert_with(|| Tool { message: message.to_owned(), ..Default::default() });
                 if d["name"].is_string() {
                     tool.name = d["name"].clone();
@@ -826,7 +897,10 @@ pub(crate) fn apply_delta(items: &mut Vec<Value>, delta: &Value) {
             items.last_mut().expect("pushed")
         }
     };
-    let slot = if reasoning { &mut item["summary"][0] } else { &mut item["text"] };
+    // An item of another kind or shape is left as it is (YN-48): its entry's
+    // end writes its whole text, and a whole read keys it apart.
+    let slot = if reasoning { item.pointer_mut("/summary/0") } else { item.get_mut("text") };
+    let Some(slot) = slot.filter(|slot| slot.is_string() || slot.is_null()) else { return };
     let mut text = slot.as_str().unwrap_or_default().to_owned();
     text.push_str(added);
     *slot = text.into();

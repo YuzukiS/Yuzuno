@@ -591,6 +591,55 @@ async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// YN-48: 2.2.5 numbers an answer's text and reasoning entries apart, each
+/// kind from 0 (core/src/session/runner/publish-llm-event.ts `fragments`),
+/// so a step that reasons and then answers says ordinal 0 for both, as a real
+/// provider streams them: reasoning deltas, the text's start, text deltas a
+/// quarter-second later. Each is its own item and the Turn ends as OpenCode
+/// says; the Agent's events go on (the next message runs). Before, the
+/// text's deltas were written as the reasoning's into the text's item, which
+/// panicked, and with it the task reading the Agent's events: the Turn stayed
+/// working with nothing shown.
+#[tokio::test]
+async fn an_answers_reasoning_and_text_numbered_apart_stream_into_two_items_and_the_turn_ends() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let turn_id = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    lab.until("the run", |d| d.agent.status == "working").await;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let answer = "msg_zzzzyn48answer";
+    let at = |kind: &str, after: i64, extra: Value| {
+        let mut data = json!({"sessionID": session, "assistantMessageID": answer});
+        data.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json!({"type": kind, "created": now + after, "properties": data})
+    };
+    for event in [
+        at("session.step.started", 0, json!({"agent": "build", "model": {"id": "fake", "providerID": "stub"}, "started": now})),
+        at("session.reasoning.started", 10, json!({"ordinal": 0})),
+        at("session.reasoning.delta", 20, json!({"ordinal": 0, "delta": "Thinking"})),
+        at("session.text.started", 40, json!({"ordinal": 0})),
+        at("session.text.delta", 50, json!({"ordinal": 0, "delta": "Hel"})),
+        at("session.text.delta", 300, json!({"ordinal": 0, "delta": "lo"})),
+        at("session.reasoning.ended", 310, json!({"ordinal": 0, "text": "Thinking"})),
+        at("session.text.ended", 320, json!({"ordinal": 0, "text": "Hello"})),
+        at("session.step.ended", 330, json!({"finish": "stop", "cost": 0, "tokens": {"input": 1, "output": 1}})),
+        json!({"type": "session.execution.succeeded", "created": now + 340, "properties": {"sessionID": session}}),
+    ] {
+        lab.control("event", event).await;
+    }
+    let d = lab.until("the turn to end as OpenCode said", |d| turn(d, &turn_id)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &turn_id)["status"], "completed");
+    let shown: Vec<(Value, Value)> = turn(&d, &turn_id)["items"].as_array().unwrap().iter().filter(|i| i["type"] != "userMessage")
+        .map(|i| (i["type"].clone(), if i["type"] == "reasoning" { i["summary"][0].clone() } else { i["text"].clone() })).collect();
+    assert_eq!(shown, vec![(json!("reasoning"), json!("Thinking")), (json!("agentMessage"), json!("Hello"))], "two items, each its own text");
+    // Its events go on: the next message runs and ends.
+    let next = lab.send("c2", "again").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID": session, "text": "Again."})).await;
+    let d = lab.until("the next turn", |d| turn(d, &next)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &next)["status"], "completed");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 /// Closing an Agent whose server something else still holds (a request
 /// still out, here a read of its models) waits for 2.x's teardown, within
 /// TEARDOWN. 2.x closes what it serves first, so that request fails and lets
