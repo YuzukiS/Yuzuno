@@ -476,6 +476,8 @@ test("image-only and mixed pasted requests retain attachment captions and exact 
           assert.match(node.textContent,/\[Image\]/);
           assert.equal(node.querySelectorAll(".pasted-text-chip").length,mixed ? 1 : 0);
         }
+        // The keyboard's focus previews a Turn (YN-44); a press's does not.
+        page.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
         page.document.querySelector('[data-turn-choice="image-turn"]').focus();
         const preview = await waitForPreviewState(() => {
           const shown = page.document.querySelector(".turn-dock-preview");
@@ -587,6 +589,8 @@ test("context tooltip has no fabricated live usage and Escape never interrupts w
       page.document.querySelector(".context-usage").dataset.level,
       "unknown",
     );
+    // A keyboard's focus opens its card, as any tip's (YN-44); a press's does not.
+    page.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
     trigger.focus();
     await pause();
     assert.match(
@@ -640,6 +644,7 @@ test("context color samples are confined to the labelled read-only preview", asy
         page.document.querySelector(".context-usage").dataset.level,
         level,
       );
+      page.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
       trigger.focus();
       await pause();
       assert.match(

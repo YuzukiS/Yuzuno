@@ -17,6 +17,7 @@ import {
 } from "recharts";
 import { api, errorText } from "../../api";
 import { useStrings } from "../../i18n";
+import { chartTip } from "../../Tip";
 import { briefText } from "./brief-text";
 import { useBrief } from "./BriefContext";
 import { useBriefDensity } from "../home-density";
@@ -166,13 +167,7 @@ function Plot({ kind, props, series, mini }: { kind: Kind; props: ChartProps; se
   const xTick = { fill: "var(--muted)", fontSize: 11 };
   const tooltip = (
     <Tooltip
-      contentStyle={{
-        background: "var(--paper)",
-        borderColor: "var(--line)",
-        color: "var(--ink)",
-        borderRadius: 8,
-        fontSize: 12,
-      }}
+      {...chartTip}
       cursor={kind === "bar" ? { fill: "var(--cream)" } : { stroke: "var(--muted)", strokeDasharray: "3 3" }}
       labelFormatter={(x) => `${props.x.label}: ${valueText(x, props.x)}`}
       formatter={(value, name) => [valueText(value, props.y), name]}
@@ -197,7 +192,7 @@ function Plot({ kind, props, series, mini }: { kind: Kind; props: ChartProps; se
         />
         <ZAxis range={[64, 64]} />
         <Tooltip
-          contentStyle={{ background: "var(--paper)", borderColor: "var(--line)", color: "var(--ink)", borderRadius: 8, fontSize: 12 }}
+          {...chartTip}
           cursor={{ stroke: "var(--muted)", strokeDasharray: "3 3" }}
           formatter={(value, name) => [valueText(value, name === props.x.label ? props.x : props.y), name]}
         />

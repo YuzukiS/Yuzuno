@@ -1,5 +1,5 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { cloneElement, createContext, isValidElement, useContext, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
+import { cloneElement, createContext, isValidElement, useContext, type CSSProperties, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
 import { langTag, useLanguage } from "./i18n";
 import "./tip.css";
 
@@ -37,12 +37,15 @@ export function TipProvider({ children }: { children: ReactNode }) {
 // elsewhere caused (a dialog closed by a click, giving focus back) should not
 // open it either, as `:focus-visible` would have it. Read here rather than
 // with `matches(":focus-visible")`, which some engines don't answer.
+// On the window, in the capture phase, from when this module loads: before
+// any listener a component adds later, so one that stops a key there (the
+// context ring's Escape) cannot hide it from this one.
 let byKeyboard = false;
-if (typeof document !== "undefined") {
-  document.addEventListener("keydown", (event) => {
+if (typeof window !== "undefined") {
+  window.addEventListener("keydown", (event) => {
     if (!event.metaKey && !event.ctrlKey && !event.altKey) byKeyboard = true;
   }, true);
-  document.addEventListener("pointerdown", () => { byKeyboard = false; }, true);
+  window.addEventListener("pointerdown", () => { byKeyboard = false; }, true);
 }
 
 /**
@@ -60,6 +63,10 @@ function own(event: SyntheticEvent): boolean {
   return !opened || opened === trigger || !trigger.contains(opened);
 }
 
+/** Whether the keyboard moved focus last, for a card of its own that opens
+ * on focus as a tip does (ContextUsage, the turn dock's preview). */
+export const focusByKeyboard = () => byKeyboard;
+
 export type TipSide = "top" | "right" | "bottom" | "left";
 export type TipTone = "ok" | "bad" | "attention" | "working" | "info" | "quiet";
 
@@ -74,6 +81,9 @@ export type TipTone = "ok" | "bad" | "attention" | "working" | "info" | "quiet";
  *    technology while it shows (aria-describedby). Off where the trigger's
  *    own name or description already says it.
  *  - `open`, `onOpenChange`: to decide when it may show, or show it by hand.
+ * Content may come and go (empty: no tip), and the trigger stays the same
+ * element either way: switching between a bare child and a wrapped one
+ * would remount it, and a dialog opened from it would lose its place.
  */
 export function Tip({
   content,
@@ -101,7 +111,8 @@ export function Tip({
 }) {
   const present = useContext(Present);
   const language = useLanguage();
-  if (content == null || content === false || content === "" || !isValidElement(children)) return children;
+  if (!isValidElement(children)) return children;
+  const empty = content == null || content === false || content === "";
   const props = children.props as Record<string, unknown>;
   // Radix marks its trigger with `data-state` and, while open,
   // `aria-describedby`. A trigger's own values of either win, and a trigger
@@ -112,7 +123,7 @@ export function Tip({
     ...(!describe || props["aria-describedby"] !== undefined ? { "aria-describedby": props["aria-describedby"] } : {}),
   } as Record<string, unknown>);
   const tip = (
-    <Tooltip.Root open={open} onOpenChange={onOpenChange}>
+    <Tooltip.Root open={empty ? false : open} onOpenChange={empty ? undefined : onOpenChange}>
       <Tooltip.Trigger
         asChild
         onFocus={(event) => { if (!byKeyboard || !own(event)) event.preventDefault(); }}
@@ -120,7 +131,7 @@ export function Tip({
       >
         {trigger}
       </Tooltip.Trigger>
-      <Tooltip.Portal>
+      {!empty && <Tooltip.Portal>
         <Tooltip.Content
           className={className ? `tip ${className}` : "tip"}
           side={side}
@@ -133,7 +144,7 @@ export function Tip({
         >
           {content}
         </Tooltip.Content>
-      </Tooltip.Portal>
+      </Tooltip.Portal>}
     </Tooltip.Root>
   );
   // A tip drawn where no provider is (a page of its own) brings one.
@@ -180,3 +191,25 @@ export function TipText({ title, kbd, status, tone, body, meta, when, value, lab
     </>
   );
 }
+
+/**
+ * Recharts' own tooltip drawn as the app's one tip: its box, its label and
+ * its rows, from tip.css's tokens. It keeps Recharts' timing: a chart's
+ * readout follows the pointer across the data at once, which a delay would
+ * only lag.
+ */
+export const chartTip: { contentStyle: CSSProperties; labelStyle: CSSProperties; itemStyle: CSSProperties; wrapperStyle: CSSProperties } = {
+  contentStyle: {
+    background: "var(--tip-bg)",
+    border: "1px solid var(--tip-line)",
+    borderRadius: "var(--tip-radius)",
+    padding: "var(--tip-pad)",
+    boxShadow: "var(--tip-shadow)",
+    color: "var(--ink)",
+    fontSize: "var(--tip-font)",
+    lineHeight: 1.45,
+  },
+  labelStyle: { margin: 0, color: "var(--ink)", fontWeight: 700 },
+  itemStyle: { padding: 0, color: "var(--text-secondary)" },
+  wrapperStyle: { zIndex: 60, outline: "none" },
+};

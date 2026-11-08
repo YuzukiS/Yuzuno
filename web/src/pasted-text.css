@@ -48,32 +48,30 @@
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+/* CodeMirror's tooltip for a folded paste, drawn as the app's one tip is
+   (tip.css); its base theme's own border and background give way. */
 .cm-tooltip.pasted-text-preview-container {
-  max-width: min(420px, 85vw);
+  max-width: min(420px, calc(100vw - 16px));
+  box-sizing: border-box;
+  border: 1px solid var(--tip-line);
+  border-radius: var(--tip-radius);
+  background: var(--tip-bg);
+  box-shadow: var(--tip-shadow);
   color: var(--ink);
-  background: var(--input);
-  border-radius: 7px;
-  border: 1px solid var(--line);
-  box-shadow: 0 5px 18px #0002;
+  pointer-events: none;
 }
 .pasted-text-preview {
-  padding: 10px 12px;
+  display: grid;
+  gap: 2px;
+  padding: var(--tip-pad);
+  font-size: var(--tip-font);
+  line-height: 1.45;
+  white-space: normal;
 }
 .pasted-text-preview pre {
-  font:
-    12px/1.5 ui-monospace,
-    monospace;
-  margin: 0 0 7px;
-  max-height: 126px;
-  overflow: hidden;
-  white-space: pre-wrap;
+  margin: 0;
+  max-height: calc(1.5em * 6);
   overflow-wrap: anywhere;
-}
-.pasted-text-preview small {
-  display: block;
-  white-space: normal;
-  color: var(--text-secondary);
-  font-size: 10px;
 }
 .pasted-text-source-label {
   display: grid;

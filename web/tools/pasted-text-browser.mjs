@@ -726,16 +726,20 @@ try {
             hint = inner.querySelector("small");
           const r = el.getBoundingClientRect(),
             h = hint.getBoundingClientRect();
+          // The app's one tip (YN-44): its tokens, which follow the text size.
           const probe = document.createElement("div");
-          probe.style.background = "var(--input)";
+          probe.style.cssText = "background: var(--tip-bg); border-radius: var(--tip-radius); padding: var(--tip-pad)";
           document.body.append(probe);
-          const expectedBackground = getComputedStyle(probe).backgroundColor;
+          const p = getComputedStyle(probe);
+          const expected = { background: p.backgroundColor, radius: p.borderTopLeftRadius, padding: p.paddingTop };
           probe.remove();
           return {
-            radius: s.borderRadius,
+            radius: s.borderTopLeftRadius,
+            expectedRadius: expected.radius,
             background: s.backgroundColor,
-            expectedBackground,
+            expectedBackground: expected.background,
             padding: getComputedStyle(inner).paddingTop,
+            expectedPadding: expected.padding,
             width: r.width,
             left: r.left,
             right: r.right,
@@ -743,8 +747,8 @@ try {
             viewport: innerWidth,
           };
         });
-        assert.equal(styles.radius, "7px");
-        assert.equal(styles.padding, "10px");
+        assert.equal(styles.radius, styles.expectedRadius);
+        assert.equal(styles.padding, styles.expectedPadding);
         assert.ok(
           styles.width <= 420 &&
             styles.left >= 0 &&
