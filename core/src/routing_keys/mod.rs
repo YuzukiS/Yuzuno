@@ -44,6 +44,9 @@ const VERSION: u32 = 1;
 /// The longest key, token or reference taken.
 const MAX_VALUE: usize = 8 * 1024;
 
+/// O_NOFOLLOW, from rustix: libc is a dependency on Linux-gnu only, and Core
+/// also builds for macOS.
+const NOFOLLOW: i32 = rustix::fs::OFlags::NOFOLLOW.bits() as i32;
 /// One read-modify-write of the file at a time in this Core.
 static WRITE: Mutex<()> = Mutex::new(());
 
@@ -246,10 +249,10 @@ impl Store {
             return Ok(Contents::default());
         }
         let path = self.path();
-        let mut file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path) {
+        let mut file = match OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Contents::default()),
-            Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
+            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) => {
                 bail!("The routing key file {} is a link: Core will not use it", path.display())
             }
             Err(error) => return Err(error).with_context(|| format!("Cannot read the routing key file {}", path.display())),
@@ -276,7 +279,7 @@ impl Store {
         let result = (|| -> Result<()> {
             // create_new: O_EXCL, so nothing already there is written into;
             // mode 0600 & !umask, never wider; then exactly 0600.
-            let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&temp)?;
+            let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(NOFOLLOW).open(&temp)?;
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
             file.write_all(&serde_json::to_vec_pretty(contents)?)?;
             file.sync_all()?;

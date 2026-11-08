@@ -123,7 +123,9 @@ async fn version() -> Result<(u32, u32, u32), Unavailable> {
     let missing = || unavailable("opMissing", "The 1Password CLI (op) is not installed on this host".into(), "这台主机没装 1Password CLI（op）".into());
     match run(&["--version"], None).await {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(missing()),
-        Err(_) | Ok(None) => Err(failed(None)),
+        // A run past the time limit counts as unreachable, as for read and check.
+        Ok(None) => Err(unreachable_now()),
+        Err(_) => Err(failed(None)),
         Ok(Some(output)) => version_in(&String::from_utf8_lossy(&output.stdout)).ok_or_else(|| failed(output.status.code())),
     }
 }

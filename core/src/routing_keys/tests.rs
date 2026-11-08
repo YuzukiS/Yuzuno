@@ -18,10 +18,10 @@ fn mode(path: &Path) -> u32 {
 }
 
 /// The umask is the process's: set it for one closure, then restore it.
-fn with_umask<T>(mask: libc::mode_t, run: impl FnOnce() -> T) -> T {
-    let before = unsafe { libc::umask(mask) };
+fn with_umask<T>(mask: rustix::fs::RawMode, run: impl FnOnce() -> T) -> T {
+    let before = rustix::process::umask(rustix::fs::Mode::from_raw_mode(mask));
     let out = run();
-    unsafe { libc::umask(before) };
+    rustix::process::umask(before);
     out
 }
 
