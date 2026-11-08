@@ -60,15 +60,24 @@ const fresh = () => ({
   ] } },
   // A run that checks a conflict has another save land first.
   conflictNext: false,
+  templates: { version: 2, laterTemplates: 0, templates: [
+    { id: "dev", label: "Development (PR)", harness: "codex", model: "gpt-6.1-sol" }, { id: "review", label: "Review", harness: "claude", routing: "fixed" }] },
 });
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const peakReason = { code: "peak", message: "DeepSeek's peak price now; off-peak from 12:00", messageZh: "现在是 DeepSeek 高峰价，12:00 起是闲时", condition: 0 };
-/** As Core would evaluate a policy now (a fixture's rule): DeepSeek at its peak, the pool's account #2 has most left. */
-function evaluation(policy) {
+/** As Core would judge a policy at an hour of the day (Asia/Shanghai, as the page's clock): one rule for
+ * evaluate and simulate, so a screenshot's picked time and its strip agree. DeepSeek is off-peak before
+ * 10:00; the claude-swap pool is out when an account is assumed used up; the Codex home runs low at 22:00. */
+const usedUp = { code: "poolNone", message: "No account has enough left (account #2 assumed used up)", messageZh: "没有够用的账号（假设账号 #2 用完）" };
+const codexLow = { code: "quotaLow", message: "5-hour left 4% (needs ≥ 15%)", messageZh: "5 小时剩 4%（要 ≥ 15%）" };
+function judged(policy, hour, assume) {
   let chosen = null;
   const candidates = policy.candidates.map((c) => {
     if (!c.enabled) return { id: c.id, state: "off", reasons: [], readings: [] };
-    if (c.harness === "opencode") return { id: c.id, state: "skipped", reasons: [peakReason], readings: [] };
+    const why = c.harness === "opencode" && hour >= 10 ? peakReason
+      : c.credential.kind === "pool" && assume?.accountsUsedUp?.length ? usedUp
+      : c.credential.kind === "codexHome" && hour >= 22 ? codexLow : null;
+    if (why) return { id: c.id, state: "skipped", reasons: [why], readings: [] };
     if (chosen) return { id: c.id, state: "notTried", reasons: [], readings: [] };
     chosen = c.id;
     return c.credential.kind === "pool" ? { id: c.id, state: "chosen",
@@ -81,6 +90,9 @@ function evaluation(policy) {
   const pick = candidates.find((c) => c.id === chosen);
   return { policyVersion: 3, evaluatedAt: ago(0), at: "preview", chosen, ...(pick?.accounts ? { account: { number: 2, fingerprint: "0f1e2d3c4b5a6978" } } : {}), candidates };
 }
+const shanghaiHour = (iso) => (new Date(iso).getUTCHours() + 8) % 24;
+/** "Now" is 14:00 in this fixture, whatever the clock says: the check's assertions don't move with it. */
+const evaluation = (policy, at, assume) => judged(policy, at ? shanghaiHour(at) : 14, assume);
 const PEAK = { timeZone: "UTC", slots: [{ days: [1, 2, 3, 4, 5], from: "01:00", to: "04:00" }, { days: [1, 2, 3, 4, 5], from: "06:00", to: "10:00" }] };
 let state = fresh();
 const notFound = { ok: false, reason: { code: "referenceNotFound", message: "1Password has no op://Yuzuno/OpenAI/api key", messageZh: "1Password 里找不到 op://Yuzuno/OpenAI/api key" } };
@@ -90,7 +102,7 @@ async function route(r) {
   if (url.hostname !== HOST) { report.unexpected.push(request.url()); return r.abort(); }
   const body = request.postData() ? JSON.parse(request.postData()) : undefined;
   // Evaluating is a read, by POST: not a write.
-  if (method !== "GET" && path !== "/api/routing/evaluate") report.writes.push({ method, path, body });
+  if (method !== "GET" && path !== "/api/routing/evaluate" && path !== "/api/routing/simulate") report.writes.push({ method, path, body });
   // A secret may be in its own write only.
   const own = (method === "PUT" && /^\/api\/routing\/keys\/[^/]+$/.test(path)) || (method === "PUT" && path === "/api/routing/1password/token");
   if (!own && (request.postData() ?? "").match(new RegExp(`${SECRET}|${TOKEN}`))) report.errors.push(`a secret was sent to ${method} ${path}`);
@@ -98,9 +110,20 @@ async function route(r) {
   const json = (value, status = 200) => r.fulfill({ status, json: value });
   if (path === "/api/routing/policy" && method === "GET") return json(state.policy);
   // S4b: Core's evaluation of the draft it is sent, the recent choices and today's spend.
-  if (path === "/api/routing/evaluate" && method === "POST") return json(evaluation(body.policy ?? state.policy.policy));
+  if (path === "/api/routing/evaluate" && method === "POST") return json(evaluation(body.policy ?? state.policy.policy, body.at, body.assume));
+  // The week, by the same rule: each day's stretches before 10:00, to 22:00 and to midnight.
+  if (path === "/api/routing/simulate" && method === "POST") {
+    const from = Date.parse(body.from), H = 3_600_000, segments = [], policy = body.policy ?? state.policy.policy;
+    for (let d = 0; d < 7; d++) for (const [a, b] of [[0, 10], [10, 22], [22, 24]])
+      segments.push({ from: new Date(from + (24 * d + a) * H).toISOString(), to: new Date(from + (24 * d + b) * H).toISOString(), chosen: judged(policy, a, body.assume).chosen });
+    return json({ segments });
+  }
+  if (path === "/api/executor-templates") {
+    if (method === "PUT") { state.templates = { version: state.templates.version + 1, templates: body.templates, laterTemplates: 0 }; }
+    return json({ workspace: state.templates, available: [], presets: [] });
+  }
   if (path === "/api/routing/choices") return json({ choices: [
-    { dispatchId: "d-905", taskId: "T-905", executorName: "T-905 · Dev", route: { ...evaluation(state.policy.policy), at: "dispatch", evaluatedAt: ago(6) } },
+    { dispatchId: "d-905", taskId: "T-905", executorName: "T-905 · Dev", route: { ...evaluation(state.policy.policy, undefined, undefined), at: "dispatch", evaluatedAt: ago(6) } },
     { dispatchId: "d-904", taskId: "T-904", route: { at: "start", evaluatedAt: ago(200), chosen: "cx", changedAtStart: { from: "cl", reason: "Account #2 ran low while waiting" },
       candidates: [{ id: "ds", state: "skipped", reasons: [peakReason], readings: [] }, { id: "cl", state: "skipped", reasons: [{ code: "poolNone", message: "No account has enough left", messageZh: "没有够用的账号" }], readings: [] },
         { id: "cx", state: "chosen", reasons: [], readings: [] }] } }] });
@@ -291,6 +314,20 @@ async function run({ width, height, theme, lang }) {
       await page.mouse.move(0, 0);
       assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, a record open`);
       await shot("recent");
+      // The week, assuming account #2 used up; the templates, one fixed.
+      const sim = order.locator(".routing-simulate");
+      await sim.locator(".routing-strip-row").nth(6).waitFor({ timeout: 10_000 });
+      await press(sim.locator(".routing-pill").nth(1));
+      // Assuming it, the pool is out: Codex until 22:00, then none (striped) each day.
+      await sim.locator(".routing-strip-run.is-wait").nth(6).waitFor({ timeout: 10_000 });
+      await sim.scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+      assert.deepEqual(await fits(), [], `${tag}: nothing wider than its box, the week drawn`);
+      await shot("simulate");
+      const fixedTemplate = order.locator('.routing-template[data-template="review"]');
+      await fixedTemplate.scrollIntoViewIfNeeded();
+      assert.match(await fixedTemplate.innerText(), lang === "zh" ? /固定：Claude Code/ : /Fixed: Claude Code/);
+      await shot("templates");
       assert.match(await order.locator(".routing-spend").innerText(), /\$3\.40 (of|\/) \$20/);
     }
     // The keys, scrolled to: a 1Password key whose reference isn't there.
