@@ -35,7 +35,7 @@ export function OpenCodeTool({ item, unconfirmed, notice, opened, onOpenChange }
     open={opened} onToggle={event => {
       if (event.target === event.currentTarget && event.currentTarget.open !== opened) onOpenChange?.(event.currentTarget.open);
     }}>
-    <ToolCallSummary open={!!opened} facts={facts} result={result} icon={callIcon(item, <SquareTerminal size={14} />)}
+    <ToolCallSummary facts={facts} result={result} icon={callIcon(item, <SquareTerminal size={14} />)}
       name={facts.name !== name ? <CallName name={facts.name} /> : <><strong>{name}</strong>{hint ? ` · ${String(hint)}` : ""}</>} />
     <div className="tool-content">
       {notice}

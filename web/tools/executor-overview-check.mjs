@@ -15,6 +15,16 @@
 //   design note, an irreversible runbook step): each Overview has the Ask's
 //   card inside the pane, its gate step waits for you, its row's ring says
 //   needs you, and its Conversation shows the same card instead.
+// - YN-46: at about 2000, 1440, 1100 and 390 px, light and dark, English and
+//   Chinese, and at 1440 again with At a glance closed. Where the pane is
+//   1000 px or wider (2000; 1440 with At a glance closed: open, it leaves the
+//   pane 928 px), two columns: its steps and what it is doing now on the
+//   right, beside the materials, changes, evidence and final report, which
+//   are no wider than 760 px; the steps column stays in view while the other
+//   scrolls. Narrower, the single column in today's order. A long acceptance
+//   stops at about 12 lines and scrolls inside, a fade at the edge with more
+//   beyond it; a short one keeps its own height. The gate card and the
+//   red → green row in both.
 // Screenshots of each, for the design Ask.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-overview-check.mjs
 import assert from "node:assert/strict";
@@ -29,7 +39,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "T-43 S3/S4", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], measures: {} };
+const report = { task: "T-43 S3/S4, YN-46", checks: [], screenshots: [], unexpected: [], writes: [], errors: [], measures: {} };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -68,10 +78,29 @@ const approval = { id: "q1", agentId: "yn21", method: "item/commandExecution/req
 const materials = (worktree, acceptance) => ({ capturedAt: ago(72), acceptance, repository: "owner/repo", baseSha: "635caab1".padEnd(40, "0"),
   worktree, returnRequirements: "Red then green; PR at a frozen head; evidence Job", handoverVersion: 3,
   contextSummary: "The selection jumps to the first row after a refresh when the list is filtered. Reproduced with a synthetic list of 40 rows." });
+// A dispatch's acceptance as long as a real one (synthetic text): it stops at about 12 lines (YN-46).
+const longAcceptance = [
+  "Step 1, before code: a one-page note on why the selection jumps, with the list and the filter that reproduce it.",
+  "Step 2: a failing test first, recorded red in a Job; then the fix, with the test left as it is.",
+  "- The selected row stays selected after a refresh, filtered or not.",
+  "- A row that left the list hands the selection to its neighbour, not to the first row.",
+  "- Keyboard: arrow keys move from where the selection is, never from the top.",
+  "- Nothing else moves: same rows, same order, same texts.",
+  "- en and zh;",
+  "- light and dark;",
+  "- phone and desktop.",
+  "- Checks: the red Job, the green Job, Chromium on the built dist at 1440 and 390, screenshots.",
+  "",
+  "Step 3: one PR titled [YN-22] …, from current main; two review rounds; PR CI green.",
+  "- Each round's reviewId and conclusion in the result, including any that did not pass.",
+  "- Known limits listed; P3 findings to the lead.",
+  "",
+  "Lab Cores and isolated browsers only.",
+].join("\n");
 const overview = {
   yn22: {
     agentId: "yn22", lifecycle: agents[1].executor, task: { id: "YN-22", title: agents[1].executor.task.title, status: "doing" },
-    template: { ...RED, deliveryMode: "pr" }, materials: materials("/fixture/app/.worktrees/yn-22", "A failing test first; the fix leaves the test as it is; two review rounds"),
+    template: { ...RED, deliveryMode: "pr" }, materials: materials("/fixture/app/.worktrees/yn-22", longAcceptance),
     steps: [
       { kind: "materials", state: "done", ref: { kind: "mail", readAt: ago(70) } },
       { kind: "job", label: "Write the failing test, record it red", state: "done", ref: { kind: "job", id: "j1", name: "red 1/1", status: "failed" } },
@@ -232,9 +261,61 @@ const measure = (page) => page.evaluate(() => {
   };
 });
 
-async function run({ width, height, theme, lang = "en" }) {
+// YN-46: where each part of the Overview is drawn, and its long materials.
+const layout = (page) => page.evaluate(() => {
+  const panel = document.querySelector("#executor-overview");
+  const rect = (el) => { const r = el.getBoundingClientRect(); return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), width: Math.round(r.width) }; };
+  const progress = panel.querySelector(":scope > .executor-overview-progress");
+  // The main column's parts, in the page's order: its gate's Ask, its request or banner, the materials, changes, evidence and report.
+  const main = [...panel.children].filter((el) => !el.matches(".executor-overview-head, .executor-overview-progress"))
+    .map((el) => ({ name: el.matches("details") ? "materials" : el.querySelector("h3")?.firstChild?.textContent?.trim() || el.className,
+      gate: el.matches(".gate-asks"), ...rect(el) }));
+  const capped = [...panel.querySelectorAll(".executor-overview-kv dd .executor-overview-capped")].map((el) => ({
+    label: el.closest("dd").previousElementSibling.textContent, height: Math.round(el.clientHeight), content: el.scrollHeight,
+    lineHeight: parseFloat(getComputedStyle(el).lineHeight) || null, fontSize: parseFloat(getComputedStyle(el).fontSize),
+    above: el.hasAttribute("data-above"), below: el.hasAttribute("data-below"),
+    tabIndex: el.getAttribute("tabindex"), role: el.getAttribute("role"), name: el.getAttribute("aria-label"),
+    fade: getComputedStyle(el, "::after").height,
+  }));
+  const pair = panel.querySelector(".executor-overview-evidence .pair");
+  const evidence = pair?.closest(".executor-overview-card");
+  return {
+    pane: document.querySelector(".main-panel").clientWidth, panel: rect(panel), head: rect(panel.querySelector(".executor-overview-head")),
+    progress: rect(progress), steps: rect(progress.querySelector(".executor-overview-card")), now: rect(progress.querySelector(".executor-overview-now")),
+    main, capped, scrollTop: Math.round(panel.scrollTop),
+    pair: pair ? { ...rect(pair), inside: evidence.getBoundingClientRect().left <= pair.getBoundingClientRect().left && evidence.getBoundingClientRect().right >= pair.getBoundingClientRect().right - 1,
+      tones: [...pair.querySelectorAll(".v [data-tone]")].map((v) => v.dataset.tone) } : null,
+  };
+});
+// Two columns where the pane is 1000 px or wider, one below: checked against what is drawn.
+function assertColumns(tag, id, l) {
+  const two = l.pane >= 1000;
+  const materials = l.main.find((part) => part.name === "materials");
+  const after = l.main.slice(l.main.indexOf(materials) + 1);
+  if (two) {
+    for (const part of l.main) {
+      assert.equal(part.left, l.main[0].left, `${tag} ${id}: ${part.name} in the main column`);
+      assert.ok(part.right <= l.progress.left - 20, `${tag} ${id}: ${part.name} left of the steps column (${part.right} / ${l.progress.left})`);
+      assert.ok(part.width <= 760, `${tag} ${id}: ${part.name} no wider than 760 px (${part.width})`);
+    }
+    assert.ok(Math.abs(l.progress.top - l.main[0].top) <= 1, `${tag} ${id}: the steps column starts with the main one (${l.progress.top} / ${l.main[0].top})`);
+    assert.ok(l.progress.width >= 299 && l.progress.width <= 381, `${tag} ${id}: the steps column 300 to 380 px (${l.progress.width})`);
+    assert.ok(l.now.top >= l.steps.bottom && l.now.left === l.steps.left, `${tag} ${id}: Doing now under the steps, in their column`);
+    assert.ok(Math.abs(l.head.right - l.progress.right) <= 1 && l.head.left === l.main[0].left, `${tag} ${id}: the header over both columns`);
+  } else {
+    assert.equal(l.progress.left, materials.left, `${tag} ${id}: one column`);
+    assert.equal(l.progress.width, materials.width, `${tag} ${id}: one column, one width`);
+    assert.ok(materials.bottom <= l.progress.top && after.every((part) => l.progress.bottom <= part.top), `${tag} ${id}: today's order: materials, steps and Doing now, then the rest`);
+  }
+  for (let i = 1; i < l.main.length; i += 1) assert.ok(l.main[i].top >= l.main[i - 1].bottom + 8, `${tag} ${id}: ${l.main[i].name} after ${l.main[i - 1].name}, a gap between`);
+  return two;
+}
+
+async function run({ width, height, theme, lang = "en", glance = true }) {
   const phone = width < 600;
-  const tag = `${width}-${theme}-${lang}`;
+  const tag = `${width}${glance ? "" : "-noglance"}-${theme}-${lang}`;
+  // YN-46: two columns where the pane is 1000 px or wider; At a glance takes 272 px of a 1440 window.
+  const twoColumns = width >= 2000 || (width >= 1440 && !glance);
   const context = await browser.newContext({ viewport: { width, height }, locale: lang === "zh" ? "zh-CN" : "en-US", timezoneId: "Asia/Shanghai",
     reducedMotion: "reduce", colorScheme: theme, ...(phone ? { hasTouch: true, isMobile: true, deviceScaleFactor: 2 } : {}) });
   await context.addInitScript(({ theme, lang }) => {
@@ -260,6 +341,11 @@ async function run({ width, height, theme, lang = "en" }) {
       await press(page.locator(".agent-scope button").first());
     await press(page.locator(`.agent-list article[data-agent-id="${id}"] .agent-select`));
     await page.locator("#executor-overview .executor-overview-head").waitFor({ timeout: 10_000 });
+    // At a glance closed, as a user may: the pane is wider by its width.
+    if (!glance && await page.locator(".inspector-heading .icon-button").isVisible()) {
+      await press(page.locator(".inspector-heading .icon-button"));
+      await page.locator(".inspector").waitFor({ state: "detached", timeout: 5_000 });
+    }
     await page.mouse.move(0, 0);
   };
   const shot = async (name) => {
@@ -274,6 +360,51 @@ async function run({ width, height, theme, lang = "en" }) {
       if (id === "yn30" || id === "yn31") await page.locator("#executor-overview .gate-ask .home-ask-options").waitFor({ timeout: 10_000 });
       const m = await measure(page);
       report.measures[`${tag}-${id}`] = m;
+      // YN-46: its columns, its long materials, its gate card and its red → green row.
+      const l = await layout(page);
+      m.layout = l;
+      const two = assertColumns(tag, id, l);
+      assert.equal(two, twoColumns, `${tag} ${id}: ${twoColumns ? "two columns" : "one column"} (pane ${l.pane} px)`);
+      for (const c of l.capped) {
+        if (id === "yn22" && c === l.capped[0]) {
+          assert.equal(c.label, lang === "zh" ? "验收" : "Acceptance");
+          assert.ok(c.content > c.height + 20, `${tag}: a long acceptance scrolls inside (${c.content} / ${c.height})`);
+          assert.ok(c.height >= 10 * c.fontSize && c.height <= 16 * c.fontSize, `${tag}: about 12 lines (${c.height} px at ${c.fontSize} px)`);
+          assert.ok(c.below && !c.above && parseFloat(c.fade) > 0, `${tag}: a fade where more is below`);
+          assert.deepEqual([c.tabIndex, c.role, c.name], ["0", "region", c.label], `${tag}: a region a keyboard can scroll`);
+        } else {
+          assert.ok(c.content <= c.height + 1, `${tag} ${id}: a short ${c.label} keeps its own height (${c.content} / ${c.height})`);
+          assert.ok(!c.below && !c.above && c.fade === "0px" && c.tabIndex === null && c.role === null, `${tag} ${id}: no fade, no region for a short ${c.label}`);
+        }
+      }
+      if (id === "yn22") {
+        assert.deepEqual([l.pair?.inside, l.pair?.tones], [true, ["bad", "ok"]], `${tag}: the red → green row in its Evidence`);
+        // To its end: the fade moves to the top.
+        const edges = () => page.evaluate(() => { const el = document.querySelector("#executor-overview .executor-overview-capped"); return [el.hasAttribute("data-above"), el.hasAttribute("data-below")]; });
+        await page.evaluate(() => { const el = document.querySelector("#executor-overview .executor-overview-capped"); el.scrollTop = el.scrollHeight; });
+        await page.waitForFunction(() => { const el = document.querySelector("#executor-overview .executor-overview-capped"); return el.hasAttribute("data-above") && !el.hasAttribute("data-below"); });
+        assert.deepEqual(await edges(), [true, false], `${tag}: at its end, the fade at the top`);
+        await shot("yn22-materials-end");
+        await page.evaluate(() => { document.querySelector("#executor-overview .executor-overview-capped").scrollTop = 0; });
+        await page.waitForFunction(() => { const el = document.querySelector("#executor-overview .executor-overview-capped"); return !el.hasAttribute("data-above") && el.hasAttribute("data-below"); });
+        check(`${tag}: a long acceptance stops at about 12 lines and scrolls, a fade at the edge with more`);
+        if (two) {
+          // A shorter window: the main column scrolls, the steps column stays in view.
+          await page.setViewportSize({ width, height: 640 });
+          await page.evaluate(() => { const panel = document.querySelector("#executor-overview"); panel.scrollTop = panel.scrollHeight; });
+          await page.waitForFunction(() => document.querySelector("#executor-overview").scrollTop > 0);
+          const s = await layout(page);
+          m.scrolled = s;
+          assert.ok(s.main[0].top < s.panel.top, `${tag}: the main column scrolled (${s.main[0].top} / ${s.panel.top})`);
+          assert.ok(s.progress.top >= s.panel.top + 10 && s.progress.top <= s.panel.top + 18 && s.progress.bottom <= s.panel.bottom,
+            `${tag}: the steps column in view, at the Overview's top padding (${s.progress.top}–${s.progress.bottom} in ${s.panel.top}–${s.panel.bottom})`);
+          await shot("yn22-scrolled");
+          await page.evaluate(() => { document.querySelector("#executor-overview").scrollTop = 0; });
+          await page.setViewportSize({ width, height });
+          check(`${tag}: the steps column stays in view while the main one scrolls`);
+        }
+      }
+      if (id === "yn30" || id === "yn31") assert.ok(l.main[0].gate, `${tag} ${id}: its gate's card first in the main column`);
       assert.equal(m.overflowX, false, `${tag} ${id}: nothing wider than the Overview`);
       assert.deepEqual(m.wide, [], `${tag} ${id}: every part inside the pane`);
       assert.deepEqual(m.overlaps, [], `${tag} ${id}: no step's label runs into its record`);
@@ -365,12 +496,9 @@ async function run({ width, height, theme, lang = "en" }) {
 }
 
 try {
-  for (const theme of ["light", "dark"]) {
-    await run({ width: 1440, height: 900, theme });
-    await run({ width: 390, height: 844, theme });
-  }
-  await run({ width: 1440, height: 900, theme: "light", lang: "zh" });
-  await run({ width: 390, height: 844, theme: "light", lang: "zh" });
+  for (const lang of ["en", "zh"])
+    for (const theme of ["light", "dark"])
+      for (const [width, height, glance] of [[2000, 1200], [1440, 900], [1440, 900, false], [1100, 800], [390, 844]]) await run({ width, height, theme, lang, glance });
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.unexpected, []);
   assert.deepEqual(report.writes, [], "no collaboration write: a check only reads");

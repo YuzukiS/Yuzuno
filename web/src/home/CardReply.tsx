@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { LoaderCircle, MessageSquareReply, Send, Trash2, X } from "lucide-react";
-import { shortcutModifier } from "../api";
+import { errorText, HttpError, shortcutModifier } from "../api";
 import { CopyButton } from "../components";
 import { useStrings } from "../i18n";
 import { useSurfaceIn } from "../surface";
@@ -8,7 +8,7 @@ import { returnKey, returnSends, useDevicePreferences } from "../device-preferen
 import { touchKeyboard } from "../touch-input";
 import type { Agent } from "../types";
 import { TargetPicker } from "./AskReply";
-import { dropPendingReply, explain, OLDER_CORE, olderCore, outboxKey, pendingReply, sendReply } from "./home-api";
+import { dropPendingReply, explain, latestSection, OLDER_CORE, olderCore, outboxKey, pendingReply, resendReply, sendReply } from "./home-api";
 import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import type { ProjectPanel, Section } from "./types";
@@ -16,28 +16,39 @@ import type { ProjectPanel, Section } from "./types";
 /**
  * Replies to report and status cards (T-174). A reply goes to the card's
  * author, or to an Agent the user picks when the author can't take it, as one
- * user message through Core. It names the card's key, title and the version
- * on screen when the user began it. A newer version arriving meanwhile never
- * changes what the reply refers to: Core sends it only while it still has
- * that version, and the user can refer the reply to the newer one. It changes
- * no ask, task or Seen mark.
+ * user message through Core. It names the card's key, and the version and
+ * title it goes to: always the card's latest (YN-38), the one on screen when
+ * it is sent. Should Core have a newer one by then, Core refuses that version
+ * and the reply goes to the newer one, as Home reads it then. It changes no
+ * ask, task or Seen mark.
  *
  * A card can show in several places at once (its project, a pinned widget,
- * History): every place shows the same reply, one per card, so the text, the
- * version it refers to and a send in progress are shared, and a send started
- * in one place blocks another anywhere. Drafts are kept across reloads until
- * sent or discarded, also after their card has left Home.
+ * History): every place shows the same reply, one per card, so the text and
+ * a send in progress are shared, and a send started in one place blocks
+ * another anywhere. Drafts are kept across reloads until sent or discarded,
+ * also after their card has left Home.
  */
 
 export type CardDraft = {
   key: string;
   text: string;
-  /** The version and title the reply refers to. */
-  version: number;
+  /** The card's title when last written in, said if the card leaves Home. */
   title: string;
   agentId: string;
   at: string;
+  /** Drafts from before YN-38: the version they were begun on, not used. */
+  version?: number;
 };
+
+/** Core refused the version a card reply named: the card has a newer one,
+ * or another section is under its key now. Nothing was sent. */
+const movedOn = (error: unknown) =>
+  error instanceof HttpError && error.code === "message_not_submitted" && /^section_changed:/.test(errorText(error));
+
+/** The card as Core has it now takes a reply: live and not an ask, or the
+ * newest report History keeps under its key, marked seen (referableHistory). */
+const takesReply = (section: Section) =>
+  section.kind !== "ask" && (!section.history || (section.kind === "report" && section.historyReason === "seen"));
 
 const drafts = draftStore<CardDraft>("yuzuno.home-card-drafts.v1");
 
@@ -142,8 +153,10 @@ export function CardReply({
   const slot = cardReplySlot(workspaceId, projectId, section.key);
   const { draft, busy, error, sent } = useReplyState(slot);
   const ownerOpen = section.owner.state === "active" && agents.some((a) => a.id === section.owner.agentId);
-  // Begun here when no place has one: bound to the version on screen now, or
-  // to the one an unconfirmed send names.
+  // The card as this place shows it now, read when sent.
+  const onScreen = useRef(section);
+  onScreen.current = section;
+  // Begun here when no place has one, with an unconfirmed send's words.
   useEffect(() => {
     if (replyState(slot).draft) return;
     const kept = pendingReply(slot);
@@ -151,8 +164,7 @@ export function CardReply({
       draft: {
         key: section.key,
         text: kept?.text ?? "",
-        version: kept?.version ?? section.version,
-        title: kept?.version !== undefined ? kept.title ?? section.title : section.title,
+        title: section.title,
         agentId: kept?.agentId ?? (ownerOpen ? section.owner.agentId : ""),
         at: new Date().toISOString(),
       },
@@ -173,12 +185,11 @@ export function CardReply({
   // On the reply as it is now: another place, or a change not drawn yet, may
   // have moved it on since this render.
   const change = (patch: Partial<CardDraft>) =>
-    update(slot, { draft: { ...(replyState(slot).draft ?? draft), ...patch, at: new Date().toISOString() } });
+    update(slot, { draft: { ...(replyState(slot).draft ?? draft), title: onScreen.current.title, ...patch, at: new Date().toISOString() } });
   const target = agents.some((a) => a.id === draft.agentId) ? draft.agentId : "";
   const named = agents.find((a) => a.id === target)?.name || null;
   const name = named ?? t.theAgent;
-  const changed = section.version !== draft.version;
-  // An attempt Core has not answered: only its retry, unchanged, is safe.
+  // An attempt Core has not answered: the same words go again as it was.
   const unconfirmed = !busy && !!pendingReply(slot);
   async function send() {
     // Read now, not from this render: another place may be sending.
@@ -186,21 +197,37 @@ export function CardReply({
     const reply = current.draft;
     const value = reply?.text.trim();
     if (!reply || !value || !target || current.busy) return;
+    const shown = onScreen.current;
     update(slot, { busy: true, error: "", sent: null });
     try {
-      const receipt = await sendReply(slot, projectId, {
-        key: reply.key,
-        agentId: target,
-        text: value,
-        version: reply.version,
-        title: reply.title,
-      });
-      // The next reply here begins afresh, at the version now on screen; the
-      // box stays where it is.
+      // The same words to the same Agent, not confirmed: that attempt again,
+      // exactly as it was, so Core never delivers them twice; anything else
+      // goes to the version on screen.
+      const was = pendingReply(slot);
+      const retry = !!was && was.text === value && was.agentId === target && was.version !== undefined;
+      let to = retry ? { version: was!.version!, title: was!.title ?? "" } : { version: shown.version, title: shown.title };
+      let attempt = () =>
+        retry ? resendReply(slot, projectId, reply.key) : sendReply(slot, projectId, { key: reply.key, agentId: target, text: value, ...to });
+      let receipt;
+      // Refused because the card moved on: to its latest version, as Core has it (YN-38).
+      for (let tries = 0; ; tries += 1) {
+        try {
+          receipt = await attempt();
+          break;
+        } catch (e) {
+          if (tries >= 2 || !movedOn(e)) throw e;
+          const now = await latestSection(projectId, reply.key).catch(() => null);
+          if (!now || !takesReply(now) || (now.version === to.version && now.title === to.title)) throw e;
+          to = { version: now.version, title: now.title };
+          attempt = () => sendReply(slot, projectId, { key: reply.key, agentId: target, text: value, ...to });
+        }
+      }
+      // The next reply here begins afresh; the box stays where it is.
+      const { version: _begun, ...rest } = reply;
       update(slot, {
         busy: false,
-        sent: { status: receipt.status, to: named, version: reply.version },
-        draft: { ...reply, text: "", version: section.version, title: section.title, at: new Date().toISOString() },
+        sent: { status: receipt.status, to: named, version: to.version },
+        draft: { ...rest, text: "", title: to.title || shown.title, at: new Date().toISOString() },
       });
     } catch (e) {
       // Refused before it was read, so never submitted: no retry record.
@@ -209,11 +236,11 @@ export function CardReply({
     }
   }
   return (
-    <div className="home-card-reply" role="group" aria-label={t.replyLabel(draft.title)} ref={root}>
+    <div className="home-card-reply" role="group" aria-label={t.replyLabel(section.title)} ref={root}>
       <div className="home-card-reply-head">
         <MessageSquareReply size={13} aria-hidden="true" />
         <span>
-          {t.replyTo} <strong>“{draft.title}”</strong> · {t.version(draft.version)}
+          {t.replyTo} <strong>“{section.title}”</strong> · {t.version(section.version)}
         </span>
         {onClose && (
           <button type="button" className="icon-button" aria-label={t.closeReplyLabel} title={t.closeReply} onClick={onClose}>
@@ -225,29 +252,6 @@ export function CardReply({
       {!ownerOpen && (
         <p className="home-note">
           {t.chooseCardRecipient(section.owner.name, section.owner.state === "active" ? t.notInProject : t.ownerAway[section.owner.state])}
-        </p>
-      )}
-      {changed && (
-        <p className="home-note" role="status">
-          {section.version > draft.version
-            ? t.changedAfter(section.owner.name, section.version)
-            : t.placeShows(section.version)}
-          {t.stillRefers(draft.version)}{" "}
-          {unconfirmed ? (
-            t.sendAgainFirst
-          ) : (
-            <button
-              type="button"
-              className="inline-link"
-              disabled={busy}
-              onClick={() => {
-                change({ version: section.version, title: section.title });
-                update(slot, { error: "" });
-              }}
-            >
-              {t.referTo(section.version)}
-            </button>
-          )}
         </p>
       )}
       {unconfirmed && (
@@ -262,7 +266,7 @@ export function CardReply({
       >
         <textarea
           ref={field}
-          aria-label={t.replyField(draft.title)}
+          aria-label={t.replyField(section.title)}
           value={draft.text}
           rows={2}
           maxLength={20_000}
@@ -333,7 +337,7 @@ export function KeptCardReplies({
               </>
             ) : (
               <>
-                <p className="home-note">{t.keptNotSent(draft.title, draft.version)}</p>
+                <p className="home-note">{t.keptNotSent(draft.title)}</p>
                 <blockquote>{draft.text}</blockquote>
               </>
             )}

@@ -130,8 +130,15 @@ function mount() {
     if (!("pointerType" in event) || event.pointerType !== pointerType) Object.defineProperty(event, "pointerType", { value: pointerType });
     target.dispatchEvent(event);
   };
-  const tip = () => document.querySelector('body > [role="tooltip"].tool-call-tip');
-  return { window, document, errors, calls, render, speak, openTools, row, capsule, pointer, tip, close: () => window.close() };
+  // The app's one tip (Tip.tsx, YN-44): Radix draws it in a wrapper of its own in the body.
+  const tip = () => document.querySelector('.tip.tool-call-tip[role="tooltip"]');
+  // A keyboard's focus (a key first) opens a tip; a press's does not.
+  const keyFocus = (target) => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    target.focus();
+  };
+  const key = (name) => (document.activeElement ?? document.body).dispatchEvent(new window.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
+  return { window, document, errors, calls, render, speak, openTools, row, capsule, pointer, tip, keyFocus, key, close: () => window.close() };
 }
 const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -277,7 +284,7 @@ test("a call's own error flag comes first: never returned, never a summary of wh
     ["6 tool steps", "5 failed", "1 refused"]);
   // Nor does its tip or its opened row read it as saved.
   const summary = page.row("e2").querySelector(":scope > summary");
-  summary.focus();
+  page.keyFocus(summary);
   await tick();
   assert.match(page.tip().textContent, /failed/);
   assert.doesNotMatch(page.tip().textContent, /saved/);
@@ -372,9 +379,10 @@ test("hover and keyboard focus show a few more facts, which Escape hides; a touc
   page.render([codex("c2", "task_update", answers.task_update), codex("c7", "peer_send", answers.peer_send)]);
   await page.openTools();
   const summary = page.row("c2").querySelector(":scope > summary");
-  page.pointer(summary, "pointerover");
+  page.pointer(summary, "pointermove");
+  await tick(150);
   assert.equal(page.tip(), null, "not at once: a pointer passing over shows nothing");
-  await tick(320);
+  await tick(250);
   const tip = page.tip();
   assert.ok(tip, "a resting mouse shows the tip");
   assert.equal(summary.getAttribute("aria-describedby"), tip.id);
@@ -383,21 +391,23 @@ test("hover and keyboard focus show a few more facts, which Escape hides; a touc
   assert.match(tip.textContent, /Status at receipt\s*Done/);
   assert.match(tip.textContent, /Version\s*50/);
   assert.match(tip.textContent, /doesn't mean code was merged or released/);
-  page.window.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  page.key("Escape");
   await tick();
   assert.equal(page.tip(), null, "Escape hides it");
   assert.equal(summary.hasAttribute("aria-describedby"), false);
   // Leaving hides it too.
-  page.pointer(summary, "pointerover");
-  await tick(320);
+  page.pointer(summary, "pointerout");
+  await tick(500);
+  page.pointer(summary, "pointermove");
+  await tick(400);
   assert.ok(page.tip());
   page.pointer(summary, "pointerout");
   await tick();
   assert.equal(page.tip(), null);
   // A touch opens no tip; the tap opens the row, which leads with the same facts.
   const mail = page.row("c7").querySelector(":scope > summary");
-  page.pointer(mail, "pointerover", "touch");
-  await tick(320);
+  page.pointer(mail, "pointermove", "touch");
+  await tick(400);
   assert.equal(page.tip(), null, "no tip from a touch");
   mail.click();
   await tick();
@@ -407,12 +417,13 @@ test("hover and keyboard focus show a few more facts, which Escape hides; a touc
   assert.match(opened.querySelector(".tool-call-details").textContent, /Delivered doesn't mean it was read or acted on/);
   // The raw input and result stay under it, as text.
   assert.match(opened.querySelector("pre").textContent, /"recipient"/);
-  // Keyboard focus shows the tip at once; leaving the capsule hides it.
-  summary.focus();
+  // Keyboard focus shows the tip at once; leaving the capsule hides it. It
+  // says what the call is, never what a click does (the user, YN-44).
+  page.keyFocus(summary);
   assert.equal(page.document.activeElement, summary);
   await tick();
   assert.ok(page.tip(), "keyboard focus shows the tip");
-  assert.match(page.tip().textContent, /Open the row for the raw input and result/);
+  assert.doesNotMatch(page.tip().textContent, /Open the row|Close the row/);
   summary.blur();
   await tick();
   assert.equal(page.tip(), null);
@@ -436,7 +447,7 @@ test("an answer's text stays text, in the capsule, the tip and the opened row", 
   assert.equal(page.capsule("x1").note, `${markup} updated · In progress`);
   assert.equal(page.capsule("x2").note, `to ${markup}`);
   assert.equal(page.capsule("x2").end, "sending");
-  page.row("x1").querySelector(":scope > summary").focus();
+  page.keyFocus(page.row("x1").querySelector(":scope > summary"));
   await tick();
   assert.match(page.tip().textContent, /onerror/);
   page.row("x1").querySelector(":scope > summary").click();
@@ -474,7 +485,7 @@ test("in Chinese the capsule's words are Chinese; names, IDs and Core's codes st
   assert.equal(page.row("r1").querySelector(".tool-call-note").getAttribute("lang"), "", "Core's code is in no language of the page's");
   const heading = page.document.querySelector(".tool-activity > summary .tool-overview");
   assert.equal(heading.textContent, "8 个工具步骤已返回 6 次1 个被拒绝");
-  page.row("c2").querySelector(":scope > summary").focus();
+  page.keyFocus(page.row("c2").querySelector(":scope > summary"));
   await tick();
   assert.equal(page.tip().getAttribute("lang"), "zh-Hans");
   assert.match(page.tip().textContent, /回执时状态\s*已完成/);

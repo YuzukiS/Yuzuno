@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { readTip } from "./tip-dom.mjs";
 
 // The Agent list's unfinished-job label and its workspace-wide store, in an
 // in-memory bundle: no live Core, browser or web/dist.
@@ -122,23 +123,27 @@ test("labels follow each Agent's own unfinished jobs and keep other states first
     assert.equal(p.label("b"), "Waiting", "waiting for you comes first");
     assert.equal(p.label("c"), "Ready", "another Agent's jobs do not count");
     assert.match(
-      p.window.document.querySelector('[data-agent-id="a"] .agent-select').title,
+      p.window.document.querySelector('[data-agent-id="a"] .agent-select').getAttribute("aria-description"),
       /2 jobs queued or running/,
     );
     p.window.refreshLiveJobs("w1");
     p.replies.shift()({ agents: { a: { active: 1, unknown: 1 } } });
     await waitFor(() => p.label("a") === "Check job", "unknown only");
     assert.match(
-      p.window.document.querySelector('[data-agent-id="a"] .agent-select').title,
+      p.window.document.querySelector('[data-agent-id="a"] .agent-select').getAttribute("aria-description"),
       /unknown outcome still holds its reservation/,
     );
     // Running and unknown together: still waiting, and the hint says to check.
     p.window.refreshLiveJobs("w1");
     p.replies.shift()({ agents: { a: { active: 3, unknown: 1 } } });
     await waitFor(() => p.label("a") === "Waiting · Job", "running and unknown");
-    const title = p.window.document.querySelector('[data-agent-id="a"] .agent-select').title;
+    const title = p.window.document.querySelector('[data-agent-id="a"] .agent-select').getAttribute("aria-description");
     assert.match(title, /2 jobs queued or running/);
     assert.match(title, /1 job with an unknown outcome still holds its reservation/);
+    // Its card (YN-44) says the same in full, with no "See Jobs" hint.
+    const card = await readTip(p.window, p.window.document.querySelector('[data-agent-id="a"] .agent-select'));
+    assert.ok(card.includes("2 jobs queued or running. 1 job with an unknown outcome still holds its reservation."), card.join(" | "));
+    assert.doesNotMatch(card.join("\n"), /See Jobs|Check in Jobs/);
     p.window.refreshLiveJobs("w1");
     p.replies.shift()({ agents: {} });
     await waitFor(() => p.label("a") === "Ready", "cleared");

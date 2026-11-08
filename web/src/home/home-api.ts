@@ -4,7 +4,7 @@
  */
 import { api, errorText, HttpError, post } from "../api";
 import type { MessageReceipt } from "../types";
-import type { HomeData, MachineLoad } from "./types";
+import type { HomeData, MachineLoad, Section } from "./types";
 import { randomId } from "../random-id";
 
 const project = (id: string) => `/projects/${encodeURIComponent(id)}/brief`;
@@ -50,6 +50,20 @@ export type LinkedRepositories = {
 
 export const readHome = (signal?: AbortSignal) =>
   api<HomeData>("/home", { signal });
+
+/**
+ * The section under `key` as Core has it now (YN-38): the live one, else the
+ * newest entry History keeps under it, else null. Read only after Core
+ * refused a reply because the version on screen is no longer the latest, so
+ * the reply can go to the latest: it reads Home whole.
+ */
+export async function latestSection(projectId: string, key: string): Promise<Section | null> {
+  const home = await readHome();
+  const panel = home.projects.find((entry) => entry.project.id === projectId);
+  if (!panel) return null;
+  const live = [...panel.brief.sections, ...(panel.brief.teamSections ?? [])].find((section) => section.key === key);
+  return live ?? panel.brief.history.find((section) => section.key === key) ?? null;
+}
 
 /** Project Priority: only the display order changes. */
 export const saveHomeOrder = (projectIds: string[]) =>

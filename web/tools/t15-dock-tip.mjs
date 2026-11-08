@@ -203,9 +203,14 @@ check(!!drawn && drawn.atTop <= drawn.composer && drawn.atEnd <= drawn.composer,
 
 /** Hover or focus an item, then read where its tip went. */
 const tipAfter = async (how) => {
+  // The app's one tip (YN-44): after 300 ms of rest, or at once on a focus
+  // the keyboard moved (a key first).
   if (how === "pointer") await page.locator(".work-dock-item").nth(2).hover();
-  else await page.locator(".work-dock-item").nth(2).focus();
-  await page.waitForTimeout(250);
+  else {
+    await page.keyboard.press("Shift");
+    await page.locator(".work-dock-item").nth(2).focus();
+  }
+  await page.waitForTimeout(450);
   return page.evaluate(() => {
     const tip = document.querySelector(".work-dock-tip");
     if (!tip) return { there: false };
@@ -222,7 +227,8 @@ const tipAfter = async (how) => {
       there: true,
       box: { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom) },
       inViewport: r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight,
-      onPage: tip.parentElement === document.body,
+      // In Radix's wrapper, itself in the body.
+      onPage: tip.parentElement === document.body || tip.parentElement?.parentElement === document.body,
       insideScrollBox: !!tip.closest(".work-dock-scroll"),
       shown: style.visibility !== "hidden" && Number(style.opacity) !== 0,
       paint: `visibility ${style.visibility}, opacity ${style.opacity}`,
@@ -294,7 +300,7 @@ await touchContext.close();
 // not repeat it, and the tip must still be in the reader's language.
 const { context: wideContext, page: widePage } = await open(false, 1440);
 await widePage.locator(".work-dock-item").nth(2).hover();
-await widePage.waitForTimeout(300);
+await widePage.waitForTimeout(500);
 const wide = await widePage.evaluate(() => {
   const panel = document.querySelector(".main-panel");
   const tip = document.querySelector(".work-dock-tip");
@@ -305,7 +311,7 @@ const wide = await widePage.evaluate(() => {
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
   };
-  const inTip = tip?.querySelector("small.work-dock-when") ?? null;
+  const inTip = tip?.querySelector(".tip-when") ?? null;
   return {
     conversation: Math.round(panel?.getBoundingClientRect().width ?? 0),
     tipThere: !!tip,

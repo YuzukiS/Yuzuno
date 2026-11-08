@@ -476,6 +476,8 @@ test("image-only and mixed pasted requests retain attachment captions and exact 
           assert.match(node.textContent,/\[Image\]/);
           assert.equal(node.querySelectorAll(".pasted-text-chip").length,mixed ? 1 : 0);
         }
+        // The keyboard's focus previews a Turn (YN-44); a press's does not.
+        page.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
         page.document.querySelector('[data-turn-choice="image-turn"]').focus();
         const preview = await waitForPreviewState(() => {
           const shown = page.document.querySelector(".turn-dock-preview");
@@ -587,6 +589,8 @@ test("context tooltip has no fabricated live usage and Escape never interrupts w
       page.document.querySelector(".context-usage").dataset.level,
       "unknown",
     );
+    // A keyboard's focus opens its card, as any tip's (YN-44); a press's does not.
+    page.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
     trigger.focus();
     await pause();
     assert.match(
@@ -640,6 +644,7 @@ test("context color samples are confined to the labelled read-only preview", asy
         page.document.querySelector(".context-usage").dataset.level,
         level,
       );
+      page.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
       trigger.focus();
       await pause();
       assert.match(
@@ -5883,7 +5888,8 @@ test("an idle Agent with unfinished jobs shows Waiting · Job in the Agent list 
   const runtime = (id) =>
     page.document.querySelector(`[data-agent-id="${id}"] .agent-island`)?.getAttribute("data-status");
   const liveReads = () => page.calls.filter((c) => c.url.endsWith("/api/jobs/live")).length;
-  const title = (id) => page.document.querySelector(`[data-agent-id="${id}"] .agent-select`)?.title || "";
+  // What it waits on, as its link describes it (its card says the same, YN-44).
+  const title = (id) => page.document.querySelector(`[data-agent-id="${id}"] .agent-select`)?.getAttribute("aria-description") || "";
   // A jobs change makes the app read live jobs again; wait for that read,
   // then for what it should show.
   const jobsChanged = async (shows, what) => {
@@ -5898,10 +5904,7 @@ test("an idle Agent with unfinished jobs shows Waiting · Job in the Agent list 
     for (let n = 0; n < 40 && runtime("b") !== "Waiting · Job"; n++) await pause();
     assert.equal(runtime("b"), "Waiting · Job");
     assert.equal(runtime("a"), "Working", "a running Agent stays Working");
-    assert.match(
-      page.document.querySelector('[data-agent-id="b"] .agent-select').title,
-      /2 jobs queued or running/,
-    );
+    assert.match(title("b"), /2 jobs queued or running/);
     // One of two finished: still waiting.
     live = { agents: { b: { active: 1, unknown: 0 } } };
     await jobsChanged(() => /\b1 job queued or running/.test(title("b")), "one job left");

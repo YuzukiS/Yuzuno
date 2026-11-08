@@ -3,11 +3,12 @@ import { ChevronDown, LoaderCircle, Settings2 } from "lucide-react";
 import { api, errorText, post } from "./api";
 import { Modal } from "./components";
 import { ChoiceChips } from "./ChoiceChips";
-import type { Agent, AgentSettings as Settings, ContextUsage, Model, PermissionCatalog } from "./types";
+import type { Agent, AgentSettings as Settings, ContextUsage, Model, OpenCodeProvider, PermissionCatalog } from "./types";
 import { CodexContextSettings, TOKEN_INVALID, tokenSetting } from "./CodexContextSettings";
 import type { CodexContextSettings as ContextSettings } from "./types";
 import { CodexPermissions } from "./CodexPermissions";
 import { OpenCodeLogin } from "./OpenCodeLogin";
+import { OpenCodeModelPicker } from "./OpenCodeModelPicker";
 import { langTag, strings, useLanguage } from "./i18n";
 import "./agent-settings.css";
 
@@ -165,6 +166,10 @@ export function AgentSettings({
   const opencode = agent.harness === "opencode";
   const [reload, setReload] = useState(0);
   const [models, setModels] = useState<Model[]>([]);
+  // OpenCode (YN-47): its providers and where each gets its access, and the model OpenCode uses when none is chosen
+  // (`default`, YN-48's; absent from a Core without it).
+  const [providers, setProviders] = useState<OpenCodeProvider[]>();
+  const [resolvedDefault, setResolvedDefault] = useState<Model | null>();
   const [permissions, setPermissions] = useState<PermissionCatalog>();
   const [context, setContext] = useState<ContextSettings>();
   const [contextWindow, setContextWindow] = useState("");
@@ -183,13 +188,24 @@ export function AgentSettings({
   const [error, setError] = useState<Said>("");
   const [effortNote, setEffortNote] = useState<Said>("");
   const [openCodeNote, setOpenCodeNote] = useState<{ version: string; verified: string } | null>(null);
+  // Each read of the catalog gets the next number; only the latest one's answer is shown (YN-47).
+  const reads = useRef(0);
+  // The dialog's own read while it is out, and a re-read asked meanwhile: that waits for it, so the dialog's read
+  // (its permissions, context and a requested model) is never dropped for it (R1 81aad988 of #788).
+  const ownRead = useRef(0);
+  const rereadWanted = useRef(false);
   useEffect(() => {
     if (!open) return;
+    const read = ++reads.current;
+    ownRead.current = read;
     let valid = true;
+    const current = () => valid && read === reads.current;
     setLoading(true);
     setError("");
     setEffortNote("");
     setModels([]);
+    setProviders(undefined);
+    setResolvedDefault(undefined);
     setPermissions(undefined);
     setModel(agent.model);
     setSettings(agent.settings || defaults);
@@ -199,10 +215,12 @@ export function AgentSettings({
     setContextNote("");
     setOpenCodeNote(null);
     setPermissionMode(chosenMode(agent));
-    api<{ models: Model[]; permissions?: PermissionCatalog; context?: ContextSettings; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
-      .then(({ models, permissions, context, opencode: native }) => {
-        if (!valid) return;
+    api<{ models: Model[]; providers?: OpenCodeProvider[]; default?: Model | null; permissions?: PermissionCatalog; context?: ContextSettings; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
+      .then(({ models, providers, default: resolved, permissions, context, opencode: native }) => {
+        if (!current()) return;
         setModels(models);
+        setProviders(providers);
+        setResolvedDefault(resolved);
         // Which OpenCode the Agent runs, said only when Core notes it (T-32: newer than the one checked against).
         setOpenCodeNote(native?.note && native.version && native.verified ? { version: native.version, verified: native.verified } : null);
         setPermissions(permissions);
@@ -228,12 +246,47 @@ export function AgentSettings({
             s.reasoningEffort || selected?.defaultReasoningEffort || null,
         }));
       })
-      .catch((e) => valid && setError(errorText(e)))
-      .finally(() => valid && setLoading(false));
+      .catch((e) => current() && setError(errorText(e)))
+      .finally(() => {
+        const mine = ownRead.current === read;
+        if (mine) ownRead.current = 0;
+        if (current()) setLoading(false);
+        // A login or logout that finished while this read was out: read again, after it.
+        if (mine && valid && rereadWanted.current) {
+          rereadWanted.current = false;
+          rereadModels();
+        }
+      });
     return () => {
       valid = false;
+      // The next read, if any, is newer than any login: nothing waits.
+      if (ownRead.current === read) ownRead.current = 0;
+      rereadWanted.current = false;
     };
   }, [open, agent.id, agent.harness, reload]);
+  // After a login or logout (YN-47): OpenCode lists its providers' models
+  // anew, so the catalog is read again. Only the catalog: what is chosen here
+  // and not saved stays chosen, shown as current if no longer listed.
+  function rereadModels() {
+    if (ownRead.current) {
+      rereadWanted.current = true;
+      return;
+    }
+    const read = ++reads.current;
+    setLoading(true);
+    setError("");
+    api<{ models: Model[]; providers?: OpenCodeProvider[]; default?: Model | null; opencode?: { version?: string; verified?: string; note?: string } }>(`/agents/${encodeURIComponent(agent.id)}/models`)
+      .then(({ models, providers, default: resolved, opencode: native }) => {
+        if (read !== reads.current) return;
+        setModels(models);
+        setProviders(providers);
+        // A login can change which model OpenCode would use by default.
+        setResolvedDefault(resolved);
+        setOpenCodeNote(native?.note && native.version && native.verified ? { version: native.version, verified: native.verified } : null);
+      })
+      .catch((e) => read === reads.current && setError(errorText(e)))
+      .finally(() => read === reads.current && setLoading(false));
+  }
   useEffect(() => {
     if (!open || observedContextUsage === undefined) return;
     setContext((current) => current && ({ ...current,
@@ -432,6 +485,21 @@ export function AgentSettings({
           }}
         >
           <p className="agent-settings-location">{t.machine(agent.remote?.machine.name || null)}</p>
+          {opencode ? (
+            <div className="agent-setting">
+              <OpenCodeModelPicker
+                models={models}
+                providers={providers}
+                resolvedDefault={resolvedDefault}
+                value={model}
+                saved={agent.model}
+                savedVariant={agent.settings?.reasoningEffort || null}
+                loading={loading}
+                disabled={loading || saving}
+                onChange={(value) => selectModel(value, models, opencodeVariant)}
+              />
+            </div>
+          ) : (
           <div className="agent-setting">
             <ChoiceChips
               label={t.model}
@@ -469,6 +537,7 @@ export function AgentSettings({
               <small className="model-catalog-note">{selected.description}</small>
             )}
           </div>
+          )}
           {claude && (
             <div className="agent-setting">
               <ChoiceChips
@@ -569,7 +638,7 @@ export function AgentSettings({
           {opencode && openCodeNote && (
             <small className="model-catalog-note opencode-version-note">{t.openCodeNewer(openCodeNote.version, openCodeNote.verified)}</small>
           )}
-          {opencode && <OpenCodeLogin agentId={agent.id} disabled={loading || saving} />}
+          {opencode && <OpenCodeLogin agentId={agent.id} disabled={loading || saving} onChanged={rereadModels} />}
           {!claude && !opencode && (
             <>
               <div className="agent-setting">

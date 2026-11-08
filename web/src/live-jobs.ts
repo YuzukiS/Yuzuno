@@ -68,19 +68,20 @@ export function useAgentJobs(agentId: string): AgentJobs | undefined {
 }
 
 // The Agent list's words for an Agent's jobs (T-189). Each label keeps its
-// " · " and "/" parts, which the row's layout reads.
+// " · " and "/" parts, which the row's layout reads. Its detail says what
+// waits, not where to look (YN-44: the row's card has no such hints).
 const words = strings({
   waiting: "Waiting · Job",
   check: "Check job",
   unknown: (count: number) => `${count} job${count === 1 ? "" : "s"} with an unknown outcome still ${count === 1 ? "holds its" : "hold their"} reservation. `,
-  running: (count: number, unknown: string) => `${count} job${count === 1 ? "" : "s"} queued or running. ${unknown}See Jobs.`,
-  checkIn: (unknown: string) => `${unknown}Check in Jobs.`,
+  running: (count: number, unknown: string) => `${count} job${count === 1 ? "" : "s"} queued or running. ${unknown}`.trim(),
+  checkIn: (unknown: string) => unknown.trim(),
 }, {
   waiting: "等待中 · Job",
   check: "核对 Job",
   unknown: (count) => `${count} 个结果未知的 Job 仍占用其预留资源。`,
-  running: (count, unknown) => `${count} 个 Job 正在排队或运行。${unknown}请在 Job 中查看。`,
-  checkIn: (unknown) => `${unknown}请在 Job 中核对。`,
+  running: (count, unknown) => `${count} 个 Job 正在排队或运行。${unknown}`,
+  checkIn: (unknown) => unknown,
 });
 /** What the Agent list shows for an idle Agent with unfinished jobs, in
  * `language`: waiting on them, or only ones to check. */
