@@ -15,6 +15,7 @@ import {
   type ScopeEvidence,
 } from "./review-scope";
 import "./pr-reviews.css";
+import { randomId } from "./random-id";
 
 type Finding = {
   title: string;
@@ -348,7 +349,7 @@ export function PrReviews({
       notifyAgentId: notifyAgentId || null,
     };
     const key = JSON.stringify(payload);
-    const requestId = pendingStarts.current.get(key) || crypto.randomUUID();
+    const requestId = pendingStarts.current.get(key) || randomId();
     pendingStarts.current.set(key, requestId);
     const result = await mutate("/pr-reviews", { ...payload, requestId });
     if (result) pendingStarts.current.delete(key);

@@ -14,6 +14,7 @@ const apiSource = (
   await readFile(new URL("../src/api.ts", import.meta.url), "utf8")
 ).replace("import.meta.env.VITE_API_BASE", '""');
 const imagesSource = await readFile(new URL("../src/image-input.ts", import.meta.url), "utf8");
+const randomIdSource = await readFile(new URL("../src/random-id.ts", import.meta.url), "utf8");
 const hookSource = (
   await readFile(
     new URL("../src/useConversationSend.ts", import.meta.url),
@@ -22,7 +23,8 @@ const hookSource = (
 )
   .replace('"react"', JSON.stringify(import.meta.resolve("react")))
   .replace('"./api"', JSON.stringify(moduleUrl(apiSource)))
-  .replace('"./image-input"', JSON.stringify(moduleUrl(imagesSource)));
+  .replace('"./image-input"', JSON.stringify(moduleUrl(imagesSource)))
+  .replace('"./random-id"', JSON.stringify(moduleUrl(randomIdSource)));
 let useConversationSend;
 const WORKSPACE = "ws-1";
 /** The whole file, as it is on disk. */

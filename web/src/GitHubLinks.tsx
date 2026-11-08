@@ -15,6 +15,7 @@ import "./github-links.css";
 import { PrReviews } from "./PrReviews";
 import { PrOperations } from "./PrOperations";
 import { openJobs } from "./Jobs";
+import { randomId } from "./random-id";
 
 export type GitHubLink = {
   id: string;
@@ -430,7 +431,7 @@ function MergeQueueSwitch({ repositoryId, name, language, disabled }: {
     else void savePolicy("strict");
   };
   const unpause = async () => {
-    unpauseId.current ||= crypto.randomUUID();
+    unpauseId.current ||= randomId();
     const requestId = unpauseId.current;
     const done = await send(async () => {
       await api(`${path}/unpause`, { method: "POST", body: JSON.stringify({ requestId }) });

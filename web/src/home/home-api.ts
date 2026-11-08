@@ -5,6 +5,7 @@
 import { api, errorText, HttpError, post } from "../api";
 import type { MessageReceipt } from "../types";
 import type { HomeData, MachineLoad } from "./types";
+import { randomId } from "../random-id";
 
 const project = (id: string) => `/projects/${encodeURIComponent(id)}/brief`;
 
@@ -170,7 +171,7 @@ export async function sendReply(
     : {
         agentId: reply.agentId,
         text: reply.text,
-        clientMessageId: crypto.randomUUID(),
+        clientMessageId: randomId(),
         ...(reply.choice ? { choice: reply.choice } : {}),
         ...(reply.version !== undefined ? { version: reply.version, title: reply.title ?? "" } : {}),
         ...(reply.askVersion !== undefined ? { askVersion: reply.askVersion, workspaceId: reply.workspaceId ?? "" } : {}),

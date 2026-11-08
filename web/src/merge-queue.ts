@@ -4,6 +4,7 @@
 // panel reads and writes only Core's /api/merge-queue routes.
 import { api, HttpError } from "./api";
 import { strings, type Language } from "./i18n";
+import { randomId } from "./random-id";
 
 export const mergeStates = [
   "queued",
@@ -232,7 +233,7 @@ export function mergeActions() {
   return async function act<T>(action: MergeAction, target: string | number, reason: string) {
     const trimmed = reason.trim();
     const key = JSON.stringify([action, target, trimmed]);
-    const requestId = pending.get(key) || crypto.randomUUID();
+    const requestId = pending.get(key) || randomId();
     pending.set(key, requestId);
     try {
       const answer = await api<T>(actionPath(action, target), {

@@ -18,6 +18,7 @@ import {
   StateGroups,
   type Placement,
 } from "./JobParts";
+import { randomId } from "./random-id";
 
 export type Run = {
   id: string;
@@ -825,7 +826,7 @@ export function CiJobs({
         : {}),
     });
     if (request.current?.payload !== payload)
-      request.current = { payload, id: crypto.randomUUID() };
+      request.current = { payload, id: randomId() };
     try {
       await post("/ci", {
         ...JSON.parse(payload),

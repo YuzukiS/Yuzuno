@@ -1,4 +1,5 @@
 import { validDraftImages, type DraftImage } from "./image-input.ts";
+import { randomId } from "./random-id.ts";
 /** Draft text stays ordered. Paste bodies are immutable values, never labels sent to a Harness. */
 export type PastedText = {
   kind: "paste";
@@ -70,13 +71,13 @@ export function shouldFoldPaste(text: string) {
 export function pastedText(
   text: string,
   number: number,
-  id: string = crypto.randomUUID(),
+  id: string = randomId(),
 ): PastedText {
   return {
     kind: "paste",
     id,
     number,
-    bodyId: crypto.randomUUID(),
+    bodyId: randomId(),
     text,
     lines: lineCount(text),
     hasContent: !!text.trim(),
