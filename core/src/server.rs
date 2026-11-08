@@ -56,6 +56,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     ws.start_collaboration(port);
     ws.start_jobs();
     ws.start_executor_slots();
+    ws.start_routing_quotas();
     ws.start_archive_passes();
     ws.start_ci_monitor();
     ws.start_delivery();
@@ -78,6 +79,7 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .merge(crate::routing_keys::routes::router())
         .merge(crate::routing_accounts::routes::router())
         .merge(crate::routing_readings::routes::router())
+        .merge(crate::routing_policy::routes::router())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);

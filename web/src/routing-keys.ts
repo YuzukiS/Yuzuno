@@ -84,6 +84,21 @@ const path = (id: string) => `/routing/keys/${encodeURIComponent(id)}`;
 export const readKeys = (signal?: AbortSignal) => api<Partial<KeysView>>("/routing/keys", { signal }).then(keysView);
 export const readOnePassword = (signal?: AbortSignal) => api<{ token?: unknown; op?: unknown }>("/routing/1password", { signal }).then(onePasswordView);
 export const readAccounts = (signal?: AbortSignal) => api<Parameters<typeof accountsView>[0]>("/routing/accounts", { signal }).then(accountsView);
+/** Reading the accounts runs claude-swap (up to a minute): a read already
+ * under way is shared by the page's two blocks, unless a `fresh` one is asked
+ * for (Read again, a changed command), which the later callers then share. */
+let accountsRead: Promise<AccountsView> | null = null;
+export function readAccountsShared(fresh = false): Promise<AccountsView> {
+  if (!accountsRead || fresh) {
+    const read: Promise<AccountsView> = readAccounts().finally(() => { if (accountsRead === read) accountsRead = null; });
+    accountsRead = read;
+  }
+  return accountsRead;
+}
+/** Said on the window when a key, the token, the claude-swap command or the
+ * Codex homes changed here, so the candidate order offers what is there now. */
+export const ROUTING_CREDENTIALS_CHANGED = "yuzuno:routing-credentials-changed";
+export const announceCredentialsChanged = () => window.dispatchEvent(new Event(ROUTING_CREDENTIALS_CHANGED));
 
 /** Keeps a local key's value. The value goes in this one request body and
  * nowhere else; the answer says only that it is set. */

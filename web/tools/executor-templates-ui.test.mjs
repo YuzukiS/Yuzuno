@@ -521,7 +521,7 @@ test("a template has no limit of its own (T-43: one limit per machine); one save
 });
 
 test("a template's delivery, steps and when to choose it are kept by a save of another edit (YN-23)", async () => {
-  const workflow = { deliveryMode: "none", whenToChoose: "A read-only question",
+  const workflow = { deliveryMode: "none", whenToChoose: "A read-only question", routing: "fixed",
     steps: [{ kind: "materials" }, { kind: "work", label: "调查" }, { kind: "gate", approver: "either" }] };
   let workspace = { version: 1, templates: [{ id: "probe", label: "Probe", harness: "codex", ...workflow }] };
   const page = mount((url, method, body) => {

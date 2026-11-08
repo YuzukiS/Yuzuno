@@ -785,3 +785,124 @@ fn a_dispatch_in_a_project_gets_the_workspaces_template_of_that_id() {
         .query_row("SELECT template_json FROM executor_dispatches WHERE request_id='first'", [], |r| r.get(0)).unwrap();
     assert_eq!(serde_json::from_str::<Value>(&given).unwrap()["source"], "workspace");
 }
+
+/// YN-34 S3b2: routing at dispatch, on synthetic readings.
+mod routing {
+    use super::*;
+    use crate::{routing_keys::Provider, routing_launch::RuntimeProfile, routing_policy::evaluate::Gathered, routing_readings::DaySpend};
+
+    fn gathered(with_key: bool) -> Gathered {
+        Gathered { keys: if with_key { vec![("deepseek".into(), Provider::Deepseek, "local")] } else { vec![] }, codex_homes: vec![],
+            spend: DaySpend::default(), cswap: Value::Null, codex: vec![] }
+    }
+
+    fn routed(store: &Store, input: Value, with_key: bool) -> Plan {
+        match store.executor_dispatch_begin_routed(None, input, LocalDefault::Read(None), Some(&gathered(with_key))) {
+            Ok(Next::Create(plan)) => *plan,
+            Ok(Next::Dispatch(_)) => panic!("went on to a dispatch"),
+            Err(error) => panic!("{error:#}"),
+        }
+    }
+
+    /// The executor its plan makes, with the plan's harness (the waiting list reads it from the agent).
+    fn create_as_planned(store: &Store, plan: &Plan) {
+        let mut detail = agent_detail(&plan.dispatch.agent_id, &plan.name);
+        detail.agent.harness = plan.template.harness.clone();
+        store.insert_created_then(&detail, Some(plan.then())).unwrap();
+    }
+
+    fn route_of(store: &Store, agent: &str) -> Option<Value> {
+        store.db.read().unwrap().query_row("SELECT route_json FROM executor_dispatches WHERE agent_id=?1", [agent],
+            |r| r.get::<_, Option<String>>(0)).unwrap().map(|r| serde_json::from_str(&r).unwrap())
+    }
+
+    #[test]
+    fn routing_gives_a_dispatch_its_candidate_or_has_it_wait_and_a_fixed_template_is_as_it_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+        let p = project(&store);
+        templates(&store, json!([reviewer(), {"id":"fixed","label":"Fixed","harness":"claude","routing":"fixed"}]));
+        let policy = json!({"enabled": true, "whenNone": "wait", "candidates": [
+            {"id": "c-deepseek", "enabled": true, "harness": "opencode", "model": "deepseek/deepseek-flash",
+             "credential": {"kind": "apiKey", "keyId": "deepseek"}, "conditions": []},
+            {"id": "c-codex", "enabled": true, "harness": "codex", "model": "gpt-test", "reasoningEffort": "high",
+             "credential": {"kind": "login"}, "conditions": []}]});
+        store.save_routing_policy(0, policy).unwrap().unwrap();
+
+        // The first candidate whose conditions hold: DeepSeek on its key, on this Core host.
+        let one = task(&store, "One", Some(&p), None);
+        let plan = routed(&store, dispatch(&one, "one"), true);
+        assert_eq!((plan.template.harness.as_str(), plan.template.model.as_deref(), plan.machine.as_str()),
+            ("opencode", Some("deepseek/deepseek-flash"), "local"));
+        assert_eq!(plan.profile, Some(RuntimeProfile::ApiKey { key_id: "deepseek".into() }));
+        assert!(plan.template.permission_mode.is_none(), "a Claude permission is not an OpenCode one");
+        let route = route_of(&store, &plan.dispatch.agent_id).unwrap();
+        assert_eq!((route["chosen"].clone(), route["at"].clone(), route["excluded"].clone()), (json!("c-deepseek"), json!("dispatch"), json!([])));
+        create_as_planned(&store, &plan);
+        store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+        let current = store.collaboration_call(None, "task_get", json!({"taskId": one, "view": "current"})).unwrap();
+        assert_eq!(current["current"]["executorSlot"]["route"]["chosen"], "c-deepseek", "the task shows why: {current}");
+
+        // A fixed template starts as it says, with no route and no profile.
+        let mut input = dispatch(&task(&store, "Two", Some(&p), None), "two");
+        input["executor"]["templateId"] = json!("fixed");
+        let fixed = routed(&store, input, true);
+        assert_eq!((fixed.template.harness.as_str(), fixed.profile.clone(), route_of(&store, &fixed.dispatch.agent_id)), ("claude", None, None));
+
+        // A rebuild of the first leaves DeepSeek out: Codex, on the host's login, with its effort.
+        let mut rebuild = dispatch(&task(&store, "Three", Some(&p), None), &format!("rebuild:{}", plan.dispatch.agent_id));
+        rebuild["expectedVersion"] = json!(1);
+        let again = routed(&store, rebuild, true);
+        assert_eq!((again.template.harness.as_str(), again.template.model.as_deref(), again.template.reasoning_effort.as_deref(), again.profile.clone()),
+            ("codex", Some("gpt-test"), Some("high"), None));
+        let route = route_of(&store, &again.dispatch.agent_id).unwrap();
+        assert_eq!((route["chosen"].clone(), route["excluded"].clone(), route["candidates"][0]["state"].clone()),
+            (json!("c-codex"), json!(["c-deepseek"]), json!("failed")));
+
+        // None holds (no key, and Codex off): made with the first one's harness, and it waits in the queue.
+        let mut off = store.routing_policy().unwrap().policy;
+        off["candidates"][1]["enabled"] = json!(false);
+        store.save_routing_policy(1, off).unwrap().unwrap();
+        let waits = routed(&store, dispatch(&task(&store, "Four", Some(&p), None), "four"), false);
+        assert_eq!((waits.template.harness.as_str(), waits.template.model.clone(), waits.profile.clone()), ("opencode", None, None));
+        let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
+        assert_eq!((route["waiting"].clone(), route["chosen"].clone()), (json!(true), Value::Null));
+        create_as_planned(&store, &waits);
+        store.collaboration_call(None, "task_dispatch", waits.dispatch.input.clone()).unwrap();
+        assert!(crate::routing_policy::dispatch::waiting(&*store.db.read().unwrap(), &waits.dispatch.agent_id).unwrap());
+        let listed = store.routing_waiting().unwrap();
+        assert_eq!(listed.iter().map(|(a, h, m, _)| (a.clone(), h.clone(), m.clone())).collect::<Vec<_>>(),
+            [(waits.dispatch.agent_id.clone(), "opencode".to_owned(), "local".to_owned())]);
+        // The slot pass leaves it queued and takes the routed one ahead of it.
+        let in_flight = std::sync::Mutex::new(std::collections::HashSet::new());
+        assert_eq!(store.executor_slot_next(&in_flight).unwrap(), Some(plan.dispatch.agent_id.clone()));
+        assert_eq!(store.executor_slot_next(&in_flight).unwrap(), None, "the waiting one is not started");
+
+        // Routing turned off while it waits: it is released and starts as without routing (#805 R1 P2).
+        let mut off = store.routing_policy().unwrap();
+        off.policy["enabled"] = json!(false);
+        store.save_routing_policy(off.version, off.policy.clone()).unwrap().unwrap();
+        assert_eq!(store.release_routing_waiting().unwrap(), [waits.dispatch.agent_id.clone()]);
+        let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
+        assert_eq!((route["waiting"].clone(), route["released"]["code"].clone()), (json!(false), json!("routingOff")));
+        assert_eq!(store.executor_slot_next(&in_flight).unwrap(), Some(waits.dispatch.agent_id.clone()), "it starts in turn");
+        assert!(store.routing_waiting().unwrap().is_empty());
+        // On again, with no enabled candidate of its harness: none could ever be chosen, so it is released too.
+        let mut on = store.routing_policy().unwrap();
+        on.policy["enabled"] = json!(true);
+        on.policy["candidates"][0]["enabled"] = json!(false);
+        let reason = |policy: &Value, harness: &str| crate::routing_policy::dispatch::release_reason(policy, harness).map(|r| r["code"].clone());
+        assert_eq!((reason(&on.policy, "opencode"), reason(&on.policy, "codex")), (Some(json!("noCandidate")), Some(json!("noCandidate"))),
+            "DeepSeek off, and Codex off since earlier");
+        on.policy["candidates"][1]["enabled"] = json!(true);
+        assert_eq!((reason(&on.policy, "opencode"), reason(&on.policy, "codex")), (Some(json!("noCandidate")), None),
+            "an enabled Codex candidate may hold later, so a Codex executor keeps waiting");
+
+        // The newest choices first.
+        let choices = store.routing_choices(10).unwrap();
+        assert_eq!(choices.iter().map(|c| c["agentId"].as_str().unwrap().to_owned()).collect::<Vec<_>>(),
+            [waits.dispatch.agent_id.clone(), again.dispatch.agent_id.clone(), plan.dispatch.agent_id.clone()]);
+        assert_eq!((choices[0]["executorName"].clone(), choices[1].get("executorName")), (json!(waits.name), None),
+            "a made executor is named; the rebuild here was never made");
+    }
+}

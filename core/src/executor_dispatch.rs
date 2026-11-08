@@ -42,7 +42,10 @@ impl Workspace {
         let permit = self.admission.enter_work().map_err(|_| anyhow::Error::new(WaitsForUpdate))?;
         ensure!(input.get("toAgentId").is_none(), "invalid_input: give toAgentId or executor, not both");
         let (who, again) = (actor.map(str::to_owned), input.clone());
-        let next = match self.stored(move |store| store.executor_dispatch_begin(who.as_deref(), input, LocalDefault::Unread)).await {
+        // What routing reads, gathered outside the dispatch's transaction, while it is on (YN-34 S3b2).
+        let routing = self.routing_for_dispatch().await.map(Arc::new);
+        let (first, second) = (routing.clone(), routing);
+        let next = match self.stored(move |store| store.executor_dispatch_begin_routed(who.as_deref(), input, LocalDefault::Unread, first.as_deref())).await {
             // It chooses its machine (`auto`), and this Core host's Jobs
             // budget isn't saved: its default is read now, outside the
             // dispatch's transaction, which wrote nothing (R1 94ba0ebd). Only
@@ -50,7 +53,8 @@ impl Workspace {
             Err(error) if error.downcast_ref::<NeedsLocalBudget>().is_some() => {
                 let default_local = self.default_local_budget().await;
                 let who = actor.map(str::to_owned);
-                self.stored(move |store| store.executor_dispatch_begin(who.as_deref(), again, LocalDefault::Read(default_local.as_ref()))).await?
+                self.stored(move |store| store.executor_dispatch_begin_routed(who.as_deref(), again, LocalDefault::Read(default_local.as_ref()),
+                    second.as_deref())).await?
             }
             next => next?,
         };
@@ -116,6 +120,11 @@ impl Workspace {
         };
         let birth = Birth { id: plan.dispatch.agent_id.clone(), then: plan.then() };
         crate::server::create_executor(self, &plan.template, plan.name.clone(), cwd, machine, plan.project_id.clone(), birth).await?;
+        // The account or key routing chose, before any slot pass can start it (YN-34 S3b2).
+        if let Some(profile) = plan.profile.clone() {
+            let agent = plan.dispatch.agent_id.clone();
+            self.stored(move |store| store.set_runtime_profile(&agent, Some(&profile))).await?;
+        }
         Ok(())
     }
 

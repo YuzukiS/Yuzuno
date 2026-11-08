@@ -26,6 +26,8 @@ export type ExecutorTemplate = {
   steps?: TemplateStep[];
   /** One line: what work to choose it for. */
   whenToChoose?: string;
+  /** "fixed": its executors start as it says, whatever the routing policy (YN-34 S3); unset follows routing. */
+  routing?: "fixed";
 };
 export type DeliveryMode = "pr" | "direct-commit" | "none";
 export type StepKind = "materials" | "work" | "result" | "gate" | "job" | "pr" | "review" | "ci" | "merge";

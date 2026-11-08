@@ -148,6 +148,8 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         (with(json!({"harness":"claude","reasoningEffort":"high","model":"m"})), "A Claude Code template takes no reasoning effort"),
         (with(json!({"harness":"opencode","model":"m"})), "An OpenCode model is named <provider>/<model>"),
         (with(json!({"harness":"opencode","model":"deepseek/deepseek-flash","reasoningEffort":"high"})), "An OpenCode template takes no reasoning effort"),
+        // YN-34 S3a: a template follows routing, or is fixed against it.
+        (with(json!({"routing":"auto"})), "A template's routing is \"fixed\" or unset"),
         // T-35 S3a: a machine is named by its id.
         (with(json!({"machineId":""})), "A machine is named by its id, at most 128 characters"),
         (with(json!({"harness":"opencode","machineId":"lab-mac"})), "OpenCode executors run on this Core host only, not on lab-mac"),
@@ -409,7 +411,7 @@ async fn a_templates_delivery_steps_and_when_to_choose_round_trip_through_a_save
         "steps":[{"kind":"materials"},{"kind":"work","label":"设计说明"},{"kind":"result","label":"设计说明"},
             {"kind":"gate","label":"批准设计说明","approver":"either"},{"kind":"work","label":"切片实现"},{"kind":"job"},{"kind":"pr"},
             {"kind":"review","rounds":2},{"kind":"ci"},{"kind":"merge"}]});
-    let memo = json!({"id":"memo","label":"Memo","harness":"claude","deliveryMode":"none"});
+    let memo = json!({"id":"memo","label":"Memo","harness":"claude","deliveryMode":"none","routing":"fixed"});
     let commit = json!({"id":"results","label":"Results","harness":"codex","deliveryMode":"direct-commit"});
     let (status, saved) = call(&ws, "PUT", "/api/executor-templates",
         Some(json!({"expectedVersion":0,"templates":[design.clone(), memo.clone(), commit.clone(), template("plain", "codex")]}))).await;

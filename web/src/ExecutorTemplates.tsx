@@ -230,6 +230,8 @@ type Draft = {
   machine: string;
   /** Kept as saved: where a copied template came from (YN-2 S2). */
   origin?: ExecutorTemplate["origin"];
+  /** Kept as saved (YN-34 S3): the Settings page's routing section sets it. */
+  routing?: ExecutorTemplate["routing"];
   /** The id it was saved under, whose last change it shows (YN-24's `lastModified`); none for a new one. */
   savedId?: string;
   /** YN-23: "" is unset, which is "pr". */
@@ -253,6 +255,7 @@ const draftOf = (t: ExecutorTemplate): Draft => ({
   namePattern: t.namePattern ?? "", instructions: t.instructions ?? "",
   machine: t.machineId && t.machineId !== "local" ? t.machineId : "",
   ...(t.origin ? { origin: t.origin } : {}),
+  ...(t.routing ? { routing: t.routing } : {}),
   deliveryMode: t.deliveryMode ?? "",
   steps: t.steps ? t.steps.map(stepOf) : null,
   whenToChoose: t.whenToChoose ?? "",
@@ -298,6 +301,7 @@ const templateOf = (d: Draft): ExecutorTemplate => {
   // Kept as saved (T-35 S3): an OpenCode template runs on this Core host.
   if (d.machine && d.harness !== "opencode") template.machineId = d.machine;
   if (d.origin) template.origin = d.origin;
+  if (d.routing) template.routing = d.routing;
   if (d.deliveryMode) template.deliveryMode = d.deliveryMode;
   if (d.steps) template.steps = d.steps.map(stepTemplate);
   if (set(d.whenToChoose)) template.whenToChoose = set(d.whenToChoose);
