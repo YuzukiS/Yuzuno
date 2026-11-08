@@ -8,13 +8,13 @@ version; a later slice adds to it.
 | Slice | What it adds | State |
 | --- | --- | --- |
 | S1a | Routing keys: the key file, its write-only routes, reading a key through 1Password | Done |
-| S1b | Accounts: claude-swap's accounts and how a binding to one resolves, its launcher, Codex homes | This version |
-| S1c | Handing a key or account to one executor's harness process | Later |
+| S1b | Accounts: claude-swap's accounts and how a binding to one resolves, its launcher, Codex homes | Done |
+| S1c | Handing a key or account to one executor's harness process: Claude and OpenCode here, Codex next | This version |
 | S2–S4 | Readings, routing itself, the Settings page | Later |
 
-Nothing at this version starts an executor with a routing key or an account:
-S1a keeps keys and reads them on request, S1b lists accounts and resolves a
-binding, and S1c will hand one to an executor.
+An executor starts with a routing key or account only when its runtime
+profile names one, and nothing at this version sets a profile: routing
+itself (S3) will. Codex executors take a profile in the next part of S1c.
 
 ## Routing keys
 
@@ -175,4 +175,27 @@ once. The host's own login (`~/.codex`, or Core's `CODEX_HOME`) needs no entry.
 
 These routes are on Core's own port only, like the routing keys', and refuse
 any `Authorization` header: the cswap command is a program Core runs.
+
+## Starting an executor with a key or account
+
+[An executor's account or key](executor-model.md#an-executors-account-or-key)
+has the rules: where the profile lives, that each start reads it again, and
+that an executor is never moved to another account. This is what each harness
+gets, and what its tools can see. The key goes to that executor's process only:
+Core's own environment never holds it, so no other Agent, Job, review run or
+catalog read sees it.
+
+| Harness | Profile | What its process gets | What its tool commands can see |
+| --- | --- | --- | --- |
+| Claude Code | API key (Anthropic) | `ANTHROPIC_API_KEY`, and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` | Not the key: with the scrub, Claude Code strips credentials from the environment of its Bash commands, hooks and stdio MCP servers ([env vars](https://code.claude.com/docs/en/env-vars)). On Linux the scrub also runs Bash commands in their own PID namespace. |
+| Claude Code | claude-swap account | `YUZUNO_CSWAP_PYTHON` and `YUZUNO_CSWAP_ACCOUNT` for the launcher, which `cswap run` turns into that account's `CLAUDE_CONFIG_DIR` | The profile folder's path, as with any `CLAUDE_CONFIG_DIR`. Its login files are files, readable by anything running as you. |
+| OpenCode | API key | Its provider's variable: `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` | **The key.** OpenCode's shell tool runs with the server's environment. Its per-session environment setting covers the main session but not sub-sessions, so it is not used. This is a known limit. A login saved in that Agent's OpenCode takes precedence over the variable. |
+
+A key from 1Password is read once at each start (`op read`), held in memory and
+handed to that process. Why it cannot be read fails the start with its reason
+(see [Keys in 1Password](#keys-in-1password)).
+
+Apart from the scrub above, none of this protects a key from a program
+deliberately reading another process's environment or files as you: the 0600
+file, `/proc/<pid>/environ` and login files are all yours to read.
 

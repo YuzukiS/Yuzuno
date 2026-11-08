@@ -808,7 +808,9 @@ impl Workspace {
             Ok(crate::opencode_revert_files::Launcher::Native { path, .. }) => path.clone(),
             _ => named,
         };
-        let launch = Launch::new(start, cwd.into(), &folder, cache);
+        let mut launch = Launch::new(start, cwd.into(), &folder, cache);
+        // A routing key goes to this Agent's server only (YN-34 S1c).
+        launch.extra = self.opencode_launch(id).await?;
         let server = Arc::new(Server::start(&launch).await?);
         let pid = server.pid();
         // OpenCode's folders as it was started: Core's environment with the Agent's own on top.

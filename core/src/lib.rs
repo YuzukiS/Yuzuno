@@ -80,6 +80,7 @@ pub mod opencode_transfer;
 pub mod rail;
 pub mod routing_accounts;
 pub mod routing_keys;
+pub mod routing_launch;
 pub mod reading_handoff;
 pub mod record_rows;
 pub mod remote;

@@ -124,14 +124,20 @@ fn with_diagnostics(error: anyhow::Error, diagnostics: Option<String>) -> anyhow
 
 impl Bridge {
     pub(crate) async fn spawn(events: impl Into<crate::backlog::EventSender>) -> Result<Arc<Self>> {
-        Self::spawn_mode(events, None).await
+        Self::spawn_mode(events, None, &[]).await
+    }
+
+    /// One Agent's bridge with its routing account or key in its own
+    /// environment only (routing_launch.rs, YN-34 S1c).
+    pub(crate) async fn spawn_with(events: impl Into<crate::backlog::EventSender>, env: &[(String, crate::routing_keys::Secret)]) -> Result<Arc<Self>> {
+        Self::spawn_mode(events, None, env).await
     }
 
     pub(crate) async fn spawn_review(events: impl Into<crate::backlog::EventSender>, cwd: &std::path::Path) -> Result<Arc<Self>> {
-        Self::spawn_mode(events, Some(cwd)).await
+        Self::spawn_mode(events, Some(cwd), &[]).await
     }
 
-    async fn spawn_mode(events: impl Into<crate::backlog::EventSender>, review_cwd: Option<&std::path::Path>) -> Result<Arc<Self>> {
+    async fn spawn_mode(events: impl Into<crate::backlog::EventSender>, review_cwd: Option<&std::path::Path>, env: &[(String, crate::routing_keys::Secret)]) -> Result<Arc<Self>> {
         let events = events.into();
         let program = std::env::var("YUZUNO_NODE").unwrap_or_else(|_| "node".into());
         // A release without the SDK runs its prepared copy (T-159).
@@ -144,6 +150,9 @@ impl Bridge {
         // copy or normalize its credential/config directory here.
         let mut command = Command::new(program);
         command.arg(script);
+        for (name, value) in env {
+            command.env(name, value.expose());
+        }
         if let Some(cwd) = review_cwd {
             command.arg("--review").current_dir(cwd);
         }
@@ -783,11 +792,18 @@ impl Workspace {
         let events = crate::updates::events::EventBarrier::new(tx.clone());
         let backlog = Arc::new(crate::backlog::Backlog::default());
         let sender = crate::backlog::EventSender::observed(tx, backlog.clone());
+        // A routing account or key goes to this Agent's bridge only (YN-34 S1c).
         let spawned = match &d.agent.remote {
-            Some(remote) => self.claude_remote_bridge(&remote.machine, id, sender).await,
-            None => Bridge::spawn(sender).await.map(|bridge| (bridge, None)),
+            Some(remote) => match self.refuse_remote_profile(id).await {
+                Ok(()) => self.claude_remote_bridge(&remote.machine, id, sender).await.map(|(bridge, instance)| (bridge, instance, None)),
+                Err(error) => Err(error),
+            },
+            None => match self.claude_launch(id).await {
+                Ok(launch) => Bridge::spawn_with(sender, &launch.env).await.map(|bridge| (bridge, None, launch.executable)),
+                Err(error) => Err(error),
+            },
         };
-        let (bridge, remote_instance) = match spawned {
+        let (bridge, remote_instance, executable) = match spawned {
             Ok(b) => b,
             Err(error) => {
                 self
@@ -830,6 +846,9 @@ impl Workspace {
             }
         });
         let mut start = start_params(&d.agent);
+        if let Some(executable) = &executable {
+            start["executable"] = executable.display().to_string().into();
+        }
         if let Some(remote) = &d.agent.remote {
             // The machine reaches Workspace MCP through Core's reverse forward,
             // as a remote Codex does; the URL below is then its own loopback.
