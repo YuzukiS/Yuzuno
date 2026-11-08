@@ -199,11 +199,15 @@ async function mount({ storage = {}, home = homeFixture(), failReplies = 0, repl
     return respond({});
   };
   const doc = w.document;
-  // By its words. An icon-only button (a summary card's Reply and Seen,
-  // T-18) is found by its class: its title is a tip now (YN-44), and its
-  // accessible name may begin with a card's title, as a fold button's does.
-  const button = (text, root = doc) =>
-    [...root.querySelectorAll("button")].find((b) => b.textContent.trim().startsWith(text));
+  // By its words; failing that, an icon-only button by its accessible name
+  // (a summary card's Reply, T-18), whose title is a tip now (YN-44). Words
+  // first: a fold button's name is its card's title, which an option's
+  // words may begin with too.
+  const button = (text, root = doc) => {
+    const all = [...root.querySelectorAll("button")];
+    return all.find((b) => b.textContent.trim().startsWith(text))
+      ?? all.find((b) => !b.textContent.trim() && (b.getAttribute("aria-label") ?? "").startsWith(text));
+  };
   const panel = (id) => doc.querySelector(`[data-home-project="${id}"]`);
   // Anything the page has before the app starts (the tab title, an app badge).
   before?.(w);
@@ -1598,7 +1602,7 @@ test("a report or status pins to the widget column: the same section, its source
     // Its project gone: said so, and it can be unpinned.
     home.projects = home.projects.filter((panel) => panel.project.id !== "p-app");
     await refresh(() => pinned()?.dataset.pinState === "project-gone", "the pin sees the project is gone");
-    pinned().querySelector('button[aria-label^="Unpin "]').click();
+    p.button("Unpin", pinned()).click();
     await waitFor(() => !pinned(), "the pin is gone");
     assert.deepEqual(layout().pins, []);
     assert.equal(writes(), before, "nothing of this told Core anything");
