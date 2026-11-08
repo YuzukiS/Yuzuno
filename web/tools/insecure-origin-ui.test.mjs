@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
 import { composerText, setComposerText } from "./composer-driver.mjs";
+import { hoverTip } from "./tip-dom.mjs";
 
 // YN-36: the built app opened over plain http on a LAN or tailnet address
 // (here 192.0.2.10, a documentation address). Such a page is not a secure
@@ -276,7 +277,7 @@ test("YN-36 over plain http, a report still copies, through the browser's copy c
     const notes = q.card("notes");
     q.button("Copy report", notes).click();
     await waitFor(() => q.button("Copy unavailable", notes), "the missing clipboard is said");
-    assert.equal(q.button("Copy unavailable", notes).title, "Clipboard unavailable. Select the text to copy.");
+    assert.deepEqual(await hoverTip(q.w, q.button("Copy unavailable", notes)), ["Clipboard unavailable. Select the text to copy."]);
     assert.equal(q.doc.querySelectorAll("textarea[data-copy-fallback]").length, 0, "nothing left on the page");
   } finally {
     q.close();

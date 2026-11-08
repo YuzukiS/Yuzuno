@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { hoverTip } from "./tip-dom.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
@@ -128,7 +129,8 @@ test("the entry is only offered between turns of an open Agent", async () => {
       await pause();
       const entry = page.button("Restore files…");
       assert.equal(entry.disabled, true, JSON.stringify(props));
-      assert.equal(entry.title, title);
+      // Why, in its tip: a resting pointer opens one on a disabled button too (YN-44).
+      assert.deepEqual(await hoverTip(page.window, entry), [title]);
       assert.equal(page.calls.length, 0, "nothing is asked of Claude Code");
     } finally { page.close(); }
   }
@@ -145,7 +147,7 @@ test("a preview lists the files and limits; one confirmation restores exactly th
     page.reply(0, preview());
     await until(() => page.button("Restore 2 files"));
     assert.deepEqual([...page.document.querySelectorAll(".checkpoint-files code")].map((n) => n.textContent), ["a.txt", "notes/b.md"]);
-    assert.equal(page.document.querySelector(".checkpoint-files li").title, "/lab/a.txt");
+    assert.deepEqual(await hoverTip(page.window, page.document.querySelector(".checkpoint-files li")), ["/lab/a.txt"], "the whole path in its tip");
     assert.match(page.text(), /2 files would change/);
     assert.match(page.text(), /\+3 −1 lines/);
     assert.match(page.text(), /missing now · would be put back/);

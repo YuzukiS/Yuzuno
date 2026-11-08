@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { hoverTip } from "./tip-dom.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
@@ -84,7 +85,7 @@ test("a waiting continue says when, and can be cancelled or sent now", async () 
     assert.match(text(page), /five-hour usage limit stopped this agent/);
     assert.match(text(page), /sends one message to continue the task in the same session/);
     assert.match(text(page), /approvals still ask you/);
-    assert.match(button(page, "Continue now").title, /may still refuse until/, "before the reset Claude may still refuse");
+    assert.match((await hoverTip(page.window, button(page, "Continue now"))).join(" "), /may still refuse until/, "before the reset Claude may still refuse");
     button(page, "Don’t continue automatically").click();
     await tick();
     assert.deepEqual(page.calls.at(-1), { url: "/api/agents/a/claude/auto-continue/cancel", method: "POST", body: { intentId: "i1" } });

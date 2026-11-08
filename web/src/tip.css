@@ -12,6 +12,20 @@
   --tip-font: calc(9px + var(--font-adjust, 3px));
 }
 
+/* A held trigger (Tip `hold`): a span around a control that may be
+   disabled, which takes the pointer while it is, as an engine that sends a
+   disabled control no pointer events (WebKit) would leave the tip shut.
+   It is laid out as the control would be, and never grows or shrinks. */
+.tip-hold {
+  display: inline-flex;
+  flex: none;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.tip-hold > :disabled {
+  pointer-events: none;
+}
+
 /* Radix places the card in a wrapper of its own; neither takes the pointer. */
 [data-radix-popper-content-wrapper]:has(> .tip) {
   pointer-events: none;

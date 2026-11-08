@@ -319,3 +319,42 @@
 .routing-record li { overflow-wrap: anywhere; }
 .routing-record b { color: var(--ink); font-weight: 550; margin-right: 6px; }
 .settings-center.is-phone .routing-recent-row { min-height: 44px; flex-wrap: wrap; }
+
+/* ---- Simulate by time (S4b): a week strip, a picked time, what to assume used up. */
+.routing-simulate, .routing-templates { display: grid; gap: 6px; }
+.routing-simulate .settings-group-title, .routing-simulate .settings-block-help,
+.routing-templates .settings-group-title, .routing-templates .settings-block-help { margin: 0; }
+.routing-sim-box { display: grid; gap: 10px; padding: 12px 14px; }
+.routing-sim-at { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; }
+.routing-sim-slider { display: grid; flex: 1 1 18rem; gap: 6px; min-width: 0; color: var(--text-secondary); font-size: calc(10px + var(--font-adjust, 3px)); }
+.routing-sim-slider b { color: var(--ink); }
+.routing-sim-slider input { width: 100%; accent-color: var(--accent-ink); }
+.routing-sim-assume { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.routing-pill {
+  min-height: 28px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--text-secondary); font: inherit; font-size: calc(9.5px + var(--font-adjust, 3px)); cursor: pointer;
+}
+.routing-pill[aria-pressed="true"] { border-color: var(--accent-ink); background: var(--accent-wash, color-mix(in srgb, var(--accent-ink) 14%, transparent)); color: var(--accent-ink); font-weight: 600; }
+.routing-pill:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.routing-sim-result { display: grid; gap: 2px; min-height: 2.6em; }
+.routing-sim-result p { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; color: var(--ink); font-size: calc(10.5px + var(--font-adjust, 3px)); }
+.routing-sim-result p.settings-row-meta { color: var(--text-quiet); font-size: calc(9px + var(--font-adjust, 3px)); }
+.routing-strip { display: grid; gap: 4px; min-width: 0; }
+.routing-strip-row { display: grid; grid-template-columns: 3.4em minmax(0, 1fr); align-items: center; gap: 8px; }
+.routing-strip-day { color: var(--text-secondary); font-size: calc(9px + var(--font-adjust, 3px)); text-align: right; }
+.routing-strip-cells { position: relative; height: 22px; border-radius: 6px; background: color-mix(in srgb, var(--text-quiet) 8%, transparent); overflow: hidden; cursor: pointer; }
+.routing-strip-run {
+  position: absolute; top: 0; bottom: 0; display: grid; place-items: center; overflow: hidden;
+  background: var(--cc); color: #fff; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--surface-raised) 70%, transparent);
+}
+.routing-strip-run.is-wait { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--text-quiet) 45%, transparent) 0 3px, transparent 3px 6px); }
+.routing-strip-pick { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background: var(--ink); pointer-events: none; }
+.routing-strip-axis { display: flex; justify-content: space-between; margin-left: calc(3.4em + 8px); color: var(--text-quiet); font-size: calc(8.5px + var(--font-adjust, 3px)); font-variant-numeric: tabular-nums; }
+.routing-sim-text summary { cursor: pointer; color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px)); }
+.routing-sim-text ol { margin: 6px 0 0; padding-left: 1.4em; color: var(--text-secondary); font-size: calc(9.5px + var(--font-adjust, 3px)); }
+.settings-center.is-phone .routing-pill { min-height: 40px; }
+.settings-center.is-phone .routing-strip-row { grid-template-columns: 2.6em minmax(0, 1fr); gap: 6px; }
+.settings-center.is-phone .routing-strip-axis { margin-left: calc(2.6em + 6px); }
+.settings-center.is-phone .routing-templates .routing-seg button { min-height: 40px; }
+.settings-center.is-phone .routing-sim-slider input { min-height: 40px; }

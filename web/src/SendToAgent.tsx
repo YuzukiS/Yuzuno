@@ -4,13 +4,13 @@ import { Forward } from "lucide-react";
 import type { Agent } from "./types";
 import { HANDOFF_TYPE, handoffRefusal, readHandoff, type HandoffSource } from "./handoff";
 import { strings, useLanguage } from "./i18n";
+import { Tip, TipText } from "./Tip";
 import "./send-to-agent.css";
 
 // Send to Agent's own words in the interface language (T-189). Agent and
 // machine names are shown as they are; what it adds to a draft is the message.
 const sendText = strings({
   send: "Send to Agent",
-  tip: (label: string) => `${label}: choose an Agent, or drag this onto one. It is added to that Agent’s draft; you send it.`,
   menu: "Add to an Agent’s draft",
   note: "Adds it to the Agent’s draft. Nothing is sent until you send it.",
   host: "Core host",
@@ -19,10 +19,8 @@ const sendText = strings({
   strip: "Agents to drop it on",
   drop: "Drop on an Agent to add it to their draft",
   noOpen: "No open Agent",
-  addTo: (name: string) => `Add it to ${name}’s draft`,
 }, {
   send: "发送给 Agent",
-  tip: (label) => `${label}：选择一个 Agent，或把它拖到某个 Agent 上。它会加入该 Agent 的草稿；由你发送。`,
   menu: "加入某个 Agent 的草稿",
   note: "加入该 Agent 的草稿。在你发送之前，不会发出任何内容。",
   host: "Core 主机",
@@ -31,7 +29,6 @@ const sendText = strings({
   strip: "可以放下的 Agent",
   drop: "放到某个 Agent 上，即可加入其草稿",
   noOpen: "没有打开的 Agent",
-  addTo: (name) => `加入 ${name} 的草稿`,
 });
 
 /** What App lends the buttons and the rail: one action for the menu and the drop (T-152). */
@@ -211,28 +208,30 @@ export function SendToAgentButton({
   }
   return (
     <span className="send-to-agent" ref={wrapper}>
-      <button
-        ref={button}
-        type="button"
-        className="quiet-button send-to-agent-button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={t.tip(label)}
-        draggable
-        onDragStart={event => {
-          const value = source();
-          if (!value) {
-            event.preventDefault();
-            return;
-          }
-          event.dataTransfer.effectAllowed = "copy";
-          startHandoffDrag(event, value);
-        }}
-        onClick={() => setOpen(!open)}
-      >
-        <Forward size={13} aria-hidden="true" />
-        <span>{label}</span>
-      </button>
+      {/* What it does with it; open, its menu says the same. */}
+      <Tip content={open ? null : <TipText body={t.note} />}>
+        <button
+          ref={button}
+          type="button"
+          className="quiet-button send-to-agent-button"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          draggable
+          onDragStart={event => {
+            const value = source();
+            if (!value) {
+              event.preventDefault();
+              return;
+            }
+            event.dataTransfer.effectAllowed = "copy";
+            startHandoffDrag(event, value);
+          }}
+          onClick={() => setOpen(!open)}
+        >
+          <Forward size={13} aria-hidden="true" />
+          <span>{label}</span>
+        </button>
+      </Tip>
       {open && (
         <div ref={menu} role="menu" aria-label={t.menu} className="send-to-agent-menu" onKeyDown={keys}>
           <p className="send-to-agent-note">{t.note}</p>
@@ -291,11 +290,11 @@ function HandoffChip({ agent }: { agent: Agent }) {
     <span
       className={`handoff-chip${drop.state ? ` handoff-${drop.state}` : ""}`}
       data-agent-id={agent.id}
-      title={drop.refusal || t.addTo(agent.name)}
       {...drop.handlers}
     >
       <span className="send-to-agent-name">{agent.name}</span>
-      <small>{agent.remote?.machine.name || t.host}</small>
+      {/* No tip shows during a drag: why it won't take one is said here, as a rail row says it. */}
+      <small role={drop.refusal ? "status" : undefined}>{drop.refusal || agent.remote?.machine.name || t.host}</small>
     </span>
   );
 }

@@ -13,6 +13,7 @@ import {
 import { api, errorText } from "./api";
 import { openJobs } from "./Jobs";
 import { langTag, strings, useLanguage } from "./i18n";
+import { Tip, TipText } from "./Tip";
 
 export interface MailboxGroup {
   kind: "peer" | "job" | "ci" | "review" | "pr" | "task_result" | "executor" | "executor_proposal" | "merge" | "system" | "workspace";
@@ -397,9 +398,12 @@ export function MailboxNotice({
               <span className={`mailbox-group mailbox-${tone}`} key={i}>
                 <Icon size={14} aria-hidden="true" />
                 {group.name && (
-                  <span className="mailbox-name" title={group.name}>
-                    {group.name}
-                  </span>
+                  // Its whole name, when the row cuts it.
+                  <Tip content={<TipText title={group.name} />} cut>
+                    <span className="mailbox-name">
+                      {group.name}
+                    </span>
+                  </Tip>
                 )}
                 <span className="mailbox-result">
                   {group.name && <span aria-hidden="true"> · </span>}
@@ -410,9 +414,11 @@ export function MailboxNotice({
           })}
         </span>
         {remaining > 0 && (
-          <span className="mailbox-more" title={t.moreResults(remaining)}>
-            +{remaining}
-          </span>
+          <Tip content={<TipText title={t.moreResults(remaining)} />}>
+            <span className="mailbox-more">
+              +{remaining}
+            </span>
+          </Tip>
         )}
         {urgent && (
           <span className="mailbox-priority urgent">

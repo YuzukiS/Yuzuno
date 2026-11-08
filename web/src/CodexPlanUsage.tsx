@@ -3,6 +3,7 @@ import { RefreshCw } from "lucide-react";
 import { api, post } from "./api";
 import type { Agent } from "./types";
 import { strings, useStrings } from "./i18n";
+import { Tip, TipLines, TipText } from "./Tip";
 import "./codex-plan-usage.css";
 
 type Window = {
@@ -365,7 +366,9 @@ export function CodexPlanUsage({
       {who && (
         <div className="codex-account">
           <dt>{t.account}</dt>
-          <dd title={`${who}\n${source}`}>{who}</dd>
+          <Tip content={<TipLines text={`${who}\n${source}`} />} side="left" size="wide">
+            <dd>{who}</dd>
+          </Tip>
         </div>
       )}
       <div className="codex-plan-usage" id="agent-plan-usage">
@@ -375,23 +378,23 @@ export function CodexPlanUsage({
             {reason && <span className="codex-plan-note">{reason}</span>}
             {live &&
               windows.map((w) => (
-                <span
-                  key={w.key}
-                  title={w.detail}
-                  className="codex-plan-window"
-                >
-                  <span>{w.name}</span>
-                  <span>
-                    {w.expired ? t.waiting : w.stale ? t.lastReport : w.percent === null ? t.unknown : t.used(w.percent)}
-                    {w.stale && !w.expired && w.percent !== null
-                      ? ` · ${w.percent}%`
-                      : ""}
+                <Tip key={w.key} content={<TipText body={w.detail} />} side="left">
+                  <span className="codex-plan-window">
+                    <span>{w.name}</span>
+                    <span>
+                      {w.expired ? t.waiting : w.stale ? t.lastReport : w.percent === null ? t.unknown : t.used(w.percent)}
+                      {w.stale && !w.expired && w.percent !== null
+                        ? ` · ${w.percent}%`
+                        : ""}
+                    </span>
                   </span>
-                </span>
+                </Tip>
               ))}
             {usage && live && (
               <details className="codex-plan-details">
-                <summary title={t.detailsTitle}>{t.details}</summary>
+                <Tip content={<TipText body={t.detailsTitle} />} side="left">
+                  <summary>{t.details}</summary>
+                </Tip>
                 <span>{t.shared(source)}</span>
                 {windows.map((w) => (
                   <span key={w.key}>{w.detail}</span>
@@ -423,22 +426,22 @@ export function CodexPlanUsage({
               </details>
             )}
           </div>
-          <button
-            type="button"
-            className="codex-plan-refresh"
-            aria-label={t.refresh}
-            aria-busy={busy}
-            disabled={busy || !live || cooldown > 0}
-            title={
-              cooldown > 0 ? t.cooldown : t.read
-            }
-            onClick={() => refresh(true)}
-          >
-            <RefreshCw
-              size={13}
-              className={busy ? "codex-plan-spinning" : undefined}
-            />
-          </button>
+          <Tip content={<TipText title={t.refresh} body={cooldown > 0 ? t.cooldown : t.read} />} side="left" hold>
+            <button
+              type="button"
+              className="codex-plan-refresh"
+              aria-label={t.refresh}
+              aria-description={cooldown > 0 ? t.cooldown : undefined}
+              aria-busy={busy}
+              disabled={busy || !live || cooldown > 0}
+              onClick={() => refresh(true)}
+            >
+              <RefreshCw
+                size={13}
+                className={busy ? "codex-plan-spinning" : undefined}
+              />
+            </button>
+          </Tip>
         </dd>
       </div>
     </>

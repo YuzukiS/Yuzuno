@@ -8,6 +8,7 @@ import vm from "node:vm";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { composerText, setComposerText } from "./composer-driver.mjs";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
+import { hoverTip } from "./tip-dom.mjs";
 
 // An OpenCode Agent's images (T-10) take the composer's image button, upload
 // and receipt, as Codex's and Claude's do. Core decides whether the chosen
@@ -75,7 +76,8 @@ test("an OpenCode Agent's composer takes images and says they need a chosen mode
       const button = page.document.querySelector('.composer-add-menu [role="menuitem"][aria-label="Add images"]');
       assert.equal(button?.disabled, false, harness);
       assert.equal(button.hasAttribute("aria-disabled"), false, harness);
-      assert.equal(/Images need a model chosen in Settings that reads images/.test(button.title), harness === "opencode", harness);
+      // Its tip, beside it: what it takes, and for OpenCode what it needs (YN-44).
+      assert.equal((await hoverTip(page.window, button)).some((line) => /Images need a model chosen in Settings that reads images/.test(line)), harness === "opencode", harness);
       assert.deepEqual(page.errors, []);
     } finally { page.close(); }
   }

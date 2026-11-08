@@ -25,12 +25,12 @@ export function workingFolder(cwd: string): string {
 export function summaryOrigin(summary: WorkSummary, language: Language = "en"): string {
   const zh = language === "zh-Hans";
   return summary.source === "agent"
-    ? zh ? "Agent 报告 · 打开原始消息" : "Agent report · open original message"
+    ? zh ? "Agent 报告" : "Agent report"
     : summary.source === "user"
-      ? zh ? "你的任务 · 打开原始消息" : "Your task · open original message"
+      ? zh ? "你的任务" : "Your task"
       : summary.kind === "pending"
-        ? zh ? "打开需要你回复的请求" : "Open the request that needs your response"
-        : zh ? "运行记录 · 打开来源" : "Runtime record · open source";
+        ? zh ? "需要你回复的请求" : "A request that needs your response"
+        : zh ? "运行记录" : "Runtime record";
 }
 
 // The row's own words (T-189); the Agent's and machine's names and what the

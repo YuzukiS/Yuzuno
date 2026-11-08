@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { hoverTip } from "./tip-dom.mjs";
 
 // Conversation times and the finished-turn footer, rendered by the real Turn
 // component. Fixed time zone; no Core, browser or web/dist writes.
@@ -94,7 +95,7 @@ function mount({ language, time, now = NOW } = {}) {
   return { window, document, errors, render, marks, footers, close: () => window.close() };
 }
 
-test("one time per natural minute; a new minute or the same clock time on another day shows again", (t) => {
+test("one time per natural minute; a new minute or the same clock time on another day shows again", async (t) => {
   const page = mount();
   t.after(page.close);
   page.render([
@@ -116,7 +117,8 @@ test("one time per natural minute; a new minute or the same clock time on anothe
   });
   const [first, , third] = page.document.querySelectorAll(".message-time");
   assert.equal(first.closest(".message-label")?.textContent.includes("You"), true, "user time sits in the label row");
-  assert.notEqual(first.title, third.title, "full date in the tooltip tells the days apart");
+  const [firstDate] = await hoverTip(page.window, first), [thirdDate] = await hoverTip(page.window, third);
+  assert.notEqual(firstDate, thirdDate, "full date in the tip tells the days apart");
   assert.match(third.getAttribute("datetime"), /^2026-10-14T02:01:20/);
   assert.equal(page.document.querySelectorAll(".tool-activity .message-time").length, 0, "tools carry no times");
 });
@@ -157,7 +159,7 @@ test("streaming, appended input and loading earlier turns keep existing marks on
   assert.deepEqual(page.marks(), { u1: label(at(13, 13, 40)), r1: label(at(13, 13, 41)), u2: before.u2, steer: label(at(13, 14, 2)) });
 });
 
-test("Copy reply carries elapsed time, completion and running shells on the latest turn only", (t) => {
+test("Copy reply carries elapsed time, completion and running shells on the latest turn only", async (t) => {
   const page = mount();
   t.after(page.close);
   const finished = (id, start, extra = {}) => ({ id, status: "completed", startedAt: start / 1000, items: [
@@ -182,7 +184,7 @@ test("Copy reply carries elapsed time, completion and running shells on the late
   page.render(turns, { shells: { state: "unknown", lastCount: 1, checkedAt: at(13, 14, 31) } });
   const unknown = page.document.querySelectorAll(".turn-footer")[1].lastElementChild;
   assert.equal(unknown.textContent, "shell status unknown");
-  assert.match(unknown.title, /1 background shell was running/);
+  assert.match((await hoverTip(page.window, unknown)).join(" "), /1 background shell was running/);
   page.render(turns, { shells: { state: "unknown", lastCount: 0, checkedAt: 1 } });
   assert.doesNotMatch(page.footers()[1].text, /shell/);
 });
@@ -210,7 +212,7 @@ test("interrupted and failed turns are never done, and missing evidence shows no
   ], "no done for interruption or failure, no elapsed time from the page clock, no footer while running");
   assert.ok(!page.document.body.textContent.includes("still running"), "only the latest finished agent turn shows shells");
   assert.ok(page.document.querySelector('[data-item-id="br"] > .reply-actions > .copy-button'), "Copy reply stays in the action row without timing evidence");
-  assert.ok(page.document.querySelector('[data-item-id="br"] > .reply-actions > .rewind-open'), "Rewind stays beside Copy reply without timing evidence");
+  assert.ok(page.document.querySelector('[data-item-id="br"] > .reply-actions > .tip-hold > .rewind-open'), "Rewind stays beside Copy reply without timing evidence");
   assert.equal(page.document.querySelector('[data-item-id="br"] .turn-footer'), null, "missing timing evidence still shows no invented time");
   assert.deepEqual(page.errors, []);
 });
@@ -241,9 +243,13 @@ const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeSty
 const lastYear = (hour, minute) => Date.UTC(2025, 11, 31, hour - 8, minute);
 const ended = (id, end) => ({ id, status: "completed", durationMs: 60_000, completedAt: end / 1000,
   items: [user(`${id}-u`, "Go", end - 60_000), reply(`${id}-r`, "Done", end - 30_000)] });
-/** Turn id → the footer's time as shown and its tooltip. */
-const endings = (page) => Object.fromEntries([...page.document.querySelectorAll(".turn-footer time")]
-  .map((node) => [node.closest("article").dataset.turnId, { text: node.textContent, title: node.getAttribute("title") }]));
+/** Turn id → the footer's time as shown and its tip (YN-44), read one by one. */
+const endings = async (page) => {
+  const shown = {};
+  for (const node of page.document.querySelectorAll(".turn-footer time"))
+    shown[node.closest("article").dataset.turnId] = { text: node.textContent, title: (await hoverTip(page.window, node))[0] };
+  return shown;
+};
 const fourDays = [
   ended("today", at(13, 14, 3)),
   ended("yesterday", at(12, 15, 45)),
@@ -251,11 +257,11 @@ const fourDays = [
   ended("lastyear", lastYear(22, 10)),
 ];
 
-test("a footer says yesterday or the date when its Turn ended before today, in English", (t) => {
+test("a footer says yesterday or the date when its Turn ended before today, in English", async (t) => {
   const page = mount({ language: "en" });
   t.after(page.close);
   page.render(fourDays);
-  const shown = endings(page);
+  const shown = await endings(page);
   t.diagnostic(`rendered en: ${JSON.stringify(page.footers().map((f) => f.text))}`);
   assert.deepEqual(Object.fromEntries(Object.entries(shown).map(([id, e]) => [id, e.text])), {
     today: label(at(13, 14, 3)),
@@ -269,11 +275,11 @@ test("a footer says yesterday or the date when its Turn ended before today, in E
   assert.deepEqual(page.errors, []);
 });
 
-test("a footer says yesterday or the date when its Turn ended before today, in Chinese", (t) => {
+test("a footer says yesterday or the date when its Turn ended before today, in Chinese", async (t) => {
   const page = mount({ language: "zh-Hans" });
   t.after(page.close);
   page.render(fourDays);
-  const shown = endings(page);
+  const shown = await endings(page);
   t.diagnostic(`rendered zh-Hans: ${JSON.stringify(page.footers().map((f) => f.text))}`);
   assert.deepEqual(Object.fromEntries(Object.entries(shown).map(([id, e]) => [id, e.text])), {
     today: label(at(13, 14, 3)),
@@ -286,13 +292,13 @@ test("a footer says yesterday or the date when its Turn ended before today, in C
   assert.deepEqual(page.errors, []);
 });
 
-test("today and yesterday are calendar days where times are shown, not 24-hour windows", (t) => {
+test("today and yesterday are calendar days where times are shown, not 24-hour windows", async (t) => {
   // Half past midnight on the 13th: 40 minutes earlier is yesterday, and a
   // day and a half hour earlier is already the 11th.
   const page = mount({ language: "en", now: at(13, 0, 30) });
   t.after(page.close);
   page.render([ended("late", at(12, 23, 50)), ended("dayBefore", at(11, 23, 59))]);
-  const shown = endings(page);
+  const shown = await endings(page);
   assert.equal(shown.late.text, `yesterday ${label(at(12, 23, 50))}`);
   assert.equal(shown.dayBefore.text, `Oct 11, ${label(at(11, 23, 59))}`);
   // In New York the same instants fall on the 12th and the 11th, and it is
@@ -300,7 +306,7 @@ test("today and yesterday are calendar days where times are shown, not 24-hour w
   const newYork = mount({ language: "en", now: at(13, 0, 30), time: { clock: "h24", timeZone: "America/New_York" } });
   t.after(newYork.close);
   newYork.render([ended("late", at(12, 23, 50)), ended("dayBefore", at(11, 23, 59))]);
-  assert.deepEqual(Object.fromEntries(Object.entries(endings(newYork)).map(([id, e]) => [id, e.text])), {
+  assert.deepEqual(Object.fromEntries(Object.entries(await endings(newYork)).map(([id, e]) => [id, e.text])), {
     late: "11:50",
     dayBefore: "yesterday 11:59",
   });

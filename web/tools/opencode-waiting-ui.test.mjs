@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { hoverTip } from "./tip-dom.mjs";
 
 // YN-48: a running OpenCode Turn is never a silent "Working". It names the
 // model its message went to, says what OpenCode retries and why, and once it
@@ -79,7 +80,8 @@ test("a waiting OpenCode turn names its model, and after 30 s with nothing shown
     show(page, { turn: turn(45_000, { _opencodeModel: flint }), onStop: () => stops.push(1), onChangeModel: () => models.push(1) });
     const model = await until(() => page.document.querySelector(".turn-activity .activity-model"), "the model beside Working");
     assert.match(model.textContent, /OpenCode · Flint 40B Free/);
-    assert.equal(model.title, "OpenCode’s default model", "said to be OpenCode's own default");
+    // In the Working line's one tip (YN-44).
+    assert.equal((await hoverTip(page.window, model)).at(-1), "OpenCode’s default model", "said to be OpenCode's own default");
     const quiet = await until(() => page.document.querySelector(".opencode-quiet"), "the no-reply note");
     assert.match(quiet.textContent, /No reply from OpenCode · Flint 40B Free yet\./);
     assert.match(quiet.textContent, /Stop this turn, or choose another model/);

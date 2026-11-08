@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
-import { readTip } from "./tip-dom.mjs";
+import { hoverTip, readTip } from "./tip-dom.mjs";
 
 // OpenCode Agents (T-110): offered only when Core says it creates them, and
 // answered in OpenCode's own terms. Bundled in memory, without the running UI's dist.
@@ -450,7 +450,7 @@ test("an OpenCode turn names OpenCode, shows its tool calls and offers its own r
   try {
     await tick(); await tick();
     assert.ok(button(codex, "Rewind"), "the same turn of a Codex Agent offers a rewind");
-    assert.match(button(page, "Rewind")?.title ?? "", /reverting to before this turn, with its files/);
+    assert.match((await hoverTip(page.window, button(page, "Rewind"))).join(" "), /reverting to before this turn, with its files/);
     const text = page.document.body.textContent;
     assert.match(text, /OpenCode/);
     assert.doesNotMatch(text, /Codex/);
