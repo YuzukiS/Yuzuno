@@ -55,6 +55,7 @@ mod machine_list;
 pub mod machines;
 pub mod model;
 pub mod message_content;
+pub(crate) mod permission_levels;
 pub mod permissions;
 pub mod project_brief;
 pub mod projects;

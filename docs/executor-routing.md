@@ -15,8 +15,9 @@ version; a later slice adds to it.
 | S2b | Readings: subscription quotas (claude-swap, Codex) | Done |
 | S3b1 | Choosing a candidate: Core's evaluator, `evaluate` and `simulate` | Done |
 | S3b2 | The choice at dispatch, waiting for a candidate, `route_json`, `choices` | Done |
-| S3b3 | A real DeepSeek executor through routing: a lab check | This version |
-| S4 | The Settings page (YN-49) | Later |
+| S3b3 | A real DeepSeek executor through routing: a lab check | Done |
+| S4 | The Settings page (YN-49) | Done |
+| YN-56 S1 | [Permission levels](#permission-levels-yn-56), and candidates whose harness doesn't keep one | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the
@@ -373,6 +374,7 @@ It is kept on the dispatch, beside `choice_json`, and shown in `task_get` under 
 
 ```jsonc
 { "policyVersion": 4, "evaluatedAt": "…", "at": "dispatch",      // "dispatch" | "start" | "preview"
+  "level": "auto",                                                // only with a permission level (YN-56)
   "chosen": "c-deepseek",                                         // null when none could be chosen
   "account": { "number": 2, "fingerprint": "3f2a…" },             // or { "home": "work" }, when the credential has one
   "candidates": [
@@ -394,6 +396,7 @@ is chosen. The other candidates are marked `notTried`.
 - **Turned on:** a candidate turned off is `off`.
 - **Not already failed:** one that already failed to start this executor is `failed`, so each is tried once.
 - **Runs on the machine:** a credential other than `login`, and any OpenCode candidate, runs on this Core host only (`hostOnly`).
+- **Keeps the permission level:** with a [permission level](#permission-levels-yn-56), a candidate whose harness doesn't keep it is `skipped`, with `levelNotKept` and `params: { level, harness }`.
 - **Its credential is there:**
   - an `apiKey` key must be set (`keyMissing`);
   - a Codex home must be listed (`homeMissing`).
@@ -414,6 +417,25 @@ When none is chosen, `earliest` names the soonest time a reason gives
 
 `POST /api/routing/evaluate` and `POST /api/routing/simulate` (below) use
 this evaluator, with the readings as Core last observed them.
+
+### Permission levels (YN-56)
+
+A permission level is a permission said once for every harness. Core maps it
+to each harness's own setting, so it holds whichever harness routing chooses.
+
+| Level | | Codex (`permissionPreset`) | Claude Code (`permissionMode`) | OpenCode |
+| --- | --- | --- | --- | --- |
+| `ask` | Ask you first | `ask`: its workspace-write sandbox; leaving it asks you | `default`: what its settings don't allow asks you | Doesn't keep it |
+| `auto` | Auto-approve | `auto`: the same sandbox; its automatic reviewer decides leaving it | `auto`: its classifier decides each action | Doesn't keep it |
+| `full` | Full access | `full`: no sandbox, never asks | Doesn't keep it: Yuzuno never starts it in a mode that skips its checks | Doesn't keep it |
+
+No level is each harness's own default for new Agents, kept everywhere.
+OpenCode keeps no level: Core adds no permission rule of its own to it, so
+only its own configuration applies.
+
+At this version a level reaches routing only through the previews'
+`permissionLevel` (below). A dispatch carries none, so routing at dispatch is
+as before.
 
 ### Routing at dispatch (S3b2)
 
@@ -471,9 +493,10 @@ cargo test --locked --lib -- --ignored --exact --nocapture \
 
 ### More routes in S3b
 
-- `POST /api/routing/evaluate { policy?, at?, assume? }` answers one `route_json` with `at: "preview"`.
+- `POST /api/routing/evaluate { policy?, at?, assume?, permissionLevel? }` answers one `route_json` with `at: "preview"`.
   - `policy` is an unsaved draft; by default, the saved one.
   - `assume` takes `{ accountsUsedUp: [fingerprint], codexUsedUp: [home], spendCapReached, onePasswordDown }`.
     A Codex home assumed used up fails its quota condition even before Core has a reading of it; a claude-swap account is known only from a reading.
-- `POST /api/routing/simulate { policy?, from, to, stepMinutes, assume? }` answers `{ segments: [ { from, to, chosen } ] }`. It keeps the current readings and varies only the time.
+- `POST /api/routing/simulate { policy?, from, to, stepMinutes, assume?, permissionLevel? }` answers `{ segments: [ { from, to, chosen } ] }`. It keeps the current readings and varies only the time.
+- `permissionLevel` is `ask`, `auto` or `full`, for an executor of that [level](#permission-levels-yn-56); another value is refused (`path: "permissionLevel"`). Left out, no level.
 - `GET /api/routing/choices?limit=20` answers `{ choices: [ { dispatchId, taskId, agentId, executorName?, route } ] }`, newest first. `executorName` is there while the executor's record is kept.

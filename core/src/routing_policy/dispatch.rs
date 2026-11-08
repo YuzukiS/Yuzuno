@@ -82,7 +82,7 @@ pub(crate) fn route(tx: &Connection, gathered: &Gathered, template: &Template, r
     // `auto` or unset chooses its machine after routing: any candidate may run.
     let machine = machine.filter(|m| *m != super::super::collaboration_store::executor_choice::AUTO);
     let assume = Assume::default();
-    let route = evaluate(stored.version, &stored.policy, "dispatch", &gathered.inputs(Utc::now(), machine, &exclude, None, &assume));
+    let route = evaluate(stored.version, &stored.policy, "dispatch", &gathered.inputs(Utc::now(), machine, &exclude, None, None, &assume));
     let mut record = route.record;
     record["excluded"] = json!(exclude);
     if let Some(candidate) = route.chosen {
@@ -249,8 +249,10 @@ impl crate::workspace::Workspace {
         for (agent, harness, machine, old) in waiting {
             let exclude: Vec<String> = old["excluded"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
             let assume = Assume::default();
+            // Its permission level, as its dispatch's route kept it.
+            let level = old["level"].as_str();
             let route = evaluate(stored.version, &stored.policy, "start",
-                &gathered.inputs(Utc::now(), Some(&machine), &exclude, Some(&harness), &assume));
+                &gathered.inputs(Utc::now(), Some(&machine), &exclude, Some(&harness), level, &assume));
             let mut record = route.record;
             record["excluded"] = json!(exclude);
             let applied: Result<()> = async {

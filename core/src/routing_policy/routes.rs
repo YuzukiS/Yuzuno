@@ -90,21 +90,32 @@ fn time(body: &Value, field: &str) -> Result<Option<chrono::DateTime<chrono::Utc
     }
 }
 
-/// `POST /api/routing/evaluate {policy?, at?, assume?}`: what routing would choose, from Core's own evaluator.
+/// A preview's `permissionLevel` (YN-56): unset, or a level, for the candidates whose harness keeps it.
+fn level_of(body: &Value) -> Result<Option<String>, Response> {
+    match body.get("permissionLevel") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(level)) if crate::permission_levels::check(level).is_ok() => Ok(Some(level.clone())),
+        Some(_) => Err(answer(StatusCode::BAD_REQUEST, json!({"code": "invalid", "error": "permissionLevel is ask, auto or full", "path": "permissionLevel"}))),
+    }
+}
+
+/// `POST /api/routing/evaluate {policy?, at?, assume?, permissionLevel?}`: what routing would choose, from Core's own evaluator.
 async fn evaluate(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
     let Ok(body) = serde_json::from_slice::<Value>(&body) else { return answer(StatusCode::BAD_REQUEST, json!({"code": "invalid", "error": "The body is JSON", "path": ""})) };
     let (version, policy) = match draft(&ws, &body).await { Ok(p) => p, Err(r) => return r };
     let now = match time(&body, "at") { Ok(t) => t.unwrap_or_else(chrono::Utc::now), Err(r) => return r };
+    let level = match level_of(&body) { Ok(l) => l, Err(r) => return r };
     let gathered = match ws.routing_gathered().await { Ok(g) => g, Err(e) => return failed(e) };
     let assume = super::evaluate::Assume::from_json(&body["assume"]);
     // On the blocking pool, as every evaluation is, never on the async runtime (#801 R1).
-    match tokio::task::spawn_blocking(move || super::evaluate::evaluate(version, &policy, "preview", &gathered.inputs(now, None, &[], None, &assume))).await {
+    match tokio::task::spawn_blocking(move || super::evaluate::evaluate(version, &policy, "preview",
+        &gathered.inputs(now, None, &[], None, level.as_deref(), &assume))).await {
         Ok(route) => answer(StatusCode::OK, route.record),
         Err(error) => failed(error.into()),
     }
 }
 
-/// `POST /api/routing/simulate {policy?, from, to, stepMinutes, assume?}`: what would be chosen across a time
+/// `POST /api/routing/simulate {policy?, from, to, stepMinutes, assume?, permissionLevel?}`: what would be chosen across a time
 /// span, with the readings as they are now; consecutive steps with the same choice are one segment.
 async fn simulate(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
     let invalid = |path: &str, error: &str| answer(StatusCode::BAD_REQUEST, json!({"code": "invalid", "error": error, "path": path}));
@@ -122,6 +133,7 @@ async fn simulate(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
     if (to - from).num_minutes() / step.num_minutes() > 2016 {
         return invalid("to", "At most 2016 steps");
     }
+    let level = match level_of(&body) { Ok(l) => l, Err(r) => return r };
     let gathered = match ws.routing_gathered().await { Ok(g) => g, Err(e) => return failed(e) };
     let assume = super::evaluate::Assume::from_json(&body["assume"]);
     // Up to 2016 evaluations: on the blocking pool, never on the async runtime (#801 R1).
@@ -129,7 +141,7 @@ async fn simulate(State(ws): State<Arc<Workspace>>, body: Bytes) -> Response {
         let mut segments: Vec<Value> = Vec::new();
         let mut at = from;
         while at < to {
-            let chosen = super::evaluate::evaluate(version, &policy, "preview", &gathered.inputs(at, None, &[], None, &assume)).record["chosen"].clone();
+            let chosen = super::evaluate::evaluate(version, &policy, "preview", &gathered.inputs(at, None, &[], None, level.as_deref(), &assume)).record["chosen"].clone();
             let end = (at + step).min(to);
             match segments.last_mut() {
                 Some(last) if last["chosen"] == chosen => last["to"] = end.to_rfc3339().into(),
