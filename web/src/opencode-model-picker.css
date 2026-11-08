@@ -1,0 +1,271 @@
+/* An OpenCode Agent's model list (YN-47): a search, then radio rows grouped
+   by provider. On a desktop the list scrolls in its own box under sticky
+   provider names; on a phone it flows in the dialog, whose scroll keeps the
+   search in view. Rows are 44 px high everywhere: touch is not detected. */
+.opencode-model-picker {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.opencode-model-picker > legend {
+  display: flex;
+  float: left;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  color: var(--ink);
+  font-size: calc(11px + var(--font-adjust, 3px));
+}
+.opencode-model-saved {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: calc(9px + var(--font-adjust, 3px));
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.opencode-model-saved b {
+  color: var(--ink);
+  font-weight: 500;
+}
+.opencode-model-search {
+  position: relative;
+  clear: both;
+}
+.opencode-model-search svg {
+  position: absolute;
+  top: 50%;
+  left: 11px;
+  color: var(--text-quiet);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.agent-settings-form .opencode-model-search input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px 0 33px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--input);
+  color: var(--ink);
+  font: inherit;
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+}
+.opencode-model-search input:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.opencode-model-list {
+  max-height: 340px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+.opencode-model-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--text-secondary);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+}
+.opencode-model-provider {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.opencode-model-source {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  line-height: 1.6;
+}
+.opencode-model-source.credential,
+.opencode-model-source.env {
+  border-color: color-mix(in srgb, var(--green) 55%, transparent);
+  color: var(--green);
+}
+.opencode-model-source.credential::before,
+.opencode-model-source.env::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.opencode-model-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.agent-settings-form label.opencode-model-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  cursor: pointer;
+  transition: background-color var(--motion-micro) var(--ease-standard);
+}
+.opencode-model-list > label.opencode-model-row:first-child {
+  border-top: 0;
+}
+.opencode-model-row:hover {
+  background: var(--surface-hover);
+}
+.opencode-model-row input[type="radio"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+.opencode-model-dot {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--text-quiet);
+  border-radius: 50%;
+  place-items: center;
+}
+.opencode-model-row:has(input:checked) {
+  background: var(--surface-soft);
+  box-shadow: inset 3px 0 0 var(--focus);
+}
+.opencode-model-row:has(input:checked) .opencode-model-dot {
+  border-color: var(--green);
+}
+.opencode-model-row:has(input:checked) .opencode-model-dot::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.opencode-model-row:has(input:focus-visible) {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+}
+.opencode-model-picker:disabled .opencode-model-row {
+  cursor: default;
+  opacity: 0.55;
+}
+.opencode-model-main {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+.opencode-model-name {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: calc(10.5px + var(--font-adjust, 3px));
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.opencode-model-id,
+.opencode-model-sub {
+  overflow: hidden;
+  color: var(--text-quiet);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.opencode-model-id {
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+.opencode-model-orphan .opencode-model-sub {
+  color: var(--accent-ink);
+}
+.opencode-model-facts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-quiet);
+  font-size: calc(8.5px + var(--font-adjust, 3px));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.opencode-model-facts [role="img"] {
+  display: inline-flex;
+}
+.opencode-model-status {
+  color: var(--accent-ink);
+}
+.opencode-model-list mark {
+  border-radius: 3px;
+  background: var(--accent-wash);
+  color: inherit;
+}
+.opencode-model-list > p {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  color: var(--text-secondary);
+  font-size: calc(9.5px + var(--font-adjust, 3px));
+  line-height: 1.55;
+}
+.opencode-model-list > p:first-child {
+  border-top: 0;
+}
+.opencode-model-status-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.opencode-model-list > p.opencode-model-unlisted {
+  background: color-mix(in srgb, var(--accent-wash) 55%, transparent);
+  color: var(--ink);
+}
+.opencode-model-unlisted code {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+.opencode-model-list > p.opencode-model-login-hint {
+  border-top-style: dashed;
+}
+/* A phone: one scroll, the dialog's; the search stays in view at its top.
+   It sticks over the dialog's own top padding, 21 px on a phone (styles.css
+   .modal), so no row scrolls by above it, and the provider names stick just
+   under its 50 px (6 + 38 + 6). */
+@media (max-width: 520px) {
+  .opencode-model-list {
+    max-height: none;
+    overflow: visible;
+  }
+  .opencode-model-search {
+    position: sticky;
+    top: -21px;
+    z-index: 2;
+    padding: 6px 0;
+    background: var(--surface-raised, var(--paper));
+  }
+  .opencode-model-group-head {
+    top: 29px;
+  }
+}

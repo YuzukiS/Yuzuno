@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { uiTestBundle } from "./ui-test-bundle.mjs";
+import { readTip } from "./tip-dom.mjs";
 
 // T-36 S3: an executor's lifecycle in the built app, against a fixture Core.
 // The sidebar lists a Project's leads, its other Agents, its task executors
@@ -164,11 +165,16 @@ test("the sidebar lists a Project's leads, its other Agents, its task executors 
     assert.match(p.two("f"), /^Both starts failed/);
     assert.equal(p.row("r").querySelector(".status-dot"), null, "no runtime status beside it");
     assert.equal(p.row("r").querySelector(".agent-rail-avatar"), null, "no avatar on an Agent row");
-    assert.match(p.island("g").title, /Archiving: Waiting to close: a Job is still running: build \(j1\)\./);
-    assert.match(p.island("f").title, /T-f · Work f\nBoth starts failed\nDispatched by you/);
+    // Each row's card (YN-44): why it is in its state, said once; its task and who dispatched it.
+    const card = async (id) => readTip(p.w, p.row(id).querySelector(".agent-select"));
+    const g = await card("g");
+    assert.ok(g.includes("Closing · Waiting to close: a Job is still running: build (j1)."), g.join(" | "));
+    assert.equal(g.filter((line) => line.includes("Waiting to close")).length, 1, "the reason once");
+    const f = await card("f");
+    for (const line of ["Both starts failed", "T-f", "Agent f · Core host", "Dispatched by you"]) assert.ok(f.includes(line), `${line}: ${f.join(" | ")}`);
     // Only needs you and failed are row islands by themselves; a state that stays is a pill.
     assert.deepEqual(["d", "q", "r", "g", "f"].map((id) => p.island(id).dataset.form), ["pill", "pill", "ring", "ring", "row"]);
-    for (const id of ["d", "q", "r", "g", "f"]) assert.doesNotMatch(p.island(id).title, /[Rr]eleas/, `${id}: no release wording`);
+    for (const id of ["d", "q", "r", "g", "f"]) assert.doesNotMatch((await card(id)).join("\n"), /[Rr]eleas/, `${id}: no release wording`);
     // Archived ones are folded away; a closed one is in Closed only.
     const toggle = p.part("archived")?.querySelector(".rail-archived-toggle");
     assert.ok(toggle, "an archived fold");
@@ -209,8 +215,9 @@ test("in Chinese the groups and states read in Chinese", async () => {
     assert.deepEqual(p.state("g"), ["done", "Work g", null]);
     assert.match(p.two("g"), /^收尾中 · Waiting to close/);
     assert.deepEqual(p.state("f"), ["failed", "Work f", null]);
-    assert.match(p.island("g").title, /归档中：Waiting to close/);
-    for (const id of ["d", "q", "r", "g", "f"]) assert.doesNotMatch(p.island(id).title, /放行/, `${id}: no 放行`);
+    const card = async (id) => readTip(p.w, p.row(id).querySelector(".agent-select"));
+    assert.ok((await card("g")).includes("收尾中 · Waiting to close: a Job is still running: build (j1)."));
+    for (const id of ["d", "q", "r", "g", "f"]) assert.doesNotMatch((await card(id)).join("\n"), /放行/, `${id}: no 放行`);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();

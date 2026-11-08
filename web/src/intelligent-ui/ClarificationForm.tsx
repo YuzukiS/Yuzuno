@@ -1,11 +1,13 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ArrowRight, Check, Clock, LoaderCircle } from "lucide-react";
 import {
+  carryClarification,
   clarificationDraftKey,
   initialClarificationValues,
   readClarificationDraft,
   saveClarificationDraft,
   validateClarification,
+  type CarryNote,
   type ClarificationErrors,
   type ClarificationProps,
   type ClarificationValues,
@@ -31,6 +33,12 @@ const formText = strings({
   waiting: "Sent · waiting",
   submit: "Submit answers",
   check: "Check delivery",
+  // Answers carried to a newer version of the form (YN-38), said on the field.
+  dropped: (labels: string) => `No longer offered: ${labels}. Choose again.`,
+  changed: "This question changed after you answered it. Answer it again.",
+  reworded: "Reworded after you answered. Check your answer.",
+  added: "New since you began answering.",
+  gone: (label: string) => `No longer asked: “${label}”. That answer won't be sent.`,
 }, {
   sent: (agent) => `答案已发送给 ${agent}。`,
   queued: (agent) => `已发送 · 等待 ${agent} 确认。`,
@@ -46,6 +54,11 @@ const formText = strings({
   waiting: "已发送 · 等待中",
   submit: "提交答案",
   check: "检查投递",
+  dropped: (labels) => `已不再提供：${labels}。请重新选择。`,
+  changed: "你回答之后，这个问题变了。请重新回答。",
+  reworded: "你回答之后措辞有改动。请检查你的答案。",
+  added: "你开始回答之后新加的问题。",
+  gone: (label) => `不再询问：“${label}”。那个答案不会发送。`,
 });
 // Said when shown, so it follows a language change; other storage errors
 // are the browser's own words.
@@ -77,6 +90,19 @@ type Props = {
   blockedReason?: string;
   onSubmit?: (values: ClarificationValues) => Promise<void>;
   onCheck?: () => void;
+  /**
+   * The answers follow a newer version of this form (YN-38, Home's asks):
+   * when `form` changes under them, or saved ones were given on another
+   * version, they are carried to it by field and option ID
+   * (carryClarification), and what changed is said on each field until the
+   * user answers it again. Without it a form never changes under its
+   * answers, and saved answers that don't fit it are not restored.
+   */
+  carry?: boolean;
+  /** With `carry`: the form the saved answers were given on, when known. */
+  basis?: ClarificationProps | null;
+  /** With `carry`: the answers were carried to `form` in this window. */
+  onCarry?: () => void;
 };
 export function Clarification(props: Props) {
   return <Form key={`${props.identity}:${props.form.id}`} {...props} />;
@@ -89,23 +115,43 @@ function Form({
   blockedReason,
   onSubmit,
   onCheck,
+  carry = false,
+  basis = null,
+  onCarry,
 }: Props) {
   const domId = useId();
   const key = draftIdentity && clarificationDraftKey(draftIdentity, form);
   const composing = useRef(false);
   const inFlight = useRef(false);
-  const [initial] = useState(() => {
-    if (!key) return { values: initialClarificationValues(form), error: "" };
+  // The answers saved under `to`, as this form now asks: carried from the
+  // form they were given on when that may be another version.
+  type Read = { values: ClarificationValues; notes: CarryNote[]; carried: boolean };
+  const read = (to: string): Read => {
+    if (carry) {
+      const raw = localStorage.getItem(to);
+      const saved = raw === null ? null : JSON.parse(raw);
+      if (saved?.version === 1 && basis && JSON.stringify(basis) !== JSON.stringify(form))
+        return { ...carryClarification(basis, form, saved.values), carried: true };
+      try {
+        return { values: readClarificationDraft(localStorage, to, form), notes: [], carried: false };
+      } catch (error) {
+        // Given on a version that is not known here: what still fits.
+        if (saved?.version === 1) return { ...carryClarification(null, form, saved.values), carried: true };
+        throw error;
+      }
+    }
+    return { values: readClarificationDraft(localStorage, to, form), notes: [], carried: false };
+  };
+  const [initial] = useState((): Read & { error: string } => {
+    if (!key) return { values: initialClarificationValues(form), error: "", notes: [], carried: false };
     try {
-      return {
-        values: readClarificationDraft(localStorage, key, form),
-        error: "",
-      };
+      return { ...read(key), error: "" };
     } catch (error) {
-      return { values: initialClarificationValues(form), error: String(error) };
+      return { values: initialClarificationValues(form), error: String(error), notes: [], carried: false };
     }
   });
   const [values, setValues] = useState(initial.values);
+  const [notes, setNotes] = useState(initial.notes);
   const [storageError, setStorageError] = useState(initial.error);
   const [errors, setErrors] = useState<ClarificationErrors>({});
   const [busy, setBusy] = useState(false);
@@ -132,14 +178,16 @@ function Form({
     const sameForm = belongTo.current === null;
     // What is on screen is only carried over when the person typed it; with
     // nothing typed, this key's own saved answers are read.
-    const carry = sameForm && typed.current;
+    const keep = sameForm && typed.current;
     belongTo.current = key;
     if (!sameForm) generation.current += 1;
     try {
-      if (carry) saveClarificationDraft(localStorage, key, values);
+      if (keep) saveClarificationDraft(localStorage, key, values);
       else {
         typed.current = false;
-        setValues(readClarificationDraft(localStorage, key, form));
+        const found = read(key);
+        setValues(found.values);
+        setNotes(found.notes);
         setErrors({});
       }
       if (!sameForm) {
@@ -151,9 +199,55 @@ function Form({
       }
       setStorageError("");
     } catch (error) {
-      setStorageError(carry ? ONLY_HERE : String(error));
+      setStorageError(keep ? ONLY_HERE : String(error));
     }
   }, [key, form, values]);
+  // A newer version of the form under the answers on screen (YN-38): they
+  // are carried to it before it is painted, and saved as its answers.
+  // Saved answers carried as this form opened: saved as this version's.
+  useEffect(() => {
+    if (!initial.carried || !key) return;
+    try {
+      saveClarificationDraft(localStorage, key, initial.values);
+    } catch {
+      setStorageError(ONLY_HERE);
+    }
+    onCarry?.();
+    // Once, as it opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const shape = JSON.stringify(form);
+  const shown = useRef({ shape, form });
+  useLayoutEffect(() => {
+    const before = shown.current;
+    if (before.shape === shape) return;
+    shown.current = { shape, form };
+    if (!carry) return;
+    const next = carryClarification(before.form, form, values);
+    setValues(next.values);
+    // What an earlier change said stays until its field is answered again.
+    const same = (a: CarryNote, b: CarryNote) =>
+      a.kind === b.kind && (a.kind === "gone" && b.kind === "gone" ? a.label === b.label : a.field === b.field);
+    setNotes((kept) => [
+      ...kept.filter(
+        (note) =>
+          (note.kind === "gone" || form.fields.some((field) => field.id === note.field)) &&
+          !next.notes.some((newer) => same(note, newer)),
+      ),
+      ...next.notes,
+    ]);
+    setErrors({});
+    setFailure("");
+    if (key)
+      try {
+        saveClarificationDraft(localStorage, key, next.values);
+      } catch {
+        setStorageError(ONLY_HERE);
+      }
+    onCarry?.();
+    // Only as the form changes; what it carries is the answers on screen then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shape]);
   const status = delivery?.status;
   // Three judgments from one receipt (T-19 CX-75/76). From the send on,
   // short of a refusal, the form is locked and shows the answers sent. Only
@@ -181,6 +275,8 @@ function Form({
     const next = { ...values, [id]: value };
     setValues(next);
     setErrors((previous) => ({ ...previous, [id]: "" }));
+    // Answered again: what changed under it has been seen to.
+    setNotes((kept) => kept.filter((note) => note.field !== id));
     setFailure("");
     typed.current = true;
     // Nothing is written while there is no Workspace to attribute this to.
@@ -215,6 +311,7 @@ function Form({
     try {
       // Capture exactly the values the user explicitly submitted.
       await onSubmit(structuredClone(values));
+      if (generation.current === from) setNotes([]);
     } catch (error) {
       if (generation.current === from)
         setFailure(error instanceof Error ? error.message : String(error));
@@ -247,6 +344,13 @@ function Form({
         {form.description && <p>{form.description}</p>}
       </header>
       <form onSubmit={(event) => event.preventDefault()} noValidate>
+        {notes.map((note) =>
+          note.kind === "gone" ? (
+            <p key={`gone:${note.label}`} className="clarification-carried" role="status">
+              {t.gone(note.label)}
+            </p>
+          ) : null,
+        )}
         {form.fields.map((field) => {
           const fieldId = `${domId}-${field.id}`;
           const value = (
@@ -256,7 +360,9 @@ function Form({
           )[field.id];
           const descriptionId = `${fieldId}-note`;
           const errorId = `${fieldId}-error`;
-          const describedBy = `${descriptionId}${errors[field.id] ? ` ${errorId}` : ""}`;
+          const carriedId = `${fieldId}-carried`;
+          const carried = notes.filter((note) => note.field === field.id);
+          const describedBy = `${descriptionId}${carried.length ? ` ${carriedId}` : ""}${errors[field.id] ? ` ${errorId}` : ""}`;
           return (
             <fieldset
               key={field.id}
@@ -271,6 +377,21 @@ function Form({
                 {field.description && <p>{field.description}</p>}
                 {field.default && <p>{t.default(field.default.source)}</p>}
               </div>
+              {carried.length > 0 && (
+                <div id={carriedId} className="clarification-carried" role="status">
+                  {carried.map((note) => (
+                    <p key={note.kind}>
+                      {note.kind === "dropped"
+                        ? t.dropped(note.labels.map((label) => `“${label}”`).join(", "))
+                        : note.kind === "changed"
+                          ? t.changed
+                          : note.kind === "reworded"
+                            ? t.reworded
+                            : t.added}
+                    </p>
+                  ))}
+                </div>
+              )}
               {field.type === "text" ? (
                 <textarea
                   id={fieldId}

@@ -27,7 +27,7 @@ fn an_answer_answers_the_newest_user_message_before_it_in_its_turn() {
         {"id": "msg_a5", "type": "assistant", "time": {"created": 13}, "content": []},
     ]);
     let Read { messages: read, ended, open, steps, tools, .. } = read_messages(&messages);
-    assert_eq!(steps, vec![OpenStep { id: "msg_a5".into(), parent: None, created: json!(13), model: Value::Null }],
+    assert_eq!(steps, vec![OpenStep { id: "msg_a5".into(), parent: None, created: json!(13), model: Value::Null, entries: vec![] }],
         "of the answers not yet ended, only the one after the last turn's end is under way, answering nothing");
     assert!(tools.is_empty());
     assert_eq!(open, None, "the last turn ended");
@@ -258,7 +258,8 @@ fn a_whole_read_gives_the_live_stream_what_its_later_events_do_not_repeat() {
     ]);
     let read = read_messages(&messages);
     assert_eq!(read.steps, vec![OpenStep { id: "msg_a1".into(), parent: Some("msg_u1".into()), created: json!(5),
-        model: json!({"id": "m", "providerID": "p"}) }], "only the answer not yet ended, with its start and model");
+        model: json!({"id": "m", "providerID": "p"}), entries: ["call_1", "call_2", "call_3"].map(|_| Entry { kind: "tool".into(), ordinal: None }).to_vec() }],
+        "only the answer not yet ended, with its start, model and entries");
     assert_eq!(read.tools, vec![
         OpenTool { id: "call_1".into(), message: "msg_a1".into(), name: json!("bash"), input: json!({"command": "ls"}) },
         OpenTool { id: "call_2".into(), message: "msg_a1".into(), name: json!("read"), input: Value::Null },
@@ -688,4 +689,103 @@ fn a_shell_a_whole_read_finds_running_ends_as_the_command_item_it_read() {
     assert_eq!(parts, [(json!("msg_S1"), json!("completed"), json!("a.txt\n"), json!(0))], "the command item that read made, ended");
     let done = json!([{"id": "msg_S1", "type": "shell", "shellID": "sh_1", "command": "ls", "status": "exited", "exit": 0, "time": {"created": 2}}]);
     assert!(read_messages(&done).shells.is_empty(), "one exited is not running");
+}
+
+/// 2.2.5 numbers an answer's text and reasoning entries apart, each kind from
+/// 0 (core/src/session/runner/publish-llm-event.ts `fragments`), so its first
+/// reasoning and its first text both say ordinal 0. Each is its own item,
+/// keyed by its place in the answer's content, as a whole read keys it: a
+/// reasoning, a text, a tool and a second text are `:0`, `:1`, the tool's
+/// call ID and `:3`. Reasoning gathered before the text started, text deltas
+/// after, and a later reasoning delta each go to their own item (YN-48: the
+/// first text and reasoning were one item, and text gathered with the
+/// reasoning's was written as reasoning, which panicked in `apply_delta`).
+#[test]
+fn an_answers_first_text_and_first_reasoning_are_two_items_keyed_as_a_whole_read_keys_them() {
+    let mut c = Cursor::default();
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    c.read(&ev("session.inbox.enqueued", 1, d(json!({"inboxID": "msg_u1", "item": {"type": "user"}}))));
+    c.read(&ev("session.inbox.delivered", 2, d(json!({"inboxID": "msg_u1"}))));
+    c.read(&ev("session.step.started", 3, d(json!({"assistantMessageID": "msg_a1", "model": {"id": "m", "providerID": "p"}}))));
+    let a = |extra: Value| { let mut v = d(json!({"assistantMessageID": "msg_a1"})); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    // Core's items from what the cursor writes: text and reasoning parts, and deltas.
+    let apply = |read: &[Value], items: &mut Vec<Value>| {
+        for one in read {
+            let part = &one["data"]["part"];
+            match (one["type"].as_str().unwrap(), part["type"].as_str()) {
+                ("message.part.updated", Some(kind @ ("text" | "reasoning"))) => {
+                    let item = if kind == "reasoning" { json!({"id": part["id"], "type": "reasoning", "summary": [part["text"]]}) }
+                        else { json!({"id": part["id"], "type": "agentMessage", "text": part["text"]}) };
+                    match items.iter_mut().find(|i| i["id"] == part["id"]) { Some(i) => *i = item, None => items.push(item) }
+                }
+                ("message.part.delta", _) => apply_delta(items, &one["data"]),
+                _ => {}
+            }
+        }
+    };
+    let mut items: Vec<Value> = Vec::new();
+    let started = c.read(&ev("session.reasoning.started", 10, a(json!({"ordinal": 0}))));
+    assert_eq!(started[0]["data"]["part"]["id"], "msg_a1:0");
+    apply(&started, &mut items);
+    apply(&c.read(&ev("session.reasoning.delta", 20, a(json!({"ordinal": 0, "delta": "Thinking"})))), &mut items);
+    let text = c.read(&ev("session.text.started", 40, a(json!({"ordinal": 0}))));
+    assert_eq!(kinds(&text), ["message.part.delta", "message.part.updated"]);
+    assert_eq!(text[1]["data"]["part"]["id"], "msg_a1:1", "the first text, after the first reasoning, is the second entry");
+    assert_eq!((&text[0]["data"]["partID"], &text[0]["data"]["type"], &text[0]["data"]["delta"]),
+        (&json!("msg_a1:0"), &json!("reasoning"), &json!("Thinking")), "what the reasoning gathered is written to the reasoning first");
+    apply(&text, &mut items);
+    apply(&c.read(&ev("session.text.delta", 50, a(json!({"ordinal": 0, "delta": "Hel"})))), &mut items);
+    apply(&c.read(&ev("session.text.delta", 50 + DELTA_GATHER_MS, a(json!({"ordinal": 0, "delta": "lo"})))), &mut items);
+    apply(&c.read(&ev("session.reasoning.delta", 60 + DELTA_GATHER_MS, a(json!({"ordinal": 0, "delta": " more"})))), &mut items);
+    assert_eq!(items, vec![json!({"id": "msg_a1:0", "type": "reasoning", "summary": ["Thinking"]}),
+        json!({"id": "msg_a1:1", "type": "agentMessage", "text": "Hello"})], "each streamed into its own item");
+    let ended = c.read(&ev("session.reasoning.ended", 400, a(json!({"ordinal": 0, "text": "Thinking more"}))));
+    assert_eq!(ended.last().unwrap()["data"]["part"]["id"], "msg_a1:0", "the reasoning's end is its own item's");
+    apply(&ended, &mut items);
+    apply(&c.read(&ev("session.text.ended", 410, a(json!({"ordinal": 0, "text": "Hello"})))), &mut items);
+    // A tool takes the next place, as 2.x's content does; the second text the one after it.
+    c.read(&ev("session.tool.input.started", 420, a(json!({"id": "call_1", "name": "read"}))));
+    let second = c.read(&ev("session.text.started", 430, a(json!({"ordinal": 1}))));
+    assert_eq!(second[0]["data"]["part"]["id"], "msg_a1:3", "the second text, after a tool, is the fourth entry");
+    assert_eq!(items, vec![json!({"id": "msg_a1:0", "type": "reasoning", "summary": ["Thinking more"]}),
+        json!({"id": "msg_a1:1", "type": "agentMessage", "text": "Hello"})], "two items, each with its own whole text");
+}
+
+/// A whole read in mid-answer hands the live stream that answer's entries,
+/// numbered within each kind as 2.x's live events number them: the next
+/// text's events after it go to the place 2.x's content gives that text.
+#[test]
+fn after_a_whole_read_in_mid_answer_an_entrys_events_go_to_its_place() {
+    let messages = json!([
+        {"id": "msg_u1", "type": "user", "time": {"created": 1}},
+        {"id": "msg_a1", "type": "assistant", "time": {"created": 2}, "content": [
+            {"type": "reasoning", "text": "think"},
+            {"type": "text", "text": "first"},
+            {"type": "reasoning", "text": "again"},
+        ]},
+    ]);
+    let read = read_messages(&messages);
+    assert_eq!(read.steps[0].entries, vec![Entry { kind: "reasoning".into(), ordinal: Some(0) }, Entry { kind: "text".into(), ordinal: Some(0) },
+        Entry { kind: "reasoning".into(), ordinal: Some(1) }]);
+    let mut c = Cursor::default();
+    c.resumed("ses_1", &read, &json!([]));
+    let d = |extra: Value| { let mut v = json!({"sessionID": "ses_1", "assistantMessageID": "msg_a1"}); v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); v };
+    let again = c.read(&ev("session.reasoning.ended", 5, d(json!({"ordinal": 1, "text": "again, done"}))));
+    assert_eq!(again[0]["data"]["part"]["id"], "msg_a1:2", "the second reasoning is the third entry, as the read keyed it");
+    let next = c.read(&ev("session.text.started", 6, d(json!({"ordinal": 1}))));
+    assert_eq!(next[0]["data"]["part"]["id"], "msg_a1:3", "the second text starts after them");
+}
+
+/// A delta never panics on an item of the other kind, or one whose text is
+/// not a string: it leaves it as it is (YN-48).
+#[test]
+fn a_delta_leaves_an_item_of_another_kind_or_shape_as_it_is() {
+    let mut items = vec![json!({"id": "msg_a1:0", "type": "agentMessage", "text": "Hi"}), json!({"id": "msg_a1:1", "type": "reasoning", "summary": []}),
+        json!({"id": "msg_a1:2", "type": "reasoning", "summary": "not a list"})];
+    let before = items.clone();
+    apply_delta(&mut items, &json!({"partID": "msg_a1:0", "messageID": "msg_a1", "type": "reasoning", "delta": "x"}));
+    apply_delta(&mut items, &json!({"partID": "msg_a1:1", "messageID": "msg_a1", "type": "text", "delta": "x"}));
+    apply_delta(&mut items, &json!({"partID": "msg_a1:1", "messageID": "msg_a1", "type": "reasoning", "delta": "x"}));
+    apply_delta(&mut items, &json!({"partID": "msg_a1:2", "messageID": "msg_a1", "type": "reasoning", "delta": "x"}));
+    assert_eq!(items, before);
 }

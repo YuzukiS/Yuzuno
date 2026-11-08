@@ -521,6 +521,40 @@ async fn abort_asks_and_only_the_end_it_reports_ends_the_turn() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// YN-48: a Turn OpenCode ends live records when Core saw it end
+/// (`_yuzunoCompletedAt`), as Claude's and Codex's Turns do, so its footer
+/// says how long it ran and when it was done: completed, failed or
+/// interrupted. One that ended while no stream was open, found by the
+/// snapshot that follows, records no such time: that read does not say when.
+#[tokio::test]
+async fn a_turn_opencode_ends_live_records_when_core_saw_it_end() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let times = |d: &AgentDetail, id: &str| (turn(d, id)["_yuzunoStartedAt"].as_i64(), turn(d, id)["_yuzunoCompletedAt"].as_i64());
+    let done = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    let d = lab.until("completion", |d| turn(d, &done)["status"] == "completed").await;
+    let (started, ended) = times(&d, &done);
+    assert!(started.is_some() && ended >= started, "completed: started {started:?}, ended {ended:?}");
+    let failed = lab.send("c2", "fail").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"error":{"name":"APIError","data":{"message":"overloaded"}}})).await;
+    let d = lab.until("the failure", |d| turn(d, &failed)["status"] == "failed").await;
+    assert!(times(&d, &failed).1.is_some_and(|ended| Some(ended) >= times(&d, &failed).0), "failed: {:?}", times(&d, &failed));
+    let stopped = lab.send("c3", "long").await.unwrap().turn_id.unwrap();
+    lab.ws.interrupt(ID).await.unwrap();
+    let d = lab.until("the interrupt", |d| turn(d, &stopped)["status"] == "interrupted").await;
+    assert!(times(&d, &stopped).1.is_some(), "interrupted: {:?}", times(&d, &stopped));
+    assert_eq!(times(&d, &done).1, ended, "a Turn's end is recorded once");
+    // Ended while the stream was broken: the snapshot after it ends the Turn, and records no time.
+    let missed = lab.send("c4", "work").await.unwrap().turn_id.unwrap();
+    lab.control("refuseEvents", json!({"seconds":0.4})).await;
+    lab.control("drop", json!({})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Missed it."})).await;
+    let d = lab.until("the snapshot", |d| turn(d, &missed)["status"] == "completed").await;
+    assert_eq!(times(&d, &missed).1, None, "a whole read says nothing of when it ended");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 #[tokio::test]
 async fn an_abort_is_read_in_the_order_opencode_reports_it() {
     let lab = lab(&[], false).await;
@@ -591,6 +625,55 @@ async fn a_run_halted_with_an_error_ends_as_opencode_reports_it() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// YN-48: 2.2.5 numbers an answer's text and reasoning entries apart, each
+/// kind from 0 (core/src/session/runner/publish-llm-event.ts `fragments`),
+/// so a step that reasons and then answers says ordinal 0 for both, as a real
+/// provider streams them: reasoning deltas, the text's start, text deltas a
+/// quarter-second later. Each is its own item and the Turn ends as OpenCode
+/// says; the Agent's events go on (the next message runs). Before, the
+/// text's deltas were written as the reasoning's into the text's item, which
+/// panicked, and with it the task reading the Agent's events: the Turn stayed
+/// working with nothing shown.
+#[tokio::test]
+async fn an_answers_reasoning_and_text_numbered_apart_stream_into_two_items_and_the_turn_ends() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let turn_id = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    lab.until("the run", |d| d.agent.status == "working").await;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let answer = "msg_zzzzyn48answer";
+    let at = |kind: &str, after: i64, extra: Value| {
+        let mut data = json!({"sessionID": session, "assistantMessageID": answer});
+        data.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json!({"type": kind, "created": now + after, "properties": data})
+    };
+    for event in [
+        at("session.step.started", 0, json!({"agent": "build", "model": {"id": "fake", "providerID": "stub"}, "started": now})),
+        at("session.reasoning.started", 10, json!({"ordinal": 0})),
+        at("session.reasoning.delta", 20, json!({"ordinal": 0, "delta": "Thinking"})),
+        at("session.text.started", 40, json!({"ordinal": 0})),
+        at("session.text.delta", 50, json!({"ordinal": 0, "delta": "Hel"})),
+        at("session.text.delta", 300, json!({"ordinal": 0, "delta": "lo"})),
+        at("session.reasoning.ended", 310, json!({"ordinal": 0, "text": "Thinking"})),
+        at("session.text.ended", 320, json!({"ordinal": 0, "text": "Hello"})),
+        at("session.step.ended", 330, json!({"finish": "stop", "cost": 0, "tokens": {"input": 1, "output": 1}})),
+        json!({"type": "session.execution.succeeded", "created": now + 340, "properties": {"sessionID": session}}),
+    ] {
+        lab.control("event", event).await;
+    }
+    let d = lab.until("the turn to end as OpenCode said", |d| turn(d, &turn_id)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &turn_id)["status"], "completed");
+    let shown: Vec<(Value, Value)> = turn(&d, &turn_id)["items"].as_array().unwrap().iter().filter(|i| i["type"] != "userMessage")
+        .map(|i| (i["type"].clone(), if i["type"] == "reasoning" { i["summary"][0].clone() } else { i["text"].clone() })).collect();
+    assert_eq!(shown, vec![(json!("reasoning"), json!("Thinking")), (json!("agentMessage"), json!("Hello"))], "two items, each its own text");
+    // Its events go on: the next message runs and ends.
+    let next = lab.send("c2", "again").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID": session, "text": "Again."})).await;
+    let d = lab.until("the next turn", |d| turn(d, &next)["status"] != "inProgress").await;
+    assert_eq!(turn(&d, &next)["status"], "completed");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 /// Closing an Agent whose server something else still holds (a request
 /// still out, here a read of its models) waits for 2.x's teardown, within
 /// TEARDOWN. 2.x closes what it serves first, so that request fails and lets
@@ -619,6 +702,39 @@ async fn closing_waits_for_the_teardown_even_while_a_request_still_holds_the_ser
     assert!(ended, "the tool's process ended in OpenCode's own teardown, not cut short by a kill of its group");
     assert!(ends(pid).await, "OpenCode ended");
     assert!(read.await.unwrap().is_err(), "the read was cut by OpenCode's teardown");
+}
+
+/// YN-48: while a Turn waits, it says what it waits on. It names the model
+/// its message went to: the Agent's chosen one, else the one OpenCode runs a
+/// session on with none chosen (`GET /api/model/default`), as the Agent's
+/// catalog also says. A retry OpenCode schedules keeps its attempt, when it
+/// tries next and why the last one failed, until the answer goes on.
+#[tokio::test]
+async fn a_waiting_turn_names_its_model_and_what_opencode_retries() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    assert_eq!(catalog["default"]["id"], "openrouter/anthropic/claude-x", "what Harness default is now: {}", catalog["default"]);
+    let first = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    assert_eq!(turn(&lab.detail(), &first)["_opencodeModel"],
+        json!({"id": "openrouter/anthropic/claude-x", "name": "OpenRouter · Claude X", "default": true}), "OpenCode's own default, named");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    lab.control("event", json!({"type": "session.retry.scheduled", "created": now, "properties": {"sessionID": session,
+        "assistantMessageID": "msg_zzzzyn48retry", "attempt": 2, "at": now + 2000,
+        "error": {"type": "provider.transport", "message": "ECONNREFUSED: Unable to connect."}}})).await;
+    let d = lab.until("the retry", |d| turn(d, &first)["_opencodeRetry"].is_object()).await;
+    assert_eq!(turn(&d, &first)["_opencodeRetry"], json!({"attempt": 2, "next": now + 2000, "message": "ECONNREFUSED: Unable to connect."}));
+    assert_eq!(turn(&d, &first)["status"], "inProgress");
+    lab.control("reply", json!({"sessionID": session, "text": "Done."})).await;
+    let d = lab.until("the answer", |d| turn(d, &first)["status"] == "completed").await;
+    assert!(turn(&d, &first).get("_opencodeRetry").is_none(), "over once the answer went on");
+    // A chosen model is the one named.
+    lab.ws.opencode_set_model(ID, "deepseek/deepseek-flash".into()).await.unwrap();
+    let second = lab.send("c2", "again").await.unwrap().turn_id.unwrap();
+    assert_eq!(turn(&lab.detail(), &second)["_opencodeModel"], json!({"id": "deepseek/deepseek-flash", "name": "DeepSeek · DeepSeek Flash"}));
+    lab.control("reply", json!({"sessionID": session, "text": "Again."})).await;
+    lab.until("the second answer", |d| turn(d, &second)["status"] == "completed").await;
+    lab.ws.close_agent(ID).await.unwrap();
 }
 
 /// An Agent's database is made by its first 2.x server (T-32): the version
@@ -924,14 +1040,26 @@ async fn a_model_opencode_lists_goes_with_the_next_messages_and_nothing_else_of_
     let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
     assert_eq!(catalog["models"], json!([
         {"id":"deepseek/deepseek-flash","model":"deepseek/deepseek-flash","displayName":"DeepSeek · DeepSeek Flash","description":null,
-         "variants":["high","max"]},
+         "variants":["high","max"],"providerId":"deepseek","providerName":"DeepSeek","name":"DeepSeek Flash","status":"active",
+         "context":1000,"image":false},
         {"id":"openrouter/anthropic/claude-x","model":"openrouter/anthropic/claude-x","displayName":"OpenRouter · Claude X","description":"beta",
-         "variants":[]},
+         "variants":[],"providerId":"openrouter","providerName":"OpenRouter","name":"Claude X","status":"beta","context":1000,"image":false},
     ]));
+    // Each provider once, in the models' order, with where it gets its access (YN-47): neither is logged in yet.
+    assert_eq!(catalog["providers"], json!([
+        {"id":"deepseek","name":"DeepSeek","source":"ready"}, {"id":"openrouter","name":"OpenRouter","source":"ready"},
+    ]));
+    lab.ws.opencode_login_key(ID, key_login("deepseek", "fixture-catalog-key", None)).await.unwrap();
+    let catalog = lab.ws.opencode_agent_catalog(ID).await.unwrap();
+    assert_eq!(catalog["providers"][0], json!({"id":"deepseek","name":"DeepSeek","source":"credential"}), "logged in, read again");
+    assert!(!catalog.to_string().contains("fixture-catalog-key") && !catalog.to_string().contains("fixture-secret"), "{catalog}");
 
-    // Only a model OpenCode lists is saved.
-    let refused = lab.ws.opencode_set_model(ID, "nope/model".into()).await.unwrap_err().to_string();
-    assert!(refused.contains("设置未保存"), "{refused}");
+    // Only a model OpenCode lists is saved; the refusal says how to add one to a provider (YN-47).
+    let refused = lab.ws.opencode_set_model(ID, "deepseek/deepseek-v9".into()).await.unwrap_err().to_string();
+    assert!(refused.contains("OpenCode 没有列出 deepseek/deepseek-v9") && refused.contains("provider.deepseek.models")
+        && refused.contains("设置未保存"), "{refused}");
+    let refused = lab.ws.opencode_set_model(ID, "nope".into()).await.unwrap_err().to_string();
+    assert!(refused.contains("提供方/模型") && refused.contains("设置未保存"), "{refused}");
     assert_eq!(lab.detail().agent.model, "");
     let chosen = lab.ws.opencode_set_model(ID, " openrouter/anthropic/claude-x ".into()).await.unwrap();
     assert_eq!(chosen.model, "openrouter/anthropic/claude-x");

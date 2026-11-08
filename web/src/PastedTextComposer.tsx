@@ -84,8 +84,8 @@ const text = strings({
   empty: "Empty text",
   lines: (lines: number) => `${lines} ${lines === 1 ? "line" : "lines"}`,
   viewLabel: (chip: string) => `${chip}. View and edit`,
-  rule: "Long pastes (12+ lines or 2,000+ characters) fold into a block. Open it to view or edit.",
-  preview: "Preview · open to view and edit the full text",
+  rule: "Long pastes (12+ lines or 2,000+ characters) fold into a block.",
+  preview: "Pasted text",
   numbered: (n: number) => `Pasted text #${n}`,
   pasted: "Pasted text",
   description: "View or edit the complete text. Saving changes does not send a message.",
@@ -100,8 +100,8 @@ const text = strings({
   empty: "空文本",
   lines: (lines) => `${lines} 行`,
   viewLabel: (chip) => `${chip}。查看并编辑`,
-  rule: "较长的粘贴内容（12 行以上或 2,000 个字符以上）会折叠成一个块。打开它即可查看或编辑。",
-  preview: "预览 · 打开以查看并编辑全文",
+  rule: "较长的粘贴内容（12 行以上或 2,000 个字符以上）会折叠成一个块。",
+  preview: "粘贴的文本",
   numbered: (n) => `粘贴的文本 #${n}`,
   pasted: "粘贴的文本",
   description: "查看或编辑完整文本。保存更改不会发送消息。",
@@ -139,8 +139,6 @@ class PasteWidget extends WidgetType {
     const t = this.words;
     button.textContent = `${textLabel(this.paste.text) || t.empty} · ${t.lines(this.paste.lines)}`;
     button.setAttribute("aria-label", t.viewLabel(button.textContent));
-    // The rule lives here rather than as a standing line under the draft.
-    button.title = t.rule;
     button.setAttribute("aria-haspopup", "dialog");
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -297,13 +295,22 @@ export const PastedTextComposer = forwardRef<ComposerHandle, Props>(
                 end: anchor.from + 1,
                 above: true,
                 create() {
+                  // The app's one tip, the Preview kind (tip.css), inside
+                  // CodeMirror's own tooltip: what it is, its start, and
+                  // the rule that folded it (no native title on the chip).
+                  const words = v.state.facet(pasteWords);
                   const dom = document.createElement("div");
                   dom.className = "pasted-text-preview";
+                  const title = document.createElement("strong");
+                  title.className = "tip-title";
+                  title.textContent = words.preview;
                   const pre = document.createElement("pre");
+                  pre.className = "tip-preview";
                   pre.textContent = anchor.paste.preview;
-                  const hint = document.createElement("small");
-                  hint.textContent = v.state.facet(pasteWords).preview;
-                  dom.append(pre, hint);
+                  const rule = document.createElement("small");
+                  rule.className = "tip-meta";
+                  rule.textContent = words.rule;
+                  dom.append(title, pre, rule);
                   return {
                     dom,
                     mount() {

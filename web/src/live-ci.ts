@@ -132,7 +132,6 @@ const words = strings({
   waitingForRun: (count: number, checked: string | null) =>
     `${count} commit${count === 1 ? "" : "s"} waiting for ${count === 1 ? "its" : "their"} first run, still monitored${checked ? ` (last checked ${checked})` : ""}.`,
   needsCheck: (count: number) => `${count} CI target${count === 1 ? " needs" : "s need"} checking: monitoring is unavailable, stale, incomplete, or no run was found.`,
-  seeJobs: "See CI in Jobs.",
   join: " ",
 }, {
   checkJob: "Job",
@@ -142,7 +141,6 @@ const words = strings({
   discovering: (count) => `${count} 个 CI 目标正在等待发现运行（最长 10 分钟）。`,
   waitingForRun: (count, checked) => `${count} 个提交正在等待首次运行，仍在监控${checked ? `（上次检查于 ${checked}）` : ""}。`,
   needsCheck: (count) => `${count} 个 CI 目标需要核对：监控不可用、已过时、不完整，或未找到运行。`,
-  seeJobs: "请在 Job 中查看 CI。",
   join: "",
 });
 export function waitingSummary(
@@ -176,7 +174,6 @@ export function waitingSummary(
     ci.discovering ? w.discovering(ci.discovering) : "",
     waitingForRun ? w.waitingForRun(waitingForRun, ci.waitingCheckedAt ? new Date(ci.waitingCheckedAt).toLocaleTimeString() : null) : "",
     ci.check ? w.needsCheck(ci.check) : "",
-    w.seeJobs,
   ]
     .filter(Boolean)
     .join(w.join);

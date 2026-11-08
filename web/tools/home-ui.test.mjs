@@ -1666,9 +1666,14 @@ const replyBox = (root) => root.querySelector(".home-card-reply");
 const keys = (body) => Object.keys(body).sort();
 const changedAnswer = (title) => [400, { error: `section_changed: version 2 of “${title}” is no longer on Home; it changed after you began this reply. Nothing was sent, and your reply is kept.`, code: "message_not_submitted" }];
 
-test("a report card takes a reply to its author with the version on screen; a newer version never changes it (T-174)", async () => {
-  let refuse = true;
-  const p = await mount({ replyAnswer: (body) => (body.version === 2 && refuse ? changedAnswer("Notes") : null) });
+test("YN-38 a report card's reply goes to its latest version: the one on screen, and the one Core has when it refused that; no step, one draft (T-174)", async () => {
+  // Core refuses any version but the one it has now, as project_brief/home.rs does.
+  const p = await mount({
+    replyAnswer: (body) => {
+      const now = p.state.home.projects[0].brief.sections.find((s) => s.key === body.key);
+      return now && now.version !== body.version ? changedAnswer(body.title) : null;
+    },
+  });
   try {
     assert.ok(!p.button("Reply", card(p, "p-app", "release")), "an ask has its own reply controls, no card reply");
     assert.ok(!!p.button("Reply", card(p, "p-app", "notes/review")), "a sub card takes a reply to its own author");
@@ -1679,36 +1684,38 @@ test("a report card takes a reply to its author with the version on screen; a ne
     assert.equal(replyBox(notes).querySelector("select").value, "a", "to its author");
     assert.equal(p.posts(/\/brief\/reply$/).length, 0, "opening sends nothing");
     await type(p, replyBox(notes).querySelector("textarea"), "Please add the numbers");
-    // The author writes version 3 meanwhile: the reply still names version 2.
+    // The author writes version 3 while the user writes: the reply follows it.
     const app = p.state.home.projects[0];
     Object.assign(app.brief.sections[1], { version: 3, title: "Notes, revised" });
     p.event({ type: "workspace.changed", scope: "brief" });
     await waitFor(() => card(p, "p-app", "notes").dataset.sectionVersion === "3", "Home read version 3");
     const box = replyBox(card(p, "p-app", "notes"));
-    assert.match(box.textContent, /Reply to “Notes” · version 2/);
-    assert.match(box.textContent, /changed this card after you began \(now version 3\)/);
-    assert.equal(box.querySelector("textarea").value, "Please add the numbers");
+    assert.match(box.textContent, /Reply to “Notes, revised” · version 3/);
+    assert.doesNotMatch(box.textContent, /changed this card|still refers|Refer it/);
+    assert.equal(p.button("Refer it to version 3", box), undefined, "no step to move it");
+    assert.equal(box.querySelector("textarea").value, "Please add the numbers", "the draft stays");
     p.button("Send", box).click();
-    await waitFor(() => !!box.querySelector('[role="alert"]'), "Core's refusal is shown");
+    await waitFor(() => /Sent to Mori, referring to version 3/.test(box.textContent), "sent to version 3");
     const [first] = p.posts(/\/brief\/reply$/);
     assert.deepEqual(keys(first.body), ["agentId", "clientMessageId", "key", "text", "title", "version"]);
     assert.deepEqual([first.body.key, first.body.version, first.body.title, first.body.agentId, first.body.text],
-      ["notes", 2, "Notes", "a", "Please add the numbers"]);
+      ["notes", 3, "Notes, revised", "a", "Please add the numbers"]);
     assert.match(first.body.clientMessageId, uuid);
-    assert.match(box.querySelector('[role="alert"]').textContent, /^version 2 of “Notes” is no longer on Home/);
-    assert.equal(box.querySelector("textarea").value, "Please add the numbers", "the draft stays");
-    assert.equal(p.w.localStorage.getItem("yuzuno.home-outbox.v1"), null, "nothing was submitted: no retry record");
-    // Only the user moves it to the new version, and it is a new message.
-    refuse = false;
-    p.button("Refer it to version 3", box).click();
-    await pause();
-    assert.match(box.textContent, /Reply to “Notes, revised” · version 3/);
-    p.button("Send", box).click();
-    await waitFor(() => /Sent to Mori, referring to version 3/.test(box.textContent), "sent");
-    const second = p.posts(/\/brief\/reply$/)[1].body;
-    assert.deepEqual([second.version, second.title], [3, "Notes, revised"]);
-    assert.notEqual(second.clientMessageId, first.body.clientMessageId);
     assert.equal(box.querySelector("textarea").value, "");
+    // Core has version 4 before Home reads it: Core refuses version 3, Home
+    // reads the card again, and the reply goes to version 4.
+    await type(p, box.querySelector("textarea"), "And the units, please");
+    Object.assign(app.brief.sections[1], { version: 4, title: "Notes, third pass" });
+    const homeReads = p.calls.filter((c) => c.url.endsWith("/api/home")).length;
+    p.button("Send", box).click();
+    await waitFor(() => /Sent to Mori, referring to version 4/.test(box.textContent), "sent to version 4");
+    const [, refusedOne, second] = p.posts(/\/brief\/reply$/).map((c) => c.body);
+    assert.deepEqual([refusedOne.version, refusedOne.title], [3, "Notes, revised"]);
+    assert.deepEqual([second.version, second.title, second.text], [4, "Notes, third pass", "And the units, please"]);
+    assert.notEqual(second.clientMessageId, refusedOne.clientMessageId, "Core never had the refused one: a new message");
+    assert.ok(p.calls.filter((c) => c.url.endsWith("/api/home")).length > homeReads, "Home read the card again");
+    assert.equal(box.querySelector('[role="alert"]'), null, "no refusal shown");
+    assert.equal(p.w.localStorage.getItem("yuzuno.home-outbox.v1"), null);
     assert.equal(p.w.localStorage.getItem("yuzuno.home-card-drafts.v1"), null, "a sent reply leaves no draft");
     assert.equal(p.posts(/\/brief\/(seen|defer)$/).length, 0, "a card reply marks nothing seen and defers nothing");
     assert.deepEqual(p.errors, []);
@@ -1795,7 +1802,7 @@ test("an author who left waits for an explicit recipient; a card that leaves Hom
     await waitFor(() => !card(p, "p-app", "notes"), "the card is gone");
     const kept = p.panel("p-app").querySelector(".home-kept-reply");
     assert.ok(!!kept, "the draft is kept and explained");
-    assert.match(kept.textContent, /Your reply to “Notes” \(version 2\) was not sent: that card is no longer on Home/);
+    assert.match(kept.textContent, /Your reply to “Notes” was not sent: that card is no longer on Home/);
     assert.match(kept.textContent, /Who owns this now\?/);
     assert.equal(p.posts(/\/brief\/reply$/).length, 0, "not sent to another card or Agent");
     p.button("Discard", kept).click();
@@ -1845,13 +1852,18 @@ test("a pinned report takes the same reply as its card: one draft, and one send 
   }
 });
 
-test("a report marked seen takes a reply from History at its version; removed entries, older versions and live keys take none (T-174)", async () => {
+test("a report marked seen takes a reply from History at its version; removed entries, older versions, asks and live keys take none, not even a control that can't send (T-174, YN-38)", async () => {
   const home = homeFixture();
   home.projects[0].brief.history = [
     section("weekly", "report", "Weekly", 3, owner("b", "Hana"), { history: true, historyReason: "seen", currentSource: true, seen: { version: 3, at: at(900) } }),
     section("weekly", "report", "Weekly", 2, owner("b", "Hana"), { history: true, historyReason: "seen", currentSource: true }),
     section("dropped", "report", "Dropped", 1, owner("a", "Mori"), { history: true, historyReason: "removed" }),
     section("notes", "report", "Notes", 1, owner("a", "Mori"), { history: true, historyReason: "seen", currentSource: true }),
+    // An ask its owner resolved, and an earlier version of a live ask's key.
+    section("launch", "ask", "Launch when?", 2, owner("a", "Mori"), { history: true, historyReason: "resolved",
+      ask: { question: "Launch on Monday?", state: "resolved", replyText: "Monday", reply: { options: [{ id: "mon", label: "Monday" }], freeText: true } } }),
+    section("release", "ask", "Ship today?", 2, owner("a", "Mori"), { history: true, historyReason: "removed",
+      ask: { question: "Ship the release today?", state: "open", reply: { options: [{ id: "ship", label: "Ship today" }], freeText: true } } }),
   ];
   const p = await mount({ home });
   try {
@@ -1863,8 +1875,12 @@ test("a report marked seen takes a reply from History at its version; removed en
       entry.dispatchEvent(new p.w.Event("toggle"));
     }
     await waitFor(() => entries.every((entry) => / body/.test(entry.textContent)), "the entries open");
-    assert.deepEqual(entries.map((entry) => !!p.button("Reply", entry)), [true, false, false, false],
+    assert.deepEqual(entries.map((entry) => !!p.button("Reply", entry)), [true, false, false, false, false, false],
       "only each key's newest seen report, while no card under its key is live");
+    // No reply control of any kind on an entry that can't take one.
+    for (const entry of entries.slice(1))
+      assert.equal(entry.querySelector("textarea, select, .home-ask-reply, .home-ask-options, .clarification, .home-card-reply"), null, entry.textContent);
+    assert.equal(p.button("Ship today", history), undefined, "an earlier version of a live ask offers no option");
     p.button("Reply", entries[0]).click();
     await waitFor(() => !!replyBox(entries[0]), "the reply opens in History");
     assert.match(replyBox(entries[0]).textContent, /Reply to “Weekly” · version 3/);
@@ -2186,7 +2202,8 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
     await choose(p, card(p, "p-app", "release").querySelector(".home-reply-target select"), "b");
     await type(p, askField(p), "Only after the docs land.");
     const kept = askDrafts(p)[releaseSlot()];
-    assert.deepEqual([kept.key, kept.text, kept.version, kept.agentId], ["release", "Only after the docs land.", 3, "b"]);
+    assert.deepEqual([kept.key, kept.text, kept.agentId], ["release", "Only after the docs land.", "b"]);
+    assert.equal(kept.version, undefined, "bound to no version: it goes to the latest (YN-38)");
     assert.equal(p.w.localStorage.getItem("yuzuno.home-card-drafts.v1"), null, "an Ask's draft is not a card reply's");
     assert.equal(p.posts(/\/brief\/reply$/).length, 0, "writing sends nothing");
     stored = storageOf(p);
@@ -2200,7 +2217,7 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
     const release = card(again, "p-app", "release");
     assert.equal(askField(again).value, "Only after the docs land.", "the text is back after a reload");
     assert.equal(release.querySelector(".home-reply-target select").value, "b", "and its recipient");
-    assert.match(release.textContent, /Kept from before, not sent yet: your reply to version 3 of this ask\./);
+    assert.match(release.textContent, /Kept from before, not sent yet: your reply to this ask\./);
     again.button("Send", release.querySelector(".home-text-reply")).click();
     await waitFor(() => again.posts(/\/brief\/reply$/).length === 1, "the reply is being sent");
     // Written while it is being sent: not what was sent, so it stays.
@@ -2208,7 +2225,7 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
     answer();
     await waitFor(() => /Replied · waiting for/.test(card(again, "p-app", "release").textContent), "delivered");
     const [sent] = again.posts(/\/brief\/reply$/);
-    // The version the reply was begun on and the Workspace, never a card's version or title (T-9).
+    // The version on screen and the Workspace, never a card's version or title (T-9).
     assert.deepEqual(keys(sent.body), ["agentId", "askVersion", "clientMessageId", "key", "text", "workspaceId"]);
     assert.deepEqual([sent.body.askVersion, sent.body.workspaceId], [3, "ws-home"]);
     assert.deepEqual([sent.body.key, sent.body.agentId, sent.body.text], ["release", "b", "Only after the docs land."]);
@@ -2227,10 +2244,19 @@ test("an Ask's unsent reply is kept across a reload with its recipient and versi
   }
 });
 
-test("an Ask asked again under its key holds a reply begun on the earlier version until the user refers it or discards it (T-182)", async () => {
-  const p = await mount();
+test("YN-38 an Ask asked again while the user writes keeps the words and sends them to the latest version: on screen, or Core's when it refused the one on screen (T-182)", async () => {
+  // Core refuses any version but the one it has now (project_brief/home.rs).
+  const p = await mount({
+    replyAnswer: (body) => {
+      const now = p.state.home.projects[0].brief.sections[0];
+      return body.key === "release" && body.askVersion !== now.version
+        ? [409, { error: `ask_changed: version ${body.askVersion} of the ask \`release\` can't be answered now: it changed after you began this reply. Nothing was sent, and your reply is kept.`, code: "message_not_submitted" }]
+        : null;
+    },
+  });
+  const ask = (version, question) => Object.assign(p.state.home.projects[0].brief.sections[0], { version, ask: { question, state: "open", reply: { freeText: true } } });
   const reask = async (version, question) => {
-    Object.assign(p.state.home.projects[0].brief.sections[0], { version, ask: { question, state: "open", reply: { freeText: true } } });
+    ask(version, question);
     p.event({ type: "workspace.changed", scope: "brief" });
     await waitFor(() => card(p, "p-app", "release").dataset.sectionVersion === String(version), `Home read version ${version}`);
   };
@@ -2238,33 +2264,85 @@ test("an Ask asked again under its key holds a reply begun on the earlier versio
     await type(p, askField(p), "Ship after QA.");
     await reask(4, "Ship the release on Monday?");
     const release = () => card(p, "p-app", "release");
-    assert.match(release().textContent, /You began this reply on version 3 of this ask; Home shows version 4\./);
+    assert.doesNotMatch(release().textContent, /began this reply on version|Refer it to/);
     assert.equal(askField(p).value, "Ship after QA.", "the text stays");
     const send = () => p.button("Send", release().querySelector(".home-text-reply"));
-    assert.equal(send().disabled, true, "not sent to the new question as it is");
-    askField(p).dispatchEvent(new p.w.KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
-    await pause();
-    assert.equal(p.posts(/\/brief\/reply$/).length, 0, "nor by the keyboard");
-    p.button("Refer it to version 4", release()).click();
-    await pause();
-    assert.equal(askDrafts(p)[releaseSlot()].version, 4);
-    assert.equal(send().disabled, false);
+    assert.equal(send().disabled, false, "no step before it can be sent");
+    assert.equal(p.button("Refer it to version 4", release()), undefined);
     send().click();
-    await waitFor(() => p.posts(/\/brief\/reply$/).length === 1, "sent once referred");
+    await waitFor(() => p.posts(/\/brief\/reply$/).length === 1, "sent");
     assert.deepEqual(keys(p.posts(/\/brief\/reply$/)[0].body), ["agentId", "askVersion", "clientMessageId", "key", "text", "workspaceId"]);
-    assert.equal(p.posts(/\/brief\/reply$/)[0].body.askVersion, 4, "to the version it was referred to");
+    assert.equal(p.posts(/\/brief\/reply$/)[0].body.askVersion, 4, "to the version on screen");
     await waitFor(() => p.w.localStorage.getItem(ASK_DRAFTS) === null, "no draft after delivery");
-    // Begun again, then the question changes again: Discard drops it, sending nothing.
+    // Begun again; Core has version 5 before Home reads it: refused there,
+    // the words go to version 5 as a new message, with nothing to press.
     p.button("Reply again", release()).click();
     await pause();
     await type(p, askField(p), "Monday is fine.");
-    await reask(5, "Ship the release on Tuesday?");
-    assert.match(release().textContent, /began this reply on version 4 of this ask; Home shows version 5/);
-    p.button("Discard", release().querySelector(".home-ask-reply")).click();
-    await pause();
-    assert.equal(askField(p).value, "");
+    ask(5, "Ship the release on Tuesday?");
+    send().click();
+    await waitFor(() => p.posts(/\/brief\/reply$/).length === 3, "refused once, then sent to version 5");
+    const [, refusedOne, sent] = p.posts(/\/brief\/reply$/).map((c) => c.body);
+    assert.deepEqual([refusedOne.askVersion, sent.askVersion, sent.text], [4, 5, "Monday is fine."]);
+    assert.notEqual(sent.clientMessageId, refusedOne.clientMessageId);
+    await waitFor(() => /Replied · waiting for/.test(release().textContent), "shown as answered");
+    assert.doesNotMatch(release().textContent, /nothing was sent/i);
     assert.equal(p.w.localStorage.getItem(ASK_DRAFTS), null);
-    assert.equal(p.posts(/\/brief\/reply$/).length, 1, "discarding sends nothing");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("YN-38 an Ask's form asked again while the user answers: the answers that still fit stay, what changed is said on each field, nothing is picked for the user, and the answers go to the latest version", async () => {
+  const home = homeFixture();
+  const plan = (version, fields) => section("plan", "ask", "Release plan", version, owner("a", "Mori"), {
+    ask: { question: "How should the release go?", state: "open", reply: { form: { id: "release-plan", title: "Release plan", fields } } },
+  });
+  const day = (options) => ({ id: "day", type: "single", label: "Release day", required: true, options });
+  const mon = { id: "mon", label: "Monday" }, tue = { id: "tue", label: "Tuesday" }, fri = { id: "fri", label: "Friday" };
+  const notesField = { id: "notes", type: "text", label: "Anything else", required: false };
+  home.projects[0].brief.sections.push(plan(1, [day([mon, tue]), notesField]));
+  const p = await mount({ home });
+  try {
+    // A form copies its answers on submit; jsdom's window lacks it (as above).
+    p.w.structuredClone = structuredClone;
+    const planCard = () => card(p, "p-app", "plan");
+    const radio = (label) => [...planCard().querySelectorAll(".clarification label")].find((l) => l.textContent.includes(label))?.querySelector("input");
+    const fieldNotes = (label) => [...[...planCard().querySelectorAll(".clarification-field")].find((f) => f.querySelector("legend").textContent.startsWith(label))
+      .querySelectorAll(".clarification-carried p")].map((n) => n.textContent);
+    radio("Tuesday").click();
+    await pause();
+    await type(p, planCard().querySelector(".clarification textarea"), "After the docs land.");
+    // Mori asks again: Tuesday is gone, Friday and a required field are new.
+    const sections = p.state.home.projects[0].brief.sections;
+    sections[sections.length - 1] = plan(2, [day([mon, fri]), notesField, { id: "who", type: "single", label: "Who ships it", required: true, options: [{ id: "mori", label: "Mori" }, { id: "hana", label: "Hana" }] }]);
+    p.event({ type: "workspace.changed", scope: "brief" });
+    await waitFor(() => planCard().dataset.sectionVersion === "2", "Home read version 2");
+    await waitFor(() => fieldNotes("Release day").length > 0, "the form says what changed");
+    assert.deepEqual(fieldNotes("Release day"), ["No longer offered: “Tuesday”. Choose again."]);
+    assert.deepEqual(fieldNotes("Who ships it"), ["New since you began answering."]);
+    assert.deepEqual(fieldNotes("Anything else"), [], "an answer that still fits is kept, unsaid");
+    assert.equal(planCard().querySelector(".clarification textarea").value, "After the docs land.");
+    assert.ok(!radio("Monday").checked && !radio("Friday").checked, "no day picked for the user");
+    assert.match(planCard().textContent, /This ask is now version 2\. Your answers are kept where they still fit/);
+    assert.doesNotMatch(planCard().textContent, /Refer it to|began this reply on version/);
+    const submit = () => planCard().querySelector(".clarification footer .primary-button");
+    assert.equal(submit().disabled, false, "no step before it can be sent");
+    submit().click();
+    await pause();
+    assert.equal(p.posts(/\/brief\/reply$/).length, 0, "not sent while a required answer is missing");
+    radio("Friday").click();
+    await pause();
+    assert.deepEqual(fieldNotes("Release day"), [], "answered again: said no more");
+    radio("Hana").click();
+    await pause();
+    submit().click();
+    await waitFor(() => p.posts(/\/brief\/reply$/).length === 1, "sent");
+    const [sent] = p.posts(/\/brief\/reply$/).map((c) => c.body);
+    assert.equal(sent.askVersion, 2);
+    assert.deepEqual(sent.form, { formId: "release-plan", answers: { day: "fri", notes: "After the docs land.", who: "hana" } });
+    assert.match(sent.text, /- Release day: Friday\n- Anything else: After the docs land\.\n- Who ships it: Hana/);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -2287,7 +2365,7 @@ test("an Ask's draft belongs to its Workspace, shows once the Workspace is read,
     // not drawn until that read lands: not there yet is "not yet", not an error.
     await waitFor(() => card(late, "p-app", "release")?.querySelector(".home-ask-reply textarea")?.value === "Kept for this Workspace.",
       "its own draft shows once it is read");
-    assert.match(card(late, "p-app", "release").textContent, /Kept from before, not sent yet: your reply to version 3/);
+    assert.match(card(late, "p-app", "release").textContent, /Kept from before, not sent yet: your reply to this ask\./);
     assert.equal(card(late, "p-app", "release").querySelector(".home-reply-target select").value, "b", "with the recipient the user chose, not the owner");
   } finally {
     late.close();

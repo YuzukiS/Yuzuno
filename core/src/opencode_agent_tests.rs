@@ -67,6 +67,48 @@ async fn events_of_an_older_connection_or_another_session_change_nothing() {
     ws.close_agent("oc").await.unwrap();
 }
 
+/// YN-48: an event whose application panics ends neither the reading of the
+/// Agent's events nor its Turn. The panic is read as the stream breaking: the
+/// stream is opened again and the session read whole, so the Turn ends as
+/// OpenCode says, the Agent stays connected, and the events after it are read
+/// (the next message runs and ends). Before, the task reading the events died
+/// with it and the Turn stayed working with nothing more read.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_event_whose_application_panics_is_read_as_a_broken_stream_and_the_turn_still_ends() {
+    program();
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let ws = Workspace::new(data.clone(), dir.path().to_string_lossy().into(), "unused".into()).unwrap();
+    ws.store.insert(&agent(&dir.path().to_string_lossy())).unwrap();
+    ws.reconnect("oc").await.unwrap();
+    let session = ws.store.detail("oc").unwrap().agent.opencode_session_id.unwrap();
+    let ended = |turn: String| {
+        let ws = ws.clone();
+        async move {
+            for _ in 0..400 {
+                let d = ws.store.detail("oc").unwrap();
+                if let Some(t) = d.turns.iter().find(|t| t["id"] == turn.as_str() && t["status"] != "inProgress") {
+                    return t["status"].clone();
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            panic!("the turn did not end within 10 s: {:#?}", ws.store.detail("oc").unwrap().turns);
+        }
+    };
+    let input = |client: &str, text: &str| serde_json::from_value::<crate::model::MessageInput>(json!({"clientMessageId": client, "text": text})).unwrap();
+    let first = ws.send_message("oc", input("c1", "hello")).await.unwrap().turn_id.unwrap();
+    control(&data, "event", json!({"type": "yuzuno.test.panic", "created": 1, "properties": {"sessionID": session}})).await;
+    control(&data, "reply", json!({"sessionID": session, "text": "Done."})).await;
+    assert_eq!(ended(first).await, "completed", "the Turn ends as OpenCode says");
+    let d = ws.store.detail("oc").unwrap();
+    assert_eq!((d.agent.connection_state.as_str(), d.agent.status.as_str()), ("connected", "idle"));
+    let second = ws.send_message("oc", input("c2", "again")).await.unwrap().turn_id.unwrap();
+    control(&data, "reply", json!({"sessionID": session, "text": "Again."})).await;
+    assert_eq!(ended(second).await, "completed", "the events after it are read");
+    ws.close_agent("oc").await.unwrap();
+}
+
 /// Whether where its OpenCode keeps snapshots can be known is kept with the
 /// connection (T-10 Revert): the stand-in runs through a script, so it
 /// cannot, and the connection says why.

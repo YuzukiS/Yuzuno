@@ -167,6 +167,11 @@ test("an executor opens on its Overview: its task, materials, steps, changes, ev
     // Starting materials, from the dispatch's snapshot.
     assert.deepEqual(p.all(".executor-overview-kv dt"), ["Acceptance", "Repository @ base", "Worktree", "Return requirements", "Handover version", "Context summary"]);
     assert.equal(p.all(".executor-overview-kv dd")[1], "owner/repo @ 635caab1");
+    // YN-46: its acceptance and return requirements in a box that scrolls once
+    // long (the browser check measures it); short, no region to tab to.
+    const capped = [...p.overviewPanel().querySelectorAll(".executor-overview-kv dd .executor-overview-capped")];
+    assert.deepEqual(capped.map((el) => [el.textContent, el.getAttribute("tabindex"), el.getAttribute("role")]),
+      [["The failing test passes; nothing else changes", null, null], ["Red then green; one PR", null, null]]);
     // Five steps, then the rest on request; each its label (or its kind's word), state and record.
     const steps = () => [...p.overviewPanel().querySelectorAll(".executor-overview-steps .step")].map((s) =>
       [s.dataset.state, s.querySelector(".label").textContent, s.querySelector(".ref").textContent]);
@@ -184,6 +189,9 @@ test("an executor opens on its Overview: its task, materials, steps, changes, ev
     await waitFor(() => steps().length === 8, "all eight steps");
     assert.deepEqual(steps().slice(5), [["done", "CI", "success"], ["doing", "Merge", "waiting"], ["done", "Submit a result", "res12345"]]);
     assert.equal(p.text(".executor-overview-now"), "Doing nowWriting the failing test");
+    // YN-46: its steps and Doing now together, a column of their own on a wide pane.
+    assert.deepEqual([...p.overviewPanel().querySelector(":scope > .executor-overview-progress").children].map((el) => el.className),
+      ["executor-overview-card", "executor-overview-now"]);
     // Changes: its PR's size, from Core's GitHub record.
     assert.match(p.overviewPanel().textContent, /Changes \+120 −30 · 7 files/);
     assert.equal(p.overviewPanel().querySelector('a[href="https://github.com/owner/repo/pull/688"]').textContent, "#688 · Fix the selection");

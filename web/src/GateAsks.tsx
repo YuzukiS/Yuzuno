@@ -39,6 +39,13 @@ export function GateAsks({ items, workspaceId, agents, readOnly, onSent }: {
   const [home, setHome] = useState<HomeData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const wanted = items.map((item) => `${item.projectId}/${item.sectionKey}@${item.since}`).join(" ");
+  // A reply sent or refused here reads the asks again, so a newer version
+  // the reply went to, or that Core refused it for, shows here (YN-38).
+  const [reads, setReads] = useState(0);
+  const sent = () => {
+    setReads((n) => n + 1);
+    onSent();
+  };
   useEffect(() => {
     if (!wanted) return;
     const controller = new AbortController();
@@ -49,7 +56,7 @@ export function GateAsks({ items, workspaceId, agents, readOnly, onSent }: {
         if (!controller.signal.aborted) setError(errorText(e));
       });
     return () => controller.abort();
-  }, [wanted]);
+  }, [wanted, reads]);
   if (!items.length) return null;
   const section = (item: NeedsYouItem): Section | null =>
     home?.projects.find((p) => p.project.id === item.projectId)?.brief.sections.find((s) => s.key === item.sectionKey && s.kind === "ask") ?? null;
@@ -68,7 +75,7 @@ export function GateAsks({ items, workspaceId, agents, readOnly, onSent }: {
                 <div className="gate-ask-body">
                   <SectionBody section={shown} projectId={item.projectId} />
                 </div>
-                <AskReply section={shown} projectId={item.projectId} workspaceId={workspaceId} agents={agents} readOnly={readOnly} onSent={onSent} />
+                <AskReply section={shown} projectId={item.projectId} workspaceId={workspaceId} agents={agents} readOnly={readOnly} onSent={sent} />
               </>
             ) : error ? (
               <p className="gate-ask-error" role="alert">{t.unread(error)}</p>
