@@ -96,15 +96,51 @@ fn root() -> String {
     "/".into()
 }
 
-/// Runs on every open, as `projects::migrate`. Older builds ignore the table.
+/// Runs on every open, as `projects::migrate`. Older builds ignore the tables.
+/// A removal (YN-32) keeps the registration as it was, who removed it, as
+/// what and when, after its row is gone; `removed_by` is `user` or
+/// `agent:<id>`, and an Agent's requestId makes its retry answer the same.
 pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS project_services(id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, data TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS project_services_project ON project_services(project_id);
-        DELETE FROM project_services WHERE project_id NOT IN (SELECT id FROM projects);",
+        DELETE FROM project_services WHERE project_id NOT IN (SELECT id FROM projects);
+        CREATE TABLE IF NOT EXISTS project_service_removals(seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_id TEXT NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            removed_by TEXT NOT NULL, request_id TEXT, data TEXT NOT NULL,
+            UNIQUE(removed_by, request_id));
+        CREATE INDEX IF NOT EXISTS project_service_removals_project ON project_service_removals(project_id, seq);
+        DELETE FROM project_service_removals WHERE project_id NOT IN (SELECT id FROM projects);",
     )?;
     Ok(())
+}
+
+/// How many of a Project's latest removals services_list shows.
+const REMOVALS_LISTED: usize = 10;
+
+/// A registration's removal: `{"service", "removedBy", "removedAs", "removedAt"}`,
+/// `removedAs` being `registrant`, `lead` or `user`.
+fn removal(tx: &Connection, service: &Service, by: &Value, as_: &str, request_id: Option<&str>) -> Result<Value> {
+    let key = match by["kind"].as_str() {
+        Some("agent") => format!("agent:{}", by["id"].as_str().context("an Agent's removal names the Agent")?),
+        _ => "user".into(),
+    };
+    let record = json!({"service": service, "removedBy": by, "removedAs": as_, "removedAt": now()});
+    tx.execute("DELETE FROM project_services WHERE id=?1", [&service.id])?;
+    tx.execute(
+        "INSERT INTO project_service_removals(service_id,project_id,removed_by,request_id,data) VALUES(?1,?2,?3,?4,?5)",
+        params![service.id, service.project_id, key, request_id, record.to_string()],
+    )?;
+    Ok(record)
+}
+
+/// A Project's latest removals, newest first.
+pub(crate) fn removals(db: &Connection, project: &str) -> Result<Vec<Value>> {
+    let mut query = db.prepare("SELECT data FROM project_service_removals WHERE project_id=?1 ORDER BY seq DESC LIMIT ?2")?;
+    let rows = query.query_map(params![project, REMOVALS_LISTED as i64], |r| r.get::<_, String>(0))?;
+    rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
 }
 
 fn validate(input: &NewService) -> Result<(String, String)> {
@@ -193,11 +229,51 @@ impl Store {
         Ok(service)
     }
 
+    /// The user's delete, kept as a removal by the user.
     pub(crate) fn delete_service(&self, id: &str) -> Result<Service> {
-        let db = self.db.write()?;
-        let service = load(&db, id)?;
-        db.execute("DELETE FROM project_services WHERE id=?1", [id])?;
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let service = load(&tx, id)?;
+        removal(&tx, &service, &json!({"kind":"user"}), "user", None)?;
+        tx.commit()?;
         Ok(service)
+    }
+
+    /// An Agent's removal (YN-32): a registration it made, or any of a
+    /// Project it leads now; never one a Job may still serve. `agent` is
+    /// `{"kind":"agent","id","name"}`. A retry with the same requestId answers
+    /// the same, after the row is gone. Whether it removed the row now.
+    pub(crate) fn unregister_service(&self, id: &str, agent: &Value, request_id: &str) -> Result<(Value, bool)> {
+        let actor = agent["id"].as_str().context("an Agent's removal names the Agent")?;
+        let mut db = self.db.write()?;
+        let tx = db.transaction()?;
+        let earlier: Option<String> = tx.query_row(
+            "SELECT data FROM project_service_removals WHERE removed_by=?1 AND request_id=?2",
+            params![format!("agent:{actor}"), request_id], |r| r.get(0)).optional()?;
+        if let Some(earlier) = earlier {
+            let earlier: Value = serde_json::from_str(&earlier)?;
+            ensure!(earlier["service"]["id"] == id, "idempotency_conflict: requestId already removed another service");
+            return Ok((earlier, false));
+        }
+        let service = load(&tx, id)?;
+        let registrant = service.author["kind"] == "agent" && service.author["id"] == actor;
+        let as_ = if registrant {
+            "registrant"
+        } else if crate::agent_roles::leads(&tx, actor, &service.project_id)? {
+            "lead"
+        } else {
+            let project = crate::projects::project_labels(&tx)?.remove(&service.project_id)
+                .map(|(name, _)| name).unwrap_or_else(|| service.project_id.clone());
+            bail!("not_registrant: only the Agent that registered {}, or a lead of its Project {project}, can remove it; \
+                ask one of them or the user", service.name);
+        };
+        if let Some((job, status)) = crate::service_jobs::live(&tx, id)? {
+            bail!("service_served: {} is still served by Job {job} ({status}); cancel that Job first, then remove the service",
+                service.name);
+        }
+        let record = removal(&tx, &service, agent, as_, Some(request_id))?;
+        tx.commit()?;
+        Ok((record, true))
     }
 }
 
@@ -658,6 +734,20 @@ impl Workspace {
         Ok(())
     }
 
+    /// An Agent's removal (YN-32), checked before anything is closed: once
+    /// the row is gone, its way closes (never the service itself). A retry
+    /// answers what was removed and closes nothing again.
+    pub async fn unregister_service(&self, id: &str, agent: Value, request_id: String) -> Result<Value> {
+        let _gate = self.services.gate.lock().await;
+        let service = id.to_owned();
+        let (record, removed) = self.stored(move |s| s.unregister_service(&service, &agent, &request_id)).await?;
+        if removed {
+            self.services.forget(id);
+            self.projects_changed();
+        }
+        Ok(record)
+    }
+
     /// Deletes a project. Its services go with it (their rows by cascade), so
     /// whatever is open for them ends too, once the project is gone. The gate
     /// is held throughout: none of them opens meanwhile. A project that cannot
@@ -928,12 +1018,15 @@ async fn forward_probe(port: u16, path: &str, stderr: Option<&Mutex<String>>) ->
 
 const REGISTER: &str = "service_register";
 const LIST: &str = "services_list";
+const UNREGISTER: &str = "service_unregister";
+/// The operations `call` takes, as collaboration_runtime routes them.
+pub(crate) const OPERATIONS: [&str; 3] = [LIST, REGISTER, UNREGISTER];
 
 pub(crate) fn tool_definitions() -> Vec<Value> {
     let project = json!({"type":"string","description":"Project ID from projects_list. Omit for your own Project."});
     vec![
         json!({"name":LIST,
-            "description":"List a Project's registered web services (a dev server, Jupyter, TensorBoard on one of its Machines) and what is open for each now: closed, available (it answered HTTP), notRunning, notReady, portInUse, machineUnreachable, tunnelFailed or disconnected. Only the user opens or closes one.",
+            "description":"List a Project's registered web services (a dev server, Jupyter, TensorBoard on one of its Machines) and what is open for each now: closed, available (it answered HTTP), notRunning, notReady, portInUse, machineUnreachable, tunnelFailed or disconnected. Only the user opens or closes one. `removed` lists the latest removals, newest first: the registration, who removed it, as what (registrant, lead or user) and when.",
             "inputSchema":{"type":"object","properties":{"projectId":project},"additionalProperties":false}}),
         json!({"name":REGISTER,
             "description":"Register a web service that already runs on one of your Project's Machines, so the user can open it from the Project. It names the Machine (local for the Core host, or a registered SSH machine; not windows), the port the service listens on there, on its loopback, and the path to open. Registering opens nothing: the user opens it, which forwards one loopback port over that machine's SSH and checks that it answers HTTP. Yuzuno never starts, stops or scans a service. Never put a token or password in the path: every Agent can read it. Retry a lost reply with the same requestId.",
@@ -945,12 +1038,31 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "port":{"type":"integer","minimum":1,"maximum":65535},
                 "path":{"type":"string","default":"/","description":"Starts with /, e.g. / or /lab"}},
                 "required":["requestId","name","machineId","port"],"additionalProperties":false}}),
+        json!({"name":UNREGISTER,
+            "description":"Remove a service's registration (serviceId from services_list): one you registered, or any in a Project you lead, the user's or another Agent's. Anyone else is refused. It removes only the registration and closes what Core has open for it (its loopback port and SSH forward); the service itself keeps running, since Yuzuno never stops one. A service a Job may still serve (queued, running, cancelling or of unknown outcome) is refused: cancel that Job first. Core keeps who removed it, as what and when; services_list shows the latest. Retry a lost reply with the same requestId: it answers the same removal.",
+            "inputSchema":{"type":"object","properties":{
+                "requestId":{"type":"string","minLength":1,"maxLength":128},
+                "serviceId":{"type":"string","minLength":1,"maxLength":128}},
+                "required":["requestId","serviceId"],"additionalProperties":false}}),
     ]
 }
 
-/// An Agent's services_list or service_register.
+/// An Agent's services_list, service_register or service_unregister.
 pub async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, mut input: Value) -> Result<Value> {
     ensure!(input.is_object(), "invalid_input: expected an object");
+    if operation == UNREGISTER {
+        // The service names its Project: a removal needs none of the caller's.
+        let agent = actor.context("agent_only: the user deletes services from the Project")?;
+        let object = input.as_object().unwrap();
+        if let Some(extra) = object.keys().find(|k| !matches!(k.as_str(), "requestId" | "serviceId")) {
+            bail!("invalid_input: unknown field {extra}; give requestId and serviceId");
+        }
+        let text = |key: &str| object.get(key).and_then(Value::as_str).filter(|v| !v.is_empty() && v.len() <= 128)
+            .map(str::to_owned).with_context(|| format!("invalid_input: {key} is required"));
+        let (request_id, service) = (text("requestId")?, text("serviceId")?);
+        let name = { let a = agent.clone(); ws.stored(move |s| s.agent(&a)).await?.name };
+        return ws.unregister_service(&service, json!({"kind":"agent","id":agent,"name":name}), request_id).await;
+    }
     let project = match input.get("projectId").and_then(Value::as_str) {
         Some(project) => project.to_owned(),
         None => {
@@ -960,7 +1072,14 @@ pub async fn call(ws: Arc<Workspace>, actor: Option<String>, operation: String, 
         }
     };
     match operation.as_str() {
-        LIST => ws.project_services(&project).await,
+        LIST => {
+            let mut listed = ws.project_services(&project).await?;
+            let removed = { let p = project.clone(); ws.stored(move |s| removals(&*s.db.read()?, &p)).await? };
+            if !removed.is_empty() {
+                listed["removed"] = Value::Array(removed);
+            }
+            Ok(listed)
+        }
         REGISTER => {
             let agent = actor.context("agent_only: the user registers services from the Project")?;
             let request_id = input["requestId"].as_str().filter(|r| !r.is_empty() && r.len() <= 128)

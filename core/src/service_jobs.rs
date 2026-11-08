@@ -187,7 +187,10 @@ pub(crate) fn insert(tx: &Connection, job: &str, link: &Link) -> Result<()> {
     Ok(())
 }
 
-fn live(db: &Connection, service: &str) -> Result<Option<(String, String)>> {
+/// The Job that may still serve `service`, and its status: the newest linked
+/// one, unless it has ended and holds no reservation (`ENDED`). Also what an
+/// Agent's removal refuses (services.rs, YN-32).
+pub(crate) fn live(db: &Connection, service: &str) -> Result<Option<(String, String)>> {
     Ok(db
         .query_row(
             &format!(

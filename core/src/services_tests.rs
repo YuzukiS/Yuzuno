@@ -530,7 +530,118 @@ async fn agents_register_and_list_in_their_project_but_never_open() {
     assert!(call(lab.ws.clone(), None, REGISTER.into(), json!({"requestId":"u","projectId":lab.project,"name":"x","machineId":"m1","port":1}))
         .await.unwrap_err().to_string().contains("agent_only"));
     let names: Vec<_> = tool_definitions().iter().map(|t| t["name"].clone()).collect();
-    assert_eq!(names, vec![json!(LIST), json!(REGISTER)], "no tool opens, closes or deletes");
+    assert_eq!(names, vec![json!(LIST), json!(REGISTER), json!(UNREGISTER)], "no tool opens or closes");
+}
+
+/// An Agent named `Agent <id>`, a member of `project` (membership only: no lead mark).
+fn agent_in(lab: &Lab, id: &str, project: &str) {
+    let agent: AgentDetail = serde_json::from_value(json!({"agent":{"id":id,"name":format!("Agent {id}"),"cwd":"/tmp",
+        "model":"test","color":"sage","status":"idle","createdAt":"now","updatedAt":"now","unreadCount":0,"pendingCount":0,
+        "lastSeq":0,"reviewedSeq":0},"turns":[],"pending":[],"artifacts":[]})).unwrap();
+    lab.ws.store.insert(&agent).unwrap();
+    lab.ws.store.set_agent_project(id, Some(project)).unwrap();
+}
+
+async fn unregister(lab: &Lab, who: &str, request: &str, service: &str) -> Result<Value> {
+    call(lab.ws.clone(), Some(who.into()), UNREGISTER.into(), json!({"requestId":request,"serviceId":service})).await
+}
+
+fn refusal(result: Result<Value>) -> String {
+    result.unwrap_err().to_string()
+}
+
+/// YN-32: the Agent that registered a service, or a lead of its Project now,
+/// removes it; another member, an executor and another Project's lead are
+/// refused. Core keeps who removed what, as what and when, and a retry with
+/// the same requestId answers that same removal once the row is gone.
+#[tokio::test]
+async fn only_its_registrant_or_a_lead_of_its_project_removes_a_service_and_a_retry_answers_the_same() {
+    let lab = lab();
+    let other = lab.ws.store.create_project("Other", Default::default()).unwrap().id;
+    for id in ["reg", "lead", "member", "x"] {
+        agent_in(&lab, id, &lab.project);
+    }
+    agent_in(&lab, "away", &other);
+    lab.ws.store.db.write().unwrap().execute(
+        "INSERT INTO agent_roles(agent_id,kind,template_id,created_by,state,created_at,updated_at)
+         VALUES('x','executor','template','lead','created','now','now')", []).unwrap();
+    crate::agent_roles::save(&lab.ws.store, &lab.project, 0, vec!["lead".into()]).unwrap();
+    crate::agent_roles::save(&lab.ws.store, &other, 0, vec!["away".into()]).unwrap();
+    let by_agent = |who: &'static str, port: u16| {
+        let ws = lab.ws.clone();
+        let input = json!({"requestId":format!("r-{who}-{port}"),"projectId":lab.project,"name":format!("{who} {port}"),
+            "machineId":"m1","port":port});
+        async move { call(ws, Some(who.into()), REGISTER.into(), input).await.unwrap()["id"].as_str().unwrap().to_owned() }
+    };
+    let mine = by_agent("reg", 8001).await;
+    let theirs = by_agent("member", 8002).await;
+    let users = register(&lab, "m1", 8003).await;
+
+    for (who, service) in [("member", &mine), ("x", &mine), ("away", &mine), ("x", &theirs), ("away", &theirs),
+        ("member", &users), ("x", &users), ("away", &users), ("reg", &theirs), ("reg", &users)] {
+        let error = refusal(unregister(&lab, who, &format!("no-{who}"), service).await);
+        assert!(error.starts_with("not_registrant: only the Agent that registered") && error.contains("its Project Lab"),
+            "{who}: {error}");
+    }
+    assert!(refusal(call(lab.ws.clone(), None, UNREGISTER.into(), json!({"requestId":"u","serviceId":mine})).await)
+        .contains("agent_only"));
+    assert!(refusal(call(lab.ws.clone(), Some("reg".into()), UNREGISTER.into(),
+        json!({"requestId":"u","serviceId":mine,"projectId":lab.project})).await).contains("unknown field projectId"));
+    let listed = call(lab.ws.clone(), Some("lead".into()), LIST.into(), json!({})).await.unwrap();
+    assert_eq!(listed["services"].as_array().unwrap().len(), 3, "a refusal removes nothing");
+    assert!(listed.get("removed").is_none(), "{listed}");
+
+    let removed = unregister(&lab, "reg", "u1", &mine).await.unwrap();
+    assert_eq!(removed["service"]["id"], mine.as_str());
+    assert_eq!(removed["service"]["author"], json!({"kind":"agent","id":"reg","name":"Agent reg"}));
+    assert_eq!((removed["removedBy"].clone(), removed["removedAs"].clone()),
+        (json!({"kind":"agent","id":"reg","name":"Agent reg"}), json!("registrant")));
+    assert!(removed["removedAt"].is_string(), "{removed}");
+    assert_eq!(unregister(&lab, "reg", "u1", &mine).await.unwrap(), removed, "a retry answers the same removal");
+    assert!(refusal(unregister(&lab, "reg", "u1", &theirs).await).starts_with("idempotency_conflict"));
+    assert!(refusal(unregister(&lab, "reg", "u2", &mine).await).starts_with("service_not_found"));
+
+    // A lead removes another Agent's and the user's.
+    let by_lead = unregister(&lab, "lead", "l1", &theirs).await.unwrap();
+    assert_eq!((by_lead["removedBy"]["id"].clone(), by_lead["removedAs"].clone()), (json!("lead"), json!("lead")));
+    let users_by_lead = unregister(&lab, "lead", "l2", &users).await.unwrap();
+    assert_eq!(users_by_lead["service"]["author"], json!({"kind":"user"}));
+    // The user's own delete is kept the same way.
+    let last = register(&lab, "m1", 8004).await;
+    lab.ws.delete_service(&last).await.unwrap();
+    let listed = call(lab.ws.clone(), Some("member".into()), LIST.into(), json!({})).await.unwrap();
+    assert_eq!(listed["services"], json!([]));
+    let removals = listed["removed"].as_array().unwrap();
+    assert_eq!(removals.len(), 4);
+    assert_eq!((removals[0]["service"]["id"].clone(), removals[0]["removedBy"].clone(), removals[0]["removedAs"].clone()),
+        (json!(last), json!({"kind":"user"}), json!("user")));
+    assert_eq!(removals[1..], [users_by_lead, by_lead, removed], "newest first");
+    let elsewhere = call(lab.ws.clone(), Some("away".into()), LIST.into(), json!({})).await.unwrap();
+    assert!(elsewhere.get("removed").is_none(), "another Project's list has none of them: {elsewhere}");
+
+    let tool = tool_definitions().into_iter().find(|t| t["name"] == UNREGISTER).unwrap();
+    assert!(tool["description"].as_str().unwrap().encode_utf16().count() <= crate::results::max_description_length());
+}
+
+/// A removal closes what Core has open for the service, and only once it is
+/// allowed: a refused one leaves the way open. The service keeps running.
+#[tokio::test]
+async fn removing_closes_its_way_only_once_allowed_and_never_the_service() {
+    let lab = lab();
+    for id in ["reg", "member"] {
+        agent_in(&lab, id, &lab.project);
+    }
+    let (port, running) = service(false).await;
+    let id = call(lab.ws.clone(), Some("reg".into()), REGISTER.into(),
+        json!({"requestId":"r","name":"dev","machineId":LOCAL,"port":port})).await.unwrap()["id"].as_str().unwrap().to_owned();
+    let local = open(&lab, &id).await["localPort"].as_u64().unwrap() as u16;
+    assert!(refusal(unregister(&lab, "member", "m", &id).await).starts_with("not_registrant"));
+    assert!(answers(local).await, "a refused removal leaves the way open");
+    unregister(&lab, "reg", "u", &id).await.unwrap();
+    assert!(unheard(local).await, "nothing listens for it once removed");
+    assert!(lab.ws.services.open.lock().unwrap().is_empty() && lab.ws.services.assigned.lock().unwrap().is_empty());
+    assert!(answers(port).await, "the service itself keeps running");
+    running.abort();
 }
 
 #[tokio::test]
