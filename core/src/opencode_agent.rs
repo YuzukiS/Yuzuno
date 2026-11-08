@@ -1140,6 +1140,8 @@ impl Workspace {
             return;
         }
         let applied: Vec<&Value> = read.iter().filter(|one| projected(type_of(one)) || type_of(one) == "message.part.delta").collect();
+        // When Core saw it, for a Turn it ends (`ended_live`).
+        let seen = crate::conversation_time::now_ms();
         let written = if applied.is_empty() {
             // Kept as evidence; it changes nothing here.
             self.store.update_meta(id, &journal, &kept, |_| {}).map(drop)
@@ -1148,12 +1150,14 @@ impl Workspace {
                 turns.extend(event_turns(&self.store, id, one)?);
                 Ok::<_, anyhow::Error>(turns)
             }).and_then(|turns| self.store.record_event(id, &journal, &kept, Sel::Turns(turns), |d| {
+                let running = running_ids(d);
                 for one in &applied {
                     project(d, generation, &c.session, one);
                     if type_of(one) == "message.updated" {
                         measure(d, &c, &one["data"]["info"]);
                     }
                 }
+                ended_live(d, &running, seen);
                 refresh_status(d);
             }).map(drop))
         };
@@ -2793,6 +2797,22 @@ fn status(d: &mut AgentDetail, status: &Value) {
                 settle(turn);
             }
         }
+    }
+}
+
+/// The Turns in progress, before a live event is applied (`ended_live`).
+fn running_ids(d: &AgentDetail) -> Vec<String> {
+    d.turns.iter().filter(|t| t["status"] == "inProgress").filter_map(|t| t["id"].as_str().map(str::to_owned)).collect()
+}
+
+/// Each of `running` that a live event ended records `at`, when Core saw it
+/// end, as Claude's and Codex's Turns do (conversation_time): its footer
+/// then says how long it ran, from `_yuzunoStartedAt`, and when it was done
+/// (YN-48). A whole read that finds a Turn ended records nothing, since it
+/// does not say when that was.
+fn ended_live(d: &mut AgentDetail, running: &[String], at: i64) {
+    for turn in d.turns.iter_mut().filter(|t| t["id"].as_str().is_some_and(|id| running.iter().any(|r| r == id))) {
+        crate::conversation_time::mark_turn_completed(turn, at);
     }
 }
 
