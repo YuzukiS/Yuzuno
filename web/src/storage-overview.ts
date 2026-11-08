@@ -46,6 +46,7 @@ export const entryLabels: Record<string, string> = {
   previews: "Copies of conversation files being previewed",
   backupOperations: "Record of backups and restores",
   backupSchedule: "Daily backup schedule",
+  routingKeys: "Routing keys and the 1Password token (never backed up)",
   earlierDatabaseCopy: "Earlier database copy, kept from a one-time conversion",
   unknown: "Not made by this Core",
 };
