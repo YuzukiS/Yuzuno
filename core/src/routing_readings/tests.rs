@@ -82,13 +82,19 @@ fn changes_at_finds_what_a_minute_by_minute_scan_finds_across_midnight_and_clock
         schedules.push(Schedule { time_zone, slots: vec![slot(&[7], "01:30", "03:00"), slot(&[3], "00:00", "24:00")] });
         schedules.push(Schedule { time_zone, slots: vec![slot(&[1, 2, 3, 4, 5, 6, 7], "00:00", "24:00")] });
         schedules.push(Schedule { time_zone, slots: vec![] });
+        // On 2027-03-14 a New York clock skips 02:00–02:59, this slot's start among them.
+        schedules.push(Schedule { time_zone, slots: vec![slot(&[7], "02:15", "05:00")] });
     }
+    let mut instants = Vec::new();
     for start in [utc(2026, 10, 31, 0, 0), utc(2027, 3, 13, 0, 0), utc(2026, 11, 9, 0, 0)] {
-        for n in 0..45 {
-            let at = start + Duration::minutes(n * 97) + Duration::seconds(n % 60);
-            for schedule in &schedules {
-                assert_eq!(schedule.changes_at(at), changes_by_minutes(schedule, at), "{schedule:?} at {at}");
-            }
+        instants.extend((0..45).map(|n| start + Duration::minutes(n * 97) + Duration::seconds(n % 60)));
+    }
+    // Right at the clock changes there: before 2026-11-01 02:00 EDT turns 01:00 EST, in the repeated hour,
+    // and before 2027-03-14 02:00 EST turns 03:00 EDT.
+    instants.extend([utc(2026, 11, 1, 5, 40), utc(2026, 11, 1, 6, 10), utc(2027, 3, 14, 6, 30), utc(2027, 3, 14, 6, 59)]);
+    for at in instants {
+        for schedule in &schedules {
+            assert_eq!(schedule.changes_at(at), changes_by_minutes(schedule, at), "{schedule:?} at {at}");
         }
     }
 }
