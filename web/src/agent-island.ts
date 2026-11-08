@@ -4,7 +4,7 @@ import type { Agent } from "./types";
 
 /**
  * The Agent row's island (T-43, rail v11, the user's answers of 2026-11-07
- * to design/ask-rail-readability): a ring at the row's top right that says
+ * to design/ask-rail-readability): a ring at the row's right that says
  * one of five states at a glance (working turns, needs you breathes orange,
  * done ✓, failed ✕, idle grey), and for every other state a pill beside it
  * with a short phrase that stays while the state holds ("等负责人", "审查中",

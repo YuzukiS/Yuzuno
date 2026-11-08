@@ -1,8 +1,8 @@
 /* The Agent row's island (AgentIsland.tsx, T-43 灵动环 v10.2): a ring at
-   the row's top right that is the state itself, drawn in strokes only; one
-   outline that grows out of the ring into a pill or the whole row and
-   shrinks back into it. Each state has a stroke of its own, so its colour is
-   never the only signal. */
+   the row's right, centred on its lines (YN-41), that is the state itself,
+   drawn in strokes only; one outline that grows out of the ring into a pill
+   or the whole row and shrinks back into it. Each state has a stroke of its
+   own, so its colour is never the only signal. */
 :root {
   --island-quiet: #858d7e;
   --island-working: #5c8550;
