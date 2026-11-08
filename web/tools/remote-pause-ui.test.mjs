@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import react from '@vitejs/plugin-react';
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { tipOf } from "./tip-dom.mjs";
 const root = fileURLToPath(new URL('../', import.meta.url));
 await mkdir(path.join(root, 'node_modules/.cache'), { recursive: true });
 const fixture = await mkdtemp(path.join(root, 'node_modules/.cache/remote-pause-ui-'));
@@ -92,7 +93,7 @@ test('a remote job without a scope of its own, and one on Windows, cannot be pau
       await select(p);
       const pause = button(p, 'Pause');
       assert.equal(pause.disabled, true);
-      assert.match(pause.title, why);
+      assert.match((await tipOf(pause)).join(' '), why);
       pause.click();
       await wait();
       assert.deepEqual(posts(p), [], 'nothing is sent');

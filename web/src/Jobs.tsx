@@ -1052,18 +1052,19 @@ export function Jobs({
                 {t.workspace}
               </button>
               {agent && (
-                <button
-                  type="button"
-                  aria-pressed={scope.agentId === agent.id}
-                  title={t.askedFor(agent.name)}
-                  onClick={() => {
-                    setScope({ agentId: agent.id });
-                    setReviewInitial({});
-                    setReviewsInvolving(false);
-                  }}
-                >
-                  {agent.name}
-                </button>
+                <Tip content={<TipText title={t.askedFor(agent.name)} />} describe={false}>
+                  <button
+                    type="button"
+                    aria-pressed={scope.agentId === agent.id}
+                    onClick={() => {
+                      setScope({ agentId: agent.id });
+                      setReviewInitial({});
+                      setReviewsInvolving(false);
+                    }}
+                  >
+                    {agent.name}
+                  </button>
+                </Tip>
               )}
               {scope.taskId && (
                 <span className="job-task-scope">{t.task(scope.taskId)}</span>
@@ -1091,27 +1092,26 @@ export function Jobs({
               }}
             >
               {jobSources.map(({ id, Icon }) => (
-                <button
-                  key={id}
-                  type="button"
-                  role="tab"
-                  id={`jobs-tab-${id}`}
-                  aria-selected={source === id}
-                  aria-controls="jobs-source-panel"
-                  tabIndex={source === id ? 0 : -1}
-                  onClick={() => setSource(id)}
-                >
-                  <Icon size={15} aria-hidden="true" />
-                  {t.sources[id]}
-                  {id === "local" && waiting > 0 && (
-                    <span
-                      className="jobs-rail-count"
-                      title={t.onMachine(budget!.activeCount, budget!.queuedCount, upstream)}
-                    >
-                      {waiting}
-                    </span>
-                  )}
-                </button>
+                // The local tab's count in words, one tip for the whole tab.
+                <Tip key={id} content={id === "local" && waiting > 0 ? <TipText title={t.onMachine(budget!.activeCount, budget!.queuedCount, upstream)} /> : null} side="right">
+                  <button
+                    type="button"
+                    role="tab"
+                    id={`jobs-tab-${id}`}
+                    aria-selected={source === id}
+                    aria-controls="jobs-source-panel"
+                    tabIndex={source === id ? 0 : -1}
+                    onClick={() => setSource(id)}
+                  >
+                    <Icon size={15} aria-hidden="true" />
+                    {t.sources[id]}
+                    {id === "local" && waiting > 0 && (
+                      <span className="jobs-rail-count">
+                        {waiting}
+                      </span>
+                    )}
+                  </button>
+                </Tip>
               ))}
             </div>
             <div
@@ -1167,19 +1167,20 @@ export function Jobs({
                     actions={
                       <>
                         {!creating && (
-                          <button
-                            type="button"
-                            className="icon-button"
-                            onClick={() => {
-                              setError("");
-                              settled.current = null;
-                              void load();
-                            }}
-                            aria-label={t.refresh}
-                            title={t.refresh}
-                          >
-                            <RefreshCw size={15} />
-                          </button>
+                          <Tip content={<TipText title={t.refresh} />} describe={false}>
+                            <button
+                              type="button"
+                              className="icon-button"
+                              onClick={() => {
+                                setError("");
+                                settled.current = null;
+                                void load();
+                              }}
+                              aria-label={t.refresh}
+                            >
+                              <RefreshCw size={15} />
+                            </button>
+                          </Tip>
                         )}
                         <button
                           type="button"
@@ -1381,23 +1382,29 @@ function JobsBudget({
         <div className="jobs-budget-machine">
           <strong>{budget.machine.name}</strong>
           {slots ? (
-            <span className="jobs-budget-counts" title={t.slotsTitle(slots.value, slots.set)}>
-              {t.activeOf(budget.activeCount, slots.value, budget.queuedCount, waitingOf(budget))}
-            </span>
+            <Tip content={<TipText body={t.slotsTitle(slots.value, slots.set)} />}>
+              <span className="jobs-budget-counts">
+                {t.activeOf(budget.activeCount, slots.value, budget.queuedCount, waitingOf(budget))}
+              </span>
+            </Tip>
           ) : (
             <span className="jobs-budget-counts">{t.activeQueued(budget.activeCount, budget.queuedCount, waitingOf(budget))}</span>
           )}
         </div>
         <div className="jobs-budget-side">
-          <span className="jobs-budget-key" title={t.keyTitle}>
-            <span className="jobs-key is-used" aria-hidden="true" /> {t.inUse}
-            <span className="jobs-key is-reserved" aria-hidden="true" /> {t.reservedKey}
-          </span>
+          <Tip content={<TipText body={t.keyTitle} />} size="wide">
+            <span className="jobs-budget-key">
+              <span className="jobs-key is-used" aria-hidden="true" /> {t.inUse}
+              <span className="jobs-key is-reserved" aria-hidden="true" /> {t.reservedKey}
+            </span>
+          </Tip>
           {onEditSettings && (
-            <button type="button" className="quiet-button jobs-budget-edit" title={t.editInSettingsTitle} onClick={onEditSettings}>
-              {t.editInSettings}
-              <ArrowRight size={13} aria-hidden="true" />
-            </button>
+            <Tip content={<TipText body={t.editInSettingsTitle} />}>
+              <button type="button" className="quiet-button jobs-budget-edit" onClick={onEditSettings}>
+                {t.editInSettings}
+                <ArrowRight size={13} aria-hidden="true" />
+              </button>
+            </Tip>
           )}
         </div>
       </div>
@@ -1525,64 +1532,67 @@ function JobDetail({
         role={active(job) ? "status" : undefined}
       >
         {job.status === "running" && !stopping && (
-          <button
-            type="button"
-            className="secondary-button"
-            // Only while a request is in flight: a resume that has not taken
-            // hold (still frozen, or Core restarted mid-way) is asked again.
-            // A job that cannot be paused says why.
-            disabled={busy || !!refused}
-            onClick={() => onPause(resume)}
-            title={
-              refused ??
-              (resume ? t.continueSame : t.freeze)
-            }
-          >
-            {resume ? <Play size={12} aria-hidden="true" /> : <Pause size={12} aria-hidden="true" />}
-            {resume ? t.resume : t.pauseButton}
-          </button>
+          // Held: refused, it still says why (Tip `hold`).
+          <Tip content={<TipText body={refused ?? (resume ? t.continueSame : t.freeze)} />} hold>
+            <button
+              type="button"
+              className="secondary-button"
+              // Only while a request is in flight: a resume that has not taken
+              // hold (still frozen, or Core restarted mid-way) is asked again.
+              // A job that cannot be paused says why.
+              disabled={busy || !!refused}
+              aria-description={refused ?? undefined}
+              onClick={() => onPause(resume)}
+            >
+              {resume ? <Play size={12} aria-hidden="true" /> : <Pause size={12} aria-hidden="true" />}
+              {resume ? t.resume : t.pauseButton}
+            </button>
+          </Tip>
         )}
         {lowerable && (
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={busy}
-            aria-expanded={lowering}
-            onClick={() => {
-              setLimitDraft(String(suggestedLimit(job) ?? ""));
-              setLowering(!lowering);
-            }}
-            title={t.lowerMemoryTitle}
-          >
-            {t.lowerMemory}
-          </button>
+          <Tip content={<TipText body={t.lowerMemoryTitle} />}>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              aria-expanded={lowering}
+              onClick={() => {
+                setLimitDraft(String(suggestedLimit(job) ?? ""));
+                setLowering(!lowering);
+              }}
+            >
+              {t.lowerMemory}
+            </button>
+          </Tip>
         )}
         {job.status === "running" && job.checkpoint && (stop?.state === "failed" || !stopping) && (
-          <button
-            type="button"
-            className="secondary-button"
-            // A paused command cannot save; Core refuses it until resumed.
-            disabled={busy || !!pause}
-            onClick={() => onCheckpoint(false)}
-            title={
-              pause ? t.resumeFirst : t.checkpointTitle(job.checkpoint.graceSeconds)
-            }
-          >
-            <Save size={12} aria-hidden="true" />
-            {t.stopAtCheckpoint}
-          </button>
+          // Held: paused, it still says to resume first.
+          <Tip content={<TipText body={pause ? t.resumeFirst : t.checkpointTitle(job.checkpoint.graceSeconds)} />} hold>
+            <button
+              type="button"
+              className="secondary-button"
+              // A paused command cannot save; Core refuses it until resumed.
+              disabled={busy || !!pause}
+              aria-description={pause ? t.resumeFirst : undefined}
+              onClick={() => onCheckpoint(false)}
+            >
+              <Save size={12} aria-hidden="true" />
+              {t.stopAtCheckpoint}
+            </button>
+          </Tip>
         )}
         {checkpointed(job) && !stop?.resumedAs && (
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={busy}
-            onClick={() => onCheckpoint(true)}
-            title={t.resumeCheckpointTitle}
-          >
-            <StepForward size={12} aria-hidden="true" />
-            {t.resumeFromCheckpoint}
-          </button>
+          <Tip content={<TipText body={t.resumeCheckpointTitle} />}>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => onCheckpoint(true)}
+            >
+              <StepForward size={12} aria-hidden="true" />
+              {t.resumeFromCheckpoint}
+            </button>
+          </Tip>
         )}
         {active(job) ? (
           <button

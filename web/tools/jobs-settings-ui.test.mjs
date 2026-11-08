@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import { JSDOM, VirtualConsole } from "jsdom";
+import { tipOf } from "./tip-dom.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const cache = path.join(root, "node_modules/.cache");
@@ -381,7 +382,7 @@ test("the Jobs card shows no editor, shows active against maxActive, keeps GPU p
     const card = p.doc.querySelector(".jobs-budget");
     const counts = card.querySelector(".jobs-budget-counts");
     assert.equal(counts.textContent, "3 of 4 active · 1 queued", "active is shown against how many may run");
-    assert.equal(counts.title, "At most 4 of this host's jobs run at once (the default); one more waits in the queue.", "the tip says the number is the default");
+    assert.deepEqual(await tipOf(counts), ["At most 4 of this host's jobs run at once (the default); one more waits in the queue."], "the tip says the number is the default");
     assert.equal(!!card.querySelector("input, select, textarea, details, form"), false, "the card has no editor");
     for (const label of ["Save budget", "Save reserve", "Save", "Close to new jobs", "Open to new jobs", "Use default"])
       assert.equal(!!button(card, label), false, `the card offers no ${label}`);

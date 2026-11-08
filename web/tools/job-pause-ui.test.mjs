@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import react from '@vitejs/plugin-react';
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { tipOf } from "./tip-dom.mjs";
 const root = fileURLToPath(new URL('../', import.meta.url));
 await mkdir(path.join(root, 'node_modules/.cache'), { recursive: true });
 const fixture = await mkdtemp(path.join(root, 'node_modules/.cache/job-pause-ui-'));
@@ -95,7 +96,7 @@ test('pausing a running job that has not frozen yet says Pausing and offers to r
   try {
     await select(p);
     assert.ok(button(p, 'Pause'));
-    assert.match(button(p, 'Pause').title, /memory, GPU memory and reservation stay; GPU work already sent finishes first/);
+    assert.match((await tipOf(button(p, 'Pause'))).join(' '), /memory, GPU memory and reservation stay; GPU work already sent finishes first/);
     assert.ok(button(p, 'Cancel'), 'cancel stays available beside pause');
     button(p, 'Pause').click();
     await until(() => button(p, 'Resume'));
@@ -151,7 +152,7 @@ test('each GPU offers to pause its work, or to resume what the user paused there
     assert.equal(gpuButton(p, 0).textContent.trim(), 'Resume GPU work');
     assert.equal(gpuButton(p, 1).textContent.trim(), 'Pause GPU work');
     assert.equal(gpuButton(p, 2).textContent.trim(), 'Resume GPU work');
-    assert.match(gpuButton(p, 1).title, /Stop new jobs on this GPU and pause the managed jobs using it/);
+    assert.match((await tipOf(gpuButton(p, 1))).join(' '), /Stop new jobs on this GPU and pause the managed jobs using it/);
     assert.ok(gpuRow(p, 1).textContent.includes('Closed to new jobs (A game is running). Jobs already on it keep it.'), 'the other close is shown as it is');
     gpuButton(p, 0).click();
     await until(() => posts(p).length === 1);

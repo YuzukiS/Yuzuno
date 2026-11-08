@@ -17,6 +17,7 @@ import { promisify } from "node:util";
 import { deflateSync } from "node:zlib";
 import { chromium } from "playwright-core";
 import { noCiRuns, noReviews, unmanagedUpdates } from "./browser-fixtures.mjs";
+import { tipText } from "./tip-browser.mjs";
 
 assert.ok(process.env.YUZUNO_UI_DIST, "Use an isolated build");
 const dist = resolve(process.env.YUZUNO_UI_DIST);
@@ -435,7 +436,8 @@ try {
         await page.waitForFunction(() => document.querySelector('.home-view [data-section-key="home-layout"]')?.dataset.sectionVersion === "3");
         await tab.locator(".nav-count").waitFor();
         assert.equal(await tab.locator(".nav-count").innerText(), "1");
-        assert.equal(await tab.getAttribute("title"), "Home · 1 waiting for your response");
+        // Its tip (YN-44 S2a): its name, then what waits.
+        assert.equal(await tipText(page, tab), "Home\n1 waiting for your response");
         const card = page.locator('.home-view [data-section-key="home-layout"]');
         const inspect = (el) => {
           const canvas = document.createElement("canvas");
@@ -523,11 +525,13 @@ try {
       const first = await line.evaluate((el) => {
         const name = el.querySelector(".home-machine-job-first");
         return { count: el.querySelector(".home-machine-job-count").textContent, clipped: name.scrollWidth > name.clientWidth,
-          tip: el.getAttribute("title"), height: Math.round(el.getBoundingClientRect().height) };
+          height: Math.round(el.getBoundingClientRect().height) };
       });
+      // Its tip (YN-44 S2c): how many, then each Job, a line each.
+      const tip = await tipText(page, line);
       assert.equal(first.count, "3 running");
       assert.ok(first.clipped, "a long first name is cut with an ellipsis");
-      assert.match(first.tip, /^.+ · yuzuno-next · Dev 3\n.+\n.+$/);
+      assert.match(tip ?? "", /^3 running\n.+ · yuzuno-next · Dev 3\n.+\n.+$/);
       assert.ok(first.height <= 30, `one line: ${JSON.stringify(first)}`);
       assert.ok(await noSideways(".home-widget-column .home-machines"), "no sideways scroll in the widget");
       await shot(machines, `machines-widget-${theme}.png`);
@@ -597,9 +601,9 @@ try {
       const text = await card.evaluate((el) => el.innerText);
       for (const gone of ["Reservations include", "Admission among", "Sampled", "Read ", "Core data and job records"])
         assert.ok(!text.includes(gone), `"${gone}" is in a tip, not on the card`);
-      assert.match(await card.locator(".jobs-budget-key").getAttribute("title"), /bounded result collector/);
-      assert.match(await card.locator(".jobs-disk-paths").getAttribute("title"), /Core data and job records: \/home\/me\/\.yuzuno/);
-      assert.match(await card.locator(".jobs-gpu-name").getAttribute("title"), /Admission among/);
+      assert.match(await tipText(page, card.locator(".jobs-budget-key")), /bounded result collector/);
+      assert.match(await tipText(page, card.locator(".jobs-disk-paths").first()), /Core data and job records: \/home\/me\/\.yuzuno/);
+      assert.match(await tipText(page, card.locator(".jobs-gpu-name").first()), /Admission among/);
       const height = await card.evaluate((el) => Math.round(el.getBoundingClientRect().height));
       assert.ok(height <= 170, `the card is short at 1440 px: ${height}px`);
       assert.ok(await noSideways(".jobs-budget"));

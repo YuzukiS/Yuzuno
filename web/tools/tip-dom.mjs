@@ -80,3 +80,6 @@ export async function hoverTip(w, target, { seconds = 3 } = {}) {
   }
   return lines;
 }
+
+/** `hoverTip` in the element's own window: a test that holds only the element. */
+export const tipOf = (target, options) => hoverTip(target.ownerDocument.defaultView, target, options);

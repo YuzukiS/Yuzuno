@@ -44,6 +44,7 @@ import {
 } from "./merge-queue";
 import type { Agent, Project } from "./types";
 import "./merge-queue.css";
+import { Tip, TipText } from "./Tip";
 
 export type MergeQueueOpen = { entryId?: string };
 
@@ -355,7 +356,7 @@ function Sha({ sha, repository }: { sha?: string | null; repository: string }) {
   if (!sha) return null;
   return (
     <Link href={commitLink(repository, sha)}>
-      <code title={sha}>{short(sha)}</code>
+      <Tip content={<TipText value={sha} />} size="wide"><code>{short(sha)}</code></Tip>
     </Link>
   );
 }
@@ -569,20 +570,21 @@ export function MergeQueue({
         id="jobs-merge-queue-title"
         title={t.title}
         actions={
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={t.refresh}
-            title={t.refresh}
-            onClick={() => {
-              setError("");
-              // One read: the change re-reads the list and the chosen entry.
-              relink.current = true;
-              changed();
-            }}
-          >
-            <RefreshCw size={15} />
-          </button>
+          <Tip content={<TipText title={t.refresh} />} describe={false}>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={t.refresh}
+              onClick={() => {
+                setError("");
+                // One read: the change re-reads the list and the chosen entry.
+                relink.current = true;
+                changed();
+              }}
+            >
+              <RefreshCw size={15} />
+            </button>
+          </Tip>
         }
       >
         {t.intro}
@@ -841,18 +843,19 @@ function RepositoryCard({
         </strong>
         <span className="merge-repository-state">
           {state && (
-            <span
-              className={`merge-switch ${state.enabled ? "is-on" : "is-off"}`}
-              title={t.switchTitle}
-            >
-              {state.enabled ? t.switchOn : t.switchOff}
-            </span>
+            <Tip content={<TipText body={t.switchTitle} />}>
+              <span className={`merge-switch ${state.enabled ? "is-on" : "is-off"}`}>
+                {state.enabled ? t.switchOn : t.switchOff}
+              </span>
+            </Tip>
           )}
           {/* How a merge lands (T-37 S2b): shown once Core says it. */}
           {typeof state?.landing === "string" && state.landing && (
-            <span className="merge-landing" title={t.landingTitle}>
-              {t.landings[state.landing] || state.landing}
-            </span>
+            <Tip content={<TipText title={t.landingTitle} />}>
+              <span className="merge-landing">
+                {t.landings[state.landing] || state.landing}
+              </span>
+            </Tip>
           )}
         </span>
       </header>
@@ -1203,7 +1206,7 @@ function EntryDetail({
                       <code>{f.format || "?"}</code>
                       {f.bytes != null && ` · ${t.bytes(f.bytes)}`}
                       {" · "}
-                      <code title={f.sha256}>{f.sha256.slice(0, 12)}</code>
+                      <Tip content={<TipText label="SHA-256" value={f.sha256} />} size="wide"><code>{f.sha256.slice(0, 12)}</code></Tip>
                       {f.note && (
                         <>
                           {" · "}
@@ -1301,7 +1304,7 @@ function EntryDetail({
               <>
                 <dt>{t.tree}</dt>
                 <dd>
-                  <code title={gate.tree}>{short(gate.tree)}</code>
+                  <Tip content={<TipText value={gate.tree} />} size="wide"><code>{short(gate.tree)}</code></Tip>
                 </dd>
               </>
             )}

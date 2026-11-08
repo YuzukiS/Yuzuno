@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
 import react from '@vitejs/plugin-react';
 import { JSDOM, VirtualConsole } from 'jsdom';
+import { tipOf } from "./tip-dom.mjs";
 const root = fileURLToPath(new URL('../', import.meta.url));
 await mkdir(path.join(root, 'node_modules/.cache'), { recursive: true });
 const fixture = await mkdtemp(path.join(root, 'node_modules/.cache/job-runs-ui-'));
@@ -114,7 +115,7 @@ test('a queued run says what it waits for, shows the reason beside its stage, an
     const card = p.doc.querySelector('.job-run');
     const said = card.querySelector('.job-card-heading small');
     assert.equal(said.textContent, 'Queued: waiting for a GPU');
-    assert.equal(said.title, reason, "Core's reason for its first stage in the queue");
+    assert.deepEqual(await tipOf(said), [reason], "Core's reason for its first stage in the queue");
     assert.doesNotMatch(card.textContent, /Running/);
     assert.equal(card.querySelector('.job-run-stage .job-state').textContent.trim(), 'Queued');
     assert.equal(card.querySelector('.job-run-wait').textContent, reason);

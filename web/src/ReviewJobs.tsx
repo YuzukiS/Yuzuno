@@ -14,6 +14,7 @@ import {
 } from "./JobParts";
 import { WorkDockGroup, WorkDockItem, WorkDockMore, useWorkActivity } from "./WorkDock";
 import { reviewWork } from "./work-activity.ts";
+import { Tip, TipText } from "./Tip";
 
 export type ReviewRow = {
   id: string;
@@ -434,18 +435,19 @@ export function ReviewJobs({
         id="jobs-reviews-title"
         title={t.title}
         actions={
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={t.refresh}
-            title={t.refresh}
-            onClick={() => {
-              setError("");
-              void load();
-            }}
-          >
-            <RefreshCw size={15} />
-          </button>
+          <Tip content={<TipText title={t.refresh} />} describe={false}>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={t.refresh}
+              onClick={() => {
+                setError("");
+                void load();
+              }}
+            >
+              <RefreshCw size={15} />
+            </button>
+          </Tip>
         }
       >
         {t.intro}
