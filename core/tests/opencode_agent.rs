@@ -521,6 +521,40 @@ async fn abort_asks_and_only_the_end_it_reports_ends_the_turn() {
     lab.ws.close_agent(ID).await.unwrap();
 }
 
+/// YN-48: a Turn OpenCode ends live records when Core saw it end
+/// (`_yuzunoCompletedAt`), as Claude's and Codex's Turns do, so its footer
+/// says how long it ran and when it was done: completed, failed or
+/// interrupted. One that ended while no stream was open, found by the
+/// snapshot that follows, records no such time: that read does not say when.
+#[tokio::test]
+async fn a_turn_opencode_ends_live_records_when_core_saw_it_end() {
+    let lab = lab(&[], false).await;
+    let session = lab.session();
+    let times = |d: &AgentDetail, id: &str| (turn(d, id)["_yuzunoStartedAt"].as_i64(), turn(d, id)["_yuzunoCompletedAt"].as_i64());
+    let done = lab.send("c1", "hello").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"text":"Done."})).await;
+    let d = lab.until("completion", |d| turn(d, &done)["status"] == "completed").await;
+    let (started, ended) = times(&d, &done);
+    assert!(started.is_some() && ended >= started, "completed: started {started:?}, ended {ended:?}");
+    let failed = lab.send("c2", "fail").await.unwrap().turn_id.unwrap();
+    lab.control("reply", json!({"sessionID":session,"error":{"name":"APIError","data":{"message":"overloaded"}}})).await;
+    let d = lab.until("the failure", |d| turn(d, &failed)["status"] == "failed").await;
+    assert!(times(&d, &failed).1.is_some_and(|ended| Some(ended) >= times(&d, &failed).0), "failed: {:?}", times(&d, &failed));
+    let stopped = lab.send("c3", "long").await.unwrap().turn_id.unwrap();
+    lab.ws.interrupt(ID).await.unwrap();
+    let d = lab.until("the interrupt", |d| turn(d, &stopped)["status"] == "interrupted").await;
+    assert!(times(&d, &stopped).1.is_some(), "interrupted: {:?}", times(&d, &stopped));
+    assert_eq!(times(&d, &done).1, ended, "a Turn's end is recorded once");
+    // Ended while the stream was broken: the snapshot after it ends the Turn, and records no time.
+    let missed = lab.send("c4", "work").await.unwrap().turn_id.unwrap();
+    lab.control("refuseEvents", json!({"seconds":0.4})).await;
+    lab.control("drop", json!({})).await;
+    lab.control("reply", json!({"sessionID":session,"text":"Missed it."})).await;
+    let d = lab.until("the snapshot", |d| turn(d, &missed)["status"] == "completed").await;
+    assert_eq!(times(&d, &missed).1, None, "a whole read says nothing of when it ended");
+    lab.ws.close_agent(ID).await.unwrap();
+}
+
 #[tokio::test]
 async fn an_abort_is_read_in_the_order_opencode_reports_it() {
     let lab = lab(&[], false).await;
