@@ -239,7 +239,10 @@
 .routing-days button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .routing-list-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .routing-list-foot .quiet-button[aria-pressed="true"] { color: var(--accent-ink); }
-.routing-conflict { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.routing-conflict {
+  display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  color: var(--ink); font-size: calc(10.5px + var(--font-adjust, 3px)); line-height: 1.5;
+}
 .routing-conflict p { margin: 0; }
 .routing-conflict-order { margin: 0; padding-left: 1.6em; color: var(--ink); }
 .routing-refused { margin: 0; }
