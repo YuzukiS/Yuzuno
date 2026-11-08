@@ -100,7 +100,7 @@ function core({ simulate = (body) => [200, { segments: week(body) }], templatesP
 
 const windows = [];
 after(() => { for (const window of windows) window.close(); });
-function mount(server, language, { now } = {}) {
+function mount(server, language, { now, time } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
@@ -112,6 +112,8 @@ function mount(server, language, { now } = {}) {
   if (language) window.localStorage.setItem("yuzuno.language", JSON.stringify({ language }));
   // What the page takes for now, when a test says (the page reads Date.now()).
   if (now) window.Date.now = () => now.value;
+  // The display time zone and clock chosen in Settings → Typing & time.
+  if (time) window.localStorage.setItem("yuzuno.time", JSON.stringify(time));
   window.fetch = async (url, init = {}) => {
     const method = init.method || "GET";
     const body = init.body && JSON.parse(init.body);
@@ -324,4 +326,24 @@ test("used up is offered only where it can change the answer: a login with a quo
   assert.deepEqual(await pills(mount(core({ policy: order([], []) }))), [], "no condition reads a quota: nothing to assume");
   assert.deepEqual(await pills(mount(core({ policy: order([], quota) }))), ["Codex subscription used up"]);
   assert.deepEqual(await pills(mount(core({ policy: order(quota, []) }))), ["Account #1 used up"]);
+});
+
+test("the week's days are those of the display time zone chosen in Settings, not the device's", async () => {
+  const zone = process.env.TZ;
+  process.env.TZ = "UTC";
+  try {
+    // Sunday 8 November 2026, 22:00 in Tokyo; the device is on UTC.
+    const now = { value: Date.parse("2026-11-08T13:00:00Z") };
+    const tokyo = (d) => Date.parse("2026-11-07T15:00:00Z") + d * 24 * H;
+    const server = core({ simulate: () => [200, { segments: [0, 1, 2, 3, 4, 5, 6].map((d) => ({ from: new Date(tokyo(d)).toISOString(), to: new Date(tokyo(d) + 10 * H).toISOString(), chosen: "ds" })) }] });
+    const page = mount(server, undefined, { now, time: { clock: "h24", timeZone: "Asia/Tokyo" } });
+    await until(() => q(page, ".routing-strip"), "the week");
+    const asked = server.asked.simulate.at(-1);
+    assert.deepEqual([asked.from, asked.to], ["2026-11-07T15:00:00.000Z", "2026-11-14T15:00:00.000Z"], "from Tokyo's midnight, seven Tokyo days");
+    const rows = [...page.document.querySelectorAll(".routing-strip-row")];
+    assert.deepEqual(rows.map((r) => r.querySelector(".routing-strip-day").textContent), ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]);
+    assert.deepEqual(rows.map((r) => r.querySelector(".routing-strip-run")?.style.left), Array(7).fill("0%"), "each Tokyo day's run starts at its row's start");
+  } finally {
+    if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone;
+  }
 });
