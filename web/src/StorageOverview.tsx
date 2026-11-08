@@ -83,6 +83,7 @@ const entryLabelsZh: Record<string, string> = {
   previews: "正在预览的会话文件副本",
   backupOperations: "备份与恢复记录",
   backupSchedule: "每日备份计划",
+  routingKeys: "执行者路由的 key 和 1Password 令牌（不进备份）",
   earlierDatabaseCopy: "早期数据库副本，保留自一次性转换",
   unknown: "不是此 Core 生成的",
 };

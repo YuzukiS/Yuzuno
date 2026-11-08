@@ -74,6 +74,8 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
         .merge(crate::remote_access::changes())
         // Only on Core's own port: an OpenCode Agent's login passes a key (T-32 slice 4b).
         .merge(crate::opencode_login::router())
+        // Only on Core's own port: routing keys are written, never read back (YN-34 S1a).
+        .merge(crate::routing_keys::routes::router())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);

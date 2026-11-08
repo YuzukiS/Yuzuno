@@ -30,6 +30,7 @@ const KNOWN: &[(&str, &str)] = &[
     ("opencode", "opencode"),
     ("desktop-updates", "desktopDownloads"),
     ("previews", "previews"),
+    (crate::routing_keys::DIR, "routingKeys"),
     (workspace_backup::online::JOURNAL, "backupOperations"),
     (workspace_backup::schedule::FILE, "backupSchedule"),
 ];
