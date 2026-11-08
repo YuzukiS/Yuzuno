@@ -804,6 +804,13 @@ mod routing {
         }
     }
 
+    /// The executor its plan makes, with the plan's harness (the waiting list reads it from the agent).
+    fn create_as_planned(store: &Store, plan: &Plan) {
+        let mut detail = agent_detail(&plan.dispatch.agent_id, &plan.name);
+        detail.agent.harness = plan.template.harness.clone();
+        store.insert_created_then(&detail, Some(plan.then())).unwrap();
+    }
+
     fn route_of(store: &Store, agent: &str) -> Option<Value> {
         store.db.read().unwrap().query_row("SELECT route_json FROM executor_dispatches WHERE agent_id=?1", [agent],
             |r| r.get::<_, Option<String>>(0)).unwrap().map(|r| serde_json::from_str(&r).unwrap())
@@ -831,7 +838,7 @@ mod routing {
         assert!(plan.template.permission_mode.is_none(), "a Claude permission is not an OpenCode one");
         let route = route_of(&store, &plan.dispatch.agent_id).unwrap();
         assert_eq!((route["chosen"].clone(), route["at"].clone(), route["excluded"].clone()), (json!("c-deepseek"), json!("dispatch"), json!([])));
-        create(&store, &plan);
+        create_as_planned(&store, &plan);
         store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
         let current = store.collaboration_call(None, "task_get", json!({"taskId": one, "view": "current"})).unwrap();
         assert_eq!(current["current"]["executorSlot"]["route"]["chosen"], "c-deepseek", "the task shows why: {current}");
@@ -860,7 +867,7 @@ mod routing {
         assert_eq!((waits.template.harness.as_str(), waits.template.model.clone(), waits.profile.clone()), ("opencode", None, None));
         let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
         assert_eq!((route["waiting"].clone(), route["chosen"].clone()), (json!(true), Value::Null));
-        create(&store, &waits);
+        create_as_planned(&store, &waits);
         store.collaboration_call(None, "task_dispatch", waits.dispatch.input.clone()).unwrap();
         assert!(crate::routing_policy::dispatch::waiting(&*store.db.read().unwrap(), &waits.dispatch.agent_id).unwrap());
         let listed = store.routing_waiting().unwrap();
