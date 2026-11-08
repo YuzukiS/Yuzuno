@@ -143,10 +143,34 @@ impl Rpc {
         events: impl Into<EventSender>,
         cwd: Option<&std::path::Path>,
     ) -> Result<Arc<Self>> {
+        Self::spawn_with(program, extra_args, events, cwd, &[]).await
+    }
+
+    /// One Agent's app-server with its routing account or key in its own
+    /// environment only (routing_launch.rs, YN-34 S1c).
+    pub(crate) async fn spawn_env(
+        program: &str,
+        extra_args: &[String],
+        env: &[(String, crate::routing_keys::Secret)],
+        events: impl Into<EventSender>,
+    ) -> Result<Arc<Self>> {
+        Self::spawn_with(program, extra_args, events, None, env).await
+    }
+
+    async fn spawn_with(
+        program: &str,
+        extra_args: &[String],
+        events: impl Into<EventSender>,
+        cwd: Option<&std::path::Path>,
+        env: &[(String, crate::routing_keys::Secret)],
+    ) -> Result<Arc<Self>> {
         let events = events.into();
         let mut command = Command::new(program);
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
+        }
+        for (name, value) in env {
+            command.env(name, value.expose());
         }
         let mut child = command
             .args(extra_args)

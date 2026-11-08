@@ -68,7 +68,9 @@ const text = strings({
   inheritEffort: "The model’s own",
   permission: "Permissions",
   inheritPermission: "Inherit the default for new Agents",
-  opencodeNative: "OpenCode uses its own configuration’s model and permissions.",
+  opencodeNative: "OpenCode uses its own configuration’s permissions.",
+  opencodeModelHelp: "As OpenCode names it, provider/model, such as deepseek/deepseek-flash",
+  opencodeOwnModel: "Its own configuration’s model",
   opencodeOption: "OpenCode (Experimental)",
   namePattern: "Name",
   namePatternHelp: (pattern: string) => `{task} is the task’s ID, {label} this label. Empty: ${pattern}.`,
@@ -162,7 +164,9 @@ const text = strings({
   inheritEffort: "模型自己的",
   permission: "权限",
   inheritPermission: "沿用新 Agent 默认值",
-  opencodeNative: "OpenCode 使用其自身配置中的模型与权限。",
+  opencodeNative: "OpenCode 使用其自身配置中的权限。",
+  opencodeModelHelp: "按 OpenCode 的写法：provider/model，例如 deepseek/deepseek-flash",
+  opencodeOwnModel: "其自身配置中的模型",
   opencodeOption: "OpenCode（实验性）",
   namePattern: "名称",
   namePatternHelp: (pattern) => `{task} 是任务 ID，{label} 是此标签。留空：${pattern}。`,
@@ -284,7 +288,8 @@ const templateOf = (d: Draft): ExecutorTemplate => {
   const template: ExecutorTemplate = { id: d.id.trim(), label: d.label.trim(), harness: d.harness };
   const pattern = set(d.namePattern);
   if (pattern) template.namePattern = pattern;
-  if (d.harness !== "opencode" && set(d.model)) template.model = set(d.model);
+  // OpenCode's as it names it, provider/model (YN-34 S1c).
+  if (set(d.model)) template.model = set(d.model);
   // An effort goes with the model it is for.
   if (d.harness === "codex" && set(d.model) && set(d.reasoningEffort)) template.reasoningEffort = set(d.reasoningEffort);
   if (d.harness === "codex" && d.permission) template.permissionPreset = d.permission;
@@ -561,6 +566,11 @@ export function ExecutorTemplates({ active, disabled = false }: { active: boolea
       // Permissions differ per harness: a change of harness starts them over,
       // with a preset's own for the new harness if it has one.
       if (change.harness && change.harness !== d.harness) next.permission = presetPermission(d.preset, change.harness);
+      // OpenCode names its models otherwise: a model is not carried to or from it.
+      if (change.harness && change.harness !== d.harness && (change.harness === "opencode" || d.harness === "opencode")) {
+        next.model = "";
+        next.reasoningEffort = "";
+      }
       // A machine the new harness can't run on goes back to this Core host:
       // OpenCode runs only there, Codex on no machine that keeps Agents contained.
       if (change.harness === "opencode"
@@ -791,15 +801,17 @@ function TemplatePage({ d, t, language, view, locked, machines, savedMachine, ed
               {(view.opencodeEnabled || d.harness === "opencode") && <option value="opencode">{t.opencodeOption}</option>}
             </select>
           </label>
+          <label className="settings-row">
+            <span className="settings-row-main">
+              <span className="settings-row-title">{t.model}</span>
+              {d.harness === "opencode" ? <span className="settings-row-help">{t.opencodeModelHelp}</span>
+                : d.preset?.modelHint && <span className="settings-row-help">{t.modelHint(d.preset.modelHint)}</span>}
+            </span>
+            <input className="settings-input" aria-label={t.model} value={d.model}
+              placeholder={d.harness === "opencode" ? t.opencodeOwnModel : t.inheritModel}
+              onChange={e => edit({ model: e.target.value })} />
+          </label>
           {d.harness === "opencode" ? <p className="settings-row-help executor-template-note">{t.opencodeNative}</p> : <>
-            <label className="settings-row">
-              <span className="settings-row-main">
-                <span className="settings-row-title">{t.model}</span>
-                {d.preset?.modelHint && <span className="settings-row-help">{t.modelHint(d.preset.modelHint)}</span>}
-              </span>
-              <input className="settings-input" aria-label={t.model} value={d.model} placeholder={t.inheritModel}
-                onChange={e => edit({ model: e.target.value })} />
-            </label>
             {d.harness === "codex" && (
               <label className="settings-row">
                 <span className="settings-row-main"><span className="settings-row-title">{t.effort}</span></span>

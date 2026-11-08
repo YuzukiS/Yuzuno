@@ -278,8 +278,12 @@ impl Template {
             }
             _ => {
                 ensure!(opencode, "OpenCode Agents aren't enabled on this Core");
-                ensure!(self.model.is_none() && self.reasoning_effort.is_none(),
-                    "An OpenCode template takes no model: an OpenCode Agent starts with its own configuration's");
+                // A model as OpenCode names it, `<provider>/<model>`, checked against what its
+                // providers offer when the executor first sends (YN-34 S1c); unset is its own default.
+                if let Some(model) = self.model.as_deref() {
+                    crate::opencode_agent::check_model_id(model)?;
+                }
+                ensure!(self.reasoning_effort.is_none(), "An OpenCode template takes no reasoning effort");
                 ensure!(self.permission_preset.is_none() && self.permission_mode.is_none(),
                     "OpenCode takes its permissions from its own configuration");
             }

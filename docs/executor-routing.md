@@ -9,12 +9,12 @@ version; a later slice adds to it.
 | --- | --- | --- |
 | S1a | Routing keys: the key file, its write-only routes, reading a key through 1Password | Done |
 | S1b | Accounts: claude-swap's accounts and how a binding to one resolves, its launcher, Codex homes | Done |
-| S1c | Handing a key or account to one executor's harness process: Claude and OpenCode here, Codex next | This version |
+| S1c | Handing a key or account to one executor's harness process: Claude Code, OpenCode and Codex | This version |
 | S2–S4 | Readings, routing itself, the Settings page | Later |
 
 An executor starts with a routing key or account only when its runtime
 profile names one, and nothing at this version sets a profile: routing
-itself (S3) will. Codex executors take a profile in the next part of S1c.
+itself (S3) will.
 
 ## Routing keys
 
@@ -172,6 +172,8 @@ Each Codex account is a `CODEX_HOME` folder you name, signed in with
 replaces the list (at most 16). Each home must be an absolute folder that
 exists, belongs to Core's user and no other user can write into, and is listed
 once. The host's own login (`~/.codex`, or Core's `CODEX_HOME`) needs no entry.
+An executor bound to a home runs its app-server there, and Core reads its
+history and its sub-agents there too.
 
 These routes are on Core's own port only, like the routing keys', and refuse
 any `Authorization` header: the cswap command is a program Core runs.
@@ -190,10 +192,16 @@ catalog read sees it.
 | Claude Code | API key (Anthropic) | `ANTHROPIC_API_KEY`, and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` | Not the key: with the scrub, Claude Code strips credentials from the environment of its Bash commands, hooks and stdio MCP servers ([env vars](https://code.claude.com/docs/en/env-vars)). On Linux the scrub also runs Bash commands in their own PID namespace. |
 | Claude Code | claude-swap account | `YUZUNO_CSWAP_PYTHON` and `YUZUNO_CSWAP_ACCOUNT` for the launcher, which `cswap run` turns into that account's `CLAUDE_CONFIG_DIR` | The profile folder's path, as with any `CLAUDE_CONFIG_DIR`. Its login files are files, readable by anything running as you. |
 | OpenCode | API key | Its provider's variable: `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` | **The key.** OpenCode's shell tool runs with the server's environment. Its per-session environment setting covers the main session but not sub-sessions, so it is not used. This is a known limit. A login saved in that Agent's OpenCode takes precedence over the variable. |
+| Codex | Codex home | `CODEX_HOME` set to that home | The home's path. Its login file (`auth.json`, or the system keyring if the home is set up so) is readable by anything running as you. |
+| Codex | API key (OpenAI) | `CODEX_HOME` set to Core's own `codex-api-home` folder in the Workspace folder (mode 0700), `-c cli_auth_credentials_store="ephemeral"`, and the key sent once over its connection, after `initialize`, with `account/login/start {"type": "apiKey"}` ([app-server](https://developers.openai.com/codex/app-server)) | Not the key: it is in no environment variable, and the ephemeral store keeps it in that app-server's memory only, never in `auth.json` ([authentication](https://developers.openai.com/codex/auth)). `codex app-server` does not read `CODEX_API_KEY`, which is for `codex exec`. |
 
 A key from 1Password is read once at each start (`op read`), held in memory and
-handed to that process. Why it cannot be read fails the start with its reason
+handed to that process (for Codex, sent over its connection). Why it cannot be read fails the start with its reason
 (see [Keys in 1Password](#keys-in-1password)).
+
+An executor with a profile cannot be forked (Codex or OpenCode): the fork
+would be a new Agent with no profile, so on another account, and a Codex
+fork's session would be in the source's home. Copy what you need instead.
 
 Apart from the scrub above, none of this protects a key from a program
 deliberately reading another process's environment or files as you: the 0600

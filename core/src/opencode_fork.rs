@@ -119,6 +119,7 @@ impl Workspace {
     /// 1): refused, saying why, unless one could start now.
     pub async fn opencode_fork_preview(self: &Arc<Self>, id: &str, turn: &str) -> Result<Value> {
         let _permit = self.admission.enter_work()?;
+        self.refuse_profiled_fork(id).await?;
         let read = self.opencode_fork_read(id, turn).await?;
         Ok(json!({
             "turnId": turn, "keptTurns": read.kept, "laterTurns": read.later, "messages": read.prefix.len(),
@@ -208,6 +209,7 @@ impl Workspace {
     /// and never writes the copy twice.
     pub async fn opencode_fork(self: &Arc<Self>, id: &str, request: Request) -> Result<Value> {
         let permit = self.admission.enter_work()?;
+        self.refuse_profiled_fork(id).await?;
         ensure!(uuid::Uuid::parse_str(&request.request_id).is_ok(), "fork 请求编号无效");
         ensure!(!request.turn_id.is_empty() && request.turn_id.len() <= 200 && !request.turn_id.chars().any(char::is_control), "fork 的 Turn 无效");
         let name = request.name.trim().to_owned();

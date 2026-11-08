@@ -144,8 +144,13 @@ impl Drop for ReadSession {
 }
 impl ReadSession {
     pub(crate) async fn open(program: &str) -> Result<Self> {
+        Self::open_with(program, &[]).await
+    }
+
+    /// A read session in an Agent's own CODEX_HOME (routing_launch::codex_home_env).
+    pub(crate) async fn open_with(program: &str, env: &[(String, crate::routing_keys::Secret)]) -> Result<Self> {
         let (tx, mut rx) = mpsc::channel(32);
-        let rpc = Rpc::spawn(program, &[], tx).await?;
+        let rpc = Rpc::spawn_env(program, &[], env, tx).await?;
         // Read calls should never ask for approval. Fail any unexpected request
         // closed, and keep draining notifications so the RPC cannot deadlock.
         let weak = Arc::downgrade(&rpc);
@@ -510,7 +515,8 @@ impl Workspace {
         anyhow::ensure!(agent.harness == "codex" && agent.remote.is_none()
             && paged, "此 Agent 没有可分页的本机导入历史");
         let _permit = self.session_reads.try_acquire().context("正在读取另一份原生历史，请稍后重试")?;
-        let session = ReadSession::open(&self.program).await?;
+        // In the Agent's own CODEX_HOME, where its thread is (YN-34 S1c).
+        let session = ReadSession::open_with(&self.program, &self.codex_home_env(agent_id).await?).await?;
         let thread = agent.thread_id.as_deref().context("缺少原生会话 ID")?;
         let saved: HashSet<&str> = ids.iter().map(String::as_str).collect();
         let mut result = unsaved_page(&session.0, thread, cursor, &saved).await?;
@@ -617,6 +623,7 @@ impl Workspace {
     /// Read-only: shows what an explicit fork would keep. Starts no Turn.
     pub async fn preview_codex_fork(&self, agent_id: &str) -> Result<ForkPreview> {
         let _admission = self.admission.enter_completion()?;
+        self.refuse_profiled_fork(agent_id).await?;
         let id = agent_id.to_owned();
         let source = self.stored(move |store| store.fork_source(&id)).await?;
         let agent = source.agent;
@@ -659,6 +666,7 @@ impl Workspace {
     /// clicking again for the same boundary) settles that same attempt.
     pub async fn fork_codex_session(self: &Arc<Self>, agent_id: &str, input: ForkSession) -> Result<ForkOutcome> {
         let _admission = self.admission.enter_work()?;
+        self.refuse_profiled_fork(agent_id).await?;
         anyhow::ensure!(uuid::Uuid::parse_str(&input.request_id).is_ok(), "fork 请求编号无效");
         anyhow::ensure!(!input.through_turn_id.is_empty() && input.through_turn_id.len() <= 200
             && !input.through_turn_id.chars().any(char::is_control), "fork 历史边界无效");

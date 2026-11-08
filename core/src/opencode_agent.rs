@@ -603,7 +603,10 @@ impl Workspace {
             bail!("请填写名称（最多 100 字节）");
         }
         ensure!(machine_id.as_deref().is_none_or(|id| id == "local"), "OpenCode Agent 目前只支持 Core 所在的本机");
-        ensure!(model.is_empty(), "OpenCode Agent 使用 OpenCode 自己配置的默认模型，这里不能选择");
+        // A template's model (YN-34 S1c), checked against OpenCode's providers when it first sends.
+        if !model.is_empty() {
+            check_model_id(&model)?;
+        }
         if let Some(project) = project_id.clone() {
             self.stored(move |store| store.ensure_project_assignable(&project)).await?;
         }
@@ -2998,6 +3001,16 @@ pub(crate) use fork::{migrate as fork_migrate, router as fork_router};
 #[path = "opencode_import.rs"]
 mod import;
 pub(crate) use import::{migrate as import_migrate, router as import_router};
+
+/// An OpenCode model as Yuzuno names it, `<provider>/<model>` (ModelChoice::id):
+/// a provider, a slash, and a model of one or more parts, no spaces.
+pub(crate) fn check_model_id(model: &str) -> Result<()> {
+    let ok = model.len() <= 200
+        && !model.chars().any(|c| c.is_whitespace() || c.is_control())
+        && model.split_once('/').is_some_and(|(provider, rest)| !provider.is_empty() && !rest.is_empty());
+    ensure!(ok, "An OpenCode model is named <provider>/<model>, such as deepseek/deepseek-flash");
+    Ok(())
+}
 
 #[cfg(test)]
 #[path = "opencode_agent_tests.rs"]
