@@ -217,7 +217,7 @@ test("removing a candidate while its evaluation is shown keeps the page (a recor
   // Today 12:00, in Claude's hours: DeepSeek is shown skipped, with its reason.
   await set(page, q(page, ".routing-sim-slider input"), String(12 * 60));
   await until(() => /: would choose Claude Code · opus$/.test(q(page, ".routing-sim-result p")?.textContent ?? ""), "the picked time's result");
-  assert.match(q(page, ".routing-sim-result .settings-row-meta").textContent, /^1 DeepSeek's peak price$/);
+  assert.equal(q(page, ".routing-sim-why").textContent, "1OpenCode · deepseek-flash · API: DeepSeek's peak price");
   button(page, "Edit OpenCode · deepseek-flash · API").click();
   await until(() => q(page, '.routing-cand[data-cand="ds"] .routing-edit'), "its editor");
   button(page, "Remove this candidate", q(page, '.routing-cand[data-cand="ds"]')).click();

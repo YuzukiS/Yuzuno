@@ -179,11 +179,12 @@ export function RoutingSimulate({ policy, active, names, colourOf, accounts, key
             ? <p><span className="routing-num is-sm" aria-hidden="true">{chosen.i + 1}</span> {t.would(when)} <b>{names(chosen.c)}</b></p>
             : <p><span className="routing-num is-sm is-wait" aria-hidden="true">…</span> {t.none(when)}</p>)}
           {/* The record can be of the order before a change: a candidate no longer in it is left out. */}
-          {record && <p className="settings-row-meta">{record.candidates.flatMap((c) => {
+          {record && <ul className="routing-now-why routing-sim-why">{record.candidates.flatMap((c) => {
             const at = byId.get(c.id);
             return at && c.reasons.length && (!chosen || at.i <= chosen.i)
-              ? [`${at.i + 1} ${c.reasons.map((r) => reasonWords(r.message, r.messageZh, language)).join(language === "zh-Hans" ? "；" : "; ")}`] : [];
-          }).join(" · ")}</p>}
+              ? [<li key={c.id}><span className="routing-num is-sm" style={{ ["--cc" as string]: `var(--route-c${colourOf(c.id)})` }} aria-hidden="true">{at.i + 1}</span>
+                <span>{c.id === chosen?.c.id ? "" : `${names(at.c)}: `}{c.reasons.map((r) => reasonWords(r.message, r.messageZh, language)).join(language === "zh-Hans" ? "；" : "; ")}</span></li>] : [];
+          })}</ul>}
         </div>
         {error && <p className="inline-error" role="alert">{t.failed} {error}</p>}
         {segments && (
