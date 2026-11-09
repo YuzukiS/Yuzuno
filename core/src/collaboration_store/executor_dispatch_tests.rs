@@ -913,8 +913,8 @@ mod routing {
         store.collaboration_call(None, "task_dispatch", waits.dispatch.input.clone()).unwrap();
         assert!(crate::routing_policy::dispatch::waiting(&*store.db.read().unwrap(), &waits.dispatch.agent_id).unwrap());
         let listed = store.routing_waiting().unwrap();
-        assert_eq!(listed.iter().map(|(a, h, m, _)| (a.clone(), h.clone(), m.clone())).collect::<Vec<_>>(),
-            [(waits.dispatch.agent_id.clone(), "opencode".to_owned(), "local".to_owned())]);
+        assert_eq!(listed.iter().map(|w| (w.agent.clone(), w.harness.clone(), w.machine.clone(), w.unstarted)).collect::<Vec<_>>(),
+            [(waits.dispatch.agent_id.clone(), "opencode".to_owned(), "local".to_owned(), true)], "nothing of it ran yet (YN-66)");
         // The slot pass leaves it queued and takes the routed one ahead of it.
         let in_flight = std::sync::Mutex::new(std::collections::HashSet::new());
         assert_eq!(store.executor_slot_next(&in_flight).unwrap(), Some(plan.dispatch.agent_id.clone()));
@@ -933,9 +933,11 @@ mod routing {
         let mut on = store.routing_policy().unwrap();
         on.policy["enabled"] = json!(true);
         on.policy["candidates"][0]["enabled"] = json!(false);
+        // One something of which ran: its own harness only, as before YN-66.
         let release = |policy: &Value, harness: &str, excluded: &[&str], machine: &str| {
-            let excluded: Vec<String> = excluded.iter().map(|e| (*e).to_owned()).collect();
-            crate::routing_policy::dispatch::release_reason(policy, harness, &excluded, machine).map(|r| r["code"].clone())
+            let waiting = crate::routing_policy::dispatch::WaitingExecutor { agent: "a-waiting".into(), harness: harness.into(),
+                machine: machine.into(), project: None, route: json!({"waiting": true, "excluded": excluded}), unstarted: false, unavailable: vec![] };
+            crate::routing_policy::dispatch::release_reason(policy, &waiting).map(|r| r["code"].clone())
         };
         let reason = |policy: &Value, harness: &str| release(policy, harness, &[], "local");
         assert_eq!((reason(&on.policy, "opencode"), reason(&on.policy, "codex")), (Some(json!("noCandidate")), Some(json!("noCandidate"))),
@@ -950,6 +952,25 @@ mod routing {
         assert_eq!((release(&on.policy, "opencode", &[], "local"), release(&on.policy, "opencode", &[], "lab-mac")),
             (None, Some(json!("noCandidate"))), "OpenCode on a key runs here only");
         assert_eq!(release(&on.policy, "codex", &[], "lab-mac"), None, "Codex on the login runs anywhere");
+        // YN-66: one nothing of which ran may be given any candidate its machine runs and that keeps its level.
+        let unstarted = |policy: &Value, route: Value, machine: &str, unavailable: Vec<&'static str>| {
+            let waiting = crate::routing_policy::dispatch::WaitingExecutor { agent: "a-waiting".into(), harness: "opencode".into(),
+                machine: machine.into(), project: None, route, unstarted: true, unavailable };
+            crate::routing_policy::dispatch::release_reason(policy, &waiting).map(|r| r["code"].clone())
+        };
+        on.policy["candidates"][0]["enabled"] = json!(false);
+        assert_eq!(unstarted(&on.policy, json!({"waiting": true}), "local", vec![]), None, "an OpenCode stand-in waits for Codex too");
+        assert_eq!(unstarted(&on.policy, json!({"waiting": true, "excluded": ["c-codex"]}), "local", vec![]), Some(json!("noCandidate")));
+        assert_eq!(unstarted(&on.policy, json!({"waiting": true}), "lab-mac", vec!["codex"]), Some(json!("noCandidate")),
+            "a contained machine runs no Codex");
+        assert_eq!(unstarted(&on.policy, json!({"waiting": true, "level": "auto"}), "local", vec![]), None, "Codex keeps auto");
+        let mut claude_only = on.policy.clone();
+        claude_only["candidates"] = json!([{"id": "c-claude", "enabled": true, "harness": "claude", "model": "opus",
+            "credential": {"kind": "login"}, "conditions": []}]);
+        assert_eq!((unstarted(&claude_only, json!({"waiting": true, "level": "auto"}), "local", vec![]),
+            unstarted(&claude_only, json!({"waiting": true, "level": "full"}), "local", vec![])), (None, Some(json!("noCandidate"))),
+            "Claude Code doesn't keep full access: an executor of that level is never given it");
+        on.policy["candidates"][0]["enabled"] = json!(true);
 
         // The newest choices first.
         let choices = store.routing_choices(10).unwrap();

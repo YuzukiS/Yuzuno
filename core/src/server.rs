@@ -709,6 +709,41 @@ pub(crate) async fn create_executor(ws: &Arc<Workspace>, template: &crate::execu
     Ok(create_agent(ws, executor_request(template, name, cwd, machine, project_id), Some(birth)).await?.0)
 }
 
+/// What an executor's Agent record is made with that its harness decides.
+pub(crate) struct Born {
+    pub harness: String,
+    pub model: String,
+    pub settings: crate::model::AgentSettings,
+}
+
+/// The harness, model and settings an executor from `template`, on `machine`
+/// in `project`, is made with, as `create_executor` makes it and each harness's
+/// create keeps them (YN-66): a waiting executor given a candidate at its start
+/// is made again in place with these, as a dispatch choosing that candidate
+/// would have made it. Nothing is written.
+pub(crate) async fn executor_born(ws: &Arc<Workspace>, template: &crate::executor_templates::Template, machine: &str,
+    project_id: Option<String>) -> anyhow::Result<Born> {
+    let p = executor_request(template, String::new(), String::new(), Some(machine.to_owned()), project_id);
+    let Settled { harness, model, settings, .. } = settle(ws, &p).await?;
+    let settings = match harness.as_str() {
+        "codex" => {
+            crate::workspace::validate_settings(&settings)?;
+            settings
+        }
+        "claude" => {
+            crate::claude::check_settings(&settings)?;
+            settings
+        }
+        // OpenCode keeps no settings of its own: its level is its own row (YN-56 S3).
+        "opencode" if crate::opencode_agent::enabled() => {
+            crate::opencode_agent::check_new(machine, &model)?;
+            crate::model::AgentSettings::default()
+        }
+        _ => anyhow::bail!("未知 Harness"),
+    };
+    Ok(Born { harness, model, settings })
+}
+
 /// What an executor from `template` asks of POST /api/agents' creation.
 fn executor_request(template: &crate::executor_templates::Template, name: String, cwd: String, machine: Option<String>,
     project_id: Option<String>) -> Create {

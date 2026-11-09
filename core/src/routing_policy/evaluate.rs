@@ -32,8 +32,12 @@ pub struct Inputs<'a> {
     pub machine: Option<&'a str>,
     /// Candidates this request already failed to start with: each is tried once.
     pub exclude: &'a [String],
-    /// Only candidates of this harness (the check at an executor's first start).
+    /// Only candidates of this harness: at the start of an executor something of which
+    /// already ran, its own (YN-66). None: any harness but `unavailable`.
     pub harness: Option<&'a str>,
+    /// Harnesses the executor's machine can't run (YN-66): OpenCode while this Core has it
+    /// off, Codex on a contained machine.
+    pub unavailable: &'a [&'a str],
     /// The executor's permission level (permission_levels): only candidates whose harness keeps it.
     pub level: Option<&'a str>,
     pub assume: &'a Assume,
@@ -302,6 +306,11 @@ fn decide(candidate: &Value, inputs: &Inputs, cap: Option<f64>) -> Decision {
     if inputs.harness.is_some_and(|h| h != harness) {
         return ("skipped", vec![reason("otherHarness", "The executor was made for another harness", "这个执行者是为另一个工具建的")], None, None, None);
     }
+    if inputs.unavailable.contains(&harness) {
+        let name = crate::permission_levels::harness_name(harness);
+        return ("skipped", vec![with(reason("harnessUnavailable", format!("Its machine can't run {name} now"), format!("它所在的机器现在跑不了 {name}")),
+            json!({"params": {"harness": harness, "machine": inputs.machine}}))], None, None, None);
+    }
     if let Some(level) = inputs.level.filter(|level| !crate::permission_levels::keeps(Some(*level), harness)) {
         return ("skipped", vec![crate::permission_levels::not_kept(level, harness)], None, None, None);
     }
@@ -445,7 +454,7 @@ impl Gathered {
     pub fn inputs<'a>(&'a self, now: DateTime<Utc>, machine: Option<&'a str>, exclude: &'a [String], harness: Option<&'a str>,
         level: Option<&'a str>, assume: &'a Assume) -> Inputs<'a> {
         Inputs { now, keys: &self.keys, codex_homes: &self.codex_homes, spend: &self.spend, cswap: &self.cswap, codex: &self.codex,
-            machine, exclude, harness, level, assume }
+            machine, exclude, harness, unavailable: &[], level, assume }
     }
 }
 

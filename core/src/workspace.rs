@@ -2806,7 +2806,7 @@ fn turn_params(agent: &Agent, thread: &str, text: &str, client_id: Option<&str>)
     params
 }
 
-fn validate_settings(settings: &AgentSettings) -> Result<()> {
+pub(crate) fn validate_settings(settings: &AgentSettings) -> Result<()> {
     crate::codex_context::Overrides::from(settings).validate()?;
     if settings.permission_preset.as_deref().is_some_and(|mode| !["config", "ask", "auto", "full"].contains(&mode)) {
         bail!("未知的 Codex 权限模式");
