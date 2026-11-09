@@ -170,9 +170,18 @@ generation = [0]  # a new generation ends every open event stream
 tools = []
 
 
+# A process started on a new database takes its switches from the plan beside it too (`fixture-new.json`,
+# `switches`), as executor routing's catalog OpenCode is (YN-57 S2a): decided once, as it starts.
+PLANNED_SWITCHES = (json.loads((ROOT.parent / 'fixture-new.json').read_text()).get('switches') or {}) \
+    if not (ROOT / 'state.json').exists() and (ROOT.parent / 'fixture-new.json').exists() else {}
+
+
 def switch(name):
     path = ROOT / name
-    return path.read_text().strip() if path.exists() else None
+    if path.exists():
+        return path.read_text().strip()
+    value = PLANNED_SWITCHES.get(name)
+    return None if value is None else str(value)
 
 
 def new_id(prefix):
@@ -340,11 +349,17 @@ def import_refused(body):
     return None
 
 
+def reachable():
+    """The providers OpenCode lists now: as 2.2.5, one that needs a key variable (`needsEnv`, YN-57) only while it
+    has that variable."""
+    return [p for p in modes['providers']['providers'] if not p.get('needsEnv') or os.environ.get(p['needsEnv'])]
+
+
 def v2_models():
     """What 2.x's `GET /api/model` lists (schema/src/model.ts Model.Info), made of the 1.19.3-shaped providers mode
     `providers` holds: each with the fields that can hold credentials (`settings`, `headers`), here fake."""
     out = []
-    for provider in modes['providers']['providers']:
+    for provider in reachable():
         for key, m in (provider.get('models') or {}).items():
             image = ((m.get('capabilities') or {}).get('input') or {}).get('image') is True
             out.append({'id': m.get('id', key), 'modelID': m.get('id', key), 'providerID': provider['id'], 'name': m.get('name', key),
@@ -359,7 +374,7 @@ def v2_models():
 def v2_providers():
     """What 2.x's `GET /api/provider` lists (schema/src/provider.ts Provider.Info), with a fake key in its settings."""
     return [{'id': p['id'], 'name': p['name'], 'activation': 'enabled', 'package': '@ai-sdk/openai-compatible',
-             'settings': {'apiKey': SECRETS[0]}} for p in modes['providers']['providers']]
+             'settings': {'apiKey': SECRETS[0]}} for p in reachable()]
 
 
 def between_reads(session):
@@ -376,11 +391,14 @@ def v2_integrations():
     """What 2.x's `GET /api/integration` lists (schema/src/integration.ts Info): each configured provider with a key
     method (core/src/config/plugin/provider.ts), then mode `integrations`' own, each with its connections. Each carries
     metadata holding a fake secret, which Core must not pass on."""
+    # One reached through its key variable has an `env` connection, as 2.2.5's (YN-57).
+    env = {p['id'] for p in reachable() if p.get('needsEnv')}
     def connections(integration):
         return [{'type': 'credential', 'id': cid, 'label': c['label'], 'method': c['method']}
-                for cid, c in credentials.items() if c['integration'] == integration]
+                for cid, c in credentials.items() if c['integration'] == integration] + (
+            [{'type': 'env', 'id': f'env-{integration}'}] if integration in env else [])
     listed = [{'id': p['id'], 'name': p['name'], 'metadata': {'token': SECRETS[0]},
-               'methods': [{'type': 'key', 'label': 'Manually enter API Key'}]} for p in modes['providers']['providers']]
+               'methods': [{'type': 'key', 'label': 'Manually enter API Key'}]} for p in reachable()]
     listed += [dict(i, metadata={'token': SECRETS[0]}) for i in modes['integrations']]
     return [dict(i, connections=connections(i['id'])) for i in listed]
 
@@ -2567,6 +2585,9 @@ def main():
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         tools.append(tool)
         seen['tool'] = tool.pid
+    if modes.get('reportTo'):
+        with open(modes['reportTo'], 'a') as out:
+            out.write(json.dumps(seen) + '\n')
     if switch('exit'):
         (ROOT / 'start.json').write_text(json.dumps(seen))
         # What it says on stderr as it goes (switch `exitStderr`), as 2.x does for a flag it does not know.
@@ -2582,6 +2603,9 @@ def main():
         # A line longer than Core reads at once, and not UTF-8.
         sys.stdout.buffer.write(b'\xfe' * 100_000 + b'\n')
     print('INFO fixture starting', flush=True)
+    if switch('hangBeforeListening'):
+        # As an OpenCode that never says it listens.
+        time.sleep(float(switch('hangBeforeListening')))
     said = 'opencode server listening on' if switch('line1x') else 'server listening on'
     print(f'{said} http://{switch("host") or "127.0.0.1"}:{seen["port"]}', flush=True)
     server.serve_forever()
