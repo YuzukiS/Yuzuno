@@ -87,11 +87,11 @@ impl Lab {
         panic!("operation {id} did not finish");
     }
     async fn view(&self) -> Value {
-        view(&self.ws, true).await.unwrap()
+        view(&self.ws).await.unwrap()
     }
     /// POST /api/remote-access/check, as the page on Core's port makes it.
     async fn check(&self) -> Value {
-        match post_check(AppState(self.ws.clone()), Request::new(axum::body::Body::empty())).await {
+        match post_check(AppState(self.ws.clone())).await {
             Ok(Json(value)) => value,
             Err(_) => panic!("check failed"),
         }
@@ -138,19 +138,48 @@ async fn apply_serves_the_phone_entry_without_a_restart_and_a_new_core_serves_it
     assert_eq!(view["serve"]["otherEntries"], 1);
     let size = view["qr"]["size"].as_u64().unwrap() as usize;
     assert!(size >= 21 && view["qr"]["rows"].as_array().unwrap().iter().all(|r| r.as_str().unwrap().len() == size), "{}", view["qr"]);
-    // Through the phone entry the page is read-only, and apply is not served there.
+    // Through the phone entry the page says so, and a change is served there too (YN-79).
     let (code, body) = get(port, "/api/remote-access", Some(OWNER), &host).await;
     assert_eq!(code, 200, "{body}");
-    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["canChange"], false);
+    let remote: Value = serde_json::from_str(&body).unwrap();
+    assert!(remote.get("canChange").is_none() && remote.get("readOnlyReason").is_none(), "{remote}");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let refused = client.post(format!("http://127.0.0.1:{port}/api/remote-access/apply")).header("host", &host)
         .header("tailscale-user-login", OWNER).header("origin", &origin).header("x-yuzuno-client", "desktop")
-        .json(&json!({"requestId": "from-phone", "enabled": false})).send().await.unwrap();
-    assert!(matches!(refused.status().as_u16(), 404 | 405), "{}", refused.status());
+        .json(&json!({"requestId": "", "enabled": false})).send().await.unwrap();
+    // Reaching the route, and refused by its own check: not a missing route.
+    assert_eq!(refused.status().as_u16(), 400, "{}", refused.text().await.unwrap_or_default());
     // A new Core on the same data serves the applied entry, and an environment entry does not override it.
     let env = RemoteEntry::new("https://elsewhere.ts.net:9000", "env@github").unwrap();
     let next = startup(&lab.ws.data_dir, Some((free_port(), env)));
     assert_eq!(next.listen, Some((Entry { port, origin: origin.clone(), login: OWNER.into() }, "settings")));
+}
+
+#[tokio::test]
+async fn a_phone_changes_its_own_access_and_the_entry_ends_with_it() {
+    let lab = lab("wsl");
+    lab.start(startup(&lab.ws.data_dir, None).bind().await.unwrap());
+    let phone = free_port();
+    let op = lab.apply(json!({"requestId": "on", "enabled": true, "localPort": phone})).await.unwrap();
+    assert_eq!(op["state"], "succeeded", "{op}");
+    let host = format!("{DNS}:8444");
+    let origin = format!("https://{DNS}:8444");
+    // The page through the phone entry reads it, then turns phone access off itself (YN-79).
+    let (code, view) = get(phone, "/api/remote-access", Some(OWNER), &host).await;
+    assert_eq!(code, 200, "{view}");
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let answer = client.post(format!("http://127.0.0.1:{phone}/api/remote-access/apply")).header("host", &host)
+        .header("tailscale-user-login", OWNER).header("origin", &origin).header("x-yuzuno-client", "desktop")
+        .json(&json!({"requestId": "off-from-phone", "enabled": false})).send().await.unwrap();
+    assert_eq!(answer.status().as_u16(), 200, "{}", answer.text().await.unwrap_or_default());
+    for _ in 0..400 {
+        if lab.saved().operations.iter().any(|o| o.request_id == "off-from-phone" && o.state != "running") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(lab.view().await["listening"].is_null(), "phone access is off, as the phone asked");
+    assert!(client.get(format!("http://127.0.0.1:{phone}/api/health")).send().await.is_err(), "the entry that answered no longer listens");
 }
 
 #[tokio::test]
@@ -451,8 +480,7 @@ async fn real_views_keep_the_shape_the_page_is_built_on() {
     let port = free_port();
     lab.apply(json!({"requestId": "on", "enabled": true, "localPort": port})).await.unwrap();
     let real = lab.view().await;
-    let mut known = keys(example);
-    known.extend(keys(&fixtures["remoteEntryReadOnly"]));
+    let known = keys(example);
     assert!(keys(&real).is_subset(&known), "fields the page does not know: {:?}", keys(&real).difference(&known).collect::<Vec<_>>());
     assert!(keys(example).is_subset(&keys(&real)), "fields the page reads but Core does not send: {:?}", keys(example).difference(&keys(&real)).collect::<Vec<_>>());
     for field in ["support", "saved", "listening", "serve", "tailscale", "verification", "qr", "defaults", "previews"] {
@@ -476,10 +504,8 @@ async fn real_views_keep_the_shape_the_page_is_built_on() {
     assert_eq!(list("operationStates"), ["running", "succeeded", "failed", "rolledBack", "uncertain", "interrupted", "partial"]);
     assert_eq!(list("operationSteps"), ["validate", "save", "listen", "serve", "verify", "cleanup", "done"]);
     assert_eq!(list("serveStates"), ["unchecked", "absent", "ours", "sameTargetNotRecorded", "conflict", "error"]);
-    // Through the phone entry: read-only, with its reason.
-    let remote = view(&lab.ws, false).await.unwrap();
-    assert_eq!(remote["canChange"], false);
-    assert!(remote["readOnlyReason"].is_string());
+    // The page has no read-only state: the phone changes it too (YN-79).
+    assert!(real.get("canChange").is_none() && real.get("readOnlyReason").is_none(), "{real}");
 }
 
 #[tokio::test]
@@ -958,13 +984,16 @@ async fn previews_open_on_the_phone_entrys_own_origin_through_its_one_serve_entr
         .header("tailscale-user-login", OWNER).header("origin", "http://localhost:4317").header("x-yuzuno-client", "desktop")
         .json(&json!({"kind": "artifact", "agentId": "a", "path": "proto.html"})).send().await.unwrap();
     assert_eq!(chosen.status().as_u16(), 403);
-    // Neither the choice nor the older way of turning previews on is there.
-    for path in ["/api/remote-access/apply", "/api/remote-access/preview"] {
-        let refused = client.post(format!("http://127.0.0.1:{phone}{path}")).header("host", format!("{DNS}:8444"))
-            .header("tailscale-user-login", OWNER).header("origin", &origin).header("x-yuzuno-client", "desktop")
-            .json(&json!({"requestId": "from-phone", "enabled": true, "previews": false})).send().await.unwrap();
-        assert!(matches!(refused.status().as_u16(), 404 | 405), "{path}: {}", refused.status());
-    }
+    // Phone access itself is changed here too (YN-79), while the older way of turning previews on is refused.
+    let apply = client.post(format!("http://127.0.0.1:{phone}/api/remote-access/apply")).header("host", format!("{DNS}:8444"))
+        .header("tailscale-user-login", OWNER).header("origin", &origin).header("x-yuzuno-client", "desktop")
+        .json(&json!({"requestId": "", "enabled": true, "previews": false})).send().await.unwrap();
+    assert_eq!(apply.status().as_u16(), 400, "the route's own check, not a missing route: {}", apply.status());
+    let preview = client.post(format!("http://127.0.0.1:{phone}/api/remote-access/preview")).header("host", format!("{DNS}:8444"))
+        .header("tailscale-user-login", OWNER).header("origin", &origin).header("x-yuzuno-client", "desktop")
+        .json(&json!({"requestId": "from-phone", "enabled": true, "previews": false})).send().await.unwrap();
+    assert_eq!(preview.status().as_u16(), 400);
+    assert!(preview.text().await.unwrap_or_default().contains("phone_previews_moved"));
     assert_eq!(lab.view().await["previews"]["included"], true);
 }
 

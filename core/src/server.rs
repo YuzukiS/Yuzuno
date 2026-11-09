@@ -69,21 +69,9 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
     let router = browser_routes(assets, updates.clone())
         // Only on Core's own port: the desktop app on this computer asks.
         .route("/api/desktop/start-profile", get(start_profile))
-        // Backups and restores start only from Core's own port (T-192).
-        .merge(crate::workspace_backup::online::changes())
-        // A preview of keeping the latest backups lists host folders (T-196).
-        .merge(crate::workspace_backup::retention::changes())
-        // Only on Core's own port: a phone cannot change its own access.
-        .merge(crate::remote_access::changes())
-        // Only on Core's own port: an OpenCode Agent's login passes a key (T-32 slice 4b).
-        .merge(crate::opencode_login::router())
-        // Only on Core's own port: routing keys are written, never read back (YN-34 S1a).
-        .merge(crate::routing_keys::routes::router())
-        .merge(crate::routing_accounts::routes::router())
-        .merge(crate::routing_readings::routes::router())
-        .merge(crate::routing_policy::routes::router())
-        // The models routing's picker offers for OpenCode (YN-57 S2a).
-        .merge(crate::routing_models::routes::router())
+        // Routing, the OpenCode login, phone access and the backups: on this
+        // port and on the phone entry (YN-79).
+        .merge(settings_routes())
         .layer(middleware::from_fn_with_state(BrowserBoundary::new(), local_browser_boundary))
         .with_state(ws)
         .merge(mcp);
@@ -100,11 +88,36 @@ pub fn router_with_updates(ws: Arc<Workspace>, assets: PathBuf, port: u16, updat
 /// reaches Yuzuno's page.
 pub fn remote_router(ws: Arc<Workspace>, assets: PathBuf, updates: Option<Arc<crate::updates::controller::Controller>>, entry: RemoteEntry) -> Router {
     let router = browser_routes(assets, updates.clone())
+        // What a phone may change, phone access itself included (YN-79).
+        .merge(settings_routes())
         .merge(crate::previews::phone_router())
         .layer(middleware::from_fn(crate::previews::reserved))
         .layer(middleware::from_fn_with_state(Arc::new(entry), remote_browser_boundary))
         .with_state(ws);
     finish(router, updates)
+}
+
+/// The settings a phone changes as the computer does (YN-79, the user's
+/// 2026-11-09 choice): routing keys, accounts, readings, policy and models,
+/// an OpenCode Agent's login, phone access itself, and backups and restores.
+/// Both entries serve them. The phone entry still admits only its configured
+/// Tailscale login (`RemoteEntry::admit`), with no second check, so any
+/// device signed in to that account may change them. An Agent's credential
+/// is not the user: any Authorization header is refused on both entries.
+fn settings_routes() -> Router<Arc<Workspace>> {
+    Router::new()
+        .merge(crate::remote_access::changes())
+        .merge(crate::opencode_login::router())
+        .merge(crate::routing_keys::routes::router())
+        .merge(crate::routing_accounts::routes::router())
+        .merge(crate::routing_readings::routes::router())
+        .merge(crate::routing_policy::routes::router())
+        .merge(crate::routing_models::routes::router())
+        // Backups and restores start here too (T-192, T-196; YN-79).
+        .merge(crate::workspace_backup::online::changes())
+        // A preview of keeping the latest backups lists host folders.
+        .merge(crate::workspace_backup::retention::changes())
+        .layer(middleware::from_fn(crate::routing_keys::routes::no_agent_credential))
 }
 
 fn finish(router: Router, updates: Option<Arc<crate::updates::controller::Controller>>) -> Router {
@@ -592,8 +605,8 @@ async fn remote_browser_boundary(State(entry): State<Arc<RemoteEntry>>, mut req:
     if let Err(reason) = entry.admit(req.method(), req.headers()) {
         return (StatusCode::FORBIDDEN, reason).into_response();
     }
-    // Pages that change phone access read this to stay read-only here, and
-    // a preview asked for here is taken for this entry.
+    // A preview asked for here is taken for this entry; appearance settings
+    // stay read-only here (RemoteRequest).
     req.extensions_mut().insert(crate::remote_access::RemoteRequest);
     req.extensions_mut().insert(entry.clone());
     harden(next.run(req).await)

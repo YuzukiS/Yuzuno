@@ -102,7 +102,6 @@ const text = strings({
   qr: (url: string) => `QR code for ${url}`,
   latest: "Latest phone access change",
   notes: "Notes from Core",
-  readOnly: "This page is open through the phone entry, so it cannot change it. Change it from Yuzuno on the computer.",
   advanced: "Advanced",
   servePort: "Serve port",
   servePortHelp: (port: number) => `The HTTPS port your phone opens. Empty: ${port}.`,
@@ -189,7 +188,6 @@ const text = strings({
   qr: (url) => `${url} 的二维码`,
   latest: "最近一次手机访问更改",
   notes: "Core 的说明",
-  readOnly: "此页面是通过手机入口打开的，因此不能更改它。请在电脑上的 Yuzuno 中更改。",
   advanced: "高级",
   servePort: "Serve 端口",
   servePortHelp: (port) => `你的手机打开的 HTTPS 端口。留空：${port}。`,
@@ -668,12 +666,7 @@ export function RemoteAccessSettings({ active, workspaceId }: { active: boolean;
               )}
             </div>
           )}
-          {supported && !view.canChange && (
-            <p className="remote-access-note" role="note">
-              {view.readOnlyReason || t.readOnly}
-            </p>
-          )}
-          {supported && view.canChange && fields && (
+          {supported && fields && (
             <div className="settings-group remote-access-form">
               {view.previews && (
                 <label className="settings-row">

@@ -1,6 +1,6 @@
 //! `GET /api/routing/models?harness=opencode` (YN-57 S2a), beside the other
-//! routing routes inside `local_browser_boundary` (server.rs): on Core's own
-//! port only, and refusing an Agent's credential.
+//! routing routes in `server::settings_routes`: on Core's own port and on the
+//! phone entry (YN-79), and refusing an Agent's credential.
 use crate::workspace::Workspace;
 use axum::{
     extract::{Query, State},

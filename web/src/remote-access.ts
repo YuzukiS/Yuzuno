@@ -84,10 +84,6 @@ export type RemoteAccessView = {
   /** The QR code's modules for `url`, '1' dark, when Core gives them. */
   qr?: { size: number; rows: string[] } | null;
   defaults: { servePort: number; localPort: number };
-  /** false on the phone entry itself: a phone cannot lock itself out. */
-  canChange: boolean;
-  /** Why it cannot be changed here, when `canChange` is false. */
-  readOnlyReason?: string | null;
   /** Phone access including previews (T-5); a Core from before sends none,
    * and takes no `previews` with a change. */
   previews?: RemoteAccessPreviews;

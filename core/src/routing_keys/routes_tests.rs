@@ -1,7 +1,7 @@
 //! The routing keys' routes (YN-34 S1a), through Core's routers: written
-//! only on Core's own port by the user's browser, never with an Agent's
-//! credential, never on the phone entry, never through a Workspace tool, and
-//! no answer ever holds a value. Synthetic values only.
+//! from the user's page on Core's own port and, since YN-79, on the phone
+//! entry too, never with an Agent's credential, never through a Workspace
+//! tool, and no answer ever holds a value. Synthetic values only.
 use crate::{model::AgentDetail, server, workspace::Workspace};
 use axum::{
     body::{to_bytes, Body},
@@ -42,10 +42,6 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>, remote
     let status = response.status();
     let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
     (status, String::from_utf8_lossy(&bytes).into_owned())
-}
-
-fn unrouted(status: StatusCode) -> bool {
-    matches!(status, StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -118,23 +114,38 @@ async fn an_agents_credential_is_refused() {
             assert!(answer.contains("take no Agent credential"), "{answer}");
         }
     }
+    // The same on the phone entry, with its own login: an Agent's token changes nothing there either (YN-79).
+    let remote = server::remote_router(ws.clone(), ws.data_dir.join("assets"), None, server::RemoteEntry::new(ORIGIN, LOGIN).unwrap());
+    let (status, answer) = call(&remote, "PUT", "/api/routing/keys/anthropic",
+        Some(json!({"source":"local","provider":"anthropic","value":KEY})), true, &[("authorization", "Bearer an-agents-token")]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+    assert!(answer.contains("take no Agent credential"), "{answer}");
     assert!(!ws.data_dir.join(crate::routing_keys::DIR).exists(), "nothing was written");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_phone_entry_has_none_of_them_and_the_browser_boundary_holds() {
+async fn the_phone_entry_writes_them_and_the_browser_boundary_holds() {
     let (_tmp, ws) = lab();
     let remote = server::remote_router(ws.clone(), ws.data_dir.join("assets"), None, server::RemoteEntry::new(ORIGIN, LOGIN).unwrap());
-    for (method, uri, body) in [
-        ("PUT", "/api/routing/keys/anthropic", Some(json!({"source":"local","provider":"anthropic","value":KEY}))),
-        ("PUT", "/api/routing/1password/token", Some(json!({"value":TOKEN}))),
-        ("GET", "/api/routing/keys", None),
-        ("GET", "/api/routing/1password", None),
-        ("DELETE", "/api/routing/1password/token", None),
-    ] {
-        let (status, answer) = call(&remote, method, uri, body, true, &[]).await;
-        // No route there: 404/405, or for a GET the page's own fallback, never an answer of these routes.
-        assert!(unrouted(status) || !answer.contains("\"set\"") && !answer.contains("onePassword"), "the phone entry: {method} {uri} {status} {answer}");
+    // The configured Tailscale login may write and read, as the computer may (YN-79).
+    let (status, answer) = call(&remote, "PUT", "/api/routing/keys/anthropic",
+        Some(json!({"source":"local","provider":"anthropic","value":KEY})), true, &[]).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert!(!answer.contains(KEY), "no value in {answer}");
+    let (status, listed) = call(&remote, "GET", "/api/routing/keys", None, true, &[]).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert!(listed.contains("\"anthropic\"") && !listed.contains(KEY), "{listed}");
+    let (status, token) = call(&remote, "PUT", "/api/routing/1password/token", Some(json!({"value":TOKEN})), true, &[]).await;
+    assert_eq!(status, StatusCode::OK, "{token}");
+    // Another device's login, or none, is the phone entry's own boundary to refuse.
+    for extra in [vec![], vec![("tailscale-user-login", "someone@else")]] {
+        let request = {
+            let mut builder = Request::builder().method("GET").uri("/api/routing/keys").header("host", HOST);
+            if let Some((name, value)) = extra.first() { builder = builder.header(*name, *value); }
+            builder.body(Body::empty()).unwrap()
+        };
+        let status = remote.clone().oneshot(request).await.unwrap().status();
+        assert_eq!(status, StatusCode::FORBIDDEN, "{extra:?}: {status}");
     }
     let local = server::router(ws.clone(), ws.data_dir.join("assets"));
     // A page from another origin, or a request without the client header, is the boundary's to refuse.
@@ -144,7 +155,6 @@ async fn the_phone_entry_has_none_of_them_and_the_browser_boundary_holds() {
     let request = Request::builder().method("PUT").uri("/api/routing/keys/a").header("host", "127.0.0.1:4317")
         .header("content-type", "application/json").body(Body::from(json!({"source":"local","provider":"openai","value":KEY}).to_string())).unwrap();
     assert_eq!(local.clone().oneshot(request).await.unwrap().status(), StatusCode::FORBIDDEN, "no client header");
-    assert!(!ws.data_dir.join(crate::routing_keys::DIR).exists(), "nothing was written");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -7,10 +7,6 @@
 //! status and kind, never what OpenCode answered (`Server::login`). Core
 //! never reads a credential back (`GET /api/credential` answers them).
 //!
-//! Only the user's own browser, on Core's own port, reaches these routes
-//! (`router`, mounted inside `local_browser_boundary` only): no Agent tool
-//! does, and a phone's entry does not serve them.
-//!
 //! Logging in needs the Agent connected (D9: Core starts nothing for it)
 //! and its OpenCode at LOGIN_MIN or newer (D4). It is allowed while a Turn
 //! runs (D10): OpenCode uses the active credential from its next model
@@ -18,6 +14,11 @@
 //! sends the browser back to a loopback address is cancelled before its link
 //! is shown (D7). A method's form is shown when its fields are all text or
 //! choice ones (D8).
+//!
+//! The routes are in `server::settings_routes`: on Core's own port and on the
+//! phone entry (YN-79), which admits only its configured Tailscale login, so
+//! any device signed in to that account may log an Agent in. No Agent tool
+//! reaches them, and any Authorization header is refused.
 use crate::{opencode::LoginRefused, server::ApiError, workspace::Workspace};
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::ErrorCode;
@@ -556,7 +557,8 @@ async fn logout(ApiState(ws): ApiState<Arc<Workspace>>, Path((id, credential)): 
     Ok(Json(ws.opencode_logout(&id, &credential).await?))
 }
 
-/// The login routes: on Core's own port only (`server::router_with_updates`).
+/// The login routes: on Core's own port and on the phone entry
+/// (`server::settings_routes`, YN-79).
 pub fn router() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/agents/{id}/opencode/login", get(read))

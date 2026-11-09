@@ -66,10 +66,14 @@ The file is `secrets/routing-keys.json` in the Workspace folder.
 
 ### Writing keys
 
-Keys and the token are written only through these routes, on Core's own port,
-for your own browser. They are not on the phone entry, no Workspace tool an
-Agent can call reaches them, and a request carrying any `Authorization`
-header (an Agent's credential) is refused with 403.
+Keys and the token are written through these routes, from Yuzuno's page on
+Core's own port or on the phone entry. The phone entry admits only the
+Tailscale login it is configured with (see [Connect from a
+phone](independent-core.md#connect-from-a-phone-tailscale-serve)), so any
+device signed in to that account can write them; that is the user's choice of
+2026-11-09 (YN-79). No Workspace tool an Agent can call reaches them, and a
+request carrying any `Authorization` header (an Agent's credential) is
+refused with 403, on either entry.
 
 Settings → Executor routing → Accounts and keys writes them through these
 routes: a key's value or the token is typed into a password field, sent once
@@ -86,7 +90,8 @@ fingerprint only.
 | `PUT` / `DELETE /api/routing/1password/token` | Keeps or forgets the service account's token. |
 
 Like the OpenCode login, these routes rely on Core's browser boundary: it
-stops other computers, web pages and the phone entry. A program running as
+stops other computers and other web pages, and the phone entry serves them
+only to the Tailscale login it was configured with. A program running as
 you on this computer can reach Core's port as your browser does, and so
 could write a key. It still cannot read one back through Core.
 
@@ -196,8 +201,9 @@ once. The host's own login (`~/.codex`, or Core's `CODEX_HOME`) needs no entry, 
 An executor bound to a home runs its app-server there, and Core reads its
 history and its sub-agents there too.
 
-These routes are on Core's own port only, like the routing keys', and refuse
-any `Authorization` header: the cswap command is a program Core runs.
+These routes are on Core's own port and on the phone entry, like the routing
+keys', and refuse any `Authorization` header: the cswap command is a program
+Core runs.
 
 ## Starting an executor with a key or account
 
@@ -266,8 +272,7 @@ This is what the harnesses report: **an estimate, not a bill**.
 ### `GET /api/routing/readings`
 
 This route is read-only and has the same boundary as the routing keys:
-- it is on Core's own port, for your own browser;
-- it is not on the phone entry;
+- it is on Core's own port and on the phone entry;
 - it refuses any `Authorization` header.
 
 It answers from what Core last observed and starts no read itself.
@@ -323,8 +328,9 @@ The rules for every shape:
 
 ### The policy: `GET` and `PUT /api/routing/policy` (S3a)
 
-These routes are on the same boundary as the routing keys. No Workspace tool
-writes the policy.
+These routes are on the same boundary as the routing keys: Core's own port
+and the phone entry, which admits only its configured Tailscale login, and
+any `Authorization` header is refused. No Workspace tool writes the policy.
 
 At this version the policy is kept, checked and served, and nothing yet
 chooses by it: S3b will. It is kept in the Workspace's database as the JSON

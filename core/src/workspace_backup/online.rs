@@ -9,7 +9,7 @@
 //! interrupted when Core next starts, and the folder it was writing beside
 //! its destination is removed.
 //!
-//! Changes are made only on Core's own port (`changes`); the phone entry reads
+//! The phone entry makes changes as Core's own port does (YN-79), and reads
 //! (`router`). Nothing here replaces or switches the running Workspace, or
 //! starts a Core on a restored copy: a restore writes a new or empty folder,
 //! and its result says how to use it and what it does not have.
@@ -18,7 +18,7 @@ use crate::{server::ApiError, workspace::Workspace};
 use anyhow::{ensure, Context, Result};
 use axum::{
     extract::{Path as UrlPath, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -317,7 +317,7 @@ async fn last_run(State(ws): State<Arc<Workspace>>) -> Json<Value> {
     Json(json!({"lastRun": ws.backup_schedule.get().last_run}))
 }
 
-/// The routes that start or stop work: on Core's own port only.
+/// The routes that start or stop work: on Core's own port and the phone entry.
 pub fn changes() -> Router<Arc<Workspace>> {
     Router::new()
         .route("/api/workspace/backups", post(start_backup))
@@ -330,10 +330,9 @@ pub fn changes() -> Router<Arc<Workspace>> {
 }
 
 /// Whether a backup can start now, and why not; the size it will roughly
-/// be; the running operation and the recent ones. `canChange` is false
-/// through the phone entry, which may only read.
-async fn status(State(ws): State<Arc<Workspace>>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
-    let can_change = !headers.contains_key("tailscale-user-login");
+/// be; the running operation and the recent ones. The phone entry changes
+/// them as Core's own port does (YN-79), so `canChange` is always true.
+async fn status(State(ws): State<Arc<Workspace>>) -> Result<Json<Value>, ApiError> {
     let data = ws.data_dir.clone();
     let checks = ws.stored(move |store| {
         let db = store.db.read()?;
@@ -353,7 +352,7 @@ async fn status(State(ws): State<Arc<Workspace>>, headers: HeaderMap) -> Result<
         refusals.push(json!({"code":"busy","detail":format!("A {} is running", op.kind)}));
     }
     Ok(Json(json!({
-        "canChange": can_change,
+        "canChange": true,
         "workspaceId": workspace_id,
         "canBackUp": refusals.is_empty(),
         "refusals": refusals,
@@ -482,7 +481,7 @@ struct ScheduleRequest {
     folder: Option<String>,
 }
 
-/// Turns the daily backup on or off (Core's own port only). Its time is UTC.
+/// Turns the daily backup on or off, on either entry. Its time is UTC.
 async fn set_schedule(State(ws): State<Arc<Workspace>>, Json(body): Json<ScheduleRequest>) -> Response {
     let folder = match body.folder.as_deref().filter(|f| !f.is_empty()).map(|f| absolute("folder", f)).transpose() {
         Ok(folder) => folder,

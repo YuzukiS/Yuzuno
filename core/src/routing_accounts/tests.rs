@@ -162,10 +162,11 @@ def main():
     assert!(!none.status.success() && none.stdout.is_empty());
 }
 
-/// The routes: on Core's own port, refusing an Agent's credential; none on
-/// the phone entry; the command and the homes are checked as they are saved.
+/// The routes: on Core's own port and on the phone entry (YN-79), refusing an
+/// Agent's credential on both; the command and the homes are checked as they
+/// are saved.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_routes_are_the_users_own_browsers_only() {
+async fn the_routes_are_the_users_own_page_on_either_entry() {
     use axum::{body::{to_bytes, Body}, http::{Request, StatusCode}};
     use tower::ServiceExt;
     let tmp = tempfile::tempdir().unwrap();
@@ -210,10 +211,17 @@ async fn the_routes_are_the_users_own_browsers_only() {
         let (status, answer) = call(local.clone(), method, uri, Some(serde_json::json!({"command":"/tmp/evil"})),
             vec![("authorization", "Bearer an-agents-token".into())]).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {answer}");
-        let (status, answer) = call(remote.clone(), method, uri, Some(serde_json::json!({"command":"/tmp/evil"})), vec![
+        // The phone entry serves them with its own login (YN-79) and refuses an Agent's credential.
+        // An empty body reaches the route's own check and writes nothing.
+        let (status, answer) = call(remote.clone(), method, uri, Some(serde_json::json!({})), vec![
             ("host", "core.example-tailnet.ts.net:8444".into()), ("tailscale-user-login", "person@example.com".into()),
             ("origin", "https://core.example-tailnet.ts.net:8444".into())]).await;
-        assert!(matches!(status, StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED) || !answer.contains("pinned"), "phone: {method} {uri} {status}");
+        assert!(!matches!(status, StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED), "phone: {method} {uri} {status} {answer}");
+        let (status, answer) = call(remote.clone(), method, uri, Some(serde_json::json!({})), vec![
+            ("host", "core.example-tailnet.ts.net:8444".into()), ("tailscale-user-login", "person@example.com".into()),
+            ("origin", "https://core.example-tailnet.ts.net:8444".into()),
+            ("authorization", "Bearer an-agents-token".into())]).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "phone, Agent credential: {method} {uri}: {answer}");
     }
     assert_eq!(ws.stored(|store| store.cswap_settings()).await.unwrap().command, stub, "no refused write changed it");
 }

@@ -322,9 +322,9 @@ test("claude-swap missing says why; its command changes and the accounts are rea
   assert.deepEqual(writes(page), ["PUT /api/routing/cswap", "PUT /api/routing/codex-homes"]);
 });
 
-test("where the routes refuse (the phone entry), the page says where keys are changed", async () => {
-  const page = mount({ route: () => [403, { error: "Proxied request: a phone uses Core's remote entry" }] });
+test("where the read is refused, the page says where keys are changed", async () => {
+  const page = mount({ route: () => [403, { error: "These settings take no Agent credential: only the user's page changes them, on the computer or on the phone" }] });
   await until(() => page.document.querySelector(".routing-read-error"), "the refusal");
-  assert.match(page.document.querySelector(".routing-read-error").textContent, /only from your own browser on this computer/);
+  assert.match(page.document.querySelector(".routing-read-error").textContent, /on the computer that runs Core or on the phone/);
   assert.ok(!page.document.querySelector(".settings-group"), "no rows to change");
 });

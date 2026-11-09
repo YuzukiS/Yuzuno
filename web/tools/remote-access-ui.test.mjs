@@ -50,7 +50,7 @@ const examples = JSON.parse(await readFile(new URL("./fixtures/remote-access-vie
  * appliedVerified with their own fields. */
 function example(name) {
   const { _note, ...own } = structuredClone(examples[name]);
-  return name === "appliedNotVerified" || name === "remoteEntryReadOnly" ? { ...structuredClone(examples.appliedVerified), ...own } : own;
+  return name === "appliedNotVerified" ? { ...structuredClone(examples.appliedVerified), ...own } : own;
 }
 /** An error from the examples, `"<status> <json>"`, as the stub answers it. */
 function exampleError(name) {
@@ -128,7 +128,6 @@ function view(over = {}) {
     operation: null,
     url: null,
     defaults: { servePort: 8444, localPort: 4318 },
-    canChange: true,
     ...over,
   };
 }
@@ -432,14 +431,22 @@ test("another change already running is shown, not started twice", async () => {
   }
 });
 
-test("on the phone entry itself the page only shows: the address, and no way to change it", async () => {
-  const p = mount(() => ({ body: example("remoteEntryReadOnly") }), { url: "https://pc.tail0.ts.net:8444/" });
+test("on the phone entry the page changes phone access as the computer does, with no extra prompt (YN-79)", async () => {
+  let current = example("appliedVerified");
+  const p = mount((url, method, body) => {
+    if (method === "GET") return { body: current };
+    current = view({ operation: op("succeeded", "done", { requestId: body.requestId, kind: "disable" }) });
+    return { status: 202, body: { operation: current.operation } };
+  }, { url: "https://pc.tail0.ts.net:8444/" });
   try {
-    await waitFor(() => p.doc.querySelector(".remote-access-result"), "the address");
-    assert.match(p.text(), /This page is open through the phone entry\. Change phone access from Yuzuno on the computer, so this phone cannot lock itself out\./);
-    for (const label of ["Check", "Save and apply", "Turn off"]) assert.equal(!!button(p, label), false, label);
-    assert.deepEqual(p.states().map(([tone]) => tone), ["on", "on", "on", "on"]);
-    assert.deepEqual(p.writes(), []);
+    await waitFor(() => button(p, "Save and apply"), "the form");
+    assert.doesNotMatch(p.text(), /open through the phone entry, so it cannot change it/, "no read-only note");
+    for (const label of ["Check", "Save and apply", "Turn off"]) assert.ok(button(p, label), label);
+    // Turn off goes at once: no confirmation, no new prompt.
+    button(p, "Turn off").click();
+    await waitFor(() => p.applies().length === 1, "the change");
+    assert.equal(p.applies()[0].body.enabled, false);
+    assert.equal(!!p.doc.querySelector(".remote-access-confirm"), false, "no confirmation panel");
   } finally {
     p.close();
   }
@@ -641,12 +648,12 @@ test("phone access includes previews (T-5): an older Core shows and sends no cho
   } finally {
     off.close();
   }
-  // Through the phone entry: the line, and no box.
-  const phone = mount(() => ({ body: on({ canChange: false, readOnlyReason: "Read only here.", previews: included() }) }), { url: `${ENTRY}/` });
+  // Through the phone entry: the line and the box, since a phone changes it too (YN-79).
+  const phone = mount(() => ({ body: on({ previews: included() }) }), { url: `${ENTRY}/` });
   try {
     await waitFor(() => previewsLine(phone), "the line");
     assert.deepEqual(previewsLine(phone), ["on", "Previews on the phone Included"]);
-    assert.equal(box(phone), null, "no change through the phone entry");
+    assert.ok(box(phone), "a phone changes it too");
   } finally {
     phone.close();
   }
@@ -825,7 +832,7 @@ test("with phone access off, an older Core's entry still held is removed by a bu
   }
 });
 
-test("with phone access off, a record Core cannot read can be tried again; one no longer held, none, an earlier partial change, or the phone entry itself offers nothing to remove (T-5)", async () => {
+test("with phone access off, a record Core cannot read can be tried again; one no longer held, none, or an earlier partial change offers nothing to remove (T-5)", async () => {
   const unreadable = { error: "remote-preview.json is not a readable phone previews record" };
   const p = mount((url, method, body) => {
     if (method === "GET") return { body: off(unreadable) };
@@ -851,18 +858,6 @@ test("with phone access off, a record Core cannot read can be tried again; one n
       await waitFor(() => button(q, "Save and apply"), `${what}: the form`);
       assert.deepEqual(cleanups(q), [], `${what}: nothing to remove`);
       assert.doesNotMatch(q.text(), /removes it while it is still exactly that entry/, `${what}: not said to be held`);
-    } finally {
-      q.close();
-    }
-  }
-  for (const [what, legacy] of [["held", { ...entry, lastAttempt: null }], ["unreadable", unreadable]]) {
-    const q = mount(() => ({ body: off(legacy, { canChange: false, readOnlyReason: "Phone access is changed from Yuzuno on the computer that runs Core, not through the phone entry." }) }));
-    try {
-      await waitFor(() => /not through the phone entry/.test(q.text()), `phone entry, ${what}: read only`);
-      assert.deepEqual(cleanups(q), [], `phone entry, ${what}: nothing to press`);
-      assert.equal(!!button(q, "Save and apply") || !!button(q, "Check"), false, `phone entry, ${what}: no change at all`);
-      await tick();
-      assert.deepEqual(q.writes(), [], `phone entry, ${what}: nothing written`);
     } finally {
       q.close();
     }
