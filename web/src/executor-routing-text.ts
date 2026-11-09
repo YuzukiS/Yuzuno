@@ -45,7 +45,7 @@ export const text = strings({
   chipPeakOn: "DeepSeek peak hours",
   chipInside: (s: string, m?: number) => `Within ${s}${m ? ` · ${m} min left at least` : ""}`,
   chipOutside: (s: string, m?: number) => `Outside ${s}${m ? ` · ${m} min left at least` : ""}`,
-  chipQuota: (five?: number, week?: number) => [five != null ? `5-hour left ≥ ${five}%` : "", week != null ? `week left ≥ ${week}%` : ""].filter(Boolean).join(" · "),
+  chipQuota: (week?: number) => (week != null ? `Week left ≥ ${week}%` : ""),
   chipCap: (usd: number) => `Today ≤ $${usd}`,
   chipPick: "The account with most left",
   chipSkip: "Skipped when a reading is unavailable",
@@ -126,7 +126,6 @@ export const text = strings({
   minLeft: "At least this many minutes left in it",
   minutes: "min",
   quota: "Subscription left",
-  fiveHour: "5-hour window left at least",
   week: "This week left at least",
   cap: "Daily spend",
   capOwn: "This candidate, at most $ a day",
@@ -146,7 +145,7 @@ export const text = strings({
   labelTooLong: "A name is at most 60 characters.",
   credNotFit: "This tool can't use that account or key.",
   poolEmpty: "Choose an account, or all.",
-  quotaEmpty: "Give a 5-hour or weekly share, or remove the condition.",
+  quotaEmpty: "Give the share of this week left, or remove the condition: a 5-hour share is no longer read.",
   capBad: "A daily spend above $0, at most $10,000.",
   slotsEmpty: "A time window needs a period.",
   slotNoDay: (n: number) => `Period ${n} needs a day.`,
@@ -210,7 +209,7 @@ export const text = strings({
   chipPeakOn: "DeepSeek 高峰时段",
   chipInside: (s, m) => `在 ${s} 内${m ? ` · 至少还剩 ${m} 分钟` : ""}`,
   chipOutside: (s, m) => `在 ${s} 以外${m ? ` · 至少还剩 ${m} 分钟` : ""}`,
-  chipQuota: (five, week) => [five != null ? `5 小时剩 ≥ ${five}%` : "", week != null ? `本周剩 ≥ ${week}%` : ""].filter(Boolean).join(" · "),
+  chipQuota: (week) => (week != null ? `本周剩 ≥ ${week}%` : ""),
   chipCap: (usd) => `今日本项 ≤ $${usd}`,
   chipPick: "选剩余最多的账号",
   chipSkip: "读不到时跳过",
@@ -288,7 +287,6 @@ export const text = strings({
   minLeft: "至少还剩多少分钟",
   minutes: "分钟",
   quota: "订阅额度",
-  fiveHour: "5 小时窗口至少剩",
   week: "本周至少剩",
   cap: "每日花费",
   capOwn: "这一项每天最多 $",
@@ -306,7 +304,7 @@ export const text = strings({
   labelTooLong: "名称最多 60 个字。",
   credNotFit: "这个工具用不了这个账号或 key。",
   poolEmpty: "选一个账号，或全部。",
-  quotaEmpty: "填 5 小时或本周的下限，或删掉这个条件。",
+  quotaEmpty: "填本周至少剩多少，或删掉这个条件：5 小时额度已不再判断。",
   capBad: "每日花费要大于 $0，最多 $10,000。",
   slotsEmpty: "时间窗口至少要有一个时段。",
   slotNoDay: (n) => `时段 ${n} 要选至少一天。`,
@@ -352,7 +350,7 @@ export function scheduleWords(schedule: Schedule, t: Text): string {
 
 export function chipText(c: AnyCondition, t: Text): string {
   if (!isKnown(c)) return t.chipUnknownKind(c.kind);
-  if (c.kind === "quota") return t.chipQuota(c.fiveHourLeftPct, c.weekLeftPct) || t.quota;
+  if (c.kind === "quota") return t.chipQuota(c.weekLeftPct) || t.quota;
   if (c.kind === "dailyApiCap") return t.chipCap(c.usd);
   if (sameSchedule(c.schedule, DEEPSEEK_PEAK)) return c.inside ? t.chipPeakOn : t.chipPeakOff(c.minMinutesLeft);
   return (c.inside ? t.chipInside : t.chipOutside)(scheduleWords(c.schedule, t), c.minMinutesLeft);
@@ -400,7 +398,7 @@ export function problemsOf(c: Candidate, t: Text, keys: RoutingKey[] | null, acc
   c.conditions.forEach((cond, i) => {
     if (!isKnown(cond)) return;
     const at = String(i);
-    if (cond.kind === "quota" && cond.fiveHourLeftPct == null && cond.weekLeftPct == null) list.push({ at, text: t.quotaEmpty });
+    if (cond.kind === "quota" && cond.weekLeftPct == null) list.push({ at, text: t.quotaEmpty });
     if (cond.kind === "dailyApiCap" && !usdFits(cond.usd)) list.push({ at, text: t.capBad });
     if (cond.kind === "timeWindow") {
       if (!cond.schedule.slots.length) list.push({ at, text: t.slotsEmpty });

@@ -56,7 +56,7 @@ const ds = { id: "ds", enabled: true, harness: "opencode", model: "deepseek/deep
   conditions: [{ kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 }, { kind: "dailyApiCap", usd: 5 }, { kind: "laterKind", x: 1 }],
   unknown: "skip", note: "from a later Core" };
 const cl = { id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "pool", manager: "cswap", accounts: "all", pick: "mostRemaining" },
-  conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10, later: true }], unknown: "skip" };
+  conditions: [{ kind: "quota", weekLeftPct: 10, later: true }], unknown: "skip" };
 const savedView = (over = {}) => ({ version: 3, updatedAt: "2026-11-08T04:00:00Z", limits: { candidates: 8 },
   policy: { enabled: true, whenNone: "wait", dailyApiCapUsd: 20, futureFlag: "kept", candidates: [clone(ds), clone(cl)] }, ...over });
 
@@ -195,7 +195,7 @@ test("the saved order with its chips; a move by the arrows saved whole against t
   assert.deepEqual(titles(page), ["OpenCode · deepseek-flash", "Claude Code · opus"]);
   assert.deepEqual(cards(page).map((c) => c.querySelector(".routing-num").textContent), ["1", "2"]);
   assert.deepEqual(chips(card(page, "ds")), ["DeepSeek off-peak · at least 30 min before peak", "Today ≤ $5", "A condition this version can't show (laterKind)"]);
-  assert.deepEqual(chips(card(page, "cl")), ["5-hour left ≥ 15% · week left ≥ 10%", "The account with most left", "Skipped when a reading is unavailable"]);
+  assert.deepEqual(chips(card(page, "cl")), ["Week left ≥ 10%", "The account with most left", "Skipped when a reading is unavailable"]);
   assert.equal(card(page, "ds").querySelector(".routing-cand-sub").textContent.trim(), "API key: DeepSeek · this host");
   assert.equal(page.document.querySelector(".settings-current").textContent, "version 3");
   assert.equal(bar(page).hidden, true, "nothing to save yet");
@@ -260,7 +260,31 @@ test("a new candidate: tool, model, effort, a Codex account and a condition; wha
   await save(page);
   await until(() => puts(page).length === 1, "the save");
   assert.deepEqual(puts(page)[0].body.policy.candidates[2], { id, enabled: true, harness: "codex", model: "gpt-6.1-sol", reasoningEffort: "high",
-    credential: { kind: "codexHome", id: "work" }, conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }], unknown: "skip" });
+    credential: { kind: "codexHome", id: "work" }, conditions: [{ kind: "quota", weekLeftPct: 10 }], unknown: "skip" });
+});
+
+test("a quota condition that named only the 5-hour share, shown by Core with nothing left, is marked to fix and holds the save", async () => {
+  // Core drops a saved 5-hour share (YN-60): a condition that had only that comes back as { kind: "quota" }.
+  const view = savedView();
+  view.policy.candidates[1].conditions = [{ kind: "quota" }];
+  const page = mount(core({ view }));
+  await opened(page);
+  assert.deepEqual(chips(card(page, "cl")).slice(0, 1), ["Subscription left"]);
+  assert.equal(card(page, "cl").querySelector(".routing-fix")?.textContent, "Needs a fix", "not silently a condition that always holds");
+  button(page, "Move OpenCode · deepseek-flash · API down").click();
+  await until(() => button(page, "Save", bar(page)), "the bar");
+  assert.equal(button(page, "Save", bar(page)).disabled, true, "held until it is corrected");
+  card(page, "cl").querySelector(".routing-fix").click();
+  await until(() => card(page, "cl").querySelector(".routing-edit"), "its editor");
+  assert.equal(card(page, "cl").querySelector(".routing-cond-error")?.textContent,
+    "Give the share of this week left, or remove the condition: a 5-hour share is no longer read.");
+  // Only the week's share is asked for: there is no 5-hour quota now (YN-60).
+  const quotaFields = [...card(page, "cl").querySelectorAll(".routing-cond .routing-inline-field")].map((l) => l.textContent.replace(/\s+/g, " ").trim());
+  assert.deepEqual(quotaFields, ["This week left at least%"], "no 5-hour field to fill");
+  await set(page, card(page, "cl").querySelector(".routing-cond input"), "20");
+  await save(page);
+  await until(() => puts(page).length === 1, "the save");
+  assert.deepEqual(puts(page)[0].body.policy.candidates[0].conditions, [{ kind: "quota", weekLeftPct: 20 }]);
 });
 
 test("a newer version is shown and not overwritten; saving over it takes a choice and a Save", async () => {
@@ -343,6 +367,9 @@ test("the preset 「闲时 DeepSeek 优先」 replaces the list once confirmed, 
     { kind: "apiKey", keyId: "deepseek-main" }, { kind: "pool", manager: "cswap", accounts: "all", pick: "mostRemaining" }, { kind: "login" },
     { kind: "apiKey", keyId: "anthropic" }]);
   assert.deepEqual(sent[0].conditions[0], { kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 });
+  assert.deepEqual([sent[1].conditions, sent[2].conditions], [[{ kind: "quota", weekLeftPct: 10 }], [{ kind: "quota", weekLeftPct: 10 }]],
+    "the subscriptions' quota is the week's only (YN-60)");
+  assert.deepEqual(chips(cards(page)[1]).slice(0, 1), ["本周剩 ≥ 10%"]);
   assert.equal(new Set(sent.map((c) => c.id)).size, 4, "each its own id");
 });
 

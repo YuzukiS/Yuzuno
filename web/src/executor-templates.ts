@@ -2,18 +2,26 @@ import { api } from "./api";
 
 /** An executor template as Core keeps it (`/api/executor-templates`, T-34). */
 export type ExecutorHarness = "codex" | "claude" | "opencode";
+/** A permission said once for every harness, which Core maps to each one's own (YN-56). */
+export type PermissionLevel = "ask" | "auto" | "full";
+export const PERMISSION_LEVELS: PermissionLevel[] = ["ask", "auto", "full"];
 export type ExecutorTemplate = {
   id: string;
   label: string;
   /** Unset is the view's `defaultNamePattern`. */
   namePattern?: string;
-  harness: ExecutorHarness;
-  /** Codex or Claude Code on this Core host; unset inherits the defaults for new Agents. */
+  /** A fixed template's only (YN-56): one that follows routing names none. */
+  harness?: ExecutorHarness;
+  /** A fixed template's: Codex or Claude Code on this Core host, OpenCode as it names it; unset inherits the defaults for new Agents. */
   model?: string;
-  /** Codex only, with a model. */
+  /** A fixed Codex template's, with a model. */
   reasoningEffort?: string;
+  /** Unset is each harness's default for new Agents (YN-56). */
+  permissionLevel?: PermissionLevel;
+  /** A fixed Codex template's `config` only: its machine's own Codex configuration. */
   permissionPreset?: string;
-  permissionMode?: string;
+  /** The harness a template that follows routing named before core.29 (#824 R1): the way back, kept until it is fixed. */
+  formerHarness?: ExecutorHarness;
   /** Where its executors run: unset or "local" for this Core host, a
    * registered machine's id, or "auto" for Core to choose at each dispatch (T-35 S3). */
   machineId?: string;
@@ -26,17 +34,36 @@ export type ExecutorTemplate = {
   steps?: TemplateStep[];
   /** One line: what work to choose it for. */
   whenToChoose?: string;
-  /** "fixed": its executors start as it says, whatever the routing policy (YN-34 S3); unset follows routing. */
+  /** "fixed": its executors start with its own harness, whatever the routing policy (YN-34 S3); unset follows routing,
+   * or while routing is off the defaults for new Agents (YN-56). */
   routing?: "fixed";
 };
+/** What a level is on each harness, as Core serves it (`levels`): null where that harness doesn't keep it. */
+export type LevelInfo = {
+  level: PermissionLevel;
+  label: string;
+  labelZh: string;
+  codex: { permissionPreset: string } | null;
+  claude: { permissionMode: string } | null;
+  opencode: Record<string, unknown> | null;
+};
+/** The levels before Core served them: Codex keeps each, Claude Code all but full, OpenCode none. */
+export const DEFAULT_LEVELS: LevelInfo[] = [
+  { level: "ask", label: "Ask you first", labelZh: "先问你", codex: { permissionPreset: "ask" }, claude: { permissionMode: "default" }, opencode: null },
+  { level: "auto", label: "Auto-approve", labelZh: "自动审批", codex: { permissionPreset: "auto" }, claude: { permissionMode: "auto" }, opencode: null },
+  { level: "full", label: "Full access", labelZh: "完全放开", codex: { permissionPreset: "full" }, claude: null, opencode: null },
+];
+/** Whether `harness` keeps `level`; no level is kept everywhere. */
+export const keepsLevel = (levels: LevelInfo[], level: string, harness: ExecutorHarness) =>
+  !level || levels.some((l) => l.level === level && l[harness] != null);
 export type DeliveryMode = "pr" | "direct-commit" | "none";
 export type StepKind = "materials" | "work" | "result" | "gate" | "job" | "pr" | "review" | "ci" | "merge";
 /** `rounds` only on a review (1 or 2), `approver` only on a gate (unset: the user). */
 export type TemplateStep = { kind: StepKind; label?: string; rounds?: number; approver?: "user" | "lead" | "either" };
 /** A template the user can adopt in Settings (YN-23): its fields in one
- * language, with no harness (the page fills in the default for new Agents)
- * and a model hint, since Core has no model tiers. `permissions` is its
- * permission per harness. Never stored until the user saves. */
+ * language, with no harness (its template follows routing, YN-56), a model
+ * hint, since Core has no model tiers, and its permission level if it names
+ * one. Never stored until the user saves. */
 export type ExecutorPreset = {
   id: string;
   language?: string;
@@ -46,7 +73,7 @@ export type ExecutorPreset = {
   instructions?: string;
   deliveryMode?: DeliveryMode;
   steps?: TemplateStep[];
-  permissions?: { codex?: string; claude?: string };
+  permissionLevel?: PermissionLevel;
 };
 /** The presets in the page's language; one without a language is in every one. */
 export const presetsIn = (presets: ExecutorPreset[], language: string) => {
@@ -79,6 +106,8 @@ export type ExecutorTemplatesView = {
   general?: GeneralExecutor;
   /** Who last changed each template, when and why, by its id (YN-24); absent from a Core without it. */
   lastModified?: Record<string, TemplateChange>;
+  /** What each permission level is on each harness (YN-56); DEFAULT_LEVELS from a Core without it. */
+  levels: LevelInfo[];
 };
 /** A template's last change: by you or a lead, the reason a lead gave. */
 export type TemplateChange = { version?: number; at: string; reason?: string | null; by: { kind: string; id?: string | null; name: string } };
@@ -118,6 +147,8 @@ export const templatesView = (value: Partial<ExecutorTemplatesView>): ExecutorTe
     opencodeEnabled: value.opencodeEnabled === true,
     ...(generalOf(value.general) ? { general: generalOf(value.general) } : {}),
     ...(changesOf(value.lastModified) ? { lastModified: changesOf(value.lastModified) } : {}),
+    levels: Array.isArray(value.levels) && value.levels.length
+      ? value.levels.filter((l) => l && PERMISSION_LEVELS.includes(l.level)) : DEFAULT_LEVELS,
   };
 };
 

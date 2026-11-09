@@ -2,7 +2,7 @@
 // The week is asked of Core with the page's policy (POST /api/routing/simulate,
 // 30-minute steps from today's local midnight), drawn as a strip per day with
 // a text version; a picked time is evaluated with its reasons; assumptions
-// are sent as Core takes them. Each template follows routing or is fixed, saved
+// are sent as Core takes them. Each template follows routing (its switch on) or is fixed to a tool (YN-56), saved
 // as the template list read but for `routing`, against its version; a list
 // changed elsewhere is not overwritten. Fixture HTTP only; no Core.
 import "./jsdom-guard.mjs";
@@ -64,10 +64,12 @@ function week(body) {
   for (let d = 0; d < 7; d++) { out(24 * d, 24 * d + 10, "ds"); out(24 * d + 10, 24 * d + 22, claude); out(24 * d + 22, 24 * d + 24, null); }
   return segments;
 }
+// As Core serves them (YN-56): one that follows routing names no tool or model; a fixed one does.
 const templates = [
-  { id: "dev", label: "Development (PR)", harness: "codex", model: "gpt-6.1-sol", instructions: "Open a PR.", steps: [{ kind: "work" }], laterField: "kept" },
-  { id: "review", label: "Review", harness: "claude", routing: "fixed" },
+  { id: "dev", label: "Development (PR)", permissionLevel: "full", instructions: "Open a PR.", steps: [{ kind: "work" }], laterField: "kept" },
+  { id: "review", label: "Review", harness: "claude", routing: "fixed", model: "opus", permissionLevel: "ask" },
 ];
+const general = { label: "Executor", harness: "claude", harnessSource: "workspace" };
 
 function core({ simulate = (body) => [200, { segments: week(body) }], templatesPut, policy: served = policy } = {}) {
   const asked = { simulate: [], evaluate: [], puts: [] };
@@ -84,13 +86,13 @@ function core({ simulate = (body) => [200, { segments: week(body) }], templatesP
         { id: "ds", state: chosen === "ds" ? "chosen" : "skipped", reasons: chosen === "ds" ? [] : [{ code: "peak", message: "DeepSeek's peak price", messageZh: "DeepSeek 高峰价" }], readings: [] },
         { id: "cl", state: chosen === "cl" ? "chosen" : chosen === "ds" ? "notTried" : "skipped", reasons: [], readings: [] }] }];
     }
-    if (p === "/api/executor-templates" && method === "GET") return [200, { workspace: list, available: [], presets: [] }];
+    if (p === "/api/executor-templates" && method === "GET") return [200, { workspace: list, available: [], presets: [], general }];
     if (p === "/api/executor-templates" && method === "PUT") {
       asked.puts.push(body);
       const answer = templatesPut?.(body);
       if (answer) return answer;
       list = { version: list.version + 1, templates: body.templates, laterTemplates: 0 };
-      return [200, { workspace: list, available: [], presets: [] }];
+      return [200, { workspace: list, available: [], presets: [], general }];
     }
     if (p === "/api/routing/keys") return [200, { keys: [{ id: "deepseek-main", provider: "deepseek", source: "local", set: true, setAt: "2026-11-08T03:00:00Z" }], onePasswordToken: { set: false } }];
     if (p === "/api/routing/accounts") return [200, { cswap: { command: "cswap", pinned: "1.0.0", accounts: [
@@ -185,28 +187,50 @@ test("a Core without the simulation says it comes with routing itself", async ()
   assert.ok(!q(page, ".routing-strip"));
 });
 
-test("a template follows routing or is fixed: saved as read but for routing, against its version; a list changed elsewhere is not overwritten", async () => {
+const toggle = (page, id) => q(page, `.routing-template[data-template="${id}"] input[role="switch"]`);
+async function pick(page, node, value) {
+  Object.getOwnPropertyDescriptor(page.window.HTMLSelectElement.prototype, "value").set.call(node, value);
+  node.dispatchEvent(new page.window.Event("change", { bubbles: true }));
+  await tick();
+}
+const fixedTo = (page, id) => q(page, `.routing-template[data-template="${id}"] select`);
+
+test("a template follows routing (switch on) or is fixed to a tool (off): saved as read but for its routing and tool, against its version; a list changed elsewhere is not overwritten", async () => {
   const server = core();
   const page = mount(server);
   await until(() => q(page, '.routing-template[data-template="dev"]'), "the templates");
   const dev = q(page, '.routing-template[data-template="dev"]');
   assert.equal(dev.querySelector(".settings-row-help").textContent, "By the order above");
-  assert.equal(q(page, '.routing-template[data-template="review"] .settings-row-help').textContent, "Fixed: Claude Code · the defaults for new Agents");
+  assert.deepEqual([toggle(page, "dev").checked, toggle(page, "dev").getAttribute("aria-label"), fixedTo(page, "dev")],
+    [true, "Development (PR): routing by rules", null], "on: routing by rules, no tool to choose");
+  assert.equal(q(page, '.routing-template[data-template="review"] .settings-row-help').textContent, "Fixed: Claude Code · opus");
+  assert.equal(toggle(page, "review").checked, false);
+  assert.equal(fixedTo(page, "review").value, "claude");
   assert.equal(q(page, ".routing-template.is-general .settings-row-help").textContent, "Always follows routing");
-  button(page, "Fixed", dev).click();
-  button(page, "Follows routing", q(page, '.routing-template[data-template="review"]')).click();
+  // Off: fixed to the Workspace's default tool for new Agents, which doesn't keep Full access.
+  toggle(page, "dev").click();
   await tick();
-  assert.equal(dev.querySelector(".settings-row-help").textContent, "Fixed: Codex · gpt-6.1-sol");
-  await until(() => button(page, "Save", q(page, ".settings-savebar")) && !button(page, "Save", q(page, ".settings-savebar")).disabled, "Save");
+  assert.deepEqual([toggle(page, "dev").checked, fixedTo(page, "dev").value], [false, "claude"]);
+  assert.equal(dev.querySelector(".settings-row-help").textContent, "Fixed: Claude Code · the defaults for new Agents");
+  assert.match(dev.querySelector(".inline-error").textContent, /^Claude Code doesn't keep this template's permission level/);
+  await until(() => button(page, "Save", q(page, ".settings-savebar")), "the save bar");
+  assert.equal(button(page, "Save", q(page, ".settings-savebar")).disabled, true, "a level the tool doesn't keep is not saved");
+  await pick(page, fixedTo(page, "dev"), "codex");
+  assert.equal(dev.querySelector(".inline-error"), null);
+  toggle(page, "review").click();
+  await tick();
+  await until(() => !button(page, "Save", q(page, ".settings-savebar")).disabled, "Save");
   button(page, "Save", q(page, ".settings-savebar")).click();
   await until(() => server.asked.puts.length === 1, "the save");
   assert.deepEqual(server.asked.puts[0], { expectedVersion: 7, templates: [
-    { ...templates[0], routing: "fixed" }, { id: "review", label: "Review", harness: "claude" }] }, "the list as read, only routing changed");
+    { ...templates[0], harness: "codex", routing: "fixed" }, { id: "review", label: "Review", permissionLevel: "ask" }] },
+    "the list as read, only routing and tool changed; following routing drops the tool and its model");
 
   const conflicted = core({ templatesPut: () => [400, { error: "version_conflict: these executor templates changed; reload before saving" }] });
   const other = mount(conflicted, "zh-Hans");
-  await until(() => q(other, '.routing-template[data-template="dev"]'), "the templates");
-  button(other, "固定", q(other, '.routing-template[data-template="dev"]')).click();
+  await until(() => q(other, '.routing-template[data-template="review"]'), "the templates");
+  assert.equal(toggle(other, "review").getAttribute("aria-label"), "Review：按规则路由");
+  toggle(other, "review").click();
   await until(() => button(other, "保存", q(other, ".settings-savebar")) && !button(other, "保存", q(other, ".settings-savebar")).disabled, "保存");
   button(other, "保存", q(other, ".settings-savebar")).click();
   await until(() => q(other, ".routing-templates .routing-conflict"), "the conflict");
@@ -267,7 +291,7 @@ test("an order Core refuses to simulate is a note with Core's words, not an erro
 
 test("a Claude login offers its active claude-swap account as used up, and no other", async () => {
   const login = { ...policy, candidates: [{ id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "login" }, unknown: "skip",
-    conditions: [{ kind: "quota", fiveHourLeftPct: 15 }] }] };
+    conditions: [{ kind: "quota", weekLeftPct: 15 }] }] };
   const server = core({ policy: login });
   const page = mount(server);
   await until(() => q(page, ".routing-sim-assume"), "the assumptions");
@@ -316,7 +340,7 @@ test("a week with a clock change: each row runs from its own local midnight, and
 });
 
 test("used up is offered only where it can change the answer: a login with a quota condition, not one without", async () => {
-  const quota = [{ kind: "quota", fiveHourLeftPct: 15 }];
+  const quota = [{ kind: "quota", weekLeftPct: 15 }];
   const order = (claude, codex) => ({ ...policy, candidates: [
     { id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "login" }, unknown: "skip", conditions: claude },
     { id: "cx", enabled: true, harness: "codex", model: "gpt-6.1-sol", credential: { kind: "login" }, unknown: "skip", conditions: codex }] });

@@ -61,15 +61,16 @@ const fresh = () => ({
     { id: "ds", enabled: true, harness: "opencode", model: "deepseek/deepseek-flash", credential: { kind: "apiKey", keyId: "deepseek-main" }, unknown: "skip",
       conditions: [{ kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 }, { kind: "dailyApiCap", usd: 5 }] },
     { id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "pool", manager: "cswap", accounts: "all", pick: "mostRemaining" }, unknown: "skip",
-      conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }] },
+      conditions: [{ kind: "quota", weekLeftPct: 10 }] },
     { id: "cx", enabled: true, harness: "codex", model: "gpt-6.1-sol", reasoningEffort: "high", credential: { kind: "codexHome", id: "work" }, unknown: "skip",
-      conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }] },
+      conditions: [{ kind: "quota", weekLeftPct: 10 }] },
     { id: "cla", enabled: false, harness: "claude", model: "opus", credential: { kind: "apiKey", keyId: "anthropic" }, unknown: "skip", conditions: [{ kind: "dailyApiCap", usd: 8 }] },
   ] } },
   // A run that checks a conflict has another save land first.
   conflictNext: false,
   templates: { version: 2, laterTemplates: 0, templates: [
-    { id: "dev", label: "Development (PR)", harness: "codex", model: "gpt-6.1-sol" }, { id: "review", label: "Review", harness: "claude", routing: "fixed" }] },
+    // As Core serves them (YN-56): one following routing names no tool; a fixed one does.
+    { id: "dev", label: "Development (PR)", permissionLevel: "auto" }, { id: "review", label: "Review", harness: "claude", routing: "fixed", permissionLevel: "ask" }] },
 });
 /** Each tool's list, as Core answers it (YN-57 S2b). */
 const CATALOGS = {
@@ -104,7 +105,7 @@ const peakReason = { code: "peak", message: "DeepSeek's peak price now; off-peak
  * evaluate and simulate, so a screenshot's picked time and its strip agree. DeepSeek is off-peak before
  * 10:00; the claude-swap pool is out when an account is assumed used up; the Codex home runs low at 22:00. */
 const usedUp = { code: "poolNone", message: "No account has enough left (account #2 assumed used up)", messageZh: "没有够用的账号（假设账号 #2 用完）" };
-const codexLow = { code: "quotaLow", message: "5-hour left 4% (needs ≥ 15%)", messageZh: "5 小时剩 4%（要 ≥ 15%）" };
+const codexLow = { code: "quotaLow", message: "4% of the weekly quota is left, below 10%", messageZh: "本周额度只剩 4%，低于 10%" };
 function judged(policy, hour, assume) {
   let chosen = null;
   const candidates = policy.candidates.map((c) => {
@@ -116,9 +117,8 @@ function judged(policy, hour, assume) {
     if (chosen) return { id: c.id, state: "notTried", reasons: [], readings: [] };
     chosen = c.id;
     return c.credential.kind === "pool" ? { id: c.id, state: "chosen",
-      reasons: [{ code: "poolPick", message: "Account #2: 71% of 5 hours and 58% of the week left", messageZh: "账号 #2：5 小时剩 71%，本周剩 58%" }],
-      readings: [{ what: "fiveHourLeft", account: "1", value: 8, observedAt: ago(2), source: "cswap" }, { what: "weekLeft", account: "1", value: 64, observedAt: ago(2), source: "cswap" },
-        { what: "fiveHourLeft", account: "2", value: 71, observedAt: ago(2), source: "cswap" }, { what: "weekLeft", account: "2", value: 58, observedAt: ago(2), source: "cswap" }],
+      reasons: [{ code: "poolPick", message: "Account #2: 58% of the week left", messageZh: "账号 #2：本周剩 58%" }],
+      readings: [{ what: "weekLeft", account: "1", value: 4, observedAt: ago(2), source: "cswap" }, { what: "weekLeft", account: "2", value: 58, observedAt: ago(2), source: "cswap" }],
       accounts: [{ number: 1, fingerprint: "a1b2c3d4e5f60718", state: "low" }, { number: 2, fingerprint: "0f1e2d3c4b5a6978", state: "pick" }] }
       : { id: c.id, state: "chosen", reasons: [], readings: [] };
   });
@@ -158,7 +158,7 @@ async function route(r) {
   }
   if (path === "/api/executor-templates") {
     if (method === "PUT") { state.templates = { version: state.templates.version + 1, templates: body.templates, laterTemplates: 0 }; }
-    return json({ workspace: state.templates, available: [], presets: [] });
+    return json({ workspace: state.templates, available: [], presets: [], general: { label: "Executor", harness: "claude", harnessSource: "workspace" } });
   }
   if (path === "/api/routing/choices") return json({ choices: [
     { dispatchId: "d-905", taskId: "T-905", executorName: "T-905 · Dev", route: { ...evaluation(state.policy.policy, undefined, undefined), at: "dispatch", evaluatedAt: ago(6) } },
@@ -399,6 +399,10 @@ async function run({ width, height, theme, lang }) {
       const fixedTemplate = order.locator('.routing-template[data-template="review"]');
       await fixedTemplate.scrollIntoViewIfNeeded();
       assert.match(await fixedTemplate.innerText(), lang === "zh" ? /固定：Claude Code/ : /Fixed: Claude Code/);
+      // YN-56: a switch per template, on for routing by rules; off, a tool beside it.
+      assert.equal(await fixedTemplate.locator('input[role="switch"]').isChecked(), false);
+      assert.equal(await fixedTemplate.locator("select").inputValue(), "claude");
+      assert.equal(await order.locator('.routing-template[data-template="dev"] input[role="switch"]').isChecked(), true);
       await shot("templates");
       assert.match(await order.locator(".routing-spend").innerText(), /\$3\.40 (of|\/) \$20/);
     }

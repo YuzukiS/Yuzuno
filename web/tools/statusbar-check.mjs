@@ -7,8 +7,9 @@
 // - The open Codex Agent's plan usage from its own connection: newer reports
 //   only, "last report" after five minutes, a passed reset waits, unknown is
 //   not 0, a stream reset reads again; gone with another Agent open.
-// - Remote machines, with those unreachable at their last check or with a
-//   disconnected Agent; opens Machines.
+// - Remote machines, with those unreachable at their last check apart from
+//   a reachable one's disconnected Agents, which are named (YN-61); opens
+//   Machines.
 // Production bundle in an isolated browser with an explicit API fixture; no
 // Core, daily window or writes.
 import assert from "node:assert/strict";
@@ -315,17 +316,18 @@ try {
   check("Codex plan usage from the open Agent's own reports: newer only, last report, waiting, unknown not 0; gone for other Agents");
 
   // Remote machines: devbox was reachable at its check, but Tora is
-  // disconnected there.
+  // disconnected there; that is not an unreachable machine (YN-61).
   const machines = bar.getByRole("button", { name: /machine/ });
-  assert.equal((await machines.innerText()).trim(), "1 machine · 1 unreachable");
-  assert.match(await tipText(machines), /devbox: reachable at its last check.*1 Agent disconnected/s);
+  assert.equal((await machines.innerText()).trim(), "1 machine · 1 Agent disconnected");
+  assert.doesNotMatch(await machines.getAttribute("class"), /is-failed/);
+  assert.match(await tipText(machines), /devbox: reachable at its last check.*Agent disconnected: Tora/s);
   await machines.click();
   // Settings › Machines (YN-8): a page of Settings, its list first.
   const machinesPage = page.locator(".modal.settings-modal");
   await machinesPage.locator("#settings-editor-machines:not([hidden]) .settings-machines").waitFor();
   await page.keyboard.press("Escape");
   await machinesPage.waitFor({ state: "detached" });
-  check("remote machines, with one unreachable through its disconnected Agent; opens Settings › Machines");
+  check("remote machines: a reachable one's disconnected Agent named, not unreachable; opens Settings › Machines");
   await shot("statusbar-light-1440.png");
 
   // Ends while the page is open, each told once.
