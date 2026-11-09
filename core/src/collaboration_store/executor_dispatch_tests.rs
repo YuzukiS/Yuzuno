@@ -1141,4 +1141,36 @@ mod routing {
         let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
         assert_eq!((waits.template.harness(), waits.machine.as_str(), route["waiting"].clone()), ("claude", "boxed", json!(true)), "{route}");
     }
+
+    /// YN-81: a routed Codex candidate's reasoning effort reaches an executor
+    /// on an SSH machine, as it does on this Core host. That machine's
+    /// app-server takes it in the same place; this host's catalog says
+    /// nothing of that machine's Codex, so nothing there is checked.
+    #[tokio::test]
+    async fn a_routed_codex_effort_reaches_an_executor_on_an_ssh_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(dir.path().join("data"), dir.path().to_string_lossy().into_owned(), "unused-harness".into()).unwrap();
+        ws.store.add_machine(&crate::remote::RemoteMachine {
+            id: "lab-box".into(), name: "Lab box".into(), target: "tester@192.0.2.10".into(), ..Default::default()
+        }).unwrap();
+        let project = ws.store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into()),
+            ("lab-box".into(), "/srv/lab/project".into())])).unwrap().id;
+        ws.store.save_routing_policy(0, json!({"enabled": true, "whenNone": "wait", "candidates": [
+            {"id": "c-codex", "enabled": true, "harness": "codex", "model": "gpt-test", "reasoningEffort": "high",
+             "credential": {"kind": "login"}, "conditions": []}]})).unwrap().unwrap();
+        let t = task(&ws.store, "Remote", Some(&project), None);
+        let input = json!({"requestId":"remote","taskId":t,"expectedVersion":1,"executor":{"machineId":"lab-box"}});
+        let plan = match ws.store.executor_dispatch_begin_routed(None, input, LocalDefault::Read(None), Some(&gathered(false))) {
+            Ok(Next::Create(plan)) => *plan,
+            Ok(Next::Dispatch(_)) => panic!("went on to a dispatch"),
+            Err(error) => panic!("{error:#}"),
+        };
+        assert_eq!((plan.machine.as_str(), plan.template.harness(), plan.template.model.as_deref(), plan.template.reasoning_effort.as_deref()),
+            ("lab-box", "codex", Some("gpt-test"), Some("high")), "routing chose the Codex candidate for that machine");
+        let born = crate::server::executor_born(&ws, &plan.template, &plan.machine, Some(project)).await;
+        assert!(born.is_ok(), "the executor the dispatch makes on the SSH machine: {:?}", born.err());
+        let born = born.unwrap();
+        assert_eq!((born.harness.as_str(), born.model.as_str(), born.settings.reasoning_effort.as_deref()),
+            ("codex", "gpt-test", Some("high")), "its app-server gets the candidate's effort");
+    }
 }
