@@ -284,9 +284,13 @@ test("no text an error carries is kept: messages, string rejections, and names, 
     await waitFor(() => q.copied.length === 1, "the diagnostics are copied");
     const text = q.copied[0];
     const kept = q.w.localStorage.getItem("yuzuno.diagnostics.v1");
+    // The Page line names the built bundle, and its content hash can contain a
+    // sentinel's letters by chance (a build once made index-BobO48U5.js). It is
+    // not an error's text, so it is left out of this check.
+    const body = text.replace(/^Page: .*$/m, "");
     for (const word of [...sentinels, "Person With Spaces", "result.json", "hello world", "Proxy error", "<html>", "my unsent draft", "FAKEFAKE", "ghp_FAKE", "abcdef123456",
       "supersecretvalue", "other-project", "secret.ts", "C:\\Users", "Bob", "\\\\nas", "report.docx", "x.example", "token=abc", "#frag", "bob@example.org", "loadPrivate", "D:\\work", "chrome-extension"]) {
-      assert.ok(!text.includes(word), `${word} is not in the diagnostics`);
+      assert.ok(!body.includes(word), `${word} is not in the diagnostics`);
       assert.ok(!kept.includes(word), `${word} is not stored either`);
     }
     assert.match(text, /^\d+\. error · Error · 2 times, \S+ to \S+\n {3}other message, not kept\n {3}at index-AbC123\.js:5:5$/m, "both paths give the same entry, without them");
