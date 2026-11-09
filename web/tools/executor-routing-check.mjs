@@ -393,6 +393,9 @@ async function run({ width, height, theme, lang }) {
     assert.equal((await pill.innerText()).trim(), w.needsFix);
     assert.equal(await pill.getAttribute("aria-label"), w.fixIt);
     assert.equal(await page.locator(".executor-routing .routing-fix").count(), 1, `${tag}: only the card with a problem has the pill`);
+    // In view first: a point outside the viewport hits nothing.
+    await fixCard.scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
     const look = await pill.evaluate((el) => {
       const css = getComputedStyle(el), box = el.getBoundingClientRect();
       const x = box.left + box.width / 2, y = box.top + box.height / 2;
@@ -407,8 +410,6 @@ async function run({ width, height, theme, lang }) {
       assert.ok(look.height < 30, `${tag}: on a phone the pill stays a pill (${look.height} px), not a 40 px blob`);
       assert.deepEqual(look.hits, [true, true], `${tag}: the pill's target is 40 px tall`);
     }
-    await fixCard.scrollIntoViewIfNeeded();
-    await page.mouse.move(0, 0);
     await shot("needs-fix");
     await press(pill);
     const fixEditor = fixCard.locator(".routing-edit");
