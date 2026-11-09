@@ -61,9 +61,9 @@ pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
 /// What `limits.maxConcurrent` still answers, for that same release: a
 /// template page from before S5 reads its field's bound from it.
 const OLDER_PAGES_MAX_CONCURRENT: u32 = 64;
-const FIELDS: [&str; 17] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
+const FIELDS: [&str; 18] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
     "permissionMode", "machineId", "instructions", "maxConcurrent", "origin", "deliveryMode", "steps", "whenToChoose", "routing",
-    "permissionLevel"];
+    "permissionLevel", "formerHarness"];
 /// How a template's work is delivered (YN-23, T-43 S1a): a pull request
 /// (unset, as every template saved before), a commit without one, or no
 /// repository change at all. Said in its executors' materials; Core holds
@@ -112,6 +112,13 @@ pub struct Template {
     /// Set only by a dispatch: the mode its level is on Claude Code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// The harness a template that follows routing named before core.29,
+    /// which reading it in this shape dropped (`upgraded`; #824 R1). Named
+    /// when a dispatch is refused for a level the default harness doesn't
+    /// keep, and shown in Settings, as the way back. Kept by saves until the
+    /// template is fixed to a harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub former_harness: Option<String>,
     /// Where its executors run: unset or `local` for this Core host, a
     /// registered machine's id (T-35 S3a), or `auto` for the one Core chooses
     /// at each dispatch (S3b); a dispatch's own machineId wins.
@@ -300,11 +307,15 @@ impl Template {
                 "A template that follows routing names no model or reasoning effort: routing gives them, or the defaults for new Agents while routing is off. Fix it (routing: fixed) to name them");
             ensure!(self.permission_preset.is_none() && self.permission_mode.is_none(),
                 "A template that follows routing takes a permission level (permissionLevel: ask, auto or full), not one harness's own permission");
+            if let Some(former) = self.former_harness.as_deref() {
+                ensure!(HARNESSES.contains(&former), "formerHarness is Codex, Claude Code or OpenCode, not {former}");
+            }
             machine_named(self.machine_id.as_deref(), "")?;
             return self.validate_rest();
         };
         ensure!(HARNESSES.contains(&harness), "A template's harness is Codex, Claude Code or OpenCode, not {harness}");
         ensure!(fixed, "A template that follows routing names no harness: routing chooses it, or the default for new Agents while routing is off. Fix it (routing: fixed) to name one");
+        ensure!(self.former_harness.is_none(), "A fixed template names its harness; formerHarness is for one that follows routing");
         if let Some(level) = self.permission_level.as_deref().filter(|level| !permission_levels::keeps(Some(*level), harness)) {
             bail!("{} doesn't keep the permission level {level} ({}); choose another level", permission_levels::harness_name(harness), permission_levels::label(level).0);
         }
@@ -382,8 +393,8 @@ impl Template {
     pub(crate) fn general() -> Self {
         Self {
             id: String::new(), label: GENERAL_LABEL.into(), name_pattern: None, harness: None, model: None, reasoning_effort: None,
-            permission_level: None, permission_preset: None, permission_mode: None, machine_id: None, instructions: None, origin: None,
-            delivery_mode: None, routing: None, steps: None, when_to_choose: None,
+            permission_level: None, permission_preset: None, permission_mode: None, former_harness: None, machine_id: None,
+            instructions: None, origin: None, delivery_mode: None, routing: None, steps: None, when_to_choose: None,
         }
     }
 
@@ -407,8 +418,13 @@ impl Template {
             let Some(native) = permission_levels::native(level, harness) else {
                 let name = permission_levels::harness_name(harness);
                 let what = if self.fixed() { "its harness" } else { "the harness for new Agents here (no routing candidate keeping it)" };
-                bail!("level_not_kept: {} asks for the permission level {level} ({}), which {name}, {what}, doesn't keep. \
-                    Choose another level for the template, or fix it to a harness that keeps this one", self.label, permission_levels::label(level).0);
+                let fix = match self.former_harness.as_deref() {
+                    Some(former) => format!("It named {0} before core.29: fix it to {0} in Settings → Executor templates (Runs with), \
+                        or change the default harness for new Agents of the task's Project", permission_levels::harness_name(former)),
+                    None => "Choose another level for the template, or fix it to a harness that keeps this one".to_owned(),
+                };
+                bail!("level_not_kept: {} asks for the permission level {level} ({}), which {name}, {what}, doesn't keep. {fix}",
+                    self.label, permission_levels::label(level).0);
             };
             template.permission_preset = (harness == "codex").then(|| native.to_owned());
             template.permission_mode = (harness == "claude").then(|| native.to_owned());
@@ -446,6 +462,10 @@ impl Template {
             None => {}
         }
         if !self.fixed() {
+            // A harness this Core knows, dropped: kept as the way back (#824 R1).
+            if self.former_harness.is_none() {
+                self.former_harness = self.harness.clone();
+            }
             self.harness = None;
             self.model = None;
             self.reasoning_effort = None;
@@ -942,7 +962,7 @@ pub(crate) const LIST_TOOL: &str = "executor_templates_list";
 pub(crate) fn tool_definition() -> Value {
     json!({
         "name": LIST_TOOL,
-        "description": "List the Workspace's executor templates, to choose one for task_dispatch with executor {templateId}. Each has id, label; whenToChoose, a line saying what work it is for (if set); deliveryMode: pr, direct-commit or none (no repository change: the result is the deliverable); steps its executors follow, each {kind, label?, rounds? (review), approver? (gate: user, lead or either; unset is user)}, descriptive only: Core doesn't track them. routing: follows (routing chooses its harness, model and account; while routing is off, the defaults for new Agents of the task's Project) or fixed (its own harness, model and reasoningEffort, given then, on the host's login). permissionLevel: ask, auto or full, which Core maps to each harness's own permission; absent is each harness's default for new Agents. levels says what each level is on each harness: routing skips a candidate whose harness doesn't keep the level. A fixed Codex template may instead have permissionPreset config (the machine's Codex configuration). machineId: local, a machine's id or auto. instructionsBytes: the size of its instructions (0 for none). general: what executor {} makes for your Project. laterTemplates: templates a newer Core saved that this one can't offer. With full true, for leads of a Project only, each also has template: as saved, to change and send back whole with executor_templates_change. The user saves templates in Settings, a lead with executor_templates_change; version is the expectedVersion.",
+        "description": "List the Workspace's executor templates, to choose one for task_dispatch with executor {templateId}. Each has id, label; whenToChoose, a line saying what work it is for (if set); deliveryMode: pr, direct-commit or none (no repository change: the result is the deliverable); steps its executors follow, each {kind, label?, rounds? (review), approver? (gate: user, lead or either; unset is user)}, descriptive only: Core doesn't track them. routing: follows (routing chooses its harness, model and account; while routing is off, the defaults for new Agents of the task's Project) or fixed (its own harness, model and reasoningEffort, given then, on the host's login). permissionLevel: ask, auto or full, which Core maps to each harness's own permission; absent is each harness's default for new Agents. formerHarness: the harness it named before core.29, when it follows routing now. levels says what each level is on each harness: routing skips a candidate whose harness doesn't keep the level. A fixed Codex template may instead have permissionPreset config (the machine's Codex configuration). machineId: local, a machine's id or auto. instructionsBytes: the size of its instructions (0 for none). general: what executor {} makes for your Project. laterTemplates: templates a newer Core saved that this one can't offer. With full true, for leads of a Project only, each also has template: as saved, to change and send back whole with executor_templates_change. The user saves templates in Settings, a lead with executor_templates_change; version is the expectedVersion.",
         "inputSchema": {"type":"object","properties":{"full":{"type":"boolean","description":"Also give each template as saved, instructions included: for leads of a Project only (YN-24)."}},"required":[],"additionalProperties":false},
     })
 }
@@ -956,6 +976,7 @@ fn listed(template: &Template) -> Value {
         "instructionsBytes": template.instructions.as_deref().map_or(0, str::len),
     });
     for (field, value) in [("whenToChoose", &template.when_to_choose), ("permissionLevel", &template.permission_level),
+        ("formerHarness", &template.former_harness),
         ("harness", &template.harness), ("model", &template.model), ("reasoningEffort", &template.reasoning_effort),
         ("permissionPreset", &template.permission_preset), ("machineId", &template.machine_id)] {
         if let Some(value) = value {

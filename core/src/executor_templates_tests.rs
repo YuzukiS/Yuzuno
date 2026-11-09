@@ -222,8 +222,11 @@ fn a_template_is_checked_strictly_and_read_leniently() {
         {"id":"g","label":"Reads, but another harness","harness":"gemini"},
     ]}).to_string())).unwrap();
     assert_eq!((read.version, read.later_templates), (3, 2));
-    assert_eq!(read.templates, vec![serde_json::from_value::<Template>(follows("a")).unwrap()],
-        "a template a Core before YN-56 kept follows routing (an unknown harness is a later Core's)");
+    assert_eq!(read.templates, vec![serde_json::from_value::<Template>(json!({"id":"a","label":"Label a","formerHarness":"codex"})).unwrap()],
+        "a template a Core before YN-56 kept follows routing, its harness kept as the way back (an unknown harness is a later Core's)");
+    assert!(refused(with(json!({"formerHarness":"codex"}))).starts_with("A fixed template names its harness; formerHarness is for one that follows routing"));
+    assert!(refused(follows_with(json!({"formerHarness":"gemini"}))).starts_with("formerHarness is Codex, Claude Code or OpenCode, not gemini"));
+    assert!(parse_save(&[follows_with(json!({"formerHarness":"claude"}))], true, &[]).is_ok());
     for level in ["ask", "auto", "full"] {
         assert!(parse_save(&[follows_with(json!({"permissionLevel":level}))], true, &[]).is_ok(), "{level}");
         assert!(parse_save(&[with(json!({"permissionLevel":level}))], true, &[]).is_ok(), "Codex keeps {level}");
@@ -549,7 +552,8 @@ async fn a_lead_lists_the_templates_to_choose_one() {
                 "routing":"fixed","permissionLevel":"ask","harness":"codex","model":"m-large","reasoningEffort":"high","machineId":"auto",
                 "instructionsBytes":"列出选项。".len()},
             {"id":"plain","label":"Label plain","deliveryMode":"pr","steps":pr_steps,"routing":"fixed","harness":"claude","instructionsBytes":0},
-            {"id":"follower","label":"Follower","deliveryMode":"pr","steps":pr_steps,"routing":"follows","permissionLevel":"ask","instructionsBytes":0},
+            {"id":"follower","label":"Follower","deliveryMode":"pr","steps":pr_steps,"routing":"follows","permissionLevel":"ask",
+                "formerHarness":"claude","instructionsBytes":0},
         ]}), "{listed}");
     assert!(!listed.to_string().contains("列出选项"), "its instructions' size, not their text");
     assert_eq!(raw_at(&ws.store, KEY), before, "reading changes nothing");
@@ -609,6 +613,9 @@ fn a_template_before_yn56_reads_as_a_level_and_one_that_follows_routing_names_no
         ("f-full", true, Some("codex"), Some("m"), None, Some("full"), None, None),
         ("f-opencode", true, Some("opencode"), None, None, None, None, None),
     ]);
+    let former: Vec<(&str, Option<&str>)> = read.templates.iter().map(|t| (t.id.as_str(), t.former_harness.as_deref())).collect();
+    assert_eq!(&former[..3], [("c-auto", Some("claude")), ("c-default", Some("claude")), ("x-ask", Some("codex"))]);
+    assert!(read.templates.iter().filter(|t| t.fixed()).all(|t| t.former_harness.is_none()), "a fixed one keeps its harness itself");
     assert_eq!(raw_at(&store, KEY), before, "reading rewrites nothing: a Core before YN-56 still reads the list until a save");
 }
 
@@ -682,4 +689,9 @@ fn a_level_resolves_to_the_harnesss_own_permission_or_refuses_the_dispatch() {
     assert_eq!(on(&none, "claude").unwrap(), (Some("claude".into()), None, None), "the harness's defaults for new Agents");
     let config = of(json!({"id":"x","label":"X","harness":"codex","routing":"fixed","permissionPreset":"config"}));
     assert_eq!(on(&config, "codex").unwrap().1.as_deref(), Some("config"));
+    // #824 R1: a template that named Codex before core.29 says so, as the way back.
+    let old = of(json!({"id":"o","label":"Old full","permissionLevel":"full","formerHarness":"codex"}));
+    let refused = on(&old, "claude").unwrap_err().to_string();
+    assert!(refused.ends_with("It named Codex before core.29: fix it to Codex in Settings → Executor templates (Runs with), \
+        or change the default harness for new Agents of the task's Project"), "{refused}");
 }

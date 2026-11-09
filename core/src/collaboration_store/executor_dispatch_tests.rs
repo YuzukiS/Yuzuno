@@ -818,6 +818,13 @@ fn a_template_that_follows_routing_starts_on_the_default_for_new_agents_with_its
         ("codex", Some("full"), None));
     let own = from("own", "own").unwrap();
     assert_eq!((own.template.harness(), own.template.permission_preset.as_deref()), ("codex", Some("config")));
+    // #824 R1: a template saved before core.29 as Codex with full access follows routing now; on Claude Code, the
+    // default, it is refused, and the refusal names the way back.
+    templates(&store, json!([{"id":"old-full","label":"Old full","harness":"codex","permissionPreset":"full"}]));
+    store.save_project_agent_defaults(&p, &harness("claude")).unwrap();
+    let refused = from("old-full", "old-full").unwrap_err();
+    assert!(refused.starts_with("level_not_kept: Old full asks for the permission level full (Full access), which Claude Code")
+        && refused.contains("It named Codex before core.29: fix it to Codex"), "{refused}");
 }
 
 /// YN-34 S3b2: routing at dispatch, on synthetic readings.
