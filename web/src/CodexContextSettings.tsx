@@ -1,6 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import type { CodexContextSettings as Context } from "./types";
 import { strings, useStrings } from "./i18n";
+import { Tip, TipText } from "./Tip";
 
 /** Thrown in English and said in the language shown (T-189). */
 export const TOKEN_INVALID = "Enter a positive whole number, or leave blank for automatic.";
@@ -112,9 +113,11 @@ export function CodexContextSettings({ context, window, compact, disabled, note,
     <div className="codex-context-reported">
       <div className="codex-context-reported-head">
         <span>{t.available}</span>
-        {onRefresh && <button type="button" className="icon-button" aria-label={t.refresh} title={t.refresh} onClick={onRefresh}>
-          <RefreshCw size={13} />
-        </button>}
+        {onRefresh && <Tip content={<TipText title={t.refresh} />} describe={false}>
+          <button type="button" className="icon-button" aria-label={t.refresh} onClick={onRefresh}>
+            <RefreshCw size={13} />
+          </button>
+        </Tip>}
       </div>
       <p className="codex-context-figure">
         {observed == null ? <strong>{t.unknown}</strong> : <><strong>{tokens(observed)}</strong>{t.tokens}</>}

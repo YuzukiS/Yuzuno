@@ -18,6 +18,7 @@ import { withRunningCalls } from "./running-calls";
 import { useLanguage, type Language } from "./i18n";
 import { cardWords } from "./subagent-text";
 import "./claude-background-tasks.css";
+import { Tip, TipText } from "./Tip";
 
 // The group's names, in the language shown.
 const groupOf = (language: Language): DockGroup => {
@@ -97,7 +98,7 @@ function when(at: string | undefined, time: TimeDisplay) {
   const ms = at ? Date.parse(at) : NaN;
   if (!Number.isFinite(ms)) return null;
   const m = moment(ms, time);
-  return <time dateTime={m.dateTime} title={m.title}>{m.label}</time>;
+  return <Tip content={<TipText title={m.title} />}><time dateTime={m.dateTime}>{m.label}</time></Tip>;
 }
 
 /** One background task's card: what Claude reported for it, its call's Turn, and its stop. */

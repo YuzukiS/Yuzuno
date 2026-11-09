@@ -16,6 +16,7 @@ import { touchKeyboard } from "./touch-input";
 import { PortalPreferencesSection } from "./portal/PortalPreferences";
 import { useOpenWith } from "./portal/portal-preference";
 import "./device-preferences.css";
+import { Tip, TipText } from "./Tip";
 
 // Key names (Return, Shift, Ctrl, ⌘) are written as on the keys.
 const text = strings({
@@ -80,9 +81,11 @@ export function InputPreferencesSection() {
           <p>{t.pageIntro}</p>
         </div>
         {/* As the shortcuts help names it; short enough for a phone at the largest text. */}
-        <span className="settings-current" title={t.current}>
-          {t.returnDoes(returnSends(preferences.sendKey, touch))} · {t.opens(open === "inside")}
-        </span>
+        <Tip content={<TipText title={t.current} />}>
+          <span className="settings-current">
+            {t.returnDoes(returnSends(preferences.sendKey, touch))} · {t.opens(open === "inside")}
+          </span>
+        </Tip>
       </header>
       <div className="settings-group appearance-group">
         <fieldset className="appearance-field input-send-key">
