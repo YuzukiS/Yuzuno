@@ -1,0 +1,45 @@
+/* A cleanup plan's approval (YN-74 ①b): Core's own summary of each group
+   in the place of its option's text, the executor's words a smaller note. */
+.cleanup-approval-note {
+  margin: 0 0 0.45rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.cleanup-approval-note p {
+  margin: 0;
+}
+.cleanup-approval-note.is-blocked,
+.cleanup-approval-note .is-blocked {
+  color: var(--coral);
+}
+.clarification-options .cleanup-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+.cleanup-group strong {
+  font-weight: 600;
+}
+.cleanup-group-facts,
+.cleanup-group-paths {
+  font-size: 0.8rem;
+  color: var(--ink);
+}
+.cleanup-group-paths {
+  color: var(--muted);
+}
+.cleanup-group-warning {
+  font-size: 0.8rem;
+  color: var(--coral);
+  font-weight: 500;
+}
+.clarification-options .cleanup-group-author {
+  display: block;
+  font-size: 0.74rem;
+  color: var(--muted);
+  margin-top: 0.15rem;
+}

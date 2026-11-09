@@ -21,6 +21,7 @@ import { homeText } from "./home-text";
 import { draftStore } from "./reply-drafts";
 import { repliedThenUpdated } from "./brief-layout";
 import type { Section } from "./types";
+import { CleanupApprovalNote, cleanupOptionView, useCleanupApproval } from "./cleanup-approval";
 import { Tip, TipText } from "../Tip";
 
 type ReplyContext = {
@@ -361,6 +362,9 @@ export function AskReply({
     const parsed = clarificationSchema.safeParse(reply.form);
     return parsed.success ? parsed.data : undefined;
   }, [reply.form]);
+  // A cleanup plan's approval (YN-74 ①b): its groups as Core summarized them,
+  // and no answer while that summary can't be shown as the Ask asks it.
+  const cleanup = useCleanupApproval(section);
   // The form saves its answers under this identity and key, the form's own;
   // the form they were given on is kept under the same key.
   const formIdentity = `home:${context.workspaceId}:${context.projectId}:${section.key}`;
@@ -673,6 +677,7 @@ export function AskReply({
       {form && carried && !pending && (
         <p className="home-note home-ask-carried" role="status">{t.askAnswersCarried(section.version)}</p>
       )}
+      {form && <CleanupApprovalNote approval={cleanup} />}
       {form ? (
         <Clarification
           identity={formEpoch ? `${formIdentity}#${formEpoch}` : formIdentity}
@@ -693,8 +698,11 @@ export function AskReply({
               ? "Choose who should get the reply."
               : pending
                 ? t.askUnconfirmedFirst
-                : undefined
+                : cleanup.state === "blocked" || cleanup.state === "loading"
+                  ? cleanup.reason
+                  : undefined
           }
+          optionView={cleanupOptionView(cleanup, language)}
           // Its delivery is that of the version it answered.
           delivery={answeredHere && receipt ? { status: receipt.status, error: receipt.error } : undefined}
           onSubmit={context.readOnly ? undefined : async (values) => {

@@ -656,7 +656,9 @@ impl Workspace {
 }
 
 /// The plan of a task the user could approve now (Home's gate card, design
-/// 2.4): its newest plan while it is submitted and not expired.
+/// 2.4): its newest plan while it is submitted and not expired. `planned`:
+/// the task has had a plan, so a gate ask of it with a `groups` field is a
+/// cleanup approval even when none is waiting now.
 fn current_plan(store: &Store, task: &str) -> Result<Value> {
     let db = store.db.write()?;
     expire(&db)?;
@@ -664,9 +666,11 @@ fn current_plan(store: &Store, task: &str) -> Result<Value> {
     let id: Option<String> = db
         .query_row("SELECT id FROM cleanup_plans WHERE task_id=?1 AND state='submitted' ORDER BY created_at DESC LIMIT 1", [&task], |r| r.get(0))
         .optional()?;
+    let planned: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM cleanup_plans WHERE task_id=?1)", [&task], |r| r.get(0))?;
     Ok(match id.map(|id| plan(&db, &id)).transpose()?.flatten() {
-        Some(plan) => json!({"plan": header(&db, &plan)?}),
-        None => json!({"plan": null, "note": "This task has no cleanup plan waiting for approval: none, or it expired, was cancelled or was applied."}),
+        Some(plan) => json!({"plan": header(&db, &plan)?, "planned": true}),
+        None => json!({"plan": null, "planned": planned,
+            "note": "This task has no cleanup plan waiting for approval: none, or it expired, was cancelled or was applied."}),
     })
 }
 
