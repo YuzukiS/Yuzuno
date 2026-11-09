@@ -170,3 +170,86 @@ fn an_incremental_rounds_summary_keeps_its_earlier_round_and_what_it_settled() {
         assert!(plain.get(absent).is_none(), "{absent}");
     }
 }
+
+#[test]
+fn merge_get_and_merge_list_take_their_view_out_and_an_agents_page_is_twenty() {
+    let mut plain = arguments(json!({"taskId":"T-1"}));
+    assert_eq!(prepare("merge_get", &mut plain), Ok(Some("summary".into())));
+    let mut full = arguments(json!({"entryId":"e","view":"full"}));
+    assert_eq!(prepare("merge_get", &mut full), Ok(Some("full".into())));
+    assert!(!full.contains_key("view"), "the merge store knows no views");
+    assert!(prepare("merge_get", &mut arguments(json!({"entryId":"e","view":"raw"}))).is_err());
+    let mut list = arguments(json!({"state":"done"}));
+    assert_eq!(prepare("merge_list", &mut list), Ok(Some("summary".into())));
+    assert_eq!(list["limit"], 20, "an Agent's page is 20 unless it asks for more");
+    let mut fifty = arguments(json!({"limit":50,"view":"full"}));
+    assert_eq!(prepare("merge_list", &mut fifty), Ok(Some("full".into())));
+    assert_eq!((fifty["limit"].clone(), fifty.contains_key("view")), (json!(50), false));
+}
+
+/// A merge entry as the queue keeps it once it merged and followed main CI:
+/// its evidence repeats the entry and the last check (lastEvidence), and its
+/// history is long.
+fn merge_entry() -> Value {
+    let sha = |c: char| c.to_string().repeat(40);
+    let gate = json!({"kind":"slot","tree":sha('5'),"runs":[{"run":42,"jobs":[{"name":"Core","checkout":sha('4'),"logSha256":"9".repeat(64)}]}]});
+    let main = json!({"atRelease":sha('2'),"anchoredAt":"t0","before":sha('2'),"beforeTree":sha('6'),"ci":{"conclusion":"success"}});
+    let merge = json!({"sha":sha('f'),"mergedAt":"t3","attempts":1,"expectedMain":sha('2'),"mainCi":{"conclusion":"success","runId":95},
+        "post":{"ok":true,"commit":{"parents":[sha('2'),sha('1')]}}});
+    let release = json!({"by":{"kind":"agent","id":"lead","name":"Lead"},"requestId":"r1","at":"t0","reviewId":"rv"});
+    let last = json!({"checkedAt":"t2","review":{"id":"rv","conclusion":"no_findings"},"pauseCleared":false,"main":main,"policy":"strict",
+        "mainRed":false,"ciRunning":false,"gate":gate,"mergeRef":sha('4'),"batch":null,"wouldMerge":{"sha":sha('1'),"method":"merge"}});
+    json!({"id":"e1","entryId":"e1","taskId":"t","taskReference":"YN-1","repositoryId":7,"repository":"owner/repo","number":11,
+        "url":"https://github.com/owner/repo/pull/11","linkId":"7:pull:11","headSha":sha('1'),"baseBranch":"main","state":"done",
+        "reason":null,"detail":"main CI on the merge commit is green","release":release,"merge":merge,"batch":null,"binaries":null,
+        "grouping":{"state":"done"},"lastEvidence":last,
+        "evidence":{"entry":"e1","repository":"owner/repo","pr":11,"head":sha('1'),"state":"merged","release":release,"binaries":null,
+            "review":last["review"],"main":main,"gate":gate,"mergeRef":sha('4'),"policy":"strict","checkedAt":"t2","batch":null,
+            "merge":merge,"grouping":{"state":"pending"},"stop":null},
+        "history":(0..30).map(|n| json!({"at":format!("t{n}"),"state":"waiting","detail":format!("check {n}")})).collect::<Vec<_>>(),
+        "createdAt":"t0","updatedAt":"t3"})
+}
+
+#[test]
+fn a_merge_entrys_summary_says_its_state_merge_and_evidence_once() {
+    let full = merge_entry();
+    let short = answer("merge_get", full.clone(), Some("summary"));
+    assert!(short.get("lastEvidence").is_none(), "the last check as read is view full's");
+    for gone in ["entry", "repository", "pr", "head", "state", "release", "binaries", "batch", "merge", "grouping", "stop"] {
+        assert!(short["evidence"].get(gone).is_none(), "evidence.{gone} repeats the entry, which is current: {}", short["evidence"]);
+    }
+    for kept in ["review", "main", "gate", "mergeRef", "policy", "checkedAt"] {
+        assert_eq!(short["evidence"][kept], full["evidence"][kept], "{kept}");
+    }
+    let history = short["history"].as_array().unwrap();
+    assert_eq!((history.len(), short["historyCount"].clone()), (10, json!(30)));
+    assert_eq!(history[..], full["history"].as_array().unwrap()[20..], "the newest ten, oldest first");
+    let mut rest = short.clone();
+    for added in ["history", "historyCount", "more"] {
+        rest.as_object_mut().unwrap().remove(added);
+    }
+    is_part_of(&rest, &full, "entry");
+    assert!(short["more"].as_str().unwrap().contains("view \"full\""));
+    assert_eq!(answer("merge_get", full.clone(), Some("full")), full, "view full is the whole record");
+    // Each write that answers with an entry answers with its summary.
+    for write in ["merge_enqueue", "merge_cancel", "merge_retry", "merge_revert"] {
+        assert_eq!(answer(write, full.clone(), None), short, "{write}");
+    }
+    let repository = json!({"repositoryId":7,"paused":null,"enabled":true});
+    assert_eq!(answer("merge_unpause", repository.clone(), None), repository, "an unpause answers with the repository, as it was");
+
+    let mut listed = full.clone();
+    for stored_apart in ["history", "lastEvidence"] {
+        listed.as_object_mut().unwrap().remove(stored_apart);
+    }
+    let page = json!({"entries":[listed.clone(), listed.clone()],"nextBefore":5,"hasMore":true});
+    let rows = answer("merge_list", page.clone(), Some("summary"));
+    assert_eq!((rows["nextBefore"].clone(), rows["hasMore"].clone()), (json!(5), json!(true)));
+    let row = &rows["entries"][0];
+    assert_eq!(row.as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
+        ["createdAt", "detail", "entryId", "headSha", "id", "merge", "number", "repository", "state", "taskId", "taskReference", "updatedAt", "url"]);
+    assert_eq!(row["merge"], json!({"sha":"f".repeat(40),"mergedAt":"t3","mainCi":{"conclusion":"success","runId":95}}));
+    is_part_of(row, &listed, "row");
+    assert!(rows["more"].as_str().unwrap().contains("merge_get"));
+    assert_eq!(answer("merge_list", page.clone(), Some("full")), page);
+}

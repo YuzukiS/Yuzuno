@@ -555,6 +555,39 @@ async fn only_the_dispatching_lead_or_the_user_may_release_a_reviewed_head() {
     assert_eq!(by_user["release"]["by"]["kind"], "user", "the user may release without a dispatch");
 }
 
+/// YN-69: an Agent pages merge_list with limit and before; the GUI's list, and
+/// an entry's whole record, which it reads over HTTP, are as they were.
+#[cfg(unix)]
+#[tokio::test]
+async fn merge_list_pages_by_limit_and_before_and_the_record_stays_whole() {
+    let lab = lab(green());
+    let first = lab.release(Some("lead"), "r1").await.unwrap();
+    lab.ws.collaboration_call(Some("lead"), "merge_cancel", json!({"requestId":"c1","entryId":first["id"]})).await.unwrap();
+    let second = lab.release(Some("lead"), "r2").await.unwrap();
+    let list = |input: Value| lab.ws.collaboration_call(Some("lead"), "merge_list", input);
+    let ids = |page: &Value| page["entries"].as_array().unwrap().iter().map(|e| e["id"].clone()).collect::<Vec<_>>();
+    let page = list(json!({"taskId":lab.task,"limit":1})).await.unwrap();
+    assert_eq!((ids(&page), page["hasMore"].clone()), (vec![second["id"].clone()], json!(true)), "{page}");
+    assert!(page["nextBefore"].is_i64(), "{page}");
+    let next = list(json!({"taskId":lab.task,"limit":1,"before":page["nextBefore"]})).await.unwrap();
+    assert_eq!((ids(&next), next["hasMore"].clone()), (vec![first["id"].clone()], json!(false)), "{next}");
+    // Without a limit, as the GUI lists: every entry up to 50, newest first.
+    let all = list(json!({})).await.unwrap();
+    assert_eq!((ids(&all), all["hasMore"].clone()), (vec![second["id"].clone(), first["id"].clone()], json!(false)));
+    for wrong in [0, 51] {
+        let refused = list(json!({"limit":wrong})).await.unwrap_err().to_string();
+        assert!(refused.contains("limit 1..50"), "{refused}");
+    }
+    tick(&lab.ws).await.unwrap();
+    let whole = lab.entry().await;
+    assert_eq!(whole["state"], "merged", "{whole}");
+    assert!(whole["lastEvidence"].is_object() && whole["history"].as_array().is_some_and(|h| h.len() > 1), "the GUI's record is whole");
+    let summary = crate::mcp_views::answer("merge_get", whole.clone(), Some("summary"));
+    assert!(summary.get("lastEvidence").is_none());
+    assert_eq!((summary["state"].clone(), summary["merge"]["sha"].clone(), summary["evidence"]["gate"].clone()),
+        (json!("merged"), json!(merge_commit()), whole["evidence"]["gate"].clone()));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_dispatcher_that_is_not_a_lead_may_not_release() {
