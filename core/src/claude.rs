@@ -1396,10 +1396,11 @@ impl Workspace {
         }).await?
     }
 
-    /// Shows a follow-up Claude has queued where it was sent, marked unread:
-    /// a turn started by a typed prompt names a folded message only on its
-    /// result. The connection may have ended since it was checked; its
-    /// receipt is then already unknown, and the item says the same.
+    /// Shows a follow-up Claude has queued where it was sent, marked unread
+    /// until the bridge reports Claude taking it in or naming it (a turn
+    /// started by a typed prompt names a folded message on no later reply).
+    /// The connection may have ended since it was checked; its receipt is
+    /// then already unknown, and the item says the same.
     async fn show_follow_up(self: &Arc<Self>, id: &str, turn: &str, client_id: &str, content: Value) -> Result<()> {
         let (turn, client, at) = (turn.to_owned(), client_id.to_owned(), Utc::now());
         let seen = client.clone();
@@ -1635,7 +1636,7 @@ impl Workspace {
                 ) else {
                     return;
                 };
-                if !matches!(status, "accepted" | "next") {
+                if !matches!(status, "accepted" | "next" | "unconfirmed") {
                     return;
                 }
                 let at = Utc::now();
@@ -3350,11 +3351,14 @@ fn follow_up_item(turn_id: &str, client_id: &str, content: Value, at: DateTime<U
     item
 }
 
-/// A follow-up sent while Claude worked: "accepted" when Claude named it in
-/// `turn_id` (it read it there), "next" when its turn ended first and Claude
-/// runs it as the next turn, `turn_id`, created here and still running. It
+/// A follow-up sent while Claude worked: "accepted" when Claude took it into
+/// `turn_id` or named it there (it read it there), "next" when its turn ended
+/// first and Claude runs it as the next turn, `turn_id`, created here and
+/// still running, "unconfirmed" when `turn_id` ended with no word of it
+/// (YN-82): whether Claude read it is unknown, and it is not sent again. It
 /// stays where it was sent if Claude read it there, else moves to that turn;
-/// it is marked unread (`_yuzunoDelivery`) until Claude names it.
+/// it is marked unread (`_yuzunoDelivery`) until Claude names it, unknown
+/// once unconfirmed.
 ///
 /// `elsewhere`: whether a Turn the record has and `d` lacks is in progress,
 /// where `d` holds only some of the record's Turns (`Store::record_delivery`).
@@ -3373,29 +3377,50 @@ pub(crate) fn deliver_message(d: &mut AgentDetail, root: &std::path::Path, clien
         open_native_turn(d, turn_id, at, true);
     }
     let here = d.turn_at(turn_id, at)["items"].as_array().is_some_and(|items| items.iter().any(|i| i["clientId"] == client_id));
+    // An item made here, before `show_follow_up` showed the follow-up, has no
+    // mark yet: missing, it says nothing about Claude having read it.
+    let mut made = false;
     if !here {
         let moved = d.turns.iter_mut().find_map(|t| {
             let items = t["items"].as_array_mut()?;
             let index = items.iter().position(|i| i["clientId"] == client_id)?;
             Some(items.remove(index))
         });
+        made = moved.is_none();
         let item = moved.unwrap_or_else(|| {
             follow_up_item(turn_id, client_id, user_content(&text, crate::input_images::history_images(root, &agent, &images)), at)
         });
         d.turn_at(turn_id, at)["items"].as_array_mut().expect("turn items").push(item);
     }
     if let Some(item) = d.turn_at(turn_id, at)["items"].as_array_mut().and_then(|items| items.iter_mut().find(|i| i["clientId"] == client_id)) {
-        if status == "accepted" {
-            item.as_object_mut().map(|item| item.remove("_yuzunoDelivery"));
-        } else {
-            item["_yuzunoDelivery"] = "queued".into();
+        match status {
+            "accepted" => {
+                item.as_object_mut().map(|item| item.remove("_yuzunoDelivery"));
+            }
+            // Never over a confirmation: read stays read.
+            "unconfirmed" if !made && item.get("_yuzunoDelivery").is_none() => {}
+            "unconfirmed" => item["_yuzunoDelivery"] = "unknown".into(),
+            _ => item["_yuzunoDelivery"] = "queued".into(),
         }
     }
     if let Some(receipt) = d.message_receipts.iter_mut().find(|r| r.input.client_message_id == client_id) {
         receipt.turn_id = Some(turn_id.into());
-        if status == "accepted" {
-            receipt.status = "accepted".into();
-            receipt.error = None;
+        match status {
+            "accepted" => {
+                receipt.status = "accepted".into();
+                receipt.error = None;
+            }
+            "unconfirmed" if receipt.status == "accepted" => {}
+            "unconfirmed" => {
+                receipt.status = "unknown".into();
+                receipt.error = Some("这一轮结束时 Claude Code 没有确认读到这条消息；不会重发".into());
+            }
+            // Run next after all: waiting on Claude again.
+            _ if receipt.status == "unknown" => {
+                receipt.status = "queued".into();
+                receipt.error = None;
+            }
+            _ => {}
         }
     }
     let turns = &d.turns;
@@ -5789,6 +5814,70 @@ mod tests {
             "nothing is sent or recorded again");
         let fresh = ws.send_message("a", input("c6", "new while closed")).await.unwrap_err();
         assert!(fresh.is::<crate::collaboration_credentials::MessageNotSubmitted>(), "{fresh}");
+    }
+
+    /// YN-82: a follow-up whose Turn ended with no word of it from Claude is
+    /// shown as unconfirmed, no longer waiting, and is not sent again; Claude
+    /// running it after all, then naming it, still moves it on.
+    #[tokio::test]
+    async fn a_follow_up_its_turn_ended_without_naming_is_unconfirmed_not_waiting() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().join("data"), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        ws.store.insert(&detail()).unwrap();
+        let seen = queuing_bridge(&ws);
+        let input = serde_json::from_value::<crate::model::MessageInput>(
+            json!({"clientMessageId":"f1","text":"also this","expectedTurnId":"t"})).unwrap();
+        assert_eq!(ws.send_message("a", input).await.unwrap().status, "queued");
+        let shown = |d: &AgentDetail, turn: &str| d.turns.iter().find(|t| t["id"] == turn)
+            .and_then(|t| t["items"].as_array().unwrap().iter().find(|i| i["clientId"] == "f1").cloned());
+        let receipt = |d: &AgentDetail| d.message_receipts.iter().find(|r| r.input.client_message_id == "f1").cloned().unwrap();
+        assert_eq!(shown(&ws.store.detail("a").unwrap(), "t").unwrap()["_yuzunoDelivery"], "queued");
+        ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":"f1","status":"unconfirmed","turnId":"t"})).await;
+        let d = ws.store.detail("a").unwrap();
+        assert_eq!(shown(&d, "t").unwrap()["_yuzunoDelivery"], "unknown", "no longer waiting for a confirmation");
+        let r = receipt(&d);
+        assert_eq!((r.status.as_str(), r.turn_id.as_deref()), ("unknown", Some("t")));
+        assert!(r.error.as_deref().is_some_and(|e| e.contains("不会重发")), "{:?}", r.error);
+        // Claude runs it after all, as its own turn, then names it there.
+        ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":"f1","status":"next",
+            "turnId":"follow-1","previousTurnId":"t"})).await;
+        let d = ws.store.detail("a").unwrap();
+        assert_eq!(shown(&d, "follow-1").unwrap()["_yuzunoDelivery"], "queued");
+        let r = receipt(&d);
+        assert_eq!((r.status.as_str(), r.error.as_deref()), ("queued", None), "waiting again, on evidence");
+        ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":"f1","status":"accepted","turnId":"follow-1"})).await;
+        let d = ws.store.detail("a").unwrap();
+        assert!(shown(&d, "follow-1").unwrap().get("_yuzunoDelivery").is_none(), "read");
+        assert_eq!(receipt(&d).status, "accepted");
+        // A late or repeated word never undoes a confirmation.
+        ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":"f1","status":"unconfirmed","turnId":"follow-1"})).await;
+        let d = ws.store.detail("a").unwrap();
+        assert!(shown(&d, "follow-1").unwrap().get("_yuzunoDelivery").is_none(), "still read");
+        assert_eq!(receipt(&d).status, "accepted");
+        assert_eq!(seen.lock().unwrap().len(), 1, "sent once, never again");
+    }
+
+    /// YN-82 (Lead, P2): the bridge can report a follow-up unconfirmed before
+    /// Core shows it (`show_follow_up` runs after the bridge's reply to the
+    /// append). The item that delivery makes is marked unknown, not read, and
+    /// the late show adds no second copy.
+    #[tokio::test]
+    async fn an_unconfirmed_delivery_before_its_follow_up_is_shown_marks_it_unknown() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(temp.path().join("data"), temp.path().to_string_lossy().into(), "unused".into()).unwrap();
+        ws.store.insert(&detail()).unwrap();
+        let _seen = queuing_bridge(&ws);
+        let sending: crate::model::MessageReceipt = serde_json::from_value(json!({"status":"sending",
+            "input":{"clientMessageId":"f1","text":"also this","expectedTurnId":"t"}})).unwrap();
+        ws.store.update("a", "test/sending", &json!({}), move |d| d.message_receipts.push(sending)).unwrap();
+        ws.dispatch_claude_event("a", 7, json!({"type":"message_delivery","clientMessageId":"f1","status":"unconfirmed","turnId":"t"})).await;
+        ws.show_follow_up("a", "t", "f1", user_content("also this", vec![])).await.unwrap();
+        let d = ws.store.detail("a").unwrap();
+        let items: Vec<&Value> = d.turns.iter().flat_map(|t| t["items"].as_array().unwrap().iter()).filter(|i| i["clientId"] == "f1").collect();
+        assert_eq!(items.len(), 1, "shown once");
+        assert_eq!(items[0]["_yuzunoDelivery"], "unknown", "not shown as read: {}", items[0]);
+        let receipt = d.message_receipts.iter().find(|r| r.input.client_message_id == "f1").unwrap();
+        assert_eq!((receipt.status.as_str(), receipt.turn_id.as_deref()), ("unknown", Some("t")));
     }
 
     /// A Claude connection whose bridge queues every follow-up sent to it,

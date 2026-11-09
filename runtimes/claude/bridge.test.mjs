@@ -1025,6 +1025,83 @@ test('a follow-up folded into the running turn is confirmed only when Claude nam
   f.bridge.close(); await f.bridge.reader;
 });
 
+// YN-82: frames as CLI 2.1.318 sends them (acceptance/yn82-folded-message,
+// a local API fixture). A turn a prompt started names a follow-up folded
+// into it on no later reply: Claude Code says it took it in
+// (command_lifecycle 'started'), then lists it on a status frame and on the
+// result.
+const toolResult = (uuid, tool) => ({ type: 'user', uuid, session_id: SESSION, parent_tool_use_id: null,
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tool, content: 'ok' }] } });
+const status = (uuid, prompts) => ({ type: 'system', subtype: 'status', status: 'requesting', uuid, session_id: SESSION, user_message_uuids: prompts });
+
+test('a follow-up folded into a prompt\'s turn is confirmed as Claude Code takes it in, while the turn runs', async () => {
+  const f = await fixture();
+  const prompt = await sendPrompt(f, 'turn1');
+  await feed(f, lifecycle(prompt, 'queued'), lifecycle(prompt, 'started'), init('i'), answering(f, 'tool1'));
+  await f.bridge.handle(append('a'));
+  const queued = (await f.state.prompt.next()).value;
+  await feed(f, lifecycle(queued.uuid, 'queued'));
+  assert.deepEqual(deliveries(f), [], 'queued is not read');
+  await feed(f, toolResult('tool-result', 'tool1'), lifecycle(queued.uuid, 'started'),
+    status('status', [prompt, queued.uuid]), text('after', 'Noted your follow-up.'));
+  assert.deepEqual(deliveries(f), [['client-a', 'accepted', 'turn1', undefined]], 'read while the turn runs');
+  const order = f.events.filter(e => e.type === 'message_delivery' || e.event?.uuid === 'after').map(e => e.type);
+  assert.deepEqual(order, ['message_delivery', 'event'], 'confirmed before the reply to it');
+  await feed(f, lifecycle(queued.uuid, 'completed'),
+    result('done', { user_message_uuid: prompt, user_message_uuids: [prompt, queued.uuid] }), lifecycle(prompt, 'completed'));
+  assert.deepEqual(routed(f).filter(([, turn]) => turn === 'turn1').map(([uuid]) => uuid),
+    ['i', 'call-tool1', `queued-${queued.uuid}`, 'tool-result', `started-${queued.uuid}`, 'status', 'after', `completed-${queued.uuid}`, 'done']);
+  assert.deepEqual([deliveries(f).length, f.bridge.turnId, f.bridge.appends.size], [1, null, 0], 'confirmed once; nothing runs next');
+  f.bridge.close(); await f.bridge.reader;
+});
+
+test('Claude Code taking a follow-up in confirms it only in the turn it was sent to', async () => {
+  // Starting a turn of its own: the frames of that turn name it, as before.
+  const f = await fixture();
+  const prompt = await sendPrompt(f, 'turn1');
+  await feed(f, init('i'), text('first', 'Done soon.', prompt));
+  await f.bridge.handle(append('b'));
+  const queued = (await f.state.prompt.next()).value;
+  await feed(f, result('first-result', stamp(prompt)));
+  assert.deepEqual(deliveries(f), [['client-b', 'next', 'follow-b', 'turn1']]);
+  await feed(f, lifecycle(queued.uuid, 'started'));
+  assert.equal(deliveries(f).length, 1, 'no turn runs yet: nothing names it');
+  await feed(f, init('j'), text('second', 'About it.', queued.uuid));
+  assert.deepEqual(deliveries(f).at(-1), ['client-b', 'accepted', 'follow-b', undefined]);
+  await feed(f, result('second-result', stamp(queued.uuid)));
+  f.bridge.close(); await f.bridge.reader;
+  // Sent to the prompt's turn but taken into a turn of Claude's own ahead
+  // of it, or a uuid that is no follow-up: neither confirms anything.
+  const g = await fixture();
+  await sendPrompt(g, 'turn1');
+  await feed(g, init('own'), text('working', 'Reading the mail.', 'notice-prompt'));
+  await g.bridge.handle(append('c'));
+  const sent = (await g.state.prompt.next()).value;
+  await feed(g, lifecycle(sent.uuid, 'started'), lifecycle('not-a-follow-up', 'started'));
+  assert.deepEqual(deliveries(g), [], 'left to the frames that name it');
+  g.bridge.close(); await g.bridge.reader;
+});
+
+test('a follow-up its turn ended without naming or leaving queued is reported unconfirmed once, and can still run', async () => {
+  const f = await fixture();
+  const prompt = await sendPrompt(f, 'turn1');
+  await feed(f, init('i'), text('first', 'Working.', prompt));
+  await f.bridge.handle(append('u'));
+  const queued = (await f.state.prompt.next()).value;
+  // An older producer: no lifecycle, and a result that lists nothing.
+  await feed(f, result('end', { user_message_uuid: prompt }));
+  assert.deepEqual(deliveries(f), [['client-u', 'unconfirmed', 'turn1', undefined]], 'not left waiting for a confirmation');
+  assert.equal(f.bridge.turnId, null, 'and no turn is claimed for it');
+  await f.bridge.handle({ id: 'next', op: 'send', turnId: 'turn2', text: 'next prompt' });
+  await f.state.prompt.next();
+  await feed(f, init('j'), text('reply', 'Next.', f.bridge.promptUuid), result('next-result', stamp(f.bridge.promptUuid)));
+  assert.equal(deliveries(f).length, 1, 'said once');
+  // Claude answers it later after all.
+  await feed(f, init('k'), text('late', 'About your note.', queued.uuid), result('late-result', stamp(queued.uuid)));
+  assert.deepEqual(deliveries(f).slice(1), [['client-u', 'next', 'follow-u', 'turn1'], ['client-u', 'accepted', 'follow-u', undefined]]);
+  f.bridge.close(); await f.bridge.reader;
+});
+
 test('a follow-up still queued when its turn ends runs as the next turn, confirmed by its own uuid', async () => {
   const f = await fixture();
   const prompt = await sendPrompt(f, 'turn1');
@@ -1126,7 +1203,9 @@ test('without a full list of what its turn consumed, a follow-up claims no turn 
   const [w1, w2] = [(await f.state.prompt.next()).value, (await f.state.prompt.next()).value];
   // An older producer: the result names its last prompt but lists nothing.
   await feed(f, result('end', { user_message_uuid: prompt }));
-  assert.deepEqual(deliveries(f), [], 'neither is pushed onto a turn');
+  // YN-82: said once to be unconfirmed, not left waiting for a confirmation.
+  const unconfirmed = [['client-w1', 'unconfirmed', 'turn1', undefined], ['client-w2', 'unconfirmed', 'turn1', undefined]];
+  assert.deepEqual(deliveries(f), unconfirmed, 'neither is pushed onto a turn');
   assert.equal(f.bridge.turnId, null);
   await f.bridge.handle({ id: 'status', op: 'status' });
   assert.equal(f.response('status').result.turnId, null, 'nothing is claimed to be running');
@@ -1134,6 +1213,7 @@ test('without a full list of what its turn consumed, a follow-up claims no turn 
   const batch = { user_message_uuid: w2.uuid, user_message_uuids: [w1.uuid, w2.uuid] };
   await feed(f, init('j'), { ...text('later', 'On both.'), ...batch }, result('later-result', batch));
   assert.deepEqual(deliveries(f), [
+    ...unconfirmed,
     ['client-w1', 'next', 'follow-w1', 'turn1'],
     ['client-w1', 'accepted', 'follow-w1', undefined],
     ['client-w2', 'accepted', 'follow-w1', undefined],
@@ -1158,6 +1238,8 @@ test('a turn ends on a result naming any follow-up it confirmed, not only the on
     { ...text('on-second', 'And the second.'), user_message_uuid: w2.uuid },
     result('later-result', { user_message_uuid: w2.uuid }));
   assert.deepEqual(deliveries(f), [
+    ['client-w1', 'unconfirmed', 'turn1', undefined],
+    ['client-w2', 'unconfirmed', 'turn1', undefined],
     ['client-w1', 'next', 'follow-w1', 'turn1'],
     ['client-w1', 'accepted', 'follow-w1', undefined],
     ['client-w2', 'accepted', 'follow-w1', undefined],
@@ -1178,7 +1260,8 @@ test('a list at the 64-entry cap confirms what it names and moves nothing else o
   const listed = [prompt, named.uuid, ...Array.from({ length: 62 }, (_, i) => `earlier-${i}`)];
   assert.equal(listed.length, 64);
   await feed(f, result('end', { user_message_uuid: prompt, user_message_uuids: listed }));
-  assert.deepEqual(deliveries(f), [['client-named', 'accepted', 'turn1', undefined]], 'the other may simply be cut off');
+  assert.deepEqual(deliveries(f), [['client-named', 'accepted', 'turn1', undefined], ['client-left', 'unconfirmed', 'turn1', undefined]],
+    'the other may simply be cut off: unconfirmed, not run');
   assert.equal(f.bridge.turnId, null);
   f.bridge.close(); await f.bridge.reader;
 });
@@ -1248,7 +1331,8 @@ test('a follow-up a turn of Claude\'s own leaves queued runs next, on the result
     }
     if (ending === 'named later') {
       await feed(f, result('done', notified));
-      assert.deepEqual([deliveries(f), f.bridge.turnId], [[], null], 'no evidence it is still queued yet');
+      assert.deepEqual([deliveries(f), f.bridge.turnId], [[['client-m', 'unconfirmed', 'native-own', undefined]], null],
+        'no evidence it is still queued yet');
       await feed(f, init('j'));
     }
     if (ending !== 'named later') {
@@ -1257,7 +1341,8 @@ test('a follow-up a turn of Claude\'s own leaves queued runs next, on the result
       await feed(f, init('j'));
     }
     await feed(f, text('second', 'About your note.', queued.uuid), result('second-result', stamp(queued.uuid)));
-    assert.deepEqual(deliveries(f), [['client-m', 'next', 'follow-m', 'native-own'], ['client-m', 'accepted', 'follow-m', undefined]], ending);
+    assert.deepEqual(deliveries(f).filter(([, s]) => s !== 'unconfirmed'),
+      [['client-m', 'next', 'follow-m', 'native-own'], ['client-m', 'accepted', 'follow-m', undefined]], ending);
     assert.deepEqual(routed(f).slice(-3), [['j', 'follow-m'], ['second', 'follow-m'], ['second-result', 'follow-m']], ending);
     assert.equal(f.bridge.turnId, null, ending);
     f.bridge.close(); await f.bridge.reader;
