@@ -35,6 +35,13 @@
   - **`task_list`：** 默认按 `compact: true` 返回短行。这是 core.30 起的默认变化；要像以前那样拿整行，写 `compact: false`。GUI 走 HTTP，读到的仍是整行。
   - **`peer_read`：** 每封信原样保留，只有信封变短：`delivery` 只留 `state`，不带唤醒记录（`delivery.detail`，投递问题看 `task_get` 的 `mailProblems`）；不写 `recipient`（就是读信的人）和 `notice`（GUI 分组用的）；自成一个线程、也不回复谁的信，不写 `threadId` 和 `replyTo`。
   - **`task_get` 的 `view: "full"`：** 登记资料只出现在 `task.materials` 一处，`materialsSource` 用 `valueIn` 指向它；活动历史不变。
+- 一个 MCP 回答最多 48 KiB（紧凑 JSON 49,152 字节，YN-69 S8）。原因是 OpenCode 显示不了超过 51,200 字节的一行工具输出，而紧凑 JSON 只有一行。
+  - **`peer_read` 和 `task_get` 的 `activity`、`full`：** 超过时提前结束这一页。`nextAfterSeq` 是这一页最后一条，`hasMore` 为 true，`more` 写明怎么接着读。
+    - 信件按 seq 截断：这一页包含 `nextAfterSeq` 及以前的全部信件，之后的一封也没有，所以接着读不会漏信，也不会重复。
+    - 正文不截。只有一封信自己就超过 48 KiB 时，才截它的正文，并在 `more` 里写明是哪一封。
+    - `full` 给全任务本身，再用活动填满剩下的空间。任务本身就超过 48 KiB 时，活动留给 `view: "activity"` 去读。
+  - **调用方明确要全量的回答：** `task_list` 的 `compact: false`、`review_get` 的 `view: "full"`、带 `dispatchId` 的 `task_get`，对所有调用方都不改行为，工具说明里写明可能超过 48 KiB。
+  - **OpenCode 调用方：** 回答超过 51,200 字节时，不发原文，改成一条简短错误 `answer_too_large_for_opencode`，写明大小、上限和分页读法。其他调用方照常拿到全量。
 
 登记对象上限 32 KiB，固定快照上限 128 KiB（只计派工者能缩短的任务材料与本次派工材料；按执行者模板派发时附带的模板、Project 交接文档与任务摘要不计入，各有上限：说明 8 KiB、交接 32 KiB、摘要 4 KiB），最终消息正文上限 16 KiB（均为 UTF-8 字节）；Project 仓库最多 20 项、任务 GitHub 链接最多 30 项。正文中的长字段以固定快照字段入口代替，不静默截断；超过存储上限或引用无效时整个派工事务回滚。执行者沿原任务调用 `task_submit_result` 并保留原 `dispatchId`；自动通知不等于独立评审、合并或上线。
 

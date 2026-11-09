@@ -9,6 +9,15 @@
 //! leaves out the wake-up's bookkeeping; a full task says its materials once.
 use serde_json::{json, Map, Value};
 
+/// What one MCP answer holds (YN-69 S8): 48 KiB of the compact JSON an Agent
+/// reads. Longer mail and history pages end early and page on.
+pub(crate) const BUDGET: usize = 48 * 1024;
+/// OpenCode shows nothing of a tool output line longer than this, and compact
+/// JSON is one line (YN-69 S6); collaboration_mcp refuses it such an answer.
+pub(crate) const OPENCODE_LINE: usize = 51_200;
+const MAIL_MORE: &str = "This page ends early, at nextAfterSeq, to fit one answer (49152 bytes): peer_read with afterSeq nextAfterSeq reads on";
+const HISTORY_MORE: &str = "This page ends early, at nextAfterSeq, to fit one answer (49152 bytes): task_get with view \"activity\" and afterSeq nextAfterSeq reads on";
+
 /// Task writes whose answer to an Agent is a short receipt.
 const WRITES: &[&str] = &["task_create", "task_update", "task_claim", "task_comment", "task_submit_result", "task_dispatch"];
 const TASK_MORE: &str = "task_get(taskId) reads the task as it is now";
@@ -75,9 +84,9 @@ pub(crate) fn answer(tool: &str, value: Value, view: Option<&str>) -> Value {
         }
         out
     } else if tool == "peer_read" {
-        mailbox(value)
+        mail_within_budget(mailbox(value))
     } else if tool == "task_get" {
-        materials_once(value)
+        history_within_budget(materials_once(value))
     } else {
         value
     }
@@ -138,6 +147,124 @@ fn mailbox(mut page: Value) -> Value {
         }
     }
     page
+}
+
+/// The bytes of `value` as an Agent reads it: its compact JSON text.
+fn size(value: &Value) -> usize {
+    value.to_string().len()
+}
+
+/// The first `bytes` of `text`, on a character boundary.
+fn cut_to(text: &str, bytes: usize) -> &str {
+    let mut end = bytes.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// A mailbox page larger than an answer holds (YN-69 S8) ends early, at a
+/// seq: every message up to nextAfterSeq and none after it, whatever order
+/// the page lists them in (session notices first), so paging on from
+/// nextAfterSeq reads each message once. Bodies are whole; only a message
+/// larger than an answer by itself is cut, and more says which.
+fn mail_within_budget(mut page: Value) -> Value {
+    if size(&page) <= BUDGET {
+        return page;
+    }
+    let messages = page["messages"].as_array().cloned().unwrap_or_default();
+    let mut order: Vec<(i64, usize)> = messages.iter().map(|m| (m["seq"].as_i64().unwrap_or(0), size(m) + 1)).collect();
+    order.sort();
+    page["messages"] = json!([]);
+    page["hasMore"] = json!(true);
+    page["nextAfterSeq"] = json!(i64::MAX);
+    page["more"] = json!(MAIL_MORE);
+    let mut room = BUDGET.saturating_sub(size(&page));
+    let mut through = None;
+    for (seq, bytes) in &order {
+        if *bytes > room {
+            break;
+        }
+        room -= bytes;
+        through = Some(*seq);
+    }
+    match through {
+        Some(through) => {
+            page["messages"] = json!(messages.into_iter().filter(|m| m["seq"].as_i64().unwrap_or(0) <= through).collect::<Vec<_>>());
+            page["nextAfterSeq"] = json!(through);
+        }
+        None => {
+            // The first message alone is more than an answer: its body, cut.
+            let Some(seq) = order.first().map(|(seq, _)| *seq) else { return page };
+            let mut message = messages.into_iter().find(|m| m["seq"].as_i64() == Some(seq)).unwrap_or_default();
+            let body = message["body"].as_str().unwrap_or_default().to_owned();
+            let over = size(&message) + 1 - room;
+            let kept = cut_to(&body, body.len().saturating_sub(over + 200));
+            let left = body[kept.len()..].chars().count();
+            message["body"] = json!(format!("{kept}… [{left} more characters: this message is larger than one answer]"));
+            page["more"] = json!(format!("{} Message {} is larger than one answer by itself: its body is cut.", MAIL_MORE,
+                message["id"].as_str().unwrap_or("?")));
+            page["messages"] = json!([message]);
+            page["nextAfterSeq"] = json!(seq);
+        }
+    }
+    page
+}
+
+/// A history page, or a full task, larger than an answer holds (YN-69 S8):
+/// the task's own record whole and its activities in order while they fit;
+/// nextAfterSeq is the last one shown, and view "activity" pages on. A task
+/// whose own record is more than an answer is that record, its history left
+/// to view "activity" from its first activity, and says so.
+fn history_within_budget(mut answer: Value) -> Value {
+    if size(&answer) <= BUDGET || !answer["activities"].is_array() {
+        return answer;
+    }
+    let activities = answer["activities"].as_array().cloned().unwrap_or_default();
+    let first = activities.first().and_then(|a| a["seq"].as_i64()).unwrap_or(1);
+    answer["activities"] = json!([]);
+    answer["hasMore"] = json!(true);
+    answer["nextAfterSeq"] = json!(i64::MAX);
+    answer["more"] = json!(HISTORY_MORE);
+    let base = size(&answer);
+    if base > BUDGET {
+        answer["nextAfterSeq"] = json!(first - 1);
+        answer["more"] = json!(format!("This task's own record is {base} bytes, more than one answer holds (49152): its history is \
+            left out. task_get with view \"activity\" and afterSeq {} reads it in pages", first - 1));
+        return answer;
+    }
+    let mut room = BUDGET - base;
+    let mut kept = Vec::new();
+    for activity in activities {
+        let bytes = size(&activity) + 1;
+        // One activity larger than an answer by itself is shown alone.
+        if bytes > room && !kept.is_empty() {
+            break;
+        }
+        room = room.saturating_sub(bytes);
+        kept.push(activity);
+    }
+    let through = kept.last().and_then(|a| a["seq"].as_i64()).unwrap_or(first - 1);
+    answer["activities"] = json!(kept);
+    answer["nextAfterSeq"] = json!(through);
+    answer
+}
+
+/// The refusal an OpenCode Agent gets for an answer it could not see: its
+/// size, OpenCode's limit, and how to read it in parts.
+pub(crate) fn too_large_for_opencode(tool: &str, bytes: usize) -> String {
+    let how = match tool {
+        "task_list" => "List short rows with compact:true (the default), or fewer with limit.",
+        "review_get" => "Read view \"summary\" (the default).",
+        "task_get" => "Read view \"current\", or the history in pages with view \"activity\" (afterSeq, limit); fixed materials \
+            this large are for the dispatcher to send in parts.",
+        "brief_get" => "Read the index with keys [] and the sections you need with keys [...].",
+        "brief_guide" => "Read one part with part.",
+        "merge_get" | "merge_list" => "Read view \"summary\" (the default), or fewer with limit.",
+        _ => "Read it in parts with this tool's paging (limit, afterSeq or before) or its summary view, as its description says.",
+    };
+    format!("answer_too_large_for_opencode: this answer is {bytes} bytes of JSON on one line, and OpenCode shows nothing of a \
+        tool output line over {OPENCODE_LINE} bytes, so it was not sent. {how}")
 }
 
 /// A full task's registered materials once (YN-69): materialsSource says

@@ -347,6 +347,7 @@ fn message(seq: i64, body: &str) -> Value {
 /// the page lists them in, so paging on reads each message once.
 #[test]
 fn a_mailbox_page_larger_than_an_answer_ends_early_at_a_seq_and_pages_on() {
+    assert_eq!((BUDGET, OPENCODE_LINE), (PAGE_BUDGET, 51_200));
     let body = "b".repeat(3000);
     // A session notice (seq 40) is listed first, as peer_read lists them.
     let mut messages: Vec<Value> = vec![message(40, &body)];
