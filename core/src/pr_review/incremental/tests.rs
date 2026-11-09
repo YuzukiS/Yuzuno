@@ -408,7 +408,10 @@ fn a_finding_a_new_merge_base_answers_is_settled_only_by_base_paths_this_round_r
     stays(&|r: &mut Value| r["incremental"]["baseChanges"]["total"] = json!(4), z(),
         "the new merge base changed more paths than Core lists, so it can't show the finding's own path didn't change there");
     // Code that is in the base now: the finding's own file changed there.
-    stays(&|r: &mut Value| r["incremental"]["baseChanges"]["paths"].as_array_mut().unwrap().push(json!({"path":"b.rs","status":"M","fromBlob":"9".repeat(40),"toBlob":"a".repeat(40)})),
+    stays(&|r: &mut Value| {
+            r["incremental"]["baseChanges"]["paths"].as_array_mut().unwrap().push(json!({"path":"b.rs","status":"M","fromBlob":"9".repeat(40),"toBlob":"a".repeat(40)}));
+            r["incremental"]["baseChanges"]["total"] = json!(4);
+        },
         z(), "its own path changed in the new merge base, so the code it is about may be there now");
     // Its file left the PR, or this round didn't read it completely.
     stays(&|r: &mut Value| { r["incremental"]["targets"].as_array_mut().unwrap().retain(|t| t["path"] != "b.rs"); r["incremental"]["leftThePr"] = json!(["b.rs"]); },
