@@ -91,6 +91,10 @@ pub(super) struct Scope {
     pub task_id: Option<String>,
     pub repository_id: Option<i64>,
     pub state: Option<String>,
+    /// merge_list's page (YN-69): at most this many, 1..50; 50 when not given.
+    pub limit: Option<i64>,
+    /// merge_list's cursor: the previous page's nextBefore.
+    pub before: Option<i64>,
 }
 fn request_key(key: &str) -> Result<()> {
     ensure!(
@@ -438,14 +442,16 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         def(
             "merge_get",
-            "Read one merge entry, by entryId or a task's newest: its state (queued, waiting, ready, merging, merged, done, stopped, cancelled), reason, history and evidence record.",
-            json!({"entryId":text,"taskId":task}),
+            "Read one merge entry, by entryId or a task's newest: its state (queued, waiting, ready, merging, merged, done, stopped, cancelled), reason, release, batch, merge and its follow-up, history and evidence record. Your default view \"summary\" leaves out lastEvidence (the last check as Core read it) and the evidence fields that repeat the entry, and keeps the newest 10 history steps (historyCount says how many there are); view \"full\" is the whole record. The merge writes answer with the same summary.",
+            json!({"entryId":text,"taskId":task,"view":{"type":"string","enum":["summary","full"]}}),
             &[],
         ),
         def(
             "merge_list",
-            "List merge entries newest first (at most 50), optionally for one repository, state or task.",
-            json!({"taskId":task,"repositoryId":{"type":"integer","minimum":1},"state":{"type":"string","enum":["queued","waiting","ready","merging","merged","done","stopped","cancelled"]}}),
+            "List merge entries newest first, optionally for one repository, state or task: 20 a page unless you give limit (up to 50); pass nextBefore as before while hasMore. Each row is the entry, PR, head, state, reason and detail, times and its merge (sha, mergedAt, mainCi); merge_get reads one entry, and view \"full\" lists each as stored without its history and lastEvidence.",
+            json!({"taskId":task,"repositoryId":{"type":"integer","minimum":1},"state":{"type":"string","enum":["queued","waiting","ready","merging","merged","done","stopped","cancelled"]},
+                "limit":{"type":"integer","minimum":1,"maximum":50},"before":{"type":"integer","description":"The previous page's nextBefore."},
+                "view":{"type":"string","enum":["summary","full"]}}),
             &[],
         ),
         def(
