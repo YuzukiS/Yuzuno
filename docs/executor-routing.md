@@ -19,6 +19,7 @@ version; a later slice adds to it.
 | S4 | The Settings page (YN-49) | Done |
 | YN-56 S1 | [Permission levels](#permission-levels-yn-56), and candidates whose harness doesn't keep one | Done |
 | YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | Done |
+| YN-56 S4 | Settings: a template's tool and level, and the Templates section's switch per template | Done |
 | YN-56 S3 | OpenCode keeps each level, as rules of its own, checked at each start | This version |
 
 An executor starts with a routing key or account only when its runtime

@@ -146,7 +146,9 @@ test("Executor templates: a new template is added, said as written and saved as 
   assert.equal(field(page, "Id").value, "template-1", "a label in another script gives a numbered id");
   await type(page, "Label", "Code reviewer");
   assert.equal(field(page, "Id").value, "code-reviewer", "a new template's id follows its label");
-  await type(page, "Harness", "claude");
+  assert.equal(field(page, "Runs with").value, "", "a new template follows routing (YN-56)");
+  assert.equal(field(page, "Model"), null, "and names no model");
+  await type(page, "Runs with", "claude");
   assert.equal(field(page, "Reasoning effort"), null, "Claude Code keeps each Agent's own effort");
   await type(page, "Permissions", "auto");
   await type(page, "Instructions", "Read the acceptance first.");
@@ -155,14 +157,14 @@ test("Executor templates: a new template is added, said as written and saved as 
   button(page, "Save templates").click();
   await until(() => /Saved\./.test(section().textContent), "the saved list");
   assert.deepEqual(puts(page)[0], { url: "/api/executor-templates", method: "PUT", body: { expectedVersion: 0, templates: [
-    { id: "code-reviewer", label: "Code reviewer", harness: "claude", permissionMode: "auto", instructions: "Read the acceptance first." },
+    { id: "code-reviewer", label: "Code reviewer", harness: "claude", routing: "fixed", permissionLevel: "auto", instructions: "Read the acceptance first." },
   ] } });
   assert.equal(button(page, "Save templates").disabled, true, "what was saved is what is shown");
   assert.equal(page.document.querySelector(".executor-template").getAttribute("aria-label"), "Code reviewer", "its page stays open across the save");
 
-  // Another harness starts its permissions over; a Codex effort needs its model.
-  await type(page, "Harness", "codex");
-  assert.equal(field(page, "Permissions").value, "", "another harness starts its permissions over");
+  // A level is the same on every tool (YN-56); a Codex effort needs its model.
+  await type(page, "Runs with", "codex");
+  assert.equal(field(page, "Permissions").value, "auto", "a level stays with another tool");
   assert.equal(field(page, "Reasoning effort").disabled, true);
   await type(page, "Model", "gpt-test");
   assert.equal(field(page, "Reasoning effort").disabled, false);
@@ -176,18 +178,18 @@ test("Executor templates: a new template is added, said as written and saved as 
   button(page, "Save templates").click();
   await until(() => page.document.querySelector('[role="alert"]'), "the refusal");
   assert.deepEqual(puts(page).at(-1).body.templates[0],
-    { id: "code-reviewer", label: "Lead reviewer", harness: "codex", instructions: "Read the acceptance first." },
+    { id: "code-reviewer", label: "Lead reviewer", harness: "codex", routing: "fixed", permissionLevel: "auto", instructions: "Read the acceptance first." },
     "an effort is sent only with its model");
   assert.match(page.document.querySelector('[role="alert"]').textContent, /version_conflict: these executor templates changed/);
   conflict = false;
   button(page, "Reload saved templates").click();
-  await until(() => field(page, "Harness")?.value === "claude", "the saved list again");
+  await until(() => field(page, "Runs with")?.value === "claude", "the saved list again");
   assert.equal(page.document.querySelector('[role="alert"]'), null);
   assert.deepEqual(page.errors, []);
 });
 
-test("a template needs only a label and a harness; its row says what it is, a copied one says where it came from (YN-2 S2)", async () => {
-  const copied = { id: "reviewer-2", label: "Reviewer (Lab)", harness: "claude", instructions: "Lab's way.",
+test("a template needs only a label, and follows routing; its row says what it is, a copied one says where it came from (YN-2 S2)", async () => {
+  const copied = { id: "reviewer-2", label: "Reviewer (Lab)", harness: "claude", routing: "fixed", instructions: "Lab's way.",
     origin: { projectId: "p1", projectName: "Lab", id: "reviewer" } };
   let workspace = { version: 2, templates: [copied] };
   const page = mount((url, method, body) => {
@@ -210,11 +212,82 @@ test("a template needs only a label and a harness; its row says what it is, a co
   assert.equal(row(page, "New template").querySelector(".settings-tag.is-error").textContent, "Needs a fix", "its row says it needs a fix");
   await openTemplate(page, "New template");
   await type(page, "Label", "Builder");
-  assert.equal(button(page, "Save templates").disabled, false, "a label and the default harness are enough");
+  assert.equal(button(page, "Save templates").disabled, false, "a label is enough");
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
-  assert.deepEqual(puts(page)[0].body, { expectedVersion: 2, templates: [copied, { id: "builder", label: "Builder", harness: "codex" }] },
-    "the copy keeps where it came from; the new one is a label and a harness");
+  assert.deepEqual(puts(page)[0].body, { expectedVersion: 2, templates: [copied, { id: "builder", label: "Builder" }] },
+    "the copy keeps where it came from; the new one is a label, following routing");
+  await until(() => /Saved\./.test(section()?.textContent ?? ""), "saved");
+  await back(page);
+  assert.equal(row(page, "Builder").querySelector(".settings-list-sub").textContent, "Follows routing · Pull request · This Core host");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-56: a template that follows routing has a level on every tool; a fixed tool that doesn't keep it needs a fix; Codex may follow its own configuration", async () => {
+  let workspace = { version: 1, templates: [] };
+  const page = mount((url, method, body) => {
+    if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+    return [200, { ...view(workspace, true), general: { label: "Executor", harness: "codex", harnessSource: "builtin" } }];
+  });
+  page.window.renderTemplates();
+  const section = () => page.document.querySelector("#settings-executor-templates").textContent;
+  await until(() => button(page, "Add template"), "the list");
+  button(page, "Add template").click();
+  await tick();
+  await type(page, "Label", "Router");
+  assert.match(section(), /Routing on: routing's order chooses the tool, model and account\. Routing off: the default for new Agents \(here: Codex; a project can have its own\)\./);
+  assert.deepEqual([...field(page, "Permissions").options].map((o) => o.value), ["", "ask", "auto", "full"], "no Codex configuration unless fixed to Codex");
+  assert.match(section(), /Each tool starts with its own default for new Agents/);
+  await type(page, "Permissions", "full");
+  assert.equal(page.document.querySelector(".executor-level-on").textContent,
+    "On each tool: Codex: Full access · Claude Code: doesn't keep it · OpenCode: doesn't keep it");
+  assert.match(section(), /Routing passes over Claude Code, OpenCode for this template\./);
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1, "the save");
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "router", label: "Router", permissionLevel: "full" }], "no tool, model or routing: a level");
+  await until(() => /Saved\./.test(section()), "saved");
+
+  await type(page, "Runs with", "claude");
+  assert.match(section(), /Fixed: always Claude Code on this host's login, whatever routing says\./);
+  assert.match(section(), /Claude Code doesn't keep this level: choose another\./);
+  assert.equal(field(page, "Permissions").getAttribute("aria-invalid"), "true");
+  assert.equal(field(page, "Permissions").querySelector('option[value="full"]').textContent, "Full access (not kept)");
+  assert.equal(button(page, "Save templates").disabled, true, "a level its tool doesn't keep is not saved");
+  await type(page, "Runs with", "codex");
+  assert.equal(button(page, "Save templates").disabled, false, "Codex keeps it");
+  await type(page, "Permissions", "config");
+  await type(page, "Model", "gpt-test");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 2, "the second save");
+  assert.deepEqual(puts(page)[1].body.templates, [{ id: "router", label: "Router", harness: "codex", routing: "fixed", model: "gpt-test", permissionPreset: "config" }]);
+  await until(() => /Saved\./.test(section()), "saved");
+  await back(page);
+  assert.equal(row(page, "Router").querySelector(".settings-list-sub").textContent, "Codex · Follow Codex config · Pull request · This Core host");
+  await openTemplate(page, "Router");
+  await type(page, "Runs with", "");
+  assert.deepEqual([field(page, "Permissions").value, field(page, "Model")], ["", null], "following routing again: no Codex configuration, no model");
+  assert.deepEqual(page.errors, []);
+});
+
+test("YN-56 S3: where Core says OpenCode keeps a level, its line says its own rules, and Auto-approve says what OpenCode lacks", async () => {
+  const levels = [
+    { level: "ask", label: "Ask you first", labelZh: "先问你", codex: { permissionPreset: "ask" }, claude: { permissionMode: "default" }, opencode: { permission: { "*": "ask" } } },
+    { level: "auto", label: "Auto-approve", labelZh: "自动审批", codex: { permissionPreset: "auto" }, claude: { permissionMode: "auto" }, opencode: { permission: { "*": "allow" } } },
+    { level: "full", label: "Full access", labelZh: "完全放开", codex: { permissionPreset: "full" }, claude: null, opencode: { permission: { "*": "allow" } } },
+  ];
+  const page = mount(() => [200, { ...view({ version: 1, templates: [{ id: "r", label: "Router", permissionLevel: "auto" }] }, true), levels }]);
+  page.window.renderTemplates();
+  await openTemplate(page, "Router");
+  assert.equal(page.document.querySelector(".executor-level-on").textContent,
+    "On each tool: Codex: Approve for me · Claude Code: Auto mode · OpenCode: its own rules");
+  assert.match(page.document.querySelector(".executor-level-opencode").textContent, /^On OpenCode nothing reviews an action/);
+  await type(page, "Permissions", "ask");
+  assert.equal(page.document.querySelector(".executor-level-opencode"), null, "only for Auto-approve");
+  assert.match(page.document.querySelector(".executor-level-on").textContent, /OpenCode: its own rules$/);
+  await type(page, "Runs with", "opencode");
+  assert.deepEqual([...field(page, "Permissions").options].map((o) => o.disabled), [false, false, false, false], "OpenCode keeps each level");
+  await type(page, "Permissions", "auto");
+  assert.ok(page.document.querySelector(".executor-level-opencode"), "a template fixed to OpenCode says it too");
   assert.deepEqual(page.errors, []);
 });
 
@@ -227,7 +300,7 @@ const presetList = [
   ...presetPair("design-first", "Design first", "设计先行", { steps: [{ kind: "materials" }, { kind: "work", label: "Design note" },
     { kind: "gate", approver: "either" }, { kind: "pr" }, { kind: "review" }, { kind: "ci" }, { kind: "merge" }] }),
   ...presetPair("investigation", "Read-only investigation", "只读调查", { deliveryMode: "none", steps: [{ kind: "materials" }, { kind: "work" }, { kind: "result", label: "Memo" }] }),
-  ...presetPair("runbook", "Gated runbook", "人工把关的运行手册", { deliveryMode: "none", permissions: { codex: "ask", claude: "default" } }),
+  ...presetPair("runbook", "Gated runbook", "人工把关的运行手册", { deliveryMode: "none", permissionLevel: "ask" }),
 ];
 const choices = (page) => [...page.document.querySelectorAll(".executor-preset-choice")];
 const choose = async (page, label) => {
@@ -236,10 +309,10 @@ const choose = async (page, label) => {
 };
 
 test("presets (YN-23): the user picks which to add, each an unsaved template in the page's language, saved only by Save", async () => {
-  let workspace = { version: 1, templates: [{ id: "design-first", label: "Design first", harness: "codex" }] };
+  let workspace = { version: 1, templates: [{ id: "design-first", label: "Design first", harness: "codex", routing: "fixed" }] };
   const page = mount((url, method, body) => {
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
-    return [200, { ...view(workspace, false, presetList), general: { label: "Executor", harness: "claude", harnessSource: "workspace" } }];
+    return [200, { ...view(workspace, false, presetList), general: { label: "Executor", harness: "claude", routing: "fixed", harnessSource: "workspace" } }];
   });
   page.window.renderTemplates();
   await until(() => button(page, "Add presets"), "the presets button");
@@ -249,7 +322,7 @@ test("presets (YN-23): the user picks which to add, each an unsaved template in 
   assert.deepEqual(choices(page).map((c) => c.querySelector(".theme-choice-name").textContent.trim()),
     ["Design first", "Read-only investigation", "Gated runbook"], "the presets in English only");
   const picker = page.document.querySelector(".executor-presets");
-  assert.match(picker.textContent, /an unsaved template for Claude Code, the default for new Agents/);
+  assert.match(picker.textContent, /an unsaved template that follows routing/);
   assert.match(choices(page)[1].textContent, /When Read-only investigation.*No repository change · Read the materials → Work → Submit a result/);
   assert.match(choices(page)[0].textContent, /One with this id is in the list/, "a preset whose id is taken says so");
   assert.equal(button(page, "Add 0 presets").disabled, true, "nothing chosen, nothing to add");
@@ -266,16 +339,16 @@ test("presets (YN-23): the user picks which to add, each an unsaved template in 
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
   assert.deepEqual(puts(page)[0].body.templates.slice(1), [
-    { id: "design-first-2", label: "Design first", harness: "claude", instructions: "Do Design first.", deliveryMode: "pr",
+    { id: "design-first-2", label: "Design first", instructions: "Do Design first.", deliveryMode: "pr",
       steps: [{ kind: "materials" }, { kind: "work", label: "Design note" }, { kind: "gate", approver: "either" },
         { kind: "pr" }, { kind: "review" }, { kind: "ci" }, { kind: "merge" }], whenToChoose: "When Design first" },
-    { id: "runbook", label: "Gated runbook", harness: "claude", permissionMode: "default", instructions: "Do Gated runbook.",
+    { id: "runbook", label: "Gated runbook", permissionLevel: "ask", instructions: "Do Gated runbook.",
       deliveryMode: "none", whenToChoose: "When Gated runbook" },
-  ], "a free id, the default harness, the preset's permission for it, and none of its hint");
+  ], "a free id, following routing, the preset's level, and none of its hint");
   assert.deepEqual(page.errors, []);
 });
 
-test("presets (YN-23) are offered in Chinese on a Chinese page, and a harness change takes the preset's own permission", async () => {
+test("presets (YN-23) are offered in Chinese on a Chinese page, follow routing, and keep their level on a fixed tool (YN-56)", async () => {
   const page = mount(() => [200, view({ version: 0, templates: [] }, false, presetList)]);
   page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
   page.window.renderTemplates();
@@ -288,15 +361,16 @@ test("presets (YN-23) are offered in Chinese on a Chinese page, and a harness ch
   await tick();
   await openTemplate(page, "人工把关的运行手册");
   assert.equal(field(page, "标签").value, "人工把关的运行手册");
-  assert.equal(field(page, "Harness").value, "codex", "no default read: Codex");
+  assert.equal(field(page, "运行环境").value, "", "it follows routing");
   assert.equal(field(page, "权限").value, "ask");
-  await type(page, "Harness", "claude");
-  assert.equal(field(page, "权限").value, "default", "the preset's permission for Claude Code");
+  assert.match(page.document.querySelector(".executor-level-on").textContent, /^在各运行环境上：Codex：请求批准 · Claude Code：操作前询问$/);
+  await type(page, "运行环境", "claude");
+  assert.equal(field(page, "权限").value, "ask", "the same level on Claude Code");
   assert.deepEqual(page.errors, []);
 });
 
 test("presets (YN-23, #742 R1 3ec18555): no more can be chosen than the list has room for, and the picker says so", async () => {
-  const workspace = { version: 1, templates: [{ id: "dev", label: "Dev", harness: "codex" }] };
+  const workspace = { version: 1, templates: [{ id: "dev", label: "Dev", harness: "codex", routing: "fixed" }] };
   const page = mount(() => [200, { ...view(workspace, false, presetList), limits: { templates: 3, instructionsBytes: 8192 } }]);
   page.window.renderTemplates();
   await until(() => button(page, "Add presets"), "the presets button");
@@ -318,7 +392,7 @@ test("presets (YN-23, #742 R1 3ec18555): no more can be chosen than the list has
 });
 
 test("delivery and steps (YN-23): chosen on the card, a step its delivery can't have is shown at its row, the default steps restored", async () => {
-  let workspace = { version: 1, templates: [{ id: "probe", label: "Probe", harness: "codex" }] };
+  let workspace = { version: 1, templates: [{ id: "probe", label: "Probe", harness: "codex", routing: "fixed" }] };
   const page = mount((url, method, body) => {
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
     return [200, view(workspace)];
@@ -355,7 +429,7 @@ test("delivery and steps (YN-23): chosen on the card, a step its delivery can't 
   await type(page, "When to choose it", "A read-only question");
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
-  assert.deepEqual(puts(page)[0].body.templates, [{ id: "probe", label: "Probe", harness: "codex", deliveryMode: "none",
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "probe", label: "Probe", harness: "codex", routing: "fixed", deliveryMode: "none",
     steps: [{ kind: "materials" }, { kind: "work" }, { kind: "gate", approver: "lead" }, { kind: "result", label: "Memo" }],
     whenToChoose: "A read-only question" }], "the delivery, the steps in their order and when to choose it");
   await until(() => /Saved\./.test(page.document.querySelector("#settings-executor-templates").textContent), "saved");
@@ -369,7 +443,7 @@ test("delivery and steps (YN-23): chosen on the card, a step its delivery can't 
 });
 
 test("each saved template says who changed it last, when and why (YN-24's lastModified); a new one says nothing", async () => {
-  const workspace = { version: 4, templates: [{ id: "dev", label: "Dev", harness: "codex" }, { id: "plain", label: "Plain", harness: "claude" }] };
+  const workspace = { version: 4, templates: [{ id: "dev", label: "Dev", harness: "codex", routing: "fixed" }, { id: "plain", label: "Plain", harness: "claude", routing: "fixed" }] };
   const lastModified = {
     dev: { version: 4, at: "2026-11-07T20:30:00Z", reason: "Say how to test", by: { kind: "agent", id: "lead", name: "Agent lead" } },
     plain: { version: 3, at: "2026-11-07T19:00:00Z", reason: null, by: { kind: "user", id: null, name: "You" } },
@@ -391,22 +465,24 @@ test("each saved template says who changed it last, when and why (YN-24's lastMo
   assert.deepEqual(page.errors, []);
 });
 
-test("OpenCode is offered only where this Core creates OpenCode Agents, with no permissions of its own", async () => {
+test("OpenCode is offered only where this Core creates OpenCode Agents, keeping only the levels Core says it keeps", async () => {
   for (const enabled of [false, true]) {
-    const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex" }], laterTemplates: 1 }, enabled)]);
+    const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex", routing: "fixed" }], laterTemplates: 1 }, enabled)]);
     page.window.renderTemplates();
     await until(() => row(page, "A"), "the list");
     assert.match(page.document.querySelector(".executor-templates-settings").textContent,
       /This list also holds 1 template saved by a newer Core\. This Core can’t show it; saving here keeps it as it is\./);
     await openTemplate(page, "A");
-    const options = [...field(page, "Harness").options].map((o) => o.value);
-    assert.deepEqual(options, enabled ? ["codex", "claude", "opencode"] : ["codex", "claude"], String(enabled));
+    const options = [...field(page, "Runs with").options].map((o) => o.value);
+    assert.deepEqual(options, enabled ? ["", "claude", "codex", "opencode"] : ["", "claude", "codex"], String(enabled));
     if (enabled) {
-      assert.equal(field(page, "Harness").querySelector('option[value="opencode"]').textContent, "OpenCode (Experimental)", "marked experimental (YN-27)");
-      await type(page, "Harness", "opencode");
+      assert.equal(field(page, "Runs with").querySelector('option[value="opencode"]').textContent, "OpenCode (Experimental)", "marked experimental (YN-27)");
+      await type(page, "Runs with", "opencode");
       assert.equal(field(page, "Model").placeholder, "Its own configuration’s model", "a model is its own unless named (YN-34 S1c)");
-      assert.equal(field(page, "Permissions"), null);
-      assert.match(page.document.querySelector(".executor-templates-settings").textContent, /OpenCode uses its own configuration’s permissions\./);
+      // OpenCode keeps no level here: only the defaults, its own configuration, can be chosen.
+      assert.deepEqual([...field(page, "Permissions").options].map((o) => [o.value, o.disabled]),
+        [["", false], ["ask", true], ["auto", true], ["full", true]]);
+      assert.equal(field(page, "Permissions").options[1].textContent, "Ask you first (not kept)");
       assert.match(page.document.querySelector(".executor-templates-settings").textContent, /As OpenCode names it, provider\/model, such as deepseek\/deepseek-flash/);
     }
     assert.deepEqual(page.errors, []);
@@ -414,7 +490,7 @@ test("OpenCode is offered only where this Core creates OpenCode Agents, with no 
 });
 
 test("An OpenCode template keeps the model it names, and a harness change does not carry a model to or from OpenCode (YN-34 S1c)", async () => {
-  let workspace = { version: 1, templates: [{ id: "a", label: "A", harness: "opencode", model: "deepseek/deepseek-flash" }] };
+  let workspace = { version: 1, templates: [{ id: "a", label: "A", harness: "opencode", routing: "fixed", model: "deepseek/deepseek-flash" }] };
   const page = mount((url, method, body) => {
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
     return [200, view(workspace, true)];
@@ -426,22 +502,22 @@ test("An OpenCode template keeps the model it names, and a harness change does n
   await type(page, "Instructions", "Keep it short.");
   button(page, "Save templates").click();
   await until(() => /Saved\./.test(page.document.querySelector("#settings-executor-templates").textContent), "the saved list");
-  assert.deepEqual(puts(page)[0].body.templates, [{ id: "a", label: "A", harness: "opencode", model: "deepseek/deepseek-flash", instructions: "Keep it short." }],
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "a", label: "A", harness: "opencode", routing: "fixed", model: "deepseek/deepseek-flash", instructions: "Keep it short." }],
     "an edit keeps its model");
-  await type(page, "Harness", "codex");
+  await type(page, "Runs with", "codex");
   assert.equal(field(page, "Model").value, "", "an OpenCode model is not a Codex one");
   await type(page, "Model", "gpt-test");
-  await type(page, "Harness", "opencode");
+  await type(page, "Runs with", "opencode");
   assert.equal(field(page, "Model").value, "", "nor a Codex model an OpenCode one");
   assert.deepEqual(page.errors, []);
 });
 
 test("OpenCode is marked experimental in a Chinese page's harness choice too (YN-27)", async () => {
-  const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex" }] }, true)]);
+  const page = mount(() => [200, view({ version: 1, templates: [{ id: "a", label: "A", harness: "codex", routing: "fixed" }] }, true)]);
   page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
   page.window.renderTemplates();
   await openTemplate(page, "A");
-  assert.equal(field(page, "Harness").querySelector('option[value="opencode"]').textContent, "OpenCode（实验性）");
+  assert.equal(field(page, "运行环境").querySelector('option[value="opencode"]').textContent, "OpenCode（实验性）");
   assert.deepEqual(page.errors, []);
 });
 
@@ -502,7 +578,7 @@ test("Start time limit (T-35 S2): the Workspace's, a whole number of seconds fro
 });
 
 test("a template has no limit of its own (T-43: one limit per machine); one saved before is dropped at the next save", async () => {
-  let workspace = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude", maxConcurrent: 3 }] };
+  let workspace = { version: 1, templates: [{ id: "reviewer", label: "Reviewer", harness: "claude", routing: "fixed", maxConcurrent: 3 }] };
   const page = mount((url, method, body) => {
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
     return [200, view(workspace)];
@@ -516,14 +592,14 @@ test("a template has no limit of its own (T-43: one limit per machine); one save
   await type(page, "Name", "{task} · review");
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
-  assert.deepEqual(puts(page)[0].body.templates, [{ id: "reviewer", label: "Reviewer", harness: "claude", namePattern: "{task} · review" }], "saved without its old limit");
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "reviewer", label: "Reviewer", harness: "claude", routing: "fixed", namePattern: "{task} · review" }], "saved without its old limit");
   assert.deepEqual(page.errors, []);
 });
 
 test("a template's delivery, steps and when to choose it are kept by a save of another edit (YN-23)", async () => {
   const workflow = { deliveryMode: "none", whenToChoose: "A read-only question", routing: "fixed",
     steps: [{ kind: "materials" }, { kind: "work", label: "调查" }, { kind: "gate", approver: "either" }] };
-  let workspace = { version: 1, templates: [{ id: "probe", label: "Probe", harness: "codex", ...workflow }] };
+  let workspace = { version: 1, templates: [{ id: "probe", label: "Probe", harness: "codex", routing: "fixed", ...workflow }] };
   const page = mount((url, method, body) => {
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
     return [200, view(workspace)];
@@ -534,7 +610,7 @@ test("a template's delivery, steps and when to choose it are kept by a save of a
   await type(page, "Name", "{task} · probe");
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
-  assert.deepEqual(puts(page)[0].body.templates, [{ id: "probe", label: "Probe", harness: "codex", namePattern: "{task} · probe", ...workflow }],
+  assert.deepEqual(puts(page)[0].body.templates, [{ id: "probe", label: "Probe", harness: "codex", routing: "fixed", namePattern: "{task} · probe", ...workflow }],
     "sent as read, with the edit");
   assert.deepEqual(page.errors, []);
 });
@@ -552,7 +628,7 @@ const offered = (page, label) => [...runsOn(page, label).options].map((o) => o.v
 const shown = (page, label) => [...runsOn(page, label).options].map((o) => o.textContent);
 
 test("Runs on (T-35 S3): a template names this Core host, a registered machine or auto, by harness, and a save keeps it", async () => {
-  let workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", machineId: "lab" }] };
+  let workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", routing: "fixed", machineId: "lab" }] };
   const page = mount((url, method, body) => {
     if (url.endsWith("/machines")) return [200, machineList];
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
@@ -567,7 +643,7 @@ test("Runs on (T-35 S3): a template names this Core host, a registered machine o
   assert.deepEqual(shown(page), ["This Core host", "Lab box", "Boxed", "Choose automatically"]);
   assert.match(section(), /Where its executors run\. A dispatch may name another machine\./);
 
-  await type(page, "Harness", "codex");
+  await type(page, "Runs with", "codex");
   assert.deepEqual(offered(page), ["", "lab", "auto"], "Codex: no machine that keeps its Agents contained");
   assert.equal(runsOn(page).value, "lab", "a machine Codex may run on stays chosen");
   button(page, "Save templates").click();
@@ -580,7 +656,7 @@ test("Runs on (T-35 S3): a template names this Core host, a registered machine o
   await until(() => puts(page).length === 2 && /Saved\./.test(section()), "the second save");
   assert.equal(puts(page)[1].body.templates[0].machineId, "auto", "auto is saved as auto");
 
-  await type(page, "Harness", "opencode");
+  await type(page, "Runs with", "opencode");
   assert.deepEqual(offered(page), [""], "OpenCode: this Core host only, no machine and no auto");
   assert.equal(runsOn(page).disabled, true);
   assert.match(section(), /OpenCode executors run on this Core host\./);
@@ -591,7 +667,7 @@ test("Runs on (T-35 S3): a template names this Core host, a registered machine o
 });
 
 test("Runs on (T-35 S3): a machine the list no longer has is shown as unknown and kept until changed", async () => {
-  const workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", machineId: "gone" }] };
+  const workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", routing: "fixed", machineId: "gone" }] };
   const page = mount((url, method) => {
     if (url.endsWith("/machines")) return [200, machineList];
     if (method === "PUT") return [200, view(workspace)];
@@ -610,7 +686,7 @@ test("Runs on (T-35 S3): a machine the list no longer has is shown as unknown an
 // #645 R1 1342ccdd: a machine still in the list that this harness cannot use
 // is named, with why, rather than called unknown; a save keeps it.
 test("Runs on (T-35 S3): a Codex template saved with a machine that keeps its Agents contained names that machine and why, and keeps it until changed", async () => {
-  const workspace = { version: 1, templates: [{ id: "c", label: "Coder", harness: "codex", machineId: "boxed" }] };
+  const workspace = { version: 1, templates: [{ id: "c", label: "Coder", harness: "codex", routing: "fixed", machineId: "boxed" }] };
   const page = mount((url, method) => {
     if (url.endsWith("/machines")) return [200, machineList];
     return [200, view(workspace)];
@@ -632,7 +708,7 @@ test("Runs on (T-35 S3): a Codex template saved with a machine that keeps its Ag
 // is read a saved machine is just its id; a failed read says the list is
 // unavailable; only a list that was read and lacks it calls it missing.
 test("Runs on (T-35 S3): a saved machine reads as its id until the Machines list is read, by name once it is, and as unavailable when the read fails", async () => {
-  const workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", machineId: "lab" }] };
+  const workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", routing: "fixed", machineId: "lab" }] };
   let answer;
   const later = new Promise((resolve) => { answer = resolve; });
   const page = mount((url) => (url.endsWith("/machines") ? later : [200, view(workspace)]));
@@ -657,7 +733,7 @@ test("Runs on (T-35 S3): a saved machine reads as its id until the Machines list
 });
 
 test("Runs on (T-35 S3) reads in Chinese (T-189)", async () => {
-  const workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", machineId: "auto" }] };
+  const workspace = { version: 1, templates: [{ id: "r", label: "Reviewer", harness: "claude", routing: "fixed", machineId: "auto" }] };
   const page = mount((url) => [200, url.endsWith("/machines") ? machineList : view(workspace)]);
   page.window.localStorage.setItem("yuzuno.language", JSON.stringify({ language: "zh-Hans" }));
   page.window.renderTemplates();
@@ -669,7 +745,7 @@ test("Runs on (T-35 S3) reads in Chinese (T-189)", async () => {
 });
 
 test("each template has a page of its own (YN-8 S5b): opened from its row, an edit kept across pages, removed from its last card, saved as one list", async () => {
-  let workspace = { version: 3, templates: [{ id: "dev", label: "Dev", harness: "codex" }, { id: "probe", label: "Probe", harness: "claude", deliveryMode: "none" }] };
+  let workspace = { version: 3, templates: [{ id: "dev", label: "Dev", harness: "codex", routing: "fixed" }, { id: "probe", label: "Probe", harness: "claude", routing: "fixed", deliveryMode: "none" }] };
   const page = mount((url, method, body) => {
     if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
     return [200, view(workspace)];
@@ -698,7 +774,7 @@ test("each template has a page of its own (YN-8 S5b): opened from its row, an ed
   assert.deepEqual(puts(page), [], "nothing saved by removing");
   button(page, "Save templates").click();
   await until(() => puts(page).length === 1, "the save");
-  assert.deepEqual(puts(page)[0].body, { expectedVersion: 3, templates: [{ id: "dev", label: "Developer", harness: "codex" }] }, "the whole list, as edited");
+  assert.deepEqual(puts(page)[0].body, { expectedVersion: 3, templates: [{ id: "dev", label: "Developer", harness: "codex", routing: "fixed" }] }, "the whole list, as edited");
   await until(() => /Saved\./.test(section().textContent), "saved");
   assert.deepEqual(page.errors, []);
 });

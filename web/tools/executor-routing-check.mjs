@@ -61,7 +61,8 @@ const fresh = () => ({
   // A run that checks a conflict has another save land first.
   conflictNext: false,
   templates: { version: 2, laterTemplates: 0, templates: [
-    { id: "dev", label: "Development (PR)", harness: "codex", model: "gpt-6.1-sol" }, { id: "review", label: "Review", harness: "claude", routing: "fixed" }] },
+    // As Core serves them (YN-56): one following routing names no tool; a fixed one does.
+    { id: "dev", label: "Development (PR)", permissionLevel: "auto" }, { id: "review", label: "Review", harness: "claude", routing: "fixed", permissionLevel: "ask" }] },
 });
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
 const peakReason = { code: "peak", message: "DeepSeek's peak price now; off-peak from 12:00", messageZh: "现在是 DeepSeek 高峰价，12:00 起是闲时", condition: 0 };
@@ -120,7 +121,7 @@ async function route(r) {
   }
   if (path === "/api/executor-templates") {
     if (method === "PUT") { state.templates = { version: state.templates.version + 1, templates: body.templates, laterTemplates: 0 }; }
-    return json({ workspace: state.templates, available: [], presets: [] });
+    return json({ workspace: state.templates, available: [], presets: [], general: { label: "Executor", harness: "claude", harnessSource: "workspace" } });
   }
   if (path === "/api/routing/choices") return json({ choices: [
     { dispatchId: "d-905", taskId: "T-905", executorName: "T-905 · Dev", route: { ...evaluation(state.policy.policy, undefined, undefined), at: "dispatch", evaluatedAt: ago(6) } },
@@ -327,6 +328,10 @@ async function run({ width, height, theme, lang }) {
       const fixedTemplate = order.locator('.routing-template[data-template="review"]');
       await fixedTemplate.scrollIntoViewIfNeeded();
       assert.match(await fixedTemplate.innerText(), lang === "zh" ? /固定：Claude Code/ : /Fixed: Claude Code/);
+      // YN-56: a switch per template, on for routing by rules; off, a tool beside it.
+      assert.equal(await fixedTemplate.locator('input[role="switch"]').isChecked(), false);
+      assert.equal(await fixedTemplate.locator("select").inputValue(), "claude");
+      assert.equal(await order.locator('.routing-template[data-template="dev"] input[role="switch"]').isChecked(), true);
       await shot("templates");
       assert.match(await order.locator(".routing-spend").innerText(), /\$3\.40 (of|\/) \$20/);
     }

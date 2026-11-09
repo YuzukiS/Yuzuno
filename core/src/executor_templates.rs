@@ -417,23 +417,33 @@ impl Template {
     }
 
     /// A template as a Core before YN-56 kept it, in this Core's shape. Its
-    /// harness's own permission is its level; on a fixed template it wins
-    /// over a level beside it, which an older Core keeps unchanged when it
-    /// changes the permission. One that follows routing names no harness,
-    /// model or effort: routing gives them, or the defaults for new Agents.
-    /// A permission no level is (Codex's `config`) stays on a fixed Codex
-    /// template, and is the defaults for new Agents on one that follows
-    /// routing.
+    /// harness's own permission is its level. On a fixed Codex or Claude Code
+    /// template the level is always what that permission says: this Core
+    /// stores the two together, and an older Core changes only the permission,
+    /// keeping the level beside it unchanged (#820 R2). So no permission
+    /// (inherit), or one no level is (Codex's `config`), is no level; a fixed
+    /// OpenCode template has no permission of its own and keeps its level.
+    /// One that follows routing names no harness, model or effort: routing
+    /// gives them, or the defaults for new Agents. A permission no level is
+    /// stays on a fixed Codex template, and is the defaults for new Agents on
+    /// one that follows routing.
     fn upgraded(mut self) -> Self {
         let harness = self.harness.as_deref().unwrap_or_default();
         if self.harness.is_some() && !HARNESSES.contains(&harness) {
             // Another harness: a later Core's template, which this Core doesn't offer.
             return self;
         }
-        if let Some(level) = permission_levels::of_native(harness, self.permission_preset.as_deref(), self.permission_mode.as_deref()) {
-            self.permission_level = Some(level.to_owned());
-            self.permission_preset = None;
-            self.permission_mode = None;
+        match permission_levels::of_native(harness, self.permission_preset.as_deref(), self.permission_mode.as_deref()) {
+            Some(level) => {
+                self.permission_level = Some(level.to_owned());
+                self.permission_preset = None;
+                self.permission_mode = None;
+            }
+            None if self.fixed() && matches!(harness, "codex" | "claude") => {
+                self.permission_level = None;
+                self.permission_mode = None;
+            }
+            None => {}
         }
         if !self.fixed() {
             self.harness = None;
