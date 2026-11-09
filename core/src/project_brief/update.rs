@@ -510,19 +510,26 @@ fn context(store: &Store, db: &Connection, actor: &str, requested: Option<&str>)
     }))
 }
 
-/// The live Brief, as a version conflict returns it.
-fn latest(store: &Store, db: &Connection, project: &str) -> Result<Value> {
+/// The live Brief as a version conflict returns it (YN-69): its version, the
+/// sections the update changes as they are now (what it merges into, whole,
+/// as brief_get shows them), and every live section's index entry, as
+/// brief_get with keys [] lists them. Any other section is brief_get keys away.
+fn latest(store: &Store, db: &Connection, project: &str, changed: &[&str]) -> Result<Value> {
     let rows = sections::live(db, project)?;
     let seen = sections::seen(db, project)?;
     let mut owners = Owners::default();
     let mut refs = super::refs::Refs::new(store, db);
     let at = chrono::Utc::now();
-    let mut listed = vec![];
+    let (mut listed, mut index) = (vec![], vec![]);
     for row in &rows {
         let owner = owners.get(store, db, row)?;
-        listed.push(sections::section_json(row, &owner, seen.get(&row.key), refs.of(&row.data["body"]), at));
+        if changed.contains(&row.key.as_str()) {
+            listed.push(sections::section_json(row, &owner, seen.get(&row.key), refs.of(&row.data["body"]), at));
+        }
+        index.push(sections::index_json(row, &owner, seen.get(&row.key), at));
     }
-    Ok(json!({"version":sections::brief_version(db, project)?,"sections":listed}))
+    Ok(json!({"version":sections::brief_version(db, project)?,"sections":listed,"index":index,
+        "more":"brief_get with keys [...] reads any other section whole"}))
 }
 
 /// Whether the update was based on a version too old for what it changes
@@ -558,7 +565,8 @@ fn conflict(store: &Store, db: &Connection, ctx: &Caller, request: &Request) -> 
             }).collect(),
         }
     };
-    Ok(Some(rejection(problems, Some(latest(store, db, &ctx.project)?))))
+    let changed: Vec<&str> = request.changes.iter().map(|change| change.key.as_str()).collect();
+    Ok(Some(rejection(problems, Some(latest(store, db, &ctx.project, &changed)?))))
 }
 
 /// How an owner left, as rejections say it.

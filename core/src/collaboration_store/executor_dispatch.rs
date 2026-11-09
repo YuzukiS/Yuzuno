@@ -274,8 +274,14 @@ impl Store {
             params![key, request_id], |r| r.get(0))?;
         ensure!(!used, "idempotency_conflict: requestId already has a different payload");
         let executor = &request["executor"];
-        ensure!(executor.is_object(), "invalid_input: executor is {{}} for a general executor, or {{templateId, machineId?}}");
-        allowed(executor, &["templateId", "machineId"])?;
+        ensure!(executor.is_object(), "invalid_input: executor is {{}} for a general executor, or {{templateId, machineId?, tier?}}");
+        allowed(executor, &["templateId", "machineId", "tier"])?;
+        // The tier this dispatch names for its executor (YN-70), over its template's.
+        let named_tier = match executor.get("tier") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(tier)) if crate::executor_templates::TIERS.contains(&tier.as_str()) => Some(tier.clone()),
+            Some(_) => bail!("invalid_input: executor.tier is strong or fast; leave it out for the template's own"),
+        };
         // None: a general executor, from the defaults for new Agents (YN-2).
         let template_id = match executor.get("templateId") {
             None | Some(Value::Null) => None,
@@ -305,11 +311,17 @@ impl Store {
             }
             None => (Template::general(), "builtin"),
         };
+        // Its tier and whose (YN-70): this dispatch's, the lead's or the user's,
+        // else its template's, else none.
+        let tier: Option<(String, &str)> = match named_tier {
+            Some(tier) => Some((tier, if author.kind == "user" { "user" } else { "lead" })),
+            None => template.tier.clone().map(|tier| (tier, "template")),
+        };
         // YN-34 S3b2: the Workspace's routing gives it its harness, model and
         // account or key, unless its template is fixed; why is kept with it.
         let routed = match routing {
             Some(gathered) => crate::routing_policy::dispatch::route(&tx, gathered, &template, &request_id,
-                given_machine.as_deref().or(template.machine_id.as_deref()))?,
+                given_machine.as_deref().or(template.machine_id.as_deref()), tier.as_ref().map(|(tier, from)| (tier.as_str(), *from)))?,
             None => None,
         };
         let (template, route_json, profile) = match routed {
@@ -387,7 +399,11 @@ impl Store {
         let at = now();
         // What the executor's materials say of its template (T-34, R1 b0046ce0):
         // its instructions reach it with the task, not only its settings.
-        let given = template.given(source);
+        let mut given = template.given(source);
+        if let Some((tier, from)) = &tier {
+            given["tier"] = json!(tier);
+            given["tierSource"] = json!(from);
+        }
         tx.execute(
             "INSERT INTO executor_dispatches(actor,request_id,input_json,task_id,template_id,project_id,machine_id,template_json,agent_id,state,created_at,updated_at,choice_json,route_json)
              VALUES(?1,?2,?3,?4,?5,?6,?10,?7,?8,'pending',?9,?9,?11,?12)",

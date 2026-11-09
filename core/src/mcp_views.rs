@@ -3,12 +3,24 @@
 //! current view by default, a short receipt for a task write, and a review's
 //! summary unless it asks for the full one. A retried write is answered from
 //! the stored receipt through the same projection, so it reads the same.
+//! A merge entry (YN-69) is its summary: the entry as it is now, its evidence
+//! once and its newest history; merge_list lists short rows, 20 a page.
+//! YN-69: an Agent's task_list is compact unless it gives compact; its mail
+//! leaves out the wake-up's bookkeeping; a full task says its materials once.
 use serde_json::{json, Map, Value};
 
 /// Task writes whose answer to an Agent is a short receipt.
 const WRITES: &[&str] = &["task_create", "task_update", "task_claim", "task_comment", "task_submit_result", "task_dispatch"];
 const TASK_MORE: &str = "task_get(taskId) reads the task as it is now";
 const REVIEW_MORE: &str = "review_get with view \"full\" adds the original report, context reads and per-file evidence";
+/// Merge writes whose answer is the entry (merge_unpause answers with the repository).
+const MERGE_WRITES: &[&str] = &["merge_enqueue", "merge_cancel", "merge_retry", "merge_revert"];
+const MERGE_MORE: &str = "merge_get with view \"full\" adds lastEvidence (the last check as Core read it) and the whole history";
+const MERGE_LIST_MORE: &str = "merge_get(entryId) reads an entry; merge_list with view \"full\" lists each as stored";
+/// How many merge entries an Agent's merge_list lists unless it gives a limit.
+const MERGE_PAGE: i64 = 20;
+/// The newest history an entry's summary keeps.
+const MERGE_HISTORY: usize = 10;
 
 /// Before the call: an Agent's task_get without a view reads the current view
 /// (or a page of history when it pages); review_get's view is taken out here
@@ -20,24 +32,125 @@ pub(crate) fn prepare(tool: &str, arguments: &mut Map<String, Value>) -> Result<
             arguments.insert("view".into(), json!(if paged { "activity" } else { "current" }));
             Ok(None)
         }
-        "review_get" => match arguments.remove("view") {
-            None => Ok(Some("summary".into())),
-            Some(Value::String(view)) if view == "summary" || view == "full" => Ok(Some(view)),
-            Some(_) => Err("invalid_input: view is summary or full".into()),
-        },
+        // Short rows unless the Agent asks for whole ones with compact:false (YN-69).
+        "task_list" if !arguments.contains_key("compact") => {
+            arguments.insert("compact".into(), json!(true));
+            Ok(None)
+        }
+        "review_get" => take_view(arguments),
+        // The merge store knows no views either; an Agent's page is 20 (YN-69).
+        "merge_get" | "merge_list" => {
+            let view = take_view(arguments)?;
+            if tool == "merge_list" && !arguments.contains_key("limit") {
+                arguments.insert("limit".into(), json!(MERGE_PAGE));
+            }
+            Ok(view)
+        }
         _ => Ok(None),
     }
 }
 
-/// After the call: what the Agent reads.
-pub(crate) fn answer(tool: &str, value: Value, review_view: Option<&str>) -> Value {
+fn take_view(arguments: &mut Map<String, Value>) -> Result<Option<String>, String> {
+    match arguments.remove("view") {
+        None => Ok(Some("summary".into())),
+        Some(Value::String(view)) if view == "summary" || view == "full" => Ok(Some(view)),
+        Some(_) => Err("invalid_input: view is summary or full".into()),
+    }
+}
+
+/// After the call: what the Agent reads. `view` is what `prepare` took out.
+pub(crate) fn answer(tool: &str, value: Value, view: Option<&str>) -> Value {
+    let full = view == Some("full");
     if WRITES.contains(&tool) {
         receipt(&value)
-    } else if tool == "review_get" && review_view != Some("full") {
+    } else if tool == "review_get" && !full {
         review_summary(&value)
+    } else if (tool == "merge_get" && !full) || (MERGE_WRITES.contains(&tool) && value.get("lastEvidence").is_some()) {
+        merge_summary(&value)
+    } else if tool == "merge_list" && !full {
+        let mut out = value.clone();
+        if let Some(entries) = value["entries"].as_array() {
+            out["entries"] = entries.iter().map(merge_row).collect();
+            out["more"] = json!(MERGE_LIST_MORE);
+        }
+        out
+    } else if tool == "peer_read" {
+        mailbox(value)
+    } else if tool == "task_get" {
+        materials_once(value)
     } else {
         value
     }
+}
+
+/// A merge entry as an Agent follows it (YN-69): the entry as it is now
+/// (state, reason, release, batch, merge and its follow-up), its evidence
+/// without the fields that repeat the entry (they are the entry's at the last
+/// check, and the entry's own are current), and its newest history.
+/// lastEvidence, the last check as Core read it, is view "full"'s.
+fn merge_summary(entry: &Value) -> Value {
+    let mut out = entry.clone();
+    let Some(map) = out.as_object_mut() else { return out };
+    map.remove("lastEvidence");
+    if let Some(evidence) = map.get_mut("evidence").and_then(Value::as_object_mut) {
+        for repeated in ["entry", "repository", "pr", "head", "state", "release", "binaries", "batch", "merge", "grouping", "stop"] {
+            evidence.remove(repeated);
+        }
+    }
+    if let Some(history) = map.get_mut("history").and_then(Value::as_array_mut) {
+        let count = history.len();
+        history.drain(..count.saturating_sub(MERGE_HISTORY));
+        map.insert("historyCount".into(), json!(count));
+    }
+    map.insert("more".into(), json!(MERGE_MORE));
+    out
+}
+
+/// One row of an Agent's merge_list: which entry, PR and head, where it stands
+/// and why, and its merge.
+fn merge_row(entry: &Value) -> Value {
+    let mut row = pick(entry, &["id", "entryId", "taskId", "taskReference", "repository", "number", "url", "headSha", "state",
+        "reason", "detail", "waitingSince", "createdAt", "updatedAt"]);
+    if entry["merge"].is_object() {
+        row["merge"] = pick(&entry["merge"], &["sha", "mergedAt", "mainCi"]);
+    }
+    row
+}
+
+/// A mailbox page as an Agent reads it (YN-69): each message whole, but its
+/// delivery is its state alone, not the wake-up's record (Core's, and the
+/// GUI's: an Agent's mail problems are task_get's mailProblems); it names no
+/// recipient (the reader) and no GUI grouping (notice: its kind, name and
+/// status are the sender's and metadata's); a message that starts its own
+/// thread and answers none says neither.
+fn mailbox(mut page: Value) -> Value {
+    for message in page["messages"].as_array_mut().into_iter().flatten() {
+        let Some(map) = message.as_object_mut() else { continue };
+        let state = map.get("delivery").map(|d| d["state"].clone()).unwrap_or(Value::Null);
+        map.insert("delivery".into(), json!({"state": state}));
+        map.remove("recipient");
+        map.remove("notice");
+        if map.get("threadId").is_some() && map.get("threadId") == map.get("id") {
+            map.remove("threadId");
+        }
+        if map.get("replyTo").is_some_and(Value::is_null) {
+            map.remove("replyTo");
+        }
+    }
+    page
+}
+
+/// A full task's registered materials once (YN-69): materialsSource says
+/// where they are when its value is task.materials; the history stays whole.
+fn materials_once(mut answer: Value) -> Value {
+    let same = answer["materialsSource"]["value"].is_object() && answer["materialsSource"]["value"] == answer["task"]["materials"];
+    if same {
+        if let Some(source) = answer["materialsSource"].as_object_mut() {
+            source.remove("value");
+            source.insert("valueIn".into(), json!("task.materials"));
+        }
+    }
+    answer
 }
 
 fn pick(from: &Value, keys: &[&str]) -> Value {

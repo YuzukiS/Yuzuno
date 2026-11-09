@@ -15,6 +15,11 @@ fn conflict_at(path: &str) -> Vec<(String, String)> {
     vec![("version_conflict".into(), path.into())]
 }
 
+/// The Brief's index as brief_get keys [] lists it for `actor`.
+fn brief_index(ws: &Workspace, actor: &str) -> Value {
+    get(&ws.store, Some(actor), &json!({"keys":[]})).unwrap()["index"].clone()
+}
+
 fn record(ws: &Workspace, project: &str) -> Vec<(String, i64)> {
     let db = ws.store.db.read().unwrap();
     let mut query = db.prepare("SELECT key,version FROM project_brief_writes WHERE project_id=?1 ORDER BY key").unwrap();
@@ -159,4 +164,34 @@ async fn without_a_trusted_record_the_whole_brief_decides_and_a_write_starts_it_
     accept(&ws, "c", input("c3", 6, vec![put("c-log", "status")])).await;
     assert_eq!(record(&ws, &project), [("".into(), 6), ("c-log".into(), 7)]);
     accept(&ws, "a", input("a2", 6, vec![put("plan", "status")])).await;
+}
+
+/// YN-69: a conflict's latest is what the update needs to merge into: the
+/// Brief's version, the sections it changes as they are now, and every
+/// section's index entry (as brief_get keys [] lists it), never every body.
+#[tokio::test]
+async fn a_conflicts_latest_holds_the_sections_it_changes_and_an_index_of_every_section() {
+    let (_dir, ws, project) = lab();
+    accept(&ws, "a", input("a1", 0, vec![put("plan", "report")])).await;
+    accept(&ws, "b", input("b1", 1, vec![put("notes", "report"), put("b-log", "status")])).await;
+    assert_eq!(version(&ws, &project), 2);
+    let index = brief_index(&ws, "a");
+    // plan, read at 0, was written at 1.
+    let rejected = reject(&ws, "a", input("a2", 0, vec![put("plan", "status")])).await;
+    assert_eq!(stale(&rejected), conflict_at("changes[0].key"));
+    let latest = &rejected["latest"];
+    assert_eq!(latest["version"], 2);
+    let keys = |sections: &Value| sections.as_array().unwrap().iter().map(|s| s["key"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(keys(&latest["sections"]), ["plan"], "only the section it changes, whole");
+    assert_eq!(latest["sections"][0], *section(&brief(&ws, "a"), "plan"));
+    assert_eq!(latest["index"], index, "every section's index entry, as brief_get keys [] lists them");
+    assert_eq!(keys(&latest["index"]), ["plan", "notes", "b-log"]);
+    assert!(latest["index"].as_array().unwrap().iter().all(|entry| entry.get("body").is_none()));
+    assert!(latest["more"].as_str().unwrap().contains("brief_get"));
+    // A version the Brief never had: still the sections the update changes.
+    let ahead = reject(&ws, "a", input("a3", 9, vec![put("plan", "status"), put("fresh", "report")])).await;
+    assert_eq!(stale(&ahead), conflict_at("expectedVersion"));
+    assert_eq!((keys(&ahead["latest"]["sections"]), ahead["latest"]["index"].clone()), (vec!["plan".to_owned()], index.clone()));
+    let quiet = reject(&ws, "a", json!({"requestId":"q1","expectedVersion":9,"noChange":true})).await;
+    assert_eq!((quiet["latest"]["sections"].clone(), quiet["latest"]["index"].clone()), (json!([]), index));
 }

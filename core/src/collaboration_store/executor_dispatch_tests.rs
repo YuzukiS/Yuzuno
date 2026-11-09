@@ -615,6 +615,33 @@ fn a_template_dispatch_says_its_tier_and_whose_it_is() {
     assert!(body.contains("\nTier: fast · 快 (the template's default)\n"), "{body}");
 }
 
+/// YN-70: a dispatch may name its executor's tier, over its template's; its
+/// materials and mail then say whose it is, the user's here, and a general
+/// executor's too. A tier that is neither strong nor fast is refused.
+#[test]
+fn a_dispatch_names_its_executors_tier_over_its_templates() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+    let p = project(&store);
+    templates(&store, json!([{"id":"reviewer","label":"Build from an approved design","harness":"codex","routing":"fixed","tier":"fast"}]));
+    let read = |t: &str, answer: &Value| store.collaboration_call(None, "task_get", json!({"taskId":t,"dispatchId":answer["task"]["dispatch"]["id"]})).unwrap();
+    for (title, executor, tier) in [("Design", json!({"templateId":"reviewer","tier":"strong"}), "strong"), ("Check", json!({"tier":"strong"}), "strong")] {
+        let t = task(&store, title, Some(&p), None);
+        let input = json!({"requestId":title,"taskId":t,"expectedVersion":1,"executor":executor});
+        let plan = begun(&store, None, input).unwrap();
+        create(&store, &plan);
+        let answer = store.collaboration_call(None, "task_dispatch", plan.dispatch.input.clone()).unwrap();
+        let template = read(&t, &answer)["dispatchMaterials"]["template"].clone();
+        assert_eq!((template["tier"].clone(), template["tierSource"].clone()), (json!(tier), json!("user")), "{title}: {template}");
+        let body = answer["message"]["body"].as_str().unwrap();
+        assert!(body.contains("\nTier: strong · 强 (the user chose it for this dispatch)\n"), "{title}: {body}");
+    }
+    let t = task(&store, "Heavy", Some(&p), None);
+    let refused = begun(&store, None, json!({"requestId":"heavy","taskId":t,"expectedVersion":1,"executor":{"templateId":"reviewer","tier":"heavy"}}))
+        .err().unwrap_or_default();
+    assert!(refused.starts_with("invalid_input: executor.tier is strong or fast"), "{refused}");
+}
+
 /// T-34 S3a: what a template dispatch adds is held to its own limits, not to
 /// the task's: the longest handover a Project can keep, beside the longest
 /// description a task can have, still dispatches.
@@ -1050,5 +1077,44 @@ mod routing {
         assert_eq!((unrouted.template.harness(), unrouted.template.permission_preset.as_deref(), unrouted.profile.clone()),
             ("codex", Some("full"), None), "the built-in default for new Agents, with the level");
         assert_eq!(route_of(&store, &unrouted.dispatch.agent_id), None);
+    }
+
+    /// YN-70, from YN-66: at dispatch, a candidate of a harness its machine can't
+    /// run (Codex on a contained machine) is passed over, with `harnessUnavailable`,
+    /// rather than chosen and the dispatch refused; nor does it stand in for one
+    /// that waits.
+    #[test]
+    fn a_dispatch_passes_over_a_harness_its_machine_cant_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("workspace.db")).unwrap();
+        machine(&store, "boxed", "Boxed", true);
+        let p = store.create_project("Lab", BTreeMap::from([("local".into(), "/synthetic/project".into()),
+            ("boxed".into(), "/srv/boxed/project".into())])).unwrap().id;
+        templates(&store, json!([{"id":"reviewer","label":"Reviewer"}]));
+        let codex = json!({"id": "c-codex", "enabled": true, "harness": "codex", "model": "gpt-test", "credential": {"kind": "login"}, "conditions": []});
+        let claude = json!({"id": "c-claude", "enabled": true, "harness": "claude", "model": "opus", "credential": {"kind": "login"}, "conditions": []});
+        store.save_routing_policy(0, json!({"enabled": true, "whenNone": "wait", "candidates": [codex, claude]})).unwrap().unwrap();
+        let on = |title: &str, request: &str| {
+            let mut input = dispatch(&task(&store, title, Some(&p), None), request);
+            input["executor"]["machineId"] = json!("boxed");
+            input
+        };
+        let plan = routed(&store, on("Review", "boxed"), false);
+        assert_eq!((plan.machine.as_str(), plan.template.harness(), plan.template.model.as_deref()), ("boxed", "claude", Some("opus")));
+        let route = route_of(&store, &plan.dispatch.agent_id).unwrap();
+        let first = &route["candidates"][0];
+        assert_eq!((first["state"].clone(), first["reasons"][0]["code"].clone(), first["reasons"][0]["params"].clone()),
+            (json!("skipped"), json!("harnessUnavailable"), json!({"harness": "codex", "machine": "boxed"})), "{route}");
+        // Here Codex is chosen, as before.
+        let here = routed(&store, dispatch(&task(&store, "Here", Some(&p), None), "here"), false);
+        assert_eq!(here.template.harness(), "codex");
+
+        // Claude Code can't be chosen now (its quota is unknown, and skips): Codex doesn't stand in on the contained machine.
+        let mut waiting = store.routing_policy().unwrap();
+        waiting.policy["candidates"][1]["conditions"] = json!([{"kind": "quota", "weekLeftPct": 30}]);
+        store.save_routing_policy(waiting.version, waiting.policy).unwrap().unwrap();
+        let waits = routed(&store, on("Wait", "wait"), false);
+        let route = route_of(&store, &waits.dispatch.agent_id).unwrap();
+        assert_eq!((waits.template.harness(), waits.machine.as_str(), route["waiting"].clone()), ("claude", "boxed", json!(true)), "{route}");
     }
 }

@@ -64,7 +64,13 @@ const binaries = { by: { kind: 'agent', id: 'lead-1', name: 'Lead Sora' }, at, f
 ] };
 const stopped = entry('e-stopped', 'stopped', { reason: 'ci_red', detail: 'Synthetic CI run 501 ended failure', binaries });
 const queued = entry('e-queued', 'queued', { number: 13, url: 'https://github.com/owner/repo/pull/13', release: { by: { kind: 'user', id: 'user', name: 'You' }, at } });
-const waiting = entry('e-waiting', 'waiting', { number: 14, detail: 'Synthetic run still in progress' });
+// YN-67: the lead acknowledged a P2 the user accepted on Home.
+const acknowledgedFindings = { by: { kind: 'agent', id: 'lead-1', name: 'Lead Sora' }, at, items: [
+  { reviewId: 'e38ff3c7-0000-4000-8000-000000000001', round: 2, index: 0, priority: 2, path: 'core/src/example.rs', startLine: 430, endLine: 454,
+    title: 'Synthetic finding title', note: 'Synthetic note on the choice',
+    userReply: { key: 'design/yn-example-q1', version: 3, question: 'Synthetic question naming PR #14', reply: 'Synthetic reply: intended', repliedAt: at } },
+] };
+const waiting = entry('e-waiting', 'waiting', { number: 14, detail: 'Synthetic run still in progress', acknowledgedFindings });
 const dry = entry('e-dry', 'stopped', { number: 15, reason: 'dry_run_ended', detail: 'Synthetic dry run ended' });
 const done = entry('e-done', 'done', {
   number: 16, taskReference: 'T-43', url: 'https://github.com/owner/repo/pull/16',
@@ -425,6 +431,29 @@ test('a release that acknowledged binary files lists each with its format, size 
       [`icons/a.png · png · 62 bytes · ${'1'.repeat(12)} · Synthetic note`, `icons/b.png · png · 70 bytes · ${'2'.repeat(12)}`]);
     assert.deepEqual(p.errors, []);
   } finally { p.close(); }
+});
+
+test('a release that acknowledged a P2 the user accepted shows the finding, the round and the reply, in English and Chinese', async () => {
+  for (const [language, label, lead, round, reply] of [
+    ['en', 'Findings accepted', '1 P2 accepted as intended by Lead Sora, citing your reply; the review round\'s conclusion stays', 'Round 2 e38ff3c7', 'your reply to design/yn-example-q1'],
+    ['zh-Hans', '确认的发现', 'Lead Sora 引用你的回复，确认 1 个 P2 是有意为之；审查轮的结论不变', '第 2 轮 e38ff3c7', '你在 design/yn-example-q1 的回复'],
+  ]) {
+    const p = mount({ language });
+    try {
+      await opened(p);
+      await choose(p, 14);
+      const accepted = detailText(p, label);
+      assert.ok(accepted, `${language}: the row is there`);
+      assert.equal(accepted.firstChild.textContent, lead, language);
+      const item = accepted.querySelector('li');
+      assert.match(item.textContent, /^P2 · core\/src\/example\.rs:430 · Synthetic finding title/, language);
+      assert.ok(item.textContent.includes(round) && item.textContent.includes(reply) && item.textContent.includes('“Synthetic reply: intended”'), `${language}: ${item.textContent}`);
+      assert.ok(item.textContent.endsWith('Synthetic note on the choice'), `${language}: ${item.textContent}`);
+      await choose(p, 12);
+      assert.equal(detailText(p, label), undefined, `${language}: an entry without acknowledged findings has no row`);
+      assert.deepEqual(p.errors, []);
+    } finally { p.close(); }
+  }
 });
 
 test('the merge card says where its one merge request stands: not sent and why, sent and waiting, or sent with an uncertain answer', async () => {

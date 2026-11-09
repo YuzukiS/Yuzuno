@@ -125,6 +125,11 @@ const queueEn = {
   binaries: "Binary files",
   binariesAcknowledged: (count: number, by: string) =>
     `${count} acknowledged by ${by} by their content; the review round could not read them and stays unknown`,
+  findings: "Findings accepted",
+  findingsAccepted: (count: number, by: string, cited: boolean) =>
+    `${count} P2 accepted as intended by ${by}${cited ? ", citing your reply" : ""}; the review round's conclusion stays`,
+  findingRound: (round: string, review: string) => `Round ${round} ${review}`,
+  findingReply: (key: string, at: string) => `your reply to ${key}${at ? ` (${at})` : ""}:`,
   bytes: (n: number) => `${n} bytes`,
   frozenHead: "Frozen head",
   base: "Base branch",
@@ -268,6 +273,10 @@ const queueText = strings<QueueText>(queueEn, {
   review: "审查轮次",
   binaries: "二进制文件",
   binariesAcknowledged: (count, by) => `${by} 已按内容确认 ${count} 个；审查轮读不了它们，结论仍是未知`,
+  findings: "确认的发现",
+  findingsAccepted: (count, by, cited) => `${by}${cited ? " 引用你的回复，" : " "}确认 ${count} 个 P2 是有意为之；审查轮的结论不变`,
+  findingRound: (round, review) => `第 ${round} 轮 ${review}`,
+  findingReply: (key, at) => `你在 ${key} 的回复${at ? `（${at}）` : ""}：`,
   bytes: (n) => `${n} 字节`,
   frozenHead: "冻结的头提交",
   base: "基础分支",
@@ -1210,6 +1219,45 @@ function EntryDetail({
                       {f.note && (
                         <>
                           {" · "}
+                          <span className="merge-core-text">{f.note}</span>
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </dd>
+            </>
+          )}
+          {!!e.acknowledgedFindings?.items?.length && (
+            <>
+              <dt>{t.findings}</dt>
+              <dd>
+                {t.findingsAccepted(
+                  e.acknowledgedFindings.items.length,
+                  actorName(e.acknowledgedFindings.by, t) || "?",
+                  e.acknowledgedFindings.items.some((f) => !!f.userReply),
+                )}
+                <ul className="merge-runs merge-findings">
+                  {e.acknowledgedFindings.items.map((f) => (
+                    <li key={`${f.reviewId}:${f.index}`}>
+                      <code>P{f.priority ?? 2}</code>
+                      {" · "}
+                      <code>{f.path ? `${f.path}${f.startLine ? `:${f.startLine}` : ""}` : "?"}</code>
+                      {" · "}
+                      <span className="merge-core-text">{f.title}</span>
+                      <br />
+                      <span className="merge-core-text">
+                        {t.findingRound(String(f.round ?? "?"), f.reviewId.slice(0, 8))}
+                        {f.userReply && (
+                          <>
+                            {" · "}
+                            {t.findingReply(f.userReply.key, clock(f.userReply.repliedAt) || "")} “{f.userReply.reply}”
+                          </>
+                        )}
+                      </span>
+                      {f.note && (
+                        <>
+                          <br />
                           <span className="merge-core-text">{f.note}</span>
                         </>
                       )}

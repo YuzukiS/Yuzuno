@@ -75,6 +75,8 @@ const PREVIEW_ITEMS: usize = 30;
 /// The only profile removed automatically.
 const PROFILE: &str = "debug";
 const SHARED: &str = "Another executor of its task is still open";
+/// How a folder its task registered is known: the task's, not this executor's.
+const REGISTERED: &str = "registered on its task";
 
 pub(crate) const SCOPE: &str = "Off unless you turn it on. Then, the chosen number of days after an executor is released, Core removes the Cargo debug build output of the worktrees its records show were that executor's, on this Core's host, once every check passes at that moment. Worktrees, branches, sources, other profiles and anything Cargo did not make stay; what is in use is tried again every hour for a week. Executors on other machines are not handled.";
 
@@ -267,7 +269,7 @@ fn evidence(store: &Store, executor: &Released) -> Result<Evidence> {
         let mut q = db.prepare("SELECT json_extract(data,'$.path') FROM task_workspaces WHERE task_id=?1")?;
         for path in q.query_map([task], |r| r.get::<_, Option<String>>(0))? {
             if let Some(path) = path? {
-                found.folders.push((path, "registered on its task"));
+                found.folders.push((path, REGISTERED));
             }
         }
         let mut q = db.prepare(
@@ -301,8 +303,8 @@ struct Root {
     scan: PathBuf,
     git_root: PathBuf,
     how: BTreeSet<&'static str>,
-    /// Known only through its task's pull request while another executor of
-    /// the task is open.
+    /// Known only through its task (a registered worktree, its pull
+    /// request's branch) while another executor of the task is open.
     shared: bool,
 }
 
@@ -340,7 +342,9 @@ async fn roots(ws: &Arc<Workspace>, found: Evidence) -> Option<(PathBuf, Vec<Roo
             continue;
         }
         if let Some(top) = worktree_of(&folder, &common).await.filter(|top| allowed(top)) {
-            add(top.clone(), top, *how, false);
+            // A folder of its task, like its pull request's branch, may be
+            // another open executor's of the task (review 912c501e).
+            add(top.clone(), top, *how, *how == REGISTERED && found.shared);
         }
     }
     if !found.branches.is_empty() {

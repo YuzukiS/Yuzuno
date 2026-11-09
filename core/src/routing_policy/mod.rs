@@ -179,6 +179,14 @@ pub fn check(policy: &Value, known: &Known) -> Result<(), Invalid> {
             Some(v) if v == "skip" || v == "pass" => {}
             Some(_) => return refuse(format!("{path}unknown"), "unknown is \"skip\" or \"pass\""),
         }
+        // The tiers it serves (YN-70); unset serves both.
+        match c.get("tiers") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(list)) if !list.is_empty()
+                && list.iter().all(|t| t.as_str().is_some_and(|t| crate::executor_templates::TIERS.contains(&t)))
+                && list.iter().collect::<HashSet<_>>().len() == list.len() => {}
+            Some(_) => return refuse(format!("{path}tiers"), "tiers lists strong, fast or both, each once; leave it out to serve both"),
+        }
         let credential = check_credential(c.get("credential").unwrap_or(&Value::Null), &format!("{path}credential"), harness, known)?;
         let none = Vec::new();
         let conditions = match c.get("conditions") {

@@ -215,3 +215,96 @@ async fn a_path_that_left_the_pr_is_listed_and_its_findings_stay() {
     assert_eq!(run["findings"][0]["disposition"]["state"], "still_valid");
     assert_eq!(run["conclusion"], "changes_requested");
 }
+
+/// main moves on from the PR's base by `change` and is merged into the
+/// reviewed head: (main, the merged head).
+fn base_moves(lab: &Lab, change: impl FnOnce(&Path)) -> (String, String) {
+    git(&lab.repo, &["checkout", "-q", &lab.base]);
+    change(&lab.repo);
+    git(&lab.repo, &["add", "-A"]);
+    git(&lab.repo, &["commit", "-qm", "main moves"]);
+    let main = git(&lab.repo, &["rev-parse", "HEAD"]);
+    git(&lab.repo, &["checkout", "-q", &lab.head]);
+    git(&lab.repo, &["merge", "-q", "--no-edit", &main]);
+    (main.clone(), git(&lab.repo, &["rev-parse", "HEAD"]))
+}
+
+async fn read(lab: &Lab, run: &mut Value, context: &mut ContextStore, tool: &str, input: Value) {
+    let directory = lab.ws.data_dir.join("pr-reviews").join("now");
+    fs::create_dir_all(&directory).unwrap();
+    let page = context_response(&lab.ws, run, &directory, context, tool, input).await.unwrap();
+    assert!(page["error"].is_null(), "{page}");
+}
+
+fn by_base(index: u64, paths: &[&str]) -> Value {
+    json!({"index":index,"disposition":"fixed_by_base","fix_paths":[],"base_paths":paths,"explanation":"The new merge base defines ready(), which b() relies on"})
+}
+
+/// YN-67, as #825: the PR relied on what its base didn't have yet; the
+/// slice that adds it merged into main, and main into the PR. The finding's
+/// own file didn't change, so only the new merge base can answer it.
+#[tokio::test]
+async fn a_finding_the_new_merge_base_answers_is_settled_by_what_this_round_read_of_that_base() {
+    let (lab, _) = earlier_round().await;
+    let (main, merged) = base_moves(&lab, |repo| fs::write(repo.join("ready.rs"), "pub fn ready() -> bool { true }\n").unwrap());
+    let (mut run, mut context, prepared) = next_round(&lab, &main, &merged, &main).await;
+    let prepared = prepared.unwrap();
+    assert_eq!(run["incremental"]["sameMergeBase"], false);
+    // What the new merge base changed, from Core's own store, before any model.
+    let changes = &run["incremental"]["baseChanges"];
+    assert_eq!((changes["state"].as_str(), changes["from"].as_str(), changes["to"].as_str()), (Some("read"), Some(lab.base.as_str()), Some(main.as_str())), "{changes}");
+    let blob = git(&lab.repo, &["rev-parse", &format!("{main}:ready.rs")]);
+    assert_eq!(changes["paths"].as_array().unwrap().len(), 1, "{changes}");
+    assert_eq!((&changes["paths"][0]["path"], &changes["paths"][0]["status"], &changes["paths"][0]["toBlob"]), (&json!("ready.rs"), &json!("A"), &json!(blob)));
+    assert!(changes["paths"][0]["fromBlob"].is_null());
+    let evidence: Value = serde_json::from_str(&prepared).unwrap();
+    assert_eq!(evidence["mergeBaseChanged"]["paths"], json!([{"path":"ready.rs","status":"A"}]));
+    assert!(reviewer::prompt(&prepared).contains("fixed_by_base"));
+    let schema = reviewer::schema(&prepared);
+    assert!(schema["properties"]["previous_findings"]["items"]["required"].as_array().unwrap().contains(&json!("base_paths")));
+    // The fake reviewer reads every target completely and ready.rs whole.
+    for path in ["a.rs", "b.rs", "c.rs"] {
+        read(&lab, &mut run, &mut context, "source_diff", json!({"path":path,"offset":0})).await;
+    }
+    read(&lab, &mut run, &mut context, "source_read", json!({"path":"ready.rs","revision":"mergeBase","startLine":1,"endLine":500})).await;
+    assert_eq!(run["contextIncomplete"], false);
+    run["actualHarness"] = json!("codex");
+    reviewer::complete_report(&json!({"findings":[],"overall_correctness":"patch is correct","overall_explanation":"ready() now exists in the base","overall_confidence_score":0.8,
+        "previous_findings":[by_base(0, &["ready.rs"])]}), &mut run);
+    let settled = &run["settledFindings"][0]["settlement"];
+    assert_eq!(settled["disposition"], "fixed_by_base", "{}", run["findings"]);
+    assert_eq!(settled["basePaths"], json!([{"path":"ready.rs","fromBlob":null,"toBlob":blob}]));
+    assert_eq!(run["conclusion"], "no_findings");
+    assert!(crate::pr_review::policy::passes(&run));
+}
+
+/// YN-67: a stacked PR whose lower slice, with the code the finding is
+/// about, merged into main. That code is now in the base, not fixed by it.
+#[tokio::test]
+async fn code_that_moved_into_the_new_merge_base_is_not_fixed_by_it() {
+    let (lab, _) = earlier_round().await;
+    let (main, merged) = base_moves(&lab, |repo| {
+        fs::write(repo.join("b.rs"), "pub fn b() { c(); }\n").unwrap();
+        fs::write(repo.join("ready.rs"), "pub fn ready() -> bool { true }\n").unwrap();
+    });
+    let (mut run, mut context, prepared) = next_round(&lab, &main, &merged, &main).await;
+    prepared.unwrap();
+    assert_eq!(run["incremental"]["leftThePr"], json!(["b.rs"]));
+    let changed: Vec<_> = run["incremental"]["baseChanges"]["paths"].as_array().unwrap().iter().map(|p| p["path"].clone()).collect();
+    assert_eq!(changed, [json!("b.rs"), json!("ready.rs")]);
+    for path in ["a.rs", "c.rs"] {
+        read(&lab, &mut run, &mut context, "source_diff", json!({"path":path,"offset":0})).await;
+    }
+    for path in ["b.rs", "ready.rs"] {
+        read(&lab, &mut run, &mut context, "source_read", json!({"path":path,"revision":"mergeBase","startLine":1,"endLine":500})).await;
+    }
+    for base_paths in [&["ready.rs"][..], &["b.rs"][..]] {
+        let mut run = run.clone();
+        run["actualHarness"] = json!("codex");
+        reviewer::complete_report(&json!({"findings":[],"overall_correctness":"patch is correct","overall_explanation":"b.rs is in main now","overall_confidence_score":0.8,
+            "previous_findings":[by_base(0, base_paths)]}), &mut run);
+        assert_eq!(run["findings"][0]["title"], "Bug", "{base_paths:?}");
+        assert_eq!(run["findings"][0]["disposition"]["reason"], "its own path changed in the new merge base, so the code it is about may be there now", "{base_paths:?}");
+        assert_eq!(run["conclusion"], "changes_requested");
+    }
+}

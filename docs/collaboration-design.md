@@ -18,12 +18,23 @@
 - `task_get({taskId, view: "full"})` 读取最新任务、登记资料及原有活动/执行信息。常规活动页只返回派工材料引用；读取决定活动可用 `afterSeq: activitySeq - 1, limit: 1`。GUI 不带 `view`，仍读这份完整记录。
 - Agent 经 MCP 不带 `view` 时读 `current`（T-153）：状态、版本、负责人、派工、短结果、最新活动及当前交付（各 PR 的固定 head/base、该 head 最后观察到的 CI、最新评审、最新 CI 订阅及其最新 run，均带观察时间）。它按索引读取，不扫描历史；超过 1500 字符的文本截断并注明。未观察、其他提交或过期的状态写作 unknown，不当作通过，也不据此合并或完成任何事。带 `afterSeq`/`limit` 时默认 `view: "activity"`，按 seq 光标分页，期间新写入的活动只出现在后续页。
 - 当前视图的每个观察带来源与时刻（T-203）：
-  - **PR**：`observedAt` 是 Core 读取 GitHub 的时刻，不是对象的 updated_at。`lastAttemptAt`/`error` 是最近一次刷新尝试及其失败；刷新失败时保留上次成功的读数和时刻。
-  - **`ci`**：该 head 全部检查的状态。`watchedRuns` 是本任务 CI 订阅在同一 head 上看到的单个 workflow 运行，与全部检查并列显示，不代表全部检查通过。
+  - **PR**：`observedAt` 是 Core 读取 GitHub 的时刻，不是对象的 updated_at。刷新失败时才出现 `error` 和那次尝试的时刻 `lastAttemptAt`，并保留上次成功的读数和时刻。
+  - **`ci`**：该 head 全部检查的状态，来源在 `delivery.note` 里写一次。`watchedRuns` 是本任务 CI 订阅在同一 head 上看到的单个 workflow 运行，与全部检查并列显示，不代表全部检查通过。
   - **最近的 result**：保持提交时的原样，附 `statusAtReport`、`taskVersionAtReport`、`editsSinceReport` 和 `notificationNow`（结果邮件现在的投递状态）。视图上方的 status、progress、blocker 才是任务现在的状态。
   - **读取**：不访问网络，重新读取仍用 `github_refresh`/`ci_refresh`。
+- 当前视图只放现在做决定要用的内容（YN-69）：
+  - 已合入或已关闭的 PR 只列短行：`linkId`、`number`、`url`、`title`、`state`、`headSha`，以及最新评审的 `reviewId`、`conclusion`、`forCurrentHead`。整份快照用 `github_links` 读。
+  - 值为空的字段不写。
+  - 最新评审不写 harness 和 model（用 `review_get` 读）。
+  - CI 订阅的 `latestRun` 不重复订阅本身已有的仓库、分支、事件和尝试次数，但始终写出它的 `headSha`。
+  - 执行者的路由记录只留选中的候选、账号和每个候选的状态与理由，不带中文文本、读数和逐个候选的账号列表（GUI 和 `view: "full"` 仍读完整记录）。
+  - 字段只删不改名，旧的读取路径读到的值不变。
 - Agent 的任务写入（create/update/claim/comment/submit_result/dispatch）返回短回执：完整回答删去字段后的子集，路径与名称不变（`task.id`、`task.version`、`task.result.id`、`message.id` 等）。存储的幂等回执仍是完整对象，重试经同一投影返回同样内容。`review_get` 默认返回摘要（结论、全部发现、覆盖计数和未覆盖路径及原因），`view: "full"` 返回原始报告、上下文读取和逐文件证据。
 - 旧派工没有材料快照时，显式查询返回 `dispatch_materials_not_found`，不会拿最新资料冒充旧快照。
+- Agent 经 MCP 读到的列表和信件也更短（YN-69）：
+  - **`task_list`：** 默认按 `compact: true` 返回短行。这是 core.30 起的默认变化；要像以前那样拿整行，写 `compact: false`。GUI 走 HTTP，读到的仍是整行。
+  - **`peer_read`：** 每封信原样保留，只有信封变短：`delivery` 只留 `state`，不带唤醒记录（`delivery.detail`，投递问题看 `task_get` 的 `mailProblems`）；不写 `recipient`（就是读信的人）和 `notice`（GUI 分组用的）；自成一个线程、也不回复谁的信，不写 `threadId` 和 `replyTo`。
+  - **`task_get` 的 `view: "full"`：** 登记资料只出现在 `task.materials` 一处，`materialsSource` 用 `valueIn` 指向它；活动历史不变。
 
 登记对象上限 32 KiB，固定快照上限 128 KiB（只计派工者能缩短的任务材料与本次派工材料；按执行者模板派发时附带的模板、Project 交接文档与任务摘要不计入，各有上限：说明 8 KiB、交接 32 KiB、摘要 4 KiB），最终消息正文上限 16 KiB（均为 UTF-8 字节）；Project 仓库最多 20 项、任务 GitHub 链接最多 30 项。正文中的长字段以固定快照字段入口代替，不静默截断；超过存储上限或引用无效时整个派工事务回滚。执行者沿原任务调用 `task_submit_result` 并保留原 `dispatchId`；自动通知不等于独立评审、合并或上线。
 

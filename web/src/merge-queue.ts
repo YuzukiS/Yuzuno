@@ -117,6 +117,19 @@ export interface MergeBinary {
   bytes?: number;
   format?: string;
 }
+/** One P2 finding the release acknowledged (YN-67), with the user's Home
+ * reply that accepts it when a lead released. */
+export interface MergeAcceptedFinding {
+  reviewId: string;
+  round?: number | null;
+  index: number;
+  priority?: number;
+  path?: string | null;
+  startLine?: number | null;
+  title: string;
+  note?: string | null;
+  userReply?: { key: string; question?: string | null; reply?: string | null; repliedAt?: string | null } | null;
+}
 export interface MergeHistoryItem {
   at: string;
   state: MergeState | string;
@@ -142,6 +155,8 @@ export interface MergeEntry {
   release?: { by?: MergeActor; at?: string; reviewId?: string | null };
   /** YN-52: binary files the release acknowledged by their content; the review round stays unknown. */
   binaries?: { by?: MergeActor; at?: string; files?: MergeBinary[] } | null;
+  /** YN-67: P2 findings the user accepted as intended; the review round's conclusion stays. */
+  acknowledgedFindings?: { by?: MergeActor; at?: string; items?: MergeAcceptedFinding[] } | null;
   state: MergeState | string;
   reason?: string | null;
   detail?: string | null;

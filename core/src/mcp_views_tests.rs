@@ -170,3 +170,166 @@ fn an_incremental_rounds_summary_keeps_its_earlier_round_and_what_it_settled() {
         assert!(plain.get(absent).is_none(), "{absent}");
     }
 }
+
+#[test]
+fn merge_get_and_merge_list_take_their_view_out_and_an_agents_page_is_twenty() {
+    let mut plain = arguments(json!({"taskId":"T-1"}));
+    assert_eq!(prepare("merge_get", &mut plain), Ok(Some("summary".into())));
+    let mut full = arguments(json!({"entryId":"e","view":"full"}));
+    assert_eq!(prepare("merge_get", &mut full), Ok(Some("full".into())));
+    assert!(!full.contains_key("view"), "the merge store knows no views");
+    assert!(prepare("merge_get", &mut arguments(json!({"entryId":"e","view":"raw"}))).is_err());
+    let mut list = arguments(json!({"state":"done"}));
+    assert_eq!(prepare("merge_list", &mut list), Ok(Some("summary".into())));
+    assert_eq!(list["limit"], 20, "an Agent's page is 20 unless it asks for more");
+    let mut fifty = arguments(json!({"limit":50,"view":"full"}));
+    assert_eq!(prepare("merge_list", &mut fifty), Ok(Some("full".into())));
+    assert_eq!((fifty["limit"].clone(), fifty.contains_key("view")), (json!(50), false));
+}
+
+/// A merge entry as the queue keeps it once it merged and followed main CI:
+/// its evidence repeats the entry and the last check (lastEvidence), and its
+/// history is long.
+fn merge_entry() -> Value {
+    let sha = |c: char| c.to_string().repeat(40);
+    let gate = json!({"kind":"slot","tree":sha('5'),"runs":[{"run":42,"jobs":[{"name":"Core","checkout":sha('4'),"logSha256":"9".repeat(64)}]}]});
+    let main = json!({"atRelease":sha('2'),"anchoredAt":"t0","before":sha('2'),"beforeTree":sha('6'),"ci":{"conclusion":"success"}});
+    let merge = json!({"sha":sha('f'),"mergedAt":"t3","attempts":1,"expectedMain":sha('2'),"mainCi":{"conclusion":"success","runId":95},
+        "post":{"ok":true,"commit":{"parents":[sha('2'),sha('1')]}}});
+    let release = json!({"by":{"kind":"agent","id":"lead","name":"Lead"},"requestId":"r1","at":"t0","reviewId":"rv"});
+    let last = json!({"checkedAt":"t2","review":{"id":"rv","conclusion":"no_findings"},"pauseCleared":false,"main":main,"policy":"strict",
+        "mainRed":false,"ciRunning":false,"gate":gate,"mergeRef":sha('4'),"batch":null,"wouldMerge":{"sha":sha('1'),"method":"merge"}});
+    json!({"id":"e1","entryId":"e1","taskId":"t","taskReference":"YN-1","repositoryId":7,"repository":"owner/repo","number":11,
+        "url":"https://github.com/owner/repo/pull/11","linkId":"7:pull:11","headSha":sha('1'),"baseBranch":"main","state":"done",
+        "reason":null,"detail":"main CI on the merge commit is green","release":release,"merge":merge,"batch":null,"binaries":null,
+        "grouping":{"state":"done"},"lastEvidence":last,
+        "evidence":{"entry":"e1","repository":"owner/repo","pr":11,"head":sha('1'),"state":"merged","release":release,"binaries":null,
+            "review":last["review"],"main":main,"gate":gate,"mergeRef":sha('4'),"policy":"strict","checkedAt":"t2","batch":null,
+            "merge":merge,"grouping":{"state":"pending"},"stop":null},
+        "history":(0..30).map(|n| json!({"at":format!("t{n}"),"state":"waiting","detail":format!("check {n}")})).collect::<Vec<_>>(),
+        "createdAt":"t0","updatedAt":"t3"})
+}
+
+#[test]
+fn a_merge_entrys_summary_says_its_state_merge_and_evidence_once() {
+    let full = merge_entry();
+    let short = answer("merge_get", full.clone(), Some("summary"));
+    assert!(short.get("lastEvidence").is_none(), "the last check as read is view full's");
+    for gone in ["entry", "repository", "pr", "head", "state", "release", "binaries", "batch", "merge", "grouping", "stop"] {
+        assert!(short["evidence"].get(gone).is_none(), "evidence.{gone} repeats the entry, which is current: {}", short["evidence"]);
+    }
+    for kept in ["review", "main", "gate", "mergeRef", "policy", "checkedAt"] {
+        assert_eq!(short["evidence"][kept], full["evidence"][kept], "{kept}");
+    }
+    let history = short["history"].as_array().unwrap();
+    assert_eq!((history.len(), short["historyCount"].clone()), (10, json!(30)));
+    assert_eq!(history[..], full["history"].as_array().unwrap()[20..], "the newest ten, oldest first");
+    let mut rest = short.clone();
+    for added in ["history", "historyCount", "more"] {
+        rest.as_object_mut().unwrap().remove(added);
+    }
+    is_part_of(&rest, &full, "entry");
+    assert!(short["more"].as_str().unwrap().contains("view \"full\""));
+    assert_eq!(answer("merge_get", full.clone(), Some("full")), full, "view full is the whole record");
+    // Each write that answers with an entry answers with its summary.
+    for write in ["merge_enqueue", "merge_cancel", "merge_retry", "merge_revert"] {
+        assert_eq!(answer(write, full.clone(), None), short, "{write}");
+    }
+    let repository = json!({"repositoryId":7,"paused":null,"enabled":true});
+    assert_eq!(answer("merge_unpause", repository.clone(), None), repository, "an unpause answers with the repository, as it was");
+
+    let mut listed = full.clone();
+    for stored_apart in ["history", "lastEvidence"] {
+        listed.as_object_mut().unwrap().remove(stored_apart);
+    }
+    let page = json!({"entries":[listed.clone(), listed.clone()],"nextBefore":5,"hasMore":true});
+    let rows = answer("merge_list", page.clone(), Some("summary"));
+    assert_eq!((rows["nextBefore"].clone(), rows["hasMore"].clone()), (json!(5), json!(true)));
+    let row = &rows["entries"][0];
+    assert_eq!(row.as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
+        ["createdAt", "detail", "entryId", "headSha", "id", "merge", "number", "repository", "state", "taskId", "taskReference", "updatedAt", "url"]);
+    assert_eq!(row["merge"], json!({"sha":"f".repeat(40),"mergedAt":"t3","mainCi":{"conclusion":"success","runId":95}}));
+    is_part_of(row, &listed, "row");
+    assert!(rows["more"].as_str().unwrap().contains("merge_get"));
+    assert_eq!(answer("merge_list", page.clone(), Some("full")), page);
+}
+
+#[test]
+fn an_agents_task_list_is_compact_unless_it_asks_for_whole_rows() {
+    let mut plain = arguments(json!({"statuses":["doing"]}));
+    assert_eq!(prepare("task_list", &mut plain), Ok(None));
+    assert_eq!(plain["compact"], true, "an Agent's task_list lists short rows by default (YN-69)");
+    let mut whole = arguments(json!({"compact":false}));
+    prepare("task_list", &mut whole).unwrap();
+    assert_eq!(whole["compact"], false, "compact:false still lists whole rows");
+}
+
+/// A mailbox page as peer_read reads it: a delivered job mail with the
+/// wake-up's bookkeeping, a dispatch, and a reply in another's thread.
+fn mailbox() -> Value {
+    let me = json!({"kind":"agent","id":"dev","name":"Dev"});
+    let detail = json!({"afterSeq":40,"agentId":"dev","clientMessageId":"peer-mail-1","mode":"start","priority":"normal",
+        "sessionId":"s","turnId":"t","mailbox":{"afterSeq":40,"count":1,"groups":[{"count":1,"kind":"job","name":"build","status":"failed"}],
+            "memberSeqs":[41],"messageCount":1,"priority":"normal","recipientId":"dev","remainingCount":0,"throughSeq":41,"version":1}});
+    json!({"messages":[
+        {"id":"m41","seq":41,"threadId":"m41","replyTo":null,"sender":{"kind":"system","id":"core","name":"Yuzuno Core"},"recipient":me,
+         "body":"Local job build is failed.","taskId":"T-1","createdAt":"t41","source":{"jobId":"j","attempt":"a"},"priority":"normal",
+         "jobId":"j","metadata":{"kind":"job","name":"build","status":"failed","jobId":"j"},
+         "notice":{"key":"[\"job\",\"j\",\"a\",\"failed\"]","kind":"job","name":"build","status":"failed"},
+         "delivery":{"state":"delivered","detail":detail},"firstReadAt":"t42","wake":"ring"},
+        {"id":"m42","seq":42,"threadId":"m42","replyTo":null,"sender":{"kind":"agent","id":"lead","name":"Lead"},"recipient":me,
+         "body":"Work on task T-1.","taskId":"T-1","createdAt":"t42","source":{"agentId":"lead","turnId":"lt"},"priority":"normal",
+         "dispatchId":"d1","materialsRef":{"schemaVersion":1,"taskId":"T-1","dispatchId":"d1","taskVersion":2,"capturedAt":"t42"},
+         "resultInstructions":"Pass this message's dispatchId to task_submit_result.",
+         "notice":{"key":"m42","kind":"peer","name":"Lead","status":""},"delivery":{"state":"pending","detail":{}},"firstReadAt":null},
+        {"id":"m43","seq":43,"threadId":"m40","replyTo":"m40","sender":{"kind":"agent","id":"lead","name":"Lead"},"recipient":me,
+         "body":"Approved.","taskId":"T-1","createdAt":"t43","source":{"agentId":"lead"},"priority":"urgent",
+         "notice":{"key":"m43","kind":"peer","name":"Lead","status":""},"delivery":{"state":"delivered","detail":detail},
+         "firstReadAt":"t44","wake":"quiet","wakeReason":"a receipt"}],
+        "nextAfterSeq":43,"hasMore":false})
+}
+
+#[test]
+fn an_agents_mail_keeps_each_message_and_leaves_out_the_wake_up_bookkeeping() {
+    let full = mailbox();
+    let short = answer("peer_read", full.clone(), None);
+    assert_eq!((short["nextAfterSeq"].clone(), short["hasMore"].clone()), (json!(43), json!(false)));
+    let messages = short["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3);
+    for (n, message) in messages.iter().enumerate() {
+        let whole = &full["messages"][n];
+        assert_eq!(message["delivery"], json!({"state":whole["delivery"]["state"]}), "its delivery, not the wake-up's record");
+        for gone in ["recipient", "notice"] {
+            assert!(message.get(gone).is_none(), "{gone}: the reader, and the GUI's grouping: {message}");
+        }
+        for kept in ["id", "seq", "sender", "body", "taskId", "createdAt", "source", "priority", "firstReadAt"] {
+            assert_eq!(message.get(kept), whole.get(kept), "{kept}");
+        }
+        is_part_of(message, whole, &format!("messages[{n}]"));
+    }
+    assert!(messages[0].get("threadId").is_none() && messages[0].get("replyTo").is_none(), "a thread of its own, no reply");
+    assert_eq!((messages[2]["threadId"].clone(), messages[2]["replyTo"].clone()), (json!("m40"), json!("m40")));
+    for kept in ["dispatchId", "materialsRef", "resultInstructions"] {
+        assert_eq!(messages[1][kept], full["messages"][1][kept], "a dispatch keeps {kept}");
+    }
+    assert_eq!((messages[0]["metadata"].clone(), messages[0]["jobId"].clone()), (full["messages"][0]["metadata"].clone(), json!("j")));
+    assert_eq!((messages[2]["wake"].clone(), messages[2]["wakeReason"].clone()), (json!("quiet"), json!("a receipt")));
+    assert!(short.to_string().len() * 3 < full.to_string().len() * 2, "{} of {}", short.to_string().len(), full.to_string().len());
+}
+
+#[test]
+fn a_full_task_says_its_registered_materials_once() {
+    let materials = json!({"acceptance":"a".repeat(2000),"baseline":"b"});
+    let full = json!({"task":{"id":"T-1","materials":materials},"activities":[{"seq":1,"kind":"created","changes":{"materials":materials}}],
+        "materialsSource":{"value":materials,"taskVersion":1,"activitySeq":1,"at":"t1","actor":{"kind":"user"}},"keys":{"global":"T-1"}});
+    let short = answer("task_get", full.clone(), None);
+    assert_eq!(short["materialsSource"], json!({"valueIn":"task.materials","taskVersion":1,"activitySeq":1,"at":"t1","actor":{"kind":"user"}}));
+    assert_eq!((short["task"].clone(), short["activities"].clone()), (full["task"].clone(), full["activities"].clone()),
+        "the task and its history stay whole");
+    // A registration that is not the task's materials (none, or another) stays as it is.
+    let mut other = full.clone();
+    other["task"]["materials"] = json!({"acceptance":"x"});
+    assert_eq!(answer("task_get", other.clone(), None), other);
+    let current = json!({"current":{"taskId":"T-1","materialsRegistered":true},"keys":{"global":"T-1"}});
+    assert_eq!(answer("task_get", current.clone(), None), current);
+}

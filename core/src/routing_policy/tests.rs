@@ -106,6 +106,11 @@ async fn each_refusal_names_its_field_and_saves_nothing() {
         (with(&|c| c["model"] = json!("deepseek-flash")), "candidates[0].model", "<provider>/<model>"),
         (with(&|c| c["reasoningEffort"] = json!("high")), "candidates[0].reasoningEffort", "Only a Codex"),
         (with(&|c| c["unknown"] = json!("wait")), "candidates[0].unknown", "skip"),
+        // YN-70: the tiers it serves, each once; left out serves both.
+        (with(&|c| c["tiers"] = json!([])), "candidates[0].tiers", "strong, fast or both"),
+        (with(&|c| c["tiers"] = json!(["heavy"])), "candidates[0].tiers", "strong, fast or both"),
+        (with(&|c| c["tiers"] = json!(["fast", "fast"])), "candidates[0].tiers", "each once"),
+        (with(&|c| c["tiers"] = json!("fast")), "candidates[0].tiers", "strong, fast or both"),
         (with(&|c| c["credential"]["keyId"] = json!("missing")), "candidates[0].credential.keyId", "No routing key"),
         (with(&|c| { c["harness"] = json!("codex"); c["model"] = json!("gpt-test"); }), "candidates[0].credential.keyId", "not one a codex"),
         (with(&|c| c["credential"] = json!({"kind": "codexHome", "id": "work"})), "candidates[0].credential.kind", "Codex candidates only"),
@@ -228,6 +233,26 @@ async fn evaluate_and_simulate_answer_from_cores_own_evaluator_for_a_draft_or_th
         let (status, refused) = post(&lab.local, uri, json!({"policy": draft, "from": "2026-11-09T00:00:00Z", "to": "2026-11-09T12:00:00Z",
             "stepMinutes": 30, "permissionLevel": "readonly"}), vec![]).await;
         assert_eq!((status, refused["path"].clone()), (StatusCode::BAD_REQUEST, json!("permissionLevel")), "{uri}: {refused}");
+    }
+    // YN-70: with a tier, only candidates that serve it. Claude Code serves strong only, DeepSeek fast only,
+    // Codex names none and serves both: fast work takes DeepSeek off-peak and Codex in the peaks; strong work never DeepSeek.
+    let mut tiered = with_claude.clone();
+    tiered["candidates"][0]["tiers"] = json!(["strong"]);
+    tiered["candidates"][1]["tiers"] = json!(["fast"]);
+    let (status, route) = post(&lab.local, "/api/routing/evaluate", json!({"policy": tiered, "at": "2026-11-09T12:00:00Z", "tier": "fast"}), vec![]).await;
+    assert_eq!(status, StatusCode::OK, "{route}");
+    assert_eq!((route["tier"].clone(), route.get("tierSource"), route["chosen"].clone(), route["candidates"][0]["reasons"][0]["code"].clone()),
+        (json!("fast"), None, json!("c-deepseek"), json!("tierNotServed")), "a preview's tier is no one's: {route}");
+    let (_, sim) = post(&lab.local, "/api/routing/simulate",
+        json!({"policy": tiered, "from": "2026-11-09T00:00:00Z", "to": "2026-11-09T12:00:00Z", "stepMinutes": 30, "tier": "strong"}), vec![]).await;
+    assert_eq!(sim["segments"].as_array().map(|s| s.iter().map(|s| s["chosen"].clone()).collect::<Vec<_>>()), Some(vec![json!("c-claude")]),
+        "strong work all day on Claude Code: {sim}");
+    let (status, saved) = call(&lab.local, "PUT", Some(json!({"expectedVersion": lab.ws.store.routing_policy().unwrap().version, "policy": tiered})), vec![]).await;
+    assert_eq!((status, saved["policy"]["candidates"][1]["tiers"].clone()), (StatusCode::OK, json!(["fast"])), "a save keeps it: {saved}");
+    for uri in ["/api/routing/evaluate", "/api/routing/simulate"] {
+        let (status, refused) = post(&lab.local, uri, json!({"policy": draft, "from": "2026-11-09T00:00:00Z", "to": "2026-11-09T12:00:00Z",
+            "stepMinutes": 30, "tier": "heavy"}), vec![]).await;
+        assert_eq!((status, refused["path"].clone()), (StatusCode::BAD_REQUEST, json!("tier")), "{uri}: {refused}");
     }
     for uri in ["/api/routing/evaluate", "/api/routing/simulate"] {
         let (status, _) = post(&lab.local, uri, json!({}), vec![("authorization", "Bearer an-agents-token".into())]).await;
