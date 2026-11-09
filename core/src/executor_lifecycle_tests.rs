@@ -281,6 +281,11 @@ async fn the_listing_says_what_routing_gave_each_executor() {
     routed("e-wait", "opencode", "", None, reviewer.clone(),
         Some(json!({"at":"dispatch","chosen":null,"waiting":true,"earliest":{"at":"2026-11-09T04:00:00Z","candidate":"c-ds"},"candidates":[]})));
     routed("e-wait-open", "opencode", "", None, reviewer.clone(), Some(json!({"at":"dispatch","chosen":null,"waiting":true,"candidates":[]})));
+    // YN-70: a tier and whose it is go with the summary, whatever its kind.
+    routed("e-fast", "opencode", "deepseek/deepseek-flash", None, reviewer.clone(),
+        Some(json!({"at":"dispatch","chosen":"c-ds","tier":"fast","tierSource":"template","candidates":[]})));
+    routed("e-fast-wait", "opencode", "", None, reviewer.clone(),
+        Some(json!({"at":"dispatch","chosen":null,"waiting":true,"tier":"strong","tierSource":"lead","candidates":[]})));
     // Released as release_waiting writes it: its reason an object (R1 e7dfa1a9).
     let waits = crate::routing_policy::dispatch::WaitingExecutor { agent: "e-released".into(), harness: "claude".into(),
         machine: "local".into(), project: None, route: json!({"waiting":true}), unstarted: true, unavailable: vec![] };
@@ -307,6 +312,9 @@ async fn the_listing_says_what_routing_gave_each_executor() {
     assert_eq!(listed(s, "e-login")["route"]["credential"], json!({"kind":"login"}), "no profile: the host's login");
     assert_eq!(listed(s, "e-wait")["route"], json!({"kind":"waiting","earliest":"2026-11-09T04:00:00Z"}));
     assert_eq!(listed(s, "e-wait-open")["route"], json!({"kind":"waiting"}));
+    assert_eq!(listed(s, "e-fast")["route"], json!({"kind":"chosen","candidate":"c-ds","harness":"opencode","model":"deepseek/deepseek-flash",
+        "credential":{"kind":"login"},"tier":"fast","tierSource":"template"}), "its tier and whose (YN-70)");
+    assert_eq!(listed(s, "e-fast-wait")["route"], json!({"kind":"waiting","tier":"strong","tierSource":"lead"}));
     assert_eq!(listed(s, "e-released")["route"], json!({"kind":"unrouted","why":"noCandidate"}));
     assert_eq!(listed(s, "e-released-off")["route"], json!({"kind":"unrouted","why":"routingOff"}));
     assert_eq!(listed(s, "e-fixed")["route"], json!({"kind":"unrouted","why":"fixed"}));

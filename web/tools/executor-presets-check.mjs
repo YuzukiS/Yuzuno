@@ -1,12 +1,13 @@
 // YN-23: Settings → Executor templates in Chromium, with every API answered
-// here (no Core, no CLI, no daily configuration). The ten presets come from
+// here (no Core, no CLI, no daily configuration). The eleven presets come from
 // Core's own presets.json, resolved as Core serves them. In English and
 // Chinese, light and dark, at 1280 px and at a 390 px phone: Add presets
 // shows them in the page's language, two are added as unsaved templates,
 // and each template card (delivery cards, steps) fits its width. Once, in
 // English: a step its delivery can't have is marked at its row and holds the
 // page's save bar, and its Save sends the presets' fields as one whole list
-// against the version read.
+// against the version read. YN-70: each preset's card names its kind of work,
+// and a template made from it keeps that tier, shown as its Kind of work.
 //   YUZUNO_UI_DIST=<isolated build> YUZUNO_BROWSER_OUTPUT=<dir> node tools/executor-presets-check.mjs
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -21,7 +22,7 @@ assert.notEqual(dist, resolve("dist"));
 assert.ok(process.env.YUZUNO_BROWSER_OUTPUT, "Give an output directory");
 const output = resolve(process.env.YUZUNO_BROWSER_OUTPUT);
 await mkdir(output, { recursive: true });
-const report = { task: "YN-23", checks: [], shots: [], writes: [], unexpected: [], errors: [] };
+const report = { task: "YN-23, YN-70", checks: [], shots: [], writes: [], unexpected: [], errors: [] };
 const check = (name, extra = {}) => {
   report.checks.push({ name, ...extra });
   console.log(`PASS ${name}`);
@@ -34,9 +35,10 @@ const presets = source.presets.flatMap((p) => ["en", "zh-Hans"].map((language) =
   id: p.id, language, label: p[language].label, whenToChoose: p[language].whenToChoose, modelHint: p[language].modelHint,
   instructions: p[language].instructions, deliveryMode: p.deliveryMode,
   ...(p.steps ? { steps: p.steps.map(({ label, ...step }) => (label ? { ...step, label: label[language] } : step)) } : {}),
-  ...(p.permissions ? { permissions: p.permissions } : {}),
+  ...(p.permissionLevel ? { permissionLevel: p.permissionLevel } : {}),
+  ...(p.tier ? { tier: p.tier } : {}),
 })));
-assert.equal(presets.length, 20);
+assert.equal(presets.length, 22);
 
 const agent = { id: "a", name: "Mori", status: "idle", harness: "codex", cwd: "/fixture", model: "gpt-6", projectId: "p1", color: "sage",
   createdAt: "", updatedAt: "", unreadCount: 0, pendingCount: 0, lastSeq: 1, reviewedSeq: 1, goal: "", connectionState: "connected" };
@@ -104,9 +106,9 @@ async function contextFor({ language, theme, phone }) {
 
 const words = {
   en: { settings: "Settings and updates", search: "executor", card: "Executor templates", addPresets: "Add presets", add2: "Add 2 presets",
-    first: "Design first", second: "Read-only investigation" },
+    first: "Design", second: "Read-only investigation", strongWork: "Strong work · ", tier: "Kind of work" },
   "zh-Hans": { settings: "设置与更新", search: "执行者", card: "执行者模板", addPresets: "添加预设", add2: "添加 2 个预设",
-    first: "设计先行", second: "只读调查" },
+    first: "设计", second: "只读调查", strongWork: "强活 · ", tier: "哪种活" },
 };
 async function openEditor(page, w) {
   const search = page.locator(".settings-search input");
@@ -163,11 +165,14 @@ try {
         const picker = box.locator(".executor-presets");
         await picker.waitFor({ timeout: 10_000 });
         const names = await picker.locator(".executor-preset-choice .theme-choice-name").allTextContents();
-        assert.deepEqual(names.map((n) => n.trim()), presets.filter((p) => p.language === language).map((p) => p.label), `${tag}: the ten, in the page's language`);
+        assert.deepEqual(names.map((n) => n.trim()), presets.filter((p) => p.language === language).map((p) => p.label), `${tag}: the eleven, in the page's language`);
+        // A preset's card by its own name: "Design" is also in "Build from an approved design".
+        const choice = (label) => picker.locator(".executor-preset-choice").filter({ has: page.locator(".theme-choice-name", { hasText: new RegExp(`^\\s*${label}\\s*$`) }) });
+        assert.ok((await choice(w.first).locator(".executor-preset-meta").first().textContent()).startsWith(w.strongWork), `${tag}: the design preset says its kind of work`);
         assert.deepEqual(await fits(box), { box: true, wider: [] }, `${tag}: the picker fits`);
         await shot(page, picker, `${tag}-1-presets`);
-        await picker.locator(".executor-preset-choice", { hasText: w.first }).click();
-        await picker.locator(".executor-preset-choice", { hasText: w.second }).click();
+        await choice(w.first).click();
+        await choice(w.second).click();
         await box.getByRole("button", { name: w.add2 }).click();
         await rowAt(2).waitFor({ timeout: 10_000 });
         assert.equal(await box.locator(".executor-presets").count(), 0, `${tag}: the picker closes`);
@@ -175,16 +180,19 @@ try {
         await shot(page, box.locator(".executor-template-list"), `${tag}-2-list`);
         const design = await openAt(1);
         assert.equal(await design.locator('input[aria-label]').first().inputValue(), w.first);
-        assert.equal(await design.locator(".executor-step").count(), 10, `${tag}: design-first's ten steps`);
-        assert.equal(await design.locator('.executor-delivery-choice input[value="pr"]').isChecked(), true);
+        assert.equal(await design.locator(".executor-step").count(), 4, `${tag}: the design's four steps, up to its approval`);
+        assert.equal(await design.locator('.executor-delivery-choice input[value="none"]').isChecked(), true);
+        assert.equal(await design.locator(`select[aria-label="${w.tier}"]`).inputValue(), "strong", `${tag}: its Kind of work, the preset's`);
         assert.deepEqual(await fits(box), { box: true, wider: [] }, `${tag}: the template's page fits`);
-        await shot(page, design, `${tag}-2-design-first`);
+        await shot(page, design, `${tag}-2-design`);
+        await design.locator(`select[aria-label="${w.tier}"]`).scrollIntoViewIfNeeded();
+        await shot(page, design.locator(".executor-template-runs"), `${tag}-2-design-kind-of-work`);
         await back();
         const dev = await openAt(0);
         assert.match(await box.locator(".executor-template-changed").textContent(), language === "en"
           ? /^Last changed: Dev Lead · .+ · Say how to test before review$/ : /^上次修改：Dev Lead · .+ · Say how to test before review$/, `${tag}: its last change`);
         await shot(page, dev, `${tag}-3-saved-template`);
-        check(`${tag}: the ten presets in the page's language, two added as unsaved templates; the list and each template's page fit their width`);
+        check(`${tag}: the eleven presets in the page's language, each card with its kind of work; two added as unsaved templates, the design's tier as its Kind of work; the list and each template's page fit their width`);
 
         if (tag === "en-light-desktop") {
           // A step its delivery can't have, marked at its row; then the presets' fields saved as one list.
@@ -212,12 +220,13 @@ try {
           const body = report.writes[0].body;
           const want = (id) => presets.find((p) => p.id === id && p.language === "en");
           assert.equal(body.expectedVersion, 3);
-          assert.deepEqual(body.templates.map((t) => t.id), ["dev", "design-first", "investigation"]);
+          assert.deepEqual(body.templates.map((t) => t.id), ["dev", "design", "investigation"]);
           const [, d, i] = body.templates;
-          assert.deepEqual({ ...d }, { id: "design-first", label: "Design first", harness: "codex", instructions: want("design-first").instructions,
-            deliveryMode: "pr", steps: want("design-first").steps, whenToChoose: want("design-first").whenToChoose });
-          assert.deepEqual({ ...i }, { id: "investigation", label: "Read-only investigation", harness: "codex", instructions: want("investigation").instructions,
-            deliveryMode: "none", steps: want("investigation").steps, whenToChoose: want("investigation").whenToChoose });
+          // As presets make them since YN-56: following routing, no harness; with their tier (YN-70).
+          assert.deepEqual({ ...d }, { id: "design", label: "Design", instructions: want("design").instructions,
+            deliveryMode: "none", steps: want("design").steps, whenToChoose: want("design").whenToChoose, tier: "strong" });
+          assert.deepEqual({ ...i }, { id: "investigation", label: "Read-only investigation", instructions: want("investigation").instructions,
+            deliveryMode: "none", steps: want("investigation").steps, whenToChoose: want("investigation").whenToChoose, tier: "strong" });
           check("en: a refused step marked at its row; Save sends the presets' fields as the whole list against version 3", { templates: body.templates.map((t) => t.id) });
         }
         await context.close();

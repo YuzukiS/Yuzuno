@@ -59,6 +59,9 @@ export const cardText = strings({
   credKey: (id: string) => `API key ${id}`,
   credPool: (n: number | null, fingerprint: string) => (n != null ? `claude-swap #${n} · ${fingerprint}` : `claude-swap · ${fingerprint}`),
   credHome: (id: string) => `Codex account ${id}`,
+  // YN-70: the kind of work it was dispatched for, and whose that was.
+  tier: (tier: string, source?: string) => `${tier === "strong" ? "strong" : tier === "fast" ? "fast" : tier} work${
+    source === "template" ? " (template)" : source === "lead" ? " (lead)" : source === "user" ? " (you)" : ""}`,
 }, {
   clock: {
     onTask: (x) => `已用 ${x}`,
@@ -101,6 +104,8 @@ export const cardText = strings({
   credKey: (id) => `API key ${id}`,
   credPool: (n, fingerprint) => (n != null ? `claude-swap #${n} · ${fingerprint}` : `claude-swap · ${fingerprint}`),
   credHome: (id) => `Codex 账号 ${id}`,
+  tier: (tier, source) => `${tier === "strong" ? "强" : tier === "fast" ? "快" : tier}活${
+    source === "template" ? "（模板）" : source === "lead" ? "（负责人）" : source === "user" ? "（你）" : ""}`,
 });
 
 /** A route's time as the card writes it: "04:00", in the user's clock format and time zone. */
@@ -109,16 +114,18 @@ const routeAt = timeFormatter({ hour: "2-digit", minute: "2-digit" });
 /** What routing gave an executor, in a line (YN-57 S4b): "Route: OpenCode · deepseek-flash · API key deepseek-main". */
 export function routeLine(route: ExecutorRoute, language: Language, time?: TimeDisplay): string {
   const t = cardText(language);
-  if (route.kind === "unrouted") return t.unrouted(route.why);
+  // YN-70: the kind of work it was dispatched for goes last, whatever routing did.
+  const tier = route.tier ? ` · ${t.tier(route.tier, route.tierSource)}` : "";
+  if (route.kind === "unrouted") return t.unrouted(route.why) + tier;
   if (route.kind === "waiting") {
     const at = route.earliest ? Date.parse(route.earliest) : NaN;
-    return t.routeWaiting(Number.isFinite(at) ? routeAt(time).format(at) : null);
+    return t.routeWaiting(Number.isFinite(at) ? routeAt(time).format(at) : null) + tier;
   }
   const c = route.credential;
   const credential = c.kind === "apiKey" ? t.credKey(c.keyId) : c.kind === "codexHome" ? t.credHome(c.id)
     : c.kind === "pool" ? t.credPool(c.account.number, shortFingerprint(c.account.fingerprint)) : t.credLogin;
   return t.route([harnessName[route.harness as keyof typeof harnessName] ?? route.harness, modelShort(route.model ?? ""), route.effort, credential]
-    .filter(Boolean).join(" · "));
+    .filter(Boolean).join(" · ")) + tier;
 }
 
 /** Since when, as the card says it: "on its task for 1h12m", "waiting

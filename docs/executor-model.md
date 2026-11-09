@@ -141,7 +141,7 @@ not a template's or a Project's.
 | **When to choose** (`whenToChoose`) | One line, up to 200 characters: what work the template is for. A lead reads it with `executor_templates_list` to choose a template; it is in the dispatch's materials, not in the executor's mail. |
 | **Delivery** (`deliveryMode`) | How the work is delivered: `pr`, as a pull request; `direct-commit`, committed without one (for a results repository, say); or `none`, no repository change, the result itself being the deliverable (an investigation, a memo, a check). Unset is `pr`, so every template saved before keeps today's flow. See [Delivery and steps](#delivery-and-steps). |
 | **Steps** (`steps`) | 1 to 12 steps its executors follow, in order. Unset is its delivery's default steps. See [Delivery and steps](#delivery-and-steps). |
-| **Tier** (`tier`) | The kind of model its work wants (YN-70): `strong`, for designing, investigating, deciding and checking, or `fast`, for building what was decided. Unset is no preference. Its executors' materials say it under `template`, as `tier` with `tierSource: "template"`, and their mail says it, such as `Tier: fast · 快 (the template's default)`. `executor_templates_list` lists it. Routing chooses only a candidate that serves it (see [Tiers](executor-routing.md#tiers-yn-70)), and a dispatch may name another: `task_dispatch` with `executor.tier`, which the materials then say with `tierSource: "lead"` (or `"user"`). Settings shows no control for it: a save there keeps the tier a template was saved with, or its preset's. |
+| **Tier** (`tier`) | The kind of model its work wants (YN-70): `strong`, for designing, investigating, deciding and checking, or `fast`, for building what was decided. Unset is no preference. Its executors' materials say it under `template`, as `tier` with `tierSource: "template"`, and their mail says it, such as `Tier: fast · 快 (the template's default)`. `executor_templates_list` lists it. Routing chooses only a candidate that serves it (see [Tiers](executor-routing.md#tiers-yn-70)), and a dispatch may name another: `task_dispatch` with `executor.tier`, which the materials then say with `tierSource: "lead"` (or `"user"`). In Settings it is the template's **Kind of work** (哪种活), under How it runs: Any, Strong or Fast; a preset's tier comes with it, and Add presets shows each preset's. |
 
 - **Which template a dispatch gets.** The Workspace's template of the named
   id, whatever the task's Project. A dispatch naming an id the Workspace
@@ -789,6 +789,11 @@ An executor with a dispatch record also says what executor routing gave it
   - `fixed`: its template is fixed;
   - `routingOff` or `noCandidate`: released after waiting
     ([executor routing](executor-routing.md)).
+
+Each kind with a route record also has the executor's `tier` and
+`tierSource` when its dispatch had one ([Tiers](executor-routing.md#tiers-yn-70)).
+The executor's card says it after the route, such as `Route: OpenCode ·
+deepseek-flash · API key deepseek-main · fast work (template)`.
 
 It never holds a key's value or an account's email.
 
