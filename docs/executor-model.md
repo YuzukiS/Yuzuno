@@ -141,7 +141,7 @@ not a template's or a Project's.
 | **When to choose** (`whenToChoose`) | One line, up to 200 characters: what work the template is for. A lead reads it with `executor_templates_list` to choose a template; it is in the dispatch's materials, not in the executor's mail. |
 | **Delivery** (`deliveryMode`) | How the work is delivered: `pr`, as a pull request; `direct-commit`, committed without one (for a results repository, say); or `none`, no repository change, the result itself being the deliverable (an investigation, a memo, a check). Unset is `pr`, so every template saved before keeps today's flow. See [Delivery and steps](#delivery-and-steps). |
 | **Steps** (`steps`) | 1 to 12 steps its executors follow, in order. Unset is its delivery's default steps. See [Delivery and steps](#delivery-and-steps). |
-| **Tier** (`tier`) | The kind of model its work wants (YN-70): `strong`, for designing, investigating, deciding and checking, or `fast`, for building what was decided. Unset is no preference. Its executors' materials say it under `template`, as `tier` with `tierSource: "template"`, and their mail says it, such as `Tier: fast · 快 (the template's default)`. `executor_templates_list` lists it. Routing doesn't choose by it. Settings shows no control for it: a save there keeps the tier a template was saved with, or its preset's. |
+| **Tier** (`tier`) | The kind of model its work wants (YN-70): `strong`, for designing, investigating, deciding and checking, or `fast`, for building what was decided. Unset is no preference. Its executors' materials say it under `template`, as `tier` with `tierSource: "template"`, and their mail says it, such as `Tier: fast · 快 (the template's default)`. `executor_templates_list` lists it. Routing chooses only a candidate that serves it (see [Tiers](executor-routing.md#tiers-yn-70)), and a dispatch may name another: `task_dispatch` with `executor.tier`, which the materials then say with `tierSource: "lead"` (or `"user"`). Settings shows no control for it: a save there keeps the tier a template was saved with, or its preset's. |
 
 - **Which template a dispatch gets.** The Workspace's template of the named
   id, whatever the task's Project. A dispatch naming an id the Workspace
@@ -338,7 +338,10 @@ records (see [An executor's session](#an-executors-session)).
 
 To dispatch a task to a new executor, give `executor` instead of `toAgentId`
 in `task_dispatch`: `executor: {}` for a [general executor](#the-general-executor),
-or `executor: {templateId}` for one made from that template. In the task's
+or `executor: {templateId}` for one made from that template. Either may also
+name `machineId` (below) and `tier`, `strong` or `fast` (YN-70): the kind of
+model this executor's work wants, over its template's
+([Tiers](executor-routing.md#tiers-yn-70)). In the task's
 **Dispatch** form, choose **A new executor**: the general executor comes first
 and is chosen unless you pick a template. Core then:
 
