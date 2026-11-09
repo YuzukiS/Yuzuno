@@ -501,7 +501,7 @@ fn save(store: &Store, executor: &Released, mut record: Value) -> Result<String>
         .optional()?
         .flatten();
     let first = first.unwrap_or_else(now);
-    let waiting = record["results"].as_array().is_some_and(|r| r.iter().any(|r| r["state"] == "waiting"));
+    let waiting = record["error"].is_string() || record["results"].as_array().is_some_and(|r| r.iter().any(|r| r["state"] == "waiting"));
     let expired = chrono::DateTime::parse_from_rfc3339(&first).is_ok_and(|at| chrono::Utc::now() - at.with_timezone(&chrono::Utc) > chrono::Duration::days(GIVE_UP_DAYS));
     let state = match (waiting, expired) {
         (false, _) => "done",
@@ -522,7 +522,10 @@ fn save(store: &Store, executor: &Released, mut record: Value) -> Result<String>
         params![executor.agent, executor.task, state, next, now(), record.to_string()],
     )?;
     if state != "waiting" {
-        if let (Some(task), Some(body)) = (&executor.task, comment(executor, &record)) {
+        let task = executor.task.as_ref().filter(|task| {
+            tx.query_row("SELECT EXISTS(SELECT 1 FROM collaboration_tasks WHERE id=?1)", [task], |r| r.get(0)).unwrap_or(false)
+        });
+        if let (Some(task), Some(body)) = (task, comment(executor, &record)) {
             collaboration::activity(&tx, task, "comment", &core(), &json!({"buildCleanup": {"agentId": executor.agent}}), json!({"body": body}))?;
         }
     }
@@ -542,7 +545,9 @@ impl Workspace {
         let mut handled = 0;
         for executor in due {
             let Ok(_permit) = self.admission.enter_work() else { break };
-            let record = clean(self, &executor).await?;
+            // One that cannot be checked waits for its next try, so it never
+            // holds up the executors after it.
+            let record = clean(self, &executor).await.unwrap_or_else(|error| json!({"error": format!("{error:#}"), "results": []}));
             let store = self.store.clone();
             tokio::task::spawn_blocking(move || save(&store, &executor, record)).await??;
             handled += 1;

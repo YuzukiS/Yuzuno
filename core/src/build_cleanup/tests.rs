@@ -301,6 +301,23 @@ async fn lab_with_waiting() -> Lab {
     lab
 }
 
+/// An executor whose task names no Project folder here is done at once, with
+/// nothing to do, and holds up no executor released after it.
+#[tokio::test]
+async fn one_without_a_project_folder_is_done_and_the_others_go_on() {
+    let lab = lab();
+    let a = worktree(&lab, "a", "feat/a");
+    let debug = target(&a.join("target"), &["debug"]).join("debug");
+    executor(&lab, "e1", &a, Some(3));
+    executor(&lab, "e2", &a, Some(2));
+    // e1's task is none Core knows: it has no Project, so no folder.
+    lab.ws.store.db.write().unwrap().execute("UPDATE agent_roles SET task_id='no-such-task' WHERE agent_id='e1'", []).unwrap();
+    turn(&lab, true, 1, true);
+    assert_eq!(pass(&lab).await, 2);
+    assert_eq!(record(&lab, "e1").unwrap().0, "done", "no folder of its can be named: nothing to do");
+    assert!(!debug.exists(), "e2's went");
+}
+
 #[test]
 fn the_policy_changes_only_against_the_version_read_and_within_its_bounds() {
     let lab = lab();
