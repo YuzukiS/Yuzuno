@@ -17,7 +17,9 @@ version; a later slice adds to it.
 | S3b2 | The choice at dispatch, waiting for a candidate, `route_json`, `choices` | Done |
 | S3b3 | A real DeepSeek executor through routing: a lab check | Done |
 | S4 | The Settings page (YN-49) | Done |
-| YN-56 S1 | [Permission levels](#permission-levels-yn-56), and candidates whose harness doesn't keep one | This version |
+| YN-56 S1 | [Permission levels](#permission-levels-yn-56), and candidates whose harness doesn't keep one | Done |
+| YN-56 S2 | A template's level at dispatch; templates that follow routing name no harness | Done |
+| YN-56 S4 | Settings: a template's tool and level, and the Templates section's switch per template | This version |
 
 An executor starts with a routing key or account only when its runtime
 profile names one. Routing sets it at the executor's dispatch, while the
@@ -433,9 +435,12 @@ No level is each harness's own default for new Agents, kept everywhere.
 OpenCode keeps no level: Core adds no permission rule of its own to it, so
 only its own configuration applies.
 
-At this version a level reaches routing only through the previews'
-`permissionLevel` (below). A dispatch carries none, so routing at dispatch is
-as before.
+A template's level goes with each dispatch from it ([Executor
+templates](executor-model.md#executor-templates)): routing passes over a
+candidate whose harness doesn't keep it. When no enabled candidate keeps it,
+the dispatch is not routed and starts on the default harness for new Agents,
+with the level; one that harness doesn't keep is refused (`level_not_kept`).
+The previews take one too (`permissionLevel`, below).
 
 ### Routing at dispatch (S3b2)
 
@@ -444,13 +449,14 @@ dispatch is routed:
 
 - **A candidate is chosen in the dispatch's own transaction.** It reads the
   readings as Core last observed them, and gives the executor:
-  - its harness, model and effort. Its permissions are the template's for that harness, else that harness's defaults;
+  - its harness, model and effort. Its permission is the template's [permission level](#permission-levels-yn-56) on that harness; a template with none gets that harness's defaults for new Agents. A candidate whose harness doesn't keep the level is passed over;
   - its account or key: its runtime profile, set as soon as the executor exists and before it can start.
   A candidate that runs on this Core host only makes it run here. The record
   of why is kept on the dispatch (`route_json`), in `task_get` under
   `executorSlot.route`, and in `GET /api/routing/choices`.
 - **When none can be chosen, the executor waits.** It is made with the
-  harness of the first candidate that could run there, and stays in the
+  harness of the first candidate that could run there and keeps its level,
+  and stays in the
   queue while executors after it start. At each slot pass routing is read
   again, among the candidates of its harness only. The first that holds
   gives it its model, effort and account or key (`changedAtStart`), and it

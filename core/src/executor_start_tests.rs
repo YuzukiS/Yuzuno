@@ -36,7 +36,7 @@ impl Lab {
         crate::agent_roles::save(&ws.store, &project, 0, vec!["lead".into()]).unwrap();
         ws.store.db.write().unwrap().execute(
             "INSERT INTO workspace_meta(key,value) VALUES('executors.templates',?1)",
-            [json!({"version":1,"templates":[{"id":"reviewer","label":"Reviewer","harness":"codex"}]}).to_string()]).unwrap();
+            [json!({"version":1,"templates":[{"id":"reviewer","label":"Reviewer","harness":"codex","routing":"fixed"}]}).to_string()]).unwrap();
         Lab { _dir: dir, ws, project }
     }
 
@@ -707,13 +707,13 @@ async fn a_cut_off_remote_start_is_failed_only_on_a_stop_that_confirms_its_insta
         lab.quiet();
         *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(Duration::from_secs(1));
         let requests = lab.ssh_machine(machine, "/srv/lab/project", hanging(lab._dir.path()), "ok", stop);
-        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex","machineId":machine}]));
+        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex","routing":"fixed","machineId":machine}]));
         let task = lab.task("Review on the lab box").await;
         let first = lab.dispatch(&task, "remote").await;
         assert_eq!(lab.machine_of(&first).as_deref(), Some(machine), "made on its template's machine");
         assert_eq!(lab.ws.store.agent(&first).unwrap().cwd, "/srv/lab/project", "in the Project's folder there");
         // Its template now names this Core host; its rebuild stays where it was made.
-        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex"}]));
+        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex","routing":"fixed"}]));
         for started in lab.ws.executor_slots_pass().await {
             started.await.unwrap();
         }
@@ -853,8 +853,8 @@ async fn a_cut_off_remote_claude_start_is_failed_only_when_its_host_confirms_the
         let lab = Lab::new(missing).await;
         lab.quiet();
         *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(Duration::from_secs(1));
-        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex"},
-            {"id":"writer","label":"Writer","harness":"claude"}]));
+        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex","routing":"fixed"},
+            {"id":"writer","label":"Writer","harness":"claude","routing":"fixed"}]));
         lab.ssh_machine(machine, "/srv/lab/project", "unused".into(), "ok", "ok");
         let script = lab._dir.path().join(format!("{machine}.cjs"));
         std::fs::write(&script, HOST).unwrap();
@@ -893,8 +893,8 @@ async fn a_failed_remote_claude_start_is_definite_only_before_it_asked_for_its_h
         let lab = Lab::new(missing).await;
         lab.quiet();
         *lab.ws.executor_slots.start_limit.lock().unwrap() = Some(Duration::from_secs(1));
-        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex"},
-            {"id":"writer","label":"Writer","harness":"claude"}]));
+        lab.templates(json!([{"id":"reviewer","label":"Reviewer","harness":"codex","routing":"fixed"},
+            {"id":"writer","label":"Writer","harness":"claude","routing":"fixed"}]));
         lab.ssh_machine(machine, "/srv/lab/project", "unused".into(), "ok", "ok");
         crate::claude::REMOTE_ATTACH.lock().unwrap().push((machine.to_owned(), vec![how.to_owned()]));
         let task = lab.task("Write on the lab box").await;

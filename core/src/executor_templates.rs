@@ -1,7 +1,15 @@
 //! Executor templates (T-34, executor model phase 1; docs/executor-model.md):
 //! what an Agent that Core creates for one task from a dispatch is made of.
-//! A template names its harness, model and permissions, how its Agent is
-//! named and where it works, and instructions it starts with.
+//! A template names its permission level, how its Agent is named and where it
+//! works, and instructions it starts with.
+//!
+//! Its harness, model and account come from routing, or while routing is off
+//! from the defaults for new Agents (YN-56); its permission is a level each
+//! harness keeps in its own way (permission_levels.rs). Only a template fixed
+//! against routing (`routing: "fixed"`) names its harness and model. A template
+//! as a Core before YN-56 kept it reads in this shape (`upgraded`), and a fixed
+//! one is stored with its harness's own permission beside its level, which
+//! such a Core reads instead (`stored_list`).
 //!
 //! The Workspace keeps one list, beside the defaults for new Agents
 //! (`workspace_meta`), and a dispatch names a template of it by its id
@@ -20,7 +28,8 @@
 //! dispatch's own machineId wins (T-35 S3a). How many run at once is each
 //! machine's limit alone (executor_slots.rs, YN-2 S5), not a template's.
 use crate::{
-    agent_defaults::{catalog_entry, catalog_name, check_in_catalog, CLAUDE_MODES, CODEX_PRESETS},
+    agent_defaults::{catalog_entry, catalog_name, check_in_catalog},
+    permission_levels,
     server::ApiError,
     store::Store,
     workspace::Workspace,
@@ -52,8 +61,9 @@ pub const MAX_INSTRUCTIONS: usize = 8 * 1024;
 /// What `limits.maxConcurrent` still answers, for that same release: a
 /// template page from before S5 reads its field's bound from it.
 const OLDER_PAGES_MAX_CONCURRENT: u32 = 64;
-const FIELDS: [&str; 16] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
-    "permissionMode", "machineId", "instructions", "maxConcurrent", "origin", "deliveryMode", "steps", "whenToChoose", "routing"];
+const FIELDS: [&str; 18] = ["id", "label", "namePattern", "harness", "model", "reasoningEffort", "permissionPreset",
+    "permissionMode", "machineId", "instructions", "maxConcurrent", "origin", "deliveryMode", "steps", "whenToChoose", "routing",
+    "permissionLevel", "formerHarness"];
 /// How a template's work is delivered (YN-23, T-43 S1a): a pull request
 /// (unset, as every template saved before), a commit without one, or no
 /// repository change at all. Said in its executors' materials; Core holds
@@ -77,21 +87,38 @@ pub struct Template {
     /// Unset is `DEFAULT_NAME_PATTERN`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_pattern: Option<String>,
-    pub harness: String,
-    /// Codex or Claude Code: a model of this Core host's catalog. Unset
-    /// inherits the defaults for new Agents (the Project's, then the
-    /// Workspace's), as an Agent created without one does. OpenCode: none.
+    /// A fixed template's harness; none on one that follows routing (YN-56).
+    /// A dispatch sets the harness it resolved (`resolved`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// A fixed template's: for Codex or Claude Code a model of this Core
+    /// host's catalog, for OpenCode as it names one. Unset inherits the
+    /// defaults for new Agents (the Project's, then the Workspace's), as an
+    /// Agent created without one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Codex only, with a model: one of that model's efforts.
+    /// A fixed Codex template's, with a model: one of that model's efforts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-    /// Codex only; unset inherits.
+    /// Its permission level (permission_levels): `ask`, `auto` or `full`.
+    /// Unset is each harness's default for new Agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_level: Option<String>,
+    /// A fixed Codex template's `config` (the machine's own Codex
+    /// configuration), which no level is; a dispatch sets the preset its
+    /// level is on Codex.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_preset: Option<String>,
-    /// Claude Code only; unset inherits.
+    /// Set only by a dispatch: the mode its level is on Claude Code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// The harness a template that follows routing named before core.29,
+    /// which reading it in this shape dropped (`upgraded`; #824 R1). Named
+    /// when a dispatch is refused for a level the default harness doesn't
+    /// keep, and shown in Settings, as the way back. Kept by saves until the
+    /// template is fixed to a harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub former_harness: Option<String>,
     /// Where its executors run: unset or `local` for this Core host, a
     /// registered machine's id (T-35 S3a), or `auto` for the one Core chooses
     /// at each dispatch (S3b); a dispatch's own machineId wins.
@@ -109,7 +136,8 @@ pub struct Template {
     pub delivery_mode: Option<String>,
     /// `fixed`: its executors start with this template's own harness and
     /// model on the host's login, whatever the routing policy says (YN-34 S3).
-    /// Unset follows the Workspace's routing.
+    /// Unset follows the Workspace's routing, and while routing is off (or
+    /// gives no candidate) the defaults for new Agents (YN-56).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<String>,
     /// 1 to 12 steps its executors follow, descriptive for now: Core keeps
@@ -263,23 +291,48 @@ impl Template {
         if let Some(pattern) = &self.name_pattern {
             check_pattern(pattern)?;
         }
-        ensure!(HARNESSES.contains(&self.harness.as_str()), "A template's harness is Codex, Claude Code or OpenCode, not {}", self.harness);
         named(&self.model, "A model")?;
         named(&self.reasoning_effort, "A reasoning effort")?;
-        match self.harness.as_str() {
+        let fixed = match self.routing.as_deref() {
+            None => false,
+            Some("fixed") => true,
+            Some(_) => bail!("A template's routing is \"fixed\" or unset"),
+        };
+        if let Some(level) = &self.permission_level {
+            permission_levels::check(level)?;
+        }
+        let Some(harness) = self.harness.as_deref() else {
+            ensure!(!fixed, "A fixed template names its harness: Codex, Claude Code or OpenCode");
+            ensure!(self.model.is_none() && self.reasoning_effort.is_none(),
+                "A template that follows routing names no model or reasoning effort: routing gives them, or the defaults for new Agents while routing is off. Fix it (routing: fixed) to name them");
+            ensure!(self.permission_preset.is_none() && self.permission_mode.is_none(),
+                "A template that follows routing takes a permission level (permissionLevel: ask, auto or full), not one harness's own permission");
+            if let Some(former) = self.former_harness.as_deref() {
+                ensure!(HARNESSES.contains(&former), "formerHarness is Codex, Claude Code or OpenCode, not {former}");
+            }
+            machine_named(self.machine_id.as_deref(), "")?;
+            return self.validate_rest();
+        };
+        ensure!(HARNESSES.contains(&harness), "A template's harness is Codex, Claude Code or OpenCode, not {harness}");
+        ensure!(fixed, "A template that follows routing names no harness: routing chooses it, or the default for new Agents while routing is off. Fix it (routing: fixed) to name one");
+        ensure!(self.former_harness.is_none(), "A fixed template names its harness; formerHarness is for one that follows routing");
+        if let Some(level) = self.permission_level.as_deref().filter(|level| !permission_levels::keeps(Some(*level), harness)) {
+            bail!("{} doesn't keep the permission level {level} ({}); choose another level", permission_levels::harness_name(harness), permission_levels::label(level).0);
+        }
+        ensure!(self.permission_mode.is_none(), "A template takes a permission level (permissionLevel), not a Claude Code permission mode");
+        match harness {
             "codex" => {
-                ensure!(self.permission_mode.is_none(), "A Claude Code permission mode does not apply to a Codex template");
                 ensure!(self.reasoning_effort.is_none() || self.model.is_some(), "Choose the Codex model the reasoning effort is for");
-                if let Some(preset) = self.permission_preset.as_deref().filter(|p| !CODEX_PRESETS.contains(p)) {
-                    bail!("Unknown Codex permission mode: {preset}");
+                match self.permission_preset.as_deref() {
+                    None => {}
+                    Some("config") => ensure!(self.permission_level.is_none(),
+                        "A fixed Codex template takes a permission level or its own configuration (permissionPreset: config), not both"),
+                    Some(_) => bail!("A template takes a permission level (permissionLevel); of Codex's own permissions only config, the machine's own configuration"),
                 }
             }
             "claude" => {
                 ensure!(self.permission_preset.is_none(), "A Codex permission mode does not apply to a Claude Code template");
                 ensure!(self.reasoning_effort.is_none(), "A Claude Code template takes no reasoning effort; each Agent keeps its own");
-                if let Some(mode) = self.permission_mode.as_deref().filter(|m| !CLAUDE_MODES.contains(m)) {
-                    bail!("Unknown Claude Code permission mode: {mode}");
-                }
             }
             _ => {
                 ensure!(opencode, "OpenCode Agents aren't enabled on this Core");
@@ -289,12 +342,15 @@ impl Template {
                     crate::opencode_agent::check_model_id(model)?;
                 }
                 ensure!(self.reasoning_effort.is_none(), "An OpenCode template takes no reasoning effort");
-                ensure!(self.permission_preset.is_none() && self.permission_mode.is_none(),
-                    "OpenCode takes its permissions from its own configuration");
+                ensure!(self.permission_preset.is_none(), "OpenCode takes its permissions from its own configuration");
             }
         }
-        machine_named(self.machine_id.as_deref(), &self.harness)?;
-        ensure!(self.routing.as_deref().is_none_or(|r| r == "fixed"), "A template's routing is \"fixed\" or unset");
+        machine_named(self.machine_id.as_deref(), harness)?;
+        self.validate_rest()
+    }
+
+    /// What every template is checked for, whatever its harness.
+    fn validate_rest(&self) -> Result<()> {
         if let Some(text) = &self.instructions {
             ensure!(text.len() <= MAX_INSTRUCTIONS, "A template's instructions are at most 8 KiB");
         }
@@ -328,19 +384,95 @@ impl Template {
         self.steps.clone().unwrap_or_else(|| default_steps(self.delivery()))
     }
 
-    /// The general executor a dispatch with no `templateId` makes (YN-2):
-    /// `harness` is the new-Agent default of the task's Project, else the
-    /// Workspace's, and everything else is unset, so the executor inherits
-    /// the defaults for new Agents as any new Agent does. It has no
+    /// The general executor a dispatch with no `templateId` makes (YN-2): it
+    /// follows routing, and everything else is unset, so the executor
+    /// inherits the defaults for new Agents as any new Agent does. It has no
     /// instructions of its own: the Project's handover and the task's
     /// materials are its instructions. Its id is empty, which no saved
     /// template can have.
-    pub(crate) fn general(harness: String) -> Self {
+    pub(crate) fn general() -> Self {
         Self {
-            id: String::new(), label: GENERAL_LABEL.into(), name_pattern: None, harness, model: None, reasoning_effort: None,
-            permission_preset: None, permission_mode: None, machine_id: None, instructions: None, origin: None,
-            delivery_mode: None, routing: None, steps: None, when_to_choose: None,
+            id: String::new(), label: GENERAL_LABEL.into(), name_pattern: None, harness: None, model: None, reasoning_effort: None,
+            permission_level: None, permission_preset: None, permission_mode: None, former_harness: None, machine_id: None,
+            instructions: None, origin: None, delivery_mode: None, routing: None, steps: None, when_to_choose: None,
         }
+    }
+
+    /// Whether it is fixed against routing (`routing: "fixed"`).
+    pub(crate) fn fixed(&self) -> bool {
+        self.routing.as_deref() == Some("fixed")
+    }
+
+    /// Its harness, once a dispatch resolved it (`resolved`); empty before.
+    pub(crate) fn harness(&self) -> &str {
+        self.harness.as_deref().unwrap_or_default()
+    }
+
+    /// This template as a dispatch starts it on `harness`, without routing:
+    /// its level as that harness's own permission (YN-56). A level the
+    /// harness doesn't keep refuses the dispatch (`level_not_kept`).
+    pub(crate) fn resolved(&self, harness: &str) -> Result<Self> {
+        let mut template = self.clone();
+        template.harness = Some(harness.to_owned());
+        if let Some(level) = self.permission_level.as_deref() {
+            let Some(native) = permission_levels::native(level, harness) else {
+                let name = permission_levels::harness_name(harness);
+                let what = if self.fixed() { "its harness" } else { "the harness for new Agents here (no routing candidate keeping it)" };
+                let fix = match self.former_harness.as_deref() {
+                    Some(former) => format!("It named {0} before core.29: fix it to {0} in Settings → Executor templates (Runs with), \
+                        or change the default harness for new Agents of the task's Project", permission_levels::harness_name(former)),
+                    None => "Choose another level for the template, or fix it to a harness that keeps this one".to_owned(),
+                };
+                bail!("level_not_kept: {} asks for the permission level {level} ({}), which {name}, {what}, doesn't keep. {fix}",
+                    self.label, permission_levels::label(level).0);
+            };
+            template.permission_preset = (harness == "codex").then(|| native.to_owned());
+            template.permission_mode = (harness == "claude").then(|| native.to_owned());
+        }
+        Ok(template)
+    }
+
+    /// A template as a Core before YN-56 kept it, in this Core's shape. Its
+    /// harness's own permission is its level. On a fixed Codex or Claude Code
+    /// template the level is always what that permission says: this Core
+    /// stores the two together, and an older Core changes only the permission,
+    /// keeping the level beside it unchanged (#820 R2). So no permission
+    /// (inherit), or one no level is (Codex's `config`), is no level; a fixed
+    /// OpenCode template has no permission of its own and keeps its level.
+    /// One that follows routing names no harness, model or effort: routing
+    /// gives them, or the defaults for new Agents. A permission no level is
+    /// stays on a fixed Codex template, and is the defaults for new Agents on
+    /// one that follows routing.
+    fn upgraded(mut self) -> Self {
+        let harness = self.harness.as_deref().unwrap_or_default();
+        if self.harness.is_some() && !HARNESSES.contains(&harness) {
+            // Another harness: a later Core's template, which this Core doesn't offer.
+            return self;
+        }
+        match permission_levels::of_native(harness, self.permission_preset.as_deref(), self.permission_mode.as_deref()) {
+            Some(level) => {
+                self.permission_level = Some(level.to_owned());
+                self.permission_preset = None;
+                self.permission_mode = None;
+            }
+            None if self.fixed() && matches!(harness, "codex" | "claude") => {
+                self.permission_level = None;
+                self.permission_mode = None;
+            }
+            None => {}
+        }
+        if !self.fixed() {
+            // A harness this Core knows, dropped: kept as the way back (#824 R1).
+            if self.former_harness.is_none() {
+                self.former_harness = self.harness.clone();
+            }
+            self.harness = None;
+            self.model = None;
+            self.reasoning_effort = None;
+            self.permission_preset = None;
+            self.permission_mode = None;
+        }
+        self
     }
 
     /// What a dispatch's materials say of this template, from the list
@@ -355,6 +487,9 @@ impl Template {
         if id.is_some() {
             given["deliveryMode"] = json!(self.delivery());
             given["steps"] = json!(self.resolved_steps());
+            if let Some(level) = &self.permission_level {
+                given["permissionLevel"] = json!(level);
+            }
             if let Some(line) = &self.when_to_choose {
                 given["whenToChoose"] = json!(line);
             }
@@ -378,17 +513,17 @@ impl Template {
     /// names one, and not the one the saved template of its id has.
     fn names_new_model(&self, saved: &[Template]) -> bool {
         self.model.is_some() && !saved.iter().any(|t| t.id == self.id && t.harness == self.harness
-            && t.model == self.model && t.reasoning_effort == self.reasoning_effort && t.permission_mode == self.permission_mode)
+            && t.model == self.model && t.reasoning_effort == self.reasoning_effort && t.permission_level == self.permission_level)
     }
 }
 
-/// A stored template as this Core can use it: one it reads, whose values it
-/// accepts. A later Core's template that reads but holds what this Core
+/// A stored template as this Core can use it: one it reads, in this Core's
+/// shape (`upgraded`), whose values it accepts. A later Core's template that reads but holds what this Core
 /// refuses (another harness or machine, a larger limit) is not this Core's
 /// (R2 70093e91). OpenCode's gate is not part of it: an OpenCode template
 /// saved while OpenCode was enabled stays this Core's own.
 pub(crate) fn readable(value: &Value) -> Option<Template> {
-    let template: Template = serde_json::from_value(value.clone()).ok()?;
+    let template = serde_json::from_value::<Template>(value.clone()).ok()?.upgraded();
     template.validate(true).ok().map(|_| template)
 }
 
@@ -418,6 +553,15 @@ fn stored_list(current: &Templates, templates: &[Template], version: i64) -> Res
     let mut items = Vec::with_capacity(templates.len());
     for template in templates {
         let mut item = serde_json::to_value(template)?;
+        // A fixed template's level as its harness's own permission too: a Core
+        // before YN-56 reads that, and starts its executors as this one does.
+        if let (Some(level), Some(harness)) = (template.permission_level.as_deref(), template.harness.as_deref()) {
+            match (harness, permission_levels::native(level, harness)) {
+                ("codex", Some(preset)) => item["permissionPreset"] = json!(preset),
+                ("claude", Some(mode)) => item["permissionMode"] = json!(mode),
+                _ => {}
+            }
+        }
         // Only from a template this Core can use: one it can't is replaced
         // as sent, never mixed with its fields (R3 46d5d3d0).
         let old = before.iter().find(|old| old["id"] == template.id.as_str()).filter(|old| readable(old).is_some());
@@ -450,18 +594,16 @@ pub(crate) fn ids(db: &Connection) -> Result<Vec<String>> {
 }
 
 /// The ten presets (YN-23, T-43 S1a), in each language the page has. A
-/// preset names no harness: the page fills in the default for new Agents.
+/// preset names no harness: its templates follow routing (YN-56).
 const PRESETS: &str = include_str!("executor_templates/presets.json");
 /// The languages presets are written in, as the page names them.
 pub(crate) const PRESET_LANGUAGES: [&str; 2] = ["en", "zh-Hans"];
 
 /// The template presets the user can adopt in Settings, one entry per preset
 /// and language: `{id, language, label, whenToChoose, modelHint,
-/// instructions, deliveryMode, steps?, permissions?}`, where `permissions`
-/// gives the permission for each harness (`codex`: a permissionPreset,
-/// `claude`: a permissionMode). Never stored by Core and never saved by an
-/// Agent: adopting one fills an unsaved template on the page, and the
-/// user's ordinary save writes it.
+/// instructions, deliveryMode, steps?, permissionLevel?}`. Never stored by
+/// Core and never saved by an Agent: adopting one fills an unsaved template
+/// on the page, and the user's ordinary save writes it.
 pub(crate) fn presets() -> Vec<Value> {
     static RESOLVED: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
     RESOLVED.get_or_init(|| {
@@ -488,8 +630,8 @@ pub(crate) fn presets() -> Vec<Value> {
                         step
                     }).collect();
                 }
-                if preset["permissions"].is_object() {
-                    item["permissions"] = preset["permissions"].clone();
+                if let Some(level) = preset["permissionLevel"].as_str() {
+                    item["permissionLevel"] = json!(level);
                 }
                 out.push(item);
             }
@@ -631,7 +773,7 @@ pub(crate) fn parse_one(value: &Value, opencode: bool, saved: &[Template]) -> Re
     }
     // An older page's `maxConcurrent` is taken and dropped (S5): Template has no such field.
     let template: Template = serde_json::from_value(value.clone()).map_err(|e| anyhow::anyhow!("Invalid template: {e}"))?;
-    let kept = saved.iter().any(|t| t.id == template.id && t.harness == "opencode");
+    let kept = saved.iter().any(|t| t.id == template.id && t.harness() == "opencode");
     template.validate(opencode || kept)?;
     Ok(template)
 }
@@ -654,7 +796,7 @@ fn confirm_models(templates: &mut [Template], saved: &[Template], catalogs: &Cat
     };
     for template in templates.iter_mut().filter(|t| t.names_new_model(saved)) {
         let model = template.model.clone().unwrap_or_default();
-        match template.harness.as_str() {
+        match template.harness() {
             "codex" => {
                 let catalog = read(&catalogs.codex, "Codex")?;
                 let checked = check_in_catalog(&catalog, &model, template.reasoning_effort.as_deref())
@@ -665,7 +807,7 @@ fn confirm_models(templates: &mut [Template], saved: &[Template], catalogs: &Cat
                 let catalog = read(&catalogs.claude, "Claude Code")?;
                 let entry = catalog_entry(&catalog, "Claude Code", &model)
                     .map_err(|e| anyhow::anyhow!("{}: {e:#}; nothing was saved", template.label))?;
-                ensure!(!(entry["supportsAutoMode"] == false && template.permission_mode.as_deref() == Some("auto")),
+                ensure!(!(entry["supportsAutoMode"] == false && template.permission_level.as_deref() == Some("auto")),
                     "{}: {model} can't run in Auto mode; nothing was saved", template.label);
                 template.model = Some(catalog_name(entry, &model));
             }
@@ -726,6 +868,7 @@ fn view(workspace: &Templates) -> Value {
         "workspace": workspace,
         "available": available,
         "presets": presets(),
+        "levels": crate::permission_levels::table(),
         "defaultNamePattern": DEFAULT_NAME_PATTERN,
         // A list the migration took past the limit keeps what it holds.
         "limits": {"templates": MAX_TEMPLATES.max(workspace.templates.len()), "instructionsBytes": MAX_INSTRUCTIONS,
@@ -786,7 +929,7 @@ async fn prepared(ws: &Arc<Workspace>, input: &Save, saved: Templates) -> Result
 /// Each model `templates` name anew, against `saved`, confirmed by this Core
 /// host's catalogs as a save confirms them.
 pub(crate) async fn confirmed(ws: &Arc<Workspace>, templates: &mut [Template], saved: &[Template]) -> Result<()> {
-    let local = |harness: &str| templates.iter().any(|t| t.harness == harness && t.names_new_model(saved));
+    let local = |harness: &str| templates.iter().any(|t| t.harness() == harness && t.names_new_model(saved));
     let catalogs = Catalogs {
         codex: if local("codex") { Some(ws.catalog().await) } else { None },
         claude: if local("claude") { Some(ws.claude_catalog().await) } else { None },
@@ -819,20 +962,23 @@ pub(crate) const LIST_TOOL: &str = "executor_templates_list";
 pub(crate) fn tool_definition() -> Value {
     json!({
         "name": LIST_TOOL,
-        "description": "List the Workspace's executor templates, to choose one for task_dispatch with executor {templateId}. Each template has its id and label; whenToChoose, a line saying what work it is for (absent if its template has none); deliveryMode: pr (the work is delivered as a pull request), direct-commit (committed without one) or none (no repository change: the result is the deliverable); steps, what its executors follow, each {kind, label?, rounds? (review), approver? (gate: user, lead or either; unset is user)}, its delivery mode's default when it sets none; these are descriptive: Core does not track steps or hold PR, review or merge operations to a mode. Each also names its harness (codex, claude or opencode), model, reasoningEffort, permissionPreset (Codex) or permissionMode (Claude Code) and machineId (local, a machine's id or auto); an unset one inherits the defaults for new Agents. instructionsBytes is the size of the instructions its executors get with their materials (0 for none). general says what executor {} makes for your Project. laterTemplates counts templates a newer Core saved that this one can't offer. With full true, for leads of a Project only, each also has template: the template as saved, every field, to change and send back whole with executor_templates_change. The user saves templates in Settings, and a lead with executor_templates_change; version is the list's version, its expectedVersion.",
+        "description": "List the Workspace's executor templates, to choose one for task_dispatch with executor {templateId}. Each has id, label; whenToChoose, a line saying what work it is for (if set); deliveryMode: pr, direct-commit or none (no repository change: the result is the deliverable); steps its executors follow, each {kind, label?, rounds? (review), approver? (gate: user, lead or either; unset is user)}, descriptive only: Core doesn't track them. routing: follows (routing chooses its harness, model and account; while routing is off, the defaults for new Agents of the task's Project) or fixed (its own harness, model and reasoningEffort, given then, on the host's login). permissionLevel: ask, auto or full, which Core maps to each harness's own permission; absent is each harness's default for new Agents. formerHarness: the harness it named before core.29, when it follows routing now. levels says what each level is on each harness: routing skips a candidate whose harness doesn't keep the level. A fixed Codex template may instead have permissionPreset config (the machine's Codex configuration). machineId: local, a machine's id or auto. instructionsBytes: the size of its instructions (0 for none). general: what executor {} makes for your Project. laterTemplates: templates a newer Core saved that this one can't offer. With full true, for leads of a Project only, each also has template: as saved, to change and send back whole with executor_templates_change. The user saves templates in Settings, a lead with executor_templates_change; version is the expectedVersion.",
         "inputSchema": {"type":"object","properties":{"full":{"type":"boolean","description":"Also give each template as saved, instructions included: for leads of a Project only (YN-24)."}},"required":[],"additionalProperties":false},
     })
 }
 
-/// What `executor_templates_list` says of one template.
+/// What `executor_templates_list` says of one template: its harness, model and
+/// effort only when it is fixed (YN-56).
 fn listed(template: &Template) -> Value {
     let mut item = json!({
         "id": template.id, "label": template.label, "deliveryMode": template.delivery(), "steps": template.resolved_steps(),
-        "harness": template.harness,
+        "routing": if template.fixed() { "fixed" } else { "follows" },
         "instructionsBytes": template.instructions.as_deref().map_or(0, str::len),
     });
-    for (field, value) in [("whenToChoose", &template.when_to_choose), ("model", &template.model), ("reasoningEffort", &template.reasoning_effort),
-        ("permissionPreset", &template.permission_preset), ("permissionMode", &template.permission_mode), ("machineId", &template.machine_id)] {
+    for (field, value) in [("whenToChoose", &template.when_to_choose), ("permissionLevel", &template.permission_level),
+        ("formerHarness", &template.former_harness),
+        ("harness", &template.harness), ("model", &template.model), ("reasoningEffort", &template.reasoning_effort),
+        ("permissionPreset", &template.permission_preset), ("machineId", &template.machine_id)] {
         if let Some(value) = value {
             item[field] = json!(value);
         }
@@ -859,6 +1005,7 @@ fn list_for(store: &Store, actor: Option<&str>, full: bool) -> Result<Value> {
             item
         }).collect::<Vec<_>>(),
         "laterTemplates": list.later_templates,
+        "levels": crate::permission_levels::table(),
         "general": general_view(store, project.as_deref())?,
     }))
 }

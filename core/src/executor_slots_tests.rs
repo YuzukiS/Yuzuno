@@ -248,8 +248,8 @@ fn only_the_machines_limit_holds_an_executor() {
 fn project_and_template_limits_hold_nothing() {
     let (_dir, store) = store();
     limit(&store, &machine_key("local"), 10);
-    templates(&store, None, json!([{"id":"reviewer","label":"Reviewer","harness":"claude","maxConcurrent":1}]));
-    templates(&store, Some("p1"), json!([{"id":"reviewer","label":"P1 reviewer","harness":"claude","maxConcurrent":1}]));
+    templates(&store, None, json!([{"id":"reviewer","label":"Reviewer","harness":"claude","routing":"fixed","maxConcurrent":1}]));
+    templates(&store, Some("p1"), json!([{"id":"reviewer","label":"P1 reviewer","harness":"claude","routing":"fixed","maxConcurrent":1}]));
     limit(&store, "executors.slots.project:p1", 1);
     queued_from(&store, "a", None, "reviewer");
     queued_from(&store, "b", None, "reviewer");

@@ -41,7 +41,7 @@ fn level(id: &str) -> Option<&'static Level> {
     LEVELS.iter().find(|l| l.id == id)
 }
 
-fn harness_name(harness: &str) -> &str {
+pub(crate) fn harness_name(harness: &str) -> &str {
     match harness {
         "codex" => "Codex",
         "claude" => "Claude Code",
@@ -73,9 +73,36 @@ pub(crate) fn keeps(id: Option<&str>, harness: &str) -> bool {
     id.is_none_or(|id| native(id, harness).is_some())
 }
 
+/// The level a harness's own permission is: a Codex preset or a Claude Code
+/// mode, as a template before YN-56 named it. None for one no level is, such
+/// as Codex's `config`, which follows the machine's own Codex configuration.
+pub(crate) fn of_native(harness: &str, preset: Option<&str>, mode: Option<&str>) -> Option<&'static str> {
+    let found = match harness {
+        "codex" => LEVELS.iter().find(|l| preset.is_some() && l.codex == preset),
+        "claude" => LEVELS.iter().find(|l| mode.is_some() && l.claude == mode),
+        _ => None,
+    };
+    found.map(|l| l.id)
+}
+
+/// `id`'s name, in English and Chinese, as the Settings page shows it.
+pub(crate) fn label(id: &str) -> (&str, &str) {
+    level(id).map_or((id, id), |l| (l.label, l.label_zh))
+}
+
+/// Each level and what it is on each harness, null where that harness doesn't keep it.
+pub(crate) fn table() -> Value {
+    LEVELS.iter().map(|l| json!({
+        "level": l.id, "label": l.label, "labelZh": l.label_zh,
+        "codex": l.codex.map(|p| json!({"permissionPreset": p})),
+        "claude": l.claude.map(|m| json!({"permissionMode": m})),
+        "opencode": null,
+    })).collect()
+}
+
 /// Why routing passes over a candidate of `harness` for an executor of level `id`.
 pub(crate) fn not_kept(id: &str, harness: &str) -> Value {
-    let (label, label_zh) = level(id).map_or((id, id), |l| (l.label, l.label_zh));
+    let (label, label_zh) = label(id);
     let name = harness_name(harness);
     json!({"code": "levelNotKept",
         "message": format!("Its permission level is {label}, which {name} doesn't keep"),
@@ -114,6 +141,36 @@ mod tests {
         assert!(!keeps(Some("readonly"), "codex"), "not a level");
         assert!(check("readonly").unwrap_err().to_string().contains("ask, auto or full"));
         assert!(check("").is_err() && check("Ask").is_err());
+    }
+
+    #[test]
+    fn a_native_permission_reads_back_as_its_level_and_one_no_level_is_reads_as_none() {
+        for id in ["ask", "auto", "full"] {
+            assert_eq!(native(id, "codex").and_then(|p| of_native("codex", Some(p), None)), Some(id));
+            if let Some(mode) = native(id, "claude") {
+                assert_eq!(of_native("claude", None, Some(mode)), Some(id));
+            }
+        }
+        assert_eq!(of_native("codex", Some("config"), None), None, "the machine's own Codex configuration");
+        assert_eq!(of_native("codex", None, None), None);
+        assert_eq!(of_native("codex", None, Some("default")), None, "a Claude mode is not a Codex permission");
+        assert_eq!(of_native("claude", Some("ask"), None), None, "a Codex preset is not a Claude permission");
+        for legacy in ["acceptEdits", "plan", "bypassPermissions", "dontAsk"] {
+            assert_eq!(of_native("claude", None, Some(legacy)), None, "{legacy}");
+        }
+        assert_eq!(of_native("opencode", Some("ask"), Some("default")), None);
+    }
+
+    #[test]
+    fn the_table_lists_each_level_in_order_with_null_where_a_harness_does_not_keep_it() {
+        let table = table();
+        let ids: Vec<&str> = table.as_array().unwrap().iter().map(|l| l["level"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["ask", "auto", "full"]);
+        assert_eq!(table[0]["codex"], json!({"permissionPreset": "ask"}));
+        assert_eq!(table[0]["claude"], json!({"permissionMode": "default"}));
+        assert_eq!((table[2]["claude"].clone(), table[2]["labelZh"].clone()), (Value::Null, json!("完全放开")));
+        assert!(table.as_array().unwrap().iter().all(|l| l["opencode"].is_null()));
+        assert_eq!(label("auto"), ("Auto-approve", "自动审批"));
     }
 
     #[test]
