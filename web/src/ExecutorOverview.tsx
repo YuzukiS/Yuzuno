@@ -59,8 +59,6 @@ const text = strings({
   context: "Context summary",
   steps: "Steps",
   stepsNote: "The template's steps · each read from its record",
-  more: (count: number) => `${count} more`,
-  fewer: "Fewer",
   stepKind: {
     materials: "Read the materials", work: "Work", result: "Submit a result", gate: "Wait for approval", job: "Run a Job",
     pr: "Pull request", review: "Review", ci: "CI", merge: "Merge",
@@ -112,8 +110,6 @@ const text = strings({
   context: "上下文摘要",
   steps: "阶段",
   stepsNote: "模板的步骤 · 每步从它的记录读出",
-  more: (count) => `还有 ${count} 步`,
-  fewer: "收起",
   stepKind: {
     materials: "读材料", work: "工作", result: "提交结果", gate: "等批准", job: "跑 Job",
     pr: "PR", review: "审查", ci: "CI", merge: "合并",
@@ -145,8 +141,6 @@ const text = strings({
   noReport: "还没有提交结果。",
 });
 
-/** How many steps show before "more". */
-const SHOWN_STEPS = 5;
 const short = (sha?: string | null) => (sha ? sha.slice(0, 8) : "");
 const when = (iso: string | null | undefined, language: string) => {
   const at = iso ? new Date(iso) : null;
@@ -261,7 +255,6 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
   const [data, setData] = useState<ExecutorOverviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [allSteps, setAllSteps] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
     setError(null);
@@ -283,7 +276,6 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
   const dispatcher = life.dispatcher;
   const started = life.dispatchedAt ? Date.parse(life.dispatchedAt) : NaN;
   const waiting = agent.pendingCount > 0 || agent.status === "waiting";
-  const steps = allSteps ? data.steps : data.steps.slice(0, SHOWN_STEPS);
   const pr = data.pullRequest;
   const review = pr?.latestReview && pr.latestReview.forCurrentHead ? pr.latestReview : null;
   // A red Job and the green one after it, side by side in one row (S5).
@@ -335,23 +327,22 @@ export function ExecutorOverview({ agent, revision, requests, asks, onOpenTask }
       <div className="executor-overview-progress">
         <section className="executor-overview-card">
           <h3>{t.steps} <span className="note">{t.stepsNote}</span></h3>
+          {/* Every step, always (YN-58). */}
           <ol className="executor-overview-steps">
-            {steps.map((step, i) => (
+            {data.steps.map((step, i) => (
               <li key={i} className="step" data-state={step.state}>
                 <span className="mark" aria-hidden="true" />
                 {/* Its place, so "step 2" in an ask points somewhere (S5); the list says it to a screen reader. */}
                 <span className="no" aria-hidden="true">{i + 1}</span>
-                <span className="label">{step.label || t.stepKind[step.kind] || step.kind}</span>
-                <span className="state">{t.stepState[step.state]}</span>
-                <span className="ref">{stepRef(step, t)}</span>
+                {/* Its name and its record: side by side where both fit, else the record under the name (YN-58). */}
+                <span className="text">
+                  <span className="label">{step.label || t.stepKind[step.kind] || step.kind}</span>
+                  <span className="state">{t.stepState[step.state]}</span>
+                  <span className="ref">{stepRef(step, t)}</span>
+                </span>
               </li>
             ))}
           </ol>
-          {data.steps.length > SHOWN_STEPS && (
-            <button type="button" className="more" onClick={() => setAllSteps((v) => !v)} aria-expanded={allSteps}>
-              {allSteps ? t.fewer : t.more(data.steps.length - SHOWN_STEPS)}
-            </button>
-          )}
         </section>
         <p className="executor-overview-now"><strong>{t.now}</strong>{agent.workSummary?.text || t.nothingNow}</p>
       </div>

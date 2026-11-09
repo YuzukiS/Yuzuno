@@ -172,7 +172,7 @@ test("an executor opens on its Overview: its task, materials, steps, changes, ev
     const capped = [...p.overviewPanel().querySelectorAll(".executor-overview-kv dd .executor-overview-capped")];
     assert.deepEqual(capped.map((el) => [el.textContent, el.getAttribute("tabindex"), el.getAttribute("role")]),
       [["The failing test passes; nothing else changes", null, null], ["Red then green; one PR", null, null]]);
-    // Five steps, then the rest on request; each its label (or its kind's word), state and record.
+    // Every step at once (YN-58); each its label (or its kind's word), state and record.
     const steps = () => [...p.overviewPanel().querySelectorAll(".executor-overview-steps .step")].map((s) =>
       [s.dataset.state, s.querySelector(".label").textContent, s.querySelector(".ref").textContent]);
     assert.deepEqual(steps(), [
@@ -181,13 +181,11 @@ test("an executor opens on its Overview: its task, materials, steps, changes, ev
       ["done", "Red, then green", "green · succeeded"],
       ["done", "Pull request", "#688"],
       ["doing", "Review", "round 1"],
+      ["done", "CI", "success"],
+      ["doing", "Merge", "waiting"],
+      ["done", "Submit a result", "res12345"],
     ]);
-    assert.deepEqual(p.all(".executor-overview-steps .state"), ["done", "done", "done", "done", "under way"], "each state has its word");
-    const more = p.overviewPanel().querySelector(".executor-overview-card .more");
-    assert.equal(more.textContent, "3 more");
-    more.click();
-    await waitFor(() => steps().length === 8, "all eight steps");
-    assert.deepEqual(steps().slice(5), [["done", "CI", "success"], ["doing", "Merge", "waiting"], ["done", "Submit a result", "res12345"]]);
+    assert.deepEqual(p.all(".executor-overview-steps .state"), ["done", "done", "done", "done", "under way", "done", "under way", "done"], "each state has its word");
     assert.equal(p.text(".executor-overview-now"), "Doing nowWriting the failing test");
     // YN-46: its steps and Doing now together, a column of their own on a wide pane.
     assert.deepEqual([...p.overviewPanel().querySelector(":scope > .executor-overview-progress").children].map((el) => el.className),
@@ -385,6 +383,50 @@ test("a red Job and the green one after it sit side by side, and the steps say t
   }
 });
 
+// YN-58: a template of ten steps, one of them a Job whose name is a long
+// sentence (the user's screenshot, synthetic text). Every step is listed at
+// once: no "N more" / "Fewer" (还有 N 步 / 收起), no button in the card; the
+// record sits in the step's text beside or under its name.
+const longJob = "YN-56 S4 b1: isolated UI build, templates and routing browser checks";
+const tenSteps = (id) => id !== "k" ? overviewOf(id) : {
+  ...overviewOf("k"),
+  steps: [
+    { kind: "materials", state: "done", ref: { kind: "mail", readAt: at(60) } },
+    { kind: "work", state: "done" },
+    { kind: "result", label: "Design note", state: "done", ref: { kind: "result", id: "2b7e41c09d", reportedAt: at(40) } },
+    { kind: "gate", label: "Approve the design note", approver: "user", state: "done" },
+    { kind: "work", label: "Slices", state: "done" },
+    { kind: "job", state: "failed", ref: { kind: "job", id: "j4", name: longJob, status: "failed" } },
+    { kind: "pr", state: "done", ref: { kind: "pr", number: 688 } },
+    { kind: "review", rounds: 2, state: "doing", ref: { kind: "review", id: "r1", round: 1, conclusion: null } },
+    { kind: "ci", state: "todo" },
+    { kind: "merge", state: "todo" },
+  ],
+};
+
+test("all ten steps show at once, with no more or fewer, in English and Chinese (YN-58)", async () => {
+  for (const [lang, words] of [["en", ["Run a Job", `${longJob} · failed`]], ["zh", ["跑 Job", `${longJob} · failed`]]]) {
+    const p = await mount({ overview: tenSteps, storage: lang === "zh" ? { "yuzuno.language": JSON.stringify({ language: "zh-Hans" }) } : {} });
+    try {
+      await waitFor(p.loaded, `k's Overview (${lang})`);
+      const card = p.overviewPanel().querySelector(".executor-overview-steps").closest(".executor-overview-card");
+      assert.equal(card.querySelectorAll(".executor-overview-steps .step").length, 10, `${lang}: all ten steps`);
+      assert.deepEqual(p.all(".executor-overview-steps .no"), ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"], `${lang}: each its place`);
+      assert.equal(card.querySelectorAll("button").length, 0, `${lang}: no more/fewer button`);
+      assert.equal(p.overviewPanel().querySelector(".more"), null, `${lang}: no .more anywhere`);
+      assert.doesNotMatch(card.textContent, /\d+ more|Fewer|还有 \d+ 步|收起/, `${lang}: no more/fewer words`);
+      const job = card.querySelectorAll(".executor-overview-steps .step")[5];
+      assert.equal(job.dataset.state, "failed");
+      assert.deepEqual([job.querySelector(".label").textContent, job.querySelector(".ref").textContent], words, `${lang}: its name and its record`);
+      assert.equal(job.querySelector(".label").parentElement, job.querySelector(".ref").parentElement, `${lang}: name and record share one text box`);
+      assert.ok(job.querySelector(".text > .label") && job.querySelector(".text > .ref"), `${lang}: in the step's text`);
+      assert.deepEqual(p.errors, []);
+    } finally {
+      p.close();
+    }
+  }
+});
+
 test("each executor keeps the tab chosen; a standing Agent has no tabs and no Overview read", async () => {
   const p = await mount();
   try {
@@ -433,7 +475,7 @@ test("in Chinese the Overview reads in Chinese", async () => {
     assert.deepEqual(p.all(".executor-overview-card h3").map((h) => h.split(/\s/)[0]), ["起始材料", "阶段", "变更", "证据坞", "收尾报告"]);
     assert.match(p.overviewPanel().textContent, /\+120 −30 · 7 个文件/);
     assert.deepEqual(p.all(".executor-overview-steps .label").slice(0, 1), ["读材料"]);
-    assert.equal(p.text(".executor-overview-card .more"), "还有 3 步");
+    assert.equal(p.all(".executor-overview-steps .step").length, 8, "every step, no 还有 N 步 (YN-58)");
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
