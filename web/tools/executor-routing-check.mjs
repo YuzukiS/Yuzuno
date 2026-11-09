@@ -55,9 +55,9 @@ const fresh = () => ({
     { id: "ds", enabled: true, harness: "opencode", model: "deepseek/deepseek-flash", credential: { kind: "apiKey", keyId: "deepseek-main" }, unknown: "skip",
       conditions: [{ kind: "timeWindow", inside: false, schedule: PEAK, minMinutesLeft: 30 }, { kind: "dailyApiCap", usd: 5 }] },
     { id: "cl", enabled: true, harness: "claude", model: "opus", credential: { kind: "pool", manager: "cswap", accounts: "all", pick: "mostRemaining" }, unknown: "skip",
-      conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }] },
+      conditions: [{ kind: "quota", weekLeftPct: 10 }] },
     { id: "cx", enabled: true, harness: "codex", model: "gpt-6.1-sol", reasoningEffort: "high", credential: { kind: "codexHome", id: "work" }, unknown: "skip",
-      conditions: [{ kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }] },
+      conditions: [{ kind: "quota", weekLeftPct: 10 }] },
     { id: "cla", enabled: false, harness: "claude", model: "opus", credential: { kind: "apiKey", keyId: "anthropic" }, unknown: "skip", conditions: [{ kind: "dailyApiCap", usd: 8 }] },
   ] } },
   // A run that checks a conflict has another save land first.
@@ -84,7 +84,7 @@ const peakReason = { code: "peak", message: "DeepSeek's peak price now; off-peak
  * evaluate and simulate, so a screenshot's picked time and its strip agree. DeepSeek is off-peak before
  * 10:00; the claude-swap pool is out when an account is assumed used up; the Codex home runs low at 22:00. */
 const usedUp = { code: "poolNone", message: "No account has enough left (account #2 assumed used up)", messageZh: "没有够用的账号（假设账号 #2 用完）" };
-const codexLow = { code: "quotaLow", message: "5-hour left 4% (needs ≥ 15%)", messageZh: "5 小时剩 4%（要 ≥ 15%）" };
+const codexLow = { code: "quotaLow", message: "4% of the weekly quota is left, below 10%", messageZh: "本周额度只剩 4%，低于 10%" };
 function judged(policy, hour, assume) {
   let chosen = null;
   const candidates = policy.candidates.map((c) => {
@@ -96,9 +96,8 @@ function judged(policy, hour, assume) {
     if (chosen) return { id: c.id, state: "notTried", reasons: [], readings: [] };
     chosen = c.id;
     return c.credential.kind === "pool" ? { id: c.id, state: "chosen",
-      reasons: [{ code: "poolPick", message: "Account #2: 71% of 5 hours and 58% of the week left", messageZh: "账号 #2：5 小时剩 71%，本周剩 58%" }],
-      readings: [{ what: "fiveHourLeft", account: "1", value: 8, observedAt: ago(2), source: "cswap" }, { what: "weekLeft", account: "1", value: 64, observedAt: ago(2), source: "cswap" },
-        { what: "fiveHourLeft", account: "2", value: 71, observedAt: ago(2), source: "cswap" }, { what: "weekLeft", account: "2", value: 58, observedAt: ago(2), source: "cswap" }],
+      reasons: [{ code: "poolPick", message: "Account #2: 58% of the week left", messageZh: "账号 #2：本周剩 58%" }],
+      readings: [{ what: "weekLeft", account: "1", value: 4, observedAt: ago(2), source: "cswap" }, { what: "weekLeft", account: "2", value: 58, observedAt: ago(2), source: "cswap" }],
       accounts: [{ number: 1, fingerprint: "a1b2c3d4e5f60718", state: "low" }, { number: 2, fingerprint: "0f1e2d3c4b5a6978", state: "pick" }] }
       : { id: c.id, state: "chosen", reasons: [], readings: [] };
   });

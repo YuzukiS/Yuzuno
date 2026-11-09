@@ -124,7 +124,7 @@ export function CandidateEditor({ c, t, keys, accounts, issues, refusedCondition
         </ul>
         <div className="routing-add-menu">
           {!has("timeWindow") && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "timeWindow", inside: false, schedule: DEEPSEEK_PEAK, minMinutesLeft: 30 }])}><Plus size={13} /> {t.addTime}</button>}
-          {!has("quota") && !api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "quota", fiveHourLeftPct: 15, weekLeftPct: 10 }])}><Plus size={13} /> {t.addQuota}</button>}
+          {!has("quota") && !api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "quota", weekLeftPct: 10 }])}><Plus size={13} /> {t.addQuota}</button>}
           {!has("dailyApiCap") && api && <button type="button" className="quiet-button" onClick={() => setConditions((l) => [...l, { kind: "dailyApiCap", usd: 5 }])}><Plus size={13} /> {t.addCap}</button>}
         </div>
       </div>
@@ -152,18 +152,16 @@ const fromField = (value: string) => (value === "00:00" ? "24:00" : value);
 function ConditionEditor({ cond, n, t, onChange }: { cond: AnyCondition; n: number; t: Text; onChange: (next: AnyCondition) => void }) {
   if (!isKnown(cond)) return <span className="routing-cond-kind">{t.chipUnknownKind(cond.kind)}</span>;
   if (cond.kind === "quota") {
-    const set = (key: "fiveHourLeftPct" | "weekLeftPct", value: string) => {
+    const set = (value: string) => {
       const next: Condition = { ...cond };
       const v = numberOrUnset(value);
-      if (v == null) delete next[key]; else next[key] = Math.max(0, Math.min(100, v));
+      if (v == null) delete next.weekLeftPct; else next.weekLeftPct = Math.max(0, Math.min(100, v));
       onChange(next);
     };
     return <>
       <b className="routing-cond-kind">{t.quota}</b>
-      <label className="routing-inline-field">{t.fiveHour}
-        <input type="number" className="settings-input routing-number" min={0} max={100} value={cond.fiveHourLeftPct ?? ""} onChange={(e) => set("fiveHourLeftPct", e.target.value)} />%</label>
       <label className="routing-inline-field">{t.week}
-        <input type="number" className="settings-input routing-number" min={0} max={100} value={cond.weekLeftPct ?? ""} onChange={(e) => set("weekLeftPct", e.target.value)} />%</label>
+        <input type="number" className="settings-input routing-number" min={0} max={100} value={cond.weekLeftPct ?? ""} onChange={(e) => set(e.target.value)} />%</label>
     </>;
   }
   if (cond.kind === "dailyApiCap") {
