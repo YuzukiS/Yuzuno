@@ -254,6 +254,7 @@ fn a_merge_entrys_summary_says_its_state_merge_and_evidence_once() {
     assert_eq!(answer("merge_list", page.clone(), Some("full")), page);
 }
 
+#[test]
 fn an_agents_task_list_is_compact_unless_it_asks_for_whole_rows() {
     let mut plain = arguments(json!({"statuses":["doing"]}));
     assert_eq!(prepare("task_list", &mut plain), Ok(None));
