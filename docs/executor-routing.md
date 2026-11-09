@@ -477,3 +477,29 @@ cargo test --locked --lib -- --ignored --exact --nocapture \
     A Codex home assumed used up fails its quota condition even before Core has a reading of it; a claude-swap account is known only from a reading.
 - `POST /api/routing/simulate { policy?, from, to, stepMinutes, assume? }` answers `{ segments: [ { from, to, chosen } ] }`. It keeps the current readings and varies only the time.
 - `GET /api/routing/choices?limit=20` answers `{ choices: [ { dispatchId, taskId, agentId, executorName?, route } ] }`, newest first. `executorName` is there while the executor's record is kept.
+
+### The models routing's picker offers for OpenCode: `GET /api/routing/models?harness=opencode` (YN-57)
+
+This route is on the same boundary as the routing keys.
+
+The Settings page's model picker reads each tool's models from a different place:
+- Claude Code's from `/api/models?harness=claude`;
+- Codex's from `/api/models`;
+- OpenCode's from this route, as a new executor's OpenCode would list them.
+
+An Agent's own catalog (`/api/agents/:id/models`) comes from its own OpenCode, with that Agent's logins. A routed executor's OpenCode starts with a database of its own, and OpenCode lists only the providers it can reach. So the two catalogs can differ.
+
+Each read starts an OpenCode for that read only. It gets:
+- a throwaway database and XDG folders under `opencode/catalogs/` in the Workspace folder, and the cache Core's Agents share;
+- the user's OpenCode config, Core's environment and Core's default folder, with models.dev fetching off;
+- `yuzuno-catalog-only-not-a-key` in `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`, the variables an executor gets its routing key by. Any value Core's own environment has for them is replaced, so the process holds no key. OpenCode lists models without asking a provider.
+
+The answer has the shape of an Agent's catalog: `models`, `providers`, `default` and `opencode`.
+- A provider that OpenCode reached only through a placeholder has `source: "routingKey"` and its `keyProvider`.
+- A provider that Core's own environment gives every executor stays `env`.
+
+How a read ends:
+- **Time limit:** a read takes at most 20 seconds.
+- **When it stops early:** past that limit, on an error, or when its request goes away, its process group is killed and its folder removed. The next read removes any folder a stop left behind.
+- **One at a time:** a request that comes during a read waits for it and takes its answer.
+- **Errors:** `503 {code: "unavailable", error}` says why OpenCode could not list its models: OpenCode is off on this Core, not installed, or too slow. Any `harness` other than `opencode` gets `400 {code: "invalid"}`.
