@@ -298,6 +298,12 @@ fn finished_prs_are_short_rows_and_each_row_keeps_what_decides() {
     assert_eq!(pr(1)["latestReview"], json!({"reviewId":"r1","conclusion":"approved_with_notes","forCurrentHead":true}));
     assert_eq!((pr(1)["state"].clone(), pr(1)["headSha"].clone()), (json!("merged"), json!("1".repeat(40))));
     assert_eq!(keys(&pr(2)), ["headSha", "linkId", "number", "state", "title", "url"], "a closed PR without a review: {}", pr(2));
+    // A finished PR whose refresh failed says so: it may have been reopened since.
+    s.github_refresh_object(pr(2)["linkId"].as_str().unwrap(), Err("rate_limited: try later".into())).unwrap();
+    let failed = current(&s)["delivery"]["pullRequests"].as_array().unwrap().iter().find(|pr| pr["number"] == 2).unwrap().clone();
+    assert_eq!((failed["state"].clone(), failed["stale"].clone(), failed["error"].clone()),
+        (json!("closed"), json!(true), json!("rate_limited: try later")), "{failed}");
+    assert!(failed["lastAttemptAt"].is_string(), "{failed}");
 
     let open = pr(3);
     assert_eq!((open["state"].clone(), open["headSha"].clone(), open["baseSha"].clone()), (json!("open"), json!("3".repeat(40)), json!(base)));

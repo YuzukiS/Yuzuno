@@ -197,8 +197,14 @@ pub(super) fn delivery(db: &Connection, task: &str) -> Result<Value> {
         };
         let latest = read(LATEST_REVIEW)?;
         if finished(&snapshot["state"]) {
+            // A failed refresh is shown as on an open PR: the last good read
+            // may be out of date (a reopened PR), and unknown is not finished.
             let mut row = present(json!({"linkId": link["id"], "number": link["number"], "url": link["url"],
-                "title": snapshot["title"], "state": snapshot["state"], "headSha": head}));
+                "title": snapshot["title"], "state": snapshot["state"], "headSha": head,
+                "stale": link["stale"].as_bool().filter(|stale| *stale), "error": link["error"]}));
+            if !link["error"].is_null() {
+                row["lastAttemptAt"] = link["lastAttemptAt"].clone();
+            }
             if let Some(r) = &latest {
                 row["latestReview"] = json!({"reviewId": r["id"], "conclusion": r["conclusion"],
                     "forCurrentHead": !head.is_null() && r["headSha"] == head});
