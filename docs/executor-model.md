@@ -716,7 +716,8 @@ An executor with a dispatch record also says what executor routing gave it
 - **`waiting`:** it waits for a candidate, with `earliest`, the soonest time a
   candidate's reason gives, when there is one.
 - **`unrouted`:** with `why`, one of:
-  - `off`: routing was off at its dispatch;
+  - `none`: its dispatch recorded no route. Either routing was off then, or
+    it could not route this one (for example, no candidate could run there);
   - `fixed`: its template is fixed;
   - `routingOff` or `noCandidate`: released after waiting
     ([executor routing](executor-routing.md)).

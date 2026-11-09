@@ -317,17 +317,22 @@ fn lifecycle(db: &Connection, role: &Role) -> Result<Value> {
 ///   `fingerprint` and, as the record gives it, `number`; `codexHome` with `id`);
 /// - `waiting` for a candidate, with the soonest time a candidate's reason
 ///   gives (`earliest`) when there is one;
-/// - `unrouted` and why: `off` (routing was off at its dispatch), `fixed` (its
-///   template is fixed), or `routingOff` / `noCandidate` (released after
-///   waiting).
+/// - `unrouted` and why: `none` (its dispatch recorded no route: routing was
+///   off then, or could not route it, as when no candidate could run there),
+///   `fixed` (its template is fixed), or `routingOff` / `noCandidate`
+///   (released after waiting: `release_waiting`'s `released.code`).
 /// Never a key's value or an account's email: a key by its id, an account by
 /// its number and fingerprint.
 fn route_summary(db: &Connection, agent: &str, routing: Option<&str>, route: Option<&str>) -> Result<Option<Value>> {
     let Some(raw) = route else {
-        return Ok(Some(json!({"kind":"unrouted","why": if routing == Some("fixed") { "fixed" } else { "off" }})));
+        // No record says only that it wasn't routed, not why (R1 e7dfa1a9): routing may have been on
+        // and unable to route it.
+        return Ok(Some(json!({"kind":"unrouted","why": if routing == Some("fixed") { "fixed" } else { "none" }})));
     };
     let Ok(route) = serde_json::from_str::<Value>(raw) else { return Ok(None) };
-    if let Some(why) = route["released"].as_str() {
+    // Released after waiting: `release_waiting` keeps why as an object, its `code` the reason (R1 e7dfa1a9).
+    if route["released"].is_object() {
+        let why = route["released"]["code"].as_str().unwrap_or("released");
         return Ok(Some(json!({"kind":"unrouted","why":why})));
     }
     if route["waiting"] == true {

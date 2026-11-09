@@ -281,8 +281,15 @@ async fn the_listing_says_what_routing_gave_each_executor() {
     routed("e-wait", "opencode", "", None, reviewer.clone(),
         Some(json!({"at":"dispatch","chosen":null,"waiting":true,"earliest":{"at":"2026-11-09T04:00:00Z","candidate":"c-ds"},"candidates":[]})));
     routed("e-wait-open", "opencode", "", None, reviewer.clone(), Some(json!({"at":"dispatch","chosen":null,"waiting":true,"candidates":[]})));
+    // Released as release_waiting writes it: its reason an object (R1 e7dfa1a9).
+    let mut released = crate::routing_policy::dispatch::release_reason(&json!({"enabled":true,"candidates":[]}), "claude", &[], "local").unwrap();
+    released["at"] = json!("2026-11-09T01:00:00Z");
     routed("e-released", "claude", "", None, reviewer.clone(),
-        Some(json!({"at":"dispatch","chosen":null,"waiting":false,"released":"noCandidate","candidates":[]})));
+        Some(json!({"at":"dispatch","chosen":null,"waiting":false,"released":released,"candidates":[]})));
+    let mut off = crate::routing_policy::dispatch::release_reason(&json!({"enabled":false}), "claude", &[], "local").unwrap();
+    off["at"] = json!("2026-11-09T01:00:00Z");
+    routed("e-released-off", "claude", "", None, reviewer.clone(),
+        Some(json!({"at":"dispatch","chosen":null,"waiting":false,"released":off,"candidates":[]})));
     routed("e-fixed", "claude", "opus", None, json!({"id":"reviewer","label":"Reviewer","routing":"fixed"}), None);
     routed("e-off", "codex", "", None, reviewer.clone(), None);
     // On a task of its own: a task's view shows its newest dispatch's executor.
@@ -299,11 +306,12 @@ async fn the_listing_says_what_routing_gave_each_executor() {
     assert_eq!(listed(s, "e-wait")["route"], json!({"kind":"waiting","earliest":"2026-11-09T04:00:00Z"}));
     assert_eq!(listed(s, "e-wait-open")["route"], json!({"kind":"waiting"}));
     assert_eq!(listed(s, "e-released")["route"], json!({"kind":"unrouted","why":"noCandidate"}));
+    assert_eq!(listed(s, "e-released-off")["route"], json!({"kind":"unrouted","why":"routingOff"}));
     assert_eq!(listed(s, "e-fixed")["route"], json!({"kind":"unrouted","why":"fixed"}));
-    assert_eq!(listed(s, "e-off")["route"], json!({"kind":"unrouted","why":"off"}));
+    assert_eq!(listed(s, "e-off")["route"], json!({"kind":"unrouted","why":"none"}), "no record says it wasn't routed, not that routing was off");
     assert!(listed(s, "e-old").get("route").is_none(), "one made before its dispatch row was kept says nothing of routing");
     assert_eq!(listed(s, "e-key")["template"], json!({"id":"reviewer","label":"Reviewer"}), "its template, from the same row");
     // A task's view of its executor (its newest dispatch's, e-off here) says it too.
     let views = for_tasks(&s.db.read().unwrap(), &[task.as_str()]).unwrap();
-    assert_eq!(views[&task]["route"], json!({"kind":"unrouted","why":"off"}), "{}", views[&task]);
+    assert_eq!(views[&task]["route"], json!({"kind":"unrouted","why":"none"}), "{}", views[&task]);
 }
