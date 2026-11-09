@@ -36,7 +36,9 @@ fn split(text: &str) -> Vec<String> {
 }
 
 /// The files a worktree's snapshot keeps: untracked ones Git does not
-/// ignore, and ignored ones under no folder a cleanup rule recognizes.
+/// ignore, and ignored ones under no folder a cleanup rule recognizes. Git
+/// names an untracked folder it does not enter (a nested repository) as one
+/// `dir/` entry: every file under it is kept (review daaf3749).
 pub(super) async fn keep_list(path: &Path) -> std::result::Result<Keep, String> {
     let untracked = git_limited(path, &["ls-files", "-z", "--others", "--exclude-standard"], LIST_BYTES)
         .await
@@ -52,12 +54,7 @@ pub(super) async fn keep_list(path: &Path) -> std::result::Result<Keep, String> 
             keep.bytes += meta.len();
             keep.files.push(relative);
         };
-        for relative in untracked {
-            if let Ok(meta) = std::fs::symlink_metadata(root.join(&relative)) {
-                add(&mut keep, relative, &meta);
-            }
-        }
-        for relative in ignored {
+        for relative in untracked.into_iter().chain(ignored) {
             let top = root.join(relative.trim_end_matches('/'));
             let mut stack = vec![top];
             while let Some(at) = stack.pop() {
@@ -172,26 +169,35 @@ pub(super) fn ref_name(task: &str, plan: &str, item: &str) -> String {
     format!("refs/yuzuno/reclaimed/{}/{}/{}", clean(task), clean(plan), clean(item))
 }
 
+/// Why a worktree was not removed, or only in part: its state or code, why,
+/// and what had been made by then (its pinned HEAD, its snapshot), which
+/// stay on record whatever happened after (review daaf3749).
+pub(super) type NotReclaimed = (&'static str, String, Option<Value>, Option<Value>);
+
+fn before(code: &'static str, why: impl Into<String>) -> NotReclaimed {
+    (code, why.into(), None, None)
+}
+
 /// Removes a worktree that passed every check: its HEAD pinned, its
 /// snapshot kept, moved aside, removed, its record pruned.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task: &str, item_id: &str, path: &Path, pre: &Value, now: &Value)
-    -> std::result::Result<(Value, Value), (&'static str, String)> {
+    -> std::result::Result<(Value, Value), NotReclaimed> {
     let facts = &now["worktree"];
     let save_diff = pre["saveDiff"] == true;
     let tracked = facts["trackedChanges"].as_u64().unwrap_or(0);
     if tracked > 0 && !save_diff {
-        return Err(("trackedChanges", "Git tracks changes in it: keep them in its snapshot (saveDiff) or commit them".into()));
+        return Err(before("trackedChanges", "Git tracks changes in it: keep them in its snapshot (saveDiff) or commit them"));
     }
-    let head = facts["head"].as_str().filter(|h| h.len() >= 40).ok_or(("git", "Its HEAD is not known".to_owned()))?.to_owned();
-    let keep = keep_list(path).await.map_err(|why| ("git", format!("Git could not list what its snapshot keeps: {why}")))?;
+    let head = facts["head"].as_str().filter(|h| h.len() >= 40).ok_or_else(|| before("git", "Its HEAD is not known"))?.to_owned();
+    let keep = keep_list(path).await.map_err(|why| before("git", format!("Git could not list what its snapshot keeps: {why}")))?;
     if !keep.complete {
-        return Err(("tooLarge", "Too large to check within the bounds of a plan".into()));
+        return Err(before("tooLarge", "Too large to check within the bounds of a plan"));
     }
-    let diff = if tracked > 0 { Some(tracked_diff(path).await.map_err(|why| ("snapshotTooLarge", why))?) } else { None };
+    let diff = if tracked > 0 { Some(tracked_diff(path).await.map_err(|why| before("snapshotTooLarge", why))?) } else { None };
     let bytes = keep.bytes + diff.as_ref().map_or(0, |d| d.len() as u64);
     if bytes > u64::from(ctx.settings.snapshot_max_mib) << 20 {
-        return Err(("snapshotTooLarge", format!("Its snapshot would be {:.1} MiB, over the limit of {} MiB (Settings)",
+        return Err(before("snapshotTooLarge", format!("Its snapshot would be {:.1} MiB, over the limit of {} MiB (Settings)",
             bytes as f64 / (1u64 << 20) as f64, ctx.settings.snapshot_max_mib)));
     }
     let out = data.join("cleanup-snapshots").join(plan).join(format!("{item_id}.tar.gz"));
@@ -199,28 +205,34 @@ pub(super) async fn reclaim(ctx: &check::Context, data: &Path, plan: &str, task:
         let (root, files, out) = (path.to_path_buf(), keep.files.clone(), out.clone());
         tokio::task::spawn_blocking(move || write_snapshot(&root, &files, diff.as_deref(), &out))
             .await
-            .map_err(|e| ("snapshot", e.to_string()))?
-            .map_err(|e| ("snapshot", format!("Its snapshot could not be made: {e:#}")))?
+            .map_err(|e| before("snapshot", e.to_string()))?
+            .map_err(|e| before("snapshot", format!("Its snapshot could not be made: {e:#}")))?
     };
     let pinned = ref_name(task, plan, item_id);
     match git(path, &["update-ref", &pinned, &head]).await {
         Ok(Ok(_)) => {}
-        Ok(Err(why)) => return Err(("git", format!("Its HEAD could not be pinned: {why}"))),
-        Err(error) => return Err(("git", format!("Its HEAD could not be pinned: {error}"))),
+        Ok(Err(why)) => return Err(("git", format!("Its HEAD could not be pinned: {why}"), None, Some(snapshot))),
+        Err(error) => return Err(("git", format!("Its HEAD could not be pinned: {error}"), None, Some(snapshot))),
     }
+    let mut record = json!({"ref": pinned, "head": head, "branch": facts["branch"]});
     let (target, dev, ino) = (path.to_path_buf(), pre["dev"].as_u64(), pre["ino"].as_u64());
     let removed = tokio::task::spawn_blocking(move || super::apply::remove_aside(&target, dev, ino))
         .await
         .unwrap_or_else(|e| Err(("failed", e.to_string())));
-    if let Err((state, why)) = removed {
-        return Err((state, format!("{why}; its HEAD stays pinned at {pinned}")));
+    // Moved aside, wholly or partly removed: Git's record of it goes either way.
+    let gone = !matches!(&removed, Err(("refused", _)));
+    if gone {
+        let pruned = match git(&ctx.project, &["worktree", "prune"]).await {
+            Ok(Ok(_)) => None,
+            Ok(Err(why)) => Some(format!("git worktree prune failed: {why}")),
+            Err(error) => Some(format!("git worktree prune failed: {error}")),
+        };
+        record["pruned"] = json!(pruned.is_none());
+        record["note"] = json!(pruned);
     }
-    let pruned = match git(&ctx.project, &["worktree", "prune"]).await {
-        Ok(Ok(_)) => None,
-        Ok(Err(why)) => Some(format!("git worktree prune failed: {why}")),
-        Err(error) => Some(format!("git worktree prune failed: {error}")),
-    };
-    let record = json!({"ref": pinned, "head": head, "branch": facts["branch"], "pruned": pruned.is_none(), "note": pruned});
+    if let Err((state, why)) = removed {
+        return Err((state, format!("{why}; its HEAD stays pinned at {pinned}"), Some(record), Some(snapshot)));
+    }
     Ok((record, snapshot))
 }
 
@@ -234,7 +246,7 @@ pub(super) struct RestoreInput {
 
 pub(super) fn restore_definition() -> Value {
     json!({"name":"cleanup_restore",
-        "description":"Put back an item a cleanup plan removed, as a lead of its task's Project (or the user in Settings). A worktree comes back at its path with git worktree add, from its branch when that still points at the commit Core pinned (refs/yuzuno/reclaimed/...), else detached at that ref; then its snapshot (untracked and ignored files no rule rebuilds) and its kept diff are put back. A scratch entry gets back only the evidence files its snapshot kept. Refused when something is at the path, the snapshot's sha256 changed, or an entry's snapshot expired (snapshotDays, Settings; a worktree's ref never expires). A retry with the same requestId answers with the same.",
+        "description":"Put back an item a cleanup plan removed, wholly or in part, as a lead of its task's Project (or the user in Settings). A worktree comes back at its path with git worktree add, from its branch when that still points at the commit Core pinned (refs/yuzuno/reclaimed/...) and is checked out nowhere else, else detached at that ref; then its snapshot (untracked and ignored files no rule rebuilds) and its kept diff are put back. A scratch entry gets back only the evidence files its snapshot kept. Refused before anything is made when something is at the path, the snapshot's sha256 changed, or an entry's snapshot expired (snapshotDays, Settings; a worktree's ref never expires); if putting it back fails later, what came back is moved aside so it can be tried again. A retry with the same requestId answers with the same.",
         "inputSchema":{"type":"object","additionalProperties":false,"required":["requestId","planId","itemId"],"properties":{
             "requestId":{"type":"string","minLength":1,"maxLength":128,"description":"Stable retry key. Reuse only when retrying exactly this operation and payload."},
             "planId":{"type":"string"},"itemId":{"type":"string"}}}})
@@ -283,57 +295,88 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
         ensure!(result["restored"]["requestId"] == input.request_id.as_str(), "item_restored: it was restored already");
         return Ok(json!({"planId": plan.id, "item": input.item_id, "state": state, "restored": result["restored"]}));
     }
-    ensure!(state == "removed", "not_removed: only an item a cleanup removed is restored (it is {state})");
+    // Removed, or partly: what went is in its snapshot either way.
+    ensure!(state == "removed" || state == "partial", "not_removed: only an item a cleanup removed is restored (it is {state})");
+    ensure!(kind == "worktree" || kind == "entry", "not_restorable: a {kind} item is rebuilt, not restored");
     let target = PathBuf::from(&path);
     ensure!(std::fs::symlink_metadata(&target).is_err(), "path_taken: something is at {path} now; move it away first");
-    let mut how = Vec::new();
-    match kind.as_str() {
-        "worktree" => {
-            let dir = dir.context("project_folder_missing: its task's Project has no folder on this host")?;
-            let project = PathBuf::from(dir);
-            let pinned = result["ref"].as_str().context("no_ref: Core pinned no commit for it")?;
-            let head = result["head"].as_str().unwrap_or_default();
-            let branch = result["branch"].as_str().filter(|b| !b.is_empty());
-            let tip = match branch {
-                Some(b) => git(&project, &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")]).await?.ok().map(|t| t.trim().to_owned()),
-                None => None,
-            };
-            let added = match (branch, tip.as_deref()) {
-                (Some(b), Some(tip)) if tip == head => {
-                    how.push(format!("checked out its branch {b}"));
-                    git(&project, &["worktree", "add", path.as_str(), b]).await?
-                }
-                _ => {
-                    how.push(format!("detached at {pinned}"));
-                    git(&project, &["worktree", "add", "--detach", path.as_str(), pinned]).await?
-                }
-            };
-            if let Err(why) = added {
-                bail!("restore_failed: git worktree add failed: {why}");
-            }
-        }
-        "entry" => {
-            ensure!(snapshot.is_object() && snapshot["expiredAt"].is_null(), "snapshot_expired: its snapshot is gone, so nothing of it can come back");
-        }
-        other => bail!("not_restorable: a {other} item is rebuilt, not restored"),
-    }
+    // Everything that can be checked before anything is made (review daaf3749).
     let expired = !snapshot["expiredAt"].is_null();
-    if snapshot.is_object() && !expired {
-        let into = if kind == "entry" { target.parent().map(Path::to_path_buf).context("an entry has a folder")? } else { target.clone() };
-        let snap = snapshot.clone();
-        tokio::task::spawn_blocking(move || unpack(&snap, &into)).await??;
-        if snapshot["path"].is_string() {
-            how.push(format!("{} file(s) of its snapshot put back", snapshot["files"]));
-        }
-        if let Some(diff) = snapshot["diff"]["path"].as_str() {
-            ensure!(sha_of(Path::new(diff))? == snapshot["diff"]["sha256"].as_str().unwrap_or_default(), "snapshot_changed: its kept diff is not the one Core kept");
-            match git(&target, &["apply", "--binary", diff]).await? {
-                Ok(_) => how.push("its tracked changes applied again".to_owned()),
-                Err(why) => how.push(format!("its tracked changes could not be applied: {why}")),
+    let usable = snapshot.is_object() && !expired;
+    ensure!(kind == "worktree" || usable, "snapshot_expired: its snapshot is gone, so nothing of it can come back");
+    if usable {
+        for (file, sha) in [(&snapshot["path"], &snapshot["sha256"]), (&snapshot["diff"]["path"], &snapshot["diff"]["sha256"])] {
+            if let Some(file) = file.as_str() {
+                let actual = sha_of(Path::new(file)).map_err(|e| anyhow::anyhow!("snapshot_changed: its snapshot cannot be read: {e}"))?;
+                ensure!(Some(actual.as_str()) == sha.as_str(), "snapshot_changed: its snapshot is not the one Core kept");
             }
         }
-    } else if expired {
-        how.push("its snapshot had expired: only what Git keeps came back".to_owned());
+    }
+    let project = dir.map(PathBuf::from);
+    let mut how = Vec::new();
+    if kind == "worktree" {
+        let project = project.clone().context("project_folder_missing: its task's Project has no folder on this host")?;
+        let pinned = result["ref"].as_str().context("no_ref: Core pinned no commit for it")?;
+        let head = result["head"].as_str().unwrap_or_default();
+        // A record its reclaim could not prune would refuse the path.
+        let _ = git(&project, &["worktree", "prune"]).await;
+        let branch = result["branch"].as_str().filter(|b| !b.is_empty());
+        let tip = match branch {
+            Some(b) => git(&project, &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")]).await?.ok().map(|t| t.trim().to_owned()),
+            None => None,
+        };
+        let listed = git_limited(&project, &["worktree", "list", "--porcelain"], LIST_BYTES).await?.unwrap_or_default();
+        let checked_out = |b: &str| listed.lines().any(|l| l == format!("branch refs/heads/{b}"));
+        let added = match (branch, tip.as_deref()) {
+            (Some(b), Some(tip)) if tip == head && !checked_out(b) => {
+                how.push(format!("checked out its branch {b}"));
+                git(&project, &["worktree", "add", path.as_str(), b]).await?
+            }
+            _ => {
+                how.push(format!("detached at {pinned}"));
+                git(&project, &["worktree", "add", "--detach", path.as_str(), pinned]).await?
+            }
+        };
+        if let Err(why) = added {
+            bail!("restore_failed: git worktree add failed: {why}");
+        }
+    }
+    let put_back = async {
+        if usable {
+            let into = if kind == "entry" { target.parent().map(Path::to_path_buf).context("an entry has a folder")? } else { target.clone() };
+            let snap = snapshot.clone();
+            tokio::task::spawn_blocking(move || unpack(&snap, &into)).await??;
+            if snapshot["path"].is_string() {
+                how.push(format!("{} file(s) of its snapshot put back", snapshot["files"]));
+            }
+            if let Some(diff) = snapshot["diff"]["path"].as_str() {
+                match git(&target, &["apply", "--binary", diff]).await? {
+                    Ok(_) => how.push("its tracked changes applied again".to_owned()),
+                    Err(why) => how.push(format!("its tracked changes could not be applied: {why}")),
+                }
+            }
+        } else if expired {
+            how.push("its snapshot had expired: only what Git keeps came back".to_owned());
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+    if let Err(error) = put_back.await {
+        // What came back moves aside, so the path is free to try again;
+        // nothing is removed.
+        let aside = target.with_file_name(format!(".yuzuno-restore-failed-{}", uuid::Uuid::new_v4()));
+        let moved = std::fs::rename(&target, &aside).is_ok();
+        if let (true, Some(project)) = (moved && kind == "worktree", project.as_ref()) {
+            let _ = git(project, &["worktree", "prune"]).await;
+        }
+        let failed = json!({"at": now(), "why": format!("{error:#}"), "aside": moved.then(|| aside.clone())});
+        let (store, plan_id, item_id) = (ws.store.clone(), plan.id.clone(), input.item_id.clone());
+        let _ = crate::db::blocking(move || -> Result<()> {
+            store.db.write()?.execute("UPDATE cleanup_items SET result=json_set(COALESCE(result,'{}'),'$.restoreFailed',json(?3)),updated_at=?4
+                WHERE plan_id=?1 AND item_id=?2", params![plan_id, item_id, failed.to_string(), now()])?;
+            Ok(())
+        })
+        .await;
+        bail!("restore_failed: {error:#}; {}", if moved { format!("what came back was moved to {}, so restoring can be tried again", aside.display()) } else { format!("what came back is still at {path}") });
     }
     let by = actor.clone().map_or_else(|| "user".to_owned(), |a| format!("agent:{a}"));
     let restored = json!({"at": now(), "by": by, "how": how, "requestId": input.request_id});
@@ -342,7 +385,7 @@ pub(super) async fn restore(ws: &Arc<Workspace>, actor: Option<String>, input: V
         let mut db = s.db.write()?;
         let tx = db.transaction()?;
         tx.execute("UPDATE cleanup_items SET state='restored',result=json_set(COALESCE(result,'{}'),'$.restored',json(?3)),updated_at=?4
-            WHERE plan_id=?1 AND item_id=?2 AND state='removed'", params![plan.id, input.item_id, restored.to_string(), now()])?;
+            WHERE plan_id=?1 AND item_id=?2 AND state IN ('removed','partial')", params![plan.id, input.item_id, restored.to_string(), now()])?;
         let (author, source) = collaboration::actor_context(s, &tx, actor.as_deref())?;
         collaboration::activity(&tx, &plan.task, "comment", &author, &json!({"cleanupPlan": {"planId": plan.id}, "agent": source}),
             json!({"body": format!("Restored {path} (item {} of cleanup plan {}): {}.", input.item_id, plan.id,

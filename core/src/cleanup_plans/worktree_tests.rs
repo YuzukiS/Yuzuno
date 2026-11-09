@@ -147,3 +147,89 @@ async fn a_scratch_entry_gets_back_its_evidence_and_nothing_comes_back_over_some
     assert_eq!(std::fs::read(entry.join("out/shot.png")).unwrap(), vec![3u8; 1000]);
     assert!(entry.join("out/report.json").exists() && !entry.join("main.rs").exists(), "only its evidence");
 }
+
+/// Review daaf3749: an untracked folder Git does not enter (a nested
+/// repository) is kept whole, and comes back.
+#[tokio::test]
+async fn a_nested_repository_git_does_not_enter_is_kept_whole_and_comes_back() {
+    let lab = lab();
+    gated(&lab);
+    let tree = worktree(&lab, &lab.project.join(".worktrees/nest"), "feat/nest");
+    let inner = tree.join("vendor/lib");
+    std::fs::create_dir_all(&inner).unwrap();
+    git(&inner, &["init", "-q"]);
+    commit(&inner, "inner.txt", "inside a nested repository\n");
+    let listed = git(&tree, &["ls-files", "--others", "--exclude-standard"]);
+    assert_eq!(listed, "vendor/lib/", "Git names it as one folder");
+    let plan = reclaim(&lab, "nest", vec![item("w", "d", "worktree", &tree)]).await;
+    let items = items_of(&lab, &plan).await;
+    let names = tar_names(items[0]["snapshotKept"]["path"].as_str().unwrap());
+    assert!(names.contains(&"vendor/lib/inner.txt".to_owned()) && names.iter().any(|n| n.starts_with("vendor/lib/.git/")), "{names:?}");
+    restore(&lab, None, "r1", &plan, "w").await.unwrap();
+    assert_eq!(std::fs::read_to_string(inner.join("inner.txt")).unwrap(), "inside a nested repository\n");
+    assert_eq!(git(&inner, &["log", "--format=%s"]), "inner.txt", "its history came back too");
+}
+
+/// Review daaf3749: a worktree removed only in part keeps its snapshot and
+/// ref on record, and can be restored.
+#[tokio::test]
+async fn a_worktree_removed_only_in_part_keeps_its_snapshot_on_record_and_comes_back() {
+    use std::os::unix::fs::PermissionsExt as _;
+    if rustix::process::geteuid().as_raw() == 0 {
+        return; // root removes a read-only folder's files: nothing to stop it here
+    }
+    let lab = lab();
+    gated(&lab);
+    let tree = worktree(&lab, &lab.project.join(".worktrees/stuck"), "feat/stuck");
+    let locked = tree.join("locked-notes");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("x.txt"), "kept\n").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let plan = reclaim(&lab, "stuck", vec![item("w", "d", "worktree", &tree)]).await;
+    let items = items_of(&lab, &plan).await;
+    let w = &items[0];
+    let left: Vec<PathBuf> = std::fs::read_dir(tree.parent().unwrap()).unwrap().flatten().map(|e| e.path())
+        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(".yuzuno-removing-")).collect();
+    for dir in &left {
+        let _ = std::fs::set_permissions(dir.join("locked-notes"), std::fs::Permissions::from_mode(0o755));
+    }
+    assert_eq!(w["state"], "partial", "{w:#}");
+    assert!(w["snapshotKept"]["path"].is_string() && w["result"]["ref"].is_string(), "its snapshot and ref stay on record: {w:#}");
+    restore(&lab, None, "r1", &plan, "w").await.unwrap();
+    assert_eq!(std::fs::read_to_string(tree.join("locked-notes/x.txt")).unwrap(), "kept\n");
+    assert_eq!(item_states(&lab, &plan).await["w"].0, "restored");
+}
+
+/// Review daaf3749: nothing is made before the snapshot is checked, and a
+/// branch checked out elsewhere comes back detached.
+#[tokio::test]
+async fn a_changed_snapshot_makes_nothing_and_a_branch_checked_out_elsewhere_comes_back_detached() {
+    let lab = lab();
+    gated(&lab);
+    let tree = worktree(&lab, &lab.project.join(".worktrees/twice"), "feat/twice");
+    std::fs::write(tree.join("draft.md"), "untracked\n").unwrap();
+    let head = git(&tree, &["rev-parse", "HEAD"]);
+    let plan = reclaim(&lab, "twice", vec![item("w", "d", "worktree", &tree)]).await;
+    let items = items_of(&lab, &plan).await;
+    let file = PathBuf::from(items[0]["snapshotKept"]["path"].as_str().unwrap());
+    let kept = std::fs::read(&file).unwrap();
+    let mut changed = kept.clone();
+    changed.push(0);
+    std::fs::write(&file, changed).unwrap();
+    let error = restore(&lab, None, "r1", &plan, "w").await.unwrap_err().to_string();
+    assert!(error.starts_with("snapshot_changed:"), "{error}");
+    assert!(!tree.exists(), "nothing was made");
+    std::fs::write(&file, kept).unwrap();
+    // Its branch is checked out in another worktree meanwhile.
+    let other = worktree_on(&lab, &lab.project.join(".worktrees/other"), "feat/twice");
+    let back = restore(&lab, None, "r2", &plan, "w").await.unwrap();
+    assert!(back["restored"]["how"].to_string().contains("detached"), "{back:#}");
+    assert_eq!(git(&tree, &["rev-parse", "HEAD"]), head);
+    assert!(other.exists());
+}
+
+/// A worktree of an existing branch.
+fn worktree_on(lab: &Lab, path: &Path, branch: &str) -> PathBuf {
+    git(&lab.project, &["worktree", "add", "-q", &path.display().to_string(), branch]);
+    std::fs::canonicalize(path).unwrap()
+}

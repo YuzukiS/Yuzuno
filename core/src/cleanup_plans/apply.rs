@@ -436,10 +436,19 @@ async fn execute(ws: &Arc<Workspace>, ctx: &check::Context, plan: &Plan, item: &
                 }
                 Outcome { state: "removed", result, snapshot: Some(snapshot) }
             }
-            Err((state, why)) if state == "partial" || state == "failed" => {
-                Outcome { state: if state == "partial" { "partial" } else { "failed" }, result: json!({"code": state, "why": why}), snapshot: None }
+            // What it made (its pinned HEAD, its snapshot) stays on record (review daaf3749).
+            Err((code, why, record, snapshot)) => {
+                let state = match code {
+                    "partial" => "partial",
+                    "failed" => "failed",
+                    _ => "refused",
+                };
+                let mut result = json!({"code": code, "why": why});
+                for (key, value) in record.as_ref().and_then(Value::as_object).into_iter().flatten() {
+                    result[key] = value.clone();
+                }
+                Outcome { state, result, snapshot }
             }
-            Err((code, why)) => outcome("refused", code, why),
         };
     }
     let mut snapshot = None;
