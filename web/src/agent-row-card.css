@@ -64,6 +64,26 @@
   -webkit-line-clamp: 3;
   color: var(--ink);
 }
+/* What its turning ring waits on (YN-51): the ring's icon, in the working
+   colour, and which one; the others it waits on, quieter, under it. A long
+   command or name wraps rather than widening the card. */
+.agent-card-wait {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.agent-card-wait > svg {
+  flex: none;
+  margin-top: 0.2em;
+  color: var(--island-working);
+}
+.agent-card-also {
+  padding-left: 19px;
+  color: var(--text-quiet);
+}
 .agent-card-meaning {
   color: var(--text-quiet);
 }

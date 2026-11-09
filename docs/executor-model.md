@@ -839,9 +839,41 @@ It never holds a key's value or an account's email.
     its start or its Turn failed; ✓ once released or archiving (what an
     archiving one waits for is line two); otherwise grey.
   - A standing Agent's: working while a Turn runs (compacting too, and an
-    idle Agent's unfinished Jobs or CI); needs you; ✕ for an error or a
+    idle Agent's unfinished Jobs or CI, reviews under way that are mailed to
+    it, or background shells and sub-agents); needs you; ✕ for an error or a
     failed Turn not yet shown; ✓ for a Turn it ended that this device
     hasn't shown; otherwise grey (offline and closed too).
+- **A turning ring shows what it waits on** (YN-51, the user's choices on
+  Home): one icon inside the working ring, 11 px, still, in the ring's
+  colour; the ring itself still says the state, and no other ring holds
+  one. The icons are the work dock's: a review (GitPullRequest), CI
+  (Github), a Job (BriefcaseBusiness), a sub-agent (Bot) and a shell
+  (SquareTerminal). When it waits on several, one shows, in this order:
+  review, CI, Job, sub-agent, shell.
+  - While a Turn runs, only the call it is stopped on counts: a shell
+    command or a sub-agent, from the listed Agent's `turnWait`, which Core
+    reads from the harness's own record of the call (Claude's `Bash` and
+    `Agent` calls, Codex's commands and sub-agent activity, OpenCode's
+    `bash`, `task` and `subagent` tools and shell parts). It shows once the
+    row has seen the call hold the Turn for a second, so quick calls never
+    flash, and goes when it ends. Thinking, writing or any other call shows
+    none, whatever runs in the background.
+  - While no Turn runs (and its last end has been seen), what it started
+    and left running counts: review rounds preparing or running whose result
+    is mailed to it, and the background shells (Claude, Codex) and Claude
+    sub-agents its live connection reports (`GET /api/waits/live`); CI it
+    watches that runs, is being found or awaits its first run
+    (`/api/ci/live`); Jobs queued or holding a reservation
+    (`/api/jobs/live`). A Job whose outcome is unknown and CI to check are
+    things to check, not waits. A count the harness hasn't reported, such
+    as OpenCode's background shells, shows nothing.
+  - The row's card says which one ("在等 CI：PR #214", an executor's PR from
+    its live read; "Waiting on a Job: web-tests"), and under it, smaller,
+    the others it waits on ("另有：CI、1 个 Job"). The row's screen-reader
+    text and the ring's label add what it waits on ("在等审查").
+  - The web reads `/api/waits/live` again when Core says an Agent changed
+    (a background count, a Turn ending) or the board did (a review starting
+    or ending).
 - **Every other state is a pill** left of the ring, with a short phrase that
   stays while the state holds: 排队 · 第 2 位 Queued · 2 in line, 启动中
   Starting, 等负责人 Lead's turn (handed in, its review not under way), 审查中

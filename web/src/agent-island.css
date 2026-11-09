@@ -113,6 +113,24 @@ button.agent-island:is(:hover, :focus-visible) .island-ringbox {
 @keyframes island-breathe {
   50% { stroke-width: 3.4px; }
 }
+/* What a turning ring waits on (YN-51; the user picked the work dock's
+   icons at 11 px): centred in the ring, inside its arc's inner edge (7.6 px
+   from the centre at 22 px), still and in the ring's colour, so the ring
+   alone still says the state. It fades in; nothing moves under reduced
+   motion. Only a working ring holds one (AgentIsland.tsx). */
+.island-wait {
+  position: absolute;
+  top: 5.5px;
+  left: 5.5px;
+  width: 11px;
+  height: 11px;
+  color: inherit;
+  pointer-events: none;
+  animation: island-wait-in 160ms ease-out;
+}
+@keyframes island-wait-in {
+  from { opacity: 0; }
+}
 /* A lead's updates unread: a small dot at the ring's top left, no count
    (the user, v11); no other Agent has one. */
 .island-dot {
@@ -175,6 +193,7 @@ button.agent-island:is(:hover, :focus-visible) .island-ringbox {
 @media (prefers-reduced-motion: reduce) {
   .island-ring *,
   .island-ringbox,
+  .island-wait,
   .island-shell,
   .island-pill {
     animation: none !important;

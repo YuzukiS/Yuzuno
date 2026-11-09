@@ -1,5 +1,5 @@
-import { clockMs, islandTime, type IslandView } from "./agent-island";
-import { IslandRing, islandText, stayText, stayTone } from "./AgentIsland";
+import { clockMs, islandTime, type IslandView, type IslandWait } from "./agent-island";
+import { IslandRing, islandText, stayText, stayTone, WAIT_ICONS, waitText } from "./AgentIsland";
 import type { ExecutorView } from "./executor-display";
 import { lifecycleText, type ExecutorLifecycle, type ExecutorRoute } from "./executor-lifecycle";
 import { modelShort } from "./executor-routing";
@@ -152,13 +152,14 @@ export function cardClock(island: IslandView, agent: Pick<Agent, "closedAt">, ex
  *  1. its name, or an executor's task by its short name;
  *  2. its ring, its state in words (or the pill of a state that stays) and
  *     since when;
- *  3. what it is doing or asks, in full;
+ *  3. what it is doing or asks, in full, and what its turning ring waits
+ *     on (YN-51), with the others it waits on too;
  *  4. what the state means where the ring alone doesn't say it (needs you,
  *     done, a state that stays), and a lead's updates unread;
  *  5. quietly: its task, who and where it is, its PR and who dispatched it.
  * Never where a click goes (the user, YN-44).
  */
-export function AgentRowCard({ agent, island, executor, lifecycle, machine, badge, activity, waits }: {
+export function AgentRowCard({ agent, island, executor, lifecycle, machine, badge, activity, waits, wait = null }: {
   agent: Agent;
   island: IslandView;
   executor: ExecutorView | null;
@@ -170,6 +171,8 @@ export function AgentRowCard({ agent, island, executor, lifecycle, machine, badg
   activity: string;
   /** A standing Agent's unfinished Jobs and CI, in full: "2 jobs queued or running". */
   waits?: string | null;
+  /** What its turning ring waits on (YN-51). */
+  wait?: IslandWait | null;
 }) {
   const language = useLanguage();
   const now = useMinute();
@@ -223,11 +226,29 @@ export function AgentRowCard({ agent, island, executor, lifecycle, machine, badg
       </span>
       {activity && <span className="tip-body agent-card-activity">{activity}</span>}
       {waits && <span className="tip-body">{waits}</span>}
+      {wait && <CardWait wait={wait} />}
       {meaning && <span className="agent-card-meaning">{meaning}</span>}
       {island.dot && <span className="agent-card-unread">{t.unread}</span>}
       <span className="agent-card-facts">
         {facts.map((line, i) => <small key={i} className="tip-meta">{line}</small>)}
       </span>
+    </>
+  );
+}
+
+/** The card's line for what its ring waits on (YN-51): the ring's icon and
+ * which one ("Waiting on CI: PR #214"), then, smaller, the others it waits
+ * on too ("Also: CI, 1 Job"). */
+function CardWait({ wait }: { wait: IslandWait }) {
+  const words = waitText(wait, useLanguage());
+  const Icon = WAIT_ICONS[wait.kind];
+  return (
+    <>
+      <span className="agent-card-wait" data-wait={wait.kind}>
+        <Icon size={13} strokeWidth={2.2} aria-hidden="true" focusable="false" />
+        <span>{words.line}</span>
+      </span>
+      {words.also && <small className="agent-card-also">{words.also}</small>}
     </>
   );
 }

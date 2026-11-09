@@ -3,8 +3,9 @@ import { api } from "./api";
 import { strings, type Language } from "./i18n";
 
 /** One Agent's unfinished local jobs: queued or still holding a reservation.
- * `unknown` of them have an outcome Core could not confirm. */
-export type AgentJobs = { active: number; unknown: number };
+ * `unknown` of them have an outcome Core could not confirm; `name` is the
+ * oldest of the others' (YN-51), from a Core that says it. */
+export type AgentJobs = { active: number; unknown: number; name?: string };
 type Snapshot = Record<string, AgentJobs>;
 
 // Workspace-wide and outside React state: a job change re-renders only the
@@ -41,12 +42,13 @@ export function refreshLiveJobs(workspaceId: string) {
       for (const [id, counts] of Object.entries(value.agents)) {
         const active = Math.max(0, Number(counts?.active) || 0);
         const unknown = Math.min(active, Math.max(0, Number(counts?.unknown) || 0));
+        const name = typeof counts?.name === "string" && counts.name.trim() ? counts.name : undefined;
         if (!active) continue;
         const old = snapshot[id];
         next[id] =
-          old?.active === active && old.unknown === unknown
+          old?.active === active && old.unknown === unknown && old.name === name
             ? old
-            : { active, unknown };
+            : name ? { active, unknown, name } : { active, unknown };
       }
       snapshot = next;
       emit();
