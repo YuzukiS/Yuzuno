@@ -35,12 +35,14 @@ export type ExecutorLifecycle = {
 
 /** What routing gave an executor, as Core says it (docs/executor-model.md): chosen, with what it runs and its account
  * or key; waiting for a candidate, from when one's reason ends; or not routed and why. Never a key's value or an email. */
-export type ExecutorRoute =
+export type ExecutorRoute = (
   | { kind: "chosen"; candidate: string; label?: string; harness: string; model: string; effort?: string;
       credential: { kind: "login" } | { kind: "apiKey"; keyId: string } | { kind: "codexHome"; id: string }
         | { kind: "pool"; account: { fingerprint: string; number: number | null } } }
   | { kind: "waiting"; earliest?: string }
-  | { kind: "unrouted"; why: string };
+  | { kind: "unrouted"; why: string }
+  /** The kind of work its dispatch wanted and whose that was (YN-70): `template`, `lead` or `user`; absent without one. */
+) & { tier?: string; tierSource?: string };
 
 export const lifecycleText = strings(
   {

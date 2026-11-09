@@ -6,7 +6,7 @@ import { claudeModeText, codexPermissionText } from "./agent-defaults";
 import {
   MAX_STEPS, PR_STEP_KINDS, STEP_KINDS, defaultSteps, keepsLevel, presetsIn, readExecutorTemplates, saveExecutorTemplates,
   type DeliveryMode, type ExecutorHarness, type ExecutorPreset, type ExecutorTemplate, type ExecutorTemplatesView,
-  type LevelInfo, type PermissionLevel, type StepKind, type TemplateChange, type TemplateStep,
+  type LevelInfo, type ModelTier, type PermissionLevel, type StepKind, type TemplateChange, type TemplateStep,
 } from "./executor-templates";
 import { ExecutorSlots } from "./ExecutorSlots";
 import { moment } from "./conversation-time";
@@ -78,6 +78,16 @@ const text = strings({
   toolLevel: (name: string, what: string) => `${name}: ${what}`,
   notKept: "doesn't keep it",
   levelSkips: (names: string) => `Routing passes over ${names} for this template.`,
+  // YN-70: the kind of work its executors are dispatched for.
+  tier: "Kind of work",
+  tierAny: "Any",
+  tierStrong: "Strong: design, investigation, decisions, checks",
+  tierFast: "Fast: building what was decided",
+  tierAnyHelp: "Routing may give its executors any candidate.",
+  tierHelp: (kind: string) => `Routing gives its executors only a candidate that takes ${kind} work (Settings → Executor routing). A lead can name another for one dispatch.`,
+  tierFixedHelp: "Fixed to a tool, so routing isn't used; its executors are still told this kind of work.",
+  tierKind: { strong: "strong", fast: "fast" } as Record<ModelTier, string>,
+  tierWord: { strong: "Strong work", fast: "Fast work" } as Record<ModelTier, string>,
   levelNotKept: (name: string) => `${name} doesn't keep this level: choose another.`,
   levelNotKeptOption: "not kept",
   refusedOff: (tool: string, level: string) => `Refused while routing is off: the default tool for new Agents here, ${tool}, doesn't keep ${level}.`,
@@ -190,6 +200,15 @@ const text = strings({
   toolLevel: (name, what) => `${name}：${what}`,
   notKept: "不支持",
   levelSkips: (names) => `路由不会把这个模板派给 ${names}。`,
+  tier: "哪种活",
+  tierAny: "不限",
+  tierStrong: "强：设计、调查、决定、核查",
+  tierFast: "快：照定下的做",
+  tierAnyHelp: "路由可以给它的执行者任何候选。",
+  tierHelp: (kind) => `路由只给它的执行者接「${kind}」活的候选（设置 → 执行者路由）。负责人派发时可以为这一次改。`,
+  tierFixedHelp: "固定了运行环境，不经过路由；执行者仍会被告知是哪种活。",
+  tierKind: { strong: "强", fast: "快" },
+  tierWord: { strong: "强活", fast: "快活" },
   levelNotKept: (name) => `${name} 不支持这个等级：请换一个。`,
   levelNotKeptOption: "不支持",
   refusedOff: (tool, level) => `路由关着时会被拒绝：这里新 Agent 的默认工具 ${tool} 不支持「${level}」。`,
@@ -445,7 +464,7 @@ function PresetPicker({ presets, taken, room, limit, t, onAdd, onCancel }: {
               </span>
               {p.whenToChoose && <small>{p.whenToChoose}</small>}
               <small className="executor-preset-meta">
-                {t.deliveries[p.deliveryMode ?? "pr"][0]} · {stepsLine(p.steps ?? defaultSteps(p.deliveryMode), t)}
+                {p.tier ? `${t.tierWord[p.tier]} · ` : ""}{t.deliveries[p.deliveryMode ?? "pr"][0]} · {stepsLine(p.steps ?? defaultSteps(p.deliveryMode), t)}
               </small>
               {taken.includes(p.id) && <small className="executor-preset-meta">{t.presetTaken}</small>}
             </label>
@@ -870,6 +889,24 @@ function LevelField({ d, t, language, levels, opencode, edit }: {
   );
 }
 
+/** The kind of work a template's executors are dispatched for (YN-70): routing gives them only a candidate that takes it. */
+function TierField({ d, t, edit }: { d: Draft; t: Text; edit: (change: Partial<Draft>) => void }) {
+  return (
+    <label className="settings-row executor-template-tier">
+      <span className="settings-row-main">
+        <span className="settings-row-title">{t.tier}</span>
+        <span className="settings-row-help">{d.harness ? t.tierFixedHelp : d.tier ? t.tierHelp(t.tierKind[d.tier]) : t.tierAnyHelp}</span>
+      </span>
+      <select className="settings-select" aria-label={t.tier} value={d.tier ?? ""}
+        onChange={(e) => edit({ tier: (e.target.value || undefined) as Draft["tier"] })}>
+        <option value="">{t.tierAny}</option>
+        <option value="strong">{t.tierStrong}</option>
+        <option value="fast">{t.tierFast}</option>
+      </select>
+    </label>
+  );
+}
+
 /** One template's page (YN-8 S5b), in the design's order: its name and
  * purpose and how it runs, its delivery and steps, where it runs and its
  * instructions, then removing it on a card of its own. */
@@ -955,6 +992,7 @@ function TemplatePage({ d, t, language, view, locked, machines, routingOn, saved
           )}
           {!d.harness && d.preset?.modelHint && <p className="settings-row-help executor-template-note">{t.modelHint(d.preset.modelHint)}</p>}
           <LevelField d={d} t={t} language={language} levels={view.levels} opencode={view.opencodeEnabled} edit={edit} />
+          <TierField d={d} t={t} edit={edit} />
           {refused && (
             <p className="inline-error executor-template-refused" role="note">
               {(routingOn === false ? t.refusedOff : t.refusedOn)(harnessName(refused), levelName(view.levels, d.level, language))}{" "}

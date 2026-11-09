@@ -381,7 +381,7 @@ test("presets (YN-23): the user picks which to add, each an unsaved template in 
   assert.deepEqual(page.errors, []);
 });
 
-test("tiers (YN-70): a saved template's tier and an added preset's are kept by a save, with no control for them on this page", async () => {
+test("tiers (YN-70): a saved template's tier and an added preset's are kept by a save", async () => {
   let workspace = { version: 1, templates: [{ id: "build", label: "Build", tier: "fast" }, { id: "plain", label: "Plain" }] };
   const presets = presetPair("design", "Design", "设计", { deliveryMode: "none", tier: "strong" });
   const page = mount((url, method, body) => {
@@ -407,6 +407,40 @@ test("tiers (YN-70): a saved template's tier and an added preset's are kept by a
   await until(() => puts(page).length === 2, "the second save");
   assert.deepEqual(puts(page)[1].body.templates[2], { id: "design", label: "Design", instructions: "Do Design.", deliveryMode: "none",
     whenToChoose: "When Design", tier: "strong" }, "a preset's tier goes with its template");
+  assert.deepEqual(page.errors, []);
+});
+
+test("tiers (YN-70): a template's Kind of work is chosen under How it runs, said in its help, saved, and shown on a preset's card", async () => {
+  let workspace = { version: 1, templates: [{ id: "plain", label: "Plain" }, { id: "fixed", label: "Fixed", harness: "claude", routing: "fixed", tier: "strong" }] };
+  const presets = presetPair("design", "Design", "设计", { deliveryMode: "none", tier: "strong" });
+  const page = mount((url, method, body) => {
+    if (method === "PUT") workspace = { version: workspace.version + 1, templates: body.templates };
+    return [200, view(workspace, false, presets)];
+  });
+  page.window.renderTemplates();
+  await until(() => button(page, "Add presets"), "the presets button");
+  button(page, "Add presets").click();
+  await tick();
+  assert.match(choices(page)[0].querySelector(".executor-preset-meta").textContent, /^Strong work · No repository change · /, "the preset's tier on its card");
+  button(page, "Cancel").click();
+  await tick();
+  await openTemplate(page, "Plain");
+  const help = () => page.document.querySelector(".executor-template-tier .settings-row-help").textContent;
+  assert.equal(field(page, "Kind of work").value, "", "Any, by default");
+  assert.equal(help(), "Routing may give its executors any candidate.");
+  await type(page, "Kind of work", "fast");
+  assert.match(help(), /^Routing gives its executors only a candidate that takes fast work/);
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 1, "the save");
+  assert.deepEqual(puts(page)[0].body.templates[0], { id: "plain", label: "Plain", tier: "fast" });
+  assert.deepEqual(puts(page)[0].body.templates[1], { id: "fixed", label: "Fixed", harness: "claude", routing: "fixed", tier: "strong" }, "another template kept as saved");
+  await type(page, "Kind of work", "");
+  button(page, "Save templates").click();
+  await until(() => puts(page).length === 2, "the second save");
+  assert.deepEqual(puts(page)[1].body.templates[0], { id: "plain", label: "Plain" }, "Any saves no tier");
+  await back(page);
+  await openTemplate(page, "Fixed");
+  assert.equal(help(), "Fixed to a tool, so routing isn't used; its executors are still told this kind of work.");
   assert.deepEqual(page.errors, []);
 });
 

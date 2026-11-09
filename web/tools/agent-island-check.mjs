@@ -94,7 +94,7 @@ const fixture = () => [
   executor("yn44", { title: "Theme names", shortName: "主题名称" }, "delivering", {}, { since: null, dispatchedAt: null }),
   executor("yn45", { title: "Sort keys", shortName: "排序键" }, "queued", {}, { since: null, dispatchedAt: null, position: 3 }),
   // Queued for a routing candidate, not a slot (YN-57): its own pill, the longest words a pill has here.
-  executor("yn57", { title: "Routing page fixes", shortName: "路由页改进" }, "queued", {}, { position: 1, route: { kind: "waiting", earliest: "2026-11-09T04:00:00Z" } }),
+  executor("yn57", { title: "Routing page fixes", shortName: "路由页改进" }, "queued", {}, { position: 1, route: { kind: "waiting", earliest: "2026-11-09T04:00:00Z", tier: "fast", tierSource: "template" } }),
 ];
 // The live step's yn32: queued, then running again (YN-41).
 const queued32 = () => executor("yn32", { title: "Export the device preferences file", shortName: "导出设备偏好文件" }, "queued", {}, { position: 2 });
@@ -407,8 +407,9 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
       await tip.waitFor({ timeout: 10_000 });
       const said = await tip.innerText();
       const zh = tag.endsWith("-zh");
-      for (const line of zh ? [`等候选 · ${at} 起`, "在等路由候选；有候选满足条件就启动", "模板：Design first", `路由：在等一个候选 · 最早 ${at}`]
-        : [`From ${at}`, "Waits for a routing candidate; starts once one's conditions hold", "Template: Design first", `Route: waiting for a candidate · from ${at}`])
+      // YN-70: its kind of work and whose, after the route.
+      for (const line of zh ? [`等候选 · ${at} 起`, "在等路由候选；有候选满足条件就启动", "模板：Design first", `路由：在等一个候选 · 最早 ${at} · 快活（模板）`]
+        : [`From ${at}`, "Waits for a routing candidate; starts once one's conditions hold", "Template: Design first", `Route: waiting for a candidate · from ${at} · fast work (template)`])
         assert.ok(said.includes(line), `${tag}: the card says "${line}": ${said}`);
       await page.screenshot({ path: join(output, `${tag}-3-card-route.png`) });
       report.screenshots.push(`${tag}-3-card-route`);

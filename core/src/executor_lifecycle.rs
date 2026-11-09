@@ -322,8 +322,25 @@ fn lifecycle(db: &Connection, role: &Role) -> Result<Value> {
 ///   `fixed` (its template is fixed), or `routingOff` / `noCandidate`
 ///   (released after waiting: `release_waiting`'s `released.code`).
 /// Never a key's value or an account's email: a key by its id, an account by
-/// its number and fingerprint.
+/// its number and fingerprint. A routed record's tier and whose it is (YN-70)
+/// go with each of chosen, waiting and released, as `tier` and `tierSource`.
 fn route_summary(db: &Connection, agent: &str, routing: Option<&str>, route: Option<&str>) -> Result<Option<Value>> {
+    let summary = route_kind(db, agent, routing, route)?;
+    let tiered = route.and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+    Ok(summary.map(|mut out| {
+        if let Some(route) = &tiered {
+            for field in ["tier", "tierSource"] {
+                if let Some(value) = route[field].as_str() {
+                    out[field] = json!(value);
+                }
+            }
+        }
+        out
+    }))
+}
+
+/// What `route_summary` says of a record, without its tier.
+fn route_kind(db: &Connection, agent: &str, routing: Option<&str>, route: Option<&str>) -> Result<Option<Value>> {
     let Some(raw) = route else {
         // No record says only that it wasn't routed, not why (R1 e7dfa1a9): routing may have been on
         // and unable to route it.

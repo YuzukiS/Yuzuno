@@ -60,12 +60,12 @@ const agents = () => [
   }, { task: { id: "YN-w", title: "Export and import device preferences", shortName: "Export settings" } }),
   // Its result in, its PR waiting for its review rounds: the lead's turn.
   executor("v", "Agent v", "delivering", {}, { route: { kind: "chosen", candidate: "c-cl", harness: "claude", model: "opus",
-    credential: { kind: "pool", account: { fingerprint: "0f1e2d3c4b5a6978", number: 2 } } } }),
+    credential: { kind: "pool", account: { fingerprint: "0f1e2d3c4b5a6978", number: 2 } }, tier: "strong", tierSource: "lead" } }),
   // At work, with a short name; done long ago; another Agent waiting for you; one with updates unread.
   executor("k", "YN-k · Design first", "running", { status: "working", workSummary: { kind: "progress", source: "agent", text: "Slice 2: evidence Job" } },
     { task: { id: "YN-k", title: "Keep the selection after a refresh", shortName: "Keep selection" },
       route: { kind: "chosen", candidate: "c-ds", label: "DeepSeek off-peak", harness: "opencode", model: "deepseek/deepseek-flash",
-        credential: { kind: "apiKey", keyId: "deepseek-main" } } }),
+        credential: { kind: "apiKey", keyId: "deepseek-main" }, tier: "fast", tierSource: "template" } }),
   executor("a", "YN-a · Design first", "archived", { closedAt: at(30), releasedAt: at(30), releasedBy: "user" },
     { dispatchedAt: at(120), since: at(30) }),
   agent("s", { status: "waiting", pendingCount: 1, workSummary: { kind: "pending", source: "runtime", text: "Allow npm test", requestId: "q2" } }),
@@ -246,11 +246,13 @@ test("the row's card says the template and what routing gave it, a key by its id
     const card = (id) => readTip(p.w, p.row(id).querySelector(".agent-select"));
     const k = await card("k");
     assert.ok(k.includes("Template: Design first"), k.join(" | "));
-    assert.ok(k.includes("Route: OpenCode · deepseek-flash · API key deepseek-main"), k.join(" | "));
+    // YN-70: the kind of work it was dispatched for, and whose, after the route.
+    const kRoute = "Route: OpenCode · deepseek-flash · API key deepseek-main · fast work (template)";
+    assert.ok(k.includes(kRoute), k.join(" | "));
     assert.ok(k.indexOf("YN-k · Design first · Core host") < k.indexOf("Template: Design first")
-      && k.indexOf("Template: Design first") < k.indexOf("Route: OpenCode · deepseek-flash · API key deepseek-main"), "under its name and machine");
+      && k.indexOf("Template: Design first") < k.indexOf(kRoute), "under its name and machine");
     const v = await card("v");
-    assert.ok(v.includes("Route: Claude Code · opus · claude-swap #2 · 0f1e2d3c"), v.join(" | "));
+    assert.ok(v.includes("Route: Claude Code · opus · claude-swap #2 · 0f1e2d3c · strong work (lead)"), v.join(" | "));
     const g = await card("g");
     assert.ok(g.includes("Template: none") && g.includes("Not routed at its dispatch"), g.join(" | "));
     assert.ok(g.includes("Agent g · Core host"), g.join(" | "));
@@ -333,7 +335,7 @@ test("in Chinese the row reads in Chinese", async () => {
     // Waiting for a routing candidate (YN-57), and what routing gave one.
     assert.equal(p.pill("c"), `等候选 · ${hhmm(CANDIDATE_AT)} 起`);
     const k = await readTip(p.w, p.row("k").querySelector(".agent-select"));
-    assert.ok(k.includes("模板：Design first") && k.includes("路由：OpenCode · deepseek-flash · API key deepseek-main"), k.join(" | "));
+    assert.ok(k.includes("模板：Design first") && k.includes("路由：OpenCode · deepseek-flash · API key deepseek-main · 快活（模板）"), k.join(" | "));
     const g = await readTip(p.w, p.row("g").querySelector(".agent-select"));
     assert.ok(g.includes("模板：无") && g.includes("派发时没有经过路由"), g.join(" | "));
     assert.deepEqual(p.errors, []);
