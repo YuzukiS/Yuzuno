@@ -393,7 +393,8 @@ async function run({ width, height, theme, lang = "zh", rail = 240, density = "d
       report.screenshots.push(`${tag}-2-selected`);
       check(`${tag}: the selected row looks as hover does, with no "…"; Shift+F10 on its link opens its menu`);
       // YN-57: the card of an executor waiting for a routing candidate says so, its template and its route.
-      const at = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(Date.parse("2026-11-09T04:00:00Z"));
+      // The time as the page writes it: its own locale and time zone (the context's), not this process's.
+      const at = await page.evaluate((iso) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(Date.parse(iso)), "2026-11-09T04:00:00Z");
       await rowOf("yn57").locator(".agent-select").hover();
       const tip = page.locator(".tip");
       await tip.waitFor({ timeout: 10_000 });
