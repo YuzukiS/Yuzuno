@@ -446,3 +446,37 @@ fn the_whole_brief_guide_is_its_leading_parts_and_the_names_of_the_rest() {
     }
     assert!(short["more"].as_str().unwrap().contains("part"));
 }
+
+fn section(n: usize, owner: &str, title: &str, body: usize) -> Value {
+    json!({"key":format!("{}/{:0>40}", "t".repeat(50), n),"kind":"report","title":title,"version":n,
+        "owner":{"agentId":owner,"name":owner,"state":"active"},"updatedAt":format!("2026-11-09T00:{:02}:00Z", n % 60),
+        "updatedTurnId":"t","body":{"root":"b","elements":{"b":{"type":"Markdown","props":{"text":"x".repeat(body)}}}},
+        "attachments":[],"refs":{},"seen":null,"history":false})
+}
+
+/// YN-69 S8b, review 6c4641bd: whatever its own sections and keys, the
+/// answer fits: more, naming every one left out, is measured before any
+/// section is chosen, and an index too long for an answer lists each
+/// section by key, kind, version, owner and time only.
+#[test]
+fn a_large_brief_always_fits_whatever_its_keys_and_titles() {
+    let own: Vec<Value> = (0..40).map(|n| section(n, "a", "Report", 3000)).collect();
+    let keys: Vec<Value> = own.iter().map(|s| s["key"].clone()).collect();
+    let brief = json!({"projectId":"p","version":40,"sections":own,"you":{"agentId":"a","ownsKeys":keys},"limits":{}});
+    let short = answer("brief_get", brief, Some("whole"));
+    assert!(short.to_string().len() <= ANSWER_BUDGET, "{}", short.to_string().len());
+    let shown = short["sections"].as_array().unwrap().len();
+    assert!(shown > 0 && shown < 40);
+    assert_eq!(short["index"].as_array().unwrap().len(), 40);
+    let more = short["more"].as_str().unwrap();
+    assert_eq!(more.matches("t/").count(), 40 - shown, "every one left out is named: {more}");
+    // Sixty sections with long titles: the index alone is more than an answer.
+    let many: Vec<Value> = (0..60).map(|n| section(n, "b", &"題".repeat(300), 10)).collect();
+    let brief = json!({"projectId":"p","version":60,"sections":many,"you":{"agentId":"a","ownsKeys":[]},"limits":{}});
+    let short = answer("brief_get", brief, Some("whole"));
+    assert!(short.to_string().len() <= ANSWER_BUDGET, "{}", short.to_string().len());
+    let index = short["index"].as_array().unwrap();
+    assert_eq!(index.len(), 60);
+    assert_eq!(index[0].as_object().unwrap().keys().cloned().collect::<Vec<_>>(), ["key", "kind", "owner", "updatedAt", "version"]);
+    assert!(short["more"].as_str().unwrap().contains("keys [] lists them whole"));
+}

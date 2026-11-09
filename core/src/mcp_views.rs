@@ -283,30 +283,49 @@ fn materials_once(mut answer: Value) -> Value {
 fn brief_within_budget(mut brief: Value) -> Value {
     let whole = size(&brief);
     let sections = brief["sections"].as_array().cloned().unwrap_or_default();
-    let own: Vec<&str> = brief["you"]["ownsKeys"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let owned: Vec<String> = brief["you"]["ownsKeys"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+    let own: Vec<&str> = owned.iter().map(String::as_str).collect();
     let mut mine: Vec<&Value> = sections.iter().filter(|s| s["key"].as_str().is_some_and(|key| own.contains(&key))).collect();
     mine.sort_by(|a, b| b["updatedAt"].as_str().cmp(&a["updatedAt"].as_str()));
+    brief["sections"] = json!([]);
     brief["index"] = sections.iter().map(index_entry).collect();
+    // An index that is more than an answer by itself (many sections, long
+    // titles) lists each section by key, kind, version, owner and time only.
+    let mut compact = false;
+    brief["more"] = brief_more(whole, sections.len(), &own, true);
+    if size(&brief) > BUDGET {
+        compact = true;
+        brief["index"] = sections.iter().map(|s| pick(&index_entry(s), &["key", "kind", "version", "updatedAt"])
+            .as_object().cloned().map(|mut entry| { entry.insert("owner".into(), json!(s["owner"]["agentId"])); Value::Object(entry) })
+            .unwrap_or_default()).collect();
+    }
+    // Sections are chosen against the longest more there can be (every one
+    // of the caller's keys named), so the answer's own more never makes it
+    // longer than measured.
+    brief["more"] = brief_more(whole, sections.len(), &own, compact);
+    let mut room = BUDGET.saturating_sub(size(&brief));
     let mut shown: Vec<Value> = Vec::new();
     let mut left: Vec<&str> = Vec::new();
     for section in mine {
-        shown.push(section.clone());
-        brief["sections"] = json!(shown);
-        brief["more"] = brief_more(whole, sections.len(), &left);
-        if size(&brief) > BUDGET {
-            shown.pop();
+        let bytes = size(section) + 1;
+        if bytes <= room {
+            room -= bytes;
+            shown.push(section.clone());
+        } else {
             left.push(section["key"].as_str().unwrap_or_default());
         }
     }
     brief["sections"] = json!(shown);
-    brief["more"] = brief_more(whole, sections.len(), &left);
+    brief["more"] = brief_more(whole, sections.len(), &left, compact);
     brief
 }
 
-fn brief_more(whole: usize, all: usize, left: &[&str]) -> Value {
+fn brief_more(whole: usize, all: usize, left: &[&str], compact: bool) -> Value {
     let left = if left.is_empty() { String::new() } else { format!("; of your own, these are left out: {}", left.join(", ")) };
-    json!(format!("This Brief is {whole} bytes, more than one answer holds ({BUDGET}): index lists all {all} sections, \
-        sections holds your own newest that fit{left}. brief_get with keys [...] reads any section whole"))
+    let index = if compact { "index lists all {all} sections by key, kind, version, owner and time only (keys [] lists them whole)" }
+        else { "index lists all {all} sections" };
+    json!(format!("This Brief is {whole} bytes, more than one answer holds ({BUDGET}): {}, sections holds your own newest \
+        that fit{left}. brief_get with keys [...] reads any section whole", index.replace("{all}", &all.to_string())))
 }
 
 /// A section's index entry, as sections::index_json lists it for keys [].
