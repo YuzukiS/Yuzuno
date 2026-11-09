@@ -129,7 +129,10 @@ const notifications = (box) => box.evaluate((el) => ({
   heading: el.querySelector("h3").textContent,
   current: el.querySelector(".settings-current").textContent,
   access: el.querySelector(".notification-access").textContent,
-  rows: [...el.querySelectorAll("label.settings-row")].map((row) => [row.querySelector(".settings-row-title").textContent, row.querySelector("input").checked]),
+  // This browser's notification rows; the iPhone Home Screen push row (T-200)
+  // has its own group, and no switch where push is unavailable, as here.
+  rows: [...el.querySelectorAll("label.settings-row")].filter((row) => !row.closest(".push-settings"))
+    .map((row) => [row.querySelector(".settings-row-title").textContent, row.querySelector("input").checked]),
   test: el.querySelector(".notification-test-result")?.textContent ?? null,
   outcome: el.querySelector(".notification-test-result")?.dataset.outcome ?? null,
   button: el.querySelector(".settings-row-action button").textContent,
